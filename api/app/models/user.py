@@ -1,36 +1,28 @@
-"""User model."""
+"""User model with UUID primary key."""
 
-from datetime import datetime
-from sqlalchemy import String, DateTime, Boolean, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Column, String, Boolean, DateTime
+from sqlalchemy.orm import relationship
 
-from app.core.database import Base
+from .base import Base, TimestampMixin, UUIDMixin
 
 
-class User(Base):
-    """User model."""
-
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    full_name: Mapped[str] = mapped_column(String(255), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+class User(Base, UUIDMixin, TimestampMixin):
+    """User model for authentication and authorization."""
     
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-    last_login: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
+    __tablename__ = "users"
+    
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    last_login = Column(DateTime(timezone=True), nullable=True)
+    
     # Relationships
-    vms: Mapped[list["VM"]] = relationship("VM", back_populates="owner", cascade="all, delete-orphan")
-    sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    vm_instances = relationship("VMInstance", back_populates="user", cascade="all, delete-orphan")
+    sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    snapshots = relationship("Snapshot", back_populates="user", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="user")
 
     def __repr__(self) -> str:
-        return f"<User(id={self.id}, email='{self.email}')>"
+        return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"

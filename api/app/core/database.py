@@ -1,19 +1,21 @@
 """Database configuration and utilities."""
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import get_settings
+from app.models.base import Base
 
 settings = get_settings()
 
-# Create async engine
+# Create async engine with proper connection pooling
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.database_echo,
+    echo=settings.database_echo if hasattr(settings, 'database_echo') else False,
     future=True,
     pool_pre_ping=True,
     pool_recycle=300,
+    pool_size=20,  # Max connections per instance
+    max_overflow=10,  # Additional connections when pool is full
 )
 
 # Create async session factory
@@ -22,11 +24,6 @@ AsyncSessionLocal = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
-
-class Base(DeclarativeBase):
-    """Base class for all database models."""
-    pass
 
 
 async def get_db_session() -> AsyncSession:

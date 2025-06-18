@@ -1,72 +1,27 @@
-"""Snapshot model."""
+"""Snapshot model with UUID primary key."""
 
-from datetime import datetime
-from enum import Enum
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, BigInteger, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Column, String, Text, BigInteger, ForeignKey, UUID, JSON
+from sqlalchemy.orm import relationship
 
-from app.core.database import Base
+from .base import Base, TimestampMixin, UUIDMixin
 
 
-class SnapshotStatus(str, Enum):
-    """Snapshot status enumeration."""
-    CREATING = "creating"
-    AVAILABLE = "available"
-    RESTORING = "restoring"
-    ERROR = "error"
-    DELETING = "deleting"
-
-
-class Snapshot(Base):
-    """VM snapshot model."""
-
+class Snapshot(Base, UUIDMixin, TimestampMixin):
+    """Snapshot model for VM snapshots."""
+    
     __tablename__ = "snapshots"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[SnapshotStatus] = mapped_column(String(20), default=SnapshotStatus.CREATING, nullable=False)
+    
+    vm_instance_id = Column(UUID(as_uuid=True), ForeignKey("vm_instances.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    storage_path = Column(String(500), nullable=False)
+    size_bytes = Column(BigInteger, nullable=True)
+    snapshot_metadata = Column(JSON, nullable=True)
     
     # Relationships
-    vm_id: Mapped[int] = mapped_column(ForeignKey("vms.id"), nullable=False)
-    
-    # Snapshot metadata
-    description: Mapped[str] = mapped_column(Text, nullable=True)
-    snapshot_type: Mapped[str] = mapped_column(String(50), default="manual", nullable=False)  # manual, auto, scheduled
-    
-    # Storage information
-    storage_path: Mapped[str] = mapped_column(String(500), nullable=True)
-    memory_snapshot_path: Mapped[str] = mapped_column(String(500), nullable=True)
-    vm_state_path: Mapped[str] = mapped_column(String(500), nullable=True)
-    
-    # Size information
-    disk_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    memory_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    compressed_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    
-    # Snapshot configuration at time of creation
-    vm_config_snapshot: Mapped[str] = mapped_column(Text, nullable=True)  # JSON snapshot of VM config
-    
-    # Retention
-    retain_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_protected: Mapped[bool] = mapped_column(default=False, nullable=False)
-    
-    # Versioning
-    parent_snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id"), nullable=True)
-    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # Relationships
-    vm: Mapped["VM"] = relationship("VM", back_populates="snapshots")
-    parent_snapshot: Mapped["Snapshot"] = relationship("Snapshot", remote_side=[id], back_populates="child_snapshots")
-    child_snapshots: Mapped[list["Snapshot"]] = relationship("Snapshot", back_populates="parent_snapshot")
+    vm_instance = relationship("VMInstance", back_populates="snapshots")
+    user = relationship("User", back_populates="snapshots")
 
     def __repr__(self) -> str:
-        return f"<Snapshot(id={self.id}, name='{self.name}', status='{self.status}')>"
+        return f"<Snapshot(id={self.id}, name='{self.name}', vm_id={self.vm_instance_id})>"

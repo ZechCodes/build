@@ -8,10 +8,10 @@ from sqlalchemy import engine_from_config, pool
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import get_settings
-from app.core.database import Base
+from app.models.base import Base
 
 # Import all models to ensure they're registered with SQLAlchemy
-from app.models import User, VM, Session, Snapshot  # noqa
+from app.models import User, VMInstance, Session, Snapshot, AuditLog  # noqa
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -55,13 +55,12 @@ def do_run_migrations(connection):
 
 async def run_async_migrations():
     """Run migrations in async mode."""
-    connectable = AsyncEngine(
-        engine_from_config(
-            config.get_section(config.config_ini_section),
-            prefix="sqlalchemy.",
-            poolclass=pool.NullPool,
-            future=True,
-        )
+    from sqlalchemy.ext.asyncio import create_async_engine
+    
+    connectable = create_async_engine(
+        config.get_main_option("sqlalchemy.url"),
+        poolclass=pool.NullPool,
+        future=True,
     )
 
     async with connectable.connect() as connection:

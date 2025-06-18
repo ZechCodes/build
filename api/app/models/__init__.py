@@ -1,8 +1,10 @@
 """Database models."""
 
-from app.models.user import User
-from app.models.vm import VM
-from app.models.session import Session
-from app.models.snapshot import Snapshot
+from .base import Base
+from .user import User
+from .vm import VMInstance
+from .session import Session
+from .snapshot import Snapshot
+from .audit import AuditLog
 
-__all__ = ["User", "VM", "Session", "Snapshot"]
+__all__ = ["Base", "User", "VMInstance", "Session", "Snapshot", "AuditLog"]

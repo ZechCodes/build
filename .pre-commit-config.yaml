@@ -1,0 +1,97 @@
+repos:
+  # Python hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: forbid-new-submodules
+      - id: mixed-line-ending
+
+  # Secret detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: package.lock.json
+
+  # Python formatting and linting
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^api/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.14
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^api/
+
+  # Python type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-all]
+        files: ^api/
+        exclude: ^api/alembic/
+
+  # Python security scanning
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.5
+    hooks:
+      - id: bandit
+        args: ['-c', 'api/pyproject.toml']
+        files: ^api/
+
+  # TypeScript/JavaScript hooks
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v8.55.0
+    hooks:
+      - id: eslint
+        files: ^frontend/
+        types: [file]
+        types_or: [javascript, jsx, ts, tsx]
+        additional_dependencies:
+          - eslint@8.55.0
+          - '@typescript-eslint/parser@6.14.0'
+          - '@typescript-eslint/eslint-plugin@6.14.0'
+
+  # Dockerfile linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint
+        args: [--ignore, DL3008, --ignore, DL3009]
+
+  # YAML formatting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        types_or: [yaml, json, markdown]
+        exclude: ^frontend/
+
+  # Shell script checking
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.6
+    hooks:
+      - id: shellcheck
+
+  # Check for secrets in environment files
+  - repo: local
+    hooks:
+      - id: check-env-files
+        name: Check for secrets in .env files
+        entry: bash -c 'if grep -r "password\|secret\|key" .env* 2>/dev/null | grep -v "example\|template"; then echo "Found secrets in .env files!"; exit 1; fi'
+        language: system
+        pass_filenames: false

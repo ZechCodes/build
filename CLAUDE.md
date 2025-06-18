@@ -1,0 +1,4 @@
+- Always use TDD
+- Always commit your changes as you make them
+- Always ensure security checklists are 100/100
+- Keep the full project in mind by looking at the planning/v1/planning-overview.md

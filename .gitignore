@@ -1,0 +1,205 @@
+# Environment and secrets
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.env
+secrets/
+.secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.venv
+venv/
+ENV/
+env/
+.env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.DS_Store
+*.tsbuildinfo
+.npm
+.eslintcache
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+
+# Frontend build outputs
+frontend/build/
+frontend/dist/
+frontend/.next/
+frontend/out/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Container and orchestration
+.podman/
+.docker/
+docker-compose.override.yml
+podman-compose.override.yml
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+postgres_data/
+mysql_data/
+
+# Storage
+minio_data/
+redis_data/
+storage/
+uploads/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.metadata
+.settings/
+*.sublime-*
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Security and certificates
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+certs/
+certificates/
+ca/
+ssl/
+
+# Development and testing
+.coverage
+coverage/
+.nyc_output
+junit.xml
+test-results/
+allure-results/
+allure-report/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+
+# Application specific
+vm-images/
+snapshots/
+recordings/
+git-repos/
+user-data/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Rust (if any Rust components added)
+target/
+Cargo.lock
+
+# Go (if any Go components added)
+vendor/
+*.exe
+*.exe~
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes
+.kube/
+*.kubeconfig
+
+# Cache directories
+.cache/
+.parcel-cache/
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+.nyc_output
+.grunt
+.lock-wscript
+.wafpickle-*
+.yarn-integrity
+.yarn/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

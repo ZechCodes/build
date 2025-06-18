@@ -233,7 +233,10 @@ class TestSessionModel:
         assert session.user_id == user.id
         assert session.session_token == "unique_token_123"
         assert session.state == "active"
-        assert session.expires_at == expires_at
+        # SQLite doesn't preserve timezone, so compare naive datetime
+        expected_expires = expires_at.replace(tzinfo=None) if expires_at.tzinfo else expires_at
+        actual_expires = session.expires_at.replace(tzinfo=None) if session.expires_at.tzinfo else session.expires_at
+        assert actual_expires == expected_expires
 
     @pytest.mark.asyncio
     async def test_session_token_uniqueness(self, db_session: AsyncSession):

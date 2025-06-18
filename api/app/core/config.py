@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = Field(..., env="REDIS_URL")
+    redis_password: str = Field(..., env="REDIS_PASSWORD")
+    redis_max_connections: int = 20
+    redis_socket_timeout: float = 5.0
+    redis_socket_connect_timeout: float = 5.0
+    redis_health_check_interval: int = 30
 
     # JWT
     jwt_secret: str = Field(..., env="JWT_SECRET")

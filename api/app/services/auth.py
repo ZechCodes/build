@@ -385,9 +385,23 @@ class AuthService:
             )
         
         # Verify reset token
-        redis = await get_redis()
-        reset_key = f"password_reset:{user_id}"
-        stored_token = await redis.get(reset_key)
+        try:
+            redis = await get_redis()
+            reset_key = f"password_reset:{user_id}"
+            stored_token = await redis.get(reset_key)
+        except Exception as e:
+            logger.warning("Redis not available for password reset token verification", error=str(e))
+            # If Redis is unavailable, we can't verify the token, so we fail safely
+            await AuditService.log_security_event(
+                db, "password_reset_failed", "authentication",
+                user_id=uuid.UUID(user_id) if user_id else None,
+                ip_address=ip_address,
+                details={"reason": "token_verification_unavailable"}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Password reset service temporarily unavailable"
+            )
         
         if not stored_token or stored_token != reset_token:
             await AuditService.log_security_event(
@@ -415,14 +429,17 @@ class AuthService:
         user.password_hash = get_password_hash(new_password)
         await db.commit()
         
-        # Remove reset token
-        await redis.delete(reset_key)
-        
-        # Revoke all refresh tokens
-        pattern = f"refresh_token:{user_id}:*"
-        keys = await redis.keys(pattern)
-        if keys:
-            await redis.delete(*keys)
+        # Remove reset token and revoke refresh tokens
+        try:
+            await redis.delete(reset_key)
+            
+            # Revoke all refresh tokens
+            pattern = f"refresh_token:{user_id}:*"
+            keys = await redis.keys(pattern)
+            if keys:
+                await redis.delete(*keys)
+        except Exception as e:
+            logger.warning("Failed to cleanup Redis tokens after password reset", error=str(e))
         
         await AuditService.log_security_event(
             db, "password_reset_completed", "authentication",

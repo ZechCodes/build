@@ -1,5 +1,6 @@
 """Main FastAPI application."""
 
+import time
 import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -30,6 +31,25 @@ from app.core.deps import (
     get_cache
 )
 from app.services.cache import get_cache_service
+
+# Import monitoring components
+try:
+    from app.monitoring.logfire_setup import (
+        setup_logfire_monitoring, 
+        setup_structured_logging,
+        LOGFIRE_AVAILABLE
+    )
+    from app.monitoring.logfire_middleware import (
+        LogfireTrackingMiddleware,
+        LogfirePerformanceMiddleware,
+        LogfireUserActivityMiddleware
+    )
+    from app.monitoring.metrics import start_metrics_collection_task
+    LOGFIRE_MONITORING_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Logfire monitoring not available - {e}")
+    LOGFIRE_MONITORING_AVAILABLE = False
+
 try:
     from app.middleware.security import (
         SecurityHeadersMiddleware,
@@ -72,6 +92,15 @@ async def lifespan(app: FastAPI):
                version="0.1.0", 
                environment=settings.environment)
     
+    # Setup Logfire monitoring
+    if LOGFIRE_MONITORING_AVAILABLE:
+        try:
+            setup_logfire_monitoring(app)
+            setup_structured_logging()
+            logger.info("Logfire monitoring initialized")
+        except Exception as e:
+            logger.error("Failed to setup Logfire monitoring", error=str(e))
+    
     try:
         # Connect to Redis
         await redis_manager.connect()
@@ -79,6 +108,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to connect to Redis", error=str(e))
         # Don't fail startup - Redis is important but not critical for basic functionality
+    
+    # Start metrics collection task
+    if LOGFIRE_MONITORING_AVAILABLE:
+        try:
+            await start_metrics_collection_task()
+            logger.info("Metrics collection task started")
+        except Exception as e:
+            logger.error("Failed to start metrics collection", error=str(e))
     
     # Log startup completion
     logger.info("Build Platform API startup completed")
@@ -108,41 +145,53 @@ app = FastAPI(
 )
 
 # Add middleware in order (last added = first executed)
+
+# Add Logfire middleware if available
+if LOGFIRE_MONITORING_AVAILABLE:
+    # 1. Logfire tracking (outermost for complete request tracing)
+    app.add_middleware(LogfireTrackingMiddleware, include_request_body=False, include_response_body=False)
+    
+    # 2. Logfire performance monitoring
+    app.add_middleware(LogfirePerformanceMiddleware, slow_request_threshold=1.0)
+    
+    # 3. Logfire user activity tracking
+    app.add_middleware(LogfireUserActivityMiddleware, track_anonymous_users=True)
+
 if SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
-    # 1. Security headers (outermost)
+    # 4. Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # 2. Request size limiting
+    # 5. Request size limiting
     app.add_middleware(RequestSizeLimitMiddleware, max_size=50 * 1024 * 1024)  # 50MB
 
-    # 3. IP whitelist for admin endpoints
+    # 6. IP whitelist for admin endpoints
     if settings.environment == "production":
         app.add_middleware(IPWhitelistMiddleware, allowed_ips=["127.0.0.1"])
 
-    # 4. Request logging and tracing
+    # 7. Request logging and tracing
     app.add_middleware(RequestLoggingMiddleware)
 
-    # 5. Performance monitoring
+    # 8. Performance monitoring
     app.add_middleware(PerformanceMonitoringMiddleware)
 
-    # 6. Error tracking
+    # 9. Error tracking
     app.add_middleware(ErrorTrackingMiddleware)
 
-    # 7. Health metrics collection
+    # 10. Health metrics collection
     app.add_middleware(HealthMetricsMiddleware)
 
-    # 8. Prometheus metrics collection  
+    # 11. Prometheus metrics collection  
     app.add_middleware(PrometheusMiddleware)
 
-    # 9. Rate limiting (before user context)
+    # 12. Rate limiting (before user context)
     app.add_middleware(RateLimitMiddleware)
 
-    # 10. User context extraction
+    # 13. User context extraction
     app.add_middleware(UserContextMiddleware)
 else:
     logger.warning("Advanced middleware disabled due to missing dependencies")
 
-# 11. CORS middleware
+# 14. CORS middleware
 if settings.enable_cors:
     app.add_middleware(
         CORSMiddleware,
@@ -153,7 +202,7 @@ if settings.enable_cors:
         expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-*"]
     )
 
-# 12. Trusted host middleware (innermost, closest to routes)
+# 15. Trusted host middleware (innermost, closest to routes)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[
@@ -251,6 +300,31 @@ async def get_cache_metrics(cache = Depends(get_cache)):
         return {"status": "healthy", "metrics": stats}
     except Exception as e:
         logger.error("Failed to get cache metrics", error=str(e))
+        return {"status": "unhealthy", "error": str(e)}
+
+
+@app.get("/api/v1/metrics/logfire")
+async def get_logfire_metrics():
+    """Get Logfire and monitoring metrics."""
+    if not LOGFIRE_MONITORING_AVAILABLE:
+        return {"error": "Logfire monitoring not available"}
+    
+    try:
+        from app.monitoring.metrics import metrics_collector
+        from app.monitoring.database_tracking import get_database_metrics
+        
+        metrics_summary = metrics_collector.get_all_metrics_summary()
+        db_metrics = get_database_metrics()
+        
+        return {
+            "status": "healthy",
+            "logfire_enabled": LOGFIRE_MONITORING_AVAILABLE,
+            "metrics": metrics_summary,
+            "database": db_metrics,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error("Failed to get Logfire metrics", error=str(e))
         return {"status": "unhealthy", "error": str(e)}
 
 

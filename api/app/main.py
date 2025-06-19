@@ -63,6 +63,21 @@ except ImportError as e:
     print(f"Warning: Enhanced security middleware not available - {e}")
     ENHANCED_SECURITY_AVAILABLE = False
 
+# Import advanced middleware
+try:
+    from app.middleware.advanced import (
+        RequestIDMiddleware,
+        CompressionMiddleware,
+        SecurityHeadersAdvancedMiddleware,
+        ProcessTimeMiddleware,
+        RequestSizeLimitAdvancedMiddleware
+    )
+    from app.middleware.versioning import create_versioning_middleware
+    ADVANCED_MIDDLEWARE_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Advanced middleware not available - {e}")
+    ADVANCED_MIDDLEWARE_AVAILABLE = False
+
 try:
     from app.middleware.security import (
         SecurityHeadersMiddleware,
@@ -159,40 +174,58 @@ app = FastAPI(
 
 # Add middleware in order (last added = first executed)
 
+# Add advanced middleware if available
+if ADVANCED_MIDDLEWARE_AVAILABLE:
+    # 1. Request ID tracking (outermost)
+    app.add_middleware(RequestIDMiddleware)
+    
+    # 2. Process time tracking
+    app.add_middleware(ProcessTimeMiddleware)
+    
+    # 3. Response compression
+    app.add_middleware(CompressionMiddleware, minimum_size=1024)
+
 # Add Logfire middleware if available
 if LOGFIRE_MONITORING_AVAILABLE:
-    # 1. Logfire tracking (outermost for complete request tracing)
+    # 4. Logfire tracking
     app.add_middleware(LogfireTrackingMiddleware, include_request_body=False, include_response_body=False)
     
-    # 2. Logfire performance monitoring
+    # 5. Logfire performance monitoring
     app.add_middleware(LogfirePerformanceMiddleware, slow_request_threshold=1.0)
     
-    # 3. Logfire user activity tracking
+    # 6. Logfire user activity tracking
     app.add_middleware(LogfireUserActivityMiddleware, track_anonymous_users=True)
 
 # Add enhanced security middleware if available
 if ENHANCED_SECURITY_AVAILABLE:
-    # 4. Enhanced security headers
+    # 7. Enhanced security headers
     app.add_middleware(EnhancedSecurityHeadersMiddleware)
     
-    # 5. Security monitoring and threat detection
+    # 8. Security monitoring and threat detection
     app.add_middleware(SecurityMonitoringMiddleware)
     
-    # 6. Input validation and attack detection
+    # 9. Input validation and attack detection
     app.add_middleware(InputValidationMiddleware, max_body_size=50 * 1024 * 1024)
     
-    # 7. Advanced rate limiting with attack detection
+    # 10. Advanced rate limiting with attack detection
     app.add_middleware(AdvancedRateLimitMiddleware)
+
+elif ADVANCED_MIDDLEWARE_AVAILABLE:
+    # Fallback to advanced security headers
+    app.add_middleware(SecurityHeadersAdvancedMiddleware)
+    
+    # Advanced request size limiting
+    app.add_middleware(RequestSizeLimitAdvancedMiddleware)
 
 elif SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
     # Fallback to basic security middleware
-    # 4. Security headers
+    # 11. Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # 5. Request size limiting
+    # 12. Request size limiting
     app.add_middleware(RequestSizeLimitMiddleware, max_size=50 * 1024 * 1024)  # 50MB
 
-    # 6. Rate limiting (basic)
+    # 13. Rate limiting (basic)
     app.add_middleware(RateLimitMiddleware)
 
 else:
@@ -200,29 +233,35 @@ else:
 
 # Add remaining middleware if available
 if SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
-    # 8. IP whitelist for admin endpoints
+    # 14. IP whitelist for admin endpoints
     if settings.environment == "production":
         app.add_middleware(IPWhitelistMiddleware, allowed_ips=["127.0.0.1"])
 
-    # 9. Request logging and tracing
+    # 15. Request logging and tracing
     app.add_middleware(RequestLoggingMiddleware)
 
-    # 10. Performance monitoring
+    # 16. Performance monitoring
     app.add_middleware(PerformanceMonitoringMiddleware)
 
-    # 11. Error tracking
+    # 17. Error tracking
     app.add_middleware(ErrorTrackingMiddleware)
 
-    # 12. Health metrics collection
+    # 18. Health metrics collection
     app.add_middleware(HealthMetricsMiddleware)
 
-    # 13. Prometheus metrics collection  
+    # 19. Prometheus metrics collection  
     app.add_middleware(PrometheusMiddleware)
 
-    # 14. User context extraction
+    # 20. User context extraction
     app.add_middleware(UserContextMiddleware)
 
-# 15. CORS middleware
+# 21. API Versioning middleware
+if ADVANCED_MIDDLEWARE_AVAILABLE:
+    versioning_middleware = create_versioning_middleware()
+    if versioning_middleware:
+        app.add_middleware(type(versioning_middleware), **versioning_middleware.__dict__)
+
+# 22. CORS middleware
 if settings.enable_cors:
     app.add_middleware(
         CORSMiddleware,
@@ -230,10 +269,10 @@ if settings.enable_cors:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-*"]
+        expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-*", "API-Version"]
     )
 
-# 16. Trusted host middleware (innermost, closest to routes)
+# 23. Trusted host middleware (innermost, closest to routes)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[

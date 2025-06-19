@@ -16,6 +16,18 @@ class TokenData(BaseModel):
     user_id: Optional[str] = None
 
 
+class UserResponse(BaseModel):
+    """User response schema."""
+    id: str
+    email: str
+    username: str
+    is_active: bool
+    is_verified: bool
+    
+    class Config:
+        from_attributes = True
+
+
 class LoginResponse(BaseModel):
     """Login response schema."""
     access_token: str
@@ -98,15 +110,3 @@ class PasswordReset(BaseModel):
             )
         
         return v
-
-
-class UserResponse(BaseModel):
-    """User response schema."""
-    id: str
-    email: str
-    username: str
-    is_active: bool
-    is_verified: bool
-    
-    class Config:
-        from_attributes = True

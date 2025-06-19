@@ -1,5 +1,6 @@
 """Dependency injection for FastAPI routes."""
 
+import uuid
 import structlog
 from typing import Generator, Optional, AsyncGenerator
 from fastapi import Depends, HTTPException, status, Request
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from app.core.database import get_db_session
 from app.core.redis import get_redis, RedisManager
 from app.core.config import get_settings, Settings
+from app.core.security import verify_token
 from app.services.cache import get_cache_service, CacheService
 from app.models.user import User
 
@@ -49,8 +51,14 @@ async def get_current_user(
     if user_id is None:
         raise credentials_exception
     
+    # Convert user_id to UUID
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise credentials_exception
+    
     # Fetch user from database
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     
     if user is None:
@@ -89,8 +97,14 @@ async def get_optional_current_user(
     if user_id is None:
         return None
     
+    # Convert user_id to UUID
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        return None
+    
     # Fetch user from database
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     
     if user is None or not user.is_active:

@@ -1,0 +1,218 @@
+version: '3.8'
+
+services:
+  redis-primary:
+    image: redis:7-alpine
+    container_name: build_redis_primary
+    hostname: redis-primary
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+    volumes:
+      - ./redis-primary.conf:/etc/redis/redis.conf:ro
+      - redis_primary_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-dev_redis_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=1G
+
+  redis-replica:
+    image: redis:7-alpine
+    container_name: build_redis_replica
+    hostname: redis-replica
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6380:6380"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+    volumes:
+      - ./redis-replica.conf:/etc/redis/redis.conf:ro
+      - redis_replica_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-dev_redis_password}", "-p", "6380", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=1G
+
+  redis-sentinel-1:
+    image: redis:7-alpine
+    container_name: build_redis_sentinel_1
+    hostname: redis-sentinel-1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:26379:26379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+      - SENTINEL_PASSWORD=${SENTINEL_PASSWORD:-dev_sentinel_password}
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+      - redis_sentinel_1_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512M
+
+  redis-sentinel-2:
+    image: redis:7-alpine
+    container_name: build_redis_sentinel_2
+    hostname: redis-sentinel-2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:26380:26379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+      - SENTINEL_PASSWORD=${SENTINEL_PASSWORD:-dev_sentinel_password}
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+      - redis_sentinel_2_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512M
+
+  redis-sentinel-3:
+    image: redis:7-alpine
+    container_name: build_redis_sentinel_3
+    hostname: redis-sentinel-3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:26381:26379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+      - SENTINEL_PASSWORD=${SENTINEL_PASSWORD:-dev_sentinel_password}
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+      - redis_sentinel_3_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512M
+
+volumes:
+  redis_primary_data:
+    driver: local
+  redis_replica_data:
+    driver: local
+  redis_sentinel_1_data:
+    driver: local
+  redis_sentinel_2_data:
+    driver: local
+  redis_sentinel_3_data:
+    driver: local
+  redis_logs:
+    driver: local
+
+networks:
+  redis_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

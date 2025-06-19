@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  redis-primary:
+    image: docker.io/redis:7-alpine
+    container_name: build_redis_primary_dev
+    hostname: redis-primary
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+    volumes:
+      - ./redis-primary.conf:/etc/redis/redis.conf:ro
+      - redis_primary_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-dev_redis_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    security_opt:
+      - no-new-privileges:true
+
+  redis-sentinel:
+    image: docker.io/redis:7-alpine
+    container_name: build_redis_sentinel_dev
+    hostname: redis-sentinel
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:26379:26379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_password}
+      - SENTINEL_PASSWORD=${SENTINEL_PASSWORD:-dev_sentinel_password}
+    volumes:
+      - ./sentinel.conf:/etc/redis/sentinel.conf:ro
+      - redis_sentinel_data:/var/lib/redis
+      - redis_logs:/var/log/redis
+    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    depends_on:
+      - redis-primary
+    networks:
+      - redis_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-p", "26379", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 64M
+          cpus: '0.05'
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  redis_primary_data:
+    driver: local
+  redis_sentinel_data:
+    driver: local
+  redis_logs:
+    driver: local
+
+networks:
+  redis_network:
+    driver: bridge

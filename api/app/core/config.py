@@ -88,6 +88,7 @@ class Settings(BaseSettings):
         env_file = ".env.development"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # Ignore extra fields from environment
 
 
 @lru_cache()

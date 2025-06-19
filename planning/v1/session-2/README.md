@@ -528,12 +528,12 @@ class PermissionChecker:
 - [ ] Timing attack resistance
 - [ ] Password complexity enforcement
 
-### Performance Testing
-- [ ] Authentication under load (1000 concurrent requests)
-- [ ] Token generation/validation performance
-- [ ] Rate limiting accuracy under load
-- [ ] Redis session storage performance
-- [ ] Database query optimization for auth operations
+### Functionality Testing
+- [ ] Authentication functionality verification
+- [ ] Token generation/validation functionality
+- [ ] Rate limiting accuracy
+- [ ] Redis session storage functionality
+- [ ] Database query functionality for auth operations
 
 ## Monitoring & Alerting
 
@@ -546,18 +546,18 @@ class PermissionChecker:
 - Password reset requests
 - New user registrations
 
-### Performance Metrics
-- Authentication request latency
-- Token generation/validation time
-- Rate limiting response times
-- Redis connection and response times
-- Database query performance for auth operations
+### Operational Metrics
+- Authentication request counts
+- Token generation/validation counts
+- Rate limiting trigger counts
+- Redis connection status
+- Database query success rates for auth operations
 
 ### Alert Conditions
 - Failed login attempts > 100/hour
 - Account lockouts > 10/hour
 - Token validation failures > 5% of total requests
-- Authentication latency > 500ms
+- Authentication failure rate > 5%
 - Redis connection failures
 - Suspicious activity patterns (rapid requests from single IP)
 
@@ -626,7 +626,7 @@ Upon successful completion of Session 2:
 ### Operational Risks
 1. **Account lockout abuse**: Administrative unlock procedures
 2. **Password reset abuse**: Rate limiting, email verification
-3. **Performance degradation**: Monitoring, optimization, scaling
+3. **Service degradation**: Monitoring, redundancy, scaling
 4. **Service unavailability**: Health checks, redundancy, monitoring
 
 ---

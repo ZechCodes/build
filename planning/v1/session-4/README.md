@@ -897,7 +897,7 @@ class FlowController:
 - [ ] Backpressure handling
 - [ ] Queue overflow management
 - [ ] State transition validation
-- [ ] Performance optimization
+- [ ] Functionality optimization
 - [ ] Recovery procedures
 
 ### Security Testing
@@ -916,35 +916,35 @@ class FlowController:
 - [ ] Error propagation and handling
 - [ ] End-to-end terminal session flow
 
-## Performance Targets
+## Functional Targets
 
-### PTY Performance
-- PTY creation time < 500ms
-- Terminal input latency < 10ms
-- Terminal output throughput > 10MB/s
-- Process cleanup time < 5s
-- Memory usage < 50MB per session
+### PTY Functionality
+- PTY creation functionality
+- Terminal input responsiveness
+- Terminal output handling
+- Process cleanup functionality
+- Memory usage monitoring
 
-### Buffer Performance
-- Buffer append operation < 1ms
-- Buffer retrieval < 10ms for 1MB
-- Redis persistence < 100ms
-- Memory efficiency > 90%
-- Buffer cleanup < 5s per session
+### Buffer Functionality
+- Buffer append operation functionality
+- Buffer retrieval functionality
+- Redis persistence functionality
+- Memory efficiency monitoring
+- Buffer cleanup functionality
 
-### Flow Control Performance
-- Flow control decision < 0.1ms
-- Queue processing < 1ms per message
-- State transition time < 1ms
-- Throughput regulation accuracy > 95%
-- Resource overhead < 5% of total
+### Flow Control Functionality
+- Flow control decision making
+- Queue processing functionality
+- State transition functionality
+- Throughput regulation functionality
+- Resource overhead monitoring
 
 ## Monitoring & Alerting
 
 ### PTY Metrics
 - Active PTY sessions count
 - PTY creation/destruction rates
-- Terminal I/O throughput
+- Terminal I/O functionality
 - Process resource usage
 - PTY error rates
 
@@ -976,7 +976,7 @@ class FlowController:
 - [ ] Buffer management architecture
 - [ ] Flow control mechanisms
 - [ ] Security controls documentation
-- [ ] Performance optimization guide
+- [ ] Functionality optimization guide
 - [ ] Troubleshooting procedures
 
 ### Integration Documentation

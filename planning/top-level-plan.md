@@ -108,7 +108,6 @@ This document breaks down the Claude Code platform implementation into focused w
 - [ ] Automatic cleanup of orphaned resources
 
 **Testing Requirements**:
-- [ ] VM creation stress test
 - [ ] Resource exhaustion scenarios
 - [ ] Network isolation verification
 - [ ] Cleanup reliability test
@@ -127,8 +126,7 @@ This document breaks down the Claude Code platform implementation into focused w
 - Buffer management
 
 **Critical Decisions**:
-- [ ] Buffer size limits (memory vs performance)
-- [ ] Flow control strategy
+- [ ] Buffer size limits and flow control strategy
 - [ ] Encoding handling (UTF-8 validation)
 - [ ] Maximum terminal dimensions
 
@@ -145,7 +143,6 @@ This document breaks down the Claude Code platform implementation into focused w
 - [ ] Process isolation
 
 **Testing Requirements**:
-- [ ] High-throughput data tests
 - [ ] Binary data handling
 - [ ] Rapid resize handling
 - [ ] Memory leak detection
@@ -374,7 +371,6 @@ This document breaks down the Claude Code platform implementation into focused w
 
 **Testing Requirements**:
 - [ ] Large recording handling
-- [ ] Playback performance
 - [ ] Export reliability
 - [ ] Privacy filter effectiveness
 
@@ -412,7 +408,6 @@ This document breaks down the Claude Code platform implementation into focused w
 
 **Testing Requirements**:
 - [ ] Alert accuracy testing
-- [ ] Dashboard load testing
 - [ ] Log rotation verification
 - [ ] Metric accuracy validation
 
@@ -449,7 +444,6 @@ This document breaks down the Claude Code platform implementation into focused w
 - [ ] Recovery procedures
 
 **Testing Requirements**:
-- [ ] Load testing all endpoints
 - [ ] DDoS simulation
 - [ ] Rate limit accuracy
 - [ ] Recovery testing
@@ -494,45 +488,7 @@ This document breaks down the Claude Code platform implementation into focused w
 
 ---
 
-### Session 14: Performance Optimization
-**Objective**: Optimize critical paths for performance
-
-**Components to Implement**:
-- Query optimization
-- Caching strategy
-- Connection pooling
-- Lazy loading
-- CDN integration
-- Asset optimization
-
-**Critical Decisions**:
-- [ ] Cache invalidation strategy
-- [ ] CDN configuration
-- [ ] Database indexes
-- [ ] Query optimization
-- [ ] Resource bundling
-
-**Security Checklist**:
-- [ ] Cache poisoning prevention
-- [ ] CDN security headers
-- [ ] Secure asset delivery
-- [ ] Query injection prevention
-- [ ] Resource exhaustion protection
-- [ ] Timing attack mitigation
-- [ ] Cache key validation
-- [ ] CDN access control
-- [ ] Performance monitoring
-- [ ] Optimization validation
-
-**Testing Requirements**:
-- [ ] Load testing
-- [ ] Cache effectiveness
-- [ ] CDN performance
-- [ ] Database performance
-
----
-
-### Session 15: Deployment & CI/CD Pipeline
+### Session 14: Deployment & CI/CD Pipeline
 **Objective**: Implement automated deployment pipeline
 
 **Components to Implement**:
@@ -626,11 +582,10 @@ This document breaks down the Claude Code platform implementation into focused w
 - Git integration
 - Recording system
 
-### Phase 4: Production Readiness (Sessions 11-15)
+### Phase 4: Production Readiness (Sessions 11-14)
 - Monitoring
 - Rate limiting
 - High availability
-- Performance optimization
 - Deployment pipeline
 
 ## Risk Register
@@ -654,11 +609,8 @@ This document breaks down the Claude Code platform implementation into focused w
 ## Success Metrics
 
 ### Technical Metrics
-- VM startup time < 5 seconds
-- WebSocket latency < 50ms
 - 99.9% uptime
 - < 1% error rate
-- Snapshot restore < 10 seconds
 
 ### Business Metrics
 - User activation rate
@@ -673,16 +625,14 @@ Each session must produce:
 1. API documentation
 2. Architecture diagrams
 3. Security assessment
-4. Performance benchmarks
-5. Operational runbook
-6. Test coverage report
+4. Operational runbook
+5. Test coverage report
 
 ## Review Gates
 
 Before completing each session:
 - [ ] Security checklist completed
 - [ ] Tests passing with >80% coverage
-- [ ] Performance benchmarks met
 - [ ] Documentation complete
 - [ ] Code review approved
 - [ ] Integration tests passing

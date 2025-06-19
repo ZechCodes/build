@@ -1,7 +1,7 @@
 # Session 5: WebSocket Communication Layer
 
 ## Objective
-Implement robust WebSocket handling for real-time terminal communication, providing seamless, low-latency bidirectional data flow between frontend and backend services.
+Implement robust WebSocket handling for real-time terminal communication, providing seamless bidirectional data flow between frontend and backend services.
 
 ## Overview
 This session builds upon the PTY layer from Session 4 to create a comprehensive WebSocket gateway that handles authentication, message routing, connection management, and provides reliability features like reconnection and message queuing.
@@ -634,28 +634,28 @@ class WebSocketRateLimiter:
 - [ ] Cross-session data isolation
 - [ ] Session audit trail maintenance
 
-## Performance Targets
+## Functional Targets
 
-### Connection Performance
-- WebSocket connection establishment < 100ms
-- Message routing latency < 10ms
-- Heartbeat response time < 50ms
-- Connection cleanup time < 5s
-- Memory usage < 10MB per 1000 connections
+### Connection Functionality
+- WebSocket connection establishment
+- Message routing functionality
+- Heartbeat responsiveness
+- Connection cleanup functionality
+- Memory usage monitoring
 
-### Message Performance
-- Terminal data throughput > 10MB/s per connection
-- Message queue processing < 1ms per message
-- Protocol encoding/decoding < 1ms per message
-- Rate limiting check < 0.1ms per message
-- Compression ratio > 50% for terminal data
+### Message Functionality
+- Terminal data handling functionality
+- Message queue processing
+- Protocol encoding/decoding
+- Rate limiting functionality
+- Compression functionality for terminal data
 
 ### Scalability
-- Support 10,000 concurrent connections per server
-- Handle 100,000 messages per second
-- Support 1,000 concurrent sessions
-- Memory usage scaling linear with connections
-- CPU usage < 80% under maximum load
+- Support concurrent connections per server
+- Handle multiple messages per second
+- Support concurrent sessions
+- Memory usage scaling with connections
+- CPU usage monitoring under load
 
 ## Monitoring & Alerting
 
@@ -667,14 +667,14 @@ class WebSocketRateLimiter:
 - Connection duration distribution
 
 ### Message Metrics
-- Message throughput (messages/second)
+- Message counts (messages/second)
 - Message size distribution
 - Rate limiting trigger frequency
 - Message queue depth
 - Protocol error rates
 
-### Performance Metrics
-- WebSocket latency (connection, message)
+### Operational Metrics
+- WebSocket responsiveness (connection, message)
 - Memory usage per connection
 - CPU usage for WebSocket handling
 - Network bandwidth utilization
@@ -682,7 +682,7 @@ class WebSocketRateLimiter:
 
 ### Alert Conditions
 - Connection failures > 5%
-- Message latency > 100ms
+- Message delays detected
 - Rate limiting triggers > 10% of connections
 - Memory usage > 80%
 - WebSocket errors > 1%

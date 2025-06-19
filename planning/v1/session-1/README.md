@@ -310,7 +310,7 @@ class LogfireMiddleware(BaseHTTPMiddleware):
 
 ### Database Connection Strategy
 - **Decision**: Use asyncpg with SQLAlchemy async for connection pooling
-- **Rationale**: Better performance under load, non-blocking operations
+- **Rationale**: Non-blocking operations, scalability
 - **Configuration**: Max 20 connections per instance, 5 min connections
 
 ### Redis Memory Management
@@ -406,20 +406,18 @@ class LogfireMiddleware(BaseHTTPMiddleware):
 ## Performance Targets
 
 ### Database Performance
-- Query response time < 100ms (95th percentile)
+- Query optimization and indexing
 - Connection establishment < 50ms
 - Migration execution < 5 minutes
 - Backup completion < 30 minutes
 
 ### API Performance
-- Health check response < 10ms
-- Authentication request < 200ms
-- CRUD operations < 300ms
-- Concurrent request handling: 1000 req/sec
+- Health check availability
+- Authentication functionality
+- CRUD operations functionality
 
 ### Redis Performance
 - Cache hit ratio > 95%
-- Operation latency < 1ms
 - Memory usage < 80% of allocated
 - Sentinel failover < 10 seconds
 
@@ -429,7 +427,7 @@ class LogfireMiddleware(BaseHTTPMiddleware):
 - Database connection pool utilization
 - Query execution times and slow query detection
 - Redis memory usage and hit ratios
-- API response times and error rates
+- API error rates and availability
 - Failed authentication attempts
 - Resource utilization (CPU, memory, disk)
 
@@ -473,7 +471,7 @@ Upon successful completion of Session 1:
 
 ### High-Risk Areas
 1. **Database corruption**: Regular integrity checks, point-in-time recovery
-2. **Performance degradation**: Query optimization, indexing strategy
+2. **Database issues**: Query optimization, indexing strategy
 3. **Security vulnerabilities**: Regular security audits, penetration testing
 4. **Data loss**: Multi-tier backup strategy, replication
 5. **Service unavailability**: Health checks, automated recovery
@@ -490,6 +488,6 @@ Upon successful completion of Session 1:
 **Session 1 Success Criteria:**
 - All core infrastructure components operational
 - Security checklist 100% complete
-- Performance benchmarks met
+- Functionality tests passed
 - Documentation complete
 - Ready for Session 2 authentication implementation

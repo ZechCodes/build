@@ -176,7 +176,7 @@ MINIO_SECRET_KEY=minioadmin
 
 ### Nice-to-Have
 1. **Development Productivity**: Hot reload, debugging tools
-2. **Performance Baseline**: Initial performance metrics
+2. **Functional Baseline**: Initial functionality verification
 3. **Error Tracking**: Development error monitoring
 
 ## Security Checklist ✅

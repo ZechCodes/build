@@ -509,17 +509,12 @@ services:
 ## Success Criteria
 
 ### Technical KPIs
-- VM boot time < 5 seconds
-- WebSocket latency < 50ms (p99)
-- API response time < 200ms (p95)
-- Snapshot creation < 30 seconds
 - System uptime > 99.9%
 
 ### Operational KPIs
 - Deployment frequency > 1/day
 - Mean time to recovery < 30 minutes
 - Error rate < 0.1%
-- Alert response time < 5 minutes
 - Documentation coverage > 90%
 
 ## Risk Mitigation Strategies
@@ -535,7 +530,7 @@ services:
 1. **Key person dependency**: Documentation, knowledge sharing
 2. **Vendor lock-in**: Abstraction layers, standard protocols
 3. **Compliance issues**: Regular reviews, automated checks
-4. **Scaling issues**: Load testing, gradual rollout
+4. **Scaling issues**: Gradual rollout, monitoring
 5. **Budget overruns**: Cost monitoring, alerts
 
 ## Conclusion

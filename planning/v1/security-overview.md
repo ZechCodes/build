@@ -123,7 +123,7 @@ The Build platform implements a defense-in-depth security architecture that prot
 | **Session Security** | Secure cookies, timeout | Penetration testing |
 | **MFA Support** | TOTP/SMS integration | User acceptance testing |
 | **RBAC** | Role-based permissions | Authorization testing |
-| **Rate Limiting** | Redis-based limiting | Load testing |
+| **Rate Limiting** | Redis-based limiting | Functionality testing |
 
 ### Data Protection
 
@@ -142,7 +142,7 @@ The Build platform implements a defense-in-depth security architecture that prot
 |---------|---------------|------------|
 | **Network Segmentation** | VPC/subnet isolation | Network testing |
 | **Firewall Rules** | Restrictive ingress/egress | Rule validation |
-| **DDoS Protection** | WAF and rate limiting | Stress testing |
+| **DDoS Protection** | WAF and rate limiting | Resilience testing |
 | **VPN Access** | Encrypted admin access | Access audit |
 | **Network Monitoring** | IDS/IPS implementation | Security monitoring |
 | **DNS Security** | DNSSEC implementation | DNS audit |
@@ -234,7 +234,7 @@ The Build platform implements a defense-in-depth security architecture that prot
 **Monitoring:**
 - Request rate anomalies
 - Resource utilization spikes
-- Service response times
+- Service availability
 - Error rate increases
 
 ### Attack Vectors

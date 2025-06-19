@@ -129,13 +129,7 @@ async def logout(
     jwt_manager = JWTManager(secret_key=settings.jwt_secret)
     
     try:
-        payload = jwt_manager.verify_token(refresh_data.refresh_token)
-        # Check if it's a refresh token
-        if payload.get("type") != "refresh":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+        payload = jwt_manager.verify_token(refresh_data.refresh_token, token_type="refresh")
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(

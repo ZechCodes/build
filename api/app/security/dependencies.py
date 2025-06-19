@@ -1,24 +1,33 @@
 """Authentication dependencies according to Session 2 requirements."""
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from typing import Optional
+import uuid
 
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.models.user import User
 from app.security.jwt import JWTManager
 
 settings = get_settings()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)  # Don't auto-raise 403, let us handle it
 jwt_manager = JWTManager(secret_key=settings.jwt_secret)
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """Get current authenticated user from JWT token."""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
+    
     token = credentials.credentials
     payload = jwt_manager.verify_token(token)
     
@@ -29,7 +38,16 @@ async def get_current_user(
             detail="Invalid authentication credentials"
         )
     
-    user = await db.get(User, user_id)
+    # Convert string user_id to UUID for database lookup
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user ID in token"
+        )
+    
+    user = await db.get(User, user_uuid)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

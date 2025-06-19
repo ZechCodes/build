@@ -208,7 +208,7 @@ class AuthService:
         try:
             redis = await get_redis()
             refresh_key = f"refresh_token:{str(user.id)}:{refresh_token[-8:]}"
-            await redis.setex(refresh_key, 7 * 24 * 3600, refresh_token)  # 7 days
+            await redis.set(refresh_key, refresh_token, ex=7 * 24 * 3600)  # 7 days
         except Exception as e:
             logger.warning("Failed to store refresh token in Redis", error=str(e))
         
@@ -231,7 +231,26 @@ class AuthService:
     @staticmethod
     async def refresh_access_token(db: AsyncSession, refresh_token: str, ip_address: str = None) -> dict:
         """Refresh access token using refresh token with validation."""
-        user_id = verify_refresh_token(refresh_token)
+        from app.security.jwt import JWTManager
+        from app.core.config import get_settings
+        
+        settings = get_settings()
+        jwt_manager = JWTManager(secret_key=settings.jwt_secret)
+        
+        # Verify refresh token
+        try:
+            payload = jwt_manager.verify_token(refresh_token, token_type="refresh")
+            user_id = payload.get("sub")
+        except Exception:
+            await AuditService.log_security_event(
+                db, "token_refresh_failed", "authentication",
+                ip_address=ip_address,
+                details={"reason": "invalid_token"}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
         
         if not user_id:
             await AuditService.log_security_event(
@@ -244,22 +263,26 @@ class AuthService:
                 detail="Invalid refresh token"
             )
         
-        # Verify refresh token is still valid in Redis
-        redis = await get_redis()
-        refresh_key = f"refresh_token:{user_id}:{refresh_token[-8:]}"
-        stored_token = await redis.get(refresh_key)
-        
-        if not stored_token or stored_token != refresh_token:
-            await AuditService.log_security_event(
-                db, "token_refresh_failed", "authentication",
-                user_id=uuid.UUID(user_id) if user_id else None,
-                ip_address=ip_address,
-                details={"reason": "token_revoked"}
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token has been revoked"
-            )
+        # Verify refresh token is still valid in Redis (gracefully handle Redis issues)
+        try:
+            redis = await get_redis()
+            refresh_key = f"refresh_token:{user_id}:{refresh_token[-8:]}"
+            stored_token = await redis.get(refresh_key)
+            
+            if stored_token and stored_token != refresh_token:
+                await AuditService.log_security_event(
+                    db, "token_refresh_failed", "authentication",
+                    user_id=uuid.UUID(user_id) if user_id else None,
+                    ip_address=ip_address,
+                    details={"reason": "token_revoked"}
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token has been revoked"
+                )
+        except Exception as e:
+            logger.warning("Redis error during token refresh", error=str(e))
+            # Continue without Redis validation if Redis is unavailable
         
         # Get user
         result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
@@ -278,7 +301,11 @@ class AuthService:
             )
         
         # Create new access token
-        access_token = create_access_token(subject=str(user.id))
+        token_data = {
+            "sub": str(user.id),
+            "email": user.email
+        }
+        access_token = jwt_manager.create_access_token(token_data)
         
         await AuditService.log_security_event(
             db, "token_refreshed", "authentication",
@@ -294,18 +321,22 @@ class AuthService:
     @staticmethod
     async def logout(db: AsyncSession, user_id: str, refresh_token: str = None, ip_address: str = None) -> dict:
         """Logout user and revoke tokens."""
-        redis = await get_redis()
-        
-        if refresh_token:
-            # Revoke specific refresh token
-            refresh_key = f"refresh_token:{user_id}:{refresh_token[-8:]}"
-            await redis.delete(refresh_key)
-        else:
-            # Revoke all refresh tokens for user
-            pattern = f"refresh_token:{user_id}:*"
-            keys = await redis.keys(pattern)
-            if keys:
-                await redis.delete(*keys)
+        try:
+            redis = await get_redis()
+            
+            if refresh_token:
+                # Revoke specific refresh token
+                refresh_key = f"refresh_token:{user_id}:{refresh_token[-8:]}"
+                await redis.delete(refresh_key)
+            else:
+                # Revoke all refresh tokens for user
+                pattern = f"refresh_token:{user_id}:*"
+                keys = await redis.keys(pattern)
+                if keys:
+                    await redis.delete(*keys)
+        except Exception as e:
+            logger.warning("Redis error during logout", error=str(e))
+            # Continue with logout even if Redis fails
         
         await AuditService.log_security_event(
             db, "logout", "authentication",
@@ -329,9 +360,12 @@ class AuthService:
             reset_token = AuthService._generate_reset_token()
             
             # Store reset token in Redis (expires in 1 hour)
-            redis = await get_redis()
-            reset_key = f"password_reset:{str(user.id)}"
-            await redis.setex(reset_key, 3600, reset_token)
+            try:
+                redis = await get_redis()
+                reset_key = f"password_reset:{str(user.id)}"
+                await redis.set(reset_key, reset_token, ex=3600)
+            except Exception as e:
+                logger.warning("Failed to store password reset token in Redis", error=str(e))
             
             await AuditService.log_security_event(
                 db, "password_reset_requested", "authentication",

@@ -1,4 +1,4 @@
-"""VM management endpoints."""
+"""VM management endpoints with permission-based authorization."""
 
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -10,6 +10,7 @@ from app.models.user import User
 from app.models.vm import VMInstance
 from app.schemas.vm import VMCreate, VMResponse, VMUpdate
 from app.services.vm import VMService
+from app.authorization.permissions import Permission, PermissionChecker
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -23,6 +24,13 @@ async def create_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new VM instance."""
+    # Check VM_CREATE permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_CREATE):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to create VMs"
+        )
+    
     client_ip = request.client.host if request.client else "unknown"
     
     try:
@@ -44,6 +52,13 @@ async def list_vms(
     db: AsyncSession = Depends(get_db)
 ):
     """List user's VM instances."""
+    # Check VM_VIEW permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_VIEW):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to view VMs"
+        )
+    
     try:
         vms = await VMService.list_user_vms(db, current_user.id)
         return [VMResponse.from_orm(vm) for vm in vms]
@@ -62,6 +77,13 @@ async def get_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Get VM instance details."""
+    # Check VM_VIEW permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_VIEW):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to view VMs"
+        )
+    
     try:
         vm = await VMService.get_vm(db, vm_id, current_user.id)
         if not vm:
@@ -89,6 +111,13 @@ async def update_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Update VM instance."""
+    # Check VM_MODIFY permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_MODIFY):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to modify VMs"
+        )
+    
     client_ip = request.client.host if request.client else "unknown"
     
     try:
@@ -117,6 +146,13 @@ async def start_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Start VM instance."""
+    # Check VM_MODIFY permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_MODIFY):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to modify VMs"
+        )
+    
     client_ip = request.client.host if request.client else "unknown"
     
     try:
@@ -145,6 +181,13 @@ async def stop_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Stop VM instance."""
+    # Check VM_MODIFY permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_MODIFY):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to modify VMs"
+        )
+    
     client_ip = request.client.host if request.client else "unknown"
     
     try:
@@ -173,6 +216,13 @@ async def delete_vm(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete VM instance."""
+    # Check VM_DELETE permission
+    if not PermissionChecker.user_has_permission(current_user, Permission.VM_DELETE):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions to delete VMs"
+        )
+    
     client_ip = request.client.host if request.client else "unknown"
     
     try:

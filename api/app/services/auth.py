@@ -28,59 +28,47 @@ class AuthService:
 
     @staticmethod
     async def authenticate_user(db: AsyncSession, email: str, password: str, ip_address: str = None) -> Optional[User]:
-        """Authenticate user with email and password with brute force protection."""
-        # Try to check for account lockout (gracefully handle Redis issues)
-        lockout_key = f"auth_lockout:{email}"
-        attempt_key = f"auth_attempts:{email}"
-        is_locked = False
-        redis_available = True
-        
-        try:
-            redis = await get_redis()
-            is_locked = await redis.get(lockout_key)
-        except Exception as e:
-            logger.warning("Redis not available for brute force protection", error=str(e))
-            redis_available = False
-            redis = None
-        
-        if is_locked:
-            logger.warning("Authentication attempt on locked account", email=email, ip_address=ip_address)
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Account temporarily locked due to multiple failed login attempts"
-            )
-        
+        """Authenticate user with email and password with database-based account lockout protection."""
+        # Get user from database
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
         
-        if not user or not verify_password(password, user.password_hash):
-            # Increment failed attempts if Redis is available
-            attempts = 1
-            if redis_available and redis:
-                try:
-                    attempts = await redis.incr(attempt_key)
-                    await redis.expire(attempt_key, 900)  # 15 minutes
-                    
-                    if attempts >= 5:  # Lock after 5 failed attempts
-                        await redis.setex(lockout_key, 1800, "locked")  # 30 minutes lockout
-                        await AuditService.log_security_event(
-                            db, "account_locked", "authentication", 
-                            user_id=user.id if user else None, 
-                            ip_address=ip_address,
-                            details={"email": email, "failed_attempts": attempts}
-                        )
-                        logger.warning("Account locked due to failed attempts", email=email, attempts=attempts)
-                except Exception as e:
-                    logger.warning("Failed to update failed login attempts in Redis", error=str(e))
-            
+        # Check if user exists
+        if not user:
             await AuditService.log_security_event(
                 db, "login_failed", "authentication",
-                user_id=user.id if user else None,
+                user_id=None,
                 ip_address=ip_address,
-                details={"email": email, "reason": "invalid_credentials"}
+                details={"email": email, "reason": "user_not_found"}
             )
+            logger.warning("Login attempt failed", email=email, error="User not found", ip_address=ip_address)
             return None
         
+        # Check if account is locked (but unlock if lockout period expired)
+        if user.locked_until:
+            if user.locked_until > datetime.now(timezone.utc):
+                # Account is still locked
+                await AuditService.log_security_event(
+                    db, "login_failed", "authentication",
+                    user_id=user.id,
+                    ip_address=ip_address,
+                    details={"email": email, "reason": "account_locked"}
+                )
+                logger.warning("Login attempt on locked account", email=email, ip_address=ip_address, 
+                             locked_until=user.locked_until.isoformat())
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail="Account is temporarily locked due to multiple failed login attempts"
+                )
+            else:
+                # Lockout period expired - unlock the account
+                user.failed_login_attempts = 0
+                user.locked_until = None
+                await db.commit()
+                logger.info("Account automatically unlocked after lockout period", 
+                           email=email, user_id=str(user.id))
+        
+        # Check if account is inactive
         if not user.is_active:
             await AuditService.log_security_event(
                 db, "login_failed", "authentication",
@@ -90,17 +78,23 @@ class AuthService:
             )
             return None
         
-        # Clear failed attempts on successful login
-        if redis_available and redis:
-            try:
-                await redis.delete(attempt_key)
-            except Exception as e:
-                logger.warning("Failed to clear failed login attempts in Redis", error=str(e))
+        # Verify password
+        if not verify_password(password, user.password_hash):
+            # Increment failed attempts and potentially lock account
+            await AuthService._handle_failed_login(db, user, ip_address)
+            
+            await AuditService.log_security_event(
+                db, "login_failed", "authentication",
+                user_id=user.id,
+                ip_address=ip_address,
+                details={"email": email, "reason": "invalid_password"}
+            )
+            logger.warning("Login attempt failed", email=email, error="Incorrect email or password", 
+                         ip_address=ip_address, user_agent=None)
+            return None
         
-        # Update last login
-        user.last_login = datetime.now(timezone.utc)
-        await db.commit()
-        await db.refresh(user)
+        # Successful login - reset failed attempts and update last login
+        await AuthService._handle_successful_login(db, user, ip_address)
         
         await AuditService.log_security_event(
             db, "login_success", "authentication",
@@ -526,3 +520,52 @@ class AuthService:
         # This is handled automatically by Redis TTL, but we can add
         # additional cleanup logic here if needed
         logger.info("Session cleanup task completed")
+    
+    @staticmethod
+    async def _handle_failed_login(db: AsyncSession, user: User, ip_address: str = None) -> None:
+        """Handle failed login attempt - increment counter and potentially lock account."""
+        # Increment failed attempts
+        user.failed_login_attempts += 1
+        
+        # Check if we should lock the account (5 failed attempts = lockout)
+        if user.failed_login_attempts >= 5:
+            # Lock for 30 minutes
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=30)
+            
+            await AuditService.log_security_event(
+                db, "account_locked", "authentication",
+                user_id=user.id,
+                ip_address=ip_address,
+                details={
+                    "email": user.email,
+                    "failed_attempts": user.failed_login_attempts,
+                    "locked_until": user.locked_until.isoformat()
+                }
+            )
+            
+            logger.warning("Account locked due to failed attempts", 
+                         user_id=str(user.id), email=user.email, 
+                         failed_attempts=user.failed_login_attempts,
+                         locked_until=user.locked_until.isoformat())
+        
+        await db.commit()
+    
+    @staticmethod
+    async def _handle_successful_login(db: AsyncSession, user: User, ip_address: str = None) -> None:
+        """Handle successful login - reset failed attempts and update last login."""
+        # Clear failed attempts and unlock account
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.last_login = datetime.now(timezone.utc)
+        
+        # Also clear Redis-based lockout if it exists (graceful fallback)
+        try:
+            redis = await get_redis()
+            lockout_key = f"auth_lockout:{user.email}"
+            attempt_key = f"auth_attempts:{user.email}"
+            await redis.delete(lockout_key)
+            await redis.delete(attempt_key)
+        except Exception as e:
+            logger.warning("Failed to clear Redis lockout data", error=str(e))
+        
+        await db.commit()

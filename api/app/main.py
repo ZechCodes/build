@@ -50,6 +50,19 @@ except ImportError as e:
     print(f"Warning: Logfire monitoring not available - {e}")
     LOGFIRE_MONITORING_AVAILABLE = False
 
+# Import enhanced security middleware
+try:
+    from app.middleware.security_enhanced import (
+        EnhancedSecurityHeadersMiddleware,
+        AdvancedRateLimitMiddleware,
+        InputValidationMiddleware,
+        SecurityMonitoringMiddleware
+    )
+    ENHANCED_SECURITY_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Enhanced security middleware not available - {e}")
+    ENHANCED_SECURITY_AVAILABLE = False
+
 try:
     from app.middleware.security import (
         SecurityHeadersMiddleware,
@@ -157,41 +170,59 @@ if LOGFIRE_MONITORING_AVAILABLE:
     # 3. Logfire user activity tracking
     app.add_middleware(LogfireUserActivityMiddleware, track_anonymous_users=True)
 
-if SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
+# Add enhanced security middleware if available
+if ENHANCED_SECURITY_AVAILABLE:
+    # 4. Enhanced security headers
+    app.add_middleware(EnhancedSecurityHeadersMiddleware)
+    
+    # 5. Security monitoring and threat detection
+    app.add_middleware(SecurityMonitoringMiddleware)
+    
+    # 6. Input validation and attack detection
+    app.add_middleware(InputValidationMiddleware, max_body_size=50 * 1024 * 1024)
+    
+    # 7. Advanced rate limiting with attack detection
+    app.add_middleware(AdvancedRateLimitMiddleware)
+
+elif SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
+    # Fallback to basic security middleware
     # 4. Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
     # 5. Request size limiting
     app.add_middleware(RequestSizeLimitMiddleware, max_size=50 * 1024 * 1024)  # 50MB
 
-    # 6. IP whitelist for admin endpoints
+    # 6. Rate limiting (basic)
+    app.add_middleware(RateLimitMiddleware)
+
+else:
+    logger.warning("Security middleware disabled due to missing dependencies")
+
+# Add remaining middleware if available
+if SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
+    # 8. IP whitelist for admin endpoints
     if settings.environment == "production":
         app.add_middleware(IPWhitelistMiddleware, allowed_ips=["127.0.0.1"])
 
-    # 7. Request logging and tracing
+    # 9. Request logging and tracing
     app.add_middleware(RequestLoggingMiddleware)
 
-    # 8. Performance monitoring
+    # 10. Performance monitoring
     app.add_middleware(PerformanceMonitoringMiddleware)
 
-    # 9. Error tracking
+    # 11. Error tracking
     app.add_middleware(ErrorTrackingMiddleware)
 
-    # 10. Health metrics collection
+    # 12. Health metrics collection
     app.add_middleware(HealthMetricsMiddleware)
 
-    # 11. Prometheus metrics collection  
+    # 13. Prometheus metrics collection  
     app.add_middleware(PrometheusMiddleware)
 
-    # 12. Rate limiting (before user context)
-    app.add_middleware(RateLimitMiddleware)
-
-    # 13. User context extraction
+    # 14. User context extraction
     app.add_middleware(UserContextMiddleware)
-else:
-    logger.warning("Advanced middleware disabled due to missing dependencies")
 
-# 14. CORS middleware
+# 15. CORS middleware
 if settings.enable_cors:
     app.add_middleware(
         CORSMiddleware,
@@ -202,7 +233,7 @@ if settings.enable_cors:
         expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-*"]
     )
 
-# 15. Trusted host middleware (innermost, closest to routes)
+# 16. Trusted host middleware (innermost, closest to routes)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=[

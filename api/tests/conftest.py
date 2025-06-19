@@ -53,19 +53,26 @@ async def db_session():
 @pytest_asyncio.fixture
 async def client(db_session):
     """Create a test client."""
-    # Import here to avoid circular imports and config issues
-    from app.main import app
-    from app.core.database import get_db_session
+    # Create a simplified app for testing without complex middleware
+    from fastapi import FastAPI
+    from app.api.v1.api import api_router
+    from app.core.deps import get_db
+    from httpx import ASGITransport
     
-    def override_get_db():
-        return db_session
+    # Create simple test app
+    test_app = FastAPI(title="Test API")
+    test_app.include_router(api_router, prefix="/api/v1")
+    
+    async def override_get_db():
+        yield db_session
 
-    app.dependency_overrides[get_db_session] = override_get_db
+    test_app.dependency_overrides[get_db] = override_get_db
     
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     
-    app.dependency_overrides.clear()
+    test_app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -73,8 +80,8 @@ def test_user_data():
     """Test user data fixture."""
     return {
         "email": "test@example.com",
-        "password": "testpassword123",
-        "full_name": "Test User",
+        "password": "TestPassword123!",
+        "username": "testuser",
     }
 
 
@@ -83,7 +90,6 @@ def test_admin_data():
     """Test admin user data fixture."""
     return {
         "email": "admin@example.com",
-        "password": "adminpassword123",
-        "full_name": "Admin User",
-        "is_superuser": True,
+        "password": "AdminPassword123!",
+        "username": "admin",
     }

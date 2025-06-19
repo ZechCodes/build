@@ -46,7 +46,7 @@ async def login(
         raise
 
 
-@router.post("/register", response_model=UserResponse)
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     user_create: UserCreate,
     request: Request,
@@ -156,8 +156,3 @@ async def reset_password(
     )
     
     return result
-    """User logout endpoint."""
-    # In a stateless JWT system, logout is typically handled client-side
-    # by discarding the tokens. For enhanced security, you might implement
-    # a token blacklist stored in Redis.
-    return {"message": "Successfully logged out"}

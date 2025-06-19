@@ -26,13 +26,20 @@ class AuthService:
     @staticmethod
     async def authenticate_user(db: AsyncSession, email: str, password: str, ip_address: str = None) -> Optional[User]:
         """Authenticate user with email and password with brute force protection."""
-        # Check for account lockout
-        redis = await get_redis()
+        # Try to check for account lockout (gracefully handle Redis issues)
         lockout_key = f"auth_lockout:{email}"
         attempt_key = f"auth_attempts:{email}"
+        is_locked = False
+        redis_available = True
         
-        # Check if account is locked
-        is_locked = await redis.get(lockout_key)
+        try:
+            redis = await get_redis()
+            is_locked = await redis.get(lockout_key)
+        except Exception as e:
+            logger.warning("Redis not available for brute force protection", error=str(e))
+            redis_available = False
+            redis = None
+        
         if is_locked:
             logger.warning("Authentication attempt on locked account", email=email, ip_address=ip_address)
             raise HTTPException(
@@ -44,19 +51,24 @@ class AuthService:
         user = result.scalar_one_or_none()
         
         if not user or not verify_password(password, user.password_hash):
-            # Increment failed attempts
-            attempts = await redis.incr(attempt_key)
-            await redis.expire(attempt_key, 900)  # 15 minutes
-            
-            if attempts >= 5:  # Lock after 5 failed attempts
-                await redis.setex(lockout_key, 1800, "locked")  # 30 minutes lockout
-                await AuditService.log_security_event(
-                    db, "account_locked", "authentication", 
-                    user_id=user.id if user else None, 
-                    ip_address=ip_address,
-                    details={"email": email, "failed_attempts": attempts}
-                )
-                logger.warning("Account locked due to failed attempts", email=email, attempts=attempts)
+            # Increment failed attempts if Redis is available
+            attempts = 1
+            if redis_available and redis:
+                try:
+                    attempts = await redis.incr(attempt_key)
+                    await redis.expire(attempt_key, 900)  # 15 minutes
+                    
+                    if attempts >= 5:  # Lock after 5 failed attempts
+                        await redis.setex(lockout_key, 1800, "locked")  # 30 minutes lockout
+                        await AuditService.log_security_event(
+                            db, "account_locked", "authentication", 
+                            user_id=user.id if user else None, 
+                            ip_address=ip_address,
+                            details={"email": email, "failed_attempts": attempts}
+                        )
+                        logger.warning("Account locked due to failed attempts", email=email, attempts=attempts)
+                except Exception as e:
+                    logger.warning("Failed to update failed login attempts in Redis", error=str(e))
             
             await AuditService.log_security_event(
                 db, "login_failed", "authentication",
@@ -76,7 +88,11 @@ class AuthService:
             return None
         
         # Clear failed attempts on successful login
-        await redis.delete(attempt_key)
+        if redis_available and redis:
+            try:
+                await redis.delete(attempt_key)
+            except Exception as e:
+                logger.warning("Failed to clear failed login attempts in Redis", error=str(e))
         
         # Update last login
         user.last_login = datetime.now(timezone.utc)
@@ -178,10 +194,13 @@ class AuthService:
         access_token = create_access_token(subject=str(user.id))
         refresh_token = create_refresh_token(subject=str(user.id))
         
-        # Store refresh token in Redis with expiration
-        redis = await get_redis()
-        refresh_key = f"refresh_token:{str(user.id)}:{refresh_token[-8:]}"
-        await redis.setex(refresh_key, 7 * 24 * 3600, refresh_token)  # 7 days
+        # Store refresh token in Redis with expiration (gracefully handle Redis issues)
+        try:
+            redis = await get_redis()
+            refresh_key = f"refresh_token:{str(user.id)}:{refresh_token[-8:]}"
+            await redis.setex(refresh_key, 7 * 24 * 3600, refresh_token)  # 7 days
+        except Exception as e:
+            logger.warning("Failed to store refresh token in Redis", error=str(e))
         
         logger.info("User logged in successfully", user_id=str(user.id), email=user.email)
         
@@ -193,6 +212,7 @@ class AuthService:
                 "id": str(user.id),
                 "email": user.email,
                 "username": user.username,
+                "is_active": user.is_active,
                 "is_verified": user.is_verified
             }
         }

@@ -8,6 +8,13 @@ from ....core.database import get_db_session
 from ....services.security_config import SecurityConfigService, get_security_dashboard, validate_security_compliance
 from ....services.audit import AuditService
 from ....services.security_checklist import run_security_checklist, get_security_readiness_status
+from ....services.session2_security_checklist import (
+    run_session2_security_checklist,
+    get_session2_security_readiness
+)
+from ....security.dependencies import get_current_active_user
+from ....models.user import User
+from ....authorization.permissions import PermissionChecker, Permission
 
 
 router = APIRouter()
@@ -263,4 +270,140 @@ async def get_readiness_status() -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get readiness status: {str(e)}"
+        )
+
+
+# Session 2 Security Endpoints
+
+@router.get("/session2-checklist", summary="Run Session 2 security checklist validation")
+async def run_session2_security_validation(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db_session)
+) -> Dict[str, Any]:
+    """Run comprehensive Session 2 security checklist validation."""
+    # Check if user has admin permissions
+    if not PermissionChecker.user_has_permission(current_user, Permission.SYSTEM_ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative access required for security validation"
+        )
+    
+    try:
+        results = await run_session2_security_checklist()
+        
+        # Log audit event
+        await AuditService.log_security_event(
+            db,
+            event_type="session2_security_checklist_requested",
+            resource_type="security",
+            user_id=current_user.id,
+            details={
+                "overall_score": results["overall_score"],
+                "session_2_complete": results["readiness"]["session_2_complete"]
+            }
+        )
+        
+        return results
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Session 2 security validation failed: {str(e)}"
+        )
+
+
+@router.get("/session2-readiness", summary="Get Session 2 security readiness status")
+async def get_session2_readiness_status(
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """Get Session 2 security readiness status (summary)."""
+    try:
+        readiness = await get_session2_security_readiness()
+        return readiness
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Session 2 readiness check failed: {str(e)}"
+        )
+
+
+@router.get("/session2-score", summary="Get Session 2 security score")
+async def get_session2_security_score() -> Dict[str, Any]:
+    """Get Session 2 security score (public endpoint for monitoring)."""
+    try:
+        readiness = await get_session2_security_readiness()
+        
+        from datetime import datetime, timezone
+        
+        return {
+            "overall_score": readiness["overall_score"],
+            "requirements_score": readiness["requirements_score"],
+            "session_2_complete": readiness["session_2_complete"],
+            "ready_for_session_3": readiness["ready_for_session_3"],
+            "critical_issues": readiness["critical_issues"],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Session 2 security score check failed: {str(e)}"
+        )
+
+
+@router.post("/session2-validate-feature", summary="Validate specific Session 2 security feature")
+async def validate_session2_security_feature(
+    feature_data: dict,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db_session)
+) -> Dict[str, Any]:
+    """Validate a specific Session 2 security feature implementation."""
+    # Check if user has admin permissions
+    if not PermissionChecker.user_has_permission(current_user, Permission.SYSTEM_ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative access required for security validation"
+        )
+    
+    feature_name = feature_data.get("feature_name")
+    if not feature_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Feature name required"
+        )
+    
+    # Run full checklist and filter for specific feature
+    try:
+        results = await run_session2_security_checklist()
+        
+        # Find the specific feature check
+        feature_check = None
+        for category_checks in results["categories"].values():
+            for check in category_checks:
+                if check["id"] == feature_name or check["name"].lower() == feature_name.lower():
+                    feature_check = check
+                    break
+            if feature_check:
+                break
+        
+        if not feature_check:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Security feature '{feature_name}' not found"
+            )
+        
+        from datetime import datetime, timezone
+        
+        return {
+            "feature": feature_check,
+            "validation_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Feature validation failed: {str(e)}"
         )

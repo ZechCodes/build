@@ -18,11 +18,9 @@ logger = structlog.get_logger(__name__)
 class AuditService:
     """Service for managing audit logs."""
     
-    def __init__(self, db_session: AsyncSession):
-        self.db = db_session
-    
+    @staticmethod
     async def log_action(
-        self,
+        db: AsyncSession,
         action: str,
         user_id: Optional[Union[str, UUID]] = None,
         resource_type: Optional[str] = None,
@@ -49,9 +47,9 @@ class AuditService:
             details=details or {}
         )
         
-        self.db.add(audit_log)
-        await self.db.commit()
-        await self.db.refresh(audit_log)
+        db.add(audit_log)
+        await db.commit()
+        await db.refresh(audit_log)
         
         # Log to structured logging for real-time monitoring
         logger.info(
@@ -67,10 +65,11 @@ class AuditService:
         
         return audit_log
     
+    @staticmethod
     async def log_security_event(
-        self,
+        db: AsyncSession,
         event_type: str,
-        severity: str,
+        resource_type: str,
         user_id: Optional[Union[str, UUID]] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
@@ -85,10 +84,11 @@ class AuditService:
             **(details or {})
         }
         
-        return await self.log_action(
-            action=f"security.{event_type}",
+        return await AuditService.log_action(
+            db=db,
+            action=event_type,
             user_id=user_id,
-            resource_type="security",
+            resource_type=resource_type,
             ip_address=ip_address,
             user_agent=user_agent,
             details=security_details

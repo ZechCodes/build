@@ -1,10 +1,14 @@
-"""Application configuration."""
+"""Application configuration with secrets management."""
 
+import asyncio
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
@@ -44,6 +48,13 @@ class Settings(BaseSettings):
     minio_secret_key: str = Field(..., env="MINIO_SECRET_KEY")
     minio_bucket: str = "build-dev"
     minio_secure: bool = False
+    
+    # Secrets Management
+    secrets_backend: str = Field("environment", env="SECRETS_BACKEND")
+    vault_url: Optional[str] = Field(None, env="VAULT_URL")
+    vault_token: Optional[str] = Field(None, env="VAULT_TOKEN")
+    secrets_file_path: str = Field("/etc/secrets/secrets.json", env="SECRETS_FILE_PATH")
+    k8s_namespace: str = Field("default", env="K8S_NAMESPACE")
 
     # CORS
     allowed_origins: List[str] = ["http://localhost:3000"]
@@ -82,6 +93,14 @@ class Settings(BaseSettings):
         if v not in ["development", "staging", "production"]:
             raise ValueError("Environment must be one of: development, staging, production")
         return v
+    
+    @validator("secrets_backend")
+    def validate_secrets_backend(cls, v):
+        """Validate secrets backend."""
+        valid_backends = ["environment", "file", "kubernetes", "vault"]
+        if v not in valid_backends:
+            raise ValueError(f"Secrets backend must be one of: {valid_backends}")
+        return v
 
     class Config:
         """Pydantic configuration."""
@@ -89,9 +108,51 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = False
         extra = "ignore"  # Ignore extra fields from environment
+    
+    async def get_secret(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Get secret using configured backend."""
+        try:
+            from .secrets import get_secret_manager
+            manager = get_secret_manager()
+            return await manager.get_secret(key, default)
+        except Exception as e:
+            logger.error("Failed to get secret from manager", key=key, error=str(e))
+            # Fallback to environment variable
+            import os
+            return os.getenv(key, default)
+    
+    def get_secret_sync(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Get secret synchronously (for initialization)."""
+        try:
+            return asyncio.run(self.get_secret(key, default))
+        except Exception as e:
+            logger.warning("Failed to get secret async, using env fallback", key=key, error=str(e))
+            import os
+            return os.getenv(key, default)
 
 
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings instance."""
-    return Settings()
+    settings = Settings()
+    
+    # Validate critical secrets on startup
+    critical_secrets = [
+        "DATABASE_URL", "REDIS_PASSWORD", "JWT_SECRET", 
+        "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"
+    ]
+    
+    missing_secrets = []
+    for secret_key in critical_secrets:
+        value = getattr(settings, secret_key.lower().replace('_', '_'), None)
+        if not value:
+            missing_secrets.append(secret_key)
+    
+    if missing_secrets:
+        logger.error("Critical secrets missing", missing_secrets=missing_secrets)
+        if settings.environment == "production":
+            raise ValueError(f"Critical secrets missing in production: {missing_secrets}")
+        else:
+            logger.warning("Running with missing secrets in non-production environment")
+    
+    return settings

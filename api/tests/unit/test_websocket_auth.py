@@ -183,7 +183,7 @@ class TestWebSocketAuthenticator:
     async def test_authenticate_websocket_expired_token(self, websocket_auth, mock_websocket):
         """Test WebSocket authentication with expired token."""
         # Create expired token manually
-        import jwt as jose_jwt
+        from jose import jwt
         from datetime import datetime, timezone, timedelta
         
         expired_payload = {
@@ -192,7 +192,7 @@ class TestWebSocketAuthenticator:
             "type": "access"
         }
         
-        expired_token = jose_jwt.encode(expired_payload, "test-secret-key", algorithm="HS256")
+        expired_token = jwt.encode(expired_payload, "test-secret-key", algorithm="HS256")
         mock_websocket.query_params = {"token": expired_token}
         
         with pytest.raises(HTTPException) as exc_info:

@@ -257,9 +257,15 @@ if SECURITY_MIDDLEWARE_AVAILABLE and MONITORING_MIDDLEWARE_AVAILABLE:
 
 # 21. API Versioning middleware
 if ADVANCED_MIDDLEWARE_AVAILABLE:
-    versioning_middleware = create_versioning_middleware()
-    if versioning_middleware:
-        app.add_middleware(type(versioning_middleware), **versioning_middleware.__dict__)
+    try:
+        from app.middleware.versioning import APIVersioningMiddleware
+        app.add_middleware(
+            APIVersioningMiddleware,
+            supported_versions={"v1", "v2"},
+            default_version="v1"
+        )
+    except Exception as e:
+        logger.warning("Failed to add versioning middleware", error=str(e))
 
 # 22. CORS middleware
 if settings.enable_cors:

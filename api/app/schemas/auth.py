@@ -1,7 +1,9 @@
 """Authentication schemas with enhanced validation."""
 
+import re
+from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class Token(BaseModel):
@@ -42,14 +44,46 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserRegistration(BaseModel):
+    """User registration schema with enhanced validation."""
+    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=30)
+    password: str = Field(..., min_length=8, max_length=128)
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        """Validate username format."""
+        if not re.match(r'^[a-zA-Z0-9_-]{3,30}$', v):
+            raise ValueError('Username must be 3-30 characters, alphanumeric, underscore, or dash only')
+        return v
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        """Validate password strength according to Session 2 requirements."""
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        return v
+
+
 class UserCreate(BaseModel):
-    """User creation schema with validation."""
+    """User creation schema with validation (backward compatibility)."""
     email: EmailStr
     username: Optional[str] = Field(None, min_length=3, max_length=50)
     password: str = Field(..., min_length=8, max_length=128)
     
-    @validator('password')
-    def validate_password(cls, v):
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v: str) -> str:
         """Validate password strength."""
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters long')
@@ -67,8 +101,9 @@ class UserCreate(BaseModel):
         
         return v
     
-    @validator('username')
-    def validate_username(cls, v):
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v: Optional[str]) -> Optional[str]:
         """Validate username format."""
         if v is not None:
             if not v.replace('_', '').replace('-', '').isalnum():
@@ -92,8 +127,9 @@ class PasswordReset(BaseModel):
     reset_token: str
     new_password: str = Field(..., min_length=8, max_length=128)
     
-    @validator('new_password')
-    def validate_password(cls, v):
+    @field_validator('new_password')
+    @classmethod
+    def validate_password(cls, v: str) -> str:
         """Validate password strength."""
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters long')
@@ -110,3 +146,24 @@ class PasswordReset(BaseModel):
             )
         
         return v
+
+
+class TokenResponse(BaseModel):
+    """Token response schema according to Session 2."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class UserProfile(BaseModel):
+    """User profile schema according to Session 2."""
+    id: str
+    email: str
+    username: str
+    role: str
+    is_verified: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True

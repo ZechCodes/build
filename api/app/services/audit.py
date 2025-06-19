@@ -77,6 +77,20 @@ class AuditService:
     ) -> AuditLog:
         """Log a security-specific event."""
         
+        # Determine severity based on event type
+        severity_map = {
+            "user_created": "info",
+            "user_login": "info", 
+            "user_logout": "info",
+            "login_failed": "warning",
+            "password_changed": "info",
+            "password_reset": "warning",
+            "account_locked": "warning",
+            "permission_denied": "warning",
+            "suspicious_activity": "high"
+        }
+        severity = severity_map.get(event_type, "info")
+        
         security_details = {
             "severity": severity,
             "event_type": event_type,

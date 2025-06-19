@@ -5,6 +5,7 @@ from httpx import AsyncClient
 
 from app.services.auth import AuthService
 from app.core.security import verify_password, get_password_hash, create_access_token, verify_token
+from app.schemas.auth import UserCreate
 
 
 class TestAuthService:
@@ -13,19 +14,20 @@ class TestAuthService:
     @pytest.mark.asyncio
     async def test_create_user(self, db_session, test_user_data):
         """Test user creation."""
-        user = await AuthService.create_user(db_session, test_user_data)
+        user_create = UserCreate(**test_user_data)
+        user = await AuthService.create_user(db_session, user_create)
         
         assert user.email == test_user_data["email"]
-        assert user.full_name == test_user_data["full_name"]
+        assert user.username == test_user_data["username"]
         assert user.is_active is True
-        assert user.is_superuser is False
-        assert verify_password(test_user_data["password"], user.hashed_password)
+        assert verify_password(test_user_data["password"], user.password_hash)
 
     @pytest.mark.asyncio
     async def test_authenticate_user_success(self, db_session, test_user_data):
         """Test successful user authentication."""
         # Create user first
-        await AuthService.create_user(db_session, test_user_data)
+        user_create = UserCreate(**test_user_data)
+        await AuthService.create_user(db_session, user_create)
         
         # Authenticate
         user = await AuthService.authenticate_user(
@@ -41,7 +43,8 @@ class TestAuthService:
     async def test_authenticate_user_invalid_password(self, db_session, test_user_data):
         """Test authentication with invalid password."""
         # Create user first
-        await AuthService.create_user(db_session, test_user_data)
+        user_create = UserCreate(**test_user_data)
+        await AuthService.create_user(db_session, user_create)
         
         # Try to authenticate with wrong password
         user = await AuthService.authenticate_user(
@@ -72,10 +75,10 @@ class TestAuthEndpoints:
         """Test user registration endpoint."""
         response = await client.post("/api/v1/auth/register", json=test_user_data)
         
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = response.json()
         assert data["email"] == test_user_data["email"]
-        assert data["full_name"] == test_user_data["full_name"]
+        assert data["username"] == test_user_data["username"]
         assert "id" in data
 
     @pytest.mark.asyncio

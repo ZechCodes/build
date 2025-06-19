@@ -212,12 +212,12 @@ class TestEnhancedAuthEndpoints:
         })
         
         tokens = login_response.json()
-        access_token = tokens["access_token"]
+        refresh_token = tokens["refresh_token"]
         
         # Logout
         response = await client.post(
             "/api/v1/auth/logout",
-            headers={"Authorization": f"Bearer {access_token}"}
+            json={"refresh_token": refresh_token}
         )
         
         assert response.status_code == 200
@@ -271,7 +271,7 @@ class TestEnhancedAuthEndpoints:
         
         # Request password reset
         reset_data = {"email": "test@example.com"}
-        response = await client.post("/api/v1/auth/reset-password", json=reset_data)
+        response = await client.post("/api/v1/auth/request-password-reset", json=reset_data)
         
         assert response.status_code == 200
         data = response.json()
@@ -283,7 +283,7 @@ class TestEnhancedAuthEndpoints:
     async def test_password_reset_request_nonexistent_email(self, client: AsyncClient):
         """Test password reset for non-existent email."""
         reset_data = {"email": "nonexistent@example.com"}
-        response = await client.post("/api/v1/auth/reset-password", json=reset_data)
+        response = await client.post("/api/v1/auth/request-password-reset", json=reset_data)
         
         # Should return same response to prevent email enumeration
         assert response.status_code == 200

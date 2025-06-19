@@ -21,7 +21,7 @@ router = APIRouter()
 lockout_manager = AccountLockoutManager()
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 async def login(
     user_login: UserLogin,
     request: Request,
@@ -34,12 +34,14 @@ async def login(
     try:
         result = await AuthService.login(db, user_login, ip_address=client_ip)
         
-        return TokenResponse(
-            access_token=result["access_token"],
-            refresh_token=result["refresh_token"],
-            token_type=result["token_type"],
-            expires_in=900  # 15 minutes in seconds
-        )
+        # Return enhanced response with user information and expires_in
+        return {
+            "access_token": result["access_token"],
+            "refresh_token": result["refresh_token"],
+            "token_type": result["token_type"],
+            "expires_in": 900,  # 15 minutes in seconds
+            "user": result["user"]
+        }
     except HTTPException as e:
         logger.warning(
             "Login attempt failed", 
@@ -119,12 +121,28 @@ async def logout(
     """User logout endpoint with token revocation."""
     client_ip = request.client.host if request.client else "unknown"
     
-    # For now, we'll extract user_id from the refresh token
-    # In a real implementation, you'd get this from the access token
-    from app.core.security import verify_refresh_token
-    user_id = verify_refresh_token(refresh_data.refresh_token)
+    # Extract user_id from the refresh token using JWT manager
+    from app.security.jwt import JWTManager
+    from app.core.config import get_settings
     
-    if not user_id:
+    settings = get_settings()
+    jwt_manager = JWTManager(secret_key=settings.jwt_secret)
+    
+    try:
+        payload = jwt_manager.verify_token(refresh_data.refresh_token)
+        # Check if it's a refresh token
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+    except HTTPException:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token"

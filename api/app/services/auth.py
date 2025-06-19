@@ -11,7 +11,9 @@ from sqlalchemy import select, and_
 from fastapi import HTTPException, status
 import structlog
 
-from app.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token, verify_refresh_token
+from app.core.security import verify_password, get_password_hash
+from app.security.jwt import JWTManager
+from app.core.config import get_settings
 from app.models.user import User
 from app.schemas.auth import UserCreate, UserLogin
 from app.core.redis import get_redis
@@ -190,9 +192,17 @@ class AuthService:
                 detail="Account is inactive"
             )
         
-        # Create tokens
-        access_token = create_access_token(subject=str(user.id))
-        refresh_token = create_refresh_token(subject=str(user.id))
+        # Create tokens using JWT manager
+        settings = get_settings()
+        jwt_manager = JWTManager(secret_key=settings.jwt_secret)
+        
+        token_data = {
+            "sub": str(user.id),
+            "email": user.email
+        }
+        
+        access_token = jwt_manager.create_access_token(token_data)
+        refresh_token = jwt_manager.create_refresh_token(token_data)
         
         # Store refresh token in Redis with expiration (gracefully handle Redis issues)
         try:
@@ -212,6 +222,7 @@ class AuthService:
                 "id": str(user.id),
                 "email": user.email,
                 "username": user.username,
+                "role": user.role.value,
                 "is_active": user.is_active,
                 "is_verified": user.is_verified
             }

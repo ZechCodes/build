@@ -33,3 +33,12 @@ async def get_db_session() -> AsyncSession:
             yield session
         finally:
             await session.close()
+
+
+async def get_db() -> AsyncSession:
+    """Database dependency for FastAPI routes."""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

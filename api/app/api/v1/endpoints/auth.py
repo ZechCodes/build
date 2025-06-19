@@ -199,20 +199,26 @@ async def get_current_user_profile(
 
 @router.put("/me", response_model=UserProfile)
 async def update_user_profile(
-    user_updates: dict,  # Define proper schema for updates
+    user_updates: dict,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Update current user profile."""
-    # Implementation would go here for profile updates
-    # For now, just return current profile
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Update user profile
+    updated_user = await AuthService.update_user_profile(
+        db, current_user, user_updates, ip_address=client_ip
+    )
+    
     return UserProfile(
-        id=str(current_user.id),
-        email=current_user.email,
-        username=current_user.username,
-        role=current_user.role.value,
-        is_verified=current_user.is_verified,
-        created_at=current_user.created_at
+        id=str(updated_user.id),
+        email=updated_user.email,
+        username=updated_user.username,
+        role=updated_user.role.value,
+        is_verified=updated_user.is_verified,
+        created_at=updated_user.created_at
     )
 
 

@@ -9,6 +9,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 import structlog
 
 from app.core.security import verify_password, get_password_hash
@@ -438,6 +439,65 @@ class AuthService:
         logger.info("Password reset completed", user_id=str(user.id))
         
         return {"message": "Password has been reset successfully"}
+    
+    @staticmethod
+    async def update_user_profile(db: AsyncSession, user: User, update_data: dict, ip_address: str = None) -> User:
+        """Update user profile with validation."""
+        from ..schemas.auth import UserProfileUpdate
+        
+        # Validate input data
+        try:
+            validated_data = UserProfileUpdate(**update_data)
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=e.errors()
+            )
+        
+        # Check for conflicts with existing users
+        if validated_data.email and validated_data.email != user.email:
+            result = await db.execute(select(User).where(User.email == validated_data.email))
+            existing_user = result.scalar_one_or_none()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email already exists"
+                )
+        
+        if validated_data.username and validated_data.username != user.username:
+            result = await db.execute(select(User).where(User.username == validated_data.username))
+            existing_user = result.scalar_one_or_none()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Username already exists"
+                )
+        
+        # Update user fields
+        update_fields = {}
+        if validated_data.email is not None:
+            user.email = validated_data.email
+            update_fields["email"] = validated_data.email
+        
+        if validated_data.username is not None:
+            user.username = validated_data.username
+            update_fields["username"] = validated_data.username
+        
+        # Commit changes
+        await db.commit()
+        await db.refresh(user)
+        
+        # Log audit event
+        await AuditService.log_security_event(
+            db, "profile_updated", "user_management",
+            user_id=user.id,
+            ip_address=ip_address,
+            details={"updated_fields": list(update_fields.keys())}
+        )
+        
+        logger.info("User profile updated", user_id=str(user.id), updated_fields=update_fields)
+        
+        return user
     
     @staticmethod
     def _validate_password_strength(password: str) -> bool:

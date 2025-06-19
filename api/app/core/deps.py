@@ -22,15 +22,15 @@ security = HTTPBearer()
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Database dependency with proper error handling."""
-    async with get_db_session() as session:
+    from app.core.database import AsyncSessionLocal
+    
+    async with AsyncSessionLocal() as session:
         try:
             yield session
         except Exception as e:
             logger.error("Database session error", error=str(e))
             await session.rollback()
             raise
-        finally:
-            await session.close()
 
 
 async def get_current_user(

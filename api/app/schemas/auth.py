@@ -175,3 +175,18 @@ class UserProfile(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class UserProfileUpdate(BaseModel):
+    """User profile update schema with validation."""
+    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=30)
+    
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v: Optional[str]) -> Optional[str]:
+        """Validate username format."""
+        if v is not None:
+            if not re.match(r'^[a-zA-Z0-9_-]{3,30}$', v):
+                raise ValueError('Username must be 3-30 characters, alphanumeric, underscore, or dash only')
+        return v

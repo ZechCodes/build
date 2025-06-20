@@ -46,7 +46,12 @@ class AuthService:
         
         # Check if account is locked (but unlock if lockout period expired)
         if user.locked_until:
-            if user.locked_until > datetime.now(timezone.utc):
+            # Handle timezone-naive datetime from database
+            locked_until = user.locked_until
+            if locked_until.tzinfo is None:
+                locked_until = locked_until.replace(tzinfo=timezone.utc)
+            
+            if locked_until > datetime.now(timezone.utc):
                 # Account is still locked
                 await AuditService.log_security_event(
                     db, "login_failed", "authentication",

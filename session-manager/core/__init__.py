@@ -1,0 +1,3 @@
+"""
+Core session management components
+"""

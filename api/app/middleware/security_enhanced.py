@@ -103,11 +103,13 @@ class AdvancedRateLimitMiddleware(BaseHTTPMiddleware):
         self.suspicious_ips: Set[str] = set()
         
         # Endpoint-specific rate limits (requests, window_seconds, burst_limit)
+        # Session 2 requirements: login=5/15min, register=3/60min, password reset=3/60min
         self.rate_limits = {
-            "/api/v1/auth/login": (5, 300, 2),  # 5 per 5 min, burst of 2
-            "/api/v1/auth/register": (3, 3600, 1),  # 3 per hour, no burst
-            "/api/v1/auth/forgot-password": (3, 3600, 1),
-            "/api/v1/auth/reset-password": (5, 3600, 1),
+            "/api/v1/auth/login": (5, 900, 2),  # 5 per 15 min, burst of 2 (Session 2)
+            "/api/v1/auth/register": (3, 3600, 1),  # 3 per hour, no burst (Session 2)
+            "/api/v1/auth/request-password-reset": (3, 3600, 1),  # Session 2
+            "/api/v1/auth/reset-password": (3, 3600, 1),  # Session 2
+            "/api/v1/auth/forgot-password": (3, 3600, 1),  # Legacy endpoint
             "/api/v1/auth/verify-email": (10, 3600, 3),
             "/api/v1/vms/create": (10, 3600, 2),
             "/api/v1/vms/": (100, 3600, 20),  # General VM operations

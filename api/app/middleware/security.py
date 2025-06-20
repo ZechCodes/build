@@ -57,11 +57,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.default_limit = self.settings.rate_limit_per_minute
         self.window_seconds = 60
         
-        # Define rate limits for different endpoints
+        # Define rate limits for different endpoints (Session 2 requirements)
         self.rate_limits = {
-            "/api/v1/auth/login": (5, 300),  # 5 requests per 5 minutes
-            "/api/v1/auth/register": (3, 3600),  # 3 requests per hour
-            "/api/v1/auth/forgot-password": (3, 3600),  # 3 requests per hour
+            "/api/v1/auth/login": (5, 900),  # 5 requests per 15 minutes (Session 2)
+            "/api/v1/auth/register": (3, 3600),  # 3 requests per hour (Session 2)
+            "/api/v1/auth/request-password-reset": (3, 3600),  # Session 2
+            "/api/v1/auth/reset-password": (3, 3600),  # Session 2
+            "/api/v1/auth/forgot-password": (3, 3600),  # Legacy endpoint
         }
     
     async def dispatch(self, request: Request, call_next):

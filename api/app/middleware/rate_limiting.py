@@ -19,9 +19,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Session 2 rate limiting requirements
         self.rate_limits = {
-            "/auth/login": {"max_requests": 5, "window_minutes": 15},
-            "/auth/register": {"max_requests": 3, "window_minutes": 60},
-            "/auth/reset-password": {"max_requests": 3, "window_minutes": 60},
+            "/api/v1/auth/login": {"max_requests": 5, "window_minutes": 15},
+            "/api/v1/auth/register": {"max_requests": 3, "window_minutes": 60},
+            "/api/v1/auth/reset-password": {"max_requests": 3, "window_minutes": 60},
+            "/api/v1/auth/request-password-reset": {"max_requests": 3, "window_minutes": 60},
         }
 
     async def dispatch(self, request: Request, call_next):

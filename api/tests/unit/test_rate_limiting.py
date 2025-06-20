@@ -31,22 +31,23 @@ class TestRateLimitMiddleware:
 
     def test_rate_limit_configuration(self, middleware):
         """Test rate limit configuration."""
-        assert "/auth/login" in middleware.rate_limits
-        assert "/auth/register" in middleware.rate_limits
-        assert "/auth/reset-password" in middleware.rate_limits
+        assert "/api/v1/auth/login" in middleware.rate_limits
+        assert "/api/v1/auth/register" in middleware.rate_limits
+        assert "/api/v1/auth/reset-password" in middleware.rate_limits
+        assert "/api/v1/auth/request-password-reset" in middleware.rate_limits
         
         # Check login limits
-        login_limits = middleware.rate_limits["/auth/login"]
+        login_limits = middleware.rate_limits["/api/v1/auth/login"]
         assert login_limits["max_requests"] == 5
         assert login_limits["window_minutes"] == 15
         
         # Check register limits
-        register_limits = middleware.rate_limits["/auth/register"]
+        register_limits = middleware.rate_limits["/api/v1/auth/register"]
         assert register_limits["max_requests"] == 3
         assert register_limits["window_minutes"] == 60
         
         # Check reset-password limits
-        reset_limits = middleware.rate_limits["/auth/reset-password"]
+        reset_limits = middleware.rate_limits["/api/v1/auth/reset-password"]
         assert reset_limits["max_requests"] == 3
         assert reset_limits["window_minutes"] == 60
 
@@ -55,17 +56,17 @@ class TestRateLimitMiddleware:
         """Test rate limiting check with no previous requests."""
         mock_redis.get.return_value = None
         
-        is_limited = await middleware.is_rate_limited("192.168.1.1", "/auth/login")
+        is_limited = await middleware.is_rate_limited("192.168.1.1", "/api/v1/auth/login")
         assert is_limited is False
         
-        mock_redis.get.assert_called_with("rate_limit:192.168.1.1:/auth/login")
+        mock_redis.get.assert_called_with("rate_limit:192.168.1.1:/api/v1/auth/login")
 
     @pytest.mark.asyncio
     async def test_is_rate_limited_below_threshold(self, middleware, mock_redis):
         """Test rate limiting check below threshold."""
         mock_redis.get.return_value = "3"  # 3 < 5 (login limit)
         
-        is_limited = await middleware.is_rate_limited("192.168.1.1", "/auth/login")
+        is_limited = await middleware.is_rate_limited("192.168.1.1", "/api/v1/auth/login")
         assert is_limited is False
 
     @pytest.mark.asyncio
@@ -73,7 +74,7 @@ class TestRateLimitMiddleware:
         """Test rate limiting check at threshold."""
         mock_redis.get.return_value = "5"  # 5 >= 5 (login limit)
         
-        is_limited = await middleware.is_rate_limited("192.168.1.1", "/auth/login")
+        is_limited = await middleware.is_rate_limited("192.168.1.1", "/api/v1/auth/login")
         assert is_limited is True
 
     @pytest.mark.asyncio
@@ -81,7 +82,7 @@ class TestRateLimitMiddleware:
         """Test rate limiting check above threshold."""
         mock_redis.get.return_value = "7"  # 7 > 5 (login limit)
         
-        is_limited = await middleware.is_rate_limited("192.168.1.1", "/auth/login")
+        is_limited = await middleware.is_rate_limited("192.168.1.1", "/api/v1/auth/login")
         assert is_limited is True
 
     @pytest.mark.asyncio
@@ -89,19 +90,19 @@ class TestRateLimitMiddleware:
         """Test recording first request."""
         mock_redis.incr.return_value = 1
         
-        await middleware.record_request("192.168.1.1", "/auth/login")
+        await middleware.record_request("192.168.1.1", "/api/v1/auth/login")
         
-        mock_redis.incr.assert_called_with("rate_limit:192.168.1.1:/auth/login")
-        mock_redis.expire.assert_called_with("rate_limit:192.168.1.1:/auth/login", 900)
+        mock_redis.incr.assert_called_with("rate_limit:192.168.1.1:/api/v1/auth/login")
+        mock_redis.expire.assert_called_with("rate_limit:192.168.1.1:/api/v1/auth/login", 900)
 
     @pytest.mark.asyncio
     async def test_record_request_subsequent_request(self, middleware, mock_redis):
         """Test recording subsequent request."""
         mock_redis.incr.return_value = 3  # Not first request
         
-        await middleware.record_request("192.168.1.1", "/auth/login")
+        await middleware.record_request("192.168.1.1", "/api/v1/auth/login")
         
-        mock_redis.incr.assert_called_with("rate_limit:192.168.1.1:/auth/login")
+        mock_redis.incr.assert_called_with("rate_limit:192.168.1.1:/api/v1/auth/login")
         # Should not set expiration again
         mock_redis.expire.assert_not_called()
 
@@ -147,7 +148,7 @@ class TestRateLimitMiddleware:
         """Test getting remaining requests with no prior usage."""
         mock_redis.get.return_value = None
         
-        result = await middleware.get_remaining_requests("192.168.1.1", "/auth/login")
+        result = await middleware.get_remaining_requests("192.168.1.1", "/api/v1/auth/login")
         
         assert result["remaining"] == 5  # Full login limit
         assert result["reset_time"] is None
@@ -158,7 +159,7 @@ class TestRateLimitMiddleware:
         mock_redis.get.return_value = "3"
         mock_redis.ttl.return_value = 600  # 10 minutes remaining
         
-        result = await middleware.get_remaining_requests("192.168.1.1", "/auth/login")
+        result = await middleware.get_remaining_requests("192.168.1.1", "/api/v1/auth/login")
         
         assert result["remaining"] == 2  # 5 - 3 = 2
         assert result["current_count"] == 3
@@ -168,10 +169,10 @@ class TestRateLimitMiddleware:
     @pytest.mark.asyncio
     async def test_reset_rate_limit_success(self, middleware, mock_redis):
         """Test successful rate limit reset."""
-        success = await middleware.reset_rate_limit("192.168.1.1", "/auth/login")
+        success = await middleware.reset_rate_limit("192.168.1.1", "/api/v1/auth/login")
         
         assert success is True
-        mock_redis.delete.assert_called_with("rate_limit:192.168.1.1:/auth/login")
+        mock_redis.delete.assert_called_with("rate_limit:192.168.1.1:/api/v1/auth/login")
 
     @pytest.mark.asyncio
     async def test_reset_rate_limit_invalid_endpoint(self, middleware, mock_redis):
@@ -187,5 +188,5 @@ class TestRateLimitMiddleware:
         mock_redis.get.side_effect = Exception("Redis connection failed")
         
         # Should not raise exception and return False (fail open)
-        is_limited = await middleware.is_rate_limited("192.168.1.1", "/auth/login")
+        is_limited = await middleware.is_rate_limited("192.168.1.1", "/api/v1/auth/login")
         assert is_limited is False

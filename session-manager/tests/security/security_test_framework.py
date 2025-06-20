@@ -439,7 +439,7 @@ class SecurityTestFramework:
         try:
             # Test various malicious message payloads
             malicious_messages = [
-                '{"type": "'; DROP TABLE messages; --"}',
+                '{"type": "; DROP TABLE messages; --"}',
                 '{"type": "join_session", "session_id": "../../admin"}',
                 '{"type": "eval", "code": "process.exit(1)"}',
                 '{"__proto__": {"isAdmin": true}}',

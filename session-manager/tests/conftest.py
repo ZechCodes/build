@@ -20,29 +20,28 @@ async def redis_mock():
     """Mock Redis client for testing"""
     redis_client = AsyncMock(spec=redis.Redis)
     
-    # Configure common Redis operations
-    redis_client.hset = AsyncMock()
-    redis_client.hgetall = AsyncMock()
-    redis_client.get = AsyncMock()
-    redis_client.set = AsyncMock()
-    redis_client.delete = AsyncMock()
-    redis_client.expire = AsyncMock()
-    redis_client.pipeline = MagicMock()
-    redis_client.sadd = AsyncMock()
-    redis_client.srem = AsyncMock()
-    redis_client.smembers = AsyncMock()
-    redis_client.scan_iter = AsyncMock()
-    redis_client.keys = AsyncMock()
+    # Configure common Redis operations with proper return values
+    redis_client.hset = AsyncMock(return_value=1)
+    redis_client.hgetall = AsyncMock(return_value={})
+    redis_client.get = AsyncMock(return_value=None)
+    redis_client.set = AsyncMock(return_value=True)
+    redis_client.delete = AsyncMock(return_value=1)
+    redis_client.expire = AsyncMock(return_value=True)
+    redis_client.sadd = AsyncMock(return_value=1)
+    redis_client.srem = AsyncMock(return_value=1)
+    redis_client.smembers = AsyncMock(return_value=set())
+    redis_client.scan_iter = AsyncMock(return_value=[])
+    redis_client.keys = AsyncMock(return_value=[])
     
-    # Pipeline mock
+    # Pipeline mock with proper return values
     pipe_mock = AsyncMock()
-    pipe_mock.hset = AsyncMock()
-    pipe_mock.expire = AsyncMock()
-    pipe_mock.sadd = AsyncMock()
-    pipe_mock.srem = AsyncMock()
-    pipe_mock.delete = AsyncMock()
-    pipe_mock.execute = AsyncMock()
-    redis_client.pipeline.return_value = pipe_mock
+    pipe_mock.hset = AsyncMock(return_value=None)
+    pipe_mock.expire = AsyncMock(return_value=None)
+    pipe_mock.sadd = AsyncMock(return_value=None)
+    pipe_mock.srem = AsyncMock(return_value=None)
+    pipe_mock.delete = AsyncMock(return_value=None)
+    pipe_mock.execute = AsyncMock(return_value=[])
+    redis_client.pipeline = MagicMock(return_value=pipe_mock)
     
     return redis_client
 

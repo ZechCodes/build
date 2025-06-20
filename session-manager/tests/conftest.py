@@ -78,3 +78,52 @@ async def state_manager_with_cleanup(redis_mock):
     
     # Cleanup
     await state_manager.stop()
+
+
+@pytest.fixture
+def auth_service_mock():
+    """Mock authentication service"""
+    service = AsyncMock()
+    service.validate_token = AsyncMock(return_value={"user_id": "user123"})
+    return service
+
+
+@pytest.fixture  
+def websocket_mock():
+    """Mock WebSocket connection"""
+    websocket = AsyncMock()
+    websocket.accept = AsyncMock()
+    websocket.close = AsyncMock()
+    websocket.send_text = AsyncMock()
+    websocket.receive_text = AsyncMock()
+    return websocket
+
+
+@pytest.fixture
+def valid_jwt_token():
+    """Valid JWT token for testing"""
+    from jose import jwt
+    import time
+    
+    payload = {
+        "user_id": "user123",
+        "exp": int(time.time()) + 3600,  # 1 hour from now
+        "iat": int(time.time())
+    }
+    
+    return jwt.encode(payload, "test-secret", algorithm="HS256")
+
+
+@pytest.fixture
+def expired_jwt_token():
+    """Expired JWT token for testing"""
+    from jose import jwt
+    import time
+    
+    payload = {
+        "user_id": "user123", 
+        "exp": int(time.time()) - 3600,  # 1 hour ago
+        "iat": int(time.time()) - 7200
+    }
+    
+    return jwt.encode(payload, "test-secret", algorithm="HS256")

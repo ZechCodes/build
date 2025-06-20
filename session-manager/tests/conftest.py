@@ -127,3 +127,49 @@ def expired_jwt_token():
     }
     
     return jwt.encode(payload, "test-secret", algorithm="HS256")
+
+
+@pytest.fixture
+def session_manager_mock():
+    """Mock session manager"""
+    import time
+    manager = AsyncMock()
+    
+    # Mock session data
+    session_mock = AsyncMock()
+    session_mock.user_id = "user123"
+    session_mock.last_activity = time.time() - 60  # 1 minute ago
+    session_mock.state.value = "active"
+    
+    manager.get_session = AsyncMock(return_value=session_mock)
+    manager.update_session_state = AsyncMock(return_value=True)
+    
+    return manager
+
+
+@pytest.fixture
+def buffer_manager_mock():
+    """Mock buffer manager"""
+    import time
+    manager = AsyncMock()
+    
+    # Mock buffer data
+    buffer_mock = AsyncMock()
+    buffer_mock.buffer_data = b"test terminal output"
+    buffer_mock.cursor_position = (10, 5)
+    buffer_mock.scroll_position = 0
+    buffer_mock.size_bytes = 20
+    buffer_mock.line_count = 1
+    buffer_mock.last_updated = time.time()
+    
+    manager.retrieve_buffer = AsyncMock(return_value=buffer_mock)
+    
+    return manager
+
+
+@pytest.fixture
+def websocket_bridge_mock():
+    """Mock WebSocket bridge"""
+    bridge = AsyncMock()
+    bridge.send_to_connection = AsyncMock(return_value=True)
+    return bridge

@@ -40,12 +40,66 @@ class SessionBufferManager:
         self.metadata_key_prefix = "session:meta:"
         self.compression_threshold = 4096  # Compress buffers > 4KB
         
+        # Buffer write rate limiting configuration
+        self.rate_limit_key_prefix = "buffer:rate_limit:"
+        self.max_writes_per_minute = 60  # 1 write per second average
+        self.rate_limit_window = 60  # 1 minute sliding window
+        
+    async def _check_buffer_write_rate_limit(self, user_id: str) -> bool:
+        """Check if user has exceeded buffer write rate limit using sliding window"""
+        try:
+            rate_key = f"{self.rate_limit_key_prefix}{user_id}"
+            current_time = int(time.time())
+            window_start = current_time - self.rate_limit_window
+            
+            # Use Redis pipeline for atomic operations
+            pipe = self.redis.pipeline()
+            
+            # Remove old entries outside the time window
+            pipe.zremrangebyscore(rate_key, 0, window_start)
+            
+            # Count current requests in window
+            pipe.zcard(rate_key)
+            
+            # Add current request timestamp
+            pipe.zadd(rate_key, {str(current_time): current_time})
+            
+            # Set expiration for cleanup
+            pipe.expire(rate_key, self.rate_limit_window + 10)
+            
+            results = await pipe.execute()
+            current_count = results[1]  # Count from zcard
+            
+            if current_count >= self.max_writes_per_minute:
+                logger.warning("Buffer write rate limit exceeded", 
+                             user_id=user_id, 
+                             current_count=current_count,
+                             limit=self.max_writes_per_minute,
+                             window_seconds=self.rate_limit_window)
+                
+                logfire.warning("Buffer write rate limited",
+                              user_id=user_id,
+                              count=current_count,
+                              limit=self.max_writes_per_minute)
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error("Buffer rate limit check failed", user_id=user_id, error=str(e))
+            # Fail open - allow operation if rate limiting fails
+            return True
+        
     async def store_buffer(self, session_id: str, user_id: str, 
                           buffer_data: bytes, cursor_pos: Tuple[int, int],
                           scroll_pos: int = 0) -> bool:
-        """Store terminal buffer data in Redis"""
+        """Store terminal buffer data in Redis with rate limiting"""
         try:
             start_time = time.time()
+            
+            # Check rate limiting FIRST
+            if not await self._check_buffer_write_rate_limit(user_id):
+                raise ValueError(f"Buffer write rate limit exceeded for user {user_id}")
             
             # Validate inputs
             if not session_id or not user_id:
@@ -136,6 +190,14 @@ class SessionBufferManager:
             
             return True
             
+        except ValueError as e:
+            # Re-raise ValueError for rate limiting and validation errors
+            if "rate limit exceeded" in str(e).lower():
+                logger.error("Buffer store blocked by rate limiting", 
+                           session_id=session_id, user_id=user_id, error=str(e))
+                logfire.error("Buffer rate limited", 
+                             session_id=session_id, user_id=user_id, error=str(e))
+            raise
         except Exception as e:
             logger.error("Failed to store buffer", 
                         session_id=session_id, error=str(e))

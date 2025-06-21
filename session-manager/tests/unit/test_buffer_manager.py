@@ -157,4 +157,74 @@ class TestSessionBufferManager:
         """Test buffer clearing functionality"""
         pytest.skip("SessionBufferManager not implemented yet - Red phase of TDD")
         
+    async def test_buffer_write_rate_limiting(self, redis_mock):
+        """Test buffer write rate limiting functionality"""
+        # Arrange
+        buffer_manager = SessionBufferManager(redis_mock)
+        user_id = "rate_limit_test_user"
+        session_id = "rate_limit_session"
+        test_data = b"test buffer data"
+        
+        # Mock Redis pipeline operations for rate limiting
+        buffer_manager.redis.pipeline.return_value = buffer_manager.redis
+        buffer_manager.redis.zremrangebyscore = AsyncMock()
+        buffer_manager.redis.zcard = AsyncMock(return_value=5)  # Under limit
+        buffer_manager.redis.zadd = AsyncMock()
+        buffer_manager.redis.expire = AsyncMock()
+        buffer_manager.redis.execute = AsyncMock(return_value=[None, 5, None, None])
+        
+        # Should allow writes under rate limit
+        result = await buffer_manager.store_buffer(
+            session_id=session_id,
+            user_id=user_id,
+            buffer_data=test_data,
+            cursor_pos=(0, 1)
+        )
+        assert result is True
+        
+        # Test rate limit exceeded
+        buffer_manager.redis.zcard = AsyncMock(return_value=65)  # Over limit
+        buffer_manager.redis.execute = AsyncMock(return_value=[None, 65, None, None])
+        
+        # Should raise rate limit error
+        with pytest.raises(ValueError, match="Buffer write rate limit exceeded"):
+            await buffer_manager.store_buffer(
+                session_id=session_id,
+                user_id=user_id,
+                buffer_data=test_data,
+                cursor_pos=(0, 1)
+            )
+    
+    async def test_rate_limit_check_method(self, redis_mock):
+        """Test the rate limit check method directly"""
+        # Arrange
+        buffer_manager = SessionBufferManager(redis_mock)
+        user_id = "direct_test_user"
+        
+        # Mock Redis operations
+        buffer_manager.redis.pipeline.return_value = buffer_manager.redis
+        buffer_manager.redis.execute = AsyncMock(return_value=[None, 30, None, None])
+        
+        # Should allow under limit
+        result = await buffer_manager._check_buffer_write_rate_limit(user_id)
+        assert result is True
+        
+        # Should block over limit
+        buffer_manager.redis.execute = AsyncMock(return_value=[None, 70, None, None])
+        result = await buffer_manager._check_buffer_write_rate_limit(user_id)
+        assert result is False
+    
+    async def test_rate_limit_error_handling(self, redis_mock):
+        """Test rate limit check handles Redis errors gracefully"""
+        # Arrange
+        buffer_manager = SessionBufferManager(redis_mock)
+        user_id = "error_test_user"
+        
+        # Mock Redis failure
+        buffer_manager.redis.pipeline.side_effect = Exception("Redis connection failed")
+        
+        # Should fail open (allow operation) when rate limiting fails
+        result = await buffer_manager._check_buffer_write_rate_limit(user_id)
+        assert result is True
+        
         # This test will verify buffers can be cleared

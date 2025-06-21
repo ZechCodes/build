@@ -20,12 +20,14 @@ logger = structlog.get_logger()
 
 @dataclass
 class ConnectionInfo:
-    """WebSocket connection information"""
+    """WebSocket connection information with security tracking"""
     websocket: WebSocket
     user_id: str
     session_id: str
     connected_at: float
     last_ping: float
+    client_ip: str
+    user_agent: str
     is_authenticated: bool = False
 
 
@@ -70,12 +72,18 @@ class WebSocketGateway:
         logger.info("WebSocket gateway stopped")
     
     async def handle_connection(self, websocket: WebSocket, token: str):
-        """Handle new WebSocket connection"""
+        """Handle new WebSocket connection with security tracking"""
         connection_id = None
         try:
+            # Extract client information for security tracking
+            client_ip = self._extract_client_ip(websocket)
+            user_agent = self._extract_user_agent(websocket)
+            
             # Validate authentication token
             user_data = await self._validate_token(token)
             if not user_data:
+                logger.warning("WebSocket authentication failed",
+                             client_ip=client_ip, user_agent=user_agent)
                 await websocket.close(code=4001, reason="Authentication failed")
                 return
                 
@@ -91,13 +99,15 @@ class WebSocketGateway:
             # Accept connection
             await websocket.accept()
             
-            # Create connection info
+            # Create connection info with security tracking
             connection_info = ConnectionInfo(
                 websocket=websocket,
                 user_id=user_id,
                 session_id="",  # Will be set when session is joined
                 connected_at=time.time(),
                 last_ping=time.time(),
+                client_ip=client_ip,
+                user_agent=user_agent,
                 is_authenticated=True
             )
             
@@ -224,7 +234,7 @@ class WebSocketGateway:
                         connection_id=connection_id, error=str(e))
             
     async def _handle_join_session(self, connection_id: str, data: Dict[str, Any]):
-        """Handle session join request"""
+        """Handle session join request with hijacking detection"""
         try:
             session_id = data.get("session_id")
             if not session_id:
@@ -242,6 +252,16 @@ class WebSocketGateway:
                               connection_id=connection_id,
                               user_id=user_id,
                               session_id=session_id)
+                return
+            
+            # Check for potential session hijacking
+            hijacking_detected = await self._detect_session_hijacking(session_id, connection_id)
+            if hijacking_detected:
+                await self._send_error(connection_id, "Session security validation failed")
+                logfire.error("Session join blocked due to hijacking detection",
+                            connection_id=connection_id,
+                            user_id=user_id,
+                            session_id=session_id)
                 return
                 
             # Update connection with session ID
@@ -396,6 +416,148 @@ class WebSocketGateway:
         except Exception as e:
             logger.error("Broadcast to user failed", user_id=user_id, error=str(e))
             return 0
+    
+    def _extract_client_ip(self, websocket: WebSocket) -> str:
+        """Extract client IP address from WebSocket connection"""
+        try:
+            # Check for forwarded headers first (proxy/load balancer)
+            headers = websocket.headers
+            
+            # X-Forwarded-For header (most common)
+            forwarded_for = headers.get("x-forwarded-for")
+            if forwarded_for:
+                # Take the first IP in the chain
+                return forwarded_for.split(",")[0].strip()
+            
+            # X-Real-IP header
+            real_ip = headers.get("x-real-ip")
+            if real_ip:
+                return real_ip.strip()
+            
+            # CF-Connecting-IP (CloudFlare)
+            cf_ip = headers.get("cf-connecting-ip")
+            if cf_ip:
+                return cf_ip.strip()
+            
+            # Fall back to client info if available
+            if hasattr(websocket, 'client') and websocket.client:
+                return websocket.client.host
+            
+            return "unknown"
+            
+        except Exception as e:
+            logger.warning("Failed to extract client IP", error=str(e))
+            return "unknown"
+    
+    def _extract_user_agent(self, websocket: WebSocket) -> str:
+        """Extract User-Agent from WebSocket connection"""
+        try:
+            headers = websocket.headers
+            user_agent = headers.get("user-agent", "")
+            
+            # Truncate very long user agents for security
+            if len(user_agent) > 500:
+                user_agent = user_agent[:500] + "..."
+            
+            return user_agent or "unknown"
+            
+        except Exception as e:
+            logger.warning("Failed to extract user agent", error=str(e))
+            return "unknown"
+    
+    async def _detect_session_hijacking(self, session_id: str, new_connection_id: str) -> bool:
+        """Detect potential session hijacking attempts"""
+        try:
+            new_connection = self.connections.get(new_connection_id)
+            if not new_connection:
+                return False
+            
+            # Find existing connections for this session
+            existing_connections = []
+            for conn_id, conn_info in self.connections.items():
+                if conn_info.session_id == session_id and conn_id != new_connection_id:
+                    existing_connections.append(conn_info)
+            
+            if not existing_connections:
+                return False  # No existing connections to compare
+            
+            # Check for suspicious differences
+            for existing_conn in existing_connections:
+                # Different IP address (potential hijacking)
+                if (existing_conn.client_ip != new_connection.client_ip and 
+                    existing_conn.client_ip != "unknown" and 
+                    new_connection.client_ip != "unknown"):
+                    
+                    logger.warning("Potential session hijacking detected - IP mismatch",
+                                 session_id=session_id,
+                                 existing_ip=existing_conn.client_ip,
+                                 new_ip=new_connection.client_ip,
+                                 user_id=new_connection.user_id)
+                    
+                    logfire.warning("Session hijacking detected - IP change",
+                                  session_id=session_id,
+                                  user_id=new_connection.user_id,
+                                  old_ip=existing_conn.client_ip,
+                                  new_ip=new_connection.client_ip)
+                    return True
+                
+                # Significantly different User-Agent (potential hijacking)
+                if (self._user_agents_significantly_different(
+                    existing_conn.user_agent, new_connection.user_agent)):
+                    
+                    logger.warning("Potential session hijacking detected - User-Agent mismatch",
+                                 session_id=session_id,
+                                 existing_ua=existing_conn.user_agent[:100],
+                                 new_ua=new_connection.user_agent[:100],
+                                 user_id=new_connection.user_id)
+                    
+                    logfire.warning("Session hijacking detected - User-Agent change",
+                                  session_id=session_id,
+                                  user_id=new_connection.user_id)
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error("Session hijacking detection failed", 
+                        session_id=session_id, error=str(e))
+            return False
+    
+    def _user_agents_significantly_different(self, ua1: str, ua2: str) -> bool:
+        """Check if User-Agents are significantly different (potential hijacking)"""
+        try:
+            if not ua1 or not ua2 or ua1 == "unknown" or ua2 == "unknown":
+                return False
+            
+            # Extract major browser/version information
+            def extract_browser_info(ua):
+                import re
+                # Extract browser name and major version
+                patterns = [
+                    r'Chrome/(\d+)',
+                    r'Firefox/(\d+)',
+                    r'Safari/(\d+)',
+                    r'Edge/(\d+)',
+                    r'Opera/(\d+)'
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, ua, re.IGNORECASE)
+                    if match:
+                        browser = pattern.split('/')[0].lower()
+                        version = match.group(1)
+                        return f"{browser}_{version}"
+                
+                return ua.lower()
+            
+            browser1 = extract_browser_info(ua1)
+            browser2 = extract_browser_info(ua2)
+            
+            # Consider significantly different if browser type changes
+            return browser1.split('_')[0] != browser2.split('_')[0]
+            
+        except Exception:
+            return False
     
     def get_connection_count(self) -> int:
         """Get total connection count"""

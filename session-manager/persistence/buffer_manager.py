@@ -14,6 +14,12 @@ import redis.asyncio as redis
 import structlog
 import logfire
 
+# Import security components
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from security.input_sanitizer import input_sanitizer, privilege_validator, SecurityException
+
 logger = structlog.get_logger()
 
 
@@ -93,20 +99,32 @@ class SessionBufferManager:
     async def store_buffer(self, session_id: str, user_id: str, 
                           buffer_data: bytes, cursor_pos: Tuple[int, int],
                           scroll_pos: int = 0) -> bool:
-        """Store terminal buffer data in Redis with rate limiting"""
+        """Store terminal buffer data in Redis with rate limiting and security validation"""
         try:
             start_time = time.time()
             
-            # Check rate limiting FIRST
-            if not await self._check_buffer_write_rate_limit(user_id):
-                raise ValueError(f"Buffer write rate limit exceeded for user {user_id}")
+            # SECURITY: Sanitize and validate all inputs FIRST
+            try:
+                sanitized_session_id = input_sanitizer.sanitize_session_id(session_id)
+                sanitized_user_id = input_sanitizer.sanitize_user_id(user_id)
+                sanitized_buffer_data = input_sanitizer.sanitize_buffer_data(
+                    buffer_data, self.max_buffer_size
+                )
+            except SecurityException as e:
+                logger.error("Buffer store blocked by security validation",
+                           session_id=session_id[:50] if session_id else None,
+                           user_id=user_id[:50] if user_id else None,
+                           error=str(e))
+                raise ValueError(f"Security validation failed: {str(e)}")
             
-            # Validate inputs
-            if not session_id or not user_id:
-                raise ValueError("Session ID and User ID are required")
+            # Check rate limiting AFTER security validation
+            if not await self._check_buffer_write_rate_limit(sanitized_user_id):
+                raise ValueError(f"Buffer write rate limit exceeded for user {sanitized_user_id}")
             
-            if not isinstance(buffer_data, bytes):
-                raise ValueError("Buffer data must be bytes")
+            # Use sanitized inputs for all operations
+            session_id = sanitized_session_id
+            user_id = sanitized_user_id
+            buffer_data = sanitized_buffer_data
             
             # Check buffer size limits
             if len(buffer_data) > self.max_buffer_size:
@@ -206,13 +224,24 @@ class SessionBufferManager:
             return False
     
     async def retrieve_buffer(self, session_id: str, user_id: str) -> Optional[SessionBuffer]:
-        """Retrieve terminal buffer data from Redis"""
+        """Retrieve terminal buffer data from Redis with security validation"""
         try:
             start_time = time.time()
             
-            # Validate inputs
-            if not session_id or not user_id:
-                raise ValueError("Session ID and User ID are required")
+            # SECURITY: Sanitize and validate all inputs FIRST
+            try:
+                sanitized_session_id = input_sanitizer.sanitize_session_id(session_id)
+                sanitized_user_id = input_sanitizer.sanitize_user_id(user_id)
+            except SecurityException as e:
+                logger.error("Buffer retrieval blocked by security validation",
+                           session_id=session_id[:50] if session_id else None,
+                           user_id=user_id[:50] if user_id else None,
+                           error=str(e))
+                return None
+            
+            # Use sanitized inputs
+            session_id = sanitized_session_id
+            user_id = sanitized_user_id
             
             buffer_key = f"{self.buffer_key_prefix}{session_id}"
             redis_data = await self.redis.hgetall(buffer_key)
@@ -221,17 +250,16 @@ class SessionBufferManager:
                 logger.debug("No buffer found", session_id=session_id)
                 return None
             
-            # Validate user ownership
+            # SECURITY: Validate user ownership and prevent privilege escalation
             stored_user_id = redis_data.get(b"user_id", b"").decode('utf-8')
-            if stored_user_id != user_id:
-                logger.warning("Unauthorized buffer access attempt",
-                             session_id=session_id,
-                             requesting_user=user_id,
-                             owner_user=stored_user_id)
-                logfire.warning("Unauthorized buffer access attempt",
-                              session_id=session_id,
-                              requesting_user=user_id,
-                              owner_user=stored_user_id)
+            
+            # Use privilege validator for comprehensive access control
+            if not privilege_validator.validate_session_access(user_id, session_id, stored_user_id):
+                # Access denied - this blocks cross-user access and privilege escalation
+                logfire.error("Buffer access denied - security violation",
+                            session_id=session_id,
+                            requesting_user=user_id,
+                            owner_user=stored_user_id)
                 return None
             
             # Extract data

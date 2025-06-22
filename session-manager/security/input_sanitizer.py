@@ -1,11 +1,10 @@
 """
 Input Sanitization and Validation Module
 
-Provides comprehensive input sanitization and validation to prevent injection attacks,
-privilege escalation, and other security vulnerabilities.
+Provides format validation and sanitization for session management.
+Focuses on real security threats: format validation, length limits, and proper data types.
 """
 import re
-import hashlib
 from typing import Any, Dict, List, Optional
 import structlog
 
@@ -18,125 +17,68 @@ class SecurityException(Exception):
 
 
 class InputSanitizer:
-    """Comprehensive input sanitization and validation"""
+    """Input format validation and sanitization for Redis-based session management"""
     
     def __init__(self):
-        # Dangerous patterns that should be blocked
-        self.sql_injection_patterns = [
-            r"['\";\-\-]",  # SQL injection characters
-            r"\b(DROP|DELETE|INSERT|UPDATE|CREATE|ALTER|EXEC|UNION|SELECT)\b",  # SQL keywords
-            r"\b(OR|AND)\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?",  # SQL boolean injection
-            r"['\"];?\s*(DROP|DELETE|INSERT|UPDATE)",  # Terminator + SQL
+        # Patterns for data that should never appear in session/buffer data
+        self.dangerous_binary_patterns = [
+            b'\x7fELF',  # ELF executable
+            b'MZ',       # Windows executable
         ]
-        
-        self.xss_patterns = [
-            r"<script[^>]*>.*?</script>",  # Script tags
-            r"javascript:",  # JavaScript protocol
-            r"on\w+\s*=",  # Event handlers
-            r"<iframe[^>]*>.*?</iframe>",  # Iframes
-        ]
-        
-        self.command_injection_patterns = [
-            r"[;&|`$]",  # Command separators and substitution
-            r"\$\([^)]*\)",  # Command substitution
-            r"`[^`]*`",  # Backtick execution
-            r"\|\s*(rm|del|format|dd|cat|nc|wget|curl)",  # Dangerous commands
-        ]
-        
-        self.path_traversal_patterns = [
-            r"\.\./",  # Directory traversal
-            r"\\\.\\.",  # Windows directory traversal
-            r"/etc/passwd",  # Unix system files
-            r"\\windows\\system32",  # Windows system files
-            r"\x00",  # Null byte injection
-        ]
-        
-        # Compiled patterns for performance
-        self.compiled_patterns = {
-            'sql': [re.compile(pattern, re.IGNORECASE) for pattern in self.sql_injection_patterns],
-            'xss': [re.compile(pattern, re.IGNORECASE) for pattern in self.xss_patterns],
-            'cmd': [re.compile(pattern, re.IGNORECASE) for pattern in self.command_injection_patterns],
-            'path': [re.compile(pattern, re.IGNORECASE) for pattern in self.path_traversal_patterns]
-        }
     
     def sanitize_session_id(self, session_id: str) -> str:
-        """Sanitize and validate session ID"""
+        """Validate session ID format"""
         if not session_id:
             raise SecurityException("Session ID cannot be empty")
         
-        # Check for injection attacks
-        self._check_for_attacks(session_id, "session_id")
-        
-        # Session IDs should be alphanumeric with limited special chars
-        if not re.match(r'^[a-zA-Z0-9_\-]{1,128}$', session_id):
+        # Session IDs follow format: sess_uuid_timestamp
+        # Allow alphanumeric, underscores, hyphens (for UUIDs)
+        if not re.match(r'^sess_[a-f0-9\-]+_\d+$', session_id):
             raise SecurityException(f"Invalid session ID format: {session_id}")
         
-        # Additional length check
+        # Length check
         if len(session_id) > 128:
             raise SecurityException("Session ID too long")
         
         return session_id
     
     def sanitize_user_id(self, user_id: str) -> str:
-        """Sanitize and validate user ID"""
+        """Validate user ID format"""
         if not user_id:
             raise SecurityException("User ID cannot be empty")
         
-        # Check for injection attacks
-        self._check_for_attacks(user_id, "user_id")
-        
-        # User IDs should be alphanumeric with limited special chars
+        # User IDs from authentication: alphanumeric, underscore, dash, dot, @ symbol
         if not re.match(r'^[a-zA-Z0-9_\-@\.]{1,64}$', user_id):
             raise SecurityException(f"Invalid user ID format: {user_id}")
+        
+        # Length check
+        if len(user_id) > 64:
+            raise SecurityException("User ID too long")
         
         return user_id
     
     def sanitize_buffer_data(self, data: bytes, max_size: int = 1024 * 1024) -> bytes:
-        """Sanitize buffer data to prevent attacks"""
+        """Validate and sanitize buffer data"""
         if not isinstance(data, bytes):
             raise SecurityException("Buffer data must be bytes")
         
-        # Size check
+        # Size limit enforcement
         if len(data) > max_size:
             logger.warning("Buffer data truncated", 
                           original_size=len(data), max_size=max_size)
             data = data[:max_size]
         
-        # Check for dangerous binary patterns
-        if b'\x00' in data and len(data) < 100:  # Small data with null bytes is suspicious
+        # Check for suspicious null bytes in small payloads
+        if b'\x00' in data and len(data) < 100:
             raise SecurityException("Suspicious null bytes in buffer data")
         
-        # Check for executable patterns (simplified)
-        dangerous_patterns = [
-            b'\x7fELF',  # ELF executable
-            b'MZ',       # Windows executable
-            b'\x89PNG',  # Could be steganography
-        ]
-        
-        for pattern in dangerous_patterns:
+        # Check for executable patterns
+        for pattern in self.dangerous_binary_patterns:
             if data.startswith(pattern):
                 logger.warning("Dangerous binary pattern detected in buffer data")
-                # Don't block entirely, but log for monitoring
+                # Log but don't block - could be legitimate terminal output
         
         return data
-    
-    def _check_for_attacks(self, input_str: str, field_name: str):
-        """Check input string for various attack patterns"""
-        attack_types = []
-        
-        # Check each attack type
-        for attack_type, patterns in self.compiled_patterns.items():
-            for pattern in patterns:
-                if pattern.search(input_str):
-                    attack_types.append(attack_type)
-                    break
-        
-        if attack_types:
-            logger.error("Attack patterns detected",
-                        field=field_name,
-                        input=input_str[:100],  # Log first 100 chars
-                        attack_types=attack_types)
-            raise SecurityException(f"Security violation: {', '.join(attack_types)} attack detected in {field_name}")
     
     def validate_request_context(self, user_id: str, session_id: str, 
                                 client_ip: str = None, user_agent: str = None) -> Dict[str, str]:
@@ -183,13 +125,14 @@ class InputSanitizer:
         if not user_agent or user_agent == "unknown":
             return user_agent
         
-        # Check for injection in User-Agent
-        self._check_for_attacks(user_agent, "user_agent")
-        
         # Length check and truncation
         if len(user_agent) > 512:
             logger.warning("User-Agent truncated", original_length=len(user_agent))
             user_agent = user_agent[:512]
+        
+        # Basic format check - should contain printable ASCII
+        if not all(32 <= ord(c) <= 126 for c in user_agent):
+            raise SecurityException("User-Agent contains non-printable characters")
         
         return user_agent
 

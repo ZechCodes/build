@@ -44,7 +44,7 @@ class TestBufferWriteRateLimitingAttackPrevention:
         redis_mock.pipeline = MagicMock(return_value=pipeline_mock)
         
         user_id = "attack_user"
-        session_id = "target_session"
+        session_id = "sess_12345678-1234-5678-9abc-123456789abc_1234567890"
         attack_data = b"flood" * 1000  # Large attack payload
         
         # Act - Attempt flooding attack
@@ -53,7 +53,7 @@ class TestBufferWriteRateLimitingAttackPrevention:
             # Try to write many buffers rapidly (attack simulation)
             for i in range(100):  # Simulate rapid-fire writes
                 await buffer_manager.store_buffer(
-                    session_id=f"{session_id}_{i}",
+                    session_id=f"sess_{i:08d}-1234-5678-9abc-123456789abc_1234567890",
                     user_id=user_id,
                     buffer_data=attack_data,
                     cursor_pos=(0, 1)
@@ -71,7 +71,7 @@ class TestBufferWriteRateLimitingAttackPrevention:
         buffer_manager = SessionBufferManager(redis_mock, max_buffer_size=1024)  # Small limit
         
         user_id = "attacker"
-        session_id = "victim_session"
+        session_id = "sess_12345678-1234-5678-9abc-123456789abc_1234567890"
         
         # Create a buffer bomb - extremely large data designed to consume memory
         buffer_bomb = b"A" * (10 * 1024 * 1024)  # 10MB bomb (way over 1KB limit)
@@ -341,7 +341,7 @@ class TestInjectionAttackPrevention:
         ]
         
         user_id = "test_user"
-        session_id = "test_session"
+        session_id = "sess_12345678-1234-5678-9abc-123456789abc_1234567890"
         
         # Act & Assert
         for malicious_data in malicious_buffer_data:
@@ -409,7 +409,7 @@ class TestDenialOfServiceAttackPrevention:
             for i in range(1000):  # Try to create many sessions
                 large_buffer = b"X" * 2048  # Each buffer larger than limit
                 result = await buffer_manager.store_buffer(
-                    session_id=f"attack_session_{i}",
+                    session_id=f"sess_{i:08d}-1234-5678-9abc-123456789abc_1234567890",
                     user_id=user_id,
                     buffer_data=large_buffer,
                     cursor_pos=(0, 1)

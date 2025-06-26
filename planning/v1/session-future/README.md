@@ -59,6 +59,13 @@ Each enhancement category includes:
 - **Testing strategies and acceptance criteria**
 - **Integration considerations with existing Session 6 code**
 
+⚠️ **CRITICAL TDD WORKFLOW NOTE**: Before implementing any future enhancement:
+1. **Review and remove any existing `pytest.skip()` statements** in related test files
+2. **Convert documentation tests to functional tests** where applicable
+3. **Implement the functionality to make tests pass** (Red → Green → Refactor)
+4. **Ensure comprehensive test coverage** for new features
+5. **Update planning documents** to reflect completion status
+
 ## Reference Implementation
 
 All future enhancements build upon the solid foundation established in Session 6:

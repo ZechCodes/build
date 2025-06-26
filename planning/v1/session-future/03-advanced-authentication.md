@@ -32,6 +32,8 @@ The following authentication security requirements were identified during Sessio
 
 ### Session Fixation Prevention
 
+⚠️ **BEFORE IMPLEMENTATION**: Remove the test skip in `tests/security/test_attack_prevention.py:200` for `test_session_fixation_vulnerability_exists` and implement the actual session fixation prevention functionality.
+
 **Objective**: Prevent session fixation attacks by regenerating session identifiers after authentication events.
 
 **Implementation Approach**:
@@ -730,6 +732,8 @@ def create_advanced_auth_session_manager(config: AdvancedAuthConfig):
 ```
 
 ### Integration Testing
+
+⚠️ **IMPORTANT**: Before implementing these advanced authentication features, ensure the existing skipped test `test_session_fixation_vulnerability_exists` is converted from a documentation test to an actual functional test that validates session fixation prevention.
 
 ```python
 async def test_advanced_authentication():

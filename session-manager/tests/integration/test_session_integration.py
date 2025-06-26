@@ -453,7 +453,7 @@ class TestSessionManagerIntegration:
         
         try:
             # Act 1: Test invalid session operations
-            invalid_session_id = "invalid_session_123"
+            invalid_session_id = "sess_00000000-1234-5678-9abc-123456789abc_1234567890"
             user_id = "error_test_user"
             
             # Try to get non-existent session

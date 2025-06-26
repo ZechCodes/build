@@ -20,6 +20,13 @@ This session builds upon the WebSocket communication layer from Session 5 to cre
 ### 1. Session State Manager
 **Location**: `session-manager/state/`
 
+⚠️ **BEFORE IMPLEMENTATION**: Remove the following test skips in `tests/unit/test_state_manager.py` and implement the corresponding functionality:
+- `test_get_session_by_id` (line 79) - Implement optimized session retrieval
+- `test_delete_session` (line 85) - Implement session deletion with cascade cleanup
+- `test_redis_persistence` (line 120) - Implement Redis operation validation
+
+**TDD Workflow**: These tests represent additional CRUD operations that need to be implemented after basic state management is working.
+
 #### Session State Persistence
 ```python
 # session-manager/state/session_state.py
@@ -418,6 +425,16 @@ class SessionBufferManager:
 ### 3. Session Recovery System
 **Location**: `session-manager/recovery/`
 
+⚠️ **BEFORE IMPLEMENTATION**: Remove the following test skips in `tests/unit/test_recovery_manager.py` and implement the corresponding functionality:
+- `test_recovery_data_integrity` (line 93) - Implement recovery data validation
+- `test_recovery_timeout_handling` (line 99) - Implement recovery timeout logic  
+- `test_recovery_failure_scenarios` (line 105) - Implement graceful failure handling
+- `test_recovery_rate_limiting` (line 111) - Implement recovery attempt rate limiting
+- `test_cross_session_recovery_prevention` (line 117) - Implement cross-session security
+- `test_recovery_cleanup_procedures` (line 123) - Implement resource cleanup
+
+**TDD Workflow**: These tests were written first (Red phase). Implement the functionality to make them pass (Green phase), then refactor (Blue phase).
+
 #### Recovery Manager
 ```python
 # session-manager/recovery/recovery_manager.py
@@ -673,10 +690,12 @@ The remaining **10 security requirements (15%)** have been organized into future
 - [ ] Session retrieval and validation
 - [ ] Session state transitions and validation
 - [ ] Session expiration and cleanup
-- [ ] Session deletion and cascade cleanup
+- [ ] Session deletion and cascade cleanup ⚠️ **Remove skip in `test_delete_session`**
 - [ ] Concurrent session operations
-- [ ] Session index consistency verification
-- [ ] Session persistence across service restarts
+- [ ] Session index consistency verification  
+- [ ] Session persistence across service restarts ⚠️ **Remove skip in `test_redis_persistence`**
+
+**Note**: Remove `pytest.skip()` statements in state manager tests before implementing these features.
 
 ### Buffer Management Testing
 - [ ] Buffer data addition and retrieval
@@ -690,13 +709,15 @@ The remaining **10 security requirements (15%)** have been organized into future
 
 ### Recovery System Testing
 - [ ] Recovery initiation and validation
-- [ ] Recovery data transmission
-- [ ] Recovery timeout handling
-- [ ] Recovery abandonment procedures
+- [ ] Recovery data transmission ⚠️ **Remove skip in `test_recovery_data_integrity`**
+- [ ] Recovery timeout handling ⚠️ **Remove skip in `test_recovery_timeout_handling`**
+- [ ] Recovery abandonment procedures ⚠️ **Remove skip in `test_recovery_cleanup_procedures`**
 - [ ] Concurrent recovery attempts
-- [ ] Recovery security validation
-- [ ] Recovery failure scenarios
+- [ ] Recovery security validation ⚠️ **Remove skip in `test_cross_session_recovery_prevention`**
+- [ ] Recovery failure scenarios ⚠️ **Remove skip in `test_recovery_failure_scenarios`**
 - [ ] End-to-end recovery workflow
+
+**Note**: Remove `pytest.skip()` statements in recovery manager tests and implement corresponding functionality before completing recovery system testing.
 
 ### Integration Testing
 - [ ] Integration with WebSocket layer

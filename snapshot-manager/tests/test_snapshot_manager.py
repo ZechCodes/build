@@ -109,6 +109,24 @@ async def snapshot_manager(vm_manager_mock, storage_backend_mock, encryption_ser
     return manager
 
 
+class TestSnapshotManager:
+    """Main test class for snapshot manager functionality."""
+    
+    async def test_initialization(self, snapshot_manager):
+        """Test snapshot manager initialization."""
+        assert snapshot_manager is not None
+        assert snapshot_manager.max_snapshots_per_user == 50
+        assert snapshot_manager.max_storage_per_user_gb == 100
+        assert snapshot_manager.compression_enabled is True
+    
+    async def test_basic_functionality(self, snapshot_manager):
+        """Test basic snapshot operations."""
+        # Test that manager is initialized and ready
+        assert hasattr(snapshot_manager, 'create_snapshot')
+        assert hasattr(snapshot_manager, 'delete_snapshot')
+        assert hasattr(snapshot_manager, 'list_user_snapshots')
+
+
 class TestSnapshotManagerCore:
     """Test core snapshot manager functionality."""
     

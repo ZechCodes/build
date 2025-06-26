@@ -138,6 +138,22 @@ def expired_jwt_token(jwt_secret):
     return jwt.encode(payload, jwt_secret, algorithm="HS256")
 
 
+class TestSnapshotAPI:
+    """Main test class for snapshot API functionality."""
+    
+    def test_api_imports(self):
+        """Test that API components can be imported."""
+        from api.snapshot_api import SnapshotAPI
+        from api.auth import AuthenticationMiddleware
+        assert SnapshotAPI is not None
+        assert AuthenticationMiddleware is not None
+    
+    def test_api_initialization(self, auth_middleware, mock_snapshot_manager):
+        """Test API initialization."""
+        api = SnapshotAPI(snapshot_manager=mock_snapshot_manager)
+        assert api is not None
+
+
 class TestAPIAuthentication:
     """Test API authentication and authorization."""
     

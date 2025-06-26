@@ -12,6 +12,88 @@ Implement comprehensive end-to-end testing suite with automated deployment valid
 
 ## Core Implementation
 
+### Production VM Environment Setup
+**Location**: `infrastructure/vm-images/`
+
+To enable complete end-to-end testing with real Firecracker VMs, production-ready kernel and rootfs images must be configured:
+
+```bash
+# infrastructure/vm-images/setup_production_images.sh
+#!/bin/bash
+# Set up production kernel and rootfs images for E2E testing
+
+set -e
+
+echo "🔧 Setting up production VM images for E2E testing..."
+
+IMAGES_DIR="/opt/firecracker/images"
+TEMP_DIR="/tmp/vm-image-setup"
+
+# Create directories
+sudo mkdir -p "$IMAGES_DIR" "$TEMP_DIR"
+cd "$TEMP_DIR"
+
+echo "📦 Downloading Ubuntu 22.04 kernel..."
+# Download official Ubuntu kernel for Firecracker
+curl -L -o vmlinux-ubuntu22.04 \
+  "https://cloud-images.ubuntu.com/releases/22.04/release/unpacked/ubuntu-22.04-server-cloudimg-amd64-vmlinuz-generic"
+
+echo "📦 Downloading Ubuntu 22.04 rootfs..."
+# Download official Ubuntu rootfs
+curl -L -o ubuntu-22.04-server-cloudimg-amd64.img \
+  "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+
+# Convert qcow2 to raw ext4 for Firecracker
+qemu-img convert -f qcow2 -O raw ubuntu-22.04-server-cloudimg-amd64.img rootfs-ubuntu22.04.ext4
+
+# Install to production location
+sudo cp vmlinux-ubuntu22.04 "$IMAGES_DIR/production_ubuntu_kernel"
+sudo cp rootfs-ubuntu22.04.ext4 "$IMAGES_DIR/production_ubuntu_rootfs"
+
+# Set proper permissions
+sudo chmod 644 "$IMAGES_DIR/production_ubuntu_kernel" "$IMAGES_DIR/production_ubuntu_rootfs"
+
+# Verify kernel is valid ELF
+if file "$IMAGES_DIR/production_ubuntu_kernel" | grep -q "ELF"; then
+    echo "✅ Production kernel verified as valid ELF"
+else
+    echo "❌ ERROR: Kernel is not a valid ELF file"
+    exit 1
+fi
+
+# Verify rootfs is valid ext4
+if file "$IMAGES_DIR/production_ubuntu_rootfs" | grep -q "ext4"; then
+    echo "✅ Production rootfs verified as valid ext4"
+else
+    echo "❌ ERROR: Rootfs is not a valid ext4 filesystem"
+    exit 1
+fi
+
+# Create test-specific smaller images for development
+echo "🧪 Creating test images..."
+sudo cp "$IMAGES_DIR/production_ubuntu_kernel" "$IMAGES_DIR/test_ubuntu_kernel"
+
+# Create smaller test rootfs (1GB instead of full size)
+truncate -s 1G "$TEMP_DIR/test_rootfs.ext4"
+mkfs.ext4 -F "$TEMP_DIR/test_rootfs.ext4"
+sudo cp "$TEMP_DIR/test_rootfs.ext4" "$IMAGES_DIR/test_ubuntu_rootfs"
+
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+echo ""
+echo "✅ Production VM images setup complete!"
+echo ""
+echo "📁 Available images:"
+echo "   Production kernel: $IMAGES_DIR/production_ubuntu_kernel"
+echo "   Production rootfs: $IMAGES_DIR/production_ubuntu_rootfs" 
+echo "   Test kernel: $IMAGES_DIR/test_ubuntu_kernel"
+echo "   Test rootfs: $IMAGES_DIR/test_ubuntu_rootfs"
+echo ""
+echo "🧪 Test with:"
+echo "   python tests/e2e/framework/test_runner.py --environment staging --suite vm_management"
+```
+
 ### E2E Test Framework
 **Location**: `tests/e2e/framework/`
 
@@ -230,6 +312,8 @@ class E2ETestRunner:
             ('vm_snapshot_restoration', self._test_vm_snapshot_restoration),
             ('vm_migration', self._test_vm_migration),
             ('vm_monitoring', self._test_vm_monitoring),
+            ('real_firecracker_integration', self._test_real_firecracker_integration),
+            ('full_vm_lifecycle_with_real_kernel', self._test_full_vm_lifecycle_real_kernel),
             ('vm_cleanup', self._test_vm_cleanup)
         ]
         
@@ -498,6 +582,134 @@ class E2ETestRunner:
             'started_at': result.started_at,
             'completed_at': result.completed_at
         }
+    
+    async def _test_real_firecracker_integration(self):
+        """Test real Firecracker integration with production kernel/rootfs"""
+        # Verify real Firecracker can create, manage, and snapshot VMs
+        # This test uses actual bootable kernel and filesystem images
+        
+        vm_data = {
+            "name": f"e2e-firecracker-test-{int(time.time())}",
+            "kernel_image": "production_ubuntu_kernel",  # Real bootable kernel
+            "rootfs_image": "production_ubuntu_rootfs",  # Real filesystem
+            "resources": {
+                "cpu_cores": 1,
+                "memory_mb": 512,
+                "disk_gb": 5
+            }
+        }
+        
+        headers = {'Authorization': f'Bearer {self.auth_token}'}
+        
+        # Create VM with real kernel
+        async with self.session.post(
+            f"{self.environment.api_url}/vms",
+            json=vm_data,
+            headers=headers
+        ) as response:
+            if response.status != 201:
+                raise AssertionError(f"Real VM creation failed with status {response.status}")
+            
+            vm = await response.json()
+            vm_id = vm['id']
+            self.test_vms.append(vm_id)
+            
+            # Wait for VM to fully boot (real kernel takes time)
+            boot_timeout = 60  # Real VMs need more time to boot
+            for attempt in range(boot_timeout):
+                async with self.session.get(
+                    f"{self.environment.api_url}/vms/{vm_id}",
+                    headers=headers
+                ) as status_response:
+                    vm_status = await status_response.json()
+                    if vm_status['status'] == 'running':
+                        break
+                    elif vm_status['status'] == 'failed':
+                        raise AssertionError(f"Real VM failed to boot: {vm_status.get('error', 'Unknown error')}")
+                    
+                    await asyncio.sleep(1)
+            else:
+                raise AssertionError("Real VM failed to boot within timeout")
+    
+    async def _test_full_vm_lifecycle_real_kernel(self):
+        """Test complete VM lifecycle with real kernel and snapshots"""
+        if not self.test_vms:
+            raise AssertionError("No real VMs available for lifecycle testing")
+        
+        vm_id = self.test_vms[0]
+        headers = {'Authorization': f'Bearer {self.auth_token}'}
+        
+        # Test real snapshot creation
+        snapshot_data = {
+            "name": f"e2e-snapshot-{int(time.time())}",
+            "description": "E2E test snapshot with real VM"
+        }
+        
+        async with self.session.post(
+            f"{self.environment.api_url}/vms/{vm_id}/snapshots",
+            json=snapshot_data,
+            headers=headers
+        ) as response:
+            if response.status != 201:
+                raise AssertionError(f"Real snapshot creation failed with status {response.status}")
+            
+            snapshot = await response.json()
+            snapshot_id = snapshot['id']
+            
+            # Wait for snapshot creation to complete
+            snapshot_timeout = 120  # Real snapshots take time
+            for attempt in range(snapshot_timeout):
+                async with self.session.get(
+                    f"{self.environment.api_url}/snapshots/{snapshot_id}",
+                    headers=headers
+                ) as status_response:
+                    snapshot_status = await status_response.json()
+                    if snapshot_status['state'] == 'available':
+                        break
+                    elif snapshot_status['state'] == 'error':
+                        raise AssertionError(f"Real snapshot creation failed: {snapshot_status.get('error', 'Unknown error')}")
+                    
+                    await asyncio.sleep(1)
+            else:
+                raise AssertionError("Real snapshot creation failed to complete within timeout")
+            
+            # Verify snapshot data is substantial (not mock)
+            if snapshot_status['size_bytes'] < 1024 * 1024:  # Less than 1MB indicates mock data
+                raise AssertionError("Snapshot appears to contain mock data (too small)")
+            
+            # Test snapshot restoration
+            restore_vm_data = {
+                "name": f"e2e-restored-vm-{int(time.time())}",
+                "snapshot_id": snapshot_id
+            }
+            
+            async with self.session.post(
+                f"{self.environment.api_url}/vms/restore",
+                json=restore_vm_data,
+                headers=headers
+            ) as response:
+                if response.status != 201:
+                    raise AssertionError(f"Real snapshot restoration failed with status {response.status}")
+                
+                restored_vm = await response.json()
+                restored_vm_id = restored_vm['id']
+                self.test_vms.append(restored_vm_id)
+                
+                # Verify restored VM boots correctly
+                for attempt in range(60):
+                    async with self.session.get(
+                        f"{self.environment.api_url}/vms/{restored_vm_id}",
+                        headers=headers
+                    ) as status_response:
+                        vm_status = await status_response.json()
+                        if vm_status['status'] == 'running':
+                            break
+                        elif vm_status['status'] == 'failed':
+                            raise AssertionError(f"Restored VM failed to boot: {vm_status.get('error', 'Unknown error')}")
+                        
+                        await asyncio.sleep(1)
+                else:
+                    raise AssertionError("Restored VM failed to boot within timeout")
 
 # Production E2E Test Configuration
 class ProductionE2ETestSuite:

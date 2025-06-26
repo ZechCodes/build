@@ -14,6 +14,14 @@ import { TerminalContextMenu } from './TerminalContextMenu';
 import { TerminalSearch } from './TerminalSearch';
 import { useTerminalSession } from '../../hooks/useTerminalSession';
 import { TerminalTheme, getTerminalTheme } from './themes';
+import { 
+  sanitizeTerminalText, 
+  validateWebSocketMessage, 
+  sanitizeClipboardContent,
+  detectSensitiveData,
+  maskSensitiveData,
+  logSecurityEvent 
+} from '../../utils/security';
 
 interface TerminalProps {
   sessionId?: string;
@@ -212,9 +220,34 @@ export const Terminal: React.FC<TerminalProps> = ({
   const handleWebSocketMessage = useCallback((message: any) => {
     if (!xtermRef.current) return;
 
+    // Validate message structure for security
+    if (!validateWebSocketMessage(message)) {
+      logSecurityEvent('invalid_websocket_message', {
+        messageType: message?.type,
+        hasData: !!message?.data
+      }, 'medium');
+      return;
+    }
+
     switch (message.type) {
       case 'terminal_data':
-        xtermRef.current.write(message.data);
+        // Sanitize terminal data to prevent XSS
+        const sanitizedData = sanitizeTerminalText(message.data);
+        
+        // Check for sensitive data
+        const sensitiveCheck = detectSensitiveData(sanitizedData);
+        if (sensitiveCheck.hasSensitiveData) {
+          logSecurityEvent('sensitive_data_detected', {
+            patterns: sensitiveCheck.patterns,
+            dataLength: sanitizedData.length
+          }, 'high');
+          
+          // Option to mask sensitive data (configurable)
+          const maskedData = maskSensitiveData(sanitizedData);
+          xtermRef.current.write(maskedData);
+        } else {
+          xtermRef.current.write(sanitizedData);
+        }
         break;
       
       case 'session_created':
@@ -265,11 +298,26 @@ export const Terminal: React.FC<TerminalProps> = ({
     
     try {
       const text = await navigator.clipboard.readText();
+      
+      // Sanitize clipboard content for security
+      const sanitizedText = sanitizeClipboardContent(text);
+      
+      // Check for potentially dangerous content
+      if (text.length !== sanitizedText.length) {
+        logSecurityEvent('clipboard_content_sanitized', {
+          originalLength: text.length,
+          sanitizedLength: sanitizedText.length
+        }, 'low');
+      }
+      
       if (wsManagerRef.current && isConnected) {
-        wsManagerRef.current.sendTerminalData(text);
+        wsManagerRef.current.sendTerminalData(sanitizedText);
       }
     } catch (error) {
       console.error('Failed to paste:', error);
+      logSecurityEvent('clipboard_access_failed', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }, 'low');
     }
   }, [readOnly, isConnected]);
 

@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { SearchAddon } from '@xterm/addon-search';
 import { Search, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { Button } from '../ui/Button';
+import { sanitizeSearchQuery } from '../../utils/security';
 
 interface TerminalSearchProps {
   onSearch: (query: string, options?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }) => void;
@@ -76,15 +77,22 @@ export const TerminalSearch: React.FC<TerminalSearchProps> = ({
   }, [handleSearch, onClose]);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const newQuery = e.target.value;
-    setQuery(newQuery);
+    const rawQuery = e.target.value;
+    const sanitizedQuery = sanitizeSearchQuery(rawQuery);
+    
+    // If sanitization changed the query, warn the user
+    if (rawQuery !== sanitizedQuery) {
+      console.warn('Search query was sanitized for security');
+    }
+    
+    setQuery(sanitizedQuery);
     setCurrentMatch(0);
     setMatchCount(0);
     
-    if (newQuery.trim() && searchAddon) {
+    if (sanitizedQuery.trim() && searchAddon) {
       // Start fresh search
       try {
-        const found = searchAddon.findNext(newQuery, { caseSensitive, wholeWord, regex });
+        const found = searchAddon.findNext(sanitizedQuery, { caseSensitive, wholeWord, regex });
         if (found) {
           setCurrentMatch(1);
         }

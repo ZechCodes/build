@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import './styles/globals.css'
+import { initializeSecurity } from './utils/security'
+
+// Initialize security measures
+initializeSecurity()
 
 const queryClient = new QueryClient({
   defaultOptions: {

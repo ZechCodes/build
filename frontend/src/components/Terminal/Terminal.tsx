@@ -22,6 +22,14 @@ import {
   maskSensitiveData,
   logSecurityEvent 
 } from '../../utils/security';
+import { 
+  usePerformanceMonitoring, 
+  useDataBatcher, 
+  useThrottledCallback,
+  useWSLatencyMonitoring,
+  useMemoryOptimization 
+} from '../../hooks/usePerformance';
+import { performanceMonitor } from '../../utils/performance';
 
 interface TerminalProps {
   sessionId?: string;
@@ -70,9 +78,40 @@ export const Terminal: React.FC<TerminalProps> = ({
     sessionHistory
   } = useTerminalSession(vmId);
 
+  // Performance monitoring
+  const { startRender, endRender } = usePerformanceMonitoring('Terminal');
+  const { startPing, endPing } = useWSLatencyMonitoring();
+  const { addCleanup } = useMemoryOptimization();
+
+  // Data batching for terminal output
+  const { addData: addTerminalData, flush: flushTerminalData } = useDataBatcher(
+    useCallback((data: string) => {
+      if (xtermRef.current) {
+        performanceMonitor.startProfiling('terminal-write');
+        xtermRef.current.write(data);
+        performanceMonitor.endProfiling('terminal-write');
+      }
+    }, [])
+  );
+
+  // Throttled resize handler
+  const throttledResize = useThrottledCallback(
+    useCallback(() => {
+      if (fitAddonRef.current) {
+        performanceMonitor.startProfiling('terminal-fit');
+        fitAddonRef.current.fit();
+        performanceMonitor.endProfiling('terminal-fit');
+      }
+    }, []),
+    100 // Throttle resize to max 10 times per second
+  );
+
   // Initialize terminal
   useEffect(() => {
     if (!terminalRef.current) return;
+
+    startRender();
+    performanceMonitor.startProfiling('terminal-init');
 
     const terminal = new XTerm({
       ...getTerminalTheme(currentTheme),
@@ -118,6 +157,14 @@ export const Terminal: React.FC<TerminalProps> = ({
 
     // Set up event handlers
     setupTerminalEventHandlers(terminal);
+
+    // Add cleanup for memory optimization
+    addCleanup(() => {
+      terminal.dispose();
+    });
+
+    performanceMonitor.endProfiling('terminal-init');
+    endRender();
 
     return () => {
       terminal.dispose();
@@ -200,11 +247,13 @@ export const Terminal: React.FC<TerminalProps> = ({
     setIsConnected(true);
     setIsReconnecting(false);
     
-    // Join session
+    // Join session and measure latency
     if (currentSession?.id && wsManagerRef.current) {
+      startPing();
       await wsManagerRef.current.joinSession(currentSession.id);
+      endPing();
     }
-  }, [currentSession]);
+  }, [currentSession, startPing, endPing]);
 
   const handleWebSocketDisconnect = useCallback(() => {
     setIsConnected(false);
@@ -234,6 +283,9 @@ export const Terminal: React.FC<TerminalProps> = ({
         // Sanitize terminal data to prevent XSS
         const sanitizedData = sanitizeTerminalText(message.data);
         
+        // Record data throughput
+        performanceMonitor.recordDataThroughput(sanitizedData.length);
+        
         // Check for sensitive data
         const sensitiveCheck = detectSensitiveData(sanitizedData);
         if (sensitiveCheck.hasSensitiveData) {
@@ -244,9 +296,9 @@ export const Terminal: React.FC<TerminalProps> = ({
           
           // Option to mask sensitive data (configurable)
           const maskedData = maskSensitiveData(sanitizedData);
-          xtermRef.current.write(maskedData);
+          addTerminalData(maskedData);
         } else {
-          xtermRef.current.write(sanitizedData);
+          addTerminalData(sanitizedData);
         }
         break;
       
@@ -351,15 +403,9 @@ export const Terminal: React.FC<TerminalProps> = ({
 
   // Resize handler
   useEffect(() => {
-    const handleResize = () => {
-      if (fitAddonRef.current) {
-        fitAddonRef.current.fit();
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+    window.addEventListener('resize', throttledResize);
+    return () => window.removeEventListener('resize', throttledResize);
+  }, [throttledResize]);
 
   // Click outside handler for context menu
   useEffect(() => {

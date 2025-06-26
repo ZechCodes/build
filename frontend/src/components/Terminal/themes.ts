@@ -147,7 +147,7 @@ const themes: Record<TerminalTheme, ITerminalThemeConfig> = {
 };
 
 export function getTerminalTheme(theme: TerminalTheme): ITerminalThemeConfig {
-  return themes[theme];
+  return themes[theme] || themes.dark;
 }
 
 export { type ITerminalThemeConfig };

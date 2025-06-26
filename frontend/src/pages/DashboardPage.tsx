@@ -1,6 +1,8 @@
+import { Terminal } from '../components/Terminal/Terminal';
+
 export function DashboardPage() {
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
@@ -71,35 +73,53 @@ export function DashboardPage() {
           </div>
         </div>
 
-        <div className="bg-white dark:bg-gray-800 shadow rounded-lg">
-          <div className="px-4 py-5 sm:p-6">
-            <h3 className="text-lg leading-6 font-medium text-gray-900 dark:text-white mb-4">
-              Recent VMs
-            </h3>
-            <div className="space-y-3">
-              {[1, 2, 3].map((vm) => (
-                <div key={vm} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-3 h-3 bg-green-400 rounded-full"></div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-900 dark:text-white">
-                        Development VM {vm}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Ubuntu 22.04 • 2 vCPU • 4GB RAM
-                      </p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-card shadow rounded-lg">
+            <div className="px-4 py-5 sm:p-6">
+              <h3 className="text-lg leading-6 font-medium text-card-foreground mb-4">
+                Recent VMs
+              </h3>
+              <div className="space-y-3">
+                {[1, 2, 3].map((vm) => (
+                  <div key={vm} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-3 h-3 bg-green-400 rounded-full"></div>
+                      <div>
+                        <p className="text-sm font-medium text-card-foreground">
+                          Development VM {vm}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Ubuntu 22.04 • 2 vCPU • 4GB RAM
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex space-x-2">
+                      <button className="text-primary hover:text-primary/80 text-sm font-medium">
+                        Connect
+                      </button>
+                      <button className="text-muted-foreground hover:text-foreground text-sm font-medium">
+                        Snapshot
+                      </button>
                     </div>
                   </div>
-                  <div className="flex space-x-2">
-                    <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                      Connect
-                    </button>
-                    <button className="text-gray-600 hover:text-gray-800 text-sm font-medium">
-                      Snapshot
-                    </button>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-card shadow rounded-lg">
+            <div className="px-4 py-5 sm:p-6">
+              <h3 className="text-lg leading-6 font-medium text-card-foreground mb-4">
+                Terminal - Development VM 1
+              </h3>
+              <Terminal
+                vmId="vm-123"
+                height="400px"
+                apiUrl="ws://localhost:8000"
+                token="demo-token"
+                onSessionCreated={(sessionId) => console.log('Session created:', sessionId)}
+                onSessionEnded={() => console.log('Session ended')}
+              />
             </div>
           </div>
         </div>

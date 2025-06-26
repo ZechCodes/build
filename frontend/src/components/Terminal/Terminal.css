@@ -1,0 +1,89 @@
+/* Terminal component styles */
+.terminal-container {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+
+.terminal-content {
+  padding: 0;
+}
+
+/* Override xterm.js styles for better integration */
+.terminal .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.terminal .xterm-screen {
+  background-color: transparent !important;
+}
+
+/* Search highlighting */
+.xterm-search-match {
+  background-color: rgba(255, 255, 0, 0.3) !important;
+  color: inherit !important;
+}
+
+.xterm-search-match.current {
+  background-color: rgba(255, 165, 0, 0.5) !important;
+}
+
+/* Context menu animations */
+.terminal-context-menu {
+  animation: menuSlideIn 0.15s ease-out;
+}
+
+@keyframes menuSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Toolbar styles */
+.terminal-toolbar {
+  backdrop-filter: blur(8px);
+}
+
+/* Search bar styles */
+.terminal-search {
+  backdrop-filter: blur(8px);
+}
+
+/* Custom scrollbar for terminal */
+.terminal .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal .xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+.terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* High contrast mode adjustments */
+@media (prefers-contrast: high) {
+  .terminal .xterm-viewport::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.8);
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .terminal-context-menu {
+    animation: none;
+  }
+  
+  .animate-pulse {
+    animation: none;
+  }
+}

@@ -165,7 +165,7 @@ export function useMemoryOptimization() {
   useEffect(() => {
     const checkMemory = () => {
       const memory = (performance as any).memory;
-      if (memory && memory.usedJSHeapSize > 50 * 1024 * 1024) { // 50MB threshold
+      if (memory && typeof memory.usedJSHeapSize === 'number' && memory.usedJSHeapSize > 50 * 1024 * 1024) { // 50MB threshold
         console.warn('High memory usage detected, running cleanup');
         runCleanup();
         

@@ -28,6 +28,7 @@ class WebSocketAuthenticator:
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 raise HTTPException(status_code=401, detail="No token provided")
             
+            
             # Verify and decode token
             try:
                 payload = self.jwt_manager.verify_token(token)

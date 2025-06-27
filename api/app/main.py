@@ -145,6 +145,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Failed to start metrics collection", error=str(e))
     
+    # Start WebSocket services
+    try:
+        from app.websocket import start_websocket_services
+        await start_websocket_services()
+        logger.info("WebSocket services started")
+    except Exception as e:
+        logger.error("Failed to start WebSocket services", error=str(e))
+    
     # Log startup completion
     logger.info("Build Platform API startup completed")
     
@@ -152,6 +160,15 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Build Platform API")
+    
+    # Stop WebSocket services
+    try:
+        from app.websocket import stop_websocket_services
+        await stop_websocket_services()
+        logger.info("WebSocket services stopped")
+    except Exception as e:
+        logger.error("Error stopping WebSocket services", error=str(e))
+    
     try:
         await redis_manager.disconnect()
         logger.info("Redis connection closed")
@@ -295,6 +312,35 @@ if API_ROUTER_AVAILABLE:
 else:
     logger.warning("API router not included due to import errors")
 
+# Add WebSocket endpoint
+try:
+    from app.websocket import websocket_terminal_endpoint
+    from fastapi import WebSocket
+    
+    @app.websocket("/ws/terminal")
+    async def websocket_endpoint(websocket: WebSocket, token: str = None):
+        await websocket_terminal_endpoint(websocket, token)
+    
+    # Add development WebSocket endpoint without auth for testing
+    @app.websocket("/ws/terminal-dev")
+    async def websocket_dev_endpoint(websocket: WebSocket):
+        """Development WebSocket endpoint without authentication for testing."""
+        await websocket.accept()
+        logger.info("Development WebSocket connection accepted")
+        
+        try:
+            while True:
+                data = await websocket.receive_text()
+                message = f"Echo: {data}"
+                await websocket.send_text(message)
+                logger.info("Dev WebSocket echoed message", data=data)
+        except Exception as e:
+            logger.info("Dev WebSocket connection closed", error=str(e))
+    
+    logger.info("WebSocket endpoints added: /ws/terminal and /ws/terminal-dev")
+except ImportError as e:
+    logger.warning("WebSocket endpoint not available", error=str(e))
+
 
 
 
@@ -402,6 +448,47 @@ async def get_logfire_metrics():
     except Exception as e:
         logger.error("Failed to get Logfire metrics", error=str(e))
         return {"status": "unhealthy", "error": str(e)}
+
+
+@app.get("/demo/token")
+async def get_demo_token():
+    """Generate a demo JWT token for development and testing."""
+    try:
+        from app.security.jwt import JWTManager
+        from app.core.config import get_settings
+        import uuid
+        
+        settings = get_settings()
+        
+        # Only allow in development environment
+        if settings.environment != "development":
+            return {"error": "Demo tokens only available in development mode"}
+        
+        jwt_manager = JWTManager(secret_key=settings.jwt_secret)
+        
+        # Create demo user payload
+        demo_payload = {
+            "sub": "550e8400-e29b-41d4-a716-446655440000",  # Demo user ID
+            "email": "demo@example.com",
+            "username": "demo",
+            "role": "user"
+        }
+        
+        # Generate access token
+        access_token = jwt_manager.create_access_token(demo_payload)
+        
+        logger.info("Demo JWT token generated for development")
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_in": jwt_manager.access_token_expire_minutes * 60,
+            "user": demo_payload
+        }
+        
+    except Exception as e:
+        logger.error("Failed to generate demo token", error=str(e))
+        return {"error": "Failed to generate demo token", "detail": str(e)}
 
 
 if __name__ == "__main__":

@@ -248,16 +248,23 @@ async def log_security_event(
 ) -> None:
     """Helper function to log security events."""
     
-    async with get_db_session() as db:
-        audit_service = AuditService(db)
-        await audit_service.log_security_event(
-            event_type=event_type,
-            severity=severity,
-            user_id=user_id,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            details=details
-        )
+    try:
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            audit_service = AuditService(db)
+            await audit_service.log_security_event(
+                event_type=event_type,
+                severity=severity,
+                user_id=user_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=details
+            )
+    except Exception as e:
+        # Log the error but don't crash the application
+        import structlog
+        logger = structlog.get_logger(__name__)
+        logger.error("Failed to log security event", error=str(e), event_type=event_type)
 
 
 async def log_database_operation(

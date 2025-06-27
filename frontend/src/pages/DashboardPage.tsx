@@ -1,6 +1,29 @@
+import { useState, useEffect } from 'react';
 import { Terminal } from '../components/Terminal/Terminal';
+import { tokenService } from '../services/TokenService';
 
 export function DashboardPage() {
+  const [authToken, setAuthToken] = useState<string>('');
+  const [tokenLoading, setTokenLoading] = useState(true);
+
+  // Fetch authentication token on component mount
+  useEffect(() => {
+    const fetchToken = async () => {
+      try {
+        setTokenLoading(true);
+        const token = await tokenService.getDemoToken();
+        setAuthToken(token);
+      } catch (error) {
+        console.error('Failed to fetch auth token:', error);
+        // Fallback to demo token
+        setAuthToken('demo-token');
+      } finally {
+        setTokenLoading(false);
+      }
+    };
+
+    fetchToken();
+  }, []);
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -112,14 +135,24 @@ export function DashboardPage() {
               <h3 className="text-lg leading-6 font-medium text-card-foreground mb-4">
                 Terminal - Development VM 1
               </h3>
-              <Terminal
-                vmId="vm-123"
-                height="400px"
-                apiUrl="ws://localhost:8000"
-                token="demo-token"
-                onSessionCreated={(sessionId) => console.log('Session created:', sessionId)}
-                onSessionEnded={() => console.log('Session ended')}
-              />
+              {tokenLoading ? (
+                <div className="flex items-center justify-center h-96 bg-muted/50 rounded-lg">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+                    <p className="text-sm text-muted-foreground">Loading authentication...</p>
+                  </div>
+                </div>
+              ) : (
+                <Terminal
+                  vmId="vm-123"
+                  height="400px"
+                  apiUrl="ws://localhost:8000"
+                  token={authToken}
+                  theme="dark"
+                  onSessionCreated={(sessionId) => console.log('Session created:', sessionId)}
+                  onSessionEnded={() => console.log('Session ended')}
+                />
+              )}
             </div>
           </div>
         </div>

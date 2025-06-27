@@ -386,7 +386,8 @@ class SecurityConfigService:
 
 async def get_security_dashboard() -> Dict[str, Any]:
     """Get security dashboard with current status."""
-    async with get_db_session() as db:
+    from ..core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
         security_service = SecurityConfigService(db)
         scan_results = await security_service.run_comprehensive_security_scan()
         
@@ -435,7 +436,8 @@ async def get_security_dashboard() -> Dict[str, Any]:
 
 async def validate_security_compliance() -> Dict[str, Any]:
     """Validate security compliance against industry standards."""
-    async with get_db_session() as db:
+    from ..core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
         security_service = SecurityConfigService(db)
         scan_results = await security_service.run_comprehensive_security_scan()
         

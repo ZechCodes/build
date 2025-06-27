@@ -20,14 +20,29 @@ export function sanitizeHtml(dirty: string): string {
  * Removes dangerous characters while preserving ANSI escape sequences
  */
 export function sanitizeTerminalText(text: string): string {
-  // Allow ANSI escape sequences for terminal formatting
-  // But strip other potentially dangerous content
-  return text
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '') // Remove control chars except ANSI
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, (match) => match) // Preserve ANSI sequences
+  // First preserve ANSI escape sequences by temporarily replacing them
+  const ansiSequences: string[] = [];
+  let ansiIndex = 0;
+  
+  // Extract and temporarily replace ANSI sequences
+  let processedText = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, (match) => {
+    ansiSequences.push(match);
+    return `__ANSI_${ansiIndex++}__`;
+  });
+  
+  // Remove dangerous content
+  processedText = processedText
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '') // Remove control chars
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') // Remove script tags
     .replace(/javascript:/gi, '') // Remove javascript: URLs
     .replace(/on\w+\s*=/gi, ''); // Remove event handlers
+  
+  // Restore ANSI sequences
+  ansiSequences.forEach((seq, index) => {
+    processedText = processedText.replace(`__ANSI_${index}__`, seq);
+  });
+  
+  return processedText;
 }
 
 /**
@@ -49,6 +64,7 @@ export function validateWebSocketMessage(message: any): boolean {
     'terminal_resize',
     'session_join',
     'session_create',
+    'session_created',
     'session_end',
     'session_recovery',
     'heartbeat',
@@ -157,12 +173,12 @@ export function maskSensitiveData(text: string): string {
       replacement: 'password=***MASKED***'
     },
     {
-      regex: /(?:api_key|apikey|api-key)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{10,})['"]?/gi,
-      replacement: '$1=***MASKED***'
+      regex: /(?:api_key|apikey|api-key)\s*[=:]\s*['"]?[a-zA-Z0-9_-]{10,}['"]?/gi,
+      replacement: 'api_key=***MASKED***'
     },
     {
-      regex: /(?:secret|token)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{10,})['"]?/gi,
-      replacement: '$1=***MASKED***'
+      regex: /(?:secret|token)\s*[=:]\s*['"]?[a-zA-Z0-9_-]{10,}['"]?/gi,
+      replacement: 'secret=***MASKED***'
     },
     {
       regex: /(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)[\s\S]*?(-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/gi,

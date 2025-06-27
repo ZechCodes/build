@@ -97,7 +97,7 @@ class PerformanceMonitor {
     if (!this.config.enableMetrics) return;
 
     const memory = (performance as any).memory;
-    if (memory) {
+    if (memory && typeof memory.usedJSHeapSize === 'number') {
       const memoryUsage = memory.usedJSHeapSize / 1024 / 1024; // MB
       const currentMetrics = this.getCurrentMetrics();
       currentMetrics.memoryUsage = memoryUsage;
@@ -344,9 +344,8 @@ export class DataBatcher {
 /**
  * Lazy loading utility for heavy components
  */
-export function createLazyComponent<T>(
-  importFn: () => Promise<{ default: T }>,
-  fallback?: React.ComponentType
+export function createLazyComponent<T extends React.ComponentType<any>>(
+  importFn: () => Promise<{ default: T }>
 ) {
   return React.lazy(importFn);
 }
@@ -407,8 +406,8 @@ export class CircularBuffer<T> {
 
 // Create global performance monitor instance
 export const performanceMonitor = new PerformanceMonitor({
-  enableMetrics: process.env.NODE_ENV === 'development',
-  enableProfiling: process.env.NODE_ENV === 'development'
+  enableMetrics: true, // Always enable for now, can be configured later
+  enableProfiling: true
 });
 
 // Cleanup on page unload

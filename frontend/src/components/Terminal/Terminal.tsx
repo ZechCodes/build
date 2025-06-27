@@ -3,8 +3,9 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { CanvasAddon } from '@xterm/addon-canvas';
+// Temporarily disabled to prevent development errors
+// import { WebglAddon } from '@xterm/addon-webgl';
+// import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
 
@@ -71,11 +72,8 @@ export const Terminal: React.FC<TerminalProps> = ({
   const [currentTheme, setCurrentTheme] = useState<TerminalTheme>(theme);
 
   const {
-    currentSession,
     createSession,
-    restoreSession,
-    endSession,
-    sessionHistory
+    restoreSession
   } = useTerminalSession(vmId);
 
   // Performance monitoring
@@ -84,7 +82,7 @@ export const Terminal: React.FC<TerminalProps> = ({
   const { addCleanup } = useMemoryOptimization();
 
   // Data batching for terminal output
-  const { addData: addTerminalData, flush: flushTerminalData } = useDataBatcher(
+  const { addData: addTerminalData } = useDataBatcher(
     useCallback((data: string) => {
       if (xtermRef.current) {
         performanceMonitor.startProfiling('terminal-write');
@@ -97,10 +95,14 @@ export const Terminal: React.FC<TerminalProps> = ({
   // Throttled resize handler
   const throttledResize = useThrottledCallback(
     useCallback(() => {
-      if (fitAddonRef.current) {
-        performanceMonitor.startProfiling('terminal-fit');
-        fitAddonRef.current.fit();
-        performanceMonitor.endProfiling('terminal-fit');
+      if (fitAddonRef.current && xtermRef.current) {
+        try {
+          performanceMonitor.startProfiling('terminal-fit');
+          fitAddonRef.current.fit();
+          performanceMonitor.endProfiling('terminal-fit');
+        } catch (error) {
+          console.warn('Failed to resize terminal:', error);
+        }
       }
     }, []),
     100 // Throttle resize to max 10 times per second
@@ -135,20 +137,27 @@ export const Terminal: React.FC<TerminalProps> = ({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(webLinksAddon);
-    
-    // Try WebGL, fallback to Canvas
-    try {
-      terminal.loadAddon(new WebglAddon());
-    } catch {
-      try {
-        terminal.loadAddon(new CanvasAddon());
-      } catch {
-        console.warn('Unable to load WebGL or Canvas addon, using DOM renderer');
-      }
-    }
 
+    // Open terminal first before loading rendering addons
     terminal.open(terminalRef.current);
-    fitAddon.fit();
+    
+    // Use a timeout to ensure terminal is fully rendered before fitting
+    setTimeout(() => {
+      try {
+        if (fitAddon && terminalRef.current) {
+          fitAddon.fit();
+          // Focus the terminal to ensure it can receive keyboard input
+          terminal.focus();
+          console.log('✅ Terminal fitted and focused');
+        }
+      } catch (error) {
+        console.warn('Failed to fit terminal:', error);
+      }
+    }, 100);
+    
+    // Skip WebGL/Canvas addons in development to avoid dimension errors
+    // These can be enabled later when backend is available
+    console.log('Using DOM renderer for development (WebGL/Canvas disabled to prevent errors)');
 
     // Store references
     xtermRef.current = terminal;
@@ -210,20 +219,25 @@ export const Terminal: React.FC<TerminalProps> = ({
     terminal.onData((data) => {
       if (readOnly) return;
       
-      if (wsManagerRef.current && isConnected) {
+      console.log('🎹 Terminal onData triggered with:', data, 'WebSocket ready:', wsManagerRef.current?.getConnectionState());
+      
+      if (wsManagerRef.current && wsManagerRef.current.getConnectionState()) {
+        console.log('📤 Sending terminal data via WebSocket');
         wsManagerRef.current.sendTerminalData(data);
+      } else {
+        console.warn('❌ Cannot send terminal data - WebSocket not ready');
       }
     });
 
     // Handle terminal resize
     terminal.onResize(({ cols, rows }) => {
-      if (wsManagerRef.current && isConnected) {
+      if (wsManagerRef.current && wsManagerRef.current.getConnectionState()) {
         wsManagerRef.current.sendResize(cols, rows);
       }
     });
 
-    // Handle right-click
-    terminal.onRightClick((event) => {
+    // Handle right-click (using general event handler since onRightClick may not exist)
+    terminal.element?.addEventListener('contextmenu', (event: MouseEvent) => {
       event.preventDefault();
       setContextMenu({ x: event.clientX, y: event.clientY });
     });
@@ -241,19 +255,25 @@ export const Terminal: React.FC<TerminalProps> = ({
         document.title = document.title.replace('🔔 ', '');
       }, 1000);
     });
-  }, [readOnly, isConnected]);
+  }, [readOnly]);
 
   const handleWebSocketConnect = useCallback(async () => {
     setIsConnected(true);
     setIsReconnecting(false);
     
-    // Join session and measure latency
-    if (currentSession?.id && wsManagerRef.current) {
+    // Create a WebSocket session first, then join it
+    if (wsManagerRef.current) {
       startPing();
-      await wsManagerRef.current.joinSession(currentSession.id);
+      try {
+        // Create session via WebSocket
+        await wsManagerRef.current.createSession(vmId);
+        console.log('WebSocket session creation requested');
+      } catch (error) {
+        console.error('Failed to create WebSocket session:', error);
+      }
       endPing();
     }
-  }, [currentSession, startPing, endPing]);
+  }, [vmId, startPing, endPing]);
 
   const handleWebSocketDisconnect = useCallback(() => {
     setIsConnected(false);
@@ -279,6 +299,15 @@ export const Terminal: React.FC<TerminalProps> = ({
     }
 
     switch (message.type) {
+      case 'session_created':
+        // Handle session creation response
+        const sessionId = message.data?.session_id;
+        if (sessionId && wsManagerRef.current) {
+          console.log('Session created, joining:', sessionId);
+          wsManagerRef.current.joinSession(sessionId);
+        }
+        break;
+        
       case 'terminal_data':
         // Sanitize terminal data to prevent XSS
         const sanitizedData = sanitizeTerminalText(message.data);
@@ -299,12 +328,6 @@ export const Terminal: React.FC<TerminalProps> = ({
           addTerminalData(maskedData);
         } else {
           addTerminalData(sanitizedData);
-        }
-        break;
-      
-      case 'session_created':
-        if (onSessionCreated) {
-          onSessionCreated(message.session_id);
         }
         break;
       
@@ -416,8 +439,18 @@ export const Terminal: React.FC<TerminalProps> = ({
     }
   }, [contextMenu]);
 
+  const themeConfig = getTerminalTheme(currentTheme);
+  
   return (
-    <div className="terminal-container bg-background text-foreground border rounded-lg overflow-hidden" style={{ height, width }}>
+    <div 
+      className="terminal-container border rounded-lg overflow-hidden" 
+      style={{ 
+        height, 
+        width, 
+        backgroundColor: themeConfig.background,
+        color: themeConfig.foreground
+      }}
+    >
       {showToolbar && (
         <TerminalToolbar
           isConnected={isConnected}

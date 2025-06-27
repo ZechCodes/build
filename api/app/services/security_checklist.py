@@ -484,7 +484,8 @@ class SecurityChecklistValidator:
 # Utility function for easy access
 async def run_security_checklist() -> Dict[str, Any]:
     """Run the complete security checklist validation."""
-    async with get_db_session() as db:
+    from ..core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
         validator = SecurityChecklistValidator(db)
         return await validator.run_all_checks()
 

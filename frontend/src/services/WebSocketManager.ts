@@ -1,4 +1,4 @@
-interface WebSocketConfig {
+export interface WebSocketManagerConfig {
   apiUrl: string;
   token: string;
   onConnect?: () => void;
@@ -10,21 +10,30 @@ interface WebSocketConfig {
 
 export class WebSocketManager {
   private ws: WebSocket | null = null;
-  private config: WebSocketConfig;
+  private config: WebSocketManagerConfig;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = 3; // Reduced from 10
   private reconnectDelay = 1000;
-  private maxReconnectDelay = 30000;
-  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private maxReconnectDelay = 5000; // Reduced from 30000
+  private heartbeatInterval: number | null = null;
   private isReconnecting = false;
   private sessionId: string | null = null;
 
-  constructor(config: WebSocketConfig) {
+  constructor(config: WebSocketManagerConfig) {
     this.config = config;
     this.connect();
   }
 
   private connect(): void {
+    // Don't reconnect if we've exceeded max attempts
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.warn('WebSocket: Max reconnection attempts reached. Stopping reconnection.');
+      if (this.config.onError) {
+        this.config.onError(new Error('Max reconnection attempts reached'));
+      }
+      return;
+    }
+
     try {
       const wsUrl = new URL('/ws/terminal', this.config.apiUrl);
       wsUrl.searchParams.set('token', this.config.token);
@@ -82,8 +91,8 @@ export class WebSocketManager {
       this.config.onDisconnect();
     }
     
-    // Attempt to reconnect unless explicitly closed
-    if (event.code !== 1000 && event.code !== 1001) {
+    // Attempt to reconnect unless explicitly closed or max attempts reached
+    if (event.code !== 1000 && event.code !== 1001 && this.reconnectAttempts < this.maxReconnectAttempts) {
       this.scheduleReconnect();
     }
   }
@@ -138,7 +147,10 @@ export class WebSocketManager {
 
   private send(message: any): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      console.log('📤 Sending WebSocket message:', message.type);
       this.ws.send(JSON.stringify(message));
+    } else {
+      console.warn('❌ WebSocket not ready, cannot send:', message.type, 'State:', this.ws?.readyState);
     }
   }
 
@@ -169,7 +181,7 @@ export class WebSocketManager {
   public async createSession(vmId: string): Promise<void> {
     this.send({
       type: 'session_create',
-      vm_id: vmId
+      data: { vm_id: vmId }
     });
   }
 
@@ -191,7 +203,7 @@ export class WebSocketManager {
     }
   }
 
-  public isConnected(): boolean {
+  public getConnectionState(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 }

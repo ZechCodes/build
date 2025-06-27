@@ -406,12 +406,14 @@ class SecurityMonitoringMiddleware(BaseHTTPMiddleware):
             )
         
         # Monitor for rapid sequential requests (potential scanning)
-        async with get_db_session() as db:
-            validation_service = SecurityValidationService(db)
-            ip_reputation = await validation_service.check_ip_reputation(client_ip)
-            
-            if ip_reputation["is_suspicious"]:
-                await log_security_event(
+        try:
+            from app.core.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                validation_service = SecurityValidationService(db)
+                ip_reputation = await validation_service.check_ip_reputation(client_ip)
+                
+                if ip_reputation["is_suspicious"]:
+                    await log_security_event(
                     event_type="suspicious_ip_activity",
                     severity="medium",
                     ip_address=client_ip,
@@ -421,6 +423,11 @@ class SecurityMonitoringMiddleware(BaseHTTPMiddleware):
                         "reasons": ip_reputation["reasons"]
                     }
                 )
+        except Exception as e:
+            # Log error but don't block request
+            import structlog
+            logger = structlog.get_logger(__name__)
+            logger.error("Security monitoring error", error=str(e))
         
         # Check for unusual request patterns
         unusual_headers = self._check_unusual_headers(request.headers)

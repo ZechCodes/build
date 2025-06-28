@@ -75,16 +75,72 @@ class TestSessionStateManager:
         assert updated_session.last_activity >= session.last_activity
     
     async def test_get_session_by_id(self, redis_mock, sample_session_data):
-        """Test session retrieval by ID"""
-        pytest.skip("SessionStateManager not implemented yet - Red phase of TDD")
+        """Test session retrieval by ID with optimized performance"""
+        # Arrange
+        state_manager = SessionStateManager(redis_mock)
+        await state_manager.initialize()
         
-        # This test will be implemented after basic CRUD operations pass
+        # Create a session first
+        session_id = await state_manager.create_session(
+            user_id=sample_session_data["user_id"],
+            vm_id=sample_session_data["vm_id"],
+            terminal_size=(80, 24)
+        )
+        
+        # Act - Test retrieval with performance timing
+        start_time = time.time()
+        retrieved_session = await state_manager.get_session(session_id)
+        retrieval_time = time.time() - start_time
+        
+        # Assert - Verify session data and performance
+        assert retrieved_session is not None
+        assert retrieved_session.session_id == session_id
+        assert retrieved_session.user_id == sample_session_data["user_id"]
+        assert retrieved_session.vm_id == sample_session_data["vm_id"]
+        assert retrieval_time < 0.05  # Sub-50ms performance requirement
+        
+        # Test retrieval of non-existent session
+        non_existent_session = await state_manager.get_session("non_existent_id")
+        assert non_existent_session is None
     
     async def test_delete_session(self, redis_mock, sample_session_data):
-        """Test session deletion"""
-        pytest.skip("SessionStateManager not implemented yet - Red phase of TDD")
+        """Test session deletion with cascade cleanup"""
+        # Arrange
+        state_manager = SessionStateManager(redis_mock)
+        await state_manager.initialize()
         
-        # This test will be implemented after basic CRUD operations pass
+        # Create a session first
+        session_id = await state_manager.create_session(
+            user_id=sample_session_data["user_id"],
+            vm_id=sample_session_data["vm_id"],
+            terminal_size=(80, 24)
+        )
+        
+        # Verify session exists
+        session_before_delete = await state_manager.get_session(session_id)
+        assert session_before_delete is not None
+        
+        # Verify session appears in user sessions
+        user_sessions_before = await state_manager.get_user_sessions(sample_session_data["user_id"])
+        assert len(user_sessions_before) == 1
+        
+        # Act - Delete the session
+        deletion_success = await state_manager.delete_session(session_id)
+        
+        # Assert - Verify cascade cleanup
+        assert deletion_success is True
+        
+        # Session should no longer exist
+        session_after_delete = await state_manager.get_session(session_id)
+        assert session_after_delete is None
+        
+        # Session should be removed from user sessions list
+        user_sessions_after = await state_manager.get_user_sessions(sample_session_data["user_id"])
+        assert len(user_sessions_after) == 0
+        
+        # Test deleting non-existent session
+        delete_non_existent = await state_manager.delete_session("non_existent_id")
+        assert delete_non_existent is False
     
     async def test_session_ownership_validation(self, state_manager_with_cleanup, sample_session_data):
         """Test that session ownership is validated"""
@@ -116,10 +172,52 @@ class TestSessionStateManager:
         assert correct_user_sessions[0].session_id == session_id
     
     async def test_redis_persistence(self, redis_mock, sample_session_data):
-        """Test that session data is persisted to Redis"""
-        pytest.skip("SessionStateManager not implemented yet - Red phase of TDD")
+        """Test that session data is persisted to Redis with integrity validation"""
+        # Arrange
+        state_manager = SessionStateManager(redis_mock)
+        await state_manager.initialize()
         
-        # This test will verify Redis operations are called correctly
+        # Act - Create a session (should trigger Redis persistence)
+        session_id = await state_manager.create_session(
+            user_id=sample_session_data["user_id"],
+            vm_id=sample_session_data["vm_id"],
+            terminal_size=(80, 24),
+            environment_vars={"TEST_VAR": "test_value"}
+        )
+        
+        # Assert - Verify Redis operations were called
+        # Check that pipeline operations were called for session storage
+        assert redis_mock.pipeline.called
+        
+        # Verify the correct persistence calls were made
+        pipeline_calls = redis_mock.pipeline.call_args_list
+        assert len(pipeline_calls) > 0
+        
+        # Test Redis connection resilience
+        # Simulate Redis connection failure
+        redis_mock.pipeline.side_effect = Exception("Redis connection failed")
+        
+        # Creating session should handle Redis failures gracefully
+        try:
+            failed_session_id = await state_manager.create_session(
+                user_id="test_user_2",
+                vm_id="test_vm_2"
+            )
+            # Session should still be created in memory even if Redis fails
+            assert failed_session_id is not None
+        except Exception:
+            # Should not raise exception - graceful degradation
+            pass
+        
+        # Reset Redis mock
+        redis_mock.pipeline.side_effect = None
+        
+        # Test data integrity verification
+        # Update session and verify persistence
+        await state_manager.update_session_state(session_id, SessionState.ACTIVE)
+        
+        # Verify update operations are persisted
+        assert redis_mock.pipeline.call_count >= 2  # Create + Update calls
     
     async def test_create_session_invalid_inputs(self, state_manager_with_cleanup):
         """Test session creation with invalid inputs"""

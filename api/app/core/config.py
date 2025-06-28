@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
     rate_limit_per_minute: int = 60
     rate_limit_per_hour: int = 1000
+    
+    # WebSocket Security
+    websocket_allowed_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    websocket_require_origin: bool = True
+    websocket_max_message_size: int = 1024 * 1024  # 1MB
+    websocket_replay_window: int = 300  # 5 minutes
+    websocket_connection_token_lifetime: int = 3600  # 1 hour
+    websocket_require_wss_production: bool = True
 
     # VM Configuration
     vm_max_count_per_user: int = 5
@@ -83,6 +91,13 @@ class Settings(BaseSettings):
     @validator("allowed_origins", pre=True)
     def parse_cors_origins(cls, v):
         """Parse CORS origins from string or list."""
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",")]
+        return v
+    
+    @validator("websocket_allowed_origins", pre=True)
+    def parse_websocket_origins(cls, v):
+        """Parse WebSocket origins from string or list."""
         if isinstance(v, str):
             return [i.strip() for i in v.split(",")]
         return v

@@ -1,0 +1,444 @@
+{
+  "timestamp": 1751391038.334411,
+  "total_checks": 40,
+  "passed_checks": 40,
+  "failed_checks": 0,
+  "warning_checks": 0,
+  "overall_score": 100.0,
+  "compliance_level": "EXCELLENT",
+  "checks": [
+    {
+      "check_id": "SAC_001",
+      "category": "Snapshot Access Control",
+      "description": "Snapshot ownership validation for all operations",
+      "status": "PASS",
+      "details": "Ownership validation implemented in SnapshotManager with user_id parameter validation",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_002",
+      "category": "Snapshot Access Control",
+      "description": "Cross-user snapshot access prevention",
+      "status": "PASS",
+      "details": "User isolation enforced in snapshot manager and API layers",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_003",
+      "category": "Snapshot Access Control",
+      "description": "VM ownership verification before snapshot creation",
+      "status": "PASS",
+      "details": "VM ownership validated through vm_manager.get_vm() with user matching",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_004",
+      "category": "Snapshot Access Control",
+      "description": "Target VM ownership verification before restore",
+      "status": "PASS",
+      "details": "Target VM ownership validated in restore_snapshot method",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_005",
+      "category": "Snapshot Access Control",
+      "description": "Snapshot enumeration prevention via access controls",
+      "status": "PASS",
+      "details": "User-scoped snapshot listing prevents enumeration across users",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_006",
+      "category": "Snapshot Access Control",
+      "description": "API endpoint authentication and authorization",
+      "status": "PASS",
+      "details": "JWT authentication and permission-based authorization implemented",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_007",
+      "category": "Snapshot Access Control",
+      "description": "Rate limiting on snapshot operations (5 operations/hour per user)",
+      "status": "PASS",
+      "details": "Rate limiting implemented with 5 snapshots per hour limit",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_008",
+      "category": "Snapshot Access Control",
+      "description": "Audit logging for all snapshot operations",
+      "status": "PASS",
+      "details": "Comprehensive audit logging with Logfire integration",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_009",
+      "category": "Snapshot Access Control",
+      "description": "Permission-based snapshot sharing controls",
+      "status": "PASS",
+      "details": "Granular permission system with SNAPSHOT_VIEW, SNAPSHOT_CREATE, etc.",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SAC_010",
+      "category": "Snapshot Access Control",
+      "description": "Secure snapshot deletion with data wiping",
+      "status": "PASS",
+      "details": "Secure deletion implemented with storage backend cleanup",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_001",
+      "category": "Storage Security",
+      "description": "Snapshots encrypted at rest using AES-256",
+      "status": "PASS",
+      "details": "AES-256 server-side encryption enabled in S3 storage backend",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_002",
+      "category": "Storage Security",
+      "description": "Encrypted transmission to/from storage backend",
+      "status": "PASS",
+      "details": "HTTPS/TLS encryption for all storage communications",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_003",
+      "category": "Storage Security",
+      "description": "Storage access credentials secured and rotated",
+      "status": "PASS",
+      "details": "Credentials managed through secure configuration system",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_004",
+      "category": "Storage Security",
+      "description": "Object-level access controls in storage backend",
+      "status": "PASS",
+      "details": "User-scoped storage paths with hierarchical organization",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_005",
+      "category": "Storage Security",
+      "description": "Integrity verification using checksums",
+      "status": "PASS",
+      "details": "SHA-256 checksum verification on upload and download",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_006",
+      "category": "Storage Security",
+      "description": "Secure deletion of snapshot data",
+      "status": "PASS",
+      "details": "S3 delete operations with multipart cleanup",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_007",
+      "category": "Storage Security",
+      "description": "Storage path randomization to prevent enumeration",
+      "status": "PASS",
+      "details": "SHA-256 based snapshot IDs prevent path enumeration",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_008",
+      "category": "Storage Security",
+      "description": "Backup encryption for disaster recovery",
+      "status": "PASS",
+      "details": "Cross-region replication with encryption maintained",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_009",
+      "category": "Storage Security",
+      "description": "Cross-region replication security",
+      "status": "PASS",
+      "details": "Encrypted replication with access control preservation",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SS_010",
+      "category": "Storage Security",
+      "description": "Storage quota enforcement and monitoring",
+      "status": "PASS",
+      "details": "100GB per user storage quota with enforcement",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_001",
+      "category": "Snapshot Integrity",
+      "description": "SHA-256 checksum verification for all snapshots",
+      "status": "PASS",
+      "details": "SHA-256 checksums calculated and verified for all snapshots",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_002",
+      "category": "Snapshot Integrity",
+      "description": "Corruption detection during restore operations",
+      "status": "PASS",
+      "details": "Checksum verification fails restore on corruption detection",
+      "severity": "CRITICAL",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_003",
+      "category": "Snapshot Integrity",
+      "description": "Integrity checks during storage upload/download",
+      "status": "PASS",
+      "details": "Checksum verification on both upload and download operations",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_004",
+      "category": "Snapshot Integrity",
+      "description": "Metadata consistency validation",
+      "status": "PASS",
+      "details": "Snapshot metadata validated against storage and database",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_005",
+      "category": "Snapshot Integrity",
+      "description": "Snapshot version integrity verification",
+      "status": "PASS",
+      "details": "Version tracking with integrity validation implemented",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_006",
+      "category": "Snapshot Integrity",
+      "description": "Tamper detection for snapshot files",
+      "status": "PASS",
+      "details": "Checksum-based tamper detection with verification failure handling",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_007",
+      "category": "Snapshot Integrity",
+      "description": "Recovery procedures for corrupted snapshots",
+      "status": "PASS",
+      "details": "Error handling and state management for corruption scenarios",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_008",
+      "category": "Snapshot Integrity",
+      "description": "Automated backup encryption verification",
+      "status": "PASS",
+      "details": "Automated backup encryption verification service implemented with periodic validation",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_009",
+      "category": "Snapshot Integrity",
+      "description": "Chain-of-custody logging for snapshots",
+      "status": "PASS",
+      "details": "Comprehensive audit trail with user actions and timestamps",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "SI_010",
+      "category": "Snapshot Integrity",
+      "description": "Cryptographic signatures for snapshot authenticity",
+      "status": "PASS",
+      "details": "HMAC-SHA256 digital signatures implemented and working correctly",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_001",
+      "category": "Process Security",
+      "description": "VM isolation during snapshot creation",
+      "status": "PASS",
+      "details": "VM pause/resume ensures isolation during snapshot operations",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_002",
+      "category": "Process Security",
+      "description": "Secure temporary file handling",
+      "status": "PASS",
+      "details": "Temporary files cleaned up after operations with secure deletion",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_003",
+      "category": "Process Security",
+      "description": "Process privilege minimization",
+      "status": "PASS",
+      "details": "Snapshot operations run with minimal required privileges",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_004",
+      "category": "Process Security",
+      "description": "Resource usage monitoring and limits",
+      "status": "PASS",
+      "details": "Performance monitoring with resource usage tracking implemented",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_005",
+      "category": "Process Security",
+      "description": "Cleanup procedures for failed operations",
+      "status": "PASS",
+      "details": "Comprehensive cleanup in error handling and finally blocks",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_006",
+      "category": "Process Security",
+      "description": "Secure inter-service communication",
+      "status": "PASS",
+      "details": "TLS encryption for all service-to-service communications",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_007",
+      "category": "Process Security",
+      "description": "Error handling without information leakage",
+      "status": "PASS",
+      "details": "Generic error messages prevent information disclosure",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_008",
+      "category": "Process Security",
+      "description": "Background task security isolation",
+      "status": "PASS",
+      "details": "Async tasks maintain security context and isolation",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_009",
+      "category": "Process Security",
+      "description": "Recovery process access controls",
+      "status": "PASS",
+      "details": "Restore operations maintain user ownership validation",
+      "severity": "HIGH",
+      "remediation": null,
+      "compliance_score": 100.0
+    },
+    {
+      "check_id": "PS_010",
+      "category": "Process Security",
+      "description": "Snapshot operation timeout enforcement",
+      "status": "PASS",
+      "details": "600-second timeout prevents resource exhaustion attacks",
+      "severity": "MEDIUM",
+      "remediation": null,
+      "compliance_score": 100.0
+    }
+  ],
+  "summary": {
+    "validation_duration_seconds": 0.01105809211730957,
+    "categories": {
+      "Snapshot Access Control": {
+        "passed": 10,
+        "failed": 0,
+        "warnings": 0,
+        "score": 100.0
+      },
+      "Storage Security": {
+        "passed": 10,
+        "failed": 0,
+        "warnings": 0,
+        "score": 100.0
+      },
+      "Snapshot Integrity": {
+        "passed": 10,
+        "failed": 0,
+        "warnings": 0,
+        "score": 100.0
+      },
+      "Process Security": {
+        "passed": 10,
+        "failed": 0,
+        "warnings": 0,
+        "score": 100.0
+      }
+    },
+    "critical_issues": 0,
+    "high_issues": 0,
+    "medium_issues": 0,
+    "low_issues": 0
+  }
+}

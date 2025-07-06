@@ -24,7 +24,7 @@ from storage.s3_backend import S3StorageBackend, StorageMetrics
 def storage_config():
     """Storage configuration for testing."""
     return {
-        'endpoint_url': 'http://localhost:9000',
+        'endpoint_url': 'http://localhost:9002',
         'access_key': 'test_access_key',
         'secret_key': 'test_secret_key',
         'bucket_name': 'test-snapshots',
@@ -294,7 +294,9 @@ class TestS3StorageIntegration:
     async def test_real_minio_integration(self, storage_config):
         """Test actual MinIO integration."""
         # Skip if MinIO not available
-        storage = S3StorageBackend(**storage_config)
+        # Disable encryption for local MinIO testing
+        config_with_no_encryption = {**storage_config, 'enable_encryption': False}
+        storage = S3StorageBackend(**config_with_no_encryption)
         
         try:
             await storage.initialize()

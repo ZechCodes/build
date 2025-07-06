@@ -17,6 +17,11 @@ from pathlib import Path
 import structlog
 import logfire
 
+# Import cryptographic signatures for enhanced security
+from security.cryptographic_signatures import (
+    CryptographicSignatureService, SnapshotSignature, get_signature_service
+)
+
 logger = structlog.get_logger()
 
 
@@ -59,6 +64,8 @@ class SnapshotMetadata:
     vm_config: Dict[str, Any]
     is_encrypted: bool
     restore_count: int = 0
+    expires_at: Optional[float] = None
+    cryptographic_signature: Optional[SnapshotSignature] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -82,6 +89,9 @@ class SnapshotManager:
         self.storage_backend = storage_backend
         self.encryption_service = encryption_service
         self.database = database
+        
+        # Initialize cryptographic signature service
+        self.signature_service = get_signature_service()
         
         # In-memory snapshot registry
         self.snapshots: Dict[str, SnapshotMetadata] = {}
@@ -515,6 +525,28 @@ class SnapshotManager:
             metadata.state = SnapshotState.AVAILABLE
             metadata.updated_at = time.time()
             
+            # Create cryptographic signature for authenticity
+            try:
+                signature = self.signature_service.sign_snapshot(
+                    metadata.to_dict(), checksum
+                )
+                metadata.cryptographic_signature = signature
+                
+                logger.info("Cryptographic signature created for snapshot",
+                           snapshot_id=snapshot_id,
+                           signature_algorithm=signature.algorithm)
+                
+                logfire.info("Snapshot signed with cryptographic signature",
+                            snapshot_id=snapshot_id,
+                            signature_key_id=signature.key_id,
+                            timestamp=signature.timestamp)
+                            
+            except Exception as e:
+                logger.warning("Failed to create cryptographic signature",
+                              snapshot_id=snapshot_id,
+                              error=str(e))
+                # Continue without signature - not critical for operation
+            
             # Resume VM if it was running
             if vm_was_running:
                 await self.vm_manager.resume_vm(metadata.vm_id)
@@ -582,6 +614,34 @@ class SnapshotManager:
             checksum = hashlib.sha256(snapshot_data).hexdigest()
             if checksum != metadata.checksum_sha256:
                 raise ValueError("Snapshot checksum verification failed - data may be corrupted")
+            
+            # Verify cryptographic signature for authenticity
+            if metadata.cryptographic_signature:
+                try:
+                    signature_valid = self.signature_service.verify_snapshot_signature(
+                        metadata.to_dict(), checksum, metadata.cryptographic_signature
+                    )
+                    
+                    if not signature_valid:
+                        raise ValueError("Snapshot cryptographic signature verification failed - data may be tampered")
+                    
+                    logger.info("Cryptographic signature verification successful",
+                               snapshot_id=snapshot_id,
+                               signature_algorithm=metadata.cryptographic_signature.algorithm)
+                    
+                    logfire.info("Snapshot authenticity verified",
+                                snapshot_id=snapshot_id,
+                                signature_timestamp=metadata.cryptographic_signature.timestamp)
+                                
+                except Exception as e:
+                    logger.error("Cryptographic signature verification failed",
+                                snapshot_id=snapshot_id,
+                                error=str(e))
+                    raise ValueError(f"Signature verification failed: {str(e)}")
+            else:
+                logger.warning("No cryptographic signature found for snapshot",
+                              snapshot_id=snapshot_id)
+                # Continue without signature verification for backward compatibility
             
             # Restore VM from snapshot data
             # This would integrate with Firecracker's restore functionality

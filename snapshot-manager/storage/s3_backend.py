@@ -40,7 +40,8 @@ class S3StorageBackend:
     """
 
     def __init__(self, endpoint_url: str, access_key: str, secret_key: str,
-                 bucket_name: str, region: str = "us-east-1"):
+                 bucket_name: str, region: str = "us-east-1", 
+                 enable_encryption: bool = True):
         """Initialize S3 storage backend."""
         self.endpoint_url = endpoint_url
         self.access_key = access_key
@@ -48,6 +49,9 @@ class S3StorageBackend:
         self.bucket_name = bucket_name
         self.region = region
         self.session = None
+        
+        # Encryption configuration (disable for local MinIO without KMS)
+        self.enable_encryption = enable_encryption
         
         # Storage configuration
         self.multipart_threshold = 100 * 1024 * 1024  # 100MB
@@ -124,14 +128,19 @@ class S3StorageBackend:
                     )
                 else:
                     # Use simple upload for smaller snapshots
-                    await s3.put_object(
-                        Bucket=self.bucket_name,
-                        Key=storage_key,
-                        Body=data,
-                        Metadata=s3_metadata,
-                        ContentType='application/octet-stream',
-                        ServerSideEncryption='AES256'
-                    )
+                    put_object_args = {
+                        'Bucket': self.bucket_name,
+                        'Key': storage_key,
+                        'Body': data,
+                        'Metadata': s3_metadata,
+                        'ContentType': 'application/octet-stream'
+                    }
+                    
+                    # Only add encryption if enabled (for production S3/MinIO with KMS)
+                    if self.enable_encryption:
+                        put_object_args['ServerSideEncryption'] = 'AES256'
+                    
+                    await s3.put_object(**put_object_args)
                     storage_path = f"s3://{self.bucket_name}/{storage_key}"
             
             # Record performance metrics
@@ -348,13 +357,18 @@ class S3StorageBackend:
         
         try:
             # Initiate multipart upload
-            response = await s3_client.create_multipart_upload(
-                Bucket=self.bucket_name,
-                Key=storage_key,
-                Metadata=metadata,
-                ContentType='application/octet-stream',
-                ServerSideEncryption='AES256'
-            )
+            create_upload_args = {
+                'Bucket': self.bucket_name,
+                'Key': storage_key,
+                'Metadata': metadata,
+                'ContentType': 'application/octet-stream'
+            }
+            
+            # Only add encryption if enabled (for production S3/MinIO with KMS)
+            if self.enable_encryption:
+                create_upload_args['ServerSideEncryption'] = 'AES256'
+            
+            response = await s3_client.create_multipart_upload(**create_upload_args)
             
             upload_id = response['UploadId']
             parts = []

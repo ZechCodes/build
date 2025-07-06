@@ -3,8 +3,8 @@ Pydantic models for snapshot API requests and responses.
 """
 
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -104,7 +104,7 @@ class ErrorResponse(BaseModel):
     error: str
     details: Optional[str] = None
     error_code: Optional[str] = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(datetime.timezone.utc))
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class HealthCheckResponse(BaseModel):

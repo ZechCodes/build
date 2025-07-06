@@ -15,7 +15,7 @@ export class WebSocketManager {
   private maxReconnectAttempts = 3; // Reduced from 10
   private reconnectDelay = 1000;
   private maxReconnectDelay = 5000; // Reduced from 30000
-  private heartbeatInterval: number | null = null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
   private isReconnecting = false;
   private sessionId: string | null = null;
 

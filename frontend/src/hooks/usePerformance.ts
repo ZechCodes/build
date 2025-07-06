@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { performanceMonitor, throttle, debounce, DataBatcher, type PerformanceMetrics } from '../utils/performance';
 
 /**

@@ -206,11 +206,11 @@ export const Terminal: React.FC<TerminalProps> = ({
     if (!wsManagerRef.current || !xtermRef.current) return;
 
     if (sessionId) {
-      // Restore existing session
-      restoreSession(sessionId);
+      // Restore existing session via WebSocket
+      wsManagerRef.current.joinSession(sessionId);
     } else {
-      // Create new session
-      createSession();
+      // Create new session via WebSocket (handled in handleWebSocketConnect)
+      // This will be triggered when WebSocket connects
     }
   }, [sessionId, vmId]);
 
@@ -305,6 +305,9 @@ export const Terminal: React.FC<TerminalProps> = ({
         if (sessionId && wsManagerRef.current) {
           console.log('Session created, joining:', sessionId);
           wsManagerRef.current.joinSession(sessionId);
+          if (onSessionCreated) {
+            onSessionCreated(sessionId);
+          }
         }
         break;
         
@@ -443,7 +446,7 @@ export const Terminal: React.FC<TerminalProps> = ({
   
   return (
     <div 
-      className="terminal-container border rounded-lg overflow-hidden" 
+      className="terminal-container border rounded-lg overflow-hidden relative" 
       style={{ 
         height, 
         width, 
@@ -476,6 +479,11 @@ export const Terminal: React.FC<TerminalProps> = ({
       <div
         ref={terminalRef}
         className="terminal-content"
+        role="terminal"
+        aria-label={`Terminal for VM ${vmId}`}
+        tabIndex={0}
+        onFocus={() => xtermRef.current?.focus()}
+        onBlur={() => xtermRef.current?.blur()}
         style={{
           height: showToolbar ? 'calc(100% - 40px)' : '100%',
           width: '100%'
@@ -493,6 +501,11 @@ export const Terminal: React.FC<TerminalProps> = ({
           hasSelection={xtermRef.current?.hasSelection() || false}
         />
       )}
+      
+      {/* Terminal size display for accessibility and debugging */}
+      <div className="absolute bottom-2 right-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+        {xtermRef.current ? `${xtermRef.current.cols}×${xtermRef.current.rows}` : '80×24'}
+      </div>
     </div>
   );
 };

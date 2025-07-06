@@ -66,7 +66,9 @@ export function validateWebSocketMessage(message: any): boolean {
     'session_create',
     'session_created',
     'session_end',
+    'session_ended',
     'session_recovery',
+    'session_recovered',
     'heartbeat',
     'heartbeat_response',
     'error'

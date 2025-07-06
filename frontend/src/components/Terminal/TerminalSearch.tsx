@@ -109,6 +109,7 @@ export const TerminalSearch: React.FC<TerminalSearchProps> = ({
         <input
           ref={inputRef}
           type="text"
+          role="searchbox"
           value={query}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
@@ -182,8 +183,10 @@ export const TerminalSearch: React.FC<TerminalSearchProps> = ({
         size="sm"
         onClick={onClose}
         title="Close search (Escape)"
+        aria-label="Close search"
       >
         <X className="w-4 h-4" />
+        <span className="sr-only">Close</span>
       </Button>
     </div>
   );

@@ -47,13 +47,19 @@ class SnapshotAPI:
             redoc_url="/redoc"
         )
         
-        # Add CORS middleware
+        # Add CORS middleware with secure configuration
+        allowed_origins = cors_origins or [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000", 
+            "https://localhost:3000",
+            "https://127.0.0.1:3000"
+        ]
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=cors_origins or ["*"],
+            allow_origins=allowed_origins,
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Accept", "Accept-Language", "Content-Language", "Content-Type", "Authorization"],
         )
         
         # Initialize metrics
@@ -192,7 +198,7 @@ class SnapshotAPI:
                 
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to create snapshot: {str(e)}"
+                    detail="Failed to create snapshot"
                 )
         
         @self.app.get("/snapshots", response_model=SnapshotListResponse)
@@ -250,183 +256,7 @@ class SnapshotAPI:
                 
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to list snapshots: {str(e)}"
-                )
-        
-        @self.app.get("/snapshots/{snapshot_id}", response_model=SnapshotResponse)
-        async def get_snapshot(
-            snapshot_id: str,
-            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
-        ):
-            """Get specific snapshot details."""
-            await self._check_rate_limit(current_user['user_id'])
-            await self._check_permission(current_user, 'snapshot:read')
-            
-            try:
-                metadata = await self.snapshot_manager.get_snapshot_metadata(
-                    snapshot_id, current_user['user_id']
-                )
-                
-                await self._check_vm_access(current_user, metadata.vm_id)
-                
-                return self._metadata_to_response(metadata)
-                
-            except ValueError as e:
-                if "not found" in str(e).lower():
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Snapshot not found"
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=str(e)
-                )
-            except Exception as e:
-                logger.error("Failed to get snapshot",
-                           snapshot_id=snapshot_id,
-                           user_id=current_user['user_id'],
-                           error=str(e))
-                
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to get snapshot: {str(e)}"
-                )
-        
-        @self.app.post("/snapshots/{snapshot_id}/restore")
-        async def restore_snapshot(
-            snapshot_id: str,
-            request: RestoreSnapshotRequest,
-            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
-        ):
-            """Restore a snapshot to a VM."""
-            await self._check_rate_limit(current_user['user_id'])
-            await self._check_permission(current_user, 'snapshot:restore')
-            
-            try:
-                # Get snapshot metadata first
-                metadata = await self.snapshot_manager.get_snapshot_metadata(
-                    snapshot_id, current_user['user_id']
-                )
-                
-                # Check VM access
-                source_vm_id = metadata.vm_id
-                target_vm_id = request.target_vm_id or source_vm_id
-                
-                await self._check_vm_access(current_user, source_vm_id)
-                await self._check_vm_access(current_user, target_vm_id)
-                
-                logger.info("Restoring snapshot",
-                           snapshot_id=snapshot_id,
-                           source_vm_id=source_vm_id,
-                           target_vm_id=target_vm_id,
-                           user_id=current_user['user_id'])
-                
-                # Restore snapshot
-                result = await self.snapshot_manager.restore_snapshot(
-                    snapshot_id=snapshot_id,
-                    user_id=current_user['user_id'],
-                    target_vm_id=target_vm_id,
-                    restore_options=request.restore_options or {}
-                )
-                
-                logger.info("Snapshot restored successfully",
-                           snapshot_id=snapshot_id,
-                           target_vm_id=target_vm_id)
-                
-                logfire.info("Snapshot restoration completed",
-                            snapshot_id=snapshot_id,
-                            source_vm_id=source_vm_id,
-                            target_vm_id=target_vm_id,
-                            user_id=current_user['user_id'])
-                
-                return {"message": "Snapshot restored successfully", "result": result}
-                
-            except ValueError as e:
-                if "not found" in str(e).lower():
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Snapshot not found"
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=str(e)
-                )
-            except Exception as e:
-                logger.error("Failed to restore snapshot",
-                           snapshot_id=snapshot_id,
-                           user_id=current_user['user_id'],
-                           error=str(e))
-                
-                logfire.error("Snapshot restoration failed",
-                             snapshot_id=snapshot_id,
-                             user_id=current_user['user_id'],
-                             error=str(e))
-                
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to restore snapshot: {str(e)}"
-                )
-        
-        @self.app.delete("/snapshots/{snapshot_id}")
-        async def delete_snapshot(
-            snapshot_id: str,
-            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
-        ):
-            """Delete a snapshot."""
-            await self._check_rate_limit(current_user['user_id'])
-            await self._check_permission(current_user, 'snapshot:delete')
-            
-            try:
-                # Get snapshot metadata to check VM access
-                metadata = await self.snapshot_manager.get_snapshot_metadata(
-                    snapshot_id, current_user['user_id']
-                )
-                
-                await self._check_vm_access(current_user, metadata.vm_id)
-                
-                logger.info("Deleting snapshot",
-                           snapshot_id=snapshot_id,
-                           user_id=current_user['user_id'])
-                
-                # Delete snapshot
-                result = await self.snapshot_manager.delete_snapshot(
-                    snapshot_id, current_user['user_id']
-                )
-                
-                if result:
-                    logger.info("Snapshot deleted successfully",
-                               snapshot_id=snapshot_id)
-                    
-                    logfire.info("Snapshot deletion completed",
-                                snapshot_id=snapshot_id,
-                                user_id=current_user['user_id'])
-                    
-                    return {"message": "Snapshot deleted successfully"}
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to delete snapshot"
-                    )
-                    
-            except ValueError as e:
-                if "not found" in str(e).lower():
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Snapshot not found"
-                    )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=str(e)
-                )
-            except Exception as e:
-                logger.error("Failed to delete snapshot",
-                           snapshot_id=snapshot_id,
-                           user_id=current_user['user_id'],
-                           error=str(e))
-                
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to delete snapshot: {str(e)}"
+                    detail="Failed to list snapshots"
                 )
         
         @self.app.get("/snapshots/stats", response_model=SnapshotStatsResponse)
@@ -482,7 +312,192 @@ class SnapshotAPI:
                 
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to get snapshot statistics: {str(e)}"
+                    detail="Failed to get snapshot statistics"
+                )
+        
+        @self.app.get("/snapshots/{snapshot_id}", response_model=SnapshotResponse)
+        async def get_snapshot(
+            snapshot_id: str,
+            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
+        ):
+            """Get specific snapshot details."""
+            await self._check_rate_limit(current_user['user_id'])
+            await self._check_permission(current_user, 'snapshot:read')
+            
+            try:
+                metadata = await self.snapshot_manager.get_snapshot_metadata(
+                    snapshot_id, current_user['user_id']
+                )
+                
+                await self._check_vm_access(current_user, metadata.vm_id)
+                
+                return self._metadata_to_response(metadata)
+                
+            except HTTPException:
+                # Re-raise HTTPExceptions (like 403 from _check_vm_access)
+                raise
+            except ValueError as e:
+                if "not found" in str(e).lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Snapshot not found"
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                logger.error("Failed to get snapshot",
+                           snapshot_id=snapshot_id,
+                           user_id=current_user['user_id'],
+                           error=str(e))
+                
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to get snapshot"
+                )
+        
+        @self.app.post("/snapshots/{snapshot_id}/restore")
+        async def restore_snapshot(
+            snapshot_id: str,
+            request: RestoreSnapshotRequest,
+            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
+        ):
+            """Restore a snapshot to a VM."""
+            await self._check_rate_limit(current_user['user_id'])
+            await self._check_permission(current_user, 'snapshot:restore')
+            
+            try:
+                # Get snapshot metadata first
+                metadata = await self.snapshot_manager.get_snapshot_metadata(
+                    snapshot_id, current_user['user_id']
+                )
+                
+                # Check VM access
+                source_vm_id = metadata.vm_id
+                target_vm_id = request.target_vm_id or source_vm_id
+                
+                await self._check_vm_access(current_user, source_vm_id)
+                await self._check_vm_access(current_user, target_vm_id)
+                
+                logger.info("Restoring snapshot",
+                           snapshot_id=snapshot_id,
+                           source_vm_id=source_vm_id,
+                           target_vm_id=target_vm_id,
+                           user_id=current_user['user_id'])
+                
+                # Restore snapshot
+                result = await self.snapshot_manager.restore_snapshot(
+                    snapshot_id=snapshot_id,
+                    user_id=current_user['user_id'],
+                    target_vm_id=target_vm_id,
+                    restore_options=request.restore_options or {}
+                )
+                
+                logger.info("Snapshot restored successfully",
+                           snapshot_id=snapshot_id,
+                           target_vm_id=target_vm_id)
+                
+                logfire.info("Snapshot restoration completed",
+                            snapshot_id=snapshot_id,
+                            source_vm_id=source_vm_id,
+                            target_vm_id=target_vm_id,
+                            user_id=current_user['user_id'])
+                
+                return {"message": "Snapshot restored successfully", "result": result}
+                
+            except HTTPException:
+                # Re-raise HTTPExceptions (like 403 from _check_vm_access)
+                raise
+            except ValueError as e:
+                if "not found" in str(e).lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Snapshot not found"
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                logger.error("Failed to restore snapshot",
+                           snapshot_id=snapshot_id,
+                           user_id=current_user['user_id'],
+                           error=str(e))
+                
+                logfire.error("Snapshot restoration failed",
+                             snapshot_id=snapshot_id,
+                             user_id=current_user['user_id'],
+                             error=str(e))
+                
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to restore snapshot"
+                )
+        
+        @self.app.delete("/snapshots/{snapshot_id}")
+        async def delete_snapshot(
+            snapshot_id: str,
+            current_user: Dict[str, Any] = Depends(self.auth.get_current_user)
+        ):
+            """Delete a snapshot."""
+            await self._check_rate_limit(current_user['user_id'])
+            await self._check_permission(current_user, 'snapshot:delete')
+            
+            try:
+                # Get snapshot metadata to check VM access
+                metadata = await self.snapshot_manager.get_snapshot_metadata(
+                    snapshot_id, current_user['user_id']
+                )
+                
+                await self._check_vm_access(current_user, metadata.vm_id)
+                
+                logger.info("Deleting snapshot",
+                           snapshot_id=snapshot_id,
+                           user_id=current_user['user_id'])
+                
+                # Delete snapshot
+                result = await self.snapshot_manager.delete_snapshot(
+                    snapshot_id, current_user['user_id']
+                )
+                
+                if result:
+                    logger.info("Snapshot deleted successfully",
+                               snapshot_id=snapshot_id)
+                    
+                    logfire.info("Snapshot deletion completed",
+                                snapshot_id=snapshot_id,
+                                user_id=current_user['user_id'])
+                    
+                    return {"message": "Snapshot deleted successfully"}
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to delete snapshot"
+                    )
+                    
+            except HTTPException:
+                # Re-raise HTTPExceptions (like 403 from _check_vm_access)
+                raise
+            except ValueError as e:
+                if "not found" in str(e).lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Snapshot not found"
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+            except Exception as e:
+                logger.error("Failed to delete snapshot",
+                           snapshot_id=snapshot_id,
+                           user_id=current_user['user_id'],
+                           error=str(e))
+                
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to delete snapshot"
                 )
     
     def _setup_error_handlers(self):

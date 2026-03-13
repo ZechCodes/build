@@ -80,20 +80,20 @@ spec:
               cpu: "250m"
           startupProbe:
             httpGet:
-              path: /healthz/
+              path: /
               port: 8080
             periodSeconds: 5
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /healthz/
+              path: /
               port: 8080
             timeoutSeconds: 10
             periodSeconds: 30
             failureThreshold: 8
           readinessProbe:
             httpGet:
-              path: /healthz/
+              path: /
               port: 8080
             timeoutSeconds: 10
             periodSeconds: 10

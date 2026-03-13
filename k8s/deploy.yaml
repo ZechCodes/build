@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-web
+  labels:
+    app: build-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: build-web
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: build-web
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: build-web
+      containers:
+        - name: build-web
+          image: zzmmrmn/build-web:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: build-web-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-db
+                  key: database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: secret-key
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-secrets
+                  key: google-oauth-client-id
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-secrets
+                  key: google-oauth-client-secret
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: github-oauth-client-id
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: github-oauth-client-secret
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: resend-api-key
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          startupProbe:
+            httpGet:
+              path: /healthz/
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz/
+              port: 8080
+            timeoutSeconds: 10
+            periodSeconds: 30
+            failureThreshold: 8
+          readinessProbe:
+            httpGet:
+              path: /healthz/
+              port: 8080
+            timeoutSeconds: 10
+            periodSeconds: 10
+            failureThreshold: 5

@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-web-init-db
+  labels:
+    app: build-web
+    component: init-db
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: build-web-init-db
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-db
+          image: zzmmrmn/build-web:latest
+          imagePullPolicy: Always
+          command: ["uv", "run", "skrift", "db", "upgrade", "heads"]
+          envFrom:
+            - configMapRef:
+                name: build-web-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-db
+                  key: database-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: secret-key
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-secrets
+                  key: google-oauth-client-id
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: zech-sh-secrets
+                  key: google-oauth-client-secret
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: github-oauth-client-id
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: build-web-secrets
+                  key: github-oauth-client-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

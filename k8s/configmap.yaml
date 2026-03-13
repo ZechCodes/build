@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: build-web-config
+  labels:
+    app: build-web
+data:
+  SKRIFT_ENV: "production"
+  SITE_BASE_URL: "https://getbuild.ing"

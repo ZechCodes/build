@@ -2,14 +2,25 @@
 
 import logging
 
-from litestar import Controller, get
-from litestar.response import Template
-from sqlalchemy import select
+from litestar import Controller, Request, get
+from litestar.response import Redirect, Template
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from skrift.lib.hooks import add_filter
 
 from build_app.models import CampaignSignup
 
 logger = logging.getLogger(__name__)
+
+CAMPAIGN_SLUG = "build-launch"
+
+
+async def _redirect_to_confirm(next_url, login_result, request):
+    """After OAuth login, redirect to the email updates confirmation page."""
+    return "/signup/oauth-confirm"
+
+
+add_filter("login_redirect", _redirect_to_confirm, priority=5)
 
 
 class SignupConfirmController(Controller):
@@ -36,4 +47,78 @@ class SignupConfirmController(Controller):
         return Template(
             "page-confirm.html",
             context={"success": signup is not None},
+        )
+
+    @get("/oauth-confirm")
+    async def oauth_confirm(self, request: Request, db_session: AsyncSession) -> Template | Redirect:
+        """Show confirmation page after OAuth login asking to join waitlist."""
+        email = request.session.get("user_email")
+        if not email:
+            return Redirect(path="/")
+
+        # Check if already signed up
+        result = await db_session.execute(
+            select(CampaignSignup).where(
+                and_(
+                    CampaignSignup.campaign_slug == CAMPAIGN_SLUG,
+                    CampaignSignup.email == email,
+                )
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        return Template(
+            "page-oauth-confirm.html",
+            context={
+                "email": email,
+                "name": request.session.get("user_name", ""),
+                "already_signed_up": existing is not None,
+            },
+        )
+
+    @get("/oauth-join")
+    async def oauth_join(self, request: Request, db_session: AsyncSession) -> Redirect:
+        """User confirmed they want to join the waitlist via OAuth."""
+        email = request.session.get("user_email")
+        if not email:
+            return Redirect(path="/")
+
+        # Check for existing signup
+        result = await db_session.execute(
+            select(CampaignSignup).where(
+                and_(
+                    CampaignSignup.campaign_slug == CAMPAIGN_SLUG,
+                    CampaignSignup.email == email,
+                )
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        if not existing:
+            signup = CampaignSignup(
+                campaign_slug=CAMPAIGN_SLUG,
+                email=email,
+                email_confirmed=True,
+                confirmation_token=None,
+                email_updates=True,
+            )
+            db_session.add(signup)
+            await db_session.commit()
+            logger.info("OAuth waitlist signup: %s", email)
+
+        return Redirect(path="/signup/oauth-done")
+
+    @get("/oauth-done")
+    async def oauth_done(self, request: Request) -> Template | Redirect:
+        """Thank you page after OAuth waitlist signup."""
+        email = request.session.get("user_email")
+        if not email:
+            return Redirect(path="/")
+
+        return Template(
+            "page-oauth-done.html",
+            context={
+                "email": email,
+                "name": request.session.get("user_name", ""),
+            },
         )

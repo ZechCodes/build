@@ -6,89 +6,116 @@
 <title>Join the Waitlist — Build</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
   background:#07070a;color:#e8e8ed;
   font-family:'DM Sans',system-ui,sans-serif;
   min-height:100vh;
-  display:flex;align-items:center;justify-content:center;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:2rem;
+  overflow:hidden;
 }
-.card{
-  max-width:440px;width:100%;
-  background:#0e0e14;
-  border:1px solid rgba(255,255,255,0.06);
-  border-radius:16px;
-  padding:3rem 2.5rem;
+body::before{
+  content:'';position:fixed;top:-40%;left:50%;transform:translateX(-50%);
+  width:600px;height:600px;
+  background:radial-gradient(circle,rgba(129,140,248,0.08) 0%,transparent 70%);
+  pointer-events:none;
+}
+.logo{
+  display:flex;align-items:center;gap:.5rem;
+  margin-bottom:3rem;
+  font-size:15px;font-weight:600;color:var(--text-secondary,#8b8b9e);
+  letter-spacing:0.02em;
+  text-decoration:none;
+}
+.logo svg{opacity:.7}
+.content{
+  max-width:400px;width:100%;
   text-align:center;
+  position:relative;
 }
-.icon{
-  width:56px;height:56px;
-  border-radius:14px;
-  display:flex;align-items:center;justify-content:center;
-  margin:0 auto 1.5rem;
-  background:rgba(129,140,248,0.12);
+h1{
+  font-family:'Instrument Serif',Georgia,serif;
+  font-size:32px;font-weight:400;
+  letter-spacing:-0.02em;
+  line-height:1.2;
+  margin-bottom:1rem;
 }
-.icon svg{color:#818cf8}
-h1{font-size:20px;font-weight:600;margin-bottom:.75rem;letter-spacing:-0.02em}
-p{font-size:14px;color:#8b8b9e;line-height:1.65;margin-bottom:.5rem}
-.email{
-  font-size:15px;font-weight:600;color:#e8e8ed;
-  margin:1rem 0 1.5rem;
-  padding:.75rem 1rem;
-  background:rgba(255,255,255,0.04);
-  border:1px solid rgba(255,255,255,0.06);
-  border-radius:8px;
+h1 em{font-style:italic;color:#818cf8}
+.subtitle{
+  font-size:15px;color:#8b8b9e;line-height:1.7;
+  margin-bottom:2rem;
 }
-.btn{
-  display:inline-flex;align-items:center;gap:.4rem;
-  padding:.7rem 2rem;
-  border-radius:8px;
+.subtitle strong{color:#e8e8ed;font-weight:500}
+.cta{
+  display:inline-flex;align-items:center;gap:.5rem;
+  padding:.8rem 2.25rem;
+  border-radius:10px;
   font-size:14px;font-weight:600;
   text-decoration:none;
-  transition:all .2s;
+  transition:all .25s cubic-bezier(0.16,1,0.3,1);
   cursor:pointer;border:none;
+  font-family:inherit;
 }
-.btn-primary{
+.cta-primary{
   background:#818cf8;color:#fff;
+  box-shadow:0 0 0 1px rgba(129,140,248,0.3),0 4px 16px rgba(129,140,248,0.15);
 }
-.btn-primary:hover{background:#6366f1;box-shadow:0 4px 24px rgba(99,102,241,.3)}
-.btn-secondary{
-  background:rgba(255,255,255,0.04);color:#8b8b9e;
-  border:1px solid rgba(255,255,255,0.06);
-  margin-left:.5rem;
+.cta-primary:hover{
+  background:#6366f1;
+  box-shadow:0 0 0 1px rgba(99,102,241,0.5),0 8px 32px rgba(99,102,241,0.25);
+  transform:translateY(-1px);
 }
-.btn-secondary:hover{color:#e8e8ed;border-color:rgba(255,255,255,.12)}
-.actions{margin-top:1.5rem;display:flex;justify-content:center;gap:.5rem;flex-wrap:wrap}
+.cta-primary svg{transition:transform .2s}
+.cta-primary:hover svg{transform:translateX(2px)}
+.skip{
+  display:block;
+  margin-top:1rem;
+  font-size:13px;color:#55556a;
+  text-decoration:none;
+  transition:color .2s;
+}
+.skip:hover{color:#8b8b9e}
+.check{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:48px;height:48px;border-radius:50%;
+  background:rgba(52,211,153,0.1);
+  margin-bottom:1.25rem;
+}
+.check svg{color:#34d399}
 </style>
 </head>
 <body>
-<div class="card">
+
+<a class="logo" href="/">
+  <svg width="18" height="18" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/><path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/></svg>
+  Build
+</a>
+
+<div class="content">
   {% if already_signed_up %}
-  <div class="icon">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  <div class="check">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
   </div>
-  <h1>You're already on the list</h1>
-  <div class="email">{{ email }}</div>
-  <p>We'll reach out as soon as Build is ready for you.</p>
-  <div class="actions">
-    <a class="btn btn-primary" href="/">Back to getbuild.ing</a>
-  </div>
+  <h1>You're already <em>in</em></h1>
+  <p class="subtitle">We'll notify <strong>{{ email }}</strong> as soon as Build is ready.</p>
+  <a class="cta cta-primary" href="/">
+    Back to getbuild.ing
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+  </a>
+
   {% else %}
-  <div class="icon">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-  </div>
-  <h1>Join the Build waitlist</h1>
-  <p>We'll send you updates at:</p>
-  <div class="email">{{ email }}</div>
-  <p>You'll be first in line when Build launches.</p>
-  <div class="actions">
-    <a class="btn btn-primary" href="/signup/oauth-join">Join the waitlist</a>
-    <a class="btn btn-secondary" href="/">No thanks</a>
-  </div>
+  <h1>One more <em>thing</em></h1>
+  <p class="subtitle">Want early access when Build launches?<br>We'll notify <strong>{{ email }}</strong> when it's ready.</p>
+  <a class="cta cta-primary" href="/signup/oauth-join">
+    Join the waitlist
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+  </a>
+  <a class="skip" href="/">Skip for now</a>
   {% endif %}
 </div>
+
 </body>
 </html>

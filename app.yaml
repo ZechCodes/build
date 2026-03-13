@@ -49,6 +49,8 @@ middleware:
 
 security_headers:
   enabled: true
+  csp_nonce: false
+  content_security_policy: "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'self'; connect-src 'self'"
 
 rate_limit:
   enabled: true

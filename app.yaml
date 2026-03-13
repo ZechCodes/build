@@ -4,6 +4,7 @@ domain: getbuild.ing
 
 db:
   url: $DATABASE_URL
+  schema: build
 
 auth:
   redirect_base_url: "https://getbuild.ing"

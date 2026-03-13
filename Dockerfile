@@ -14,8 +14,11 @@ RUN uv sync --frozen --no-dev
 # Copy application code
 COPY . .
 
+# Add venv to PATH so skrift setup can find the skrift CLI
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Expose port
 EXPOSE 8080
 
 # Run the application
-CMD [".venv/bin/skrift", "serve", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["skrift", "serve", "--host", "0.0.0.0", "--port", "8080"]

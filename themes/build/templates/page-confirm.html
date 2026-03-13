@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% if success %}Email Confirmed{% else %}Invalid Link{% endif %} — Build</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#07070a;color:#e8e8ed;
+  font-family:'DM Sans',system-ui,sans-serif;
+  min-height:100vh;
+  display:flex;align-items:center;justify-content:center;
+  padding:2rem;
+}
+.card{
+  max-width:420px;width:100%;
+  background:#0e0e14;
+  border:1px solid rgba(255,255,255,0.06);
+  border-radius:16px;
+  padding:3rem 2.5rem;
+  text-align:center;
+}
+.icon{
+  width:56px;height:56px;
+  border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 1.5rem;
+}
+.icon-success{background:rgba(52,211,153,0.12)}
+.icon-success svg{color:#34d399}
+.icon-error{background:rgba(248,113,113,0.12)}
+.icon-error svg{color:#f87171}
+h1{font-size:20px;font-weight:600;margin-bottom:.5rem;letter-spacing:-0.02em}
+p{font-size:14px;color:#8b8b9e;line-height:1.65;margin-bottom:1.5rem}
+a{
+  display:inline-flex;align-items:center;gap:.4rem;
+  padding:.6rem 1.5rem;
+  border-radius:8px;
+  background:#818cf8;color:#fff;
+  font-size:14px;font-weight:600;
+  text-decoration:none;
+  transition:all .2s;
+}
+a:hover{background:#6366f1;box-shadow:0 4px 24px rgba(99,102,241,.3)}
+</style>
+</head>
+<body>
+<div class="card">
+  {% if success %}
+  <div class="icon icon-success">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  </div>
+  <h1>You're confirmed</h1>
+  <p>Your email is verified and you're on the Build waitlist. We'll reach out as soon as we're ready for you.</p>
+  <a href="/">Back to getbuild.ing</a>
+  {% else %}
+  <div class="icon icon-error">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+  </div>
+  <h1>Link invalid or expired</h1>
+  <p>This confirmation link is no longer valid. It may have already been used or expired after 48 hours.</p>
+  <a href="/">Back to getbuild.ing</a>
+  {% endif %}
+</div>
+</body>
+</html>

@@ -1,0 +1,1539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Build — Local-first agent orchestration</title>
+<meta name="description" content="Orchestrate coding agents across any device with end-to-end encryption. Plan, build, and ship with full observability.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Söhne+Mono,+JetBrains+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070a;
+  --bg-elevated:#0e0e14;
+  --surface:rgba(255,255,255,0.04);
+  --surface-hover:rgba(255,255,255,0.07);
+  --glass:rgba(255,255,255,0.03);
+  --glass-border:rgba(255,255,255,0.06);
+  --text:#e8e8ed;
+  --text-secondary:#8b8b9e;
+  --text-tertiary:#55556a;
+  --accent:#818cf8;
+  --accent-bright:#a5b4fc;
+  --accent-dim:rgba(129,140,248,0.12);
+  --accent-glow:rgba(129,140,248,0.06);
+  --green:#34d399;
+  --green-dim:rgba(52,211,153,0.12);
+  --amber:#fbbf24;
+  --amber-dim:rgba(251,191,36,0.12);
+  --red:#f87171;
+  --red-dim:rgba(248,113,113,0.12);
+  --cyan:#22d3ee;
+  --serif:'Instrument Serif',Georgia,serif;
+  --sans:'DM Sans',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+  --ease:cubic-bezier(0.16,1,0.3,1);
+}
+html{
+  scroll-behavior:smooth;
+  font-size:16px;
+}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* Grain */
+body::after{
+  content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;
+  opacity:.025;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ============ NAV ============ */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:0 clamp(1.5rem,4vw,3rem);
+  height:64px;
+  display:flex;align-items:center;
+  background:rgba(7,7,10,0.7);
+  backdrop-filter:blur(20px) saturate(1.4);
+  -webkit-backdrop-filter:blur(20px) saturate(1.4);
+  border-bottom:1px solid rgba(255,255,255,0.04);
+}
+.nav-logo{
+  display:flex;align-items:center;gap:.6rem;
+  text-decoration:none;color:var(--text);
+}
+.nav-logo svg{width:28px;height:28px}
+.nav-wordmark{
+  font-family:var(--sans);
+  font-size:18px;font-weight:700;
+  letter-spacing:-0.03em;
+}
+.nav-links{
+  display:flex;gap:2rem;
+  margin-left:3rem;
+  list-style:none;
+}
+.nav-links a{
+  color:var(--text-secondary);
+  text-decoration:none;
+  font-size:14px;font-weight:500;
+  transition:color .2s;
+}
+.nav-links a:hover{color:var(--text)}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:1rem}
+.nav-cta{
+  display:inline-flex;align-items:center;gap:.4rem;
+  padding:.5rem 1.25rem;
+  border-radius:8px;
+  background:var(--accent);
+  color:#fff;
+  font-size:13px;font-weight:600;
+  text-decoration:none;
+  transition:all .2s var(--ease);
+  border:none;cursor:pointer;
+  font-family:var(--sans);
+}
+.nav-cta:hover{
+  background:#6366f1;
+  box-shadow:0 0 24px rgba(99,102,241,.3);
+  transform:translateY(-1px);
+}
+.nav-ghost{
+  color:var(--text-secondary);
+  font-size:13px;font-weight:500;
+  text-decoration:none;
+  transition:color .2s;
+}
+.nav-ghost:hover{color:var(--text)}
+
+/* ============ HERO ============ */
+.hero{
+  position:relative;
+  min-height:100vh;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  padding:8rem 2rem 6rem;
+  text-align:center;
+  overflow:hidden;
+}
+
+/* Mesh grid background */
+.hero::before{
+  content:'';position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(129,140,248,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(129,140,248,.03) 1px, transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(ellipse 70% 60% at 50% 40%, black 20%, transparent 70%);
+  -webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 40%, black 20%, transparent 70%);
+}
+
+/* Ambient glow */
+.hero-glow{
+  position:absolute;
+  width:800px;height:600px;
+  top:10%;left:50%;transform:translateX(-50%);
+  background:radial-gradient(ellipse, rgba(99,102,241,.08) 0%, rgba(99,102,241,.02) 40%, transparent 70%);
+  pointer-events:none;
+}
+.hero-glow-2{
+  position:absolute;
+  width:400px;height:400px;
+  top:30%;left:20%;
+  background:radial-gradient(circle, rgba(52,211,153,.04) 0%, transparent 60%);
+  pointer-events:none;
+}
+
+.hero-badge{
+  display:inline-flex;align-items:center;gap:.5rem;
+  padding:.4rem 1rem .4rem .6rem;
+  border-radius:100px;
+  background:var(--surface);
+  border:1px solid var(--glass-border);
+  font-size:12px;
+  color:var(--text-secondary);
+  margin-bottom:2rem;
+  position:relative;
+  animation:fadeUp .8s var(--ease) both;
+}
+.hero-badge .pulse{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--green);
+  position:relative;
+}
+.hero-badge .pulse::after{
+  content:'';position:absolute;inset:-3px;
+  border-radius:50%;
+  background:var(--green);
+  opacity:.4;
+  animation:ping 2s ease-out infinite;
+}
+@keyframes ping{0%{transform:scale(1);opacity:.4}100%{transform:scale(2.5);opacity:0}}
+
+.hero h1{
+  font-family:var(--serif);
+  font-size:clamp(3.5rem,8vw,7rem);
+  font-weight:400;
+  line-height:1;
+  letter-spacing:-0.03em;
+  max-width:900px;
+  margin-bottom:1.5rem;
+  position:relative;
+  animation:fadeUp .8s var(--ease) .1s both;
+}
+.hero h1 em{
+  font-style:italic;
+  background:linear-gradient(135deg, var(--accent-bright), var(--cyan));
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+
+.hero-sub{
+  font-size:clamp(1rem,2vw,1.25rem);
+  color:var(--text-secondary);
+  max-width:560px;
+  line-height:1.7;
+  margin-bottom:2.5rem;
+  animation:fadeUp .8s var(--ease) .2s both;
+}
+
+.hero-signup, .bottom-signup{
+  display:flex;gap:.5rem;
+  max-width:420px;
+  animation:fadeUp .8s var(--ease) .3s both;
+}
+.hero-signup{margin:0 auto}
+.hero-signup input, .bottom-signup input{
+  flex:1;
+  padding:.75rem 1rem;
+  border-radius:10px;
+  border:1px solid var(--glass-border);
+  background:var(--surface);
+  color:var(--text);
+  font-family:var(--sans);font-size:14px;
+  outline:none;
+  transition:border-color .2s;
+}
+.hero-signup input:focus, .bottom-signup input:focus{
+  border-color:var(--accent);
+}
+.hero-signup input::placeholder, .bottom-signup input::placeholder{
+  color:var(--text-tertiary);
+}
+.signup-success{
+  font-size:14px;color:var(--green);
+  animation:fadeUp .4s var(--ease) both;
+}
+.bottom-signup{max-width:420px;margin:0 auto;justify-content:center}
+.hero-auth{
+  animation:fadeUp .8s var(--ease) .3s both;
+  text-align:center;
+}
+.hero-or, .auth-divider{
+  display:flex;align-items:center;gap:.75rem;
+  margin:.75rem 0;
+  color:var(--text-tertiary);font-size:12px;
+  text-transform:uppercase;letter-spacing:.08em;
+}
+.hero-or::before,.hero-or::after,
+.auth-divider::before,.auth-divider::after{
+  content:'';flex:1;height:1px;
+  background:var(--glass-border);
+}
+.hero-or{max-width:420px;margin:.75rem auto}
+.hero-oauth{
+  display:flex;gap:.5rem;
+  justify-content:center;
+}
+.oauth-pill{
+  display:inline-flex;align-items:center;gap:.4rem;
+  padding:.55rem 1.25rem;
+  border-radius:8px;
+  background:var(--surface);
+  border:1px solid var(--glass-border);
+  color:var(--text-secondary);
+  font-size:13px;font-weight:500;
+  text-decoration:none;
+  transition:all .2s;
+  font-family:var(--sans);
+}
+.oauth-pill:hover{
+  border-color:rgba(255,255,255,.12);
+  color:var(--text);
+  background:var(--surface-hover);
+}
+/* Auth modal */
+.auth-overlay{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.65);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  display:none;align-items:center;justify-content:center;
+  z-index:1000;
+  animation:fadeIn .2s ease both;
+}
+.auth-overlay.open{display:flex}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.auth-modal{
+  position:relative;
+  width:100%;max-width:400px;
+  background:var(--bg-elevated);
+  border:1px solid var(--glass-border);
+  border-radius:16px;
+  padding:2.5rem 2rem 2rem;
+  text-align:center;
+  animation:modalIn .3s var(--ease) both;
+}
+@keyframes modalIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+.auth-close{
+  position:absolute;top:1rem;right:1rem;
+  background:none;border:none;
+  color:var(--text-tertiary);font-size:22px;
+  cursor:pointer;line-height:1;
+  transition:color .15s;
+}
+.auth-close:hover{color:var(--text)}
+.auth-logo{margin-bottom:1rem}
+.auth-modal h3{
+  font-size:18px;font-weight:600;
+  margin-bottom:.35rem;
+}
+.auth-sub{
+  font-size:13px;color:var(--text-secondary);
+  margin-bottom:1.5rem;
+}
+.auth-providers{
+  display:flex;flex-direction:column;gap:.5rem;
+}
+.auth-btn{
+  display:flex;align-items:center;justify-content:center;gap:.6rem;
+  padding:.7rem 1rem;
+  border-radius:10px;
+  font-size:14px;font-weight:500;
+  text-decoration:none;
+  transition:all .2s;
+  font-family:var(--sans);
+  cursor:pointer;border:none;
+}
+.auth-google{
+  background:#fff;color:#333;
+}
+.auth-google:hover{background:#f5f5f5;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.auth-github{
+  background:#24292f;color:#fff;
+}
+.auth-github:hover{background:#32383f;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+.auth-email-form{
+  display:flex;flex-direction:column;gap:.5rem;
+}
+.auth-email-form input{
+  padding:.7rem 1rem;
+  border-radius:10px;
+  border:1px solid var(--glass-border);
+  background:var(--surface);
+  color:var(--text);
+  font-family:var(--sans);font-size:14px;
+  outline:none;
+  transition:border-color .2s;
+}
+.auth-email-form input:focus{border-color:var(--accent)}
+.auth-email-form input::placeholder{color:var(--text-tertiary)}
+.btn-full{width:100%;justify-content:center}
+.auth-updates{
+  display:flex;align-items:center;gap:.5rem;
+  margin-top:1rem;
+  font-size:12px;color:var(--text-tertiary);
+  cursor:pointer;
+  justify-content:center;
+}
+.auth-updates input[type="checkbox"]{
+  accent-color:var(--accent);
+  width:14px;height:14px;
+  cursor:pointer;
+}
+.bottom-auth{
+  max-width:420px;margin:0 auto;
+}
+.bottom-oauth{
+  display:flex;gap:.5rem;
+  justify-content:center;
+}
+.bottom-oauth .auth-btn{flex:1}
+.btn-primary{
+  display:inline-flex;align-items:center;gap:.5rem;
+  padding:.75rem 2rem;
+  border-radius:10px;
+  background:var(--accent);
+  color:#fff;font-size:15px;font-weight:600;
+  text-decoration:none;
+  transition:all .25s var(--ease);
+  border:none;cursor:pointer;
+  font-family:var(--sans);
+}
+.btn-primary:hover{
+  background:#6366f1;
+  box-shadow:0 4px 32px rgba(99,102,241,.35);
+  transform:translateY(-2px);
+}
+.btn-secondary{
+  display:inline-flex;align-items:center;gap:.5rem;
+  padding:.75rem 2rem;
+  border-radius:10px;
+  background:var(--surface);
+  border:1px solid var(--glass-border);
+  color:var(--text);font-size:15px;font-weight:500;
+  text-decoration:none;
+  transition:all .25s var(--ease);
+  cursor:pointer;
+  font-family:var(--sans);
+}
+.btn-secondary:hover{
+  background:var(--surface-hover);
+  border-color:rgba(255,255,255,.12);
+  transform:translateY(-1px);
+}
+.btn-secondary svg{width:16px;height:16px;color:var(--text-secondary)}
+
+/* Install snippet */
+.hero-install{
+  margin-top:3rem;
+  animation:fadeUp .8s var(--ease) .4s both;
+}
+.install-cmd{
+  display:inline-flex;align-items:center;gap:1rem;
+  padding:.6rem 1.25rem;
+  border-radius:8px;
+  background:rgba(255,255,255,.03);
+  border:1px solid var(--glass-border);
+  font-family:var(--mono);font-size:13px;
+  color:var(--text-secondary);
+  cursor:pointer;
+  transition:all .2s;
+}
+.install-cmd:hover{
+  background:rgba(255,255,255,.05);
+  border-color:rgba(255,255,255,.1);
+}
+.install-cmd .prompt{color:var(--accent);user-select:none}
+.install-cmd .copy-hint{
+  font-family:var(--sans);font-size:11px;
+  color:var(--text-tertiary);
+  padding-left:1rem;
+  border-left:1px solid rgba(255,255,255,.06);
+}
+
+@keyframes fadeUp{
+  from{opacity:0;transform:translateY(16px)}
+  to{opacity:1;transform:translateY(0)}
+}
+
+/* ============ PRODUCT SHOWCASE ============ */
+.showcase{
+  position:relative;
+  padding:0 clamp(1.5rem,4vw,3rem) 8rem;
+  animation:fadeUp 1s var(--ease) .5s both;
+}
+.showcase-frame{
+  max-width:1200px;
+  margin:0 auto;
+  border-radius:16px;
+  overflow:hidden;
+  border:1px solid var(--glass-border);
+  box-shadow:
+    0 4px 24px rgba(0,0,0,.3),
+    0 0 0 1px rgba(255,255,255,.02) inset,
+    0 40px 80px -20px rgba(99,102,241,.08);
+  background:var(--bg-elevated);
+  position:relative;
+}
+/* Simulated app screenshot */
+.showcase-app{
+  display:flex;height:520px;
+  font-size:12px;
+}
+.sc-rail{
+  width:44px;background:#111116;
+  display:flex;flex-direction:column;align-items:center;
+  padding:.75rem 0;gap:.35rem;
+  border-right:1px solid rgba(255,255,255,.04);
+  flex-shrink:0;
+}
+.sc-rail-icon{
+  width:32px;height:32px;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;
+}
+.sc-rail-icon.active{background:rgba(129,140,248,.12)}
+.sc-rail-icon svg{width:16px;height:16px;color:#52525b}
+.sc-rail-icon.active svg{color:var(--accent)}
+.sc-spacer{flex:1}
+.sc-e2e{color:#059669;opacity:.6}
+.sc-e2e svg{width:14px;height:14px}
+
+.sc-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.sc-topbar{
+  height:40px;
+  display:flex;align-items:center;gap:.75rem;
+  padding:0 1rem;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  flex-shrink:0;
+}
+.sc-agent-name{font-weight:600;color:var(--text);font-size:13px}
+.sc-device{color:var(--text-tertiary);font-size:11px}
+.sc-status{
+  display:flex;align-items:center;gap:.25rem;
+  font-size:10px;font-weight:600;
+  color:var(--green);
+  background:var(--green-dim);
+  padding:.15rem .5rem;border-radius:10px;
+}
+.sc-status .dot{width:4px;height:4px;border-radius:50%;background:currentColor}
+.sc-runtime{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)}
+
+.sc-complications{
+  display:flex;gap:.4rem;padding:.4rem 1rem;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  flex-shrink:0;overflow-x:auto;
+}
+.sc-comp{
+  display:flex;align-items:center;gap:.3rem;
+  padding:.2rem .5rem;
+  border-radius:4px;
+  font-size:10px;color:var(--text-secondary);
+  background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.04);
+  white-space:nowrap;
+  flex-shrink:0;
+}
+.sc-comp .v{font-weight:600;color:var(--text)}
+.sc-comp .g{color:var(--green)}
+.sc-comp .a{color:var(--amber)}
+.sc-comp .r{color:var(--red)}
+
+.sc-content{flex:1;display:flex;overflow:hidden}
+.sc-chat{
+  flex:1;display:flex;flex-direction:column;overflow:hidden;
+  border-right:1px solid rgba(255,255,255,.04);
+}
+.sc-messages{flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:.75rem}
+.sc-msg{display:flex;gap:.5rem}
+.sc-avatar{
+  width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:700;flex-shrink:0;
+}
+.sc-avatar.user{background:var(--accent-dim);color:var(--accent)}
+.sc-avatar.agent{background:var(--green-dim);color:var(--green)}
+.sc-msg-body{min-width:0}
+.sc-msg-name{font-size:10px;font-weight:600;color:var(--text-secondary);margin-bottom:.15rem}
+.sc-msg-text{font-size:11.5px;color:var(--text);line-height:1.55}
+.sc-msg-code{
+  background:rgba(0,0,0,.3);
+  border:1px solid rgba(255,255,255,.04);
+  border-radius:5px;padding:.4rem .5rem;
+  font-family:var(--mono);font-size:10px;
+  color:var(--text-secondary);line-height:1.6;
+  margin-top:.3rem;overflow-x:auto;
+}
+.sc-msg-code .kw{color:#c084fc}
+.sc-msg-code .fn{color:var(--accent-bright)}
+.sc-msg-code .str{color:var(--green)}
+.sc-input{
+  padding:.5rem .75rem;
+  border-top:1px solid rgba(255,255,255,.04);
+  display:flex;align-items:center;gap:.4rem;
+}
+.sc-input-field{
+  flex:1;height:28px;
+  background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:6px;
+  padding:0 .6rem;
+  font-size:11px;color:var(--text-tertiary);
+  font-family:var(--sans);
+  display:flex;align-items:center;
+}
+.sc-send{
+  width:28px;height:28px;border-radius:6px;
+  background:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+}
+.sc-send svg{width:12px;height:12px;color:#fff}
+
+/* Console at bottom of showcase */
+.sc-console{
+  height:120px;
+  background:#0c0c10;
+  border-top:1px solid rgba(255,255,255,.06);
+  display:flex;flex-direction:column;
+  flex-shrink:0;
+}
+.sc-console-header{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.3rem .75rem;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  flex-shrink:0;
+}
+.sc-console-title{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em}
+.sc-console-count{font-size:9px;color:var(--accent);background:var(--accent-dim);padding:.1rem .35rem;border-radius:6px;font-weight:600}
+.sc-console-body{flex:1;overflow-y:auto;font-size:10px}
+.sc-ce{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.25rem .75rem;
+  border-bottom:1px solid rgba(255,255,255,.02);
+}
+.sc-ce:hover{background:rgba(255,255,255,.02)}
+.sc-ce-chev{width:10px;height:10px;color:#3f3f46}
+.sc-ce-tag{
+  font-size:9px;font-weight:600;
+  padding:.1rem .3rem;border-radius:3px;
+  text-transform:uppercase;letter-spacing:.03em;
+}
+.sc-ce-tag.read{background:rgba(99,102,241,.15);color:#818cf8}
+.sc-ce-tag.write{background:rgba(52,211,153,.12);color:#34d399}
+.sc-ce-tag.edit{background:rgba(251,191,36,.12);color:#fbbf24}
+.sc-ce-tag.bash{background:rgba(192,132,252,.12);color:#c084fc}
+.sc-ce-file{color:#a1a1aa;font-family:var(--mono);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-ce-summary{font-size:9px;color:#52525b}
+.sc-ce-summary .g{color:var(--green)}
+.sc-ce-summary .r{color:var(--red)}
+.sc-ce-time{font-size:9px;color:#3f3f46;font-family:var(--mono)}
+
+/* Right pane - file tree in showcase */
+.sc-files{
+  width:280px;display:flex;flex-direction:column;
+  overflow:hidden;flex-shrink:0;
+}
+.sc-files-header{
+  padding:.5rem .75rem;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  font-size:10px;font-weight:600;color:#71717a;
+  text-transform:uppercase;letter-spacing:.04em;
+}
+.sc-tree{flex:1;overflow-y:auto;padding:.25rem 0;font-size:11px}
+.sc-tree-item{
+  display:flex;align-items:center;gap:.3rem;
+  padding:.2rem .75rem;
+  color:var(--text-secondary);
+  white-space:nowrap;
+}
+.sc-tree-item.sel{background:var(--accent-dim);color:var(--accent)}
+.sc-tree-badge{
+  font-size:8px;font-weight:600;
+  padding:.05rem .25rem;border-radius:2px;
+  margin-left:auto;
+}
+.sc-tree-badge.add{background:var(--green-dim);color:var(--green)}
+.sc-tree-badge.mod{background:var(--amber-dim);color:var(--amber)}
+.sc-tree-badge.del{background:var(--red-dim);color:var(--red)}
+
+/* Reflection effect */
+.showcase-reflection{
+  max-width:1200px;
+  margin:-1px auto 0;
+  height:120px;
+  border-radius:0 0 16px 16px;
+  background:linear-gradient(to bottom, var(--bg-elevated), transparent);
+  mask-image:linear-gradient(to bottom, rgba(0,0,0,.15), transparent);
+  -webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,.15), transparent);
+  border-left:1px solid rgba(255,255,255,.02);
+  border-right:1px solid rgba(255,255,255,.02);
+  pointer-events:none;
+}
+
+/* ============ FEATURES ============ */
+.features{
+  padding:4rem clamp(1.5rem,4vw,3rem) 8rem;
+  max-width:1200px;
+  margin:0 auto;
+}
+.section-label{
+  font-family:var(--mono);
+  font-size:11px;font-weight:500;
+  color:var(--accent);
+  text-transform:uppercase;
+  letter-spacing:.1em;
+  margin-bottom:1rem;
+}
+.section-heading{
+  font-family:var(--serif);
+  font-size:clamp(2rem,4vw,3.25rem);
+  font-weight:400;
+  line-height:1.15;
+  letter-spacing:-0.02em;
+  max-width:640px;
+  margin-bottom:4rem;
+}
+.section-heading em{font-style:italic;color:var(--accent-bright)}
+
+.feature-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:1px;
+  background:rgba(255,255,255,.04);
+  border-radius:16px;
+  overflow:hidden;
+  border:1px solid var(--glass-border);
+}
+.feature-card{
+  background:var(--bg);
+  padding:2.5rem 2rem;
+  display:flex;flex-direction:column;
+  transition:background .3s;
+}
+.feature-card:hover{background:var(--bg-elevated)}
+.feature-icon{
+  width:40px;height:40px;
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  margin-bottom:1.25rem;
+  flex-shrink:0;
+}
+.feature-icon svg{width:20px;height:20px}
+.feature-icon.indigo{background:var(--accent-dim);color:var(--accent)}
+.feature-icon.green{background:var(--green-dim);color:var(--green)}
+.feature-icon.amber{background:var(--amber-dim);color:var(--amber)}
+.feature-icon.cyan{background:rgba(34,211,238,.1);color:var(--cyan)}
+.feature-icon.red{background:var(--red-dim);color:var(--red)}
+.feature-icon.purple{background:rgba(192,132,252,.1);color:#c084fc}
+.feature-card h3{
+  font-size:16px;font-weight:600;
+  margin-bottom:.5rem;
+  letter-spacing:-0.01em;
+}
+.feature-card p{
+  font-size:14px;
+  color:var(--text-secondary);
+  line-height:1.65;
+}
+
+/* ============ COMPLICATIONS DEEP DIVE ============ */
+.complications-section{
+  padding:6rem clamp(1.5rem,4vw,3rem) 8rem;
+  max-width:1200px;margin:0 auto;
+}
+.comp-layout{
+  display:grid;grid-template-columns:1fr 1fr;gap:4rem;
+  align-items:center;
+}
+.comp-visual{
+  background:var(--bg-elevated);
+  border:1px solid var(--glass-border);
+  border-radius:16px;
+  padding:2rem;
+  display:flex;flex-direction:column;gap:1rem;
+}
+.comp-card{
+  display:flex;align-items:center;gap:.75rem;
+  padding:.75rem 1rem;
+  background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.04);
+  border-radius:8px;
+  transition:all .2s;
+}
+.comp-card:hover{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.08)}
+.comp-card-icon{
+  width:32px;height:32px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+}
+.comp-card-icon svg{width:16px;height:16px}
+.comp-card-label{font-size:11px;color:var(--text-tertiary);font-weight:500;text-transform:uppercase;letter-spacing:.03em}
+.comp-card-value{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--text)}
+.comp-card-value .g{color:var(--green)}
+.comp-card-value .a{color:var(--amber)}
+.comp-card-value .r{color:var(--red)}
+
+.comp-text h2{
+  font-family:var(--serif);
+  font-size:clamp(2rem,3.5vw,2.75rem);
+  font-weight:400;line-height:1.2;
+  letter-spacing:-0.02em;
+  margin-bottom:1.25rem;
+}
+.comp-text h2 em{font-style:italic;color:var(--accent-bright)}
+.comp-text p{
+  font-size:15px;color:var(--text-secondary);line-height:1.7;
+  margin-bottom:1rem;
+}
+.comp-text ul{
+  list-style:none;
+  display:flex;flex-direction:column;gap:.5rem;
+  margin-top:1.5rem;
+}
+.comp-text li{
+  display:flex;align-items:center;gap:.5rem;
+  font-size:14px;color:var(--text-secondary);
+}
+.comp-text li svg{width:16px;height:16px;color:var(--green);flex-shrink:0}
+
+/* ============ ENCRYPTION STRIP ============ */
+.e2e-strip{
+  padding:4rem clamp(1.5rem,4vw,3rem);
+  text-align:center;
+  position:relative;
+  overflow:hidden;
+}
+.e2e-strip::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(180deg,transparent,rgba(52,211,153,.02),transparent);
+}
+.e2e-inner{
+  position:relative;
+  max-width:700px;margin:0 auto;
+}
+.e2e-icon{
+  width:48px;height:48px;border-radius:14px;
+  background:var(--green-dim);
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 1.25rem;
+}
+.e2e-icon svg{width:24px;height:24px;color:var(--green)}
+.e2e-strip h2{
+  font-family:var(--serif);
+  font-size:clamp(1.75rem,3vw,2.5rem);
+  font-weight:400;line-height:1.2;
+  letter-spacing:-0.02em;
+  margin-bottom:.75rem;
+}
+.e2e-strip p{
+  font-size:15px;color:var(--text-secondary);line-height:1.7;
+  max-width:520px;margin:0 auto;
+}
+.e2e-badges{
+  display:flex;justify-content:center;gap:.75rem;
+  margin-top:2rem;flex-wrap:wrap;
+}
+.e2e-badge{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.4rem .8rem;border-radius:6px;
+  background:rgba(255,255,255,.03);
+  border:1px solid var(--glass-border);
+  font-family:var(--mono);font-size:11px;
+  color:var(--text-secondary);
+}
+
+/* ============ HOW IT WORKS ============ */
+.how-section{
+  padding:6rem clamp(1.5rem,4vw,3rem) 8rem;
+  max-width:1200px;margin:0 auto;
+}
+.flow{
+  display:flex;align-items:flex-start;
+  margin-top:3.5rem;
+  counter-reset:step;
+  position:relative;
+}
+.flow-step{
+  flex:1;
+  position:relative;
+  counter-increment:step;
+  text-align:center;
+  padding:0 1.25rem;
+}
+.flow-node{
+  width:72px;height:72px;
+  border-radius:20px;
+  background:var(--bg-elevated);
+  border:1px solid var(--glass-border);
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 1.25rem;
+  position:relative;
+  transition:border-color .3s, box-shadow .3s;
+}
+.flow-step:hover .flow-node{
+  border-color:var(--accent);
+  box-shadow:0 0 24px var(--accent-dim);
+}
+.flow-node svg{width:28px;height:28px;color:var(--accent)}
+.flow-number{
+  position:absolute;top:-8px;right:-8px;
+  width:22px;height:22px;border-radius:50%;
+  background:var(--accent);color:var(--bg);
+  font-family:var(--mono);font-size:10px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+}
+.flow-connector{
+  flex:0 0 auto;
+  display:flex;align-items:center;
+  padding-top:36px; /* vertically center with node */
+  color:var(--text-tertiary);
+}
+.flow-connector svg{width:48px;height:24px}
+.flow-step h3{
+  font-size:15px;font-weight:600;
+  margin-bottom:.4rem;letter-spacing:-0.01em;
+}
+.flow-step p{font-size:13px;color:var(--text-secondary);line-height:1.6;max-width:240px;margin:0 auto}
+.flow-step code{
+  display:block;margin-top:.75rem;
+  font-family:var(--mono);font-size:11.5px;
+  color:var(--text-tertiary);
+  background:rgba(0,0,0,.3);
+  padding:.4rem .65rem;border-radius:6px;
+  border:1px solid rgba(255,255,255,.03);
+}
+.flow-step code .prompt{color:var(--accent);user-select:none}
+.flow-detail{
+  margin-top:.75rem;
+  display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem;
+}
+.flow-tag{
+  font-family:var(--mono);font-size:10px;
+  color:var(--text-tertiary);
+  background:rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.05);
+  padding:2px 8px;border-radius:4px;
+}
+@media(max-width:768px){
+  .flow{flex-direction:column;align-items:center;gap:0}
+  .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
+  .flow-step{padding:0 0 .5rem}
+}
+
+/* ============ BOTTOM CTA ============ */
+.bottom-cta{
+  padding:6rem clamp(1.5rem,4vw,3rem) 8rem;
+  text-align:center;
+  position:relative;
+}
+.bottom-cta::before{
+  content:'';position:absolute;
+  inset:0;
+  background:radial-gradient(ellipse 50% 60% at 50% 80%, rgba(99,102,241,.06), transparent);
+  pointer-events:none;
+}
+.bottom-cta-inner{position:relative;max-width:600px;margin:0 auto}
+.bottom-cta h2{
+  font-family:var(--serif);
+  font-size:clamp(2.5rem,5vw,3.5rem);
+  font-weight:400;line-height:1.1;
+  letter-spacing:-0.02em;
+  margin-bottom:1rem;
+}
+.bottom-cta h2 em{font-style:italic;color:var(--accent-bright)}
+.bottom-cta p{
+  font-size:15px;color:var(--text-secondary);
+  line-height:1.7;margin-bottom:2rem;
+}
+.bottom-actions{display:flex;justify-content:center;gap:1rem}
+
+/* ============ FOOTER ============ */
+footer{
+  border-top:1px solid rgba(255,255,255,.04);
+  padding:3rem clamp(1.5rem,4vw,3rem);
+  max-width:1200px;margin:0 auto;
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:1rem;
+}
+.footer-left{
+  display:flex;align-items:center;gap:2rem;
+}
+.footer-logo{
+  display:flex;align-items:center;gap:.5rem;
+  font-size:14px;font-weight:600;
+  color:var(--text);text-decoration:none;
+}
+.footer-logo svg{width:20px;height:20px}
+.footer-links{display:flex;gap:1.5rem;list-style:none}
+.footer-links a{color:var(--text-tertiary);text-decoration:none;font-size:13px;transition:color .2s}
+.footer-links a:hover{color:var(--text-secondary)}
+.footer-right{font-size:12px;color:var(--text-tertiary)}
+
+/* ============ SCROLL REVEALS ============ */
+.reveal{opacity:0;transform:translateY(24px);transition:all .7s var(--ease)}
+.reveal.visible{opacity:1;transform:none}
+
+/* ============ RESPONSIVE ============ */
+@media(max-width:900px){
+  .feature-grid{grid-template-columns:1fr}
+  .comp-layout{grid-template-columns:1fr;gap:2rem}
+  .comp-visual{order:2}
+  .flow{flex-direction:column;align-items:center}
+  .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
+  .nav-links{display:none}
+  .showcase-app{height:auto;flex-direction:column}
+  .sc-rail{width:100%;flex-direction:row;height:36px;border-right:none;border-bottom:1px solid rgba(255,255,255,.04)}
+  .sc-files{width:100%;height:200px;border-top:1px solid rgba(255,255,255,.04)}
+}
+@media(max-width:600px){
+  .hero h1{font-size:3rem}
+  .hero-signup, .bottom-signup{flex-direction:column;align-items:stretch}
+  .hero-oauth{flex-direction:column}
+  .bottom-oauth{flex-direction:column}
+  .auth-modal{margin:1rem;padding:2rem 1.5rem 1.5rem}
+  .e2e-badges{flex-direction:column;align-items:center}
+}
+</style>
+</head>
+<body>
+
+<!-- ===== NAV ===== -->
+<nav>
+  <a class="nav-logo" href="#">
+    <svg viewBox="0 0 28 28" fill="none">
+      <rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/>
+      <path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    <span class="nav-wordmark">Build</span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#observability">Observability</a></li>
+    <li><a href="#how">How it works</a></li>
+    <li><a href="https://github.com" target="_blank">GitHub</a></li>
+    <li><a href="#">Docs</a></li>
+  </ul>
+  <div class="nav-right">
+    <a class="nav-ghost" href="#" onclick="openAuthModal(event)">Sign in</a>
+    <a class="nav-cta" href="#" onclick="openAuthModal(event)">Get started</a>
+  </div>
+</nav>
+
+<!-- ===== AUTH MODAL ===== -->
+<div class="auth-overlay" id="auth-overlay" onclick="closeAuthModal(event)">
+  <div class="auth-modal" onclick="event.stopPropagation()">
+    <button class="auth-close" onclick="closeAuthModal()">&times;</button>
+    <div class="auth-logo">
+      <svg width="32" height="32" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/><path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </div>
+    <h3>Sign in to Build</h3>
+    <p class="auth-sub">Create your account or sign in to join the waitlist.</p>
+
+    <div class="auth-providers">
+      <a class="auth-btn auth-google" href="/auth/google/begin">
+        <svg width="18" height="18" viewBox="0 0 18 18"><path d="M17.64 9.2a10.3 10.3 0 00-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92A8.78 8.78 0 0017.64 9.2z" fill="#4285F4"/><path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.33A9 9 0 009 18z" fill="#34A853"/><path d="M3.97 10.71A5.41 5.41 0 013.68 9c0-.59.1-1.17.29-1.71V4.96H.96A9 9 0 000 9c0 1.45.35 2.82.96 4.04l3.01-2.33z" fill="#FBBC05"/><path d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 009 0 9 9 0 00.96 4.96l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" fill="#EA4335"/></svg>
+        Continue with Google
+      </a>
+      <a class="auth-btn auth-github" href="/auth/github/begin">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Continue with GitHub
+      </a>
+    </div>
+
+    <div class="auth-divider"><span>or</span></div>
+
+    <form class="auth-email-form" onsubmit="handleSignup(event, this)">
+      <input type="email" placeholder="you@email.com" required>
+      <button type="submit" class="btn-primary btn-full">
+        Sign up with email
+      </button>
+    </form>
+
+    <label class="auth-updates">
+      <input type="checkbox" checked>
+      <span>Send me product updates and launch news</span>
+    </label>
+  </div>
+</div>
+
+<!-- ===== HERO ===== -->
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="hero-glow-2"></div>
+
+  <div class="hero-badge">
+    <span class="pulse"></span>
+    Coming soon
+  </div>
+
+  <h1>Orchestrate agents<br>across <em>every device</em></h1>
+
+  <p class="hero-sub">
+    Local-first agent coordination with end-to-end encryption.
+    Plan, build, and ship with real-time observability across your entire fleet.
+  </p>
+
+  <div class="hero-auth">
+    <form class="hero-signup" onsubmit="handleSignup(event, this)">
+      <input type="email" placeholder="you@email.com" required>
+      <button type="submit" class="btn-primary">
+        Get notified
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </form>
+    <div class="hero-or"><span>or</span></div>
+    <div class="hero-oauth">
+      <a class="oauth-pill" href="/auth/google/begin">
+        <svg width="16" height="16" viewBox="0 0 18 18"><path d="M17.64 9.2a10.3 10.3 0 00-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92A8.78 8.78 0 0017.64 9.2z" fill="#4285F4"/><path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.33A9 9 0 009 18z" fill="#34A853"/><path d="M3.97 10.71A5.41 5.41 0 013.68 9c0-.59.1-1.17.29-1.71V4.96H.96A9 9 0 000 9c0 1.45.35 2.82.96 4.04l3.01-2.33z" fill="#FBBC05"/><path d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 009 0 9 9 0 00.96 4.96l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" fill="#EA4335"/></svg>
+        Google
+      </a>
+      <a class="oauth-pill" href="/auth/github/begin">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+
+  <div class="hero-install">
+    <div class="install-cmd" onclick="navigator.clipboard.writeText('curl -sSf getbuild.ing | sh')">
+      <span class="prompt">$</span> curl -sSf getbuild.ing | sh
+      <span class="copy-hint">click to copy</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===== PRODUCT SHOWCASE ===== -->
+<div class="showcase">
+  <div class="showcase-frame">
+    <div class="showcase-app">
+      <!-- Rail -->
+      <div class="sc-rail">
+        <div class="sc-rail-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/></svg></div>
+        <div class="sc-rail-icon active"><svg viewBox="0 0 16 16" fill="none"><path d="M3 3h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 3V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/></svg></div>
+        <div class="sc-rail-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M6 5h4M6 7.5h4M6 10h2.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></div>
+        <div class="sc-rail-icon"><svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h3.5l2 2H13a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg></div>
+        <div class="sc-spacer"></div>
+        <div class="sc-rail-icon sc-e2e"><svg viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.2"/></svg></div>
+      </div>
+
+      <!-- Main -->
+      <div class="sc-main">
+        <!-- Top bar -->
+        <div class="sc-topbar">
+          <span class="sc-agent-name">refactor-auth-middleware</span>
+          <span class="sc-device">on macbook-pro</span>
+          <div class="sc-status"><span class="dot"></span> Working</div>
+          <span class="sc-runtime">2m 14s</span>
+        </div>
+        <!-- Complications -->
+        <div class="sc-complications">
+          <div class="sc-comp">Model <span class="v">claude-opus-4-6</span></div>
+          <div class="sc-comp">Tokens <span class="v">42,847</span> in</div>
+          <div class="sc-comp">Files <span class="v g">+4</span> <span class="v a">~3</span> <span class="v r">-1</span></div>
+          <div class="sc-comp">Tests <span class="v g">12</span>/<span class="v a">2</span>/<span class="v r">1</span></div>
+          <div class="sc-comp">Git <span class="v g">+247</span> <span class="v r">-89</span></div>
+          <div class="sc-comp">CI <span class="v g">passing</span></div>
+        </div>
+        <!-- Content -->
+        <div class="sc-content">
+          <!-- Chat -->
+          <div class="sc-chat">
+            <div class="sc-messages">
+              <div class="sc-msg">
+                <div class="sc-avatar user">Z</div>
+                <div class="sc-msg-body">
+                  <div class="sc-msg-name">You</div>
+                  <div class="sc-msg-text">Refactor the auth middleware. Extract JWT verification into its own module and add refresh token rotation.</div>
+                </div>
+              </div>
+              <div class="sc-msg">
+                <div class="sc-avatar agent">A</div>
+                <div class="sc-msg-body">
+                  <div class="sc-msg-name">refactor-auth-middleware</div>
+                  <div class="sc-msg-text">I'll extract JWT verification into a standalone module:</div>
+                  <div class="sc-msg-code"><span class="kw">export async function</span> <span class="fn">verifyToken</span>(
+  token: <span class="kw">string</span>, config: AuthConfig
+): Promise&lt;JWTPayload&gt; {
+  <span class="kw">const</span> { payload } = <span class="kw">await</span> jwtVerify(
+    token, config.secret
+  );
+  <span class="kw">return</span> payload <span class="kw">as</span> JWTPayload;
+}</div>
+                </div>
+              </div>
+              <div class="sc-msg">
+                <div class="sc-avatar user">Z</div>
+                <div class="sc-msg-body">
+                  <div class="sc-msg-name">You</div>
+                  <div class="sc-msg-text">Use Redis for the token store.</div>
+                </div>
+              </div>
+              <div class="sc-msg">
+                <div class="sc-avatar agent">A</div>
+                <div class="sc-msg-body">
+                  <div class="sc-msg-name">refactor-auth-middleware</div>
+                  <div class="sc-msg-text">Switching to Redis. Setting up composable middleware chain with <code style="font-family:var(--mono);font-size:10px;background:rgba(255,255,255,.05);padding:.1em .3em;border-radius:3px">compose()</code> pattern. Running tests now.</div>
+                </div>
+              </div>
+            </div>
+            <div class="sc-input">
+              <div class="sc-input-field">Message agent...</div>
+              <div class="sc-send"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6h8M7 3l3 3-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            </div>
+          </div>
+          <!-- File tree -->
+          <div class="sc-files">
+            <div class="sc-files-header">Explorer</div>
+            <div class="sc-tree">
+              <div class="sc-tree-item" style="padding-left:.75rem;color:var(--text-secondary)">&#9662; src</div>
+              <div class="sc-tree-item" style="padding-left:1.5rem;color:var(--text-secondary)">&#9662; auth</div>
+              <div class="sc-tree-item sel" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">jwt.ts<span class="sc-tree-badge add">A</span></div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">refresh.ts<span class="sc-tree-badge add">A</span></div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">types.ts<span class="sc-tree-badge add">A</span></div>
+              <div class="sc-tree-item" style="padding-left:1.5rem;color:var(--text-secondary)">&#9662; middleware</div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">auth.ts<span class="sc-tree-badge mod">M</span></div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">chain.ts<span class="sc-tree-badge add">A</span></div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">jwt-legacy.ts<span class="sc-tree-badge del">D</span></div>
+              <div class="sc-tree-item" style="padding-left:1.5rem;color:var(--text-secondary)">&#9662; config</div>
+              <div class="sc-tree-item" style="padding-left:2.25rem;font-family:var(--mono);font-size:10px">redis.ts<span class="sc-tree-badge mod">M</span></div>
+              <div class="sc-tree-item" style="padding-left:1.5rem;color:var(--text-secondary)">&#9656; routes</div>
+              <div class="sc-tree-item" style="padding-left:.75rem;color:var(--text-tertiary)">&#9656; test</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Console bottom -->
+        <div class="sc-console">
+          <div class="sc-console-header">
+            <span class="sc-console-title">Console</span>
+            <span class="sc-console-count">6</span>
+          </div>
+          <div class="sc-console-body">
+            <div class="sc-ce">
+              <svg class="sc-ce-chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+              <span class="sc-ce-tag read">Read</span>
+              <span class="sc-ce-file">middleware/auth.ts</span>
+              <span class="sc-ce-summary"><span class="g">142 lines</span></span>
+              <span class="sc-ce-time">14:32</span>
+            </div>
+            <div class="sc-ce">
+              <svg class="sc-ce-chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+              <span class="sc-ce-tag write">Write</span>
+              <span class="sc-ce-file">auth/jwt.ts</span>
+              <span class="sc-ce-summary"><span class="g">89 lines</span></span>
+              <span class="sc-ce-time">14:32</span>
+            </div>
+            <div class="sc-ce">
+              <svg class="sc-ce-chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+              <span class="sc-ce-tag edit">Edit</span>
+              <span class="sc-ce-file">middleware/auth.ts</span>
+              <span class="sc-ce-summary"><span class="g">+18</span> <span class="r">-34</span></span>
+              <span class="sc-ce-time">14:33</span>
+            </div>
+            <div class="sc-ce">
+              <svg class="sc-ce-chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+              <span class="sc-ce-tag bash">Bash</span>
+              <span class="sc-ce-file">npm test</span>
+              <span class="sc-ce-summary"><span class="g">47 pass</span> <span class="r">2 fail</span></span>
+              <span class="sc-ce-time">14:34</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="showcase-reflection"></div>
+</div>
+
+<!-- ===== FEATURES ===== -->
+<section class="features reveal" id="features">
+  <div class="section-label">Capabilities</div>
+  <h2 class="section-heading">Everything you need to <em>coordinate</em> agents at scale</h2>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon indigo">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M4 4h12a1 1 0 011 1v7a1 1 0 01-1 1H7l-3 3V5a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M7 8h6M7 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Agent chat</h3>
+      <p>Direct communication with any agent on any device. Send instructions, review code, and iterate in real time with full message history.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon green">
+        <svg viewBox="0 0 20 20" fill="none"><rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M7 7h6M7 10h6M7 13h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Project planning</h3>
+      <p>Full issue tracker with priorities, assignees, checklists, and activity feeds. Agents update their own progress as they work.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon amber">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M3 5a1 1 0 011-1h4l2 2h6a1 1 0 011 1v8a1 1 0 01-1 1H4a1 1 0 01-1-1V5z" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <h3>File browser</h3>
+      <p>Browse agent workspaces with a full file tree, inline diffs, and version control integration. See exactly what changed and why.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon cyan">
+        <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M10 6v4l2.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Complications</h3>
+      <p>Always-visible status cards for git, CI/CD, tests, tokens, and model info. Per-agent context at a glance without switching views.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon red">
+        <svg viewBox="0 0 20 20" fill="none"><path d="M4 16V8l6-5 6 5v8a1 1 0 01-1 1H5a1 1 0 01-1-1z" stroke="currentColor" stroke-width="1.5"/><path d="M8 16v-5h4v5" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <h3>Local first</h3>
+      <p>Your data stays on your devices. No cloud dependency for core functionality. Works offline, syncs when connected. You own everything.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon purple">
+        <svg viewBox="0 0 20 20" fill="none"><rect x="2" y="6" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 6V4a4 4 0 018 0v2" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="11" r="1.5" fill="currentColor"/></svg>
+      </div>
+      <h3>E2E encrypted</h3>
+      <p>Every message, file, and command is end-to-end encrypted. Not even we can read your data. Zero-knowledge architecture throughout.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== COMPLICATIONS DEEP DIVE ===== -->
+<section class="complications-section reveal" id="observability">
+  <div class="comp-layout">
+    <div class="comp-text">
+      <div class="section-label">Observability</div>
+      <h2>Know everything.<br><em>Always.</em></h2>
+      <p>Complications are always-visible status cards that give you instant context about each agent's work. No digging through logs or switching tabs.</p>
+      <p>Each agent surfaces the metrics that matter for its task &mdash; git status, test results, CI/CD pipelines, model info, token usage, and more.</p>
+      <ul>
+        <li><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Git status with line-level diffs</li>
+        <li><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> CI/CD pipeline status in real time</li>
+        <li><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Test results as they run</li>
+        <li><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Token usage and cost tracking</li>
+        <li><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Agents choose their own relevant complications</li>
+      </ul>
+    </div>
+    <div class="comp-visual">
+      <div class="comp-card">
+        <div class="comp-card-icon" style="background:var(--accent-dim)"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#818cf8" stroke-width="1.2"/><path d="M6 8h4M8 6v4" stroke="#818cf8" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+        <div><div class="comp-card-label">Model</div><div class="comp-card-value">claude-opus-4-6</div></div>
+      </div>
+      <div class="comp-card">
+        <div class="comp-card-icon" style="background:var(--green-dim)"><svg viewBox="0 0 16 16" fill="none"><path d="M3 13V8M6.5 13V5M10 13V7M13.5 13V3" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+        <div><div class="comp-card-label">Files Changed</div><div class="comp-card-value"><span class="g">+4 added</span> &middot; <span class="a">3 modified</span> &middot; <span class="r">1 deleted</span></div></div>
+      </div>
+      <div class="comp-card">
+        <div class="comp-card-icon" style="background:rgba(34,211,238,.1)"><svg viewBox="0 0 16 16" fill="none"><path d="M6 8l1.5 1.5L10.5 6" stroke="#22d3ee" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="5.5" stroke="#22d3ee" stroke-width="1.2"/></svg></div>
+        <div><div class="comp-card-label">Tests</div><div class="comp-card-value"><span class="g">47 passed</span> &middot; <span class="a">2 skipped</span> &middot; <span class="r">2 failed</span></div></div>
+      </div>
+      <div class="comp-card">
+        <div class="comp-card-icon" style="background:rgba(192,132,252,.1)"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#c084fc" stroke-width="1.2"/><path d="M5 8.5l2 2 4-4.5" stroke="#c084fc" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div><div class="comp-card-label">CI/CD</div><div class="comp-card-value"><span class="g">Pipeline passing</span> &middot; Build #142</div></div>
+      </div>
+      <div class="comp-card">
+        <div class="comp-card-icon" style="background:var(--amber-dim)"><svg viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h10M3 12h6" stroke="#fbbf24" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+        <div><div class="comp-card-label">Tokens</div><div class="comp-card-value">42,847 in &middot; 8,291 out &middot; ~$1.24</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== E2E STRIP ===== -->
+<section class="e2e-strip reveal">
+  <div class="e2e-inner">
+    <div class="e2e-icon">
+      <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="11" width="18" height="11" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M7 11V7a5 5 0 0110 0v4" stroke="currentColor" stroke-width="1.8"/></svg>
+    </div>
+    <h2>End-to-end encrypted.<br>Zero compromises.</h2>
+    <p>Every message, file transfer, and command between you and your agents is encrypted end-to-end. Your code never touches our servers in plaintext.</p>
+    <div class="e2e-badges">
+      <div class="e2e-badge">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Zero-knowledge architecture
+      </div>
+      <div class="e2e-badge">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Local key management
+      </div>
+      <div class="e2e-badge">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Open source encryption layer
+      </div>
+      <div class="e2e-badge">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8l3 3 6-6" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Auditable by design
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== HOW IT WORKS ===== -->
+<section class="how-section reveal" id="how">
+  <div class="section-label">Getting started</div>
+  <h2 class="section-heading">Up and running in <em>minutes</em></h2>
+
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-node">
+        <span class="flow-number">1</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      </div>
+      <h3>Install</h3>
+      <p>One command. Works on macOS, Linux, and WSL. No Docker, no cloud accounts.</p>
+      <code><span class="prompt">$ </span>curl -sSf getbuild.ing | sh</code>
+    </div>
+
+    <div class="flow-connector">
+      <svg viewBox="0 0 48 24" fill="none"><line x1="4" y1="12" x2="36" y2="12" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/><polyline points="33,8 38,12 33,16" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-node">
+        <span class="flow-number">2</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      </div>
+      <h3>Configure device</h3>
+      <p>A guided TUI walks you through setup &mdash; name your device, point it at projects, Claude Code, and git credentials.</p>
+      <div class="flow-detail">
+        <span class="flow-tag">device name</span>
+        <span class="flow-tag">projects</span>
+        <span class="flow-tag">claude binary</span>
+        <span class="flow-tag">git creds</span>
+      </div>
+    </div>
+
+    <div class="flow-connector">
+      <svg viewBox="0 0 48 24" fill="none"><line x1="4" y1="12" x2="36" y2="12" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/><polyline points="33,8 38,12 33,16" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+    </div>
+
+    <div class="flow-step">
+      <div class="flow-node">
+        <span class="flow-number">3</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      </div>
+      <h3>Create agents</h3>
+      <p>Open the web UI and spin up as many agents as you need. Assign tasks, track progress, and watch them work &mdash; all from one dashboard.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== BOTTOM CTA ===== -->
+<section class="bottom-cta reveal">
+  <div class="bottom-cta-inner">
+    <h2>Start <em>building</em><br>with your fleet</h2>
+    <p>Sign up to be first in line when Build launches. We'll notify you as soon as it's ready.</p>
+    <div class="bottom-auth">
+      <div class="bottom-oauth">
+        <a class="auth-btn auth-google" href="/auth/google/begin">
+          <svg width="18" height="18" viewBox="0 0 18 18"><path d="M17.64 9.2a10.3 10.3 0 00-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92A8.78 8.78 0 0017.64 9.2z" fill="#4285F4"/><path d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.71H.96v2.33A9 9 0 009 18z" fill="#34A853"/><path d="M3.97 10.71A5.41 5.41 0 013.68 9c0-.59.1-1.17.29-1.71V4.96H.96A9 9 0 000 9c0 1.45.35 2.82.96 4.04l3.01-2.33z" fill="#FBBC05"/><path d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 009 0 9 9 0 00.96 4.96l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z" fill="#EA4335"/></svg>
+          Continue with Google
+        </a>
+        <a class="auth-btn auth-github" href="/auth/github/begin">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Continue with GitHub
+        </a>
+      </div>
+      <div class="auth-divider"><span>or</span></div>
+      <form class="bottom-signup" onsubmit="handleSignup(event, this)">
+        <input type="email" placeholder="you@email.com" required>
+        <button type="submit" class="btn-primary">
+          Join the waitlist
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<footer>
+  <div class="footer-left">
+    <a class="footer-logo" href="#">
+      <svg width="20" height="20" viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/><path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/></svg>
+      Build
+    </a>
+    <ul class="footer-links">
+      <li><a href="#">Docs</a></li>
+      <li><a href="#">GitHub</a></li>
+      <li><a href="#">Discord</a></li>
+      <li><a href="#">Blog</a></li>
+      <li><a href="#">Privacy</a></li>
+    </ul>
+  </div>
+  <div class="footer-right">&copy; 2026 getbuild.ing</div>
+</footer>
+
+<script>
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); }});
+}, { threshold: 0.15 });
+reveals.forEach(el => observer.observe(el));
+
+// Copy install command
+document.querySelector('.install-cmd').addEventListener('click', function() {
+  const hint = this.querySelector('.copy-hint');
+  hint.textContent = 'copied!';
+  hint.style.color = '#34d399';
+  setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
+});
+
+// Auth modal
+function openAuthModal(e) {
+  if (e) e.preventDefault();
+  document.getElementById('auth-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeAuthModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('auth-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeAuthModal();
+});
+
+// Campaign signup
+const CAMPAIGN_SLUG = 'build-launch';
+const API_BASE = '/v2/api/campaign-signups';
+
+function getEmailUpdatesPreference(form) {
+  // Check if there's a checkbox in the form's context (auth modal)
+  const modal = form.closest('.auth-modal');
+  if (modal) {
+    const cb = modal.querySelector('.auth-updates input[type="checkbox"]');
+    return cb ? cb.checked : true;
+  }
+  return true; // default to opted-in for hero/bottom forms
+}
+
+async function handleSignup(e, form) {
+  e.preventDefault();
+  const input = form.querySelector('input[type="email"]');
+  const btn = form.querySelector('button');
+  const email = input.value.trim();
+  if (!email) return;
+
+  const origText = btn.innerHTML;
+  btn.innerHTML = '...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch(API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        campaign_slug: CAMPAIGN_SLUG,
+        email,
+        email_updates: getEmailUpdatesPreference(form),
+      })
+    });
+
+    if (res.ok || res.status === 409) {
+      form.innerHTML = '<div class="signup-success">You\'re on the list. Check your email to confirm.</div>';
+    } else if (res.status === 429) {
+      btn.innerHTML = origText;
+      btn.disabled = false;
+      input.value = '';
+      input.placeholder = 'Too many requests — try again shortly';
+    } else {
+      throw new Error(res.statusText);
+    }
+  } catch (err) {
+    btn.innerHTML = origText;
+    btn.disabled = false;
+    input.value = '';
+    input.placeholder = 'Something went wrong — try again';
+  }
+}
+
+// Smooth scroll for nav links
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,9 @@
+name: build
+display_name: Build
+description: Landing page theme for getbuild.ing
+version: "1.0.0"
+author: "Zech"
+colors:
+  - "#818cf8"
+  - "#6366f1"
+  - "#07070a"

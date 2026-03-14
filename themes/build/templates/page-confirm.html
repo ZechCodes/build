@@ -9,6 +9,8 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+canvas#mesh{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.card{position:relative;z-index:1}
 body{
   background:#07070a;color:#e8e8ed;
   font-family:'DM Sans',system-ui,sans-serif;
@@ -49,6 +51,7 @@ a:hover{background:#6366f1;box-shadow:0 4px 24px rgba(99,102,241,.3)}
 </style>
 </head>
 <body>
+<canvas id="mesh"></canvas>
 <div class="card">
   {% if success %}
   <div class="icon icon-success">
@@ -66,5 +69,26 @@ a:hover{background:#6366f1;box-shadow:0 4px 24px rgba(99,102,241,.3)}
   <a href="/">Back to getbuild.ing</a>
   {% endif %}
 </div>
+<script>
+(function(){
+  const c=document.getElementById('mesh');if(!c)return;const ctx=c.getContext('2d');
+  let w,h,dpr;
+  const GAP=180,SPAWN_INTERVAL=1400,EDGES_PER_BURST=2,EDGE_SPEED=0.5,PROPAGATE_CHANCE=0.35,MAX_PROPAGATE=3;
+  let verts=[],edges=[],trails=[],lastSpawn=0;
+  function resize(){dpr=devicePixelRatio||1;w=c.width=innerWidth*dpr;h=c.height=innerHeight*dpr;c.style.width=innerWidth+'px';c.style.height=innerHeight+'px'}
+  function buildGrid(){verts=[];const g=GAP*dpr,rh=g*Math.sin(Math.PI/3),cols=Math.ceil(w/g)+2,rows=Math.ceil(h/rh)+2;for(let r=-1;r<rows;r++){const o=(r%2)?g*.5:0;for(let col=-1;col<cols;col++)verts.push({x:col*g+o,y:r*rh})}}
+  function neighbors(v,exclude){const maxD=GAP*dpr*1.15,result=[];for(const u of verts){if(u===v||u===exclude)continue;const dx=u.x-v.x,dy=u.y-v.y;if(Math.sqrt(dx*dx+dy*dy)<maxD)result.push(u)}return result}
+  function spawnEdge(from,to,depth){const dx=to.x-from.x,dy=to.y-from.y,dist=Math.sqrt(dx*dx+dy*dy);edges.push({from,to,ox:from.x,oy:from.y,x:from.x,y:from.y,totalDist:dist,traveled:0,speed:(EDGE_SPEED+Math.random()*0.2)*dpr,alpha:0.22+Math.random()*0.08,life:1,arrived:false,depth:depth||0})}
+  function spawnBurst(){const v=verts[(Math.random()*verts.length)|0],nb=neighbors(v);if(!nb.length)return;const shuffled=nb.sort(()=>Math.random()-0.5),count=Math.min(EDGES_PER_BURST,shuffled.length);for(let i=0;i<count;i++)spawnEdge(v,shuffled[i],0)}
+  function draw(now){ctx.clearRect(0,0,w,h);if(now-lastSpawn>SPAWN_INTERVAL){spawnBurst();lastSpawn=now}
+  for(let i=edges.length-1;i>=0;i--){const e=edges[i],px=e.x,py=e.y;if(!e.arrived){const dx=e.to.x-e.ox,dy=e.to.y-e.oy,angle=Math.atan2(dy,dx);e.x+=Math.cos(angle)*e.speed;e.y+=Math.sin(angle)*e.speed;e.traveled+=e.speed;trails.push({x1:px,y1:py,x2:e.x,y2:e.y,alpha:e.alpha,life:1});if(e.traveled>=e.totalDist){e.x=e.to.x;e.y=e.to.y;e.arrived=true;if(e.depth<MAX_PROPAGATE){const nb=neighbors(e.to,e.from);for(const u of nb){if(Math.random()<PROPAGATE_CHANCE)spawnEdge(e.to,u,e.depth+1)}}}}else{edges.splice(i,1);continue}ctx.beginPath();ctx.arc(e.x,e.y,2.5*dpr,0,Math.PI*2);ctx.fillStyle='rgba(129,140,248,'+(e.alpha*0.8)+')';ctx.fill()}
+  for(let i=trails.length-1;i>=0;i--){const t=trails[i];t.life-=0.006;if(t.life<=0){trails.splice(i,1);continue}const a=t.alpha*t.life;ctx.beginPath();ctx.moveTo(t.x1,t.y1);ctx.lineTo(t.x2,t.y2);ctx.strokeStyle='rgba(129,140,248,'+a+')';ctx.lineWidth=(0.6+t.life*0.8)*dpr;ctx.stroke()}
+  requestAnimationFrame(draw)}
+  function simStep(){for(let i=edges.length-1;i>=0;i--){const e=edges[i],px=e.x,py=e.y;if(!e.arrived){const dx=e.to.x-e.ox,dy=e.to.y-e.oy,angle=Math.atan2(dy,dx);e.x+=Math.cos(angle)*e.speed;e.y+=Math.sin(angle)*e.speed;e.traveled+=e.speed;trails.push({x1:px,y1:py,x2:e.x,y2:e.y,alpha:e.alpha,life:1});if(e.traveled>=e.totalDist){e.x=e.to.x;e.y=e.to.y;e.arrived=true;if(e.depth<MAX_PROPAGATE){const nb=neighbors(e.to,e.from);for(const u of nb){if(Math.random()<PROPAGATE_CHANCE)spawnEdge(e.to,u,e.depth+1)}}}}else{edges.splice(i,1)}}for(let i=trails.length-1;i>=0;i--){trails[i].life-=0.006;if(trails[i].life<=0)trails.splice(i,1)}}
+  addEventListener('resize',function(){resize();buildGrid();edges=[];trails=[]});resize();buildGrid();
+  for(let b=0;b<8;b++){spawnBurst();for(let f=0;f<120;f++)simStep()}
+  requestAnimationFrame(draw)
+})();
+</script>
 </body>
 </html>

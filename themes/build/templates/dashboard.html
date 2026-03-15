@@ -1463,6 +1463,22 @@ document.addEventListener('sk:notification', (e) => {
       break;
     }
 
+    case 'e2ee-ready': {
+      // Device uploaded transport key — update device record and trigger E2EE connect.
+      const dev = devices.get(deviceId);
+      if (dev) {
+        dev.has_transport_key = true;
+        dev.status = 'online';
+      }
+      renderDeviceGrid();
+      // If not already connected, initiate E2EE.
+      if (!e2ee || !e2ee.connected) {
+        console.log('[E2EE] Device e2ee-ready notification — connecting...');
+        initE2EE();
+      }
+      break;
+    }
+
     case 'status': {
       addActivity(
         `<strong>${escapeHtml(deviceName)}</strong> status update`,
@@ -1590,15 +1606,10 @@ async function initE2EE() {
   };
 
   if (!await connectToDevice()) {
-    console.log('[E2EE] Not connected, will retry every 5s');
-    const retryInterval = setInterval(async () => {
-      if (e2ee && e2ee.connected) { clearInterval(retryInterval); return; }
-      // Re-fetch device list in case transport keys or status changed.
-      await fetchDevices();
-      dot.className = 'e2ee-dot connecting';
-      label.textContent = 'Retrying...';
-      if (await connectToDevice()) clearInterval(retryInterval);
-    }, 5000);
+    // No device ready — wait for build:device:e2ee-ready notification.
+    console.log('[E2EE] No device ready, waiting for e2ee-ready notification');
+    dot.className = 'e2ee-dot connecting';
+    label.textContent = 'Waiting for device...';
   }
 }
 
@@ -1619,10 +1630,9 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-label').textContent = 'Reconnecting...';
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
-    // Reset e2ee so initE2EE creates a fresh instance (avoids stale listener state).
+    // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
-    // Auto-reconnect — give device time to reconnect after deploy.
-    setTimeout(() => initE2EE(), 5000);
+    // Don't poll — the e2ee-ready notification will trigger reconnect.
   });
 
   // ----- Channel list -----

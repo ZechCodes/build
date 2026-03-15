@@ -880,6 +880,13 @@ class DeviceApiController(Controller):
                         await db_session.commit()
 
                     logger.info("Device %s uploaded transport key", device_id)
+
+                    # Notify browser clients that the device is E2EE-ready.
+                    await _notify_device_event(
+                        owner_user_id, "e2ee-ready",
+                        device_id, device_name,
+                    )
+
                     if rid:
                         await socket.send_json({"type": "response", "rid": rid, "ok": True})
 

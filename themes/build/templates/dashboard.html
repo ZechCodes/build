@@ -737,9 +737,37 @@ body{
   transition:background-color 150ms ease;
 }
 .sk-status-label{font-weight:500}
+/* ===== MOBILE CHANNEL DROPDOWN ===== */
+.chat-mobile-header{display:none}
+.chat-mobile-select{
+  width:100%;padding:.5rem .75rem;
+  font-size:14px;font-family:var(--font);
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%2371717a' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right .75rem center;
+  cursor:pointer;
+}
+.chat-mobile-header-row{
+  display:flex;align-items:center;gap:.5rem;
+}
+.chat-mobile-header-row .chat-sidebar-btn{flex-shrink:0}
+.chat-mobile-e2ee{
+  display:flex;align-items:center;gap:.4rem;
+  font-size:10px;color:var(--text-muted);padding-top:.25rem;
+}
+
 @media(max-width:600px){
   .sk-status-indicator{
     bottom:calc(1rem + env(safe-area-inset-bottom,0px));
+  }
+  .chat-sidebar{display:none !important}
+  .chat-mobile-header{
+    display:block;
+    padding:.5rem .75rem;
+    border-bottom:1px solid var(--border);
+    background:rgba(255,255,255,0.5);
   }
 }
 </style>
@@ -896,6 +924,20 @@ body{
         </div>
         <!-- Chat main area -->
         <div class="chat-main">
+          <div class="chat-mobile-header" id="chat-mobile-header">
+            <div class="chat-mobile-header-row">
+              <select class="chat-mobile-select" id="chat-mobile-select">
+                <option value="">Select a channel...</option>
+              </select>
+              <button class="chat-sidebar-btn" id="btn-new-channel-mobile" title="New channel">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <div class="chat-mobile-e2ee">
+              <span class="e2ee-dot" id="e2ee-dot-mobile"></span>
+              <span id="e2ee-label-mobile">Not connected</span>
+            </div>
+          </div>
           <div class="chat-messages" id="chat-messages">
             <div class="empty-state" id="chat-empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1582,10 +1624,14 @@ function bindE2EEEvents() {
 function renderChannelList() {
   const list = document.getElementById('chat-channel-list');
   const empty = document.getElementById('channels-empty');
+  const mobileSelect = document.getElementById('chat-mobile-select');
 
   if (chatChannels.size === 0) {
     if (empty) empty.style.display = '';
     list.querySelectorAll('.channel-item').forEach(el => el.remove());
+    if (mobileSelect) {
+      mobileSelect.innerHTML = '<option value="">No channels yet</option>';
+    }
     return;
   }
 
@@ -1593,6 +1639,8 @@ function renderChannelList() {
   list.querySelectorAll('.channel-item').forEach(el => el.remove());
 
   const sorted = [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at);
+
+  // Desktop sidebar
   for (const ch of sorted) {
     const item = document.createElement('div');
     item.className = 'channel-item' + (chatCurrentChannel === ch.id ? ' active' : '');
@@ -1600,6 +1648,18 @@ function renderChannelList() {
     item.innerHTML = `<span class="channel-hash">#</span> ${escapeHtml(ch.name)}`;
     item.addEventListener('click', () => selectChannel(ch.id));
     list.appendChild(item);
+  }
+
+  // Mobile dropdown
+  if (mobileSelect) {
+    mobileSelect.innerHTML = '<option value="">Select a channel...</option>';
+    for (const ch of sorted) {
+      const opt = document.createElement('option');
+      opt.value = ch.id;
+      opt.textContent = `# ${ch.name}`;
+      if (chatCurrentChannel === ch.id) opt.selected = true;
+      mobileSelect.appendChild(opt);
+    }
   }
 }
 
@@ -1838,6 +1898,36 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
     if (e.key === 'Escape') close();
   });
 });
+
+// ----- Mobile channel dropdown -----
+document.getElementById('chat-mobile-select')?.addEventListener('change', (e) => {
+  const channelId = e.target.value;
+  if (channelId) selectChannel(channelId);
+});
+
+// Mobile new-channel button triggers the same dialog
+document.getElementById('btn-new-channel-mobile')?.addEventListener('click', () => {
+  document.getElementById('btn-new-channel')?.click();
+});
+
+// Sync E2EE status to mobile indicator
+function syncMobileE2EEStatus() {
+  const dot = document.getElementById('e2ee-dot');
+  const label = document.getElementById('e2ee-label');
+  const mobileDot = document.getElementById('e2ee-dot-mobile');
+  const mobileLabel = document.getElementById('e2ee-label-mobile');
+  if (dot && mobileDot) mobileDot.className = dot.className;
+  if (label && mobileLabel) mobileLabel.textContent = label.textContent;
+}
+// Observe changes to the desktop E2EE status.
+const _e2eeDot = document.getElementById('e2ee-dot');
+if (_e2eeDot) {
+  new MutationObserver(syncMobileE2EEStatus).observe(_e2eeDot, { attributes: true });
+}
+const _e2eeLabel = document.getElementById('e2ee-label');
+if (_e2eeLabel) {
+  new MutationObserver(syncMobileE2EEStatus).observe(_e2eeLabel, { childList: true, characterData: true, subtree: true });
+}
 
 
 </script>

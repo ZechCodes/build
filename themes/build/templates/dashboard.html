@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Build — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --rail-bg:#0f0f12;
+  --bg:#18181f;
+  --surface:#24242e;
+  --surface-alt:#2e2e3a;
+  --accent:#a78bfa;
+  --accent-rich:#7c3aed;
+  --accent-glow:rgba(167,139,250,.15);
+  --text:#e4e4e7;
+  --text-muted:#71717a;
+  --border:#3f3f50;
+  --green:#34d399;
+  --amber:#fbbf24;
+  --red:#f87171;
+  --console-bg:#0f0f12;
+  --font:'DM Sans','Geist',sans-serif;
+  --mono:'JetBrains Mono','Geist Mono',monospace;
+  --radius:8px;
+  --radius-sm:6px;
+  --rail-w:48px;
+}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;display:flex;flex-direction:column}
+::selection{background:var(--accent-rich);color:#fff}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+
+/* Layout */
+.app{display:flex;flex:1;overflow:hidden}
+
+/* ===== DASHBOARD ===== */
+.dashboard{flex:1;overflow-y:auto;padding:2.5rem 3rem;display:none}
+.dashboard.active{display:block}
+
+.dash-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2rem}
+.dash-logo{display:flex;align-items:center;gap:12px}
+.dash-logo svg{width:32px;height:32px}
+.dash-logo h1{font-size:22px;font-weight:700;letter-spacing:-.5px}
+.dash-logo h1 span{color:var(--accent)}
+.dash-subtitle{font-size:13px;color:var(--text-muted);margin-top:2px}
+.dash-e2e{
+  display:flex;align-items:center;gap:6px;font-size:11px;color:var(--green);
+  background:rgba(52,211,153,.08);padding:6px 12px;border-radius:20px;border:1px solid rgba(52,211,153,.15);
+}
+
+.stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:2rem}
+.stat-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;
+  transition:border-color .15s;
+}
+.stat-card:hover{border-color:var(--accent)}
+.stat-card .label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:8px}
+.stat-card .value{font-size:26px;font-weight:700;letter-spacing:-.5px}
+.stat-card .sub{font-size:11px;color:var(--text-muted);margin-top:2px}
+.stat-card .value .accent{color:var(--accent)}
+.stat-card .value .green{color:var(--green)}
+.stat-card .value .amber{color:var(--amber)}
+
+.section-title{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:14px}
+
+.devices-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:2.5rem}
+.device-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:1.25rem;cursor:pointer;transition:all .2s;
+}
+.device-card:hover{border-color:var(--accent);box-shadow:0 0 20px rgba(167,139,250,.06)}
+.device-card.offline{opacity:.55}
+.device-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.device-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.device-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.device-dot.online{background:var(--green);box-shadow:0 0 6px rgba(52,211,153,.4)}
+.device-dot.offline{background:var(--text-muted)}
+.device-status{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px}
+.device-agents{display:flex;flex-direction:column;gap:6px}
+.device-agent{
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
+  background:var(--surface-alt);border-radius:var(--radius-sm);
+  font-size:13px;transition:background .15s;cursor:pointer;
+}
+.device-agent:hover{background:var(--border)}
+.agent-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.agent-dot.working{background:var(--green)}
+.agent-dot.idle{background:var(--amber)}
+.agent-dot.stopped{background:var(--text-muted)}
+.device-agent .name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-agent .tag{
+  font-size:10px;padding:2px 7px;border-radius:4px;font-weight:500;
+}
+.tag.working{background:rgba(52,211,153,.12);color:var(--green)}
+.tag.idle{background:rgba(251,191,36,.1);color:var(--amber)}
+.tag.stopped{background:rgba(113,113,122,.12);color:var(--text-muted)}
+.device-agent .unread{
+  background:var(--accent-rich);color:#fff;font-size:10px;font-weight:700;
+  padding:1px 6px;border-radius:10px;min-width:18px;text-align:center;flex-shrink:0;
+}
+
+.activity-feed{margin-bottom:2rem}
+.activity-item{
+  display:flex;align-items:flex-start;gap:12px;padding:10px 0;
+  border-bottom:1px solid rgba(63,63,80,.4);font-size:13px;
+}
+.activity-item:last-child{border-bottom:none}
+.activity-time{color:var(--text-muted);font-size:11px;min-width:50px;flex-shrink:0;font-family:var(--mono)}
+.activity-dot{width:6px;height:6px;border-radius:50%;margin-top:6px;flex-shrink:0}
+.activity-text{flex:1;color:var(--text)}
+.activity-text strong{font-weight:600;color:var(--accent)}
+
+/* ===== AGENT WORKSPACE ===== */
+.workspace{flex:1;display:none;flex-direction:column;overflow:hidden}
+.workspace.active{display:flex}
+
+/* Top bar */
+.topbar{
+  display:flex;align-items:center;gap:16px;padding:0 20px;height:48px;
+  background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.topbar-back{
+  display:flex;align-items:center;gap:6px;color:var(--text-muted);cursor:pointer;
+  font-size:13px;transition:color .15s;background:none;border:none;font-family:var(--font);
+}
+.topbar-back:hover{color:var(--accent)}
+.topbar-sep{width:1px;height:24px;background:var(--border)}
+.topbar-agent{font-weight:600;font-size:14px}
+.topbar-device{font-size:12px;color:var(--text-muted)}
+.topbar-badge{
+  font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600;
+  background:rgba(52,211,153,.12);color:var(--green);
+}
+.topbar-timer{font-size:12px;color:var(--text-muted);font-family:var(--mono);margin-left:auto}
+
+/* Complications bar */
+.complications{
+  display:flex;align-items:center;gap:1px;padding:0;height:36px;
+  background:var(--rail-bg);border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.complication{
+  display:flex;align-items:center;gap:6px;padding:0 14px;height:100%;
+  font-size:11px;color:var(--text-muted);border-right:1px solid rgba(63,63,80,.4);
+  white-space:nowrap;
+}
+.complication .cl{font-weight:600;color:var(--text)}
+.complication .dot{width:5px;height:5px;border-radius:50%}
+
+/* Workspace body */
+.ws-body{display:flex;flex:1;overflow:hidden}
+
+/* Icon rail */
+.icon-rail{
+  width:var(--rail-w);min-width:var(--rail-w);background:var(--rail-bg);
+  display:flex;flex-direction:column;align-items:center;padding-top:8px;gap:4px;
+  border-right:1px solid var(--border);flex-shrink:0;
+}
+.rail-icon{
+  width:40px;height:40px;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius-sm);cursor:pointer;color:var(--text-muted);
+  transition:all .15s;position:relative;border:none;background:none;
+}
+.rail-icon:hover{color:var(--text);background:var(--surface)}
+.rail-icon.active{
+  color:var(--accent);background:rgba(167,139,250,.08);
+  box-shadow:inset 3px 0 0 var(--accent);border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+}
+.rail-icon svg{width:20px;height:20px}
+
+/* Content panels */
+.ws-content{flex:1;display:flex;overflow:hidden}
+.panel-chat,.panel-plan,.panel-files{display:none;flex:1;overflow:hidden}
+.panel-chat.active,.panel-plan.active,.panel-files.active{display:flex}
+
+/* ===== CHAT PANEL ===== */
+.chat-area{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
+.chat-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.msg{display:flex;flex-direction:column;gap:4px;max-width:85%}
+.msg.user{align-self:flex-end}
+.msg.agent{align-self:flex-start}
+.msg-meta{font-size:11px;color:var(--text-muted);padding:0 4px}
+.msg.user .msg-meta{text-align:right}
+.msg-bubble{
+  padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.6;
+}
+.msg.user .msg-bubble{
+  background:linear-gradient(135deg,var(--accent-rich),#6d28d9);color:#fff;
+  border-bottom-right-radius:4px;
+}
+.msg.agent .msg-bubble{
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  border-bottom-left-radius:4px;
+}
+.msg-bubble code{
+  font-family:var(--mono);font-size:12px;background:rgba(167,139,250,.12);
+  padding:2px 6px;border-radius:4px;
+}
+.msg.user .msg-bubble code{background:rgba(255,255,255,.15)}
+
+.chat-input-area{
+  padding:16px 20px;border-top:1px solid var(--border);flex-shrink:0;
+}
+.chat-input-wrap{
+  display:flex;align-items:flex-end;gap:8px;background:var(--surface);
+  border:1px solid var(--border);border-radius:12px;padding:8px 12px;
+  transition:border-color .15s;
+}
+.chat-input-wrap:focus-within{border-color:var(--accent)}
+.chat-input{
+  flex:1;background:none;border:none;color:var(--text);font-family:var(--font);
+  font-size:13px;resize:none;outline:none;min-height:20px;max-height:120px;
+}
+.chat-input::placeholder{color:var(--text-muted)}
+.chat-send{
+  width:32px;height:32px;border-radius:8px;border:none;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),var(--accent-rich));color:#fff;
+  display:flex;align-items:center;justify-content:center;transition:opacity .15s;flex-shrink:0;
+}
+.chat-send:hover{opacity:.85}
+
+/* ===== CONSOLE ===== */
+.console{
+  width:380px;min-width:300px;background:var(--console-bg);
+  display:flex;flex-direction:column;overflow:hidden;position:relative;
+}
+.console-header{
+  display:flex;align-items:center;justify-content:space-between;padding:10px 16px;
+  border-bottom:1px solid rgba(63,63,80,.4);flex-shrink:0;
+}
+.console-title{font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.console-entries{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+.console-entry{font-size:12px;font-family:var(--mono);display:flex;flex-direction:column;gap:2px}
+.console-entry .op{display:flex;align-items:center;gap:8px}
+.console-entry .op-name{
+  font-weight:500;padding:2px 7px;border-radius:4px;font-size:10px;text-transform:uppercase;
+}
+.op-name.read{background:rgba(52,211,153,.1);color:var(--green)}
+.op-name.write{background:rgba(167,139,250,.12);color:var(--accent)}
+.op-name.edit{background:rgba(251,191,36,.1);color:var(--amber)}
+.op-name.bash{background:rgba(248,113,113,.1);color:var(--red)}
+.console-entry .op-path{color:var(--text-muted);font-size:11px}
+.console-entry .op-detail{color:rgba(228,228,231,.4);font-size:11px;padding-left:4px}
+
+/* Notification overlays */
+.console-notification{
+  position:absolute;bottom:12px;right:12px;left:12px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:10px 14px;display:flex;align-items:center;gap:10px;font-size:12px;
+  box-shadow:0 4px 20px rgba(0,0,0,.4);animation:slideUp .3s ease;
+  z-index:10;
+}
+.console-notification.hidden{display:none}
+.console-notification .notif-dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
+.console-notification .notif-text{flex:1;color:var(--text)}
+.console-notification .notif-time{color:var(--text-muted);font-size:10px;font-family:var(--mono);flex-shrink:0}
+.console-notification .notif-close{
+  background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;
+  padding:0 2px;transition:color .15s;
+}
+.console-notification .notif-close:hover{color:var(--text)}
+@keyframes slideUp{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+/* ===== PLANNING PANEL ===== */
+.plan-main{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
+.plan-content{flex:1;overflow-y:auto;padding:20px}
+.plan-section{margin-bottom:24px}
+.plan-section-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:12px}
+.plan-item{
+  display:flex;align-items:flex-start;gap:10px;padding:8px 12px;
+  border-radius:var(--radius-sm);margin-bottom:4px;font-size:13px;
+  transition:background .1s;
+}
+.plan-item:hover{background:var(--surface)}
+.plan-check{
+  width:18px;height:18px;border-radius:4px;border:2px solid var(--border);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;
+}
+.plan-item.done .plan-check{background:var(--green);border-color:var(--green)}
+.plan-item.done .plan-check::after{content:'\2713';color:#fff;font-size:11px;font-weight:700}
+.plan-item.done .plan-text{color:var(--text-muted);text-decoration:line-through}
+.plan-item.in-progress .plan-check{border-color:var(--accent);background:rgba(167,139,250,.15)}
+.plan-item.in-progress .plan-check::after{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.plan-item.in-progress .plan-text{color:var(--accent);font-weight:500}
+.plan-text{flex:1}
+
+.plan-notes{margin-top:20px}
+.plan-notes-title{font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px}
+.plan-notes-content{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px;font-size:13px;color:var(--text);line-height:1.7;
+}
+.plan-notes-content em{color:var(--accent);font-style:normal}
+
+/* ===== FILES PANEL ===== */
+.files-tree{
+  width:240px;min-width:200px;background:var(--surface);border-right:1px solid var(--border);
+  overflow-y:auto;padding:12px 0;display:flex;flex-direction:column;
+}
+.tree-title{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--text-muted);padding:0 14px 10px;
+}
+.tree-item{
+  display:flex;align-items:center;gap:6px;padding:4px 14px;font-size:12px;
+  cursor:pointer;transition:background .1s;white-space:nowrap;
+}
+.tree-item:hover{background:var(--surface-alt)}
+.tree-item.active{background:var(--accent-glow);color:var(--accent)}
+.tree-item .arrow{width:12px;font-size:9px;color:var(--text-muted);text-align:center;flex-shrink:0;transition:transform .15s}
+.tree-item .arrow.collapsed{transform:rotate(-90deg)}
+.tree-item .arrow.none{visibility:hidden}
+.tree-item .icon{font-size:13px;flex-shrink:0}
+.tree-item .fname{flex:1;overflow:hidden;text-overflow:ellipsis}
+.tree-item.modified .fname::after{content:'M';margin-left:6px;font-size:9px;color:var(--amber);font-weight:700}
+.tree-children{display:flex;flex-direction:column}
+.tree-children.collapsed{display:none}
+.tree-item.depth-1{padding-left:26px}
+.tree-item.depth-2{padding-left:38px}
+.tree-item.depth-3{padding-left:50px}
+
+.diff-viewer{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.diff-header{
+  display:flex;align-items:center;gap:12px;padding:10px 16px;
+  border-bottom:1px solid var(--border);flex-shrink:0;font-size:13px;
+}
+.diff-filename{font-weight:600;font-family:var(--mono);font-size:12px}
+.diff-badge{font-size:10px;padding:2px 8px;border-radius:4px;font-weight:500}
+.diff-badge.modified{background:rgba(251,191,36,.1);color:var(--amber)}
+.diff-badge.added{background:rgba(52,211,153,.1);color:var(--green)}
+.diff-content{flex:1;overflow:auto;padding:0;font-family:var(--mono);font-size:12px}
+.diff-line{display:flex;padding:1px 16px;min-height:22px;align-items:center}
+.diff-line .ln{width:40px;color:var(--text-muted);text-align:right;padding-right:12px;flex-shrink:0;user-select:none;font-size:11px}
+.diff-line .code{flex:1;white-space:pre}
+.diff-line.add{background:rgba(52,211,153,.06)}
+.diff-line.add .code{color:var(--green)}
+.diff-line.add .ln{color:rgba(52,211,153,.4)}
+.diff-line.remove{background:rgba(248,113,113,.06)}
+.diff-line.remove .code{color:var(--red)}
+.diff-line.remove .ln{color:rgba(248,113,113,.4)}
+.diff-line.context .code{color:var(--text-muted)}
+
+.files-console{width:340px;min-width:280px}
+
+/* Empty state */
+.empty-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:3rem;text-align:center;gap:12px;color:var(--text-muted);
+}
+.empty-state svg{opacity:.3}
+.empty-state h3{font-size:16px;font-weight:600;color:var(--text)}
+.empty-state p{font-size:13px;max-width:360px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== DASHBOARD ===== -->
+  <div class="dashboard active" id="dashboard">
+    <div class="dash-header">
+      <div class="dash-logo">
+        <svg viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="#a78bfa" stroke-width="2"/><circle cx="10" cy="14" r="3" fill="#a78bfa"/><circle cx="22" cy="14" r="3" fill="#a78bfa"/><circle cx="16" cy="22" r="3" fill="#a78bfa"/><line x1="10" y1="14" x2="22" y2="14" stroke="#a78bfa" stroke-width="1.5"/><line x1="10" y1="14" x2="16" y2="22" stroke="#a78bfa" stroke-width="1.5"/><line x1="22" y1="14" x2="16" y2="22" stroke="#a78bfa" stroke-width="1.5"/></svg>
+        <div>
+          <h1><span>Build</span></h1>
+          <div class="dash-subtitle">Fleet Overview</div>
+        </div>
+      </div>
+      <div class="dash-e2e">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        E2E Encrypted
+      </div>
+    </div>
+
+    <div class="stat-cards">
+      <div class="stat-card">
+        <div class="label">Devices</div>
+        <div class="value"><span class="green">0</span></div>
+        <div class="sub">No devices registered</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Agents</div>
+        <div class="value"><span class="accent">0</span> active</div>
+        <div class="sub">0 total across fleet</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Tasks</div>
+        <div class="value">0</div>
+        <div class="sub">0 in progress</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Tokens</div>
+        <div class="value">0</div>
+        <div class="sub">~$0.00 estimated</div>
+      </div>
+    </div>
+
+    <div class="section-title">Devices</div>
+    <div class="devices-grid" id="devices-grid">
+      <div class="empty-state" style="grid-column:1/-1">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+        </svg>
+        <h3>No devices yet</h3>
+        <p>Register a device to start managing your agent fleet. Devices connect securely using E2E encrypted transport.</p>
+      </div>
+    </div>
+
+    <div class="section-title">Activity</div>
+    <div class="activity-feed" id="activity-feed">
+      <div class="activity-item">
+        <span class="activity-time">now</span>
+        <span class="activity-dot" style="background:var(--accent)"></span>
+        <span class="activity-text"><strong>Dashboard</strong> initialized &mdash; waiting for device connections</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== AGENT WORKSPACE ===== -->
+  <div class="workspace" id="workspace">
+    <!-- Top bar -->
+    <div class="topbar">
+      <button class="topbar-back" onclick="goToDashboard()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        Dashboard
+      </button>
+      <div class="topbar-sep"></div>
+      <span class="topbar-agent" id="topbar-agent"></span>
+      <span class="topbar-device" id="topbar-device"></span>
+      <span class="topbar-badge" id="topbar-badge">Working</span>
+      <span class="topbar-timer" id="topbar-timer">0m 0s</span>
+    </div>
+
+    <!-- Complications -->
+    <div class="complications">
+      <div class="complication">
+        <span style="color:var(--text-muted)">Model</span>
+        <span class="cl" id="comp-model">—</span>
+      </div>
+      <div class="complication">
+        <span style="color:var(--text-muted)">Tokens</span>
+        <span class="cl" id="comp-tokens">—</span>
+      </div>
+      <div class="complication">
+        <span style="color:var(--text-muted)">Files</span>
+        <span class="cl" id="comp-files">—</span>
+      </div>
+      <div class="complication">
+        <span style="color:var(--text-muted)">Status</span>
+        <span class="dot" id="comp-status-dot" style="background:var(--text-muted)"></span>
+        <span class="cl" id="comp-status">—</span>
+      </div>
+    </div>
+
+    <div class="ws-body">
+      <!-- Icon rail -->
+      <div class="icon-rail">
+        <button class="rail-icon active" data-panel="chat" onclick="switchPanel('chat')" title="Chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        </button>
+        <button class="rail-icon" data-panel="plan" onclick="switchPanel('plan')" title="Plan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        </button>
+        <button class="rail-icon" data-panel="files" onclick="switchPanel('files')" title="Files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+        </button>
+      </div>
+
+      <div class="ws-content">
+        <!-- CHAT PANEL -->
+        <div class="panel-chat active" id="panel-chat">
+          <div class="chat-area">
+            <div class="chat-messages" id="chat-messages">
+              <div class="empty-state">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                </svg>
+                <h3>No messages yet</h3>
+                <p>Send a message to this agent to get started.</p>
+              </div>
+            </div>
+            <div class="chat-input-area">
+              <div class="chat-input-wrap">
+                <textarea class="chat-input" rows="1" placeholder="Message agent..."></textarea>
+                <button class="chat-send">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="console" id="console-chat">
+            <div class="console-header">
+              <span class="console-title">Console</span>
+              <span style="font-size:11px;color:var(--text-muted);font-family:var(--mono)">0 ops</span>
+            </div>
+            <div class="console-entries"></div>
+          </div>
+        </div>
+
+        <!-- PLANNING PANEL -->
+        <div class="panel-plan" id="panel-plan">
+          <div class="plan-main">
+            <div class="plan-content">
+              <div class="empty-state">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                </svg>
+                <h3>No plan yet</h3>
+                <p>The agent's task plan will appear here once work begins.</p>
+              </div>
+            </div>
+          </div>
+          <div class="console" id="console-plan">
+            <div class="console-header">
+              <span class="console-title">Console</span>
+              <span style="font-size:11px;color:var(--text-muted);font-family:var(--mono)">0 ops</span>
+            </div>
+            <div class="console-entries"></div>
+          </div>
+        </div>
+
+        <!-- FILES PANEL -->
+        <div class="panel-files" id="panel-files">
+          <div class="files-tree">
+            <div class="tree-title">Explorer</div>
+            <div class="empty-state">
+              <p style="font-size:12px">No files modified yet</p>
+            </div>
+          </div>
+          <div class="diff-viewer">
+            <div class="diff-header">
+              <span class="diff-filename" id="diff-filename">No file selected</span>
+            </div>
+            <div class="diff-content" id="diff-content">
+              <div class="empty-state">
+                <p>Select a file to view changes</p>
+              </div>
+            </div>
+          </div>
+          <div class="console files-console" id="console-files">
+            <div class="console-header">
+              <span class="console-title">Console</span>
+              <span style="font-size:11px;color:var(--text-muted);font-family:var(--mono)">0 ops</span>
+            </div>
+            <div class="console-entries"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Navigation
+function goToDashboard(){
+  document.getElementById('dashboard').classList.add('active');
+  document.getElementById('workspace').classList.remove('active');
+}
+function openAgent(name, device){
+  document.getElementById('dashboard').classList.remove('active');
+  document.getElementById('workspace').classList.add('active');
+  document.getElementById('topbar-agent').textContent = name;
+  document.getElementById('topbar-device').textContent = 'on ' + device;
+}
+
+// Icon rail panel switching
+function switchPanel(panel){
+  document.querySelectorAll('.rail-icon').forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-panel="'+panel+'"]').classList.add('active');
+  document.querySelectorAll('.panel-chat,.panel-plan,.panel-files').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-'+panel).classList.add('active');
+}
+
+// File tree expand/collapse
+function toggleTree(el){
+  const arrow = el.querySelector('.arrow');
+  if(arrow.classList.contains('none')) return;
+  const children = el.nextElementSibling;
+  if(children && children.classList.contains('tree-children')){
+    children.classList.toggle('collapsed');
+    arrow.classList.toggle('collapsed');
+  }
+}
+
+// File selection
+function selectFile(el, path){
+  document.querySelectorAll('.tree-item').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('diff-filename').textContent = path;
+}
+
+// Auto-resize textarea
+document.querySelector('.chat-input')?.addEventListener('input', function(){
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+</script>
+</body>
+</html>

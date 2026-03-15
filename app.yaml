@@ -38,6 +38,7 @@ controllers:
   - build_app.controllers:SignupConfirmController
   - build_app.campaign_signups_api:CampaignSignupsApiController
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
+  - build_app.dashboard:DashboardController
 
 page_types:
   - name: page

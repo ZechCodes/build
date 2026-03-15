@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Söhne+Mono,+JetBrains+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
-<style>
+<style nonce="{{ csp_nonce() }}">
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 nav,section,footer,.auth-modal-backdrop{position:relative;z-index:1}
 :root{
@@ -1439,7 +1439,7 @@ footer{
   <div class="footer-right">&copy; 2026 getbuild.ing</div>
 </footer>
 
-<script>
+<script nonce="{{ csp_nonce() }}">
 // Scroll reveal
 const reveals = document.querySelectorAll('.reveal');
 const observer = new IntersectionObserver((entries) => {

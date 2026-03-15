@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Build — Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
+<style nonce="{{ csp_nonce() }}">
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --rail-bg:#18181b;
@@ -854,9 +854,9 @@ body{
 </div><!-- /app -->
 
 <!-- Skrift notification SSE client -->
-<script src="/static/skrift/js/notifications.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/skrift/js/notifications.js"></script>
 
-<script>
+<script nonce="{{ csp_nonce() }}">
 // ===== UI State =====
 let currentView = 'dashboard';
 let currentTab = 'chat';

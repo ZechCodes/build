@@ -1481,6 +1481,8 @@ async function initE2EE() {
     console.log('[E2EE] No suitable device found, will retry every 5s');
     const retryInterval = setInterval(async () => {
       if (e2ee && e2ee.connected) { clearInterval(retryInterval); return; }
+      // Re-fetch device list in case transport keys changed.
+      await fetchDevices();
       await connectToDevice();
       if (e2ee && e2ee.connected) clearInterval(retryInterval);
     }, 5000);

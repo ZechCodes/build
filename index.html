@@ -1575,7 +1575,7 @@ footer{
 
         <!-- Console -->
         <div class="sc-console collapsed" id="sc-console">
-          <div class="sc-console-header" onclick="document.getElementById('sc-console').classList.toggle('collapsed')">
+          <div class="sc-console-header">
             <span class="sc-working-dot"></span>
             <span class="sc-console-title">Console</span>
             <span class="sc-console-count">6</span>
@@ -1825,6 +1825,11 @@ document.querySelectorAll('.sc-rail-icon[data-panel]').forEach(icon => {
     const panel = icon.dataset.panel;
     document.querySelectorAll('.sc-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
   });
+});
+
+// Console toggle
+document.querySelector('.sc-console-header').addEventListener('click', () => {
+  document.getElementById('sc-console').classList.toggle('collapsed');
 });
 
 // Copy install command

@@ -185,6 +185,12 @@
 
     // Countdown timer
     const countdownEl = document.getElementById('countdown');
+    function formatTime(s) {
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+    }
+    countdownEl.textContent = formatTime(expiresIn);
     const timerInterval = setInterval(() => {
       expiresIn--;
       if (expiresIn <= 0) {
@@ -192,7 +198,7 @@
         showResult('error', 'Registration expired.');
         disableButtons();
       } else {
-        countdownEl.textContent = expiresIn;
+        countdownEl.textContent = formatTime(expiresIn);
       }
     }, 1000);
 

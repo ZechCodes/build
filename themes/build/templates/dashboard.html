@@ -328,6 +328,47 @@ body{
 
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden}
+.chat-sidebar{
+  width:220px;min-width:220px;
+  display:flex;flex-direction:column;
+  border-right:1px solid var(--border);
+  background:rgba(255,255,255,0.5);
+}
+.chat-sidebar-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.75rem 1rem;border-bottom:1px solid var(--border);
+}
+.chat-sidebar-title{font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.chat-sidebar-btn{
+  width:24px;height:24px;border-radius:var(--radius-xs);
+  border:none;background:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-muted);transition:all .12s;
+}
+.chat-sidebar-btn:hover{background:var(--accent-light);color:var(--accent)}
+.chat-channel-list{flex:1;overflow-y:auto;padding:.5rem}
+.channel-item{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.5rem .75rem;border-radius:var(--radius-sm);
+  cursor:pointer;font-size:13px;color:var(--text);
+  transition:all .12s;
+}
+.channel-item:hover{background:rgba(99,102,241,0.06)}
+.channel-item.active{background:var(--accent-light);color:var(--accent);font-weight:600}
+.channel-item .channel-hash{color:var(--text-muted);font-weight:700;font-size:14px}
+.chat-e2ee-status{
+  padding:.5rem 1rem;border-top:1px solid var(--border);
+  display:flex;align-items:center;gap:.5rem;
+  font-size:11px;color:var(--text-muted);
+}
+.e2ee-dot{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--text-muted);flex-shrink:0;
+}
+.e2ee-dot.connected{background:var(--green)}
+.e2ee-dot.connecting{background:var(--amber);animation:pulse 1.5s infinite}
+.e2ee-dot.error{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
 .chat-messages{
   flex:1;overflow-y:auto;padding:1.25rem 1.25rem .75rem;
@@ -361,6 +402,35 @@ body{
   margin:.4rem 0;
   color:var(--text);
 }
+.msg-status{font-size:10px;color:var(--text-muted);margin-top:.15rem}
+.msg-status .delivered{color:var(--accent)}
+.msg-status .read{color:var(--green)}
+
+/* New channel dialog */
+.new-channel-overlay{
+  position:absolute;inset:0;z-index:50;
+  background:rgba(0,0,0,0.2);backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+}
+.new-channel-dialog{
+  background:var(--surface-solid);border-radius:var(--radius);
+  padding:1.5rem;width:320px;
+  box-shadow:var(--shadow-lg);
+}
+.new-channel-dialog h3{font-size:15px;font-weight:600;margin-bottom:1rem}
+.new-channel-dialog input{
+  width:100%;padding:.5rem .75rem;border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);font-size:13px;font-family:var(--font);
+  outline:none;transition:border-color .15s;
+}
+.new-channel-dialog input:focus{border-color:var(--accent)}
+.new-channel-dialog .dialog-btns{display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem}
+.new-channel-dialog .btn{
+  padding:.4rem 1rem;border-radius:var(--radius-sm);
+  font-size:13px;font-weight:500;cursor:pointer;border:none;
+}
+.new-channel-dialog .btn-cancel{background:var(--border);color:var(--text)}
+.new-channel-dialog .btn-create{background:var(--accent);color:#fff}
 
 /* Chat input */
 .chat-input-area{
@@ -806,20 +876,39 @@ body{
     <!-- ===== CHAT TAB ===== -->
     <div class="tab-panel active" id="tab-chat">
       <div class="chat-layout">
+        <!-- Channel sidebar -->
+        <div class="chat-sidebar" id="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <span class="chat-sidebar-title">Channels</span>
+            <button class="chat-sidebar-btn" id="btn-new-channel" title="New channel">
+              <svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="chat-channel-list" id="chat-channel-list">
+            <div class="empty-state" style="padding:1rem;font-size:12px" id="channels-empty">
+              <p>No channels yet</p>
+            </div>
+          </div>
+          <div class="chat-e2ee-status" id="chat-e2ee-status">
+            <span class="e2ee-dot" id="e2ee-dot"></span>
+            <span id="e2ee-label">Not connected</span>
+          </div>
+        </div>
+        <!-- Chat main area -->
         <div class="chat-main">
           <div class="chat-messages" id="chat-messages">
-            <div class="empty-state">
+            <div class="empty-state" id="chat-empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
               </svg>
-              <h3>No messages yet</h3>
-              <p>Send a message to this agent to get started.</p>
+              <h3>Select a channel</h3>
+              <p>Choose or create a channel to start chatting.</p>
             </div>
           </div>
           <div class="chat-input-area">
             <div class="chat-input-wrap">
-              <textarea class="chat-input" placeholder="Message agent..." rows="1"></textarea>
-              <button class="chat-send">
+              <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
+              <button class="chat-send" id="chat-send-btn" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
               </button>
             </div>
@@ -898,6 +987,8 @@ body{
 
 <!-- Skrift notification SSE client -->
 <script nonce="{{ csp_nonce() }}" src="/static/skrift/js/notifications.js"></script>
+<script nonce="{{ csp_nonce() }}" src="https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.15/dist/modules/libsodium-wrappers.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/build/js/e2ee.js"></script>
 
 <script nonce="{{ csp_nonce() }}">
 // ===== UI State =====
@@ -1012,7 +1103,7 @@ function toggleTree(el) {
   }
 }
 
-document.querySelector('.chat-input')?.addEventListener('input', function(){
+document.getElementById('chat-input')?.addEventListener('input', function(){
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
@@ -1302,6 +1393,335 @@ setInterval(() => {
 
 // ----- Initialize -----
 fetchDevices();
+
+// =====================================================================
+// E2EE Chat — wired to BuildE2EE client
+// =====================================================================
+
+const e2ee = new BuildE2EE();
+let chatCurrentChannel = null;
+const chatChannels = new Map(); // id -> {id, name, created_at}
+const chatMessages = new Map(); // channelId -> [messages]
+
+// ----- E2EE connection -----
+
+async function initE2EE() {
+  const dot = document.getElementById('e2ee-dot');
+  const label = document.getElementById('e2ee-label');
+
+  try {
+    await e2ee.ready();
+  } catch (err) {
+    label.textContent = 'Crypto unavailable';
+    dot.className = 'e2ee-dot error';
+    console.error('[E2EE] libsodium not available:', err);
+    return;
+  }
+
+  // Wait for a device with a transport key.
+  dot.className = 'e2ee-dot connecting';
+  label.textContent = 'Waiting for device...';
+
+  const connectToDevice = async () => {
+    // Find an online device with transport key.
+    for (const d of devices.values()) {
+      if (d.status === 'online' && d.has_transport_key) {
+        dot.className = 'e2ee-dot connecting';
+        label.textContent = 'Connecting...';
+        try {
+          await e2ee.connect(d.id);
+          return true;
+        } catch (err) {
+          console.error('[E2EE] Failed to connect to', d.name, err);
+        }
+      }
+    }
+    return false;
+  };
+
+  if (!await connectToDevice()) {
+    // Retry periodically.
+    const retryInterval = setInterval(async () => {
+      if (e2ee.connected) { clearInterval(retryInterval); return; }
+      await connectToDevice();
+      if (e2ee.connected) clearInterval(retryInterval);
+    }, 5000);
+  }
+}
+
+e2ee.addEventListener('connected', () => {
+  document.getElementById('e2ee-dot').className = 'e2ee-dot connected';
+  document.getElementById('e2ee-label').textContent = 'E2EE active';
+  document.getElementById('chat-input').disabled = false;
+  document.getElementById('chat-send-btn').disabled = false;
+  // Request channel list.
+  e2ee.listChannels();
+});
+
+e2ee.addEventListener('disconnected', () => {
+  document.getElementById('e2ee-dot').className = 'e2ee-dot error';
+  document.getElementById('e2ee-label').textContent = 'Disconnected';
+  document.getElementById('chat-input').disabled = true;
+  document.getElementById('chat-send-btn').disabled = true;
+});
+
+// ----- Channel list -----
+
+e2ee.addEventListener('channel_list', (evt) => {
+  const channels = evt.detail;
+  chatChannels.clear();
+  for (const ch of channels) {
+    chatChannels.set(ch.id, ch);
+  }
+  renderChannelList();
+});
+
+e2ee.addEventListener('channel_created', (evt) => {
+  const ch = evt.detail;
+  chatChannels.set(ch.id, ch);
+  renderChannelList();
+  selectChannel(ch.id);
+});
+
+function renderChannelList() {
+  const list = document.getElementById('chat-channel-list');
+  const empty = document.getElementById('channels-empty');
+
+  if (chatChannels.size === 0) {
+    if (empty) empty.style.display = '';
+    list.querySelectorAll('.channel-item').forEach(el => el.remove());
+    return;
+  }
+
+  if (empty) empty.style.display = 'none';
+  list.querySelectorAll('.channel-item').forEach(el => el.remove());
+
+  const sorted = [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at);
+  for (const ch of sorted) {
+    const item = document.createElement('div');
+    item.className = 'channel-item' + (chatCurrentChannel === ch.id ? ' active' : '');
+    item.dataset.channelId = ch.id;
+    item.innerHTML = `<span class="channel-hash">#</span> ${escapeHtml(ch.name)}`;
+    item.addEventListener('click', () => selectChannel(ch.id));
+    list.appendChild(item);
+  }
+}
+
+function selectChannel(channelId) {
+  chatCurrentChannel = channelId;
+  renderChannelList();
+  renderMessages();
+  // Request messages for this channel.
+  e2ee.getMessages(channelId);
+  // Enable input.
+  document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
+}
+
+// ----- Messages -----
+
+e2ee.addEventListener('messages', (evt) => {
+  const { channel_id, messages } = evt.detail;
+  chatMessages.set(channel_id, messages);
+  if (chatCurrentChannel === channel_id) {
+    renderMessages();
+  }
+});
+
+e2ee.addEventListener('message', (evt) => {
+  const msg = evt.detail;
+  if (!msg || !msg.channel_id) return;
+  const msgs = chatMessages.get(msg.channel_id) || [];
+  msgs.push(msg);
+  chatMessages.set(msg.channel_id, msgs);
+  if (chatCurrentChannel === msg.channel_id) {
+    appendMessage(msg);
+    scrollChatToBottom();
+  }
+  // Mark as read if it's the current channel.
+  if (chatCurrentChannel === msg.channel_id && msg.id) {
+    e2ee.markRead([msg.id]);
+  }
+});
+
+e2ee.addEventListener('delivered', (evt) => {
+  const { message_id } = evt.detail;
+  const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);
+  if (statusEl) {
+    statusEl.innerHTML = '<span class="delivered">✓ Delivered</span>';
+  }
+});
+
+function renderMessages() {
+  const container = document.getElementById('chat-messages');
+  const empty = document.getElementById('chat-empty-state');
+
+  if (!chatCurrentChannel) {
+    container.innerHTML = '';
+    container.appendChild(createEmptyState('Select a channel', 'Choose or create a channel to start chatting.'));
+    return;
+  }
+
+  const msgs = chatMessages.get(chatCurrentChannel) || [];
+
+  if (msgs.length === 0) {
+    container.innerHTML = '';
+    const ch = chatChannels.get(chatCurrentChannel);
+    container.appendChild(createEmptyState(
+      `#${ch?.name || 'channel'}`,
+      'No messages yet. Send one to get started.',
+    ));
+    return;
+  }
+
+  container.innerHTML = '';
+  for (const msg of msgs) {
+    appendMessage(msg);
+  }
+  scrollChatToBottom();
+}
+
+function appendMessage(msg) {
+  const container = document.getElementById('chat-messages');
+  // Remove empty state if present.
+  const empty = container.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const isUser = msg.sender === 'client';
+  const avatarClass = isUser ? 'user' : 'agent';
+  const avatarLabel = isUser ? 'Y' : 'D';
+  const nameLabel = isUser ? 'You' : 'Device';
+  const timeStr = msg.created_at ? shortTime(
+    typeof msg.created_at === 'number'
+      ? new Date(msg.created_at * 1000).toISOString()
+      : msg.created_at
+  ) : '';
+
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.dataset.msgId = msg.id || '';
+  div.innerHTML = `
+    <div class="msg-avatar ${avatarClass}">${avatarLabel}</div>
+    <div class="msg-body">
+      <div class="msg-header">
+        <span class="msg-name">${nameLabel}</span>
+        <span class="msg-time">${timeStr}</span>
+      </div>
+      <div class="msg-text"><p>${escapeHtml(msg.content || '')}</p></div>
+      ${isUser && msg.id ? '<div class="msg-status">Sending...</div>' : ''}
+    </div>
+  `;
+  container.appendChild(div);
+}
+
+function scrollChatToBottom() {
+  const container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function createEmptyState(title, desc) {
+  const div = document.createElement('div');
+  div.className = 'empty-state';
+  div.innerHTML = `
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+    </svg>
+    <h3>${title}</h3>
+    <p>${desc}</p>
+  `;
+  return div;
+}
+
+// ----- Send message -----
+
+async function sendChatMessage() {
+  const input = document.getElementById('chat-input');
+  const content = input.value.trim();
+  if (!content || !chatCurrentChannel || !e2ee.connected) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  // Optimistically render the message.
+  const tempMsg = {
+    id: crypto.randomUUID(),
+    channel_id: chatCurrentChannel,
+    sender: 'client',
+    content,
+    created_at: Date.now() / 1000,
+  };
+  const msgs = chatMessages.get(chatCurrentChannel) || [];
+  msgs.push(tempMsg);
+  chatMessages.set(chatCurrentChannel, msgs);
+  appendMessage(tempMsg);
+  scrollChatToBottom();
+
+  try {
+    await e2ee.sendMessage(chatCurrentChannel, content);
+  } catch (err) {
+    console.error('[Chat] Send failed:', err);
+  }
+}
+
+document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMessage);
+document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessage();
+  }
+});
+
+// ----- New channel dialog -----
+
+document.getElementById('btn-new-channel')?.addEventListener('click', () => {
+  if (!e2ee.connected) return;
+
+  const chatTab = document.getElementById('tab-chat');
+  const overlay = document.createElement('div');
+  overlay.className = 'new-channel-overlay';
+  overlay.innerHTML = `
+    <div class="new-channel-dialog">
+      <h3>New Channel</h3>
+      <input type="text" id="new-channel-name" placeholder="Channel name..." autofocus>
+      <div class="dialog-btns">
+        <button class="btn btn-cancel" id="new-channel-cancel">Cancel</button>
+        <button class="btn btn-create" id="new-channel-create">Create</button>
+      </div>
+    </div>
+  `;
+  chatTab.style.position = 'relative';
+  chatTab.appendChild(overlay);
+
+  const nameInput = document.getElementById('new-channel-name');
+  nameInput.focus();
+
+  const close = () => overlay.remove();
+  document.getElementById('new-channel-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const create = () => {
+    const name = nameInput.value.trim();
+    if (name) {
+      e2ee.createChannel(name);
+      close();
+    }
+  };
+  document.getElementById('new-channel-create').addEventListener('click', create);
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') create();
+    if (e.key === 'Escape') close();
+  });
+});
+
+// ----- Auto-connect E2EE when device is available -----
+// Start after devices are fetched.
+const originalFetchDevices = fetchDevices;
+fetchDevices = async function() {
+  await originalFetchDevices();
+  if (!e2ee.connected) {
+    initE2EE();
+  }
+};
+
 </script>
 </body>
 </html>

@@ -74,6 +74,11 @@ class Device(Base):
         nullable=False,
         comment="Base64-encoded Ed25519 public key",
     )
+    transport_public_key: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="Base64-encoded X25519 public key for E2EE transport",
+    )
     owner_user_id: Mapped[UUID] = mapped_column(
         nullable=False,
         index=True,

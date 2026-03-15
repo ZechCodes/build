@@ -1,4 +1,4 @@
-"""Device API — registration, authorization, listing, WebSocket, and heartbeat monitoring."""
+"""Device API — registration, authorization, listing, WebSocket, heartbeat monitoring, and E2EE relay."""
 
 from __future__ import annotations
 
@@ -28,6 +28,26 @@ from skrift.auth.guards import auth_guard, Permission
 from skrift.lib.notifications import notify_user, NotificationMode
 
 from build_app.models import Device
+
+
+# ---------------------------------------------------------------------------
+# E2EE session registry — maps session_id to routing info
+# ---------------------------------------------------------------------------
+@dataclass
+class E2ESession:
+    """Tracks an active E2EE session between a browser and a device."""
+    session_id: str
+    device_id: UUID
+    owner_user_id: UUID
+    created_at: float = field(default_factory=time.time)
+
+
+_e2e_sessions: dict[str, E2ESession] = {}
+
+
+def get_e2e_sessions() -> dict[str, E2ESession]:
+    """Expose for testing."""
+    return _e2e_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +557,7 @@ class DeviceApiController(Controller):
                 "name": d.name,
                 "status": d.status,
                 "approved": d.approved,
+                "has_transport_key": d.transport_public_key is not None,
                 "last_heartbeat_at": d.last_heartbeat_at.isoformat() if d.last_heartbeat_at else None,
                 "heartbeat_interval_s": d.heartbeat_interval_s,
                 "missed_heartbeat_windows": d.get_missed_windows(),
@@ -544,6 +565,163 @@ class DeviceApiController(Controller):
             }
             for d in devices
         ]
+
+    # ------------------------------------------------------------------
+    # E2EE relay endpoints (browser → device)
+    # ------------------------------------------------------------------
+
+    @get(
+        "/{device_id:uuid}/transport-key",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def get_transport_key(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        device_id: UUID,
+    ) -> Response:
+        """Return the X25519 transport public key for a device.
+
+        The browser needs this to create a sealed-box session_init.
+        """
+        user_id = UUID(request.session["user_id"])
+        result = await db_session.execute(
+            select(Device).where(
+                Device.id == device_id,
+                Device.owner_user_id == user_id,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            raise NotFoundException(detail="Device not found")
+
+        if not device.transport_public_key:
+            return Response(
+                content={"error": "device has no transport key — is it online?"},
+                status_code=404,
+            )
+
+        return Response(
+            content={
+                "device_id": str(device.id),
+                "transport_public_key": device.transport_public_key,
+                "identity_public_key": device.public_key,
+            },
+            status_code=200,
+        )
+
+    @post(
+        "/e2ee/session-init",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def session_init(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        data: dict[str, Any],
+    ) -> Response:
+        """Browser sends session_init to bootstrap an E2EE session.
+
+        Body: ``{"device_id": "...", "session_id": "...", "session_init": {...}}``
+        The relay registers the session and forwards to the device over WS.
+        """
+        device_id_str = data.get("device_id", "")
+        session_id = data.get("session_id", "")
+        session_init_payload = data.get("session_init")
+
+        if not device_id_str or not session_id or not session_init_payload:
+            return Response(
+                content={"error": "device_id, session_id, and session_init required"},
+                status_code=400,
+            )
+
+        try:
+            device_id = UUID(device_id_str)
+        except ValueError:
+            return Response(content={"error": "invalid device_id"}, status_code=400)
+
+        user_id = UUID(request.session["user_id"])
+
+        # Verify device belongs to user and is online.
+        result = await db_session.execute(
+            select(Device).where(
+                Device.id == device_id,
+                Device.owner_user_id == user_id,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            return Response(content={"error": "device not found"}, status_code=404)
+
+        conn = _connected_devices.get(device_id)
+        if not conn:
+            return Response(content={"error": "device is offline"}, status_code=503)
+
+        # Register the session.
+        _e2e_sessions[session_id] = E2ESession(
+            session_id=session_id,
+            device_id=device_id,
+            owner_user_id=user_id,
+        )
+
+        # Forward session_init to device over WS.
+        try:
+            await conn.socket.send_json({
+                "type": "session_init",
+                "session_id": session_id,
+                "session_init": session_init_payload,
+            })
+        except Exception:
+            _e2e_sessions.pop(session_id, None)
+            return Response(content={"error": "failed to reach device"}, status_code=503)
+
+        return Response(content={"ok": True, "session_id": session_id}, status_code=200)
+
+    @post(
+        "/e2ee/send",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def e2ee_send(
+        self,
+        request: Request,
+        data: dict[str, Any],
+    ) -> Response:
+        """Browser sends an encrypted envelope to a device via the relay.
+
+        Body: ``{"session_id": "...", "envelope": {...}}``
+        """
+        session_id = data.get("session_id", "")
+        envelope = data.get("envelope")
+
+        if not session_id or not envelope:
+            return Response(
+                content={"error": "session_id and envelope required"},
+                status_code=400,
+            )
+
+        user_id = UUID(request.session["user_id"])
+        session = _e2e_sessions.get(session_id)
+        if not session or session.owner_user_id != user_id:
+            return Response(content={"error": "unknown session"}, status_code=404)
+
+        conn = _connected_devices.get(session.device_id)
+        if not conn:
+            return Response(content={"error": "device is offline"}, status_code=503)
+
+        try:
+            await conn.socket.send_json({
+                "type": "e2ee_envelope",
+                "session_id": session_id,
+                "envelope": envelope,
+            })
+        except Exception:
+            return Response(content={"error": "failed to reach device"}, status_code=503)
+
+        return Response(content={"ok": True}, status_code=200)
+
+    # ------------------------------------------------------------------
+    # WebSocket
+    # ------------------------------------------------------------------
 
     @websocket("/ws")
     async def device_ws(self, socket: WebSocket) -> None:
@@ -667,6 +845,107 @@ class DeviceApiController(Controller):
                     if rid:
                         await socket.send_json({"type": "response", "rid": rid, "ok": True})
 
+                elif msg_type == "transport_key":
+                    # Device uploading its X25519 transport public key.
+                    transport_key_b64 = msg.get("transport_public_key", "").strip()
+                    if not transport_key_b64:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "transport_public_key required",
+                            })
+                        continue
+
+                    # Validate it's plausible base64 (32 bytes decoded).
+                    try:
+                        raw = base64.b64decode(transport_key_b64)
+                        if len(raw) != 32:
+                            raise ValueError("must be 32 bytes")
+                    except Exception:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "invalid X25519 public key",
+                            })
+                        continue
+
+                    async with session_maker() as db_session:
+                        await db_session.execute(
+                            update(Device)
+                            .where(Device.id == device_id)
+                            .values(transport_public_key=transport_key_b64)
+                        )
+                        await db_session.commit()
+
+                    logger.info("Device %s uploaded transport key", device_id)
+                    if rid:
+                        await socket.send_json({"type": "response", "rid": rid, "ok": True})
+
+                elif msg_type == "session_accept":
+                    # Device sending session_accept back to a browser session.
+                    session_id = msg.get("session_id")
+                    envelope = msg.get("envelope")
+                    if not session_id or not envelope:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "session_id and envelope required",
+                            })
+                        continue
+
+                    session = _e2e_sessions.get(session_id)
+                    if not session or session.device_id != device_id:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "unknown session",
+                            })
+                        continue
+
+                    # Forward as ephemeral notification to the browser.
+                    await notify_user(
+                        str(session.owner_user_id),
+                        "build:e2ee:envelope",
+                        mode=NotificationMode.EPHEMERAL,
+                        push_notify=False,
+                        session_id=session_id,
+                        envelope=envelope,
+                    )
+                    if rid:
+                        await socket.send_json({"type": "response", "rid": rid, "ok": True})
+
+                elif msg_type == "e2ee_envelope":
+                    # Device sending an encrypted envelope to a browser session.
+                    session_id = msg.get("session_id")
+                    envelope = msg.get("envelope")
+                    if not session_id or not envelope:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "session_id and envelope required",
+                            })
+                        continue
+
+                    session = _e2e_sessions.get(session_id)
+                    if not session or session.device_id != device_id:
+                        if rid:
+                            await socket.send_json({
+                                "type": "response", "rid": rid,
+                                "ok": False, "error": "unknown session",
+                            })
+                        continue
+
+                    await notify_user(
+                        str(session.owner_user_id),
+                        "build:e2ee:envelope",
+                        mode=NotificationMode.EPHEMERAL,
+                        push_notify=False,
+                        session_id=session_id,
+                        envelope=envelope,
+                    )
+                    if rid:
+                        await socket.send_json({"type": "response", "rid": rid, "ok": True})
+
                 elif msg_type == "status":
                     # Device reporting status update (agents, tasks, etc.)
                     async with session_maker() as db_session:
@@ -691,6 +970,14 @@ class DeviceApiController(Controller):
         finally:
             # --- Cleanup ---
             _connected_devices.pop(device_id, None)
+
+            # Clean up any E2EE sessions for this device.
+            stale_sessions = [
+                sid for sid, s in _e2e_sessions.items()
+                if s.device_id == device_id
+            ]
+            for sid in stale_sessions:
+                _e2e_sessions.pop(sid, None)
 
             # Record missed window if last heartbeat was stale.
             now = time.time()

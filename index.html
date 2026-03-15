@@ -540,7 +540,7 @@ nav{
   margin-left:auto;
   font-size:10px;font-weight:600;color:#059669;
 }
-.sc-e2e-status .sc-e2e-dot{width:5px;height:5px;border-radius:50%;background:#059669}
+.sc-lock{color:#059669;flex-shrink:0}
 
 /* Channel bar */
 .sc-channel-bar{
@@ -616,41 +616,20 @@ nav{
 .sc-send svg{width:12px;height:12px;color:#fff}
 
 /* Console at bottom */
-.sc-console{
-  height:110px;
+.sc-console-collapsed{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.45rem .75rem;
   background:#fafafa;
   border-top:1px solid rgba(0,0,0,.08);
-  display:flex;flex-direction:column;
   flex-shrink:0;
 }
-.sc-console-header{
-  display:flex;align-items:center;gap:.5rem;
-  padding:.3rem .75rem;
-  border-bottom:1px solid rgba(0,0,0,.06);
-  flex-shrink:0;
+.sc-working-dot{
+  width:6px;height:6px;border-radius:50%;background:#059669;
+  animation:sc-pulse 2s ease-in-out infinite;
 }
-.sc-console-title{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em}
-.sc-console-count{font-size:9px;color:var(--accent);background:rgba(99,102,241,.08);padding:.1rem .35rem;border-radius:6px;font-weight:600}
-.sc-console-body{flex:1;overflow-y:auto;font-size:10px}
-.sc-ce{
-  display:flex;align-items:center;gap:.4rem;
-  padding:.25rem .75rem;
-  border-bottom:1px solid rgba(0,0,0,.03);
-}
-.sc-ce-tag{
-  font-size:9px;font-weight:600;
-  padding:.1rem .3rem;border-radius:3px;
-  text-transform:uppercase;letter-spacing:.03em;
-}
-.sc-ce-tag.read{background:rgba(99,102,241,.1);color:#6366f1}
-.sc-ce-tag.write{background:rgba(5,150,105,.08);color:#059669}
-.sc-ce-tag.edit{background:rgba(217,119,6,.08);color:#d97706}
-.sc-ce-tag.bash{background:rgba(124,58,237,.08);color:#7c3aed}
-.sc-ce-file{color:#71717a;font-family:var(--mono);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sc-ce-summary{font-size:9px;color:#a1a1aa}
-.sc-ce-summary .g{color:#059669}
-.sc-ce-summary .r{color:#dc2626}
-.sc-ce-time{font-size:9px;color:#a1a1aa;font-family:var(--mono)}
+@keyframes sc-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
+.sc-working-label{font-size:11px;font-weight:600;color:#059669}
+.sc-expand-icon{margin-left:auto;color:#a1a1aa}
 
 /* Reflection */
 .showcase-reflection{
@@ -984,8 +963,7 @@ footer{
   .sc-rail-icon{width:28px;height:28px}
   .sc-rail-icon svg{width:14px;height:14px}
   .sc-sidebar{display:none}
-  .sc-console{display:none}
-  .sc-channel-bar{display:none}
+  .sc-console-collapsed{display:none}
   .showcase-reflection{max-width:380px;height:40px}
 }
 @media(max-width:600px){
@@ -1144,7 +1122,7 @@ footer{
       <div class="sc-main">
         <div class="sc-topbar">
           <div class="sc-device-dropdown"><svg viewBox="0 0 16 16" fill="none" width="12" height="12"><rect x="2" y="4" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5 4V3a3 3 0 016 0v1" stroke="currentColor" stroke-width="1.2"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-          <div class="sc-e2e-status"><span class="sc-e2e-dot"></span> E2EE</div>
+          <div class="sc-e2e-status"><svg class="sc-lock" viewBox="0 0 12 14" width="10" height="12"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg> Connected</div>
         </div>
         <div class="sc-channel-bar">
           <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
@@ -1198,18 +1176,11 @@ footer{
           </div>
         </div>
 
-        <!-- Console -->
-        <div class="sc-console">
-          <div class="sc-console-header">
-            <span class="sc-console-title">Tools</span>
-            <span class="sc-console-count">4</span>
-          </div>
-          <div class="sc-console-body">
-            <div class="sc-ce"><span class="sc-ce-tag read">Read</span><span class="sc-ce-file">middleware/auth.ts</span><span class="sc-ce-summary"><span class="g">142 lines</span></span><span class="sc-ce-time">2:30</span></div>
-            <div class="sc-ce"><span class="sc-ce-tag write">Write</span><span class="sc-ce-file">auth/jwt.ts</span><span class="sc-ce-summary"><span class="g">89 lines</span></span><span class="sc-ce-time">2:31</span></div>
-            <div class="sc-ce"><span class="sc-ce-tag edit">Edit</span><span class="sc-ce-file">middleware/auth.ts</span><span class="sc-ce-summary"><span class="g">+18</span> <span class="r">-34</span></span><span class="sc-ce-time">2:32</span></div>
-            <div class="sc-ce"><span class="sc-ce-tag bash">Bash</span><span class="sc-ce-file">npm test</span><span class="sc-ce-summary"><span class="g">47 pass</span> <span class="r">2 fail</span></span><span class="sc-ce-time">2:33</span></div>
-          </div>
+        <!-- Console (collapsed) -->
+        <div class="sc-console-collapsed">
+          <span class="sc-working-dot"></span>
+          <span class="sc-working-label">Working</span>
+          <svg class="sc-expand-icon" viewBox="0 0 12 12" width="12" height="12"><path d="M3 5l3-3 3 3M3 7l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
         </div>
       </div>
     </div>

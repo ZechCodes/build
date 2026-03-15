@@ -441,7 +441,7 @@ nav{
 /* ============ PRODUCT SHOWCASE ============ */
 .showcase{
   position:relative;
-  padding:0 clamp(1.5rem,4vw,3rem) 8rem;
+  padding:0 1rem 8rem;
   animation:fadeUp 1s var(--ease) .5s both;
 }
 .showcase-frame{
@@ -1020,16 +1020,8 @@ footer{
   .flow{flex-direction:column;align-items:center}
   .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
   .nav-links{display:none}
-  /* Showcase: portrait phone mockup on mobile */
-  .showcase{padding:0 2rem 6rem}
-  .showcase-frame{max-width:380px;border-radius:24px;border:3px solid rgba(255,255,255,.1)}
-  .showcase-app{height:580px;flex-direction:row}
-  .sc-rail{width:36px;padding:.5rem 0;gap:.2rem}
-  .sc-rail .sc-spacer,.sc-rail .sc-e2e{display:none}
-  .sc-rail-icon{width:28px;height:28px}
-  .sc-rail-icon svg{width:14px;height:14px}
   .sc-sidebar{display:none}
-  .showcase-reflection{max-width:380px;height:40px}
+  .showcase-reflection{height:40px}
 }
 @media(max-width:600px){
   .hero{padding:5rem 1.25rem 3rem;min-height:100vh;min-height:100dvh}
@@ -1040,9 +1032,17 @@ footer{
   .bottom-oauth{flex-direction:column}
   .auth-modal{margin:1rem;padding:2rem 1.5rem 1.5rem}
   .e2e-badges{flex-direction:column;align-items:center}
+}
+/* Portrait phone mockup */
+@media(max-width:600px) and (orientation:portrait){
   .showcase{padding:0 1.5rem 4rem}
-  .showcase-frame{max-width:340px}
-  .showcase-app{height:520px}
+  .showcase-frame{max-width:380px;border-radius:24px;border:3px solid rgba(255,255,255,.1)}
+  .showcase-app{height:580px}
+  .sc-rail{width:36px;padding:.5rem 0;gap:.2rem}
+  .sc-rail .sc-spacer,.sc-rail .sc-e2e{display:none}
+  .sc-rail-icon{width:28px;height:28px}
+  .sc-rail-icon svg{width:14px;height:14px}
+  .showcase-reflection{max-width:380px}
 }
 </style>
 </head>

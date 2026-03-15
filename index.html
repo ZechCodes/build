@@ -961,23 +961,33 @@ footer{
   .flow{flex-direction:column;align-items:center}
   .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
   .nav-links{display:none}
-  .showcase-app{height:auto;flex-direction:column}
-  .sc-rail{width:100%;flex-direction:row;height:36px;border-right:none;border-bottom:1px solid rgba(255,255,255,.04)}
-  .sc-files{width:100%;height:200px;border-top:1px solid rgba(255,255,255,.04)}
+  /* Showcase: keep compact on mobile, hide secondary panels */
+  .showcase-app{height:380px;flex-direction:row}
+  .sc-rail{width:36px;flex-direction:column;border-right:1px solid rgba(255,255,255,.04);border-bottom:none}
+  .sc-rail .sc-spacer,.sc-rail .sc-e2e{display:none}
+  .sc-files{display:none}
+  .sc-console{display:none}
+  .sc-content{flex-direction:column}
+  .sc-chat{border-right:none}
+  .showcase-reflection{height:60px}
 }
 @media(max-width:600px){
-  .hero h1{font-size:3rem}
+  .hero{padding:5rem 1.25rem 3rem;min-height:auto}
+  .hero h1{font-size:2.5rem}
+  .hero-sub{font-size:.95rem;margin-bottom:1.5rem}
   .hero-signup, .bottom-signup{flex-direction:column;align-items:stretch}
   .hero-oauth{flex-direction:column}
   .bottom-oauth{flex-direction:column}
   .auth-modal{margin:1rem;padding:2rem 1.5rem 1.5rem}
   .e2e-badges{flex-direction:column;align-items:center}
+  .showcase{padding:0 1rem 4rem}
+  .showcase-app{height:320px}
 }
 </style>
 </head>
 <body>
 
-<canvas id="mesh" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0"></canvas>
+<canvas id="mesh" style="position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0"></canvas>
 
 <!-- ===== NAV ===== -->
 <nav>

@@ -682,41 +682,43 @@ body{
   <div class="stat-row">
     <div class="stat-card glass">
       <div class="stat-label">Devices</div>
-      <div class="stat-value">0</div>
-      <div class="stat-sub">No devices registered</div>
+      <div class="stat-value" id="stat-devices">0</div>
+      <div class="stat-sub" id="stat-devices-sub">No devices registered</div>
     </div>
     <div class="stat-card glass">
-      <div class="stat-label">Agents</div>
-      <div class="stat-value">0</div>
-      <div class="stat-sub">0 active</div>
+      <div class="stat-label">Online</div>
+      <div class="stat-value" id="stat-online">0</div>
+      <div class="stat-sub" id="stat-online-sub">0 offline</div>
     </div>
     <div class="stat-card glass">
-      <div class="stat-label">Tasks Today</div>
-      <div class="stat-value">0</div>
-      <div class="stat-sub">0 in progress</div>
+      <div class="stat-label">Last Heartbeat</div>
+      <div class="stat-value" id="stat-heartbeat">&mdash;</div>
+      <div class="stat-sub" id="stat-heartbeat-sub">No data yet</div>
     </div>
     <div class="stat-card glass">
-      <div class="stat-label">Uptime</div>
-      <div class="stat-value">&mdash;</div>
-      <div class="stat-sub">No data yet</div>
+      <div class="stat-label">Missed Beats</div>
+      <div class="stat-value" id="stat-missed">0</div>
+      <div class="stat-sub" id="stat-missed-sub">Last 7 days</div>
     </div>
   </div>
 
   <div class="dash-body">
     <div class="devices-section">
       <div class="section-title">Devices</div>
-      <div class="empty-state glass" style="padding:2rem">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-        </svg>
-        <h3>No devices yet</h3>
-        <p>Register a device to start managing your agent fleet. Devices connect securely using E2E encrypted transport.</p>
+      <div id="device-grid">
+        <div class="empty-state glass" style="padding:2rem" id="devices-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+          </svg>
+          <h3>No devices yet</h3>
+          <p>Register a device to start managing your agent fleet. Devices connect securely using E2E encrypted transport.</p>
+        </div>
       </div>
     </div>
 
     <div class="activity-section">
       <div class="section-title">Recent Activity</div>
-      <div class="activity-feed glass">
+      <div class="activity-feed glass" id="activity-feed">
         <div class="activity-item">
           <span class="activity-time">now</span>
           <span class="activity-text"><strong>Dashboard</strong> initialized &mdash; waiting for device connections</span>
@@ -851,23 +853,30 @@ body{
 </div><!-- /main-content -->
 </div><!-- /app -->
 
+<!-- Skrift notification SSE client -->
+<script src="/static/skrift/js/notifications.js"></script>
+
 <script>
-// State
+// ===== UI State =====
 let currentView = 'dashboard';
 let currentTab = 'chat';
 let selectedAgent = null;
 let consoleCollapsed = true;
 
-// Elements
+// ===== Device State =====
+const devices = new Map(); // id -> device object
+const activityItems = [];
+const MAX_ACTIVITY = 50;
+
+// ===== DOM References =====
 const rail = document.getElementById('main-rail');
 const viewDash = document.getElementById('view-dashboard');
 const viewWork = document.getElementById('view-workspace');
 const consoleBtm = document.getElementById('console-bottom');
 const consoleToggle = document.getElementById('console-toggle');
-
-// Rail icons
 const railIcons = rail.querySelectorAll('.rail-icon[data-rail]');
 
+// ===== Rail Navigation =====
 function setRailState(agentSelected) {
   railIcons.forEach(btn => {
     const r = btn.dataset.rail;
@@ -915,7 +924,6 @@ function switchTab(tab) {
   setActiveRail(tab);
 }
 
-// Rail click handler
 railIcons.forEach(btn => {
   btn.addEventListener('click', () => {
     if (btn.classList.contains('disabled')) return;
@@ -928,7 +936,6 @@ railIcons.forEach(btn => {
   });
 });
 
-// Agent selection from dashboard
 function selectAgent(name, device) {
   selectedAgent = { name, device };
   document.getElementById('ws-agent-name').textContent = name;
@@ -937,17 +944,13 @@ function selectAgent(name, device) {
   switchView('workspace', 'chat');
 }
 
-// Console toggle
 consoleToggle.addEventListener('click', () => {
   consoleCollapsed = !consoleCollapsed;
   consoleBtm.classList.toggle('collapsed', consoleCollapsed);
   consoleToggle.querySelector('svg').style.transform = consoleCollapsed ? 'rotate(180deg)' : '';
 });
-
-// Hide console initially (dashboard is default)
 consoleBtm.style.display = 'none';
 
-// Console entry toggle
 function toggleConsoleEntry(row) {
   const chevron = row.querySelector('.ce-chevron');
   const detail = row.nextElementSibling;
@@ -957,7 +960,6 @@ function toggleConsoleEntry(row) {
   }
 }
 
-// File tree toggle
 function toggleTree(el) {
   const children = el.nextElementSibling;
   if (children && children.classList.contains('tree-children')) {
@@ -967,14 +969,296 @@ function toggleTree(el) {
   }
 }
 
-// Auto-resize textarea
 document.querySelector('.chat-input')?.addEventListener('input', function(){
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
 
-// Initialize rail state
 setRailState(false);
+
+// =====================================================================
+// Device Dashboard — live data via Skrift notifications
+// =====================================================================
+
+// Configure Skrift notifications for persistent connection
+function initNotifications() {
+  if (window.__skriftNotifications) {
+    window.__skriftNotifications.configure({ persistConnection: true });
+  } else {
+    // Retry if not yet initialized
+    setTimeout(initNotifications, 100);
+  }
+}
+initNotifications();
+
+// ----- Helpers -----
+
+function timeAgo(isoOrTs) {
+  if (!isoOrTs) return 'never';
+  const date = typeof isoOrTs === 'number'
+    ? new Date(isoOrTs * 1000)
+    : new Date(isoOrTs);
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 5) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function shortTime(isoOrTs) {
+  if (!isoOrTs) return '';
+  const date = typeof isoOrTs === 'number'
+    ? new Date(isoOrTs * 1000)
+    : new Date(isoOrTs);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// ----- Rendering -----
+
+function renderDeviceCard(device) {
+  const isOnline = device.status === 'online';
+  const statusClass = isOnline ? '' : 'offline';
+  const statusText = isOnline ? 'Online' : 'Offline';
+  const heartbeatText = device.last_heartbeat_at
+    ? timeAgo(device.last_heartbeat_at)
+    : 'never';
+  const missedCount = (device.missed_heartbeat_windows || []).length;
+
+  return `
+    <div class="device-card glass" data-device-id="${device.id}">
+      <div class="device-header">
+        <div class="device-icon ${statusClass}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+          </svg>
+        </div>
+        <span class="device-name">${escapeHtml(device.name)}</span>
+        <div class="device-status">
+          <span class="dot ${statusClass}"></span>
+          <span>${statusText}</span>
+        </div>
+      </div>
+      <div class="device-meta" style="display:flex;gap:1rem;font-size:11px;color:var(--text-muted)">
+        <span title="Last heartbeat">Last beat: ${heartbeatText}</span>
+        <span title="Heartbeat interval">Interval: ${device.heartbeat_interval_s || 30}s</span>
+        ${missedCount > 0 ? `<span style="color:var(--amber)" title="Missed heartbeat windows">${missedCount} missed</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderDeviceGrid() {
+  const grid = document.getElementById('device-grid');
+  const empty = document.getElementById('devices-empty');
+
+  if (devices.size === 0) {
+    if (empty) empty.style.display = '';
+    // Remove any device cards
+    grid.querySelectorAll('.device-card').forEach(el => el.remove());
+    return;
+  }
+
+  if (empty) empty.style.display = 'none';
+
+  // Clear existing cards
+  grid.querySelectorAll('.device-card').forEach(el => el.remove());
+
+  // Sort: online first, then by name
+  const sorted = [...devices.values()].sort((a, b) => {
+    if (a.status === 'online' && b.status !== 'online') return -1;
+    if (a.status !== 'online' && b.status === 'online') return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const device of sorted) {
+    grid.insertAdjacentHTML('beforeend', renderDeviceCard(device));
+  }
+}
+
+function updateStats() {
+  const total = devices.size;
+  const online = [...devices.values()].filter(d => d.status === 'online').length;
+  const offline = total - online;
+  const totalMissed = [...devices.values()].reduce(
+    (sum, d) => sum + (d.missed_heartbeat_windows || []).length, 0
+  );
+
+  document.getElementById('stat-devices').textContent = total;
+  document.getElementById('stat-devices-sub').textContent =
+    total === 0 ? 'No devices registered' :
+    total === 1 ? '1 device registered' :
+    `${total} devices registered`;
+
+  document.getElementById('stat-online').textContent = online;
+  document.getElementById('stat-online-sub').textContent = `${offline} offline`;
+
+  // Find most recent heartbeat
+  let latestBeat = null;
+  for (const d of devices.values()) {
+    if (d.last_heartbeat_at) {
+      const t = new Date(d.last_heartbeat_at);
+      if (!latestBeat || t > latestBeat) latestBeat = t;
+    }
+  }
+  document.getElementById('stat-heartbeat').textContent =
+    latestBeat ? timeAgo(latestBeat.toISOString()) : '\u2014';
+  document.getElementById('stat-heartbeat-sub').textContent =
+    latestBeat ? shortTime(latestBeat.toISOString()) : 'No data yet';
+
+  document.getElementById('stat-missed').textContent = totalMissed;
+}
+
+function addActivity(text, timestamp) {
+  const feed = document.getElementById('activity-feed');
+  const time = timestamp ? shortTime(timestamp) : shortTime(new Date().toISOString());
+
+  const item = document.createElement('div');
+  item.className = 'activity-item';
+  item.innerHTML = `
+    <span class="activity-time">${time}</span>
+    <span class="activity-text">${text}</span>
+  `;
+
+  // Insert at top
+  if (feed.firstChild) {
+    feed.insertBefore(item, feed.firstChild);
+  } else {
+    feed.appendChild(item);
+  }
+
+  // Limit items
+  while (feed.children.length > MAX_ACTIVITY) {
+    feed.removeChild(feed.lastChild);
+  }
+}
+
+// ----- Initial data fetch -----
+
+async function fetchDevices() {
+  try {
+    const resp = await fetch('/api/devices/');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    devices.clear();
+    for (const d of data) {
+      devices.set(d.id, d);
+    }
+    renderDeviceGrid();
+    updateStats();
+
+    // Add activity for existing devices
+    if (data.length > 0) {
+      addActivity(
+        `<strong>Dashboard</strong> loaded &mdash; ${data.length} device${data.length > 1 ? 's' : ''} found`,
+      );
+    }
+  } catch (err) {
+    console.error('Failed to fetch devices:', err);
+  }
+}
+
+// ----- Skrift notification event handler -----
+
+document.addEventListener('sk:notification', (e) => {
+  const data = e.detail;
+  const type = data.type || '';
+
+  // Only handle build:device:* events
+  if (!type.startsWith('build:device:')) return;
+
+  // Prevent default toast rendering — we handle it ourselves
+  e.preventDefault();
+
+  const eventType = type.replace('build:device:', '');
+  const deviceId = data.device_id;
+  const deviceName = data.device_name || '';
+
+  switch (eventType) {
+    case 'authorized': {
+      // New device authorized — fetch fresh data to get full record
+      fetchDevices();
+      addActivity(
+        `<strong>${escapeHtml(deviceName)}</strong> authorized`,
+        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
+      );
+      break;
+    }
+
+    case 'online': {
+      const device = devices.get(deviceId);
+      if (device) {
+        device.status = 'online';
+        device.last_heartbeat_at = new Date().toISOString();
+      } else {
+        // Unknown device — refetch
+        fetchDevices();
+      }
+      renderDeviceGrid();
+      updateStats();
+      addActivity(
+        `<strong>${escapeHtml(deviceName)}</strong> came <span style="color:var(--green);font-weight:600">online</span>`,
+        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
+      );
+      break;
+    }
+
+    case 'offline': {
+      const device = devices.get(deviceId);
+      if (device) {
+        device.status = 'offline';
+      }
+      renderDeviceGrid();
+      updateStats();
+      addActivity(
+        `<strong>${escapeHtml(deviceName)}</strong> went <span style="color:var(--red);font-weight:600">offline</span>`,
+        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
+      );
+      break;
+    }
+
+    case 'heartbeat-missed': {
+      const device = devices.get(deviceId);
+      addActivity(
+        `<strong>${escapeHtml(deviceName || deviceId)}</strong> <span style="color:var(--amber);font-weight:600">missed heartbeat</span> (${data.elapsed_s || '?'}s)`,
+        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
+      );
+      // Refresh to get updated missed windows
+      fetchDevices();
+      break;
+    }
+
+    case 'status': {
+      addActivity(
+        `<strong>${escapeHtml(deviceName)}</strong> status update`,
+        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
+      );
+      break;
+    }
+
+    default:
+      console.log('Unhandled device event:', eventType, data);
+  }
+});
+
+// ----- Periodic heartbeat time refresh -----
+setInterval(() => {
+  // Update "last heartbeat" stat and device cards with fresh relative times
+  updateStats();
+  // Re-render cards to update "Last beat: Xs ago"
+  renderDeviceGrid();
+}, 15000);
+
+// ----- Initialize -----
+fetchDevices();
 </script>
 </body>
 </html>

@@ -431,7 +431,7 @@ class DeviceApiController(Controller):
 
         return ServerSentEvent(generate())
 
-    @delete("/pending/{code:str}")
+    @delete("/pending/{code:str}", status_code=200)
     async def dismiss_pending(self, code: str) -> Response:
         """Dismiss/clean up a pending registration after the device receives approval."""
         _pending_registrations.pop(code, None)

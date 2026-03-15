@@ -1699,7 +1699,12 @@ async function sendChatMessage() {
   scrollChatToBottom();
 
   try {
-    await e2ee.sendMessage(chatCurrentChannel, content);
+    const realMessageId = await e2ee.sendMessage(chatCurrentChannel, content);
+    // Update the optimistic message's data-msg-id to match the encrypted frame's message_id
+    // so that delivered/read status updates can find it.
+    const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
+    if (el) el.dataset.msgId = realMessageId;
+    tempMsg.id = realMessageId;
   } catch (err) {
     console.error('[Chat] Send failed:', err);
   }

@@ -596,21 +596,73 @@ nav{
 .sc-send svg{width:12px;height:12px;color:#fff}
 
 /* Console at bottom */
-.sc-console-collapsed{
-  display:flex;align-items:center;gap:.5rem;
-  padding:.45rem .75rem;
+/* Console */
+.sc-console{
   background:#18181b;
   border-top:1px solid rgba(255,255,255,.08);
   flex-shrink:0;
-  border-radius:0 0 12px 0;/* match frame corners */
+  display:flex;flex-direction:column;
+  transition:height .2s ease;
+  overflow:hidden;
 }
+.sc-console.collapsed{height:32px}
+.sc-console.collapsed .sc-console-body{display:none}
+.sc-console-header{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.35rem .75rem;
+  min-height:32px;flex-shrink:0;
+  cursor:pointer;
+  border-bottom:1px solid rgba(255,255,255,.04);
+}
+.sc-console-header:hover{background:rgba(255,255,255,.03)}
 .sc-working-dot{
   width:6px;height:6px;border-radius:50%;background:#22c55e;
   animation:sc-pulse 2s ease-in-out infinite;
 }
 @keyframes sc-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
-.sc-working-label{font-size:11px;font-weight:600;color:#e4e4e7}
-.sc-expand-icon{margin-left:auto;color:#71717a}
+.sc-console-title{font-size:10px;font-weight:600;color:#a1a1aa;text-transform:uppercase;letter-spacing:.04em}
+.sc-console-count{
+  font-size:9px;font-weight:600;color:#818cf8;
+  background:rgba(99,102,241,.15);
+  padding:.1rem .35rem;border-radius:6px;
+}
+.sc-console-toggle{
+  margin-left:auto;
+  width:20px;height:20px;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.06);border-radius:4px;
+  border:none;cursor:pointer;color:#71717a;
+  transition:transform .2s;
+}
+.sc-console.collapsed .sc-console-toggle{transform:rotate(180deg)}
+.sc-console-toggle svg{width:12px;height:12px}
+.sc-console-body{
+  flex:1;overflow-y:auto;max-height:160px;
+}
+.sc-console-body::-webkit-scrollbar{width:4px}
+.sc-console-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
+.sc-ce{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.3rem .75rem;
+  border-bottom:1px solid rgba(255,255,255,.04);
+  font-size:10.5px;
+}
+.sc-ce:last-child{border-bottom:none}
+.sc-ce-tag{
+  font-size:9px;font-weight:600;
+  padding:.1rem .3rem;border-radius:3px;
+  text-transform:uppercase;letter-spacing:.03em;
+  flex-shrink:0;
+}
+.sc-ce-tag.read{background:rgba(99,102,241,.15);color:#818cf8}
+.sc-ce-tag.write{background:rgba(5,150,105,.15);color:#34d399}
+.sc-ce-tag.edit{background:rgba(217,119,6,.15);color:#fbbf24}
+.sc-ce-tag.bash{background:rgba(168,85,247,.15);color:#c084fc}
+.sc-ce-file{color:#d4d4d8;font-family:var(--mono);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-ce-summary{font-size:9.5px;color:#71717a;white-space:nowrap;flex-shrink:0}
+.sc-ce-summary .g{color:#34d399}
+.sc-ce-summary .r{color:#f87171}
+.sc-ce-time{font-size:9px;color:#52525b;font-family:var(--mono);flex-shrink:0}
 
 /* Tab panels */
 .sc-panel{display:none;flex:1;min-width:0;overflow:hidden}
@@ -1521,11 +1573,22 @@ footer{
           </div>
         </div>
 
-        <!-- Console spans full width -->
-        <div class="sc-console-collapsed">
-          <span class="sc-working-dot"></span>
-          <span class="sc-working-label">Working</span>
-          <svg class="sc-expand-icon" viewBox="0 0 12 12" width="12" height="12"><path d="M3 5l3-3 3 3M3 7l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        <!-- Console -->
+        <div class="sc-console collapsed" id="sc-console">
+          <div class="sc-console-header" onclick="document.getElementById('sc-console').classList.toggle('collapsed')">
+            <span class="sc-working-dot"></span>
+            <span class="sc-console-title">Console</span>
+            <span class="sc-console-count">6</span>
+            <button class="sc-console-toggle"><svg viewBox="0 0 12 12" fill="none"><path d="M3 7l3-3 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+          <div class="sc-console-body">
+            <div class="sc-ce"><span class="sc-ce-tag read">Read</span><span class="sc-ce-file">auth/middleware.ts</span><span class="sc-ce-summary"><span class="g">142 lines</span></span><span class="sc-ce-time">14:32</span></div>
+            <div class="sc-ce"><span class="sc-ce-tag write">Write</span><span class="sc-ce-file">auth/types.ts</span><span class="sc-ce-summary"><span class="g">28 lines</span></span><span class="sc-ce-time">14:32</span></div>
+            <div class="sc-ce"><span class="sc-ce-tag edit">Edit</span><span class="sc-ce-file">auth/verify.ts</span><span class="sc-ce-summary"><span class="g">+18</span> <span class="r">-12</span></span><span class="sc-ce-time">14:32</span></div>
+            <div class="sc-ce"><span class="sc-ce-tag write">Write</span><span class="sc-ce-file">auth/jwt.ts</span><span class="sc-ce-summary"><span class="g">89 lines</span></span><span class="sc-ce-time">14:33</span></div>
+            <div class="sc-ce"><span class="sc-ce-tag edit">Edit</span><span class="sc-ce-file">middleware/chain.ts</span><span class="sc-ce-summary"><span class="g">+34</span> <span class="r">-8</span></span><span class="sc-ce-time">14:33</span></div>
+            <div class="sc-ce"><span class="sc-ce-tag bash">Bash</span><span class="sc-ce-file">npm test</span><span class="sc-ce-summary"><span class="g">47 pass</span> <span class="r">2 fail</span></span><span class="sc-ce-time">14:34</span></div>
+          </div>
         </div>
       </div>
     </div>

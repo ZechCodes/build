@@ -1671,7 +1671,11 @@ function appendMessage(msg) {
         <span class="msg-time">${timeStr}</span>
       </div>
       <div class="msg-text"><p>${escapeHtml(msg.content || '')}</p></div>
-      ${isUser && msg.id ? '<div class="msg-status">Sending...</div>' : ''}
+      ${isUser && msg.id ? `<div class="msg-status">${
+        msg.read_at ? '<span class="read">✓✓ Read</span>'
+        : msg.delivered_at ? '<span class="delivered">✓ Delivered</span>'
+        : 'Sending...'
+      }</div>` : ''}
     </div>
   `;
   container.appendChild(div);

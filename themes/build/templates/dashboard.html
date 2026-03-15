@@ -881,7 +881,7 @@ body{
           <div class="chat-sidebar-header">
             <span class="chat-sidebar-title">Channels</span>
             <button class="chat-sidebar-btn" id="btn-new-channel" title="New channel">
-              <svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
           </div>
           <div class="chat-channel-list" id="chat-channel-list">
@@ -1404,7 +1404,7 @@ setInterval(() => {
 }, 15000);
 
 // ----- Initialize -----
-fetchDevices();
+fetchDevices().then(() => initE2EE());
 
 // =====================================================================
 // E2EE Chat — wired to BuildE2EE client
@@ -1755,15 +1755,6 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   });
 });
 
-// ----- Auto-connect E2EE when device is available -----
-// Start after devices are fetched.
-const originalFetchDevices = fetchDevices;
-fetchDevices = async function() {
-  await originalFetchDevices();
-  if (!e2ee || !e2ee.connected) {
-    initE2EE();
-  }
-};
 
 </script>
 </body>

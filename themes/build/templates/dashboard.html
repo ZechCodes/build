@@ -1065,8 +1065,14 @@ railIcons.forEach(btn => {
     const r = btn.dataset.rail;
     if (r === 'dashboard') {
       switchView('dashboard');
+      location.hash = 'dashboard';
     } else {
       switchView('workspace', r);
+      if (r === 'chat' && chatCurrentChannel) {
+        location.hash = `chat/${chatCurrentChannel}`;
+      } else {
+        location.hash = r;
+      }
     }
   });
 });
@@ -1077,6 +1083,12 @@ function selectAgent(name, device) {
   document.getElementById('ws-device').textContent = device;
   setRailState(true);
   switchView('workspace', 'chat');
+  // Update hash to reflect chat view (keep channel if set).
+  if (chatCurrentChannel) {
+    location.hash = `chat/${chatCurrentChannel}`;
+  } else {
+    location.hash = 'chat';
+  }
 }
 
 consoleToggle.addEventListener('click', () => {
@@ -1404,8 +1416,41 @@ setInterval(() => {
   renderDeviceGrid();
 }, 15000);
 
+// ----- Hash-based routing -----
+let _pendingChannelId = null;
+
+function restoreFromHash() {
+  const hash = location.hash.replace(/^#/, '');
+  if (!hash || hash === 'dashboard') return;
+
+  if (hash === 'chat' || hash.startsWith('chat/')) {
+    // Need an agent selected to show workspace.
+    const firstDevice = [...devices.values()][0];
+    if (firstDevice && !selectedAgent) {
+      selectedAgent = { name: firstDevice.name, device: firstDevice.name };
+      document.getElementById('ws-agent-name').textContent = firstDevice.name;
+      document.getElementById('ws-device').textContent = firstDevice.name;
+      setRailState(true);
+    }
+    switchView('workspace', 'chat');
+
+    const parts = hash.split('/');
+    if (parts[1]) {
+      _pendingChannelId = parts[1];
+      // If channels are already loaded, select immediately.
+      if (chatChannels.has(_pendingChannelId)) {
+        selectChannel(_pendingChannelId);
+        _pendingChannelId = null;
+      }
+    }
+  }
+}
+
 // ----- Initialize -----
-fetchDevices().then(() => initE2EE());
+fetchDevices().then(() => {
+  restoreFromHash();
+  initE2EE();
+});
 
 // =====================================================================
 // E2EE Chat — wired to BuildE2EE client
@@ -1520,6 +1565,11 @@ function bindE2EEEvents() {
       chatChannels.set(ch.id, ch);
     }
     renderChannelList();
+    // Restore pending channel from hash.
+    if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
+      selectChannel(_pendingChannelId);
+      _pendingChannelId = null;
+    }
   });
 
   e2ee.addEventListener('channel_created', (evt) => {
@@ -1561,6 +1611,7 @@ function selectChannel(channelId) {
     e2ee.getMessages(channelId);
   }
   document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
+  location.hash = `chat/${channelId}`;
 }
 
 // ----- Messages -----

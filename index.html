@@ -481,14 +481,6 @@ nav{
 .sc-e2e{color:#059669;opacity:.6}
 .sc-e2e svg{width:14px;height:14px}
 
-/* Sidebar — channels */
-.sc-sidebar{
-  width:200px;
-  display:flex;flex-direction:column;
-  border-right:1px solid rgba(0,0,0,.08);
-  background:rgba(255,255,255,.5);
-  flex-shrink:0;
-}
 .sc-sidebar-header{
   display:flex;align-items:center;justify-content:space-between;
   padding:.65rem .75rem;
@@ -519,7 +511,9 @@ nav{
 }
 .sc-e2e-dot{width:6px;height:6px;border-radius:50%;background:#059669;flex-shrink:0}
 
-/* Main content area */
+/* Content area (topbar + body + console) */
+.sc-content{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.sc-body{flex:1;display:flex;overflow:hidden}
 .sc-topbar{
   height:40px;
   display:flex;align-items:center;gap:.75rem;
@@ -608,7 +602,7 @@ nav{
   background:#18181b;
   border-top:1px solid rgba(255,255,255,.08);
   flex-shrink:0;
-  border-radius:0 0 12px 0;
+  border-radius:0 0 12px 0;/* match frame corners */
 }
 .sc-working-dot{
   width:6px;height:6px;border-radius:50%;background:#22c55e;
@@ -619,9 +613,37 @@ nav{
 .sc-expand-icon{margin-left:auto;color:#71717a}
 
 /* Tab panels */
-.sc-panel{display:none;flex:1;flex-direction:column;min-width:0;overflow:hidden}
+.sc-panel{display:none;flex:1;min-width:0;overflow:hidden}
 .sc-panel.active{display:flex}
 .sc-rail-icon{cursor:default}
+.sc-panel-sidebar{
+  width:200px;flex-shrink:0;
+  display:flex;flex-direction:column;
+  border-right:1px solid rgba(0,0,0,.08);
+  background:rgba(255,255,255,.5);
+  overflow:hidden;
+}
+.sc-panel-main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+/* Detail pane (plan content, file content) — hidden on mobile */
+.sc-detail-pane{display:none}
+@media(min-width:769px){.sc-detail-pane{display:flex}}
+.sc-detail-header{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.5rem .75rem;
+  border-bottom:1px solid rgba(0,0,0,.08);
+  flex-shrink:0;
+}
+.sc-detail-title{font-size:13px;font-weight:600;color:#18181b}
+.sc-detail-body{flex:1;overflow-y:auto;padding:.75rem;font-size:12px;color:#3f3f46;line-height:1.6}
+.sc-detail-section{margin-top:.75rem;padding-top:.5rem;border-top:1px solid rgba(0,0,0,.08)}
+.sc-detail-label{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem}
+.sc-detail-text{font-size:12px;color:#3f3f46;line-height:1.6}
+.sc-code-view{
+  font-family:var(--mono);font-size:10.5px;line-height:1.6;
+  padding:.5rem .625rem;
+  overflow:auto;
+}
 
 /* Plans panel */
 .sc-plans-list{flex:1;overflow-y:auto;padding:.5rem}
@@ -682,21 +704,6 @@ nav{
 .sc-file-preview .add{color:#059669}
 .sc-file-preview .del{color:#dc2626}
 
-/* Desktop sidebar detail panels */
-.sc-sidebar-detail{display:none}
-@media(min-width:769px){
-  .sc-sidebar-detail{
-    display:flex;flex-direction:column;
-    width:220px;border-left:1px solid rgba(0,0,0,.08);
-    background:rgba(255,255,255,.5);flex-shrink:0;
-    overflow:hidden;
-  }
-  .sc-sidebar-detail .sc-sidebar-header{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:.65rem .75rem;border-bottom:1px solid rgba(0,0,0,.08);
-  }
-  .sc-sidebar-detail-content{flex:1;overflow-y:auto;padding:.5rem .625rem;font-size:11px;line-height:1.5;color:#3f3f46}
-}
 
 /* Reflection */
 .showcase-reflection{
@@ -1020,7 +1027,11 @@ footer{
   .flow{flex-direction:column;align-items:center}
   .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
   .nav-links{display:none}
-  .sc-sidebar{display:none}
+  .sc-panel-sidebar{display:none}
+  .sc-panel[data-panel="plans"] .sc-panel-sidebar,
+  .sc-panel[data-panel="files"] .sc-panel-sidebar{display:flex;flex:1}
+  .sc-panel[data-panel="plans"] .sc-detail-pane,
+  .sc-panel[data-panel="files"] .sc-detail-pane{display:none !important}
   .showcase-reflection{height:40px}
 }
 @media(max-width:600px){
@@ -1168,44 +1179,46 @@ footer{
         <div class="sc-rail-icon sc-e2e"><svg viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.2"/></svg></div>
       </div>
 
-      <!-- Channel Sidebar -->
-      <div class="sc-sidebar">
-        <div class="sc-sidebar-header">
-          <span class="sc-sidebar-title">Channels</span>
-          <div class="sc-sidebar-btn"><svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
-        </div>
-        <div class="sc-channel-list">
-          <div class="sc-channel active"><span class="sc-channel-hash">#</span> refactor-auth</div>
-          <div class="sc-channel"><span class="sc-channel-hash">#</span> add-redis-cache</div>
-          <div class="sc-channel"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
-          <div class="sc-channel"><span class="sc-channel-hash">#</span> update-deps</div>
-        </div>
-        <div class="sc-e2e-bar"><span class="sc-e2e-dot"></span> E2E Connected</div>
-      </div>
-
-      <!-- Chat Panel -->
-      <div class="sc-panel active" data-panel="chat">
+      <!-- Content area: topbar + body + console -->
+      <div class="sc-content">
         <div class="sc-topbar">
           <div class="sc-device-dropdown"><svg class="sc-lock" viewBox="0 0 12 14" width="10" height="12"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
           <span class="sc-separator"></span>
           <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
         </div>
 
-        <div class="sc-messages">
-          <div class="sc-msg">
-            <div class="sc-avatar user">Z</div>
-            <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">2:30 PM</span></div>
-              <div class="sc-msg-text">Refactor the auth middleware. Extract JWT verification into its own module and add refresh token rotation.</div>
-              <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+        <div class="sc-body">
+          <!-- Chat Panel -->
+          <div class="sc-panel active" data-panel="chat">
+            <div class="sc-panel-sidebar">
+              <div class="sc-sidebar-header">
+                <span class="sc-sidebar-title">Channels</span>
+                <div class="sc-sidebar-btn"><svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+              </div>
+              <div class="sc-channel-list">
+                <div class="sc-channel active"><span class="sc-channel-hash">#</span> refactor-auth</div>
+                <div class="sc-channel"><span class="sc-channel-hash">#</span> add-redis-cache</div>
+                <div class="sc-channel"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
+                <div class="sc-channel"><span class="sc-channel-hash">#</span> update-deps</div>
+              </div>
+              <div class="sc-e2e-bar"><span class="sc-e2e-dot"></span> E2E Connected</div>
             </div>
-          </div>
-          <div class="sc-msg">
-            <div class="sc-avatar agent">C</div>
-            <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:30 PM</span></div>
-              <div class="sc-msg-text">I'll extract JWT verification into a standalone module:</div>
-              <div class="sc-msg-code"><span class="kw">export async function</span> <span class="fn">verifyToken</span>(
+            <div class="sc-panel-main">
+              <div class="sc-messages">
+                <div class="sc-msg">
+                  <div class="sc-avatar user">Z</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">2:30 PM</span></div>
+                    <div class="sc-msg-text">Refactor the auth middleware. Extract JWT verification into its own module and add refresh token rotation.</div>
+                    <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:30 PM</span></div>
+                    <div class="sc-msg-text">I'll extract JWT verification into a standalone module:</div>
+                    <div class="sc-msg-code"><span class="kw">export async function</span> <span class="fn">verifyToken</span>(
   token: <span class="kw">string</span>, config: AuthConfig
 ): Promise&lt;JWTPayload&gt; {
   <span class="kw">const</span> { payload } = <span class="kw">await</span> jwtVerify(
@@ -1213,165 +1226,154 @@ footer{
   );
   <span class="kw">return</span> payload <span class="kw">as</span> JWTPayload;
 }</div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar user">Z</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">2:32 PM</span></div>
+                    <div class="sc-msg-text">Use Redis for the token store.</div>
+                    <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:32 PM</span></div>
+                    <div class="sc-msg-text">Switching to Redis with composable middleware chain. Running tests now.</div>
+                  </div>
+                </div>
+              </div>
+              <div class="sc-input">
+                <div class="sc-input-wrap">
+                  <div class="sc-input-field">Message...</div>
+                  <div class="sc-send"><svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg></div>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="sc-msg">
-            <div class="sc-avatar user">Z</div>
-            <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">2:32 PM</span></div>
-              <div class="sc-msg-text">Use Redis for the token store.</div>
-              <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+
+          <!-- Plans Panel -->
+          <div class="sc-panel" data-panel="plans">
+            <div class="sc-panel-sidebar">
+              <div class="sc-sidebar-header">
+                <span class="sc-sidebar-title">Plans</span>
+              </div>
+              <div class="sc-plans-list">
+                <div class="sc-plan-item open">
+                  <div class="sc-plan-dot ready"></div>
+                  <div class="sc-plan-body">
+                    <div class="sc-plan-title">Extract JWT verification module</div>
+                    <div class="sc-plan-meta">Ready &middot; assigned to refactor-auth</div>
+                  </div>
+                </div>
+                <div class="sc-plan-item">
+                  <div class="sc-plan-dot progress"></div>
+                  <div class="sc-plan-body">
+                    <div class="sc-plan-title">Add rate limiting middleware</div>
+                    <div class="sc-plan-meta">In progress &middot; 3 of 5 tasks done</div>
+                  </div>
+                </div>
+                <div class="sc-plan-item">
+                  <div class="sc-plan-dot ready"></div>
+                  <div class="sc-plan-body">
+                    <div class="sc-plan-title">Migrate session store to Redis</div>
+                    <div class="sc-plan-meta">Ready &middot; unassigned</div>
+                  </div>
+                </div>
+                <div class="sc-plan-item">
+                  <div class="sc-plan-dot todo"></div>
+                  <div class="sc-plan-body">
+                    <div class="sc-plan-title">Add CORS configuration</div>
+                    <div class="sc-plan-meta">Backlog</div>
+                  </div>
+                </div>
+                <div class="sc-plan-item">
+                  <div class="sc-plan-dot todo"></div>
+                  <div class="sc-plan-body">
+                    <div class="sc-plan-title">Write API documentation</div>
+                    <div class="sc-plan-meta">Backlog</div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="sc-msg">
-            <div class="sc-avatar agent">C</div>
-            <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:32 PM</span></div>
-              <div class="sc-msg-text">Switching to Redis with composable middleware chain. Running tests now.</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="sc-input">
-          <div class="sc-input-wrap">
-            <div class="sc-input-field">Message...</div>
-            <div class="sc-send"><svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg></div>
-          </div>
-        </div>
-
-        <div class="sc-console-collapsed">
-          <span class="sc-working-dot"></span>
-          <span class="sc-working-label">Working</span>
-          <svg class="sc-expand-icon" viewBox="0 0 12 12" width="12" height="12"><path d="M3 5l3-3 3 3M3 7l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        </div>
-      </div>
-
-      <!-- Plans Panel -->
-      <div class="sc-panel" data-panel="plans">
-        <div class="sc-topbar">
-          <div class="sc-device-dropdown"><svg class="sc-lock" viewBox="0 0 12 14" width="10" height="12"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-          <span class="sc-separator"></span>
-          <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-        </div>
-
-        <div class="sc-plans-list">
-          <div class="sc-plan-item open">
-            <div class="sc-plan-dot ready"></div>
-            <div class="sc-plan-body">
-              <div class="sc-plan-title">Extract JWT verification module</div>
-              <div class="sc-plan-meta">Ready &middot; assigned to refactor-auth</div>
-              <div class="sc-plan-detail">
+            <div class="sc-panel-main sc-detail-pane">
+              <div class="sc-detail-header">
+                <div class="sc-plan-dot ready"></div>
+                <span class="sc-detail-title">Extract JWT verification module</span>
+              </div>
+              <div class="sc-detail-body">
+                <div class="sc-plan-meta" style="margin-bottom:.5rem">Ready &middot; assigned to refactor-auth</div>
                 <ul class="sc-plan-checklist">
                   <li class="done">Create auth/jwt.ts with verify &amp; refresh</li>
                   <li class="done">Add Redis token store adapter</li>
                   <li>Update middleware to use new module</li>
                   <li>Add refresh token rotation tests</li>
                 </ul>
+                <div class="sc-detail-section">
+                  <div class="sc-detail-label">Description</div>
+                  <div class="sc-detail-text">Extract all JWT verification logic from the auth middleware into a standalone module. Add refresh token rotation with Redis-backed token store for invalidation tracking.</div>
+                </div>
               </div>
             </div>
           </div>
-          <div class="sc-plan-item">
-            <div class="sc-plan-dot progress"></div>
-            <div class="sc-plan-body">
-              <div class="sc-plan-title">Add rate limiting middleware</div>
-              <div class="sc-plan-meta">In progress &middot; 3 of 5 tasks done</div>
+
+          <!-- Files Panel -->
+          <div class="sc-panel" data-panel="files">
+            <div class="sc-panel-sidebar">
+              <div class="sc-sidebar-header">
+                <span class="sc-sidebar-title">Files</span>
+              </div>
+              <div class="sc-file-tree">
+                <div class="sc-tree-item"><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">src/</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">auth/</span></div>
+                <div class="sc-tree-item open"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">jwt.ts</span><span class="sc-tree-badge a">A</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">refresh.ts</span><span class="sc-tree-badge a">A</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">middleware/</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">auth.ts</span><span class="sc-tree-badge m">M</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">rate-limit.ts</span><span class="sc-tree-badge m">M</span></div>
+                <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">index.ts</span></div>
+                <div class="sc-tree-item"><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">package.json</span></div>
+                <div class="sc-tree-item"><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">tsconfig.json</span></div>
+              </div>
             </div>
-          </div>
-          <div class="sc-plan-item">
-            <div class="sc-plan-dot ready"></div>
-            <div class="sc-plan-body">
-              <div class="sc-plan-title">Migrate session store to Redis</div>
-              <div class="sc-plan-meta">Ready &middot; unassigned</div>
-            </div>
-          </div>
-          <div class="sc-plan-item">
-            <div class="sc-plan-dot todo"></div>
-            <div class="sc-plan-body">
-              <div class="sc-plan-title">Add CORS configuration</div>
-              <div class="sc-plan-meta">Backlog</div>
-            </div>
-          </div>
-          <div class="sc-plan-item">
-            <div class="sc-plan-dot todo"></div>
-            <div class="sc-plan-body">
-              <div class="sc-plan-title">Write API documentation</div>
-              <div class="sc-plan-meta">Backlog</div>
+            <div class="sc-panel-main sc-detail-pane">
+              <div class="sc-detail-header">
+                <svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+                <span class="sc-detail-title">src/auth/jwt.ts</span>
+                <span class="sc-tree-badge a" style="margin-left:auto">Added</span>
+              </div>
+              <div class="sc-detail-body sc-code-view">
+                <div><span class="ln">1</span><span class="kw">import</span> { jwtVerify, SignJWT } <span class="kw">from</span> <span class="str">'jose'</span>;</div>
+                <div><span class="ln">2</span><span class="kw">import</span> { redis } <span class="kw">from</span> <span class="str">'../store'</span>;</div>
+                <div><span class="ln">3</span></div>
+                <div class="add"><span class="ln">4</span><span class="kw">export async function</span> verifyToken(</div>
+                <div class="add"><span class="ln">5</span>  token: <span class="kw">string</span>,</div>
+                <div class="add"><span class="ln">6</span>  config: AuthConfig</div>
+                <div class="add"><span class="ln">7</span>) {</div>
+                <div class="add"><span class="ln">8</span>  <span class="kw">const</span> { payload } = <span class="kw">await</span> jwtVerify(</div>
+                <div class="add"><span class="ln">9</span>    token, config.secret</div>
+                <div class="add"><span class="ln">10</span>  );</div>
+                <div class="add"><span class="ln">11</span>  <span class="kw">return</span> payload <span class="kw">as</span> JWTPayload;</div>
+                <div class="add"><span class="ln">12</span>}</div>
+                <div><span class="ln">13</span></div>
+                <div class="add"><span class="ln">14</span><span class="kw">export async function</span> rotateRefresh(</div>
+                <div class="add"><span class="ln">15</span>  oldToken: <span class="kw">string</span>,</div>
+                <div class="add"><span class="ln">16</span>  config: AuthConfig</div>
+                <div class="add"><span class="ln">17</span>) {</div>
+                <div class="add"><span class="ln">18</span>  <span class="kw">await</span> redis.set(</div>
+                <div class="add"><span class="ln">19</span>    <span class="str">`revoked:${oldToken}`</span>, <span class="str">'1'</span></div>
+                <div class="add"><span class="ln">20</span>  );</div>
+              </div>
             </div>
           </div>
         </div>
 
+        <!-- Console spans full width -->
         <div class="sc-console-collapsed">
           <span class="sc-working-dot"></span>
           <span class="sc-working-label">Working</span>
           <svg class="sc-expand-icon" viewBox="0 0 12 12" width="12" height="12"><path d="M3 5l3-3 3 3M3 7l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        </div>
-      </div>
-
-      <!-- Files Panel -->
-      <div class="sc-panel" data-panel="files">
-        <div class="sc-topbar">
-          <div class="sc-device-dropdown"><svg class="sc-lock" viewBox="0 0 12 14" width="10" height="12"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-          <span class="sc-separator"></span>
-          <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-        </div>
-
-        <div class="sc-file-tree">
-          <div class="sc-tree-item"><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">src/</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">auth/</span></div>
-          <div class="sc-tree-item open"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">jwt.ts</span><span class="sc-tree-badge a">A</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">refresh.ts</span><span class="sc-tree-badge a">A</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon folder" viewBox="0 0 14 12" width="12" height="10"><path d="M1 2.5A1 1 0 012 1.5h3l1.5 1.5H12a1 1 0 011 1v6a1 1 0 01-1 1H2a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">middleware/</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">auth.ts</span><span class="sc-tree-badge m">M</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">rate-limit.ts</span><span class="sc-tree-badge m">M</span></div>
-          <div class="sc-tree-item"><span class="indent"></span><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">index.ts</span></div>
-          <div class="sc-tree-item"><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">package.json</span></div>
-          <div class="sc-tree-item"><svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg><span class="sc-tree-name">tsconfig.json</span></div>
-        </div>
-
-        <div class="sc-file-preview">
-          <div><span class="ln">1</span><span class="kw">import</span> { jwtVerify, SignJWT } <span class="kw">from</span> <span class="str">'jose'</span>;</div>
-          <div><span class="ln">2</span><span class="kw">import</span> { redis } <span class="kw">from</span> <span class="str">'../store'</span>;</div>
-          <div><span class="ln">3</span></div>
-          <div class="add"><span class="ln">4</span><span class="kw">export async function</span> verifyToken(</div>
-          <div class="add"><span class="ln">5</span>  token: <span class="kw">string</span>,</div>
-          <div class="add"><span class="ln">6</span>  config: AuthConfig</div>
-          <div class="add"><span class="ln">7</span>) {</div>
-        </div>
-
-        <div class="sc-console-collapsed">
-          <span class="sc-working-dot"></span>
-          <span class="sc-working-label">Working</span>
-          <svg class="sc-expand-icon" viewBox="0 0 12 12" width="12" height="12"><path d="M3 5l3-3 3 3M3 7l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        </div>
-      </div>
-
-      <!-- Desktop detail sidebar (plan/file open) -->
-      <div class="sc-sidebar-detail">
-        <div class="sc-sidebar-header">
-          <span class="sc-sidebar-title">JWT Module Plan</span>
-        </div>
-        <div class="sc-sidebar-detail-content">
-          <div class="sc-plan-detail">
-            <ul class="sc-plan-checklist">
-              <li class="done">Create auth/jwt.ts with verify &amp; refresh</li>
-              <li class="done">Add Redis token store adapter</li>
-              <li>Update middleware to use new module</li>
-              <li>Add refresh token rotation tests</li>
-            </ul>
-          </div>
-          <div style="margin-top:.75rem;padding-top:.5rem;border-top:1px solid rgba(0,0,0,.08)">
-            <div style="font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.4rem">Open File</div>
-            <div style="font-family:var(--mono);font-size:10px;line-height:1.5;background:#f4f4f5;padding:.4rem .5rem;border-radius:4px">
-              <div><span style="color:#a1a1aa">1</span> <span class="kw">import</span> { jwtVerify } <span class="kw">from</span> <span class="str">'jose'</span>;</div>
-              <div><span style="color:#a1a1aa">2</span></div>
-              <div style="color:#059669"><span style="color:#a1a1aa">3</span> export async function verifyToken(</div>
-              <div style="color:#059669"><span style="color:#a1a1aa">4</span>   token: string,</div>
-              <div style="color:#059669"><span style="color:#a1a1aa">5</span>   config: AuthConfig</div>
-              <div style="color:#059669"><span style="color:#a1a1aa">6</span> ) {</div>
-              <div style="color:#059669"><span style="color:#a1a1aa">7</span>   const { payload } = await</div>
-              <div style="color:#059669"><span style="color:#a1a1aa">8</span>     jwtVerify(token, config.secret);</div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

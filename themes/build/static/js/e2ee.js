@@ -209,6 +209,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('delivered', {
         detail: { message_id: payload.message_id, channel_id: payload.channel_id },
       }));
+    } else if (action === 'read') {
+      this.dispatchEvent(new CustomEvent('read', {
+        detail: { message_ids: payload.message_ids, channel_id: payload.channel_id },
+      }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }

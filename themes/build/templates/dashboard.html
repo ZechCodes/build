@@ -1570,6 +1570,14 @@ function selectChannel(channelId) {
     chatMessages.set(channel_id, messages);
     if (chatCurrentChannel === channel_id) {
       renderMessages();
+      // Mark unread device messages as read.
+      const unread = messages
+        .filter(m => m.sender !== 'client' && !m.read_at)
+        .map(m => m.id)
+        .filter(Boolean);
+      if (unread.length && e2ee && e2ee.connected) {
+        e2ee.markRead(unread);
+      }
     }
   });
 
@@ -1593,6 +1601,16 @@ function selectChannel(channelId) {
     const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);
     if (statusEl) {
       statusEl.innerHTML = '<span class="delivered">✓ Delivered</span>';
+    }
+  });
+
+  e2ee.addEventListener('read', (evt) => {
+    const { message_ids } = evt.detail;
+    for (const mid of (message_ids || [])) {
+      const statusEl = document.querySelector(`[data-msg-id="${mid}"] .msg-status`);
+      if (statusEl) {
+        statusEl.innerHTML = '<span class="read">✓✓ Read</span>';
+      }
     }
   });
 } // end bindE2EEEvents

@@ -513,7 +513,7 @@ nav{
 
 /* Content area (topbar + body + console) */
 .sc-content{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
-.sc-body{flex:1;display:flex;overflow:hidden}
+.sc-body{flex:1;display:flex;overflow:hidden;position:relative}
 .sc-topbar{
   height:40px;
   display:flex;align-items:center;gap:.75rem;
@@ -602,11 +602,15 @@ nav{
   border-top:1px solid rgba(255,255,255,.08);
   flex-shrink:0;
   display:flex;flex-direction:column;
-  transition:height .2s ease;
   overflow:hidden;
 }
-.sc-console.collapsed{height:32px}
-.sc-console.collapsed .sc-console-body{display:none}
+.sc-console .sc-console-body{
+  max-height:160px;opacity:1;
+  transition:max-height .25s ease,opacity .2s ease;
+}
+.sc-console.collapsed .sc-console-body{
+  max-height:0;opacity:0;overflow:hidden;
+}
 .sc-console-header{
   display:flex;align-items:center;gap:.5rem;
   padding:.35rem .75rem;
@@ -632,7 +636,7 @@ nav{
   display:flex;align-items:center;justify-content:center;
   background:rgba(255,255,255,.06);border-radius:4px;
   border:none;cursor:pointer;color:#71717a;
-  transition:transform .2s;
+  transition:transform .25s ease;
 }
 .sc-console.collapsed .sc-console-toggle{transform:rotate(180deg)}
 .sc-console-toggle svg{width:12px;height:12px}
@@ -665,8 +669,19 @@ nav{
 .sc-ce-time{font-size:9px;color:#52525b;font-family:var(--mono);flex-shrink:0}
 
 /* Tab panels */
-.sc-panel{display:none;flex:1;min-width:0;overflow:hidden}
-.sc-panel.active{display:flex}
+.sc-panel{
+  display:flex;flex:1;min-width:0;overflow:hidden;
+  opacity:0;
+  transform:translateY(6px);
+  position:absolute;inset:0;
+  pointer-events:none;
+  transition:opacity .2s ease,transform .2s ease;
+}
+.sc-panel.active{
+  opacity:1;transform:translateY(0);
+  position:relative;
+  pointer-events:auto;
+}
 .sc-rail-icon{cursor:default}
 .sc-panel-sidebar{
   width:200px;flex-shrink:0;

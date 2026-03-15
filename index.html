@@ -529,34 +529,32 @@ nav{
   border-bottom:1px solid rgba(0,0,0,.08);
   flex-shrink:0;
 }
-.sc-agent-name{font-weight:600;color:#18181b;font-size:13px}
-.sc-device{color:#71717a;font-size:11px}
-.sc-status{
-  display:flex;align-items:center;gap:.25rem;
-  font-size:10px;font-weight:600;
-  color:#059669;
-  background:rgba(5,150,105,.08);
-  padding:.15rem .5rem;border-radius:10px;
+.sc-device-dropdown{
+  display:flex;align-items:center;gap:.35rem;
+  font-weight:600;color:#18181b;font-size:13px;
+  cursor:default;
 }
-.sc-status .dot{width:4px;height:4px;border-radius:50%;background:currentColor}
-.sc-runtime{margin-left:auto;font-family:var(--mono);font-size:10px;color:#a1a1aa}
+.sc-chevron{color:#a1a1aa;flex-shrink:0}
+.sc-e2e-status{
+  display:flex;align-items:center;gap:.3rem;
+  margin-left:auto;
+  font-size:10px;font-weight:600;color:#059669;
+}
+.sc-e2e-status .sc-e2e-dot{width:5px;height:5px;border-radius:50%;background:#059669}
 
-/* Complications strip */
-.sc-complications{
-  display:flex;gap:.35rem;padding:.35rem .75rem;
+/* Channel bar */
+.sc-channel-bar{
+  display:flex;align-items:center;
+  padding:.4rem .75rem;
   border-bottom:1px solid rgba(0,0,0,.08);
-  flex-shrink:0;overflow-x:auto;
+  flex-shrink:0;
 }
-.sc-comp{
-  display:flex;align-items:center;gap:.25rem;
-  padding:.15rem .45rem;
-  border-radius:4px;
-  font-size:10px;color:#71717a;
-  background:rgba(0,0,0,.03);
-  border:1px solid rgba(0,0,0,.06);
-  white-space:nowrap;flex-shrink:0;
+.sc-channel-dropdown{
+  display:flex;align-items:center;gap:.35rem;
+  font-size:12px;font-weight:600;color:#18181b;
+  cursor:default;
 }
-.sc-comp .v{font-weight:600;color:#18181b}
+.sc-channel-dropdown .sc-channel-hash{color:#a1a1aa;font-weight:400}
 .sc-comp .g{color:#059669}
 .sc-comp .a{color:#d97706}
 .sc-comp .r{color:#dc2626}
@@ -987,7 +985,7 @@ footer{
   .sc-rail-icon svg{width:14px;height:14px}
   .sc-sidebar{display:none}
   .sc-console{display:none}
-  .sc-complications{display:none}
+  .sc-channel-bar{display:none}
   .showcase-reflection{max-width:380px;height:40px}
 }
 @media(max-width:600px){
@@ -1145,17 +1143,11 @@ footer{
       <!-- Main Chat -->
       <div class="sc-main">
         <div class="sc-topbar">
-          <span class="sc-agent-name">refactor-auth</span>
-          <span class="sc-device">on macbook-pro</span>
-          <div class="sc-status"><span class="dot"></span> Working</div>
-          <span class="sc-runtime">2m 14s</span>
+          <div class="sc-device-dropdown"><svg viewBox="0 0 16 16" fill="none" width="12" height="12"><rect x="2" y="4" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5 4V3a3 3 0 016 0v1" stroke="currentColor" stroke-width="1.2"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
+          <div class="sc-e2e-status"><span class="sc-e2e-dot"></span> E2EE</div>
         </div>
-        <div class="sc-complications">
-          <div class="sc-comp">Model <span class="v">opus-4-6</span></div>
-          <div class="sc-comp">Tokens <span class="v">42.8k</span></div>
-          <div class="sc-comp">Files <span class="v g">+4</span> <span class="v a">~3</span></div>
-          <div class="sc-comp">Tests <span class="v g">12</span>/<span class="v r">1</span></div>
-          <div class="sc-comp">Git <span class="v g">+247</span> <span class="v r">-89</span></div>
+        <div class="sc-channel-bar">
+          <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
         </div>
 
         <div class="sc-messages">
@@ -1168,9 +1160,9 @@ footer{
             </div>
           </div>
           <div class="sc-msg">
-            <div class="sc-avatar agent">A</div>
+            <div class="sc-avatar agent">C</div>
             <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">refactor-auth</span><span class="sc-msg-time">2:30 PM</span></div>
+              <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:30 PM</span></div>
               <div class="sc-msg-text">I'll extract JWT verification into a standalone module:</div>
               <div class="sc-msg-code"><span class="kw">export async function</span> <span class="fn">verifyToken</span>(
   token: <span class="kw">string</span>, config: AuthConfig
@@ -1191,9 +1183,9 @@ footer{
             </div>
           </div>
           <div class="sc-msg">
-            <div class="sc-avatar agent">A</div>
+            <div class="sc-avatar agent">C</div>
             <div class="sc-msg-body">
-              <div class="sc-msg-header"><span class="sc-msg-name">refactor-auth</span><span class="sc-msg-time">2:32 PM</span></div>
+              <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:32 PM</span></div>
               <div class="sc-msg-text">Switching to Redis with composable middleware chain. Running tests now.</div>
             </div>
           </div>

@@ -857,8 +857,10 @@ class DeviceApiController(Controller):
                         continue
 
                     # Validate it's plausible base64 (32 bytes decoded).
+                    # Add padding if missing (some encoders omit it).
                     try:
-                        raw = base64.b64decode(transport_key_b64)
+                        padded = transport_key_b64 + "=" * (-len(transport_key_b64) % 4)
+                        raw = base64.b64decode(padded)
                         if len(raw) != 32:
                             raise ValueError("must be 32 bytes")
                     except Exception:

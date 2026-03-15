@@ -337,7 +337,7 @@ body{
 .tab-panel.active{display:flex}
 
 /* ===== CHAT TAB ===== */
-.chat-layout{flex:1;display:flex;overflow:hidden}
+.chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
 .chat-sidebar{
   width:220px;min-width:220px;
   display:flex;flex-direction:column;
@@ -747,6 +747,28 @@ body{
   transition:background-color 150ms ease;
 }
 .sk-status-label{font-weight:500}
+/* ===== E2EE WAITING OVERLAY ===== */
+.e2ee-waiting-overlay{
+  position:absolute;inset:0;z-index:20;
+  background:rgba(250,250,250,0.92);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+  transition:opacity .3s;
+}
+.e2ee-waiting-overlay.hidden{opacity:0;pointer-events:none}
+.e2ee-waiting-content{
+  display:flex;flex-direction:column;align-items:center;gap:.75rem;
+}
+.e2ee-waiting-dot{
+  width:12px;height:12px;border-radius:50%;
+  background:var(--amber);
+  animation:pulse 1.5s infinite;
+}
+.e2ee-waiting-text{
+  font-size:14px;font-weight:500;color:var(--text-muted);
+  letter-spacing:.01em;
+}
+
 /* ===== MOBILE CHANNEL DROPDOWN ===== */
 .chat-mobile-header{display:none}
 .chat-mobile-select{
@@ -963,6 +985,13 @@ body{
                 <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
               </button>
             </div>
+          </div>
+        </div>
+        <!-- E2EE waiting overlay -->
+        <div class="e2ee-waiting-overlay" id="e2ee-waiting-overlay">
+          <div class="e2ee-waiting-content">
+            <div class="e2ee-waiting-dot"></div>
+            <span class="e2ee-waiting-text">Waiting for device...</span>
           </div>
         </div>
       </div>
@@ -1621,13 +1650,15 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-label').textContent = 'E2EE active';
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
+    document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     e2ee.listChannels();
   });
 
   e2ee.addEventListener('disconnected', () => {
-    console.log('[E2EE] Disconnected — will auto-reconnect');
-    document.getElementById('e2ee-dot').className = 'e2ee-dot error';
-    document.getElementById('e2ee-label').textContent = 'Reconnecting...';
+    console.log('[E2EE] Disconnected — waiting for device');
+    document.getElementById('e2ee-dot').className = 'e2ee-dot connecting';
+    document.getElementById('e2ee-label').textContent = 'Waiting for device...';
+    document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance on next connect.

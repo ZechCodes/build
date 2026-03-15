@@ -39,6 +39,7 @@ controllers:
   - build_app.campaign_signups_api:CampaignSignupsApiController
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
   - build_app.dashboard:DashboardController
+  - build_app.device_api:DeviceApiController
 
 page_types:
   - name: page
@@ -51,7 +52,7 @@ middleware:
 security_headers:
   enabled: true
   csp_nonce: false
-  content_security_policy: "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'self'; connect-src 'self'"
+  content_security_policy: "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'self'; connect-src 'self' wss://getbuild.ing ws://getbuild.ing"
 
 rate_limit:
   enabled: true

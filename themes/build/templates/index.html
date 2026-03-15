@@ -625,9 +625,7 @@ nav{
 }
 .sc-panel-main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
 
-/* Detail pane (plan content, file content) — hidden on mobile */
-.sc-detail-pane{display:none}
-@media(min-width:769px){.sc-detail-pane{display:flex}}
+/* Detail pane (plan content, file content) */
 .sc-detail-header{
   display:flex;align-items:center;gap:.4rem;
   padding:.5rem .75rem;
@@ -1027,11 +1025,7 @@ footer{
   .flow{flex-direction:column;align-items:center}
   .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
   .nav-links{display:none}
-  .sc-panel-sidebar{display:none}
-  .sc-panel[data-panel="plans"] .sc-panel-sidebar,
-  .sc-panel[data-panel="files"] .sc-panel-sidebar{display:flex;flex:1}
-  .sc-panel[data-panel="plans"] .sc-detail-pane,
-  .sc-panel[data-panel="files"] .sc-detail-pane{display:none !important}
+  .sc-panel[data-panel="chat"] .sc-panel-sidebar{display:none}
   .showcase-reflection{height:40px}
 }
 @media(max-width:600px){
@@ -1054,6 +1048,11 @@ footer{
   .sc-rail-icon{width:28px;height:28px}
   .sc-rail-icon svg{width:14px;height:14px}
   .showcase-reflection{max-width:380px}
+  /* On portrait mobile: plans/files show only sidebar, no detail */
+  .sc-panel-sidebar{display:none}
+  .sc-panel[data-panel="plans"] .sc-panel-sidebar,
+  .sc-panel[data-panel="files"] .sc-panel-sidebar{display:flex;flex:1}
+  .sc-detail-pane{display:none !important}
 }
 </style>
 </head>

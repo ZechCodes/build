@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, CheckConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
@@ -75,9 +75,9 @@ class Device(Base):
         comment="Base64-encoded Ed25519 public key",
     )
     owner_user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+        comment="FK to users.id (enforced at DB level)",
     )
     approved: Mapped[bool] = mapped_column(
         Boolean,

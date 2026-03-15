@@ -1,4 +1,4 @@
-"""Device API — authorization, listing, WebSocket, and heartbeat monitoring."""
+"""Device API — registration, authorization, listing, WebSocket, and heartbeat monitoring."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -14,10 +16,11 @@ from uuid import UUID
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from litestar import Controller, Request, get, post, websocket
+from litestar import Controller, Request, get, post, delete, websocket
 from litestar.connection import WebSocket
 from litestar.exceptions import NotAuthorizedException, NotFoundException
-from litestar.response import Response
+from litestar.response import Response, Template
+from litestar.response.sse import ServerSentEvent, ServerSentEventMessage
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +35,34 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_TIMEOUT_MULTIPLIER = 2.5
 # Max missed windows to keep per device (rolling).
 MAX_MISSED_WINDOWS = 100
+# How long a pending registration is valid (10 minutes).
+PENDING_EXPIRY_S = 600
+
+
+# ---------------------------------------------------------------------------
+# In-memory pending registrations (short-lived, for auth flow)
+# ---------------------------------------------------------------------------
+@dataclass
+class PendingRegistration:
+    code: str
+    name: str
+    public_key_b64: str
+    created_at: float = field(default_factory=time.time)
+    result_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+
+
+_pending_registrations: dict[str, PendingRegistration] = {}
+
+
+def _cleanup_expired_pending() -> None:
+    """Remove expired pending registrations."""
+    now = time.time()
+    expired = [
+        code for code, reg in _pending_registrations.items()
+        if now - reg.created_at > PENDING_EXPIRY_S
+    ]
+    for code in expired:
+        _pending_registrations.pop(code, None)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +237,209 @@ class DeviceApiController(Controller):
     """Device management API."""
 
     path = "/api/devices"
+
+    # ------------------------------------------------------------------
+    # Registration flow (device-initiated, no user session required)
+    # ------------------------------------------------------------------
+
+    @post("/register", status_code=201)
+    async def register_device(
+        self,
+        request: Request,
+        data: dict[str, Any],
+    ) -> Response:
+        """Start the device registration flow.
+
+        Called by the device CLI (no user session needed).
+        Body: ``{"name": "my-laptop", "public_key": "<base64>"}``
+        Returns: ``{"code": "...", "auth_url": "https://..."}``
+        """
+        _cleanup_expired_pending()
+
+        name = data.get("name", "").strip()
+        public_key_b64 = data.get("public_key", "").strip()
+        if not name or not public_key_b64:
+            return Response(
+                content={"error": "name and public_key are required"},
+                status_code=400,
+            )
+
+        # Validate the key format.
+        try:
+            _load_public_key(public_key_b64)
+        except Exception:
+            return Response(
+                content={"error": "invalid Ed25519 public key"},
+                status_code=400,
+            )
+
+        code = secrets.token_urlsafe(32)
+        _pending_registrations[code] = PendingRegistration(
+            code=code,
+            name=name,
+            public_key_b64=public_key_b64,
+        )
+
+        # Build the approval URL from the request's base URL.
+        base = str(request.base_url).rstrip("/")
+        auth_url = f"{base}/api/devices/approve/{code}"
+
+        logger.info("Pending registration created: %s (code=%s)", name, code[:8])
+
+        return Response(
+            content={"code": code, "auth_url": auth_url},
+            status_code=201,
+        )
+
+    @get("/approve/{code:str}", guards=[auth_guard, Permission("administrator")])
+    async def approve_device_page(
+        self,
+        request: Request,
+        code: str,
+    ) -> Template:
+        """Render the device approval page for the admin."""
+        _cleanup_expired_pending()
+        pending = _pending_registrations.get(code)
+        if not pending:
+            raise NotFoundException(detail="Registration not found or expired")
+
+        return Template(
+            "device_approve.html",
+            context={
+                "code": code,
+                "device_name": pending.name,
+                "public_key_preview": pending.public_key_b64[:16] + "...",
+                "expires_in_s": max(0, int(PENDING_EXPIRY_S - (time.time() - pending.created_at))),
+            },
+        )
+
+    @post("/approve/{code:str}", guards=[auth_guard, Permission("administrator")])
+    async def approve_device_action(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        code: str,
+    ) -> Response:
+        """Approve a pending device registration.
+
+        Creates the Device record and signals the waiting device client.
+        """
+        _cleanup_expired_pending()
+        pending = _pending_registrations.get(code)
+        if not pending:
+            return Response(
+                content={"error": "registration not found or expired"},
+                status_code=404,
+            )
+
+        user_id = UUID(request.session["user_id"])
+
+        # Check for duplicate name.
+        existing = await db_session.execute(
+            select(Device).where(
+                Device.name == pending.name,
+                Device.owner_user_id == user_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            return Response(
+                content={"error": f"device '{pending.name}' already exists"},
+                status_code=409,
+            )
+
+        device = Device(
+            name=pending.name,
+            public_key=pending.public_key_b64,
+            owner_user_id=user_id,
+            approved=True,
+            status="offline",
+        )
+        db_session.add(device)
+        await db_session.commit()
+        await db_session.refresh(device)
+
+        logger.info(
+            "Device approved: %s (id=%s) for user %s via code %s",
+            pending.name, device.id, user_id, code[:8],
+        )
+
+        # Signal the waiting device client via its SSE stream.
+        await pending.result_queue.put({
+            "type": "approved",
+            "device_id": str(device.id),
+            "device_name": device.name,
+        })
+
+        # Fire dashboard notification.
+        await _notify_device_event(user_id, "authorized", device.id, pending.name)
+
+        # Clean up the pending registration.
+        _pending_registrations.pop(code, None)
+
+        return Response(
+            content={
+                "id": str(device.id),
+                "name": device.name,
+                "status": device.status,
+            },
+            status_code=201,
+        )
+
+    @get("/pending/{code:str}/events")
+    async def pending_device_events(
+        self,
+        request: Request,
+        code: str,
+    ) -> ServerSentEvent:
+        """SSE stream for a pending device registration.
+
+        The device connects here after calling ``POST /register`` and waits
+        for the admin to approve. No user session is required — the pending
+        code acts as the auth token.
+        """
+        pending = _pending_registrations.get(code)
+        if not pending:
+            raise NotFoundException(detail="Registration not found or expired")
+
+        async def generate() -> AsyncGenerator[ServerSentEventMessage, None]:
+            # Send an initial connected event.
+            yield ServerSentEventMessage(
+                data=json.dumps({"type": "waiting", "device_name": pending.name}),
+                event="status",
+            )
+
+            while True:
+                try:
+                    # Wait for approval or keepalive every 15s.
+                    result = await asyncio.wait_for(pending.result_queue.get(), timeout=15.0)
+                    yield ServerSentEventMessage(
+                        data=json.dumps(result),
+                        event="notification",
+                    )
+                    return  # Done — device got its approval.
+                except asyncio.TimeoutError:
+                    # Check if expired.
+                    if time.time() - pending.created_at > PENDING_EXPIRY_S:
+                        yield ServerSentEventMessage(
+                            data=json.dumps({"type": "expired"}),
+                            event="notification",
+                        )
+                        _pending_registrations.pop(code, None)
+                        return
+                    # Keepalive.
+                    yield ServerSentEventMessage(comment="keepalive")
+
+        return ServerSentEvent(generate())
+
+    @delete("/pending/{code:str}")
+    async def dismiss_pending(self, code: str) -> Response:
+        """Dismiss/clean up a pending registration after the device receives approval."""
+        _pending_registrations.pop(code, None)
+        return Response(content={"ok": True}, status_code=200)
+
+    # ------------------------------------------------------------------
+    # Direct authorization (admin-initiated, existing endpoint)
+    # ------------------------------------------------------------------
 
     @post(
         "/authorize",

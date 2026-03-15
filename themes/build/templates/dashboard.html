@@ -1904,7 +1904,21 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
 // ----- Mobile channel dropdown -----
 document.getElementById('chat-mobile-select')?.addEventListener('change', (e) => {
   const channelId = e.target.value;
-  if (channelId) selectChannel(channelId);
+  if (!channelId) return;
+  // Set channel and fetch messages directly — avoid full renderChannelList
+  // which rebuilds the dropdown and can interfere with the select state.
+  chatCurrentChannel = channelId;
+  renderMessages();
+  if (e2ee && e2ee.connected) {
+    e2ee.getMessages(channelId);
+  }
+  document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
+  location.hash = `chat/${channelId}`;
+  // Update desktop sidebar selection without touching mobile dropdown.
+  const list = document.getElementById('chat-channel-list');
+  list.querySelectorAll('.channel-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.channelId === channelId);
+  });
 });
 
 // Mobile new-channel button triggers the same dialog

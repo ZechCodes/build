@@ -39,7 +39,7 @@ controllers:
   - build_app.campaign_signups_api:CampaignSignupsApiController
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
   - build_app.dashboard:DashboardController
-  - build_app.device_api:DeviceApiController
+  - build_app.devices:DeviceApiController
 
 page_types:
   - name: page

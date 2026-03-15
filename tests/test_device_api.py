@@ -1,4 +1,4 @@
-"""Tests for build_app.device_api — device authorization, listing, WS, heartbeat."""
+"""Tests for build_app.devices — device authorization, listing, WS, heartbeat."""
 
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ import pytest_asyncio
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from build_app.models import Device
-from build_app.device_api import (
+from build_app.devices import (
     ConnectedDevice,
     DeviceApiController,
     HEARTBEAT_TIMEOUT_MULTIPLIER,
     MAX_MISSED_WINDOWS,
-    _load_public_key,
-    _verify_device_signature,
-    _record_heartbeat,
-    _record_missed_window,
-    _notify_device_event,
+    load_public_key,
+    verify_device_signature,
+    record_heartbeat,
+    record_missed_window,
+    notify_device_event,
     _connected_devices,
     start_heartbeat_monitor,
     stop_heartbeat_monitor,
@@ -87,12 +87,12 @@ def _make_device(
 class TestLoadPublicKey:
     def test_load_raw_32_byte_key(self):
         _, pub_b64 = _generate_keypair()
-        key = _load_public_key(pub_b64)
+        key = load_public_key(pub_b64)
         assert isinstance(key, type(Ed25519PrivateKey.generate().public_key()))
 
     def test_load_invalid_key_raises(self):
         with pytest.raises(Exception):
-            _load_public_key(base64.b64encode(b"too short").decode())
+            load_public_key(base64.b64encode(b"too short").decode())
 
 
 # ---------------------------------------------------------------------------
@@ -102,27 +102,27 @@ class TestLoadPublicKey:
 class TestVerifyDeviceSignature:
     def test_valid_signature(self):
         private_key, pub_b64 = _generate_keypair()
-        pub_key = _load_public_key(pub_b64)
+        pub_key = load_public_key(pub_b64)
         ts, sig = _sign_ws_handshake(private_key)
-        assert _verify_device_signature(pub_key, ts, sig) is True
+        assert verify_device_signature(pub_key, ts, sig) is True
 
     def test_wrong_key_fails(self):
         private_key, _ = _generate_keypair()
         _, other_pub_b64 = _generate_keypair()
-        other_pub = _load_public_key(other_pub_b64)
+        other_pub = load_public_key(other_pub_b64)
         ts, sig = _sign_ws_handshake(private_key)
-        assert _verify_device_signature(other_pub, ts, sig) is False
+        assert verify_device_signature(other_pub, ts, sig) is False
 
     def test_tampered_timestamp_fails(self):
         private_key, pub_b64 = _generate_keypair()
-        pub_key = _load_public_key(pub_b64)
+        pub_key = load_public_key(pub_b64)
         ts, sig = _sign_ws_handshake(private_key)
-        assert _verify_device_signature(pub_key, str(float(ts) + 1), sig) is False
+        assert verify_device_signature(pub_key, str(float(ts) + 1), sig) is False
 
     def test_empty_signature_fails(self):
         _, pub_b64 = _generate_keypair()
-        pub_key = _load_public_key(pub_b64)
-        assert _verify_device_signature(pub_key, str(time.time()), "") is False
+        pub_key = load_public_key(pub_b64)
+        assert verify_device_signature(pub_key, str(time.time()), "") is False
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ class TestHeartbeatMonitorLifecycle:
     @pytest.mark.asyncio
     async def test_start_creates_task(self):
         start_heartbeat_monitor()
-        from build_app.device_api import _monitor_task
+        from build_app.devices._heartbeat import _monitor_task
         assert _monitor_task is not None
         assert not _monitor_task.done()
         stop_heartbeat_monitor()
@@ -201,7 +201,7 @@ class TestHeartbeatMonitorLifecycle:
     @pytest.mark.asyncio
     async def test_stop_cancels_task(self):
         start_heartbeat_monitor()
-        from build_app.device_api import _monitor_task
+        from build_app.devices._heartbeat import _monitor_task
         task = _monitor_task
         stop_heartbeat_monitor()
         # Give the event loop a tick so the cancellation propagates.
@@ -211,10 +211,10 @@ class TestHeartbeatMonitorLifecycle:
     @pytest.mark.asyncio
     async def test_start_is_idempotent(self):
         start_heartbeat_monitor()
-        from build_app.device_api import _monitor_task
+        from build_app.devices._heartbeat import _monitor_task
         first_task = _monitor_task
         start_heartbeat_monitor()
-        from build_app.device_api import _monitor_task as second
+        from build_app.devices._heartbeat import _monitor_task as second
         assert first_task is second
         stop_heartbeat_monitor()
 
@@ -228,8 +228,8 @@ class TestNotifyDeviceEvent:
     async def test_fires_notification(self):
         owner = uuid4()
         device_id = uuid4()
-        with patch("build_app.device_api.notify_user", new_callable=AsyncMock) as mock_notify:
-            await _notify_device_event(owner, "online", device_id, "my-device")
+        with patch("build_app.devices._helpers.notify_user", new_callable=AsyncMock) as mock_notify:
+            await notify_device_event(owner, "online", device_id, "my-device")
             mock_notify.assert_called_once()
             call_args = mock_notify.call_args
             assert call_args[0][0] == str(owner)
@@ -240,8 +240,8 @@ class TestNotifyDeviceEvent:
 
     @pytest.mark.asyncio
     async def test_extra_kwargs_passed(self):
-        with patch("build_app.device_api.notify_user", new_callable=AsyncMock) as mock_notify:
-            await _notify_device_event(uuid4(), "status", uuid4(), "dev", agents=3)
+        with patch("build_app.devices._helpers.notify_user", new_callable=AsyncMock) as mock_notify:
+            await notify_device_event(uuid4(), "status", uuid4(), "dev", agents=3)
             assert mock_notify.call_args[1]["agents"] == 3
 
 
@@ -253,16 +253,16 @@ class TestAuthorizeValidation:
     def test_keypair_roundtrip(self):
         """Authorize validates the key, so verify our keypair helper works end-to-end."""
         private_key, pub_b64 = _generate_keypair()
-        pub_key = _load_public_key(pub_b64)
+        pub_key = load_public_key(pub_b64)
         # Sign and verify
         ts, sig = _sign_ws_handshake(private_key)
-        assert _verify_device_signature(pub_key, ts, sig) is True
+        assert verify_device_signature(pub_key, ts, sig) is True
 
     def test_invalid_key_detected(self):
         """Authorize should reject a bad key."""
         bad_b64 = base64.b64encode(b"not a real key at all").decode()
         with pytest.raises(Exception):
-            _load_public_key(bad_b64)
+            load_public_key(bad_b64)
 
 
 # ---------------------------------------------------------------------------

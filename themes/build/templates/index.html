@@ -1839,6 +1839,7 @@ document.querySelectorAll('.sc-rail-icon[data-panel]').forEach(icon => {
     icon.classList.add('active');
     const panel = icon.dataset.panel;
     document.querySelectorAll('.sc-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
+    document.querySelector('.sc-topbar').style.display = panel === 'dashboard' ? 'none' : '';
   });
 });
 

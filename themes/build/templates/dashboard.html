@@ -1216,6 +1216,18 @@ function renderDeviceGrid() {
   for (const device of sorted) {
     grid.insertAdjacentHTML('beforeend', renderDeviceCard(device));
   }
+
+  // Add click handlers to device cards.
+  grid.querySelectorAll('.device-card').forEach(card => {
+    card.style.cursor = 'pointer';
+    card.addEventListener('click', () => {
+      const deviceId = card.dataset.deviceId;
+      const device = devices.get(deviceId);
+      if (device) {
+        selectAgent(device.name, device.name);
+      }
+    });
+  });
 }
 
 function updateStats() {

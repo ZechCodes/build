@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Söhne+Mono,+JetBrains+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+#mesh{position:fixed!important;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0;display:block}
 nav,section,footer,.auth-modal-backdrop{position:relative;z-index:1}
 :root{
   --bg:#07070a;
@@ -1547,7 +1548,7 @@ document.querySelectorAll('a[href^="#"]').forEach(a => {
   let w,h,dpr;
   const GAP=180,SPAWN_INTERVAL=1400,EDGES_PER_BURST=2,EDGE_SPEED=0.5,PROPAGATE_CHANCE=0.35,MAX_PROPAGATE=3;
   let verts=[],edges=[],trails=[],lastSpawn=0;
-  function resize(){dpr=devicePixelRatio||1;w=c.width=innerWidth*dpr;h=c.height=innerHeight*dpr;c.style.width=innerWidth+'px';c.style.height=innerHeight+'px'}
+  function resize(){dpr=devicePixelRatio||1;w=c.width=innerWidth*dpr;h=c.height=innerHeight*dpr}
   function buildGrid(){verts=[];const g=GAP*dpr,rh=g*Math.sin(Math.PI/3),cols=Math.ceil(w/g)+2,rows=Math.ceil(h/rh)+2;for(let r=-1;r<rows;r++){const o=(r%2)?g*.5:0;for(let col=-1;col<cols;col++)verts.push({x:col*g+o,y:r*rh})}}
   function neighbors(v,exclude){const maxD=GAP*dpr*1.15,result=[];for(const u of verts){if(u===v||u===exclude)continue;const dx=u.x-v.x,dy=u.y-v.y;if(Math.sqrt(dx*dx+dy*dy)<maxD)result.push(u)}return result}
   function spawnEdge(from,to,depth){const dx=to.x-from.x,dy=to.y-from.y,dist=Math.sqrt(dx*dx+dy*dy);edges.push({from,to,ox:from.x,oy:from.y,x:from.x,y:from.y,totalDist:dist,traveled:0,speed:(EDGE_SPEED+Math.random()*0.2)*dpr,alpha:0.22+Math.random()*0.08,life:1,arrived:false,depth:depth||0})}

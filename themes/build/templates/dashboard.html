@@ -1565,11 +1565,13 @@ async function initE2EE() {
   };
 
   if (!await connectToDevice()) {
-    console.log('[E2EE] No suitable device found, will retry every 5s');
+    console.log('[E2EE] Not connected, will retry every 5s');
     const retryInterval = setInterval(async () => {
       if (e2ee && e2ee.connected) { clearInterval(retryInterval); return; }
-      // Re-fetch device list in case transport keys changed.
+      // Re-fetch device list in case transport keys or status changed.
       await fetchDevices();
+      dot.className = 'e2ee-dot connecting';
+      label.textContent = 'Retrying...';
       if (await connectToDevice()) clearInterval(retryInterval);
     }, 5000);
   }
@@ -1594,8 +1596,8 @@ function bindE2EEEvents() {
     document.getElementById('chat-send-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance (avoids stale listener state).
     e2ee = null;
-    // Auto-reconnect with backoff.
-    setTimeout(() => initE2EE(), 3000);
+    // Auto-reconnect — give device time to reconnect after deploy.
+    setTimeout(() => initE2EE(), 5000);
   });
 
   // ----- Channel list -----

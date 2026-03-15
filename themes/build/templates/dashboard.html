@@ -1483,8 +1483,7 @@ async function initE2EE() {
       if (e2ee && e2ee.connected) { clearInterval(retryInterval); return; }
       // Re-fetch device list in case transport keys changed.
       await fetchDevices();
-      await connectToDevice();
-      if (e2ee && e2ee.connected) clearInterval(retryInterval);
+      if (await connectToDevice()) clearInterval(retryInterval);
     }, 5000);
   }
 }
@@ -1501,11 +1500,15 @@ function bindE2EEEvents() {
   });
 
   e2ee.addEventListener('disconnected', () => {
-    console.log('[E2EE] Disconnected');
+    console.log('[E2EE] Disconnected — will auto-reconnect');
     document.getElementById('e2ee-dot').className = 'e2ee-dot error';
-    document.getElementById('e2ee-label').textContent = 'Disconnected';
+    document.getElementById('e2ee-label').textContent = 'Reconnecting...';
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
+    // Reset e2ee so initE2EE creates a fresh instance (avoids stale listener state).
+    e2ee = null;
+    // Auto-reconnect with backoff.
+    setTimeout(() => initE2EE(), 3000);
   });
 
   // ----- Channel list -----

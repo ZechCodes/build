@@ -213,6 +213,16 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('read', {
         detail: { message_ids: payload.message_ids, channel_id: payload.channel_id },
       }));
+    } else if (action === 'harness_list') {
+      this.dispatchEvent(new CustomEvent('harness_list', { detail: payload.harnesses }));
+    } else if (action === 'agent_started') {
+      this.dispatchEvent(new CustomEvent('agent_started', { detail: payload }));
+    } else if (action === 'agent_stopped') {
+      this.dispatchEvent(new CustomEvent('agent_stopped', { detail: payload }));
+    } else if (action === 'agent_restarted') {
+      this.dispatchEvent(new CustomEvent('agent_restarted', { detail: payload }));
+    } else if (action === 'worker_list') {
+      this.dispatchEvent(new CustomEvent('worker_list', { detail: payload.workers }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -278,8 +288,13 @@ class BuildE2EE extends EventTarget {
     return this.send({ action: 'list_channels' });
   }
 
-  async createChannel(name) {
-    return this.send({ action: 'create_channel', name });
+  async createChannel(name, opts = {}) {
+    const payload = { action: 'create_channel', name };
+    if (opts.harness) payload.harness = opts.harness;
+    if (opts.model) payload.model = opts.model;
+    if (opts.system_prompt) payload.system_prompt = opts.system_prompt;
+    if (opts.working_directory) payload.working_directory = opts.working_directory;
+    return this.send(payload);
   }
 
   async getMessages(channelId, limit = 50, before = null) {
@@ -308,6 +323,29 @@ class BuildE2EE extends EventTarget {
 
   async markRead(messageIds) {
     return this.send({ action: 'mark_read', message_ids: messageIds });
+  }
+
+  async listHarnesses() {
+    return this.send({ action: 'list_harnesses' });
+  }
+
+  async startAgent(channelId, harness, model, opts = {}) {
+    const payload = { action: 'start_agent', channel_id: channelId, harness, model };
+    if (opts.system_prompt) payload.system_prompt = opts.system_prompt;
+    if (opts.working_directory) payload.working_directory = opts.working_directory;
+    return this.send(payload);
+  }
+
+  async stopAgent(channelId) {
+    return this.send({ action: 'stop_agent', channel_id: channelId });
+  }
+
+  async restartAgent(channelId) {
+    return this.send({ action: 'restart_agent', channel_id: channelId });
+  }
+
+  async listWorkers() {
+    return this.send({ action: 'list_workers' });
   }
 
   disconnect() {

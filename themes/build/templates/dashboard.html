@@ -424,7 +424,7 @@ body{
 }
 .new-channel-dialog{
   background:var(--surface-solid);border-radius:var(--radius);
-  padding:1.5rem;width:320px;
+  padding:1.5rem;width:380px;max-width:90vw;
   box-shadow:var(--shadow-lg);
 }
 .new-channel-dialog h3{font-size:15px;font-weight:600;margin-bottom:1rem}
@@ -441,6 +441,31 @@ body{
 }
 .new-channel-dialog .btn-cancel{background:var(--border);color:var(--text)}
 .new-channel-dialog .btn-create{background:var(--accent);color:#fff}
+.new-channel-dialog label{display:block;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.25rem;margin-top:.75rem}
+.new-channel-dialog select{
+  width:100%;padding:.5rem .75rem;border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);font-size:13px;font-family:var(--font);
+  outline:none;transition:border-color .15s;background:var(--surface-solid);
+  color:var(--text);appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%2371717a' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right .75rem center;
+  cursor:pointer;
+}
+.new-channel-dialog select:focus{border-color:var(--accent)}
+.new-channel-dialog textarea{
+  width:100%;padding:.5rem .75rem;border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);font-size:13px;font-family:var(--font);
+  outline:none;transition:border-color .15s;resize:vertical;min-height:3rem;
+}
+.new-channel-dialog textarea:focus{border-color:var(--accent)}
+.new-channel-advanced-toggle{
+  font-size:11px;font-weight:600;color:var(--text-muted);
+  cursor:pointer;border:none;background:none;padding:.25rem 0;
+  margin-top:.75rem;transition:color .15s;
+}
+.new-channel-advanced-toggle:hover{color:var(--accent)}
+.new-channel-advanced{display:none}
+.new-channel-advanced.is-open{display:block}
 
 /* Chat input */
 .chat-input-area{
@@ -1572,6 +1597,7 @@ let e2ee = null;
 let chatCurrentChannel = null;
 const chatChannels = new Map(); // id -> {id, name, created_at}
 const chatMessages = new Map(); // channelId -> [messages]
+let cachedHarnesses = null; // harness list from device
 
 // ----- E2EE connection -----
 
@@ -1652,6 +1678,7 @@ function bindE2EEEvents() {
     document.getElementById('chat-send-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     e2ee.listChannels();
+    e2ee.listHarnesses();
   });
 
   e2ee.addEventListener('disconnected', () => {
@@ -1687,6 +1714,29 @@ function bindE2EEEvents() {
     chatChannels.set(ch.id, ch);
     renderChannelList();
     selectChannel(ch.id);
+  });
+
+  // ----- Harness & Agent events -----
+
+  e2ee.addEventListener('harness_list', (evt) => {
+    cachedHarnesses = evt.detail;
+    console.log('[E2EE] Harnesses:', cachedHarnesses.map(h => h.name));
+  });
+
+  e2ee.addEventListener('agent_started', (evt) => {
+    console.log('[E2EE] Agent started:', evt.detail);
+  });
+
+  e2ee.addEventListener('agent_stopped', (evt) => {
+    console.log('[E2EE] Agent stopped:', evt.detail);
+  });
+
+  e2ee.addEventListener('agent_restarted', (evt) => {
+    console.log('[E2EE] Agent restarted:', evt.detail);
+  });
+
+  e2ee.addEventListener('e2ee_error', (evt) => {
+    console.error('[E2EE] Error:', evt.detail);
   });
 
 function renderChannelList() {
@@ -1933,10 +1983,30 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   const chatTab = document.getElementById('tab-chat');
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
+
+  // Build harness options from cache.
+  let harnessOptions = '<option value="">No agent</option>';
+  if (cachedHarnesses && cachedHarnesses.length) {
+    harnessOptions = cachedHarnesses.map(h =>
+      `<option value="${h.id}">${h.name}</option>`
+    ).join('');
+  }
+
   overlay.innerHTML = `
     <div class="new-channel-dialog">
       <h3>New Channel</h3>
       <input type="text" id="new-channel-name" placeholder="Channel name..." autofocus>
+      <label for="new-channel-harness">Harness</label>
+      <select id="new-channel-harness">${harnessOptions}</select>
+      <label for="new-channel-model">Model</label>
+      <select id="new-channel-model"><option value="">Select a harness first</option></select>
+      <button class="new-channel-advanced-toggle" type="button" id="new-channel-advanced-toggle">▶ Advanced</button>
+      <div class="new-channel-advanced" id="new-channel-advanced">
+        <label for="new-channel-workdir">Working Directory</label>
+        <input type="text" id="new-channel-workdir" placeholder="/path/to/project">
+        <label for="new-channel-prompt">System Prompt</label>
+        <textarea id="new-channel-prompt" placeholder="Optional agent instructions..." rows="2"></textarea>
+      </div>
       <div class="dialog-btns">
         <button class="btn btn-cancel" id="new-channel-cancel">Cancel</button>
         <button class="btn btn-create" id="new-channel-create">Create</button>
@@ -1947,7 +2017,39 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   chatTab.appendChild(overlay);
 
   const nameInput = document.getElementById('new-channel-name');
+  const harnessSelect = document.getElementById('new-channel-harness');
+  const modelSelect = document.getElementById('new-channel-model');
+  const advancedToggle = document.getElementById('new-channel-advanced-toggle');
+  const advancedSection = document.getElementById('new-channel-advanced');
   nameInput.focus();
+
+  // Populate models when harness changes.
+  function updateModels() {
+    const harnessId = harnessSelect.value;
+    modelSelect.innerHTML = '';
+    if (!harnessId || !cachedHarnesses) {
+      modelSelect.innerHTML = '<option value="">Select a harness first</option>';
+      return;
+    }
+    const harness = cachedHarnesses.find(h => h.id === harnessId);
+    if (!harness) return;
+    for (const m of harness.models) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.name;
+      if (m.id === harness.default_model) opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+  }
+  harnessSelect.addEventListener('change', updateModels);
+  // Init models for first harness.
+  updateModels();
+
+  // Advanced toggle.
+  advancedToggle.addEventListener('click', () => {
+    advancedSection.classList.toggle('is-open');
+    advancedToggle.textContent = advancedSection.classList.contains('is-open') ? '▼ Advanced' : '▶ Advanced';
+  });
 
   const close = () => overlay.remove();
   document.getElementById('new-channel-cancel').addEventListener('click', close);
@@ -1956,7 +2058,14 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   const create = () => {
     const name = nameInput.value.trim();
     if (name) {
-      e2ee.createChannel(name);
+      const opts = {};
+      if (harnessSelect.value) opts.harness = harnessSelect.value;
+      if (modelSelect.value) opts.model = modelSelect.value;
+      const wd = document.getElementById('new-channel-workdir').value.trim();
+      if (wd) opts.working_directory = wd;
+      const sp = document.getElementById('new-channel-prompt').value.trim();
+      if (sp) opts.system_prompt = sp;
+      e2ee.createChannel(name, opts);
       close();
     }
   };

@@ -291,6 +291,13 @@ body{
   transition:all .12s;
 }
 .top-channel-select:hover{border-color:var(--border-strong);background-color:var(--surface)}
+.top-new-channel{
+  width:22px;height:22px;border-radius:var(--radius-xs);
+  border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.7);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--accent);transition:all .12s;flex-shrink:0;
+}
+.top-new-channel:hover{background:var(--accent-light)}
 .top-device-select{
   font-size:13px;font-weight:600;color:var(--text);
   font-family:var(--font);
@@ -360,10 +367,7 @@ body{
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
 .chat-sidebar{
-  width:200px;min-width:200px;
-  display:flex;flex-direction:column;
-  border-right:1px solid var(--border);
-  background:rgba(255,255,255,0.5);
+  display:none;
 }
 .chat-sidebar-header{
   display:flex;align-items:center;justify-content:space-between;
@@ -1027,6 +1031,9 @@ body{
     <select class="top-device-select" id="ws-device-select"></select>
     <span class="top-separator"></span>
     <select class="top-channel-select" id="ws-channel-select"></select>
+    <button class="top-new-channel" id="top-new-channel" title="New channel">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
   </div>
 
   <!-- Complications -->
@@ -2397,6 +2404,9 @@ document.getElementById('ws-channel-select')?.addEventListener('change', (e) => 
   const channelId = e.target.value;
   if (!channelId) return;
   selectChannel(channelId);
+});
+document.getElementById('top-new-channel')?.addEventListener('click', () => {
+  document.getElementById('btn-new-channel')?.click();
 });
 
 // Sync E2EE status to mobile indicator and topbar

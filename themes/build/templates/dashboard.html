@@ -560,20 +560,6 @@ body{
 .chat-send:hover{opacity:.85}
 .chat-send svg{width:16px;height:16px;color:#fff}
 
-/* Agent activity items in chat */
-.agent-activity-item{
-  display:flex;align-items:center;gap:.5rem;
-  padding:.375rem .75rem;margin:0 1rem;
-  font-size:11.5px;color:var(--text-muted);
-  border-left:2px solid var(--border);
-  font-family:var(--mono);
-}
-.agent-activity-item .tool-name{color:var(--accent);font-weight:500}
-.agent-activity-item .tool-desc{color:var(--text-muted)}
-.agent-activity-item.thinking{border-left-color:var(--amber)}
-.agent-activity-item.working{border-left-color:var(--accent)}
-.agent-activity-item.done{border-left-color:var(--green);opacity:.7}
-
 /* ===== BOTTOM CONSOLE ===== */
 .console-bottom{
   height:var(--console-h);min-height:120px;
@@ -1919,29 +1905,16 @@ function selectChannel(channelId) {
         appendMessage(msg);
         scrollChatToBottom();
       }
-    } else if (event_type === 'tool.use' && chatCurrentChannel === channel_id) {
+    } else if (event_type === 'tool.use') {
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
       const desc = describeToolUse(name, input);
-      appendActivityItem(agentEvt.tool_use_id, name, desc, 'working');
-      scrollChatToBottom();
-    } else if (event_type === 'tool.result' && chatCurrentChannel === channel_id) {
-      // Mark the tool use as done.
-      const el = document.querySelector(`[data-tool-id="${agentEvt.tool_use_id}"]`);
-      if (el) {
-        el.className = 'agent-activity-item done';
-      }
-    } else if (event_type === 'activity.delta' && chatCurrentChannel === channel_id) {
-      const delta = agentEvt.delta || {};
-      if (delta.type === 'text' && delta.text) {
-        appendActivityItem(null, 'thinking', delta.text.substring(0, 200), 'thinking');
-        scrollChatToBottom();
-      }
-    } else if (event_type === 'activity.end' && chatCurrentChannel === channel_id) {
-      // Fade out any remaining "working" items.
-      document.querySelectorAll('.agent-activity-item.working').forEach(el => {
-        el.className = 'agent-activity-item done';
-      });
+      appendConsoleEntry(agentEvt.tool_use_id, name, desc, input);
+    } else if (event_type === 'tool.result') {
+      markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error);
+    } else if (event_type === 'activity.end') {
+      // Update console count.
+      updateConsoleCount();
     }
   });
 
@@ -2032,28 +2005,91 @@ function appendMessage(msg) {
 
 function describeToolUse(name, input) {
   const descs = {
-    Read: () => `Reading ${(input.file_path || '').split('/').pop()}`,
-    Edit: () => `Editing ${(input.file_path || '').split('/').pop()}`,
-    Write: () => `Writing ${(input.file_path || '').split('/').pop()}`,
-    Bash: () => `Running: ${(input.command || '').substring(0, 60)}`,
-    Glob: () => `Searching for ${input.pattern || ''}`,
-    Grep: () => `Searching for '${input.pattern || ''}'`,
-    Agent: () => `Agent: ${input.description || ''}`,
-    WebFetch: () => 'Fetching web page',
-    WebSearch: () => `Searching: ${input.query || ''}`,
-    ToolSearch: () => `Finding tools: ${input.query || ''}`,
+    Read: () => (input.file_path || '').split('/').pop() || 'file',
+    Edit: () => (input.file_path || '').split('/').pop() || 'file',
+    Write: () => (input.file_path || '').split('/').pop() || 'file',
+    Bash: () => (input.command || '').substring(0, 80),
+    Glob: () => input.pattern || '',
+    Grep: () => `'${input.pattern || ''}'`,
+    Agent: () => input.description || '',
+    WebFetch: () => 'web page',
+    WebSearch: () => input.query || '',
+    ToolSearch: () => input.query || '',
   };
   const fn = descs[name];
-  return fn ? fn() : `Using ${name}`;
+  return fn ? fn() : name;
 }
 
-function appendActivityItem(toolId, name, desc, state) {
-  const container = document.getElementById('chat-messages');
-  const div = document.createElement('div');
-  div.className = `agent-activity-item ${state}`;
-  if (toolId) div.dataset.toolId = toolId;
-  div.innerHTML = `<span class="tool-name">${escapeHtml(name)}</span> <span class="tool-desc">${escapeHtml(desc)}</span>`;
-  container.appendChild(div);
+function toolTag(name) {
+  const map = { Read: 'read', Edit: 'edit', Write: 'write', Bash: 'bash', Grep: 'read', Glob: 'read', Agent: 'bash', ToolSearch: 'read' };
+  return map[name] || 'read';
+}
+
+let consoleEntryCount = 0;
+
+function appendConsoleEntry(toolId, name, desc, input) {
+  const body = document.querySelector('.console-body');
+  if (!body) return;
+
+  // Auto-expand console on first tool use.
+  const console = document.getElementById('console-bottom');
+  if (console && console.classList.contains('collapsed')) {
+    console.classList.remove('collapsed');
+    consoleCollapsed = false;
+  }
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const tag = toolTag(name);
+
+  const entry = document.createElement('div');
+  entry.className = 'console-entry';
+  if (toolId) entry.dataset.toolId = toolId;
+
+  entry.innerHTML = `
+    <div class="ce-row">
+      <svg class="ce-chevron" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ce-tag ${tag}">${escapeHtml(name)}</span>
+      <span class="ce-file">${escapeHtml(desc)}</span>
+      <span class="ce-summary"></span>
+      <span class="ce-time">${timeStr}</span>
+    </div>
+    <div class="ce-detail"><pre>${escapeHtml(JSON.stringify(input || {}, null, 2))}</pre></div>
+  `;
+
+  // Toggle detail on click.
+  const row = entry.querySelector('.ce-row');
+  const chevron = entry.querySelector('.ce-chevron');
+  const detail = entry.querySelector('.ce-detail');
+  row.addEventListener('click', () => {
+    chevron.classList.toggle('open');
+    detail.classList.toggle('open');
+  });
+
+  body.appendChild(entry);
+  body.scrollTop = body.scrollHeight;
+
+  consoleEntryCount++;
+  updateConsoleCount();
+}
+
+function markConsoleEntryDone(toolId, isError) {
+  if (!toolId) return;
+  const entry = document.querySelector(`.console-entry[data-tool-id="${toolId}"]`);
+  if (!entry) return;
+  const summary = entry.querySelector('.ce-summary');
+  if (summary) {
+    summary.innerHTML = isError
+      ? '<span class="fail">error</span>'
+      : '<span class="success">done</span>';
+  }
+}
+
+function updateConsoleCount() {
+  const countEl = document.querySelector('.console-count');
+  if (countEl) {
+    countEl.textContent = `${consoleEntryCount} ${consoleEntryCount === 1 ? 'entry' : 'entries'}`;
+  }
 }
 
 function scrollChatToBottom() {

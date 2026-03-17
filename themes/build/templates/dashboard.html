@@ -366,15 +366,6 @@ body{
 
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
-/* Sidebar button (used by mobile + new-channel dialog trigger) */
-.chat-sidebar-btn{
-  width:22px;height:22px;border-radius:var(--radius-xs);
-  border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.7);cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  color:var(--accent);transition:all .12s;flex-shrink:0;
-}
-.chat-sidebar-btn svg{width:12px;height:12px}
-.chat-sidebar-btn:hover{background:var(--accent-light);color:var(--accent)}
 /* E2EE dot (hidden source element for status sync) */
 .e2ee-dot{
   width:6px;height:6px;border-radius:50%;
@@ -868,36 +859,9 @@ body{
   letter-spacing:.01em;
 }
 
-/* ===== MOBILE CHANNEL DROPDOWN ===== */
-.chat-mobile-header{display:none}
-.chat-mobile-select{
-  width:100%;padding:.5rem .75rem;
-  font-size:14px;font-family:var(--font);
-  background:var(--surface);color:var(--text);
-  border:1px solid var(--border-strong);border-radius:var(--radius-sm);
-  appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%2371717a' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right .75rem center;
-  cursor:pointer;
-}
-.chat-mobile-header-row{
-  display:flex;align-items:center;gap:.5rem;
-}
-.chat-mobile-header-row .chat-sidebar-btn{flex-shrink:0}
-.chat-mobile-e2ee{
-  display:flex;align-items:center;gap:.4rem;
-  font-size:10px;color:var(--text-muted);padding-top:.25rem;
-}
-
 @media(max-width:600px){
   .sk-status-indicator{
     bottom:calc(1rem + env(safe-area-inset-bottom,0px));
-  }
-  .chat-mobile-header{
-    display:block;
-    padding:.5rem .75rem;
-    border-bottom:1px solid var(--border);
-    background:rgba(255,255,255,0.5);
   }
 }
 </style>
@@ -1049,20 +1013,6 @@ body{
         </div>
         <!-- Chat main area -->
         <div class="chat-main">
-          <div class="chat-mobile-header" id="chat-mobile-header">
-            <div class="chat-mobile-header-row">
-              <select class="chat-mobile-select" id="chat-mobile-select">
-                <option value="">Select a channel...</option>
-              </select>
-              <button class="chat-sidebar-btn" id="btn-new-channel-mobile" title="New channel">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-              </button>
-            </div>
-            <div class="chat-mobile-e2ee">
-              <span class="e2ee-dot" id="e2ee-dot-mobile"></span>
-              <span id="e2ee-label-mobile">Not connected</span>
-            </div>
-          </div>
           <div class="chat-messages" id="chat-messages">
             <div class="empty-state" id="chat-empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1835,25 +1785,9 @@ function bindE2EEEvents() {
   });
 
 function renderChannelList() {
-  const mobileSelect = document.getElementById('chat-mobile-select');
-
   const sorted = chatChannels.size > 0
     ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
     : [];
-
-  // Mobile dropdown
-  if (mobileSelect) {
-    mobileSelect.innerHTML = sorted.length
-      ? '<option value="">Select a channel...</option>'
-      : '<option value="">No channels yet</option>';
-    for (const ch of sorted) {
-      const opt = document.createElement('option');
-      opt.value = ch.id;
-      opt.textContent = `# ${ch.name}`;
-      if (chatCurrentChannel === ch.id) opt.selected = true;
-      mobileSelect.appendChild(opt);
-    }
-  }
 
   // Topbar channel select
   const topChSelect = document.getElementById('ws-channel-select');
@@ -2320,29 +2254,6 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   });
 });
 
-// ----- Mobile channel dropdown -----
-document.getElementById('chat-mobile-select')?.addEventListener('change', (e) => {
-  const channelId = e.target.value;
-  if (!channelId) return;
-  // Set channel and fetch messages directly — avoid full renderChannelList
-  // which rebuilds the dropdown and can interfere with the select state.
-  chatCurrentChannel = channelId;
-  renderMessages();
-  if (e2ee && e2ee.connected) {
-    e2ee.getMessages(channelId);
-  }
-  document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
-  location.hash = `chat/${channelId}`;
-  // Sync topbar channel select
-  const topChSel = document.getElementById('ws-channel-select');
-  if (topChSel) topChSel.value = channelId;
-});
-
-// Mobile new-channel button triggers the same dialog
-document.getElementById('btn-new-channel-mobile')?.addEventListener('click', () => {
-  document.getElementById('btn-new-channel')?.click();
-});
-
 // ----- Topbar channel select -----
 document.getElementById('ws-channel-select')?.addEventListener('change', (e) => {
   const channelId = e.target.value;
@@ -2353,18 +2264,10 @@ document.getElementById('top-new-channel')?.addEventListener('click', () => {
   document.getElementById('btn-new-channel')?.click();
 });
 
-// Sync E2EE status to mobile indicator and topbar
+// Sync E2EE status to topbar indicator
 function syncE2EEStatus() {
   const dot = document.getElementById('e2ee-dot');
-  const label = document.getElementById('e2ee-label');
-  const mobileDot = document.getElementById('e2ee-dot-mobile');
-  const mobileLabel = document.getElementById('e2ee-label-mobile');
-  if (dot && mobileDot) mobileDot.className = dot.className;
-  if (label && mobileLabel) mobileLabel.textContent = label.textContent;
-
-  // Topbar E2EE indicator
   const topStatus = document.getElementById('top-e2ee-status');
-  const topDot = document.getElementById('top-e2ee-dot');
   if (!topStatus || !dot) return;
   const isConnected = dot.classList.contains('connected');
   const isConnecting = dot.classList.contains('connecting');

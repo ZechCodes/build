@@ -714,15 +714,46 @@ body{
 /* Collapsible detail */
 .ce-detail{
   display:none;
-  padding:.375rem .875rem .5rem 2.75rem;
-  font-family:var(--mono);font-size:11px;
+  padding:.5rem .875rem .625rem 2.75rem;
+  font-size:11px;
   color:var(--console-text);
   line-height:1.6;
   border-top:1px solid rgba(255,255,255,0.03);
   background:rgba(0,0,0,0.15);
 }
 .ce-detail.open{display:block}
-.ce-detail pre{white-space:pre-wrap;margin:0}
+.ce-detail-label{
+  font-size:9px;font-weight:600;color:#52525b;
+  text-transform:uppercase;letter-spacing:.04em;
+  margin-top:.4rem;margin-bottom:.15rem;
+}
+.ce-detail-label:first-child{margin-top:0}
+.ce-detail-val{
+  font-family:var(--mono);font-size:11px;color:#d4d4d8;
+  padding:.1rem 0;
+}
+.ce-detail-code{
+  font-family:var(--mono);font-size:11px;color:#d4d4d8;
+  white-space:pre-wrap;margin:0;
+  background:rgba(0,0,0,0.2);
+  border-radius:4px;padding:.4rem .5rem;
+  max-height:200px;overflow-y:auto;
+  line-height:1.5;
+}
+.ce-detail-diff{
+  font-family:var(--mono);font-size:11px;
+  white-space:pre-wrap;margin:0;
+  background:rgba(0,0,0,0.2);
+  border-radius:4px;padding:.4rem .5rem;
+  max-height:200px;overflow-y:auto;
+  line-height:1.5;
+}
+.ce-diff-del{display:block;color:#f87171;background:rgba(248,113,113,0.08)}
+.ce-diff-add{display:block;color:#34d399;background:rgba(52,211,153,0.08)}
+.ce-error{color:#f87171}
+.ce-error-label{color:#f87171}
+.ce-detail-result{margin-top:.3rem}
+.ce-detail-result:empty{display:none}
 
 /* ===== PLANNING TAB ===== */
 .planning-layout{flex:1;display:flex;overflow:hidden}
@@ -2035,7 +2066,7 @@ function selectChannel(channelId) {
       const desc = describeToolUse(name, input);
       appendConsoleEntry(agentEvt.tool_use_id, name, desc, input);
     } else if (event_type === 'tool.result') {
-      markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error);
+      markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content);
     } else if (event_type === 'activity.end') {
       // Update console count.
       updateConsoleCount();
@@ -2057,7 +2088,7 @@ function selectChannel(channelId) {
         appendConsoleEntry(d.id || '', name, desc, input);
       } else if (entry.type === 'tool_result') {
         const d = entry.data || {};
-        markConsoleEntryDone(d.tool_use_id || '', d.is_error || false);
+        markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content);
       }
     }
   });
@@ -2148,6 +2179,8 @@ function appendMessage(msg) {
 }
 
 function describeToolUse(name, input) {
+  // Prefer explicit description field (e.g. Bash has it)
+  if (input.description) return input.description;
   const descs = {
     Read: () => (input.file_path || '').split('/').pop() || 'file',
     Edit: () => (input.file_path || '').split('/').pop() || 'file',
@@ -2155,13 +2188,60 @@ function describeToolUse(name, input) {
     Bash: () => (input.command || '').substring(0, 80),
     Glob: () => input.pattern || '',
     Grep: () => `'${input.pattern || ''}'`,
-    Agent: () => input.description || '',
-    WebFetch: () => 'web page',
+    Agent: () => input.prompt ? input.prompt.substring(0, 80) : '',
+    WebFetch: () => input.url || 'web page',
     WebSearch: () => input.query || '',
     ToolSearch: () => input.query || '',
   };
   const fn = descs[name];
   return fn ? fn() : name;
+}
+
+function formatToolDetail(name, input) {
+  const parts = [];
+  if (name === 'Bash' && input.command) {
+    parts.push(`<div class="ce-detail-label">Command</div><pre class="ce-detail-code">${escapeHtml(input.command)}</pre>`);
+  } else if (name === 'Edit' && input.file_path) {
+    parts.push(`<div class="ce-detail-label">File</div><div class="ce-detail-val">${escapeHtml(input.file_path)}</div>`);
+    if (input.old_string != null && input.new_string != null) {
+      parts.push(`<div class="ce-detail-label">Diff</div><pre class="ce-detail-diff"><span class="ce-diff-del">${escapeHtml(input.old_string)}</span><span class="ce-diff-add">${escapeHtml(input.new_string)}</span></pre>`);
+    }
+  } else if ((name === 'Read' || name === 'Write') && input.file_path) {
+    parts.push(`<div class="ce-detail-label">File</div><div class="ce-detail-val">${escapeHtml(input.file_path)}</div>`);
+  } else if (name === 'Grep') {
+    parts.push(`<div class="ce-detail-label">Pattern</div><div class="ce-detail-val">${escapeHtml(input.pattern || '')}</div>`);
+    if (input.path) parts.push(`<div class="ce-detail-label">Path</div><div class="ce-detail-val">${escapeHtml(input.path)}</div>`);
+  } else if (name === 'Glob') {
+    parts.push(`<div class="ce-detail-label">Pattern</div><div class="ce-detail-val">${escapeHtml(input.pattern || '')}</div>`);
+  } else if (name === 'Agent') {
+    if (input.prompt) parts.push(`<div class="ce-detail-label">Prompt</div><pre class="ce-detail-code">${escapeHtml(input.prompt)}</pre>`);
+  }
+  return parts.join('') || `<pre class="ce-detail-code">${escapeHtml(JSON.stringify(input || {}, null, 2))}</pre>`;
+}
+
+function formatToolResult(name, content, isError) {
+  if (!content) return '';
+  const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+  if (isError) {
+    return `<div class="ce-detail-label ce-error-label">Error</div><pre class="ce-detail-code ce-error">${escapeHtml(text)}</pre>`;
+  }
+  // For Edit tools, result is usually short confirmation
+  if (name === 'Edit') {
+    return `<div class="ce-detail-label">Result</div><div class="ce-detail-val">${escapeHtml(text.substring(0, 200))}</div>`;
+  }
+  // For Bash, show output
+  if (name === 'Bash') {
+    return `<div class="ce-detail-label">Output</div><pre class="ce-detail-code">${escapeHtml(text)}</pre>`;
+  }
+  // For Read, show file content
+  if (name === 'Read') {
+    return `<div class="ce-detail-label">Content</div><pre class="ce-detail-code">${escapeHtml(text.length > 2000 ? text.substring(0, 2000) + '\n…truncated' : text)}</pre>`;
+  }
+  // Default
+  if (text.length > 500) {
+    return `<div class="ce-detail-label">Result</div><pre class="ce-detail-code">${escapeHtml(text.substring(0, 500) + '\n…truncated')}</pre>`;
+  }
+  return `<div class="ce-detail-label">Result</div><pre class="ce-detail-code">${escapeHtml(text)}</pre>`;
 }
 
 function toolTag(name) {
@@ -2205,8 +2285,12 @@ function appendConsoleEntry(toolId, name, desc, input) {
       <span class="ce-summary"></span>
       <span class="ce-time">${timeStr}</span>
     </div>
-    <div class="ce-detail"><pre>${escapeHtml(JSON.stringify(input || {}, null, 2))}</pre></div>
+    <div class="ce-detail">
+      <div class="ce-detail-input">${formatToolDetail(name, input)}</div>
+      <div class="ce-detail-result" id="ce-result-${toolId || ''}"></div>
+    </div>
   `;
+  entry._toolName = name;
 
   // Toggle detail on click.
   const row = entry.querySelector('.ce-row');
@@ -2224,7 +2308,7 @@ function appendConsoleEntry(toolId, name, desc, input) {
   updateConsoleCount();
 }
 
-function markConsoleEntryDone(toolId, isError) {
+function markConsoleEntryDone(toolId, isError, content) {
   if (!toolId) return;
   const entry = document.querySelector(`.console-entry[data-tool-id="${toolId}"]`);
   if (!entry) return;
@@ -2233,6 +2317,13 @@ function markConsoleEntryDone(toolId, isError) {
     summary.innerHTML = isError
       ? '<span class="fail">error</span>'
       : '<span class="success">done</span>';
+  }
+  // Render result content
+  if (content) {
+    const resultEl = entry.querySelector('.ce-detail-result');
+    if (resultEl) {
+      resultEl.innerHTML = formatToolResult(entry._toolName || '', content, isError);
+    }
   }
 }
 

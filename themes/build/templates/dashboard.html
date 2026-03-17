@@ -416,6 +416,64 @@ body{
 .msg-status .delivered{color:var(--accent)}
 .msg-status .read{color:var(--green)}
 
+/* Markdown in messages */
+.msg-text p{margin-bottom:.4rem}
+.msg-text p:last-child{margin-bottom:0}
+.msg-text .md-h1{font-size:1.15em;font-weight:700;margin:.6rem 0 .3rem}
+.msg-text .md-h2{font-size:1.05em;font-weight:600;margin:.5rem 0 .25rem}
+.msg-text .md-h3{font-size:.95em;font-weight:600;margin:.4rem 0 .2rem}
+.md-inline-code{
+  background:rgba(0,0,0,0.06);
+  padding:.1em .35em;border-radius:3px;
+  font-family:var(--mono);font-size:0.9em;
+  color:var(--text);
+}
+.md-code-block{
+  position:relative;
+  background:#1e1e2e;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  margin:.4rem 0;
+  overflow:hidden;
+}
+.md-code-block pre{
+  margin:0;padding:.75rem .875rem;
+  overflow-x:auto;
+}
+.md-code-block code{
+  font-family:var(--mono);font-size:12px;
+  line-height:1.55;color:#cdd6f4;
+  white-space:pre;
+}
+.md-code-lang{
+  display:block;
+  padding:.25rem .875rem;
+  font-family:var(--mono);font-size:10px;
+  color:#6c7086;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  user-select:none;
+}
+.md-link{color:var(--accent);text-decoration:none}
+.md-link:hover{text-decoration:underline}
+.md-blockquote{
+  border-left:3px solid var(--border-strong);
+  padding:.25rem 0 .25rem .75rem;
+  margin:.3rem 0;
+  color:var(--text-muted);
+}
+.md-list{
+  margin:.3rem 0 .3rem 1.25rem;
+  font-size:inherit;line-height:1.6;
+}
+.md-list li{margin-bottom:.15rem}
+.md-list li:last-child{margin-bottom:0}
+.md-hr{
+  border:none;
+  border-top:1px solid var(--border);
+  margin:.5rem 0;
+}
+.md-img{max-width:100%;border-radius:var(--radius-sm);margin:.3rem 0}
+
 /* New channel dialog */
 .new-channel-overlay{
   position:absolute;inset:0;z-index:50;
@@ -501,6 +559,20 @@ body{
 }
 .chat-send:hover{opacity:.85}
 .chat-send svg{width:16px;height:16px;color:#fff}
+
+/* Agent activity items in chat */
+.agent-activity-item{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.375rem .75rem;margin:0 1rem;
+  font-size:11.5px;color:var(--text-muted);
+  border-left:2px solid var(--border);
+  font-family:var(--mono);
+}
+.agent-activity-item .tool-name{color:var(--accent);font-weight:500}
+.agent-activity-item .tool-desc{color:var(--text-muted)}
+.agent-activity-item.thinking{border-left-color:var(--amber)}
+.agent-activity-item.working{border-left-color:var(--accent)}
+.agent-activity-item.done{border-left-color:var(--green);opacity:.7}
 
 /* ===== BOTTOM CONSOLE ===== */
 .console-bottom{
@@ -1095,6 +1167,7 @@ body{
 <script nonce="{{ csp_nonce() }}" src="/static/build/js/libsodium.js"></script>
 <script nonce="{{ csp_nonce() }}" src="/static/build/js/libsodium-wrappers.js"></script>
 <script nonce="{{ csp_nonce() }}" src="/static/build/js/e2ee.js"></script>
+<script nonce="{{ csp_nonce() }}" src="/static/build/js/markdown.js"></script>
 
 <script nonce="{{ csp_nonce() }}">
 // ===== UI State =====
@@ -1825,7 +1898,7 @@ function selectChannel(channelId) {
     }
   });
 
-  // Agent events (chat.response, activity.delta, etc.) from spawned agents.
+  // Agent events (chat.response, activity.delta, tool.use, etc.) from spawned agents.
   e2ee.addEventListener('agent_event', (evt) => {
     const { channel_id, event_type, event: agentEvt } = evt.detail;
     if (!channel_id) return;
@@ -1846,8 +1919,30 @@ function selectChannel(channelId) {
         appendMessage(msg);
         scrollChatToBottom();
       }
+    } else if (event_type === 'tool.use' && chatCurrentChannel === channel_id) {
+      const name = agentEvt.name || 'tool';
+      const input = agentEvt.input || {};
+      const desc = describeToolUse(name, input);
+      appendActivityItem(agentEvt.tool_use_id, name, desc, 'working');
+      scrollChatToBottom();
+    } else if (event_type === 'tool.result' && chatCurrentChannel === channel_id) {
+      // Mark the tool use as done.
+      const el = document.querySelector(`[data-tool-id="${agentEvt.tool_use_id}"]`);
+      if (el) {
+        el.className = 'agent-activity-item done';
+      }
+    } else if (event_type === 'activity.delta' && chatCurrentChannel === channel_id) {
+      const delta = agentEvt.delta || {};
+      if (delta.type === 'text' && delta.text) {
+        appendActivityItem(null, 'thinking', delta.text.substring(0, 200), 'thinking');
+        scrollChatToBottom();
+      }
+    } else if (event_type === 'activity.end' && chatCurrentChannel === channel_id) {
+      // Fade out any remaining "working" items.
+      document.querySelectorAll('.agent-activity-item.working').forEach(el => {
+        el.className = 'agent-activity-item done';
+      });
     }
-    // Future: handle activity.delta, tool.use, etc.
   });
 
   e2ee.addEventListener('delivered', (evt) => {
@@ -1924,7 +2019,7 @@ function appendMessage(msg) {
         <span class="msg-name">${nameLabel}</span>
         <span class="msg-time">${timeStr}</span>
       </div>
-      <div class="msg-text"><p>${escapeHtml(msg.content || '')}</p></div>
+      <div class="msg-text">${renderMarkdown(msg.content || '')}</div>
       ${isUser && msg.id ? `<div class="msg-status">${
         msg.read_at ? '<span class="read">✓✓ Read</span>'
         : msg.delivered_at ? '<span class="delivered">✓ Delivered</span>'
@@ -1932,6 +2027,32 @@ function appendMessage(msg) {
       }</div>` : ''}
     </div>
   `;
+  container.appendChild(div);
+}
+
+function describeToolUse(name, input) {
+  const descs = {
+    Read: () => `Reading ${(input.file_path || '').split('/').pop()}`,
+    Edit: () => `Editing ${(input.file_path || '').split('/').pop()}`,
+    Write: () => `Writing ${(input.file_path || '').split('/').pop()}`,
+    Bash: () => `Running: ${(input.command || '').substring(0, 60)}`,
+    Glob: () => `Searching for ${input.pattern || ''}`,
+    Grep: () => `Searching for '${input.pattern || ''}'`,
+    Agent: () => `Agent: ${input.description || ''}`,
+    WebFetch: () => 'Fetching web page',
+    WebSearch: () => `Searching: ${input.query || ''}`,
+    ToolSearch: () => `Finding tools: ${input.query || ''}`,
+  };
+  const fn = descs[name];
+  return fn ? fn() : `Using ${name}`;
+}
+
+function appendActivityItem(toolId, name, desc, state) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = `agent-activity-item ${state}`;
+  if (toolId) div.dataset.toolId = toolId;
+  div.innerHTML = `<span class="tool-name">${escapeHtml(name)}</span> <span class="tool-desc">${escapeHtml(desc)}</span>`;
   container.appendChild(div);
 }
 

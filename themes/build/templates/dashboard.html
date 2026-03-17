@@ -398,7 +398,7 @@ body{
 .msg-header{display:flex;align-items:baseline;gap:.4rem;margin-bottom:.2rem}
 .msg-name{font-size:12px;font-weight:600;color:var(--text)}
 .msg-time{font-size:10.5px;color:var(--text-muted);font-weight:400}
-.msg-text{font-size:13px;color:var(--text);line-height:1.6}
+.msg-text{font-size:13px;color:var(--text);line-height:1.6;overflow-wrap:break-word;word-break:break-word}
 .msg-text p{margin-bottom:.4rem}
 .msg-text p:last-child{margin-bottom:0}
 .msg-code{
@@ -427,6 +427,7 @@ body{
   padding:.1em .35em;border-radius:3px;
   font-family:var(--mono);font-size:0.9em;
   color:var(--text);
+  overflow-wrap:break-word;word-break:break-word;
 }
 .md-code-block{
   position:relative;

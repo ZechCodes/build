@@ -1808,6 +1808,8 @@ let e2ee = null;
 let chatCurrentChannel = null;
 const chatChannels = new Map(); // id -> {id, name, created_at}
 const chatMessages = new Map(); // channelId -> [messages]
+const chatLoadingMessages = new Set(); // channels currently loading messages
+const chatLoadingActivity = new Set(); // channels currently loading activity
 let cachedHarnesses = null; // harness list from device
 
 // ----- E2EE connection -----
@@ -1892,6 +1894,8 @@ function bindE2EEEvents() {
     e2ee.listHarnesses();
     // Re-fetch history for the current channel on reconnect.
     if (chatCurrentChannel) {
+      chatLoadingMessages.add(chatCurrentChannel);
+      chatLoadingActivity.add(chatCurrentChannel);
       e2ee.getMessages(chatCurrentChannel);
       e2ee.getActivity(chatCurrentChannel);
     }
@@ -1992,12 +1996,14 @@ function renderChannelList() {
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
   renderChannelList();
-  renderMessages();
-  clearConsole();
   if (e2ee && e2ee.connected) {
+    chatLoadingMessages.add(channelId);
+    chatLoadingActivity.add(channelId);
     e2ee.getMessages(channelId);
     e2ee.getActivity(channelId);
   }
+  renderMessages();
+  clearConsole(chatLoadingActivity.has(channelId));
   const chName = chatChannels.get(channelId)?.name || '';
   document.getElementById('chat-input').placeholder = `Message #${chName}...`;
   // Update dropdown label
@@ -2010,6 +2016,7 @@ function selectChannel(channelId) {
 
   e2ee.addEventListener('messages', (evt) => {
     const { channel_id, messages } = evt.detail;
+    chatLoadingMessages.delete(channel_id);
     chatMessages.set(channel_id, messages);
     if (chatCurrentChannel === channel_id) {
       renderMessages();
@@ -2076,6 +2083,7 @@ function selectChannel(channelId) {
   // Activity history — tool use console entries loaded on channel select / reconnect.
   e2ee.addEventListener('activity_history', (evt) => {
     const { channel_id, entries } = evt.detail;
+    chatLoadingActivity.delete(channel_id);
     if (chatCurrentChannel !== channel_id) return;
 
     clearConsole();
@@ -2127,10 +2135,17 @@ function renderMessages() {
   if (msgs.length === 0) {
     container.innerHTML = '';
     const ch = chatChannels.get(chatCurrentChannel);
-    container.appendChild(createEmptyState(
-      `#${ch?.name || 'channel'}`,
-      'No messages yet. Send one to get started.',
-    ));
+    if (chatLoadingMessages.has(chatCurrentChannel)) {
+      container.appendChild(createEmptyState(
+        `#${ch?.name || 'channel'}`,
+        'Loading messages…',
+      ));
+    } else {
+      container.appendChild(createEmptyState(
+        `#${ch?.name || 'channel'}`,
+        'No messages yet. Send one to get started.',
+      ));
+    }
     return;
   }
 
@@ -2251,9 +2266,15 @@ function toolTag(name) {
 
 let consoleEntryCount = 0;
 
-function clearConsole() {
+function clearConsole(loading) {
   const body = document.querySelector('.console-body');
-  if (body) body.innerHTML = '';
+  if (body) {
+    if (loading) {
+      body.innerHTML = '<div class="empty-state"><p>Loading tool uses…</p></div>';
+    } else {
+      body.innerHTML = '';
+    }
+  }
   consoleEntryCount = 0;
   updateConsoleCount();
 }

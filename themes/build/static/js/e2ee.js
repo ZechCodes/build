@@ -229,6 +229,18 @@ class BuildE2EE extends EventTarget {
       }));
     } else if (action === 'agent_event') {
       this.dispatchEvent(new CustomEvent('agent_event', { detail: payload }));
+    } else if (action === 'chunk_ack') {
+      this.dispatchEvent(new CustomEvent('chunk_ack', {
+        detail: { file_id: payload.file_id, chunk_index: payload.chunk_index },
+      }));
+    } else if (action === 'upload_accepted') {
+      this.dispatchEvent(new CustomEvent('upload_accepted', {
+        detail: { file_id: payload.file_id, filename: payload.filename, size: payload.size, path: payload.path },
+      }));
+    } else if (action === 'upload_error') {
+      this.dispatchEvent(new CustomEvent('upload_error', {
+        detail: { file_id: payload.file_id, error: payload.error },
+      }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -356,6 +368,143 @@ class BuildE2EE extends EventTarget {
 
   async listWorkers() {
     return this.send({ action: 'list_workers' });
+  }
+
+  // ---- File Upload ----
+
+  /**
+   * Upload a file to the device via E2EE chunked transfer.
+   *
+   * @param {string} channelId - Channel to associate the upload with.
+   * @param {File} file - The File object to upload.
+   * @returns {Promise<{file_id: string, filename: string, size: number, mime_type: string}>}
+   */
+  async uploadFile(channelId, file) {
+    if (!this._connected) throw new Error('not connected');
+
+    const CHUNK_SIZE = 180 * 1024; // 180 KB raw per chunk
+    const fileId = crypto.randomUUID();
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+    const arrayBuffer = await file.arrayBuffer();
+    const fileBytes = new Uint8Array(arrayBuffer);
+
+    // Compute SHA-256 of the original file.
+    const hashBuffer = await crypto.subtle.digest('SHA-256', fileBytes);
+    const sha256 = Array.from(new Uint8Array(hashBuffer))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    this.dispatchEvent(new CustomEvent('upload_progress', {
+      detail: { file_id: fileId, filename: file.name, progress: 0, total_chunks: totalChunks },
+    }));
+
+    // Send chunks sequentially, waiting for ack after each.
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunkData = fileBytes.slice(start, end);
+      const chunkB64 = this._toB64(chunkData);
+
+      await this.send({
+        action: 'upload_chunk',
+        file_id: fileId,
+        channel_id: channelId,
+        filename: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        total_size: file.size,
+        total_chunks: totalChunks,
+        chunk_index: i,
+        data: chunkB64,
+      });
+
+      // Wait for chunk_ack from device.
+      await this._waitForChunkAck(fileId, i, 30000);
+
+      this.dispatchEvent(new CustomEvent('upload_progress', {
+        detail: {
+          file_id: fileId,
+          filename: file.name,
+          progress: (i + 1) / totalChunks,
+          total_chunks: totalChunks,
+          chunks_done: i + 1,
+        },
+      }));
+    }
+
+    // Send upload_complete.
+    await this.send({
+      action: 'upload_complete',
+      file_id: fileId,
+      channel_id: channelId,
+      sha256,
+    });
+
+    // Wait for upload_accepted.
+    const result = await this._waitForUploadAccepted(fileId, 15000);
+
+    this.dispatchEvent(new CustomEvent('upload_done', {
+      detail: { file_id: fileId, filename: file.name, size: file.size },
+    }));
+
+    return {
+      file_id: fileId,
+      filename: file.name,
+      size: file.size,
+      mime_type: file.type || 'application/octet-stream',
+      path: result.path,
+    };
+  }
+
+  _waitForChunkAck(fileId, chunkIndex, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.removeEventListener('chunk_ack', handler);
+        reject(new Error(`chunk_ack timed out for chunk ${chunkIndex}`));
+      }, timeoutMs);
+
+      const handler = (event) => {
+        const d = event.detail;
+        if (d.file_id === fileId && d.chunk_index === chunkIndex) {
+          clearTimeout(timeout);
+          this.removeEventListener('chunk_ack', handler);
+          resolve();
+        }
+      };
+      this.addEventListener('chunk_ack', handler);
+    });
+  }
+
+  _waitForUploadAccepted(fileId, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.removeEventListener('upload_accepted', handler);
+        this.removeEventListener('upload_error', errHandler);
+        reject(new Error('upload_accepted timed out'));
+      }, timeoutMs);
+
+      const handler = (event) => {
+        const d = event.detail;
+        if (d.file_id === fileId) {
+          clearTimeout(timeout);
+          this.removeEventListener('upload_accepted', handler);
+          this.removeEventListener('upload_error', errHandler);
+          resolve(d);
+        }
+      };
+
+      const errHandler = (event) => {
+        const d = event.detail;
+        if (d.file_id === fileId) {
+          clearTimeout(timeout);
+          this.removeEventListener('upload_accepted', handler);
+          this.removeEventListener('upload_error', errHandler);
+          reject(new Error(d.error || 'upload rejected'));
+        }
+      };
+
+      this.addEventListener('upload_accepted', handler);
+      this.addEventListener('upload_error', errHandler);
+    });
   }
 
   disconnect() {

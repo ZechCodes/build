@@ -605,6 +605,61 @@ body{
 }
 .chat-send:hover{opacity:.85}
 .chat-send svg{width:12px;height:12px;color:#fff}
+.chat-attach{
+  width:28px;height:28px;border-radius:var(--radius-sm);
+  background:none;border:1px solid rgba(0,0,0,.12);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .12s,border-color .12s;flex-shrink:0;
+}
+.chat-attach:hover{background:var(--surface);border-color:var(--border-strong)}
+.chat-attach svg{width:14px;height:14px;color:var(--text-muted)}
+.chat-attach:disabled{opacity:.4;cursor:default}
+/* Upload staging area — files queued before send */
+.upload-staging{display:none;flex-wrap:wrap;gap:.35rem;padding:.35rem .5rem 0}
+.upload-staging.has-files{display:flex}
+.upload-pill{
+  display:inline-flex;align-items:center;gap:.3rem;
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:.2rem .5rem;font-size:11px;
+  color:var(--text);max-width:200px;
+}
+.upload-pill .up-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-pill .up-size{color:var(--text-muted);flex-shrink:0}
+.upload-pill .up-remove{
+  cursor:pointer;color:var(--text-muted);font-size:13px;line-height:1;
+  margin-left:.15rem;
+}
+.upload-pill .up-remove:hover{color:var(--text)}
+/* Upload progress bar */
+.upload-progress{display:none;padding:0 .5rem .25rem}
+.upload-progress.active{display:block}
+.upload-progress-bar{
+  height:3px;border-radius:2px;background:var(--border);overflow:hidden;
+}
+.upload-progress-fill{
+  height:100%;background:var(--accent);transition:width .2s;width:0;
+}
+.upload-progress-label{font-size:10px;color:var(--text-muted);margin-top:.15rem}
+/* Drag overlay */
+.chat-drop-overlay{
+  display:none;position:absolute;inset:0;z-index:50;
+  background:rgba(var(--accent-rgb,59,130,246),.08);
+  border:2px dashed var(--accent);border-radius:var(--radius);
+  align-items:center;justify-content:center;
+  font-size:13px;color:var(--accent);font-weight:500;
+}
+.chat-drop-overlay.visible{display:flex}
+/* Attachment pills on messages */
+.msg-attachments{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.3rem}
+.msg-attachment{
+  display:inline-flex;align-items:center;gap:.25rem;
+  background:rgba(0,0,0,.04);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:.2rem .45rem;
+  font-size:11px;color:var(--text);
+}
+.msg-attachment svg{width:12px;height:12px;color:var(--text-muted);flex-shrink:0}
+.msg-attachment .att-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.msg-attachment .att-size{color:var(--text-muted)}
 
 /* ===== BOTTOM CONSOLE ===== */
 .console-bottom{
@@ -1129,12 +1184,22 @@ body{
             </div>
           </div>
           <div class="chat-input-area">
+            <div class="upload-staging" id="upload-staging"></div>
+            <div class="upload-progress" id="upload-progress">
+              <div class="upload-progress-bar"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
+              <div class="upload-progress-label" id="upload-progress-label"></div>
+            </div>
             <div class="chat-input-wrap">
+              <button class="chat-attach" id="chat-attach-btn" title="Attach file" disabled>
+                <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <input type="file" id="chat-file-input" multiple hidden>
               <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
               <button class="chat-send" id="chat-send-btn" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
               </button>
             </div>
+            <div class="chat-drop-overlay" id="chat-drop-overlay">Drop files to attach</div>
           </div>
         </div>
         <!-- E2EE waiting overlay -->
@@ -1536,6 +1601,12 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 function renderDeviceGrid() {
   const grid = document.getElementById('device-grid');
   const empty = document.getElementById('devices-empty');
@@ -1889,7 +1960,9 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-label').textContent = 'E2EE active';
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
+    document.getElementById('chat-attach-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
+    if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
     e2ee.listChannels();
     e2ee.listHarnesses();
     // Re-fetch history for the current channel on reconnect.
@@ -1908,6 +1981,7 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
+    document.getElementById('chat-attach-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
     // Don't poll — the e2ee-ready notification will trigger reconnect.
@@ -2183,6 +2257,15 @@ function appendMessage(msg) {
         <span class="msg-time">${timeStr}</span>
       </div>
       <div class="msg-text">${renderMarkdown(msg.content || '')}</div>
+      ${msg.attachments && msg.attachments.length ? `<div class="msg-attachments">${
+        msg.attachments.map(att =>
+          `<div class="msg-attachment">
+            <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="att-name">${escapeHtml(att.filename || att.name || 'file')}</span>
+            <span class="att-size">${formatFileSize(att.size || 0)}</span>
+          </div>`
+        ).join('')
+      }</div>` : ''}
       ${isUser && msg.id ? `<div class="msg-status">${
         msg.read_at ? '<span class="read">✓✓ Read</span>'
         : msg.delivered_at ? '<span class="delivered">✓ Delivered</span>'
@@ -2386,18 +2469,45 @@ function createEmptyState(title, desc) {
 async function sendChatMessage() {
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
-  if (!content || !chatCurrentChannel || !e2ee || !e2ee.connected) return;
+  const hasFiles = pendingFiles.length > 0;
+  if ((!content && !hasFiles) || !chatCurrentChannel || !e2ee || !e2ee.connected) return;
 
   input.value = '';
   input.style.height = 'auto';
+
+  // Upload any staged files first.
+  let attachments = null;
+  if (hasFiles) {
+    const files = [...pendingFiles];
+    clearPendingFiles();
+    attachments = [];
+    for (const file of files) {
+      try {
+        const result = await e2ee.uploadFile(chatCurrentChannel, file);
+        attachments.push({
+          file_id: result.file_id,
+          filename: result.filename,
+          size: result.size,
+          mime_type: result.mime_type,
+        });
+      } catch (err) {
+        console.error('[Chat] File upload failed:', err);
+      }
+    }
+    if (!attachments.length) attachments = null;
+  }
+
+  const messageContent = content || (attachments ? `Sent ${attachments.length} file(s)` : '');
+  if (!messageContent) return;
 
   // Optimistically render the message.
   const tempMsg = {
     id: crypto.randomUUID(),
     channel_id: chatCurrentChannel,
     sender: 'client',
-    content,
+    content: messageContent,
     created_at: Date.now() / 1000,
+    attachments,
   };
   const msgs = chatMessages.get(chatCurrentChannel) || [];
   msgs.push(tempMsg);
@@ -2406,9 +2516,10 @@ async function sendChatMessage() {
   scrollChatToBottom();
 
   try {
-    const realMessageId = await e2ee.sendMessage(chatCurrentChannel, content);
-    // Update the optimistic message's data-msg-id to match the encrypted frame's message_id
-    // so that delivered/read status updates can find it.
+    // Send via E2EE with attachment metadata.
+    const payload = { action: 'message', channel_id: chatCurrentChannel, content: messageContent };
+    if (attachments) payload.attachments = attachments;
+    const realMessageId = await e2ee.send(payload);
     const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
     if (el) el.dataset.msgId = realMessageId;
     tempMsg.id = realMessageId;
@@ -2424,6 +2535,121 @@ document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
     sendChatMessage();
   }
 });
+
+// ----- File Upload UI -----
+
+const pendingFiles = [];
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
+function addPendingFiles(files) {
+  for (const file of files) {
+    if (file.size > MAX_FILE_SIZE) {
+      console.warn(`File too large: ${file.name} (${formatFileSize(file.size)})`);
+      continue;
+    }
+    pendingFiles.push(file);
+  }
+  renderPendingFiles();
+}
+
+function removePendingFile(index) {
+  pendingFiles.splice(index, 1);
+  renderPendingFiles();
+}
+
+function clearPendingFiles() {
+  pendingFiles.length = 0;
+  renderPendingFiles();
+}
+
+function renderPendingFiles() {
+  const staging = document.getElementById('upload-staging');
+  if (!staging) return;
+  if (!pendingFiles.length) {
+    staging.innerHTML = '';
+    staging.classList.remove('has-files');
+    return;
+  }
+  staging.classList.add('has-files');
+  staging.innerHTML = pendingFiles.map((f, i) =>
+    `<div class="upload-pill">
+      <span class="up-name">${escapeHtml(f.name)}</span>
+      <span class="up-size">${formatFileSize(f.size)}</span>
+      <span class="up-remove" data-index="${i}">&times;</span>
+    </div>`
+  ).join('');
+  staging.querySelectorAll('.up-remove').forEach(btn => {
+    btn.addEventListener('click', () => removePendingFile(parseInt(btn.dataset.index)));
+  });
+}
+
+// Attach button opens file picker.
+document.getElementById('chat-attach-btn')?.addEventListener('click', () => {
+  document.getElementById('chat-file-input')?.click();
+});
+
+document.getElementById('chat-file-input')?.addEventListener('change', (e) => {
+  if (e.target.files.length) {
+    addPendingFiles(e.target.files);
+    e.target.value = ''; // Reset so same file can be re-selected.
+  }
+});
+
+// Upload progress listener.
+if (typeof e2ee !== 'undefined' && e2ee) {
+  _bindUploadProgress(e2ee);
+}
+
+function _bindUploadProgress(client) {
+  client.addEventListener('upload_progress', (evt) => {
+    const { filename, progress, total_chunks, chunks_done } = evt.detail;
+    const bar = document.getElementById('upload-progress');
+    const fill = document.getElementById('upload-progress-fill');
+    const label = document.getElementById('upload-progress-label');
+    if (!bar) return;
+    bar.classList.add('active');
+    fill.style.width = (progress * 100) + '%';
+    label.textContent = `Uploading ${filename}… ${chunks_done || 0}/${total_chunks}`;
+    if (progress >= 1) {
+      setTimeout(() => { bar.classList.remove('active'); }, 1500);
+    }
+  });
+}
+
+// Drag and drop on chat area.
+const chatPanel = document.querySelector('.chat-panel');
+if (chatPanel) {
+  let dragCounter = 0;
+  const overlay = document.getElementById('chat-drop-overlay');
+
+  chatPanel.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCounter++;
+    if (overlay) overlay.classList.add('visible');
+  });
+
+  chatPanel.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      if (overlay) overlay.classList.remove('visible');
+    }
+  });
+
+  chatPanel.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+
+  chatPanel.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    if (overlay) overlay.classList.remove('visible');
+    if (e.dataTransfer?.files?.length) {
+      addPendingFiles(e.dataTransfer.files);
+    }
+  });
+}
 
 // ----- New channel dialog -----
 

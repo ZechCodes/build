@@ -1825,6 +1825,31 @@ function selectChannel(channelId) {
     }
   });
 
+  // Agent events (chat.response, activity.delta, etc.) from spawned agents.
+  e2ee.addEventListener('agent_event', (evt) => {
+    const { channel_id, event_type, event: agentEvt } = evt.detail;
+    if (!channel_id) return;
+
+    if (event_type === 'chat.response') {
+      // Agent sent a chat message — display it like a device message.
+      const msg = {
+        id: agentEvt.id || '',
+        channel_id,
+        sender: 'device',
+        content: agentEvt.content || '',
+        created_at: new Date().toISOString(),
+      };
+      const msgs = chatMessages.get(channel_id) || [];
+      msgs.push(msg);
+      chatMessages.set(channel_id, msgs);
+      if (chatCurrentChannel === channel_id) {
+        appendMessage(msg);
+        scrollChatToBottom();
+      }
+    }
+    // Future: handle activity.delta, tool.use, etc.
+  });
+
   e2ee.addEventListener('delivered', (evt) => {
     const { message_id } = evt.detail;
     const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);

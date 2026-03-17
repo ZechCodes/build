@@ -223,6 +223,8 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('agent_restarted', { detail: payload }));
     } else if (action === 'worker_list') {
       this.dispatchEvent(new CustomEvent('worker_list', { detail: payload.workers }));
+    } else if (action === 'agent_event') {
+      this.dispatchEvent(new CustomEvent('agent_event', { detail: payload }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }

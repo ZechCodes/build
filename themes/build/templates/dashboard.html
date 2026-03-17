@@ -2064,9 +2064,9 @@ function selectChannel(channelId) {
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
       const desc = describeToolUse(name, input);
-      appendConsoleEntry(agentEvt.tool_use_id, name, desc, input);
+      appendConsoleEntry(agentEvt.tool_use_id, name, desc, input, agentEvt.created_at);
     } else if (event_type === 'tool.result') {
-      markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content);
+      markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content, agentEvt.completed_at);
     } else if (event_type === 'activity.end') {
       // Update console count.
       updateConsoleCount();
@@ -2085,10 +2085,10 @@ function selectChannel(channelId) {
         const name = d.name || 'tool';
         const input = d.input || {};
         const desc = describeToolUse(name, input);
-        appendConsoleEntry(d.id || '', name, desc, input);
+        appendConsoleEntry(d.id || '', name, desc, input, entry.created_at);
       } else if (entry.type === 'tool_result') {
         const d = entry.data || {};
-        markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content);
+        markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content, entry.created_at);
       }
     }
   });
@@ -2258,7 +2258,7 @@ function clearConsole() {
   updateConsoleCount();
 }
 
-function appendConsoleEntry(toolId, name, desc, input) {
+function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   const body = document.querySelector('.console-body');
   if (!body) return;
 
@@ -2269,8 +2269,8 @@ function appendConsoleEntry(toolId, name, desc, input) {
     consoleCollapsed = false;
   }
 
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const ts = timestamp ? new Date(timestamp) : new Date();
+  const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const tag = toolTag(name);
 
   const entry = document.createElement('div');
@@ -2308,7 +2308,7 @@ function appendConsoleEntry(toolId, name, desc, input) {
   updateConsoleCount();
 }
 
-function markConsoleEntryDone(toolId, isError, content) {
+function markConsoleEntryDone(toolId, isError, content, completedAt) {
   if (!toolId) return;
   const entry = document.querySelector(`.console-entry[data-tool-id="${toolId}"]`);
   if (!entry) return;
@@ -2317,6 +2317,14 @@ function markConsoleEntryDone(toolId, isError, content) {
     summary.innerHTML = isError
       ? '<span class="fail">error</span>'
       : '<span class="success">done</span>';
+  }
+  // Update displayed time to completion time.
+  if (completedAt) {
+    const timeEl = entry.querySelector('.ce-time');
+    if (timeEl) {
+      const ts = new Date(completedAt);
+      timeEl.textContent = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
   }
   // Render result content
   if (content) {

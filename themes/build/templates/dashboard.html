@@ -1739,6 +1739,11 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     e2ee.listChannels();
     e2ee.listHarnesses();
+    // Re-fetch history for the current channel on reconnect.
+    if (chatCurrentChannel) {
+      e2ee.getMessages(chatCurrentChannel);
+      e2ee.getActivity(chatCurrentChannel);
+    }
   });
 
   e2ee.addEventListener('disconnected', () => {
@@ -1845,8 +1850,10 @@ function selectChannel(channelId) {
   chatCurrentChannel = channelId;
   renderChannelList();
   renderMessages();
+  clearConsole();
   if (e2ee && e2ee.connected) {
     e2ee.getMessages(channelId);
+    e2ee.getActivity(channelId);
   }
   document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
   location.hash = `chat/${channelId}`;
@@ -1916,6 +1923,26 @@ function selectChannel(channelId) {
     } else if (event_type === 'activity.end') {
       // Update console count.
       updateConsoleCount();
+    }
+  });
+
+  // Activity history — tool use console entries loaded on channel select / reconnect.
+  e2ee.addEventListener('activity_history', (evt) => {
+    const { channel_id, entries } = evt.detail;
+    if (chatCurrentChannel !== channel_id) return;
+
+    clearConsole();
+    for (const entry of entries) {
+      if (entry.type === 'tool_use') {
+        const d = entry.data || {};
+        const name = d.name || 'tool';
+        const input = d.input || {};
+        const desc = describeToolUse(name, input);
+        appendConsoleEntry(d.id || '', name, desc, input);
+      } else if (entry.type === 'tool_result') {
+        const d = entry.data || {};
+        markConsoleEntryDone(d.tool_use_id || '', d.is_error || false);
+      }
     }
   });
 
@@ -2027,6 +2054,13 @@ function toolTag(name) {
 }
 
 let consoleEntryCount = 0;
+
+function clearConsole() {
+  const body = document.querySelector('.console-body');
+  if (body) body.innerHTML = '';
+  consoleEntryCount = 0;
+  updateConsoleCount();
+}
 
 function appendConsoleEntry(toolId, name, desc, input) {
   const body = document.querySelector('.console-body');

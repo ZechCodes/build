@@ -223,6 +223,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('agent_restarted', { detail: payload }));
     } else if (action === 'worker_list') {
       this.dispatchEvent(new CustomEvent('worker_list', { detail: payload.workers }));
+    } else if (action === 'activity_history') {
+      this.dispatchEvent(new CustomEvent('activity_history', {
+        detail: { channel_id: payload.channel_id, entries: payload.entries },
+      }));
     } else if (action === 'agent_event') {
       this.dispatchEvent(new CustomEvent('agent_event', { detail: payload }));
     } else if (action === 'error') {
@@ -301,6 +305,10 @@ class BuildE2EE extends EventTarget {
 
   async getMessages(channelId, limit = 50, before = null) {
     return this.send({ action: 'get_messages', channel_id: channelId, limit, before });
+  }
+
+  async getActivity(channelId) {
+    return this.send({ action: 'get_activity', channel_id: channelId });
   }
 
   async sendMessage(channelId, content) {

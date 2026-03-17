@@ -281,10 +281,10 @@ body{
 .top-e2ee-status .top-e2ee-dot.error{background:var(--red)}
 /* Custom dropdowns */
 .top-dropdown{
-  position:relative;flex-shrink:0;
+  position:relative;flex-shrink:1;min-width:0;
 }
-#device-dropdown{width:160px}
-#channel-dropdown{width:180px}
+#device-dropdown{width:160px;max-width:35vw}
+#channel-dropdown{width:180px;max-width:40vw}
 .top-dropdown-trigger{
   display:flex;align-items:center;gap:.35rem;
   width:100%;
@@ -308,8 +308,8 @@ body{
 .top-dropdown-trigger .dd-hash{color:var(--text-muted);font-weight:400}
 .top-dropdown-menu{
   display:none;
-  position:absolute;top:calc(100% + 4px);left:0;
-  min-width:220px;max-width:min(320px, calc(100vw - 2rem));
+  position:fixed;
+  min-width:220px;max-width:calc(100vw - 1rem);
   background:var(--surface-solid);
   border:1px solid var(--border-strong);
   border-radius:var(--radius);
@@ -1316,13 +1316,22 @@ function selectAgent(name, device) {
 
 // ===== Custom dropdown toggle logic =====
 function closeAllDropdowns() {
-  document.querySelectorAll('.top-dropdown-menu.open').forEach(m => {
-    m.classList.remove('open');
-    m.style.left = '';
-    m.style.right = '';
-  });
+  document.querySelectorAll('.top-dropdown-menu.open').forEach(m => m.classList.remove('open'));
   document.querySelectorAll('.top-dropdown-trigger.open').forEach(t => t.classList.remove('open'));
   document.querySelectorAll('.top-dropdown-backdrop').forEach(b => b.remove());
+}
+
+function positionDropdownMenu(trigger, menu) {
+  const tr = trigger.getBoundingClientRect();
+  menu.style.top = (tr.bottom + 4) + 'px';
+  menu.style.left = tr.left + 'px';
+  // After rendering, check if it overflows the right edge
+  requestAnimationFrame(() => {
+    const mr = menu.getBoundingClientRect();
+    if (mr.right > window.innerWidth - 8) {
+      menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + 'px';
+    }
+  });
 }
 
 function toggleDropdown(dropdownId) {
@@ -1334,14 +1343,7 @@ function toggleDropdown(dropdownId) {
   if (!isOpen) {
     trigger.classList.add('open');
     menu.classList.add('open');
-    // Prevent overflow off right edge
-    requestAnimationFrame(() => {
-      const rect = menu.getBoundingClientRect();
-      if (rect.right > window.innerWidth - 8) {
-        menu.style.left = 'auto';
-        menu.style.right = '0';
-      }
-    });
+    positionDropdownMenu(trigger, menu);
     const backdrop = document.createElement('div');
     backdrop.className = 'top-dropdown-backdrop';
     backdrop.addEventListener('click', closeAllDropdowns);

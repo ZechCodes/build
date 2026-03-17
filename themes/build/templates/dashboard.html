@@ -279,37 +279,83 @@ body{
 .top-e2ee-status .top-e2ee-dot.connected{background:var(--green)}
 .top-e2ee-status .top-e2ee-dot.connecting{background:var(--amber);animation:pulse 1.5s infinite}
 .top-e2ee-status .top-e2ee-dot.error{background:var(--red)}
-.top-channel-select{
-  font-size:12px;font-weight:600;color:var(--text);
-  font-family:var(--font);
-  background:transparent;border:1px solid transparent;
-  border-radius:var(--radius-xs);padding:.25rem .5rem;
-  cursor:pointer;appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 4l2.5 2.5L7.5 4' stroke='%2371717a' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right .25rem center;
-  padding-right:1.25rem;
-  transition:all .12s;
+/* Custom dropdowns */
+.top-dropdown{
+  position:relative;flex-shrink:0;
 }
-.top-channel-select:hover{border-color:var(--border-strong);background-color:var(--surface)}
-.top-new-channel{
-  width:22px;height:22px;border-radius:var(--radius-xs);
-  border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.7);
-  display:flex;align-items:center;justify-content:center;
-  cursor:pointer;color:var(--accent);transition:all .12s;flex-shrink:0;
-}
-.top-new-channel:hover{background:var(--accent-light)}
-.top-device-select{
+.top-dropdown-trigger{
+  display:flex;align-items:center;gap:.35rem;
   font-size:13px;font-weight:600;color:var(--text);
   font-family:var(--font);
   background:transparent;border:1px solid transparent;
   border-radius:var(--radius-xs);padding:.25rem .5rem;
-  cursor:pointer;appearance:none;-webkit-appearance:none;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 4l2.5 2.5L7.5 4' stroke='%2371717a' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right .25rem center;
-  padding-right:1.25rem;
-  transition:all .12s;
+  cursor:pointer;transition:all .12s;
+  white-space:nowrap;
 }
-.top-device-select:hover{border-color:var(--border-strong);background-color:var(--surface)}
+.top-dropdown-trigger:hover{border-color:var(--border-strong);background:var(--surface)}
+.top-dropdown-trigger.open{border-color:var(--accent);background:var(--surface)}
+.top-dropdown-trigger .dd-chevron{
+  width:8px;height:6px;color:var(--text-muted);flex-shrink:0;
+  transition:transform .15s;
+}
+.top-dropdown-trigger.open .dd-chevron{transform:rotate(180deg)}
+.top-dropdown-trigger .dd-hash{color:var(--text-muted);font-weight:400}
+.top-dropdown-menu{
+  display:none;
+  position:absolute;top:calc(100% + 4px);left:0;
+  min-width:220px;
+  background:var(--surface-solid);
+  border:1px solid var(--border-strong);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow-lg);
+  z-index:100;
+  flex-direction:column;
+  overflow:hidden;
+}
+.top-dropdown-menu.open{display:flex}
+.top-dropdown-list{
+  flex:1;overflow-y:auto;
+  max-height:50vh;
+  padding:.35rem;
+}
+.top-dropdown-list::-webkit-scrollbar{width:5px}
+.top-dropdown-list::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:3px}
+.dd-item{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.45rem .6rem;border-radius:var(--radius-sm);
+  cursor:pointer;font-size:12px;color:var(--text);
+  transition:background .1s;
+}
+.dd-item:hover{background:rgba(99,102,241,.06)}
+.dd-item.active{background:rgba(99,102,241,.08);color:var(--accent);font-weight:600}
+.dd-item-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dd-item-edit{
+  width:22px;height:22px;border-radius:var(--radius-xs);
+  border:none;background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--text-muted);
+  opacity:0;transition:all .12s;flex-shrink:0;
+}
+.dd-item:hover .dd-item-edit{opacity:1}
+.dd-item-edit:hover{background:rgba(0,0,0,.06);color:var(--text)}
+.dd-item-edit svg{width:12px;height:12px}
+.dd-footer{
+  padding:.35rem;
+  border-top:1px solid var(--border);
+  flex-shrink:0;
+}
+.dd-footer-btn{
+  display:flex;align-items:center;gap:.4rem;
+  width:100%;padding:.45rem .6rem;border-radius:var(--radius-sm);
+  border:none;background:none;cursor:pointer;
+  font-size:12px;font-weight:500;color:var(--accent);
+  font-family:var(--font);transition:background .1s;
+}
+.dd-footer-btn:hover{background:rgba(99,102,241,.06)}
+.dd-footer-btn svg{width:12px;height:12px}
+.top-dropdown-backdrop{
+  position:fixed;inset:0;z-index:99;
+}
 .top-status{display:none}
 .top-runtime{display:none}
 
@@ -970,12 +1016,34 @@ body{
     <div class="top-e2ee-status" id="top-e2ee-status" title="Not connected">
       <div class="top-e2ee-dot" id="top-e2ee-dot"></div>
     </div>
-    <select class="top-device-select" id="ws-device-select"></select>
+    <!-- Device dropdown -->
+    <div class="top-dropdown" id="device-dropdown">
+      <div class="top-dropdown-trigger" id="device-dropdown-trigger">
+        <span id="device-dropdown-label">Device</span>
+        <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      </div>
+      <div class="top-dropdown-menu" id="device-dropdown-menu">
+        <div class="top-dropdown-list" id="device-dropdown-list"></div>
+      </div>
+    </div>
     <span class="top-separator"></span>
-    <select class="top-channel-select" id="ws-channel-select"></select>
-    <button class="top-new-channel" id="top-new-channel" title="New channel">
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
+    <!-- Channel dropdown -->
+    <div class="top-dropdown" id="channel-dropdown">
+      <div class="top-dropdown-trigger" id="channel-dropdown-trigger">
+        <span class="dd-hash">#</span>
+        <span id="channel-dropdown-label">Channel</span>
+        <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      </div>
+      <div class="top-dropdown-menu" id="channel-dropdown-menu">
+        <div class="top-dropdown-list" id="channel-dropdown-list"></div>
+        <div class="dd-footer">
+          <button class="dd-footer-btn" id="dd-new-channel">
+            <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            New Channel
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Complications -->
@@ -1204,15 +1272,26 @@ railIcons.forEach(btn => {
 });
 
 function renderDeviceSelect(selectedDeviceName) {
-  const sel = document.getElementById('ws-device-select');
-  sel.innerHTML = '';
+  const label = document.getElementById('device-dropdown-label');
+  const list = document.getElementById('device-dropdown-list');
+  if (!list) return;
+  if (selectedDeviceName && label) label.textContent = selectedDeviceName;
+  list.innerHTML = '';
   const sorted = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
   for (const d of sorted) {
-    const opt = document.createElement('option');
-    opt.value = d.name;
-    opt.textContent = d.name;
-    if (d.name === selectedDeviceName) opt.selected = true;
-    sel.appendChild(opt);
+    const item = document.createElement('div');
+    item.className = 'dd-item' + (d.name === selectedDeviceName ? ' active' : '');
+    item.innerHTML = `<span class="dd-item-label">${escapeHtml(d.name)}</span><button class="dd-item-edit" title="Edit device"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
+    item.querySelector('.dd-item-label').addEventListener('click', () => {
+      selectAgent(d.name, d.name);
+      closeAllDropdowns();
+    });
+    item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      // TODO: device edit action
+      console.log('Edit device:', d.name);
+    });
+    list.appendChild(item);
   }
 }
 
@@ -1229,9 +1308,35 @@ function selectAgent(name, device) {
   }
 }
 
-document.getElementById('ws-device-select')?.addEventListener('change', (e) => {
-  const name = e.target.value;
-  if (name) selectAgent(name, name);
+// ===== Custom dropdown toggle logic =====
+function closeAllDropdowns() {
+  document.querySelectorAll('.top-dropdown-menu.open').forEach(m => m.classList.remove('open'));
+  document.querySelectorAll('.top-dropdown-trigger.open').forEach(t => t.classList.remove('open'));
+  document.querySelectorAll('.top-dropdown-backdrop').forEach(b => b.remove());
+}
+
+function toggleDropdown(dropdownId) {
+  const trigger = document.getElementById(dropdownId + '-trigger');
+  const menu = document.getElementById(dropdownId + '-menu');
+  if (!trigger || !menu) return;
+  const isOpen = menu.classList.contains('open');
+  closeAllDropdowns();
+  if (!isOpen) {
+    trigger.classList.add('open');
+    menu.classList.add('open');
+    // Add backdrop to close on outside click
+    const backdrop = document.createElement('div');
+    backdrop.className = 'top-dropdown-backdrop';
+    backdrop.addEventListener('click', closeAllDropdowns);
+    document.body.appendChild(backdrop);
+  }
+}
+
+document.getElementById('device-dropdown-trigger')?.addEventListener('click', () => toggleDropdown('device-dropdown'));
+document.getElementById('channel-dropdown-trigger')?.addEventListener('click', () => toggleDropdown('channel-dropdown'));
+document.getElementById('dd-new-channel')?.addEventListener('click', () => {
+  closeAllDropdowns();
+  document.getElementById('btn-new-channel')?.click();
 });
 
 function toggleConsole() {
@@ -1785,21 +1890,35 @@ function bindE2EEEvents() {
   });
 
 function renderChannelList() {
+  const label = document.getElementById('channel-dropdown-label');
+  const list = document.getElementById('channel-dropdown-list');
+  if (!list) return;
+
   const sorted = chatChannels.size > 0
     ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
     : [];
 
-  // Topbar channel select
-  const topChSelect = document.getElementById('ws-channel-select');
-  if (topChSelect) {
-    topChSelect.innerHTML = '<option value="">Channel...</option>';
-    for (const ch of sorted) {
-      const opt = document.createElement('option');
-      opt.value = ch.id;
-      opt.textContent = `# ${ch.name}`;
-      if (chatCurrentChannel === ch.id) opt.selected = true;
-      topChSelect.appendChild(opt);
-    }
+  // Update trigger label
+  if (chatCurrentChannel && label) {
+    const cur = chatChannels.get(chatCurrentChannel);
+    if (cur) label.textContent = cur.name;
+  }
+
+  list.innerHTML = '';
+  for (const ch of sorted) {
+    const item = document.createElement('div');
+    item.className = 'dd-item' + (chatCurrentChannel === ch.id ? ' active' : '');
+    item.innerHTML = `<span class="dd-item-label">${escapeHtml(ch.name)}</span><button class="dd-item-edit" title="Edit channel"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
+    item.querySelector('.dd-item-label').addEventListener('click', () => {
+      selectChannel(ch.id);
+      closeAllDropdowns();
+    });
+    item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      // TODO: channel edit action
+      console.log('Edit channel:', ch.name);
+    });
+    list.appendChild(item);
   }
 }
 
@@ -1814,9 +1933,9 @@ function selectChannel(channelId) {
   }
   const chName = chatChannels.get(channelId)?.name || '';
   document.getElementById('chat-input').placeholder = `Message #${chName}...`;
-  // Sync topbar channel select
-  const topChSel = document.getElementById('ws-channel-select');
-  if (topChSel) topChSel.value = channelId;
+  // Update dropdown label
+  const lbl = document.getElementById('channel-dropdown-label');
+  if (lbl) lbl.textContent = chName;
   location.hash = `chat/${channelId}`;
 }
 
@@ -2252,16 +2371,6 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
     if (e.key === 'Enter') create();
     if (e.key === 'Escape') close();
   });
-});
-
-// ----- Topbar channel select -----
-document.getElementById('ws-channel-select')?.addEventListener('change', (e) => {
-  const channelId = e.target.value;
-  if (!channelId) return;
-  selectChannel(channelId);
-});
-document.getElementById('top-new-channel')?.addEventListener('click', () => {
-  document.getElementById('btn-new-channel')?.click();
 });
 
 // Sync E2EE status to topbar indicator

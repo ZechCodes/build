@@ -366,14 +366,7 @@ body{
 
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
-.chat-sidebar{
-  display:none;
-}
-.chat-sidebar-header{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:.65rem .75rem;border-bottom:1px solid var(--border);
-}
-.chat-sidebar-title{font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+/* Sidebar button (used by mobile + new-channel dialog trigger) */
 .chat-sidebar-btn{
   width:22px;height:22px;border-radius:var(--radius-xs);
   border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.7);cursor:pointer;
@@ -382,21 +375,7 @@ body{
 }
 .chat-sidebar-btn svg{width:12px;height:12px}
 .chat-sidebar-btn:hover{background:var(--accent-light);color:var(--accent)}
-.chat-channel-list{flex:1;overflow-y:auto;padding:.35rem}
-.channel-item{
-  display:flex;align-items:center;gap:.4rem;
-  padding:.4rem .6rem;border-radius:var(--radius-sm);
-  cursor:pointer;font-size:12px;color:var(--text);
-  transition:all .12s;
-}
-.channel-item:hover{background:rgba(99,102,241,0.04)}
-.channel-item.active{background:rgba(99,102,241,.08);color:var(--accent);font-weight:600}
-.channel-item .channel-hash{color:var(--text-muted);font-weight:400;font-size:13px}
-.chat-e2ee-status{
-  padding:.4rem .75rem;border-top:1px solid var(--border);
-  display:flex;align-items:center;gap:.35rem;
-  font-size:10px;color:var(--text-muted);
-}
+/* E2EE dot (hidden source element for status sync) */
 .e2ee-dot{
   width:6px;height:6px;border-radius:50%;
   background:var(--text-muted);flex-shrink:0;
@@ -914,7 +893,6 @@ body{
   .sk-status-indicator{
     bottom:calc(1rem + env(safe-area-inset-bottom,0px));
   }
-  .chat-sidebar{display:none !important}
   .chat-mobile-header{
     display:block;
     padding:.5rem .75rem;
@@ -1063,23 +1041,11 @@ body{
     <!-- ===== CHAT TAB ===== -->
     <div class="tab-panel active" id="tab-chat">
       <div class="chat-layout">
-        <!-- Channel sidebar -->
-        <div class="chat-sidebar" id="chat-sidebar">
-          <div class="chat-sidebar-header">
-            <span class="chat-sidebar-title">Channels</span>
-            <button class="chat-sidebar-btn" id="btn-new-channel" title="New channel">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            </button>
-          </div>
-          <div class="chat-channel-list" id="chat-channel-list">
-            <div class="empty-state" style="padding:1rem;font-size:12px" id="channels-empty">
-              <p>No channels yet</p>
-            </div>
-          </div>
-          <div class="chat-e2ee-status" id="chat-e2ee-status">
-            <span class="e2ee-dot" id="e2ee-dot"></span>
-            <span id="e2ee-label">Not connected</span>
-          </div>
+        <!-- Hidden elements for JS references (e2ee status source, new-channel trigger) -->
+        <div hidden>
+          <button id="btn-new-channel"></button>
+          <span class="e2ee-dot" id="e2ee-dot"></span>
+          <span id="e2ee-label">Not connected</span>
         </div>
         <!-- Chat main area -->
         <div class="chat-main">
@@ -1869,37 +1835,17 @@ function bindE2EEEvents() {
   });
 
 function renderChannelList() {
-  const list = document.getElementById('chat-channel-list');
-  const empty = document.getElementById('channels-empty');
   const mobileSelect = document.getElementById('chat-mobile-select');
 
-  if (chatChannels.size === 0) {
-    if (empty) empty.style.display = '';
-    list.querySelectorAll('.channel-item').forEach(el => el.remove());
-    if (mobileSelect) {
-      mobileSelect.innerHTML = '<option value="">No channels yet</option>';
-    }
-    return;
-  }
-
-  if (empty) empty.style.display = 'none';
-  list.querySelectorAll('.channel-item').forEach(el => el.remove());
-
-  const sorted = [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at);
-
-  // Desktop sidebar
-  for (const ch of sorted) {
-    const item = document.createElement('div');
-    item.className = 'channel-item' + (chatCurrentChannel === ch.id ? ' active' : '');
-    item.dataset.channelId = ch.id;
-    item.innerHTML = `<span class="channel-hash">#</span> ${escapeHtml(ch.name)}`;
-    item.addEventListener('click', () => selectChannel(ch.id));
-    list.appendChild(item);
-  }
+  const sorted = chatChannels.size > 0
+    ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
+    : [];
 
   // Mobile dropdown
   if (mobileSelect) {
-    mobileSelect.innerHTML = '<option value="">Select a channel...</option>';
+    mobileSelect.innerHTML = sorted.length
+      ? '<option value="">Select a channel...</option>'
+      : '<option value="">No channels yet</option>';
     for (const ch of sorted) {
       const opt = document.createElement('option');
       opt.value = ch.id;
@@ -2387,11 +2333,9 @@ document.getElementById('chat-mobile-select')?.addEventListener('change', (e) =>
   }
   document.getElementById('chat-input').placeholder = `Message #${chatChannels.get(channelId)?.name || ''}...`;
   location.hash = `chat/${channelId}`;
-  // Update desktop sidebar selection without touching mobile dropdown.
-  const list = document.getElementById('chat-channel-list');
-  list.querySelectorAll('.channel-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.channelId === channelId);
-  });
+  // Sync topbar channel select
+  const topChSel = document.getElementById('ws-channel-select');
+  if (topChSel) topChSel.value = channelId;
 });
 
 // Mobile new-channel button triggers the same dialog

@@ -359,9 +359,6 @@ body{
 }
 .dd-footer-btn:hover{background:rgba(99,102,241,.06)}
 .dd-footer-btn svg{width:12px;height:12px}
-.top-dropdown-backdrop{
-  position:fixed;inset:0;z-index:99;
-}
 .top-status{display:none}
 .top-runtime{display:none}
 
@@ -1288,7 +1285,8 @@ function renderDeviceSelect(selectedDeviceName) {
     const item = document.createElement('div');
     item.className = 'dd-item' + (d.name === selectedDeviceName ? ' active' : '');
     item.innerHTML = `<span class="dd-item-label">${escapeHtml(d.name)}</span><button class="dd-item-edit" title="Edit device"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
-    item.querySelector('.dd-item-label').addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.dd-item-edit')) return;
       selectAgent(d.name, d.name);
       closeAllDropdowns();
     });
@@ -1315,17 +1313,18 @@ function selectAgent(name, device) {
 }
 
 // ===== Custom dropdown toggle logic =====
+let _openDropdown = null;
+
 function closeAllDropdowns() {
   document.querySelectorAll('.top-dropdown-menu.open').forEach(m => m.classList.remove('open'));
   document.querySelectorAll('.top-dropdown-trigger.open').forEach(t => t.classList.remove('open'));
-  document.querySelectorAll('.top-dropdown-backdrop').forEach(b => b.remove());
+  _openDropdown = null;
 }
 
 function positionDropdownMenu(trigger, menu) {
   const tr = trigger.getBoundingClientRect();
   menu.style.top = (tr.bottom + 4) + 'px';
   menu.style.left = tr.left + 'px';
-  // After rendering, check if it overflows the right edge
   requestAnimationFrame(() => {
     const mr = menu.getBoundingClientRect();
     if (mr.right > window.innerWidth - 8) {
@@ -1344,16 +1343,29 @@ function toggleDropdown(dropdownId) {
     trigger.classList.add('open');
     menu.classList.add('open');
     positionDropdownMenu(trigger, menu);
-    const backdrop = document.createElement('div');
-    backdrop.className = 'top-dropdown-backdrop';
-    backdrop.addEventListener('click', closeAllDropdowns);
-    document.body.appendChild(backdrop);
+    _openDropdown = dropdownId;
   }
 }
 
-document.getElementById('device-dropdown-trigger')?.addEventListener('click', () => toggleDropdown('device-dropdown'));
-document.getElementById('channel-dropdown-trigger')?.addEventListener('click', () => toggleDropdown('channel-dropdown'));
-document.getElementById('dd-new-channel')?.addEventListener('click', () => {
+// Close dropdowns on any click outside
+document.addEventListener('click', (e) => {
+  if (!_openDropdown) return;
+  const dropdown = document.getElementById(_openDropdown);
+  if (dropdown && !dropdown.contains(e.target)) {
+    closeAllDropdowns();
+  }
+}, true);
+
+document.getElementById('device-dropdown-trigger')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDropdown('device-dropdown');
+});
+document.getElementById('channel-dropdown-trigger')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDropdown('channel-dropdown');
+});
+document.getElementById('dd-new-channel')?.addEventListener('click', (e) => {
+  e.stopPropagation();
   closeAllDropdowns();
   document.getElementById('btn-new-channel')?.click();
 });
@@ -1928,7 +1940,8 @@ function renderChannelList() {
     const item = document.createElement('div');
     item.className = 'dd-item' + (chatCurrentChannel === ch.id ? ' active' : '');
     item.innerHTML = `<span class="dd-item-label">${escapeHtml(ch.name)}</span><button class="dd-item-edit" title="Edit channel"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
-    item.querySelector('.dd-item-label').addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.dd-item-edit')) return;
       selectChannel(ch.id);
       closeAllDropdowns();
     });

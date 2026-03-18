@@ -809,6 +809,7 @@ body{
 .ce-error-label{color:#f87171}
 .ce-detail-result{margin-top:.3rem}
 .ce-detail-result:empty{display:none}
+.ce-result-preview{color:var(--text-secondary,#888);font-size:.75rem;margin-left:.4rem;opacity:.7}
 
 /* ===== PLANNING TAB ===== */
 .planning-layout{flex:1;display:flex;overflow:hidden}
@@ -2156,7 +2157,7 @@ function selectChannel(channelId) {
 
   // Activity history — tool use console entries loaded on channel select / reconnect.
   e2ee.addEventListener('activity_history', (evt) => {
-    const { channel_id, entries } = evt.detail;
+    const { channel_id, entries, total_tool_uses } = evt.detail;
     chatLoadingActivity.delete(channel_id);
     if (chatCurrentChannel !== channel_id) return;
 
@@ -2172,6 +2173,11 @@ function selectChannel(channelId) {
         const d = entry.data || {};
         markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content, entry.created_at);
       }
+    }
+    // Use the total count from the device (includes trimmed entries).
+    if (total_tool_uses != null) {
+      consoleEntryCount = total_tool_uses;
+      updateConsoleCount();
     }
   });
 
@@ -2418,9 +2424,17 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
   if (!entry) return;
   const summary = entry.querySelector('.ce-summary');
   if (summary) {
-    summary.innerHTML = isError
-      ? '<span class="fail">error</span>'
-      : '<span class="success">done</span>';
+    if (isError) {
+      summary.innerHTML = '<span class="fail">error</span>';
+    } else if (content) {
+      // Show a brief preview of the result in the collapsed header.
+      const text = typeof content === 'string' ? content : JSON.stringify(content);
+      const preview = text.replace(/\n/g, ' ').trim();
+      const short = preview.length > 80 ? preview.substring(0, 80) + '…' : preview;
+      summary.innerHTML = `<span class="success">done</span> <span class="ce-result-preview">${escapeHtml(short)}</span>`;
+    } else {
+      summary.innerHTML = '<span class="success">done</span>';
+    }
   }
   // Update displayed time to completion time.
   if (completedAt) {
@@ -2430,7 +2444,7 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
       timeEl.textContent = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
   }
-  // Render result content
+  // Render result content in the expandable detail section.
   if (content) {
     const resultEl = entry.querySelector('.ce-detail-result');
     if (resultEl) {

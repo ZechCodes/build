@@ -225,7 +225,7 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('worker_list', { detail: payload.workers }));
     } else if (action === 'activity_history') {
       this.dispatchEvent(new CustomEvent('activity_history', {
-        detail: { channel_id: payload.channel_id, entries: payload.entries },
+        detail: { channel_id: payload.channel_id, entries: payload.entries, total_tool_uses: payload.total_tool_uses },
       }));
     } else if (action === 'agent_event') {
       this.dispatchEvent(new CustomEvent('agent_event', { detail: payload }));

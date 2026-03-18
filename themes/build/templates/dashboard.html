@@ -760,7 +760,7 @@ body{
 .ce-tag.write{background:rgba(5,150,105,0.15);color:#34d399}
 .ce-tag.edit{background:rgba(217,119,6,0.15);color:#fbbf24}
 .ce-tag.bash{background:rgba(168,85,247,0.15);color:#c084fc}
-.ce-file{color:#d4d4d8;font-family:var(--mono);font-size:11px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.ce-desc{color:#d4d4d8;font-family:var(--mono);font-size:11px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .ce-summary{font-size:10.5px;color:#71717a;white-space:nowrap;flex-shrink:0}
 .ce-summary .success{color:#34d399}
 .ce-summary .fail{color:#f87171}
@@ -2391,7 +2391,7 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
     <div class="ce-row">
       <svg class="ce-chevron" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="ce-tag ${tag}">${escapeHtml(name)}</span>
-      <span class="ce-file">${escapeHtml(desc)}</span>
+      <span class="ce-desc">${escapeHtml(desc)}</span>
       <span class="ce-summary"></span>
       <span class="ce-time">${timeStr}</span>
     </div>
@@ -2426,12 +2426,6 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
   if (summary) {
     if (isError) {
       summary.innerHTML = '<span class="fail">error</span>';
-    } else if (content) {
-      // Show a brief preview of the result in the collapsed header.
-      const text = typeof content === 'string' ? content : JSON.stringify(content);
-      const preview = text.replace(/\n/g, ' ').trim();
-      const short = preview.length > 80 ? preview.substring(0, 80) + '…' : preview;
-      summary.innerHTML = `<span class="success">done</span> <span class="ce-result-preview">${escapeHtml(short)}</span>`;
     } else {
       summary.innerHTML = '<span class="success">done</span>';
     }

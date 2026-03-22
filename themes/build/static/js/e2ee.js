@@ -241,6 +241,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('upload_error', {
         detail: { file_id: payload.file_id, error: payload.error },
       }));
+    } else if (action === 'plan_mode_updated') {
+      this.dispatchEvent(new CustomEvent('plan_mode_updated', {
+        detail: { channel_id: payload.channel_id, plan_mode: payload.plan_mode },
+      }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -504,6 +508,24 @@ class BuildE2EE extends EventTarget {
 
       this.addEventListener('upload_accepted', handler);
       this.addEventListener('upload_error', errHandler);
+    });
+  }
+
+  async sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse) {
+    return this.send({
+      action: 'interaction_response',
+      channel_id: channelId,
+      interaction_id: interactionId,
+      selected_option: selectedOption || null,
+      freeform_response: freeformResponse || null,
+    });
+  }
+
+  async setPlanMode(channelId, planMode) {
+    return this.send({
+      action: 'set_plan_mode',
+      channel_id: channelId,
+      plan_mode: planMode,
     });
   }
 

@@ -614,6 +614,36 @@ body{
 .chat-attach:hover{background:var(--surface);border-color:var(--border-strong)}
 .chat-attach svg{width:14px;height:14px;color:var(--text-muted)}
 .chat-attach:disabled{opacity:.4;cursor:default}
+/* Plan mode toggle */
+.plan-toggle-btn{
+  width:28px;height:28px;border-radius:var(--radius-sm);
+  background:none;border:1px solid rgba(0,0,0,.12);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .15s,border-color .15s,color .15s;flex-shrink:0;
+}
+.plan-toggle-btn:hover{background:var(--surface);border-color:var(--border-strong)}
+.plan-toggle-btn svg{width:14px;height:14px;color:var(--text-muted)}
+.plan-toggle-btn:disabled{opacity:.4;cursor:default}
+.plan-toggle-btn.active{background:var(--accent-light);border-color:var(--accent);color:var(--accent)}
+.plan-toggle-btn.active svg{color:var(--accent)}
+/* Interaction cards inline in chat */
+.interaction-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.75rem;margin-top:.25rem}
+.interaction-question{font-size:13px;line-height:1.5;margin-bottom:.5rem}
+.interaction-plan-toggle{font-size:11px;color:var(--accent);cursor:pointer;border:none;background:none;padding:0;margin-bottom:.5rem;font-family:var(--font)}
+.interaction-plan-toggle:hover{text-decoration:underline}
+.interaction-plan-content{display:none;max-height:300px;overflow-y:auto;background:var(--console-bg);color:var(--console-text);border-radius:var(--radius-sm);padding:.5rem .75rem;margin-bottom:.5rem;font-size:12px;line-height:1.5}
+.interaction-plan-content.expanded{display:block}
+.interaction-options{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.5rem}
+.interaction-opt{font-size:12px;padding:.3rem .75rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong);background:var(--surface-solid);cursor:pointer;font-family:var(--font);transition:background .12s,border-color .12s}
+.interaction-opt:hover{background:var(--accent-light);border-color:var(--accent)}
+.interaction-opt.selected{background:var(--accent);color:#fff;border-color:var(--accent)}
+.interaction-freeform{display:flex;gap:.35rem;align-items:flex-end}
+.interaction-freeform textarea{flex:1;font-family:var(--font);font-size:12px;padding:.35rem .5rem;border:1px solid var(--border);border-radius:var(--radius-sm);resize:none;min-height:28px;max-height:80px;background:var(--surface-solid);color:var(--text);outline:none}
+.interaction-freeform textarea:focus{border-color:var(--accent)}
+.interaction-submit{font-size:11px;padding:.3rem .6rem;border-radius:var(--radius-sm);border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;font-family:var(--font);white-space:nowrap}
+.interaction-submit:hover{opacity:.85}
+.interaction-card.resolved .interaction-options,.interaction-card.resolved .interaction-freeform{display:none}
+.interaction-resolved{font-size:12px;color:var(--text-muted);font-style:italic}
 /* Upload staging area — files queued before send */
 .upload-staging{display:none;flex-wrap:wrap;gap:.35rem;padding:.35rem .5rem 0}
 .upload-staging.has-files{display:flex}
@@ -1202,6 +1232,9 @@ body{
             <div class="chat-input-wrap">
               <button class="chat-attach" id="chat-attach-btn" title="Attach file" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button class="plan-toggle-btn" id="plan-toggle-btn" title="Plan mode" disabled>
+                <svg viewBox="0 0 16 16" fill="none"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
               </button>
               <input type="file" id="chat-file-input" multiple hidden>
               <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
@@ -1891,6 +1924,7 @@ const chatChannels = new Map(); // id -> {id, name, created_at}
 const chatMessages = new Map(); // channelId -> [messages]
 const chatLoadingMessages = new Set(); // channels currently loading messages
 const chatLoadingActivity = new Set(); // channels currently loading activity
+const channelPlanMode = new Map(); // channelId -> boolean
 let cachedHarnesses = null; // harness list from device
 
 // ----- E2EE connection -----
@@ -1971,6 +2005,7 @@ function bindE2EEEvents() {
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
     document.getElementById('chat-attach-btn').disabled = false;
+    document.getElementById('plan-toggle-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
     e2ee.listChannels();
@@ -1992,6 +2027,7 @@ function bindE2EEEvents() {
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
     document.getElementById('chat-attach-btn').disabled = true;
+    document.getElementById('plan-toggle-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
     // Don't poll — the e2ee-ready notification will trigger reconnect.
@@ -2094,6 +2130,8 @@ function selectChannel(channelId) {
   const lbl = document.getElementById('channel-dropdown-label');
   if (lbl) lbl.textContent = chName;
   location.hash = `chat/${channelId}`;
+  // Sync plan mode toggle.
+  updatePlanModeUI(channelPlanMode.get(channelId) || false);
 }
 
 // ----- Messages -----
@@ -2161,6 +2199,35 @@ function selectChannel(channelId) {
     } else if (event_type === 'activity.end') {
       // Update console count.
       updateConsoleCount();
+    } else if (event_type === 'interaction.request') {
+      // Agent is asking the user a question — render inline in chat.
+      const msg = {
+        id: agentEvt.interaction_id || '',
+        channel_id,
+        sender: 'device',
+        content: agentEvt.question || '',
+        created_at: new Date().toISOString(),
+        metadata: JSON.stringify({
+          interaction_id: agentEvt.interaction_id,
+          kind: agentEvt.kind || 'question',
+          options: agentEvt.options || [],
+          allow_freeform: agentEvt.allow_freeform !== false,
+          plan: agentEvt.plan || null,
+        }),
+      };
+      const msgs = chatMessages.get(channel_id) || [];
+      msgs.push(msg);
+      chatMessages.set(channel_id, msgs);
+      if (chatCurrentChannel === channel_id) {
+        appendMessage(msg);
+        scrollChatToBottom();
+      }
+    } else if (event_type === 'agent.state_update') {
+      const planMode = agentEvt.plan_mode;
+      if (planMode != null) {
+        channelPlanMode.set(channel_id, planMode);
+        if (channel_id === chatCurrentChannel) updatePlanModeUI(planMode);
+      }
     }
   });
 
@@ -2207,6 +2274,11 @@ function selectChannel(channelId) {
       }
     }
   });
+  e2ee.addEventListener('plan_mode_updated', (evt) => {
+    const { channel_id, plan_mode } = evt.detail;
+    channelPlanMode.set(channel_id, plan_mode);
+    if (channel_id === chatCurrentChannel) updatePlanModeUI(plan_mode);
+  });
 } // end bindE2EEEvents
 
 function renderMessages() {
@@ -2246,6 +2318,15 @@ function renderMessages() {
 }
 
 function appendMessage(msg) {
+  // Delegate to interaction card if metadata present.
+  if (msg.metadata) {
+    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata;
+    if (meta.interaction_id) {
+      appendInteractionCard(msg, meta);
+      return;
+    }
+  }
+
   const container = document.getElementById('chat-messages');
   // Remove empty state if present.
   const empty = container.querySelector('.empty-state');
@@ -2289,6 +2370,110 @@ function appendMessage(msg) {
     </div>
   `;
   container.appendChild(div);
+}
+
+function appendInteractionCard(msg, meta) {
+  const container = document.getElementById('chat-messages');
+  const empty = container.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const resolved = !!meta.resolved_at;
+  const interactionId = meta.interaction_id;
+  const kind = meta.kind || 'question';
+  const options = meta.options || [];
+  const allowFreeform = meta.allow_freeform !== false;
+  const plan = meta.plan || null;
+  const timeStr = msg.created_at ? shortTime(
+    typeof msg.created_at === 'number'
+      ? new Date(msg.created_at * 1000).toISOString()
+      : msg.created_at
+  ) : '';
+
+  const div = document.createElement('div');
+  div.className = `msg ${resolved ? 'interaction-resolved-msg' : ''}`;
+  div.dataset.msgId = msg.id || '';
+
+  let cardHtml = `
+    <div class="msg-avatar agent">D</div>
+    <div class="msg-body">
+      <div class="msg-header">
+        <span class="msg-name">Device</span>
+        <span class="msg-time">${timeStr}</span>
+      </div>
+      <div class="interaction-card ${resolved ? 'resolved' : ''}" data-interaction-id="${escapeHtml(interactionId)}">
+        <div class="interaction-question">${renderMarkdown(msg.content || '')}</div>`;
+
+  // Plan content (collapsible).
+  if (plan) {
+    cardHtml += `
+        <button class="interaction-plan-toggle" onclick="this.nextElementSibling.classList.toggle('expanded');this.textContent=this.nextElementSibling.classList.contains('expanded')?'Hide plan':'Show plan'">Show plan</button>
+        <div class="interaction-plan-content">${renderMarkdown(plan)}</div>`;
+  }
+
+  if (resolved) {
+    const answer = meta.freeform_response || meta.selected_option || '';
+    cardHtml += `<div class="interaction-resolved">Responded: ${escapeHtml(answer)}</div>`;
+  } else {
+    // Options.
+    if (options.length) {
+      cardHtml += `<div class="interaction-options">`;
+      for (const opt of options) {
+        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}" onclick="respondToInteraction('${escapeHtml(interactionId)}','${escapeHtml(opt.id)}',null)">${escapeHtml(opt.label || opt.id)}</button>`;
+      }
+      cardHtml += `</div>`;
+    }
+    // Freeform input.
+    if (allowFreeform) {
+      cardHtml += `
+        <div class="interaction-freeform">
+          <textarea placeholder="Type a response..." rows="1"></textarea>
+          <button class="interaction-submit" onclick="respondToInteractionFreeform(this,'${escapeHtml(interactionId)}')">Send</button>
+        </div>`;
+    }
+  }
+
+  cardHtml += `</div></div>`;
+  div.innerHTML = cardHtml;
+  container.appendChild(div);
+}
+
+function respondToInteraction(interactionId, selectedOption, freeformResponse) {
+  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
+  e2ee.sendInteractionResponse(chatCurrentChannel, interactionId, selectedOption, freeformResponse);
+  // Mark card as resolved in UI.
+  const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
+  if (card) {
+    card.classList.add('resolved');
+    const answer = freeformResponse || selectedOption || '';
+    // Hide interactive elements and show response.
+    const opts = card.querySelector('.interaction-options');
+    const ff = card.querySelector('.interaction-freeform');
+    if (opts) opts.remove();
+    if (ff) ff.remove();
+    const resolvedEl = document.createElement('div');
+    resolvedEl.className = 'interaction-resolved';
+    resolvedEl.textContent = `Responded: ${answer}`;
+    card.appendChild(resolvedEl);
+  }
+}
+
+function respondToInteractionFreeform(btn, interactionId) {
+  const textarea = btn.parentElement.querySelector('textarea');
+  const text = (textarea ? textarea.value : '').trim();
+  if (!text) return;
+  respondToInteraction(interactionId, null, text);
+}
+
+function updatePlanModeUI(active) {
+  const btn = document.getElementById('plan-toggle-btn');
+  if (!btn) return;
+  if (active) {
+    btn.classList.add('active');
+    btn.title = 'Plan mode (active)';
+  } else {
+    btn.classList.remove('active');
+    btn.title = 'Plan mode';
+  }
 }
 
 function describeToolUse(name, input) {
@@ -2551,6 +2736,16 @@ document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
     e.preventDefault();
     sendChatMessage();
   }
+});
+
+// ----- Plan mode toggle -----
+document.getElementById('plan-toggle-btn')?.addEventListener('click', () => {
+  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
+  const current = channelPlanMode.get(chatCurrentChannel) || false;
+  const next = !current;
+  channelPlanMode.set(chatCurrentChannel, next);
+  updatePlanModeUI(next);
+  e2ee.setPlanMode(chatCurrentChannel, next);
 });
 
 // ----- File Upload UI -----

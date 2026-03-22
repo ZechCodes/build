@@ -1004,6 +1004,15 @@ body{
 @media(hover:none){
   .dd-item-edit{opacity:1}
 }
+.pad-2{padding:2rem}
+.pad-1-5{padding:1.5rem}
+.text-xs{font-size:12px}
+.device-meta-row{display:flex;gap:1rem;font-size:11px;color:var(--text-muted)}
+.text-amber{color:var(--amber);font-weight:600}
+.text-green{color:var(--green);font-weight:600}
+.text-red{color:var(--red);font-weight:600}
+.cursor-pointer{cursor:pointer}
+.chat-tab-rel{position:relative}
 </style>
 </head>
 <body>
@@ -1081,7 +1090,7 @@ body{
     <div class="devices-section">
       <div class="section-title">Devices</div>
       <div id="device-grid">
-        <div class="empty-state glass" style="padding:2rem" id="devices-empty">
+        <div class="empty-state glass pad-2" id="devices-empty">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
           </svg>
@@ -1224,8 +1233,8 @@ body{
             </div>
           </div>
           <div class="issue-list">
-            <div class="empty-state" style="padding:2rem">
-              <p style="font-size:12px">No issues yet</p>
+            <div class="empty-state pad-2">
+              <p class="text-xs">No issues yet</p>
             </div>
           </div>
         </div>
@@ -1245,8 +1254,8 @@ body{
         <div class="file-tree-panel">
           <div class="file-tree-header">Files</div>
           <div class="file-tree">
-            <div class="empty-state" style="padding:1.5rem">
-              <p style="font-size:12px">No files modified yet</p>
+            <div class="empty-state pad-1-5">
+              <p class="text-xs">No files modified yet</p>
             </div>
           </div>
         </div>
@@ -1587,10 +1596,10 @@ function renderDeviceCard(device) {
           <span>${statusText}</span>
         </div>
       </div>
-      <div class="device-meta" style="display:flex;gap:1rem;font-size:11px;color:var(--text-muted)">
+      <div class="device-meta device-meta-row">
         <span title="Last heartbeat">Last beat: ${heartbeatText}</span>
         <span title="Heartbeat interval">Interval: ${device.heartbeat_interval_s || 30}s</span>
-        ${missedCount > 0 ? `<span style="color:var(--amber)" title="Missed heartbeat windows">${missedCount} missed</span>` : ''}
+        ${missedCount > 0 ? `<span class="text-amber" title="Missed heartbeat windows">${missedCount} missed</span>` : ''}
       </div>
     </div>
   `;
@@ -1637,7 +1646,7 @@ function renderDeviceGrid() {
 
   // Add click handlers to device cards.
   grid.querySelectorAll('.device-card').forEach(card => {
-    card.style.cursor = 'pointer';
+    card.classList.add('cursor-pointer');
     card.addEventListener('click', () => {
       const deviceId = card.dataset.deviceId;
       const device = devices.get(deviceId);
@@ -1769,7 +1778,7 @@ document.addEventListener('sk:notification', (e) => {
       renderDeviceGrid();
       updateStats();
       addActivity(
-        `<strong>${escapeHtml(deviceName)}</strong> came <span style="color:var(--green);font-weight:600">online</span>`,
+        `<strong>${escapeHtml(deviceName)}</strong> came <span class="text-green">online</span>`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
       break;
@@ -1783,7 +1792,7 @@ document.addEventListener('sk:notification', (e) => {
       renderDeviceGrid();
       updateStats();
       addActivity(
-        `<strong>${escapeHtml(deviceName)}</strong> went <span style="color:var(--red);font-weight:600">offline</span>`,
+        `<strong>${escapeHtml(deviceName)}</strong> went <span class="text-red">offline</span>`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
       break;
@@ -1792,7 +1801,7 @@ document.addEventListener('sk:notification', (e) => {
     case 'heartbeat-missed': {
       const device = devices.get(deviceId);
       addActivity(
-        `<strong>${escapeHtml(deviceName || deviceId)}</strong> <span style="color:var(--amber);font-weight:600">missed heartbeat</span> (${data.elapsed_s || '?'}s)`,
+        `<strong>${escapeHtml(deviceName || deviceId)}</strong> <span class="text-amber">missed heartbeat</span> (${data.elapsed_s || '?'}s)`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
       // Refresh to get updated missed windows

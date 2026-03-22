@@ -629,10 +629,7 @@ body{
 /* Interaction cards inline in chat */
 .interaction-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.75rem;margin-top:.25rem}
 .interaction-question{font-size:13px;line-height:1.5;margin-bottom:.5rem}
-.interaction-plan-toggle{font-size:11px;color:var(--accent);cursor:pointer;border:none;background:none;padding:0;margin-bottom:.5rem;font-family:var(--font)}
-.interaction-plan-toggle:hover{text-decoration:underline}
-.interaction-plan-content{display:none;max-height:300px;overflow-y:auto;background:var(--console-bg);color:var(--console-text);border-radius:var(--radius-sm);padding:.5rem .75rem;margin-bottom:.5rem;font-size:12px;line-height:1.5}
-.interaction-plan-content.expanded{display:block}
+.interaction-plan-content{background:var(--console-bg);color:var(--console-text);border-radius:var(--radius-sm);padding:.5rem .75rem;margin-bottom:.5rem;font-size:12px;line-height:1.5}
 .interaction-options{display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.5rem}
 .interaction-opt{font-size:12px;padding:.3rem .75rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong);background:var(--surface-solid);cursor:pointer;font-family:var(--font);transition:background .12s,border-color .12s}
 .interaction-opt:hover{background:var(--accent-light);border-color:var(--accent)}
@@ -2403,10 +2400,9 @@ function appendInteractionCard(msg, meta) {
       <div class="interaction-card ${resolved ? 'resolved' : ''}" data-interaction-id="${escapeHtml(interactionId)}">
         <div class="interaction-question">${renderMarkdown(msg.content || '')}</div>`;
 
-  // Plan content (collapsible).
+  // Plan content (fully expanded).
   if (plan) {
     cardHtml += `
-        <button class="interaction-plan-toggle">Show plan</button>
         <div class="interaction-plan-content">${renderMarkdown(plan)}</div>`;
   }
 
@@ -2439,16 +2435,6 @@ function appendInteractionCard(msg, meta) {
   // Bind event listeners (CSP blocks inline onclick handlers).
   const card = div.querySelector('.interaction-card');
   if (!card || resolved) return;
-
-  // Plan toggle.
-  const planToggle = card.querySelector('.interaction-plan-toggle');
-  if (planToggle) {
-    planToggle.addEventListener('click', () => {
-      const content = planToggle.nextElementSibling;
-      content.classList.toggle('expanded');
-      planToggle.textContent = content.classList.contains('expanded') ? 'Hide plan' : 'Show plan';
-    });
-  }
 
   // Option buttons.
   card.querySelectorAll('.interaction-opt').forEach(btn => {

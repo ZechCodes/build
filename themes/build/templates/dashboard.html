@@ -2406,7 +2406,7 @@ function appendInteractionCard(msg, meta) {
   // Plan content (collapsible).
   if (plan) {
     cardHtml += `
-        <button class="interaction-plan-toggle" onclick="this.nextElementSibling.classList.toggle('expanded');this.textContent=this.nextElementSibling.classList.contains('expanded')?'Hide plan':'Show plan'">Show plan</button>
+        <button class="interaction-plan-toggle">Show plan</button>
         <div class="interaction-plan-content">${renderMarkdown(plan)}</div>`;
   }
 
@@ -2418,7 +2418,7 @@ function appendInteractionCard(msg, meta) {
     if (options.length) {
       cardHtml += `<div class="interaction-options">`;
       for (const opt of options) {
-        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}" onclick="respondToInteraction('${escapeHtml(interactionId)}','${escapeHtml(opt.id)}',null)">${escapeHtml(opt.label || opt.id)}</button>`;
+        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}">${escapeHtml(opt.label || opt.id)}</button>`;
       }
       cardHtml += `</div>`;
     }
@@ -2427,7 +2427,7 @@ function appendInteractionCard(msg, meta) {
       cardHtml += `
         <div class="interaction-freeform">
           <textarea placeholder="Type a response..." rows="1"></textarea>
-          <button class="interaction-submit" onclick="respondToInteractionFreeform(this,'${escapeHtml(interactionId)}')">Send</button>
+          <button class="interaction-submit">Send</button>
         </div>`;
     }
   }
@@ -2435,6 +2435,35 @@ function appendInteractionCard(msg, meta) {
   cardHtml += `</div></div>`;
   div.innerHTML = cardHtml;
   container.appendChild(div);
+
+  // Bind event listeners (CSP blocks inline onclick handlers).
+  const card = div.querySelector('.interaction-card');
+  if (!card || resolved) return;
+
+  // Plan toggle.
+  const planToggle = card.querySelector('.interaction-plan-toggle');
+  if (planToggle) {
+    planToggle.addEventListener('click', () => {
+      const content = planToggle.nextElementSibling;
+      content.classList.toggle('expanded');
+      planToggle.textContent = content.classList.contains('expanded') ? 'Hide plan' : 'Show plan';
+    });
+  }
+
+  // Option buttons.
+  card.querySelectorAll('.interaction-opt').forEach(btn => {
+    btn.addEventListener('click', () => {
+      respondToInteraction(interactionId, btn.dataset.optId, null);
+    });
+  });
+
+  // Freeform submit.
+  const submitBtn = card.querySelector('.interaction-submit');
+  if (submitBtn) {
+    submitBtn.addEventListener('click', () => {
+      respondToInteractionFreeform(submitBtn, interactionId);
+    });
+  }
 }
 
 function respondToInteraction(interactionId, selectedOption, freeformResponse) {

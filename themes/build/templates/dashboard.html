@@ -458,9 +458,15 @@ body{
   margin-top:.3rem;
   color:var(--text);
 }
-.msg-status{font-size:9px;color:var(--text-muted);margin-top:.15rem}
-.msg-status .delivered{color:var(--accent)}
-.msg-status .read{color:var(--green)}
+.msg-status{font-size:9px;color:var(--text-muted);margin-top:.15rem;position:relative;height:1.3em;overflow:hidden}
+.msg-status-state{display:inline-flex;align-items:center;gap:.2rem;position:absolute;left:0;transition:opacity .3s ease,transform .3s ease}
+.msg-status-state.enter{opacity:0;transform:translateY(4px)}
+.msg-status-state.visible{opacity:1;transform:translateY(0)}
+.msg-status-state.exit{opacity:0;transform:translateY(-4px)}
+.msg-status .check{opacity:.35}
+.msg-status .check.active{opacity:1}
+.msg-status.delivered .check.active{color:var(--accent)}
+.msg-status.read .check.active{color:var(--green)}
 
 /* Markdown in messages */
 .msg-text p{margin-bottom:.4rem}
@@ -2256,7 +2262,7 @@ function selectChannel(channelId) {
         for (const mid of readIds) {
           const statusEl = document.querySelector(`[data-msg-id="${mid}"] .msg-status`);
           if (statusEl) {
-            statusEl.innerHTML = '<span class="read">\u2713\u2713 Read</span>';
+            crossfadeStatus(statusEl, 'read', '<span class="check active">✓</span><span class="check active">✓</span> Read');
           }
         }
       }
@@ -2293,7 +2299,7 @@ function selectChannel(channelId) {
     const { message_id } = evt.detail;
     const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);
     if (statusEl) {
-      statusEl.innerHTML = '<span class="delivered">✓ Delivered</span>';
+      crossfadeStatus(statusEl, 'delivered', '<span class="check active">✓</span><span class="check">✓</span> Delivered');
     }
   });
 
@@ -2302,7 +2308,7 @@ function selectChannel(channelId) {
     for (const mid of (message_ids || [])) {
       const statusEl = document.querySelector(`[data-msg-id="${mid}"] .msg-status`);
       if (statusEl) {
-        statusEl.innerHTML = '<span class="read">✓✓ Read</span>';
+        crossfadeStatus(statusEl, 'read', '<span class="check active">✓</span><span class="check active">✓</span> Read');
       }
     }
   });
@@ -2394,11 +2400,7 @@ function appendMessage(msg) {
           </div>`
         ).join('')
       }</div>` : ''}
-      ${isUser && msg.id ? `<div class="msg-status">${
-        msg.read_at ? '<span class="read">✓✓ Read</span>'
-        : msg.delivered_at ? '<span class="delivered">✓ Delivered</span>'
-        : 'Sending...'
-      }</div>` : ''}
+      ${isUser && msg.id ? `<div class="msg-status ${msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sending'}"><span class="msg-status-state visible"><span class="check ${msg.read_at || msg.delivered_at ? 'active' : ''}">✓</span><span class="check ${msg.read_at ? 'active' : ''}">✓</span> ${msg.read_at ? 'Read' : msg.delivered_at ? 'Delivered' : 'Sending'}</span></div>` : ''}
     </div>
   `;
   container.appendChild(div);
@@ -2610,6 +2612,28 @@ function respondToInteraction(interactionId, selectedOption, freeformResponse) {
     resolvedEl.textContent = `Responded: ${answer}`;
     card.appendChild(resolvedEl);
   }
+}
+
+function crossfadeStatus(statusEl, newState, newContent) {
+  // Remove old state classes and set new one.
+  statusEl.classList.remove('sending', 'delivered', 'read');
+  statusEl.classList.add(newState);
+  // Crossfade: exit old, enter new.
+  const oldSpan = statusEl.querySelector('.msg-status-state');
+  const newSpan = document.createElement('span');
+  newSpan.className = 'msg-status-state enter';
+  newSpan.innerHTML = newContent;
+  statusEl.appendChild(newSpan);
+  if (oldSpan) {
+    oldSpan.classList.remove('visible');
+    oldSpan.classList.add('exit');
+    setTimeout(() => oldSpan.remove(), 300);
+  }
+  // Trigger reflow then make new span visible.
+  requestAnimationFrame(() => {
+    newSpan.classList.remove('enter');
+    newSpan.classList.add('visible');
+  });
 }
 
 function respondToInteractionFreeform(btn, interactionId) {

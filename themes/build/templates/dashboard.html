@@ -2225,6 +2225,7 @@ function bindE2EEEvents() {
     chatChannels.clear();
     for (const ch of channels) {
       chatChannels.set(ch.id, ch);
+      if (ch.plan_mode != null) channelPlanMode.set(ch.id, ch.plan_mode);
     }
     renderChannelList();
     // Restore pending channel from hash.

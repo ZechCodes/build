@@ -672,6 +672,13 @@ body{
 .plan-review-btn.deny.selected{background:#fecaca;border-color:#f87171}
 .plan-review-note{font-size:11px;color:#8888a0;margin-left:.25rem;font-style:italic}
 .plan-review-question{font-size:12.5px;line-height:1.5;color:#2d2d3f;margin-bottom:.5rem}
+/* Light-themed overrides for markdown inside plan cards */
+.plan-review-content .md-code-block{background:#f5f5fa;border-color:#e2e2e8}
+.plan-review-content .md-code-block code{color:#2d2d3f}
+.plan-review-content .md-code-lang{color:#71717a;border-bottom-color:#e2e2e8}
+.plan-review-content .md-inline-code{background:#eeeef3;color:#2d2d3f}
+.plan-review-content .md-blockquote{border-left-color:#d0d0da;color:#52526a}
+.plan-review-content .md-h1,.plan-review-content .md-h2,.plan-review-content .md-h3{color:#1a1a2e}
 /* Upload staging area — files queued before send */
 .upload-staging{display:none;flex-wrap:wrap;gap:.35rem;padding:.35rem .5rem 0}
 .upload-staging.has-files{display:flex}
@@ -1672,6 +1679,22 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function modelToFriendlyName(modelId) {
+  if (!modelId) return 'Agent';
+  const m = modelId.toLowerCase();
+  if (m.includes('claude')) return 'Claude';
+  if (m.includes('codex')) return 'Codex';
+  if (m.includes('gpt')) return 'GPT';
+  if (m.includes('gemini')) return 'Gemini';
+  if (m.includes('llama')) return 'Llama';
+  if (m.includes('mistral')) return 'Mistral';
+  if (m.includes('command')) return 'Command';
+  if (m.includes('deepseek')) return 'DeepSeek';
+  // Fallback: capitalize first word
+  const first = modelId.split(/[-_\/]/)[0];
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -2496,9 +2519,8 @@ function appendInteractionCard(msg, meta) {
 }
 
 function appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr) {
-  const agentName = selectedAgent?.name || 'Agent';
-  // Capitalize first letter for display.
-  const displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+  const channelModel = chatChannels.get(chatCurrentChannel)?.model || '';
+  const displayName = modelToFriendlyName(channelModel);
 
   const div = document.createElement('div');
   div.className = 'msg';

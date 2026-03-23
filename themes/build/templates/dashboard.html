@@ -2225,11 +2225,11 @@ function selectChannel(channelId) {
     if (!channel_id) return;
 
     if (event_type === 'chat.response') {
-      // Agent sent a chat message — display it like a device message.
+      // Agent sent a chat message.
       const msg = {
         id: agentEvt.id || '',
         channel_id,
-        sender: 'device',
+        sender: agentEvt.sender || 'Device',
         content: agentEvt.content || '',
         created_at: new Date().toISOString(),
       };
@@ -2255,7 +2255,7 @@ function selectChannel(channelId) {
       const msg = {
         id: agentEvt.interaction_id || '',
         channel_id,
-        sender: 'device',
+        sender: agentEvt.sender || 'Device',
         content: agentEvt.question || '',
         created_at: new Date().toISOString(),
         metadata: JSON.stringify({
@@ -2395,8 +2395,9 @@ function appendMessage(msg) {
 
   const isUser = msg.sender === 'client';
   const avatarClass = isUser ? 'user' : 'agent';
-  const avatarLabel = isUser ? 'Y' : 'D';
-  const nameLabel = isUser ? 'You' : 'Device';
+  const displayName = isUser ? 'You' : agentShortName(msg.sender);
+  const avatarLabel = isUser ? 'Y' : displayName[0];
+  const nameLabel = displayName;
   const timeStr = msg.created_at ? shortTime(
     typeof msg.created_at === 'number'
       ? new Date(msg.created_at * 1000).toISOString()
@@ -2456,11 +2457,12 @@ function appendInteractionCard(msg, meta) {
   div.className = `msg ${resolved ? 'interaction-resolved-msg' : ''}`;
   div.dataset.msgId = msg.id || '';
 
+  const senderName = agentShortName(msg.sender);
   let cardHtml = `
-    <div class="msg-avatar agent">D</div>
+    <div class="msg-avatar agent">${senderName[0]}</div>
     <div class="msg-body">
       <div class="msg-header">
-        <span class="msg-name">Device</span>
+        <span class="msg-name">${escapeHtml(senderName)}</span>
         <span class="msg-time">${timeStr}</span>
       </div>
       <div class="interaction-card ${resolved ? 'resolved' : ''}" data-interaction-id="${escapeHtml(interactionId)}">
@@ -2674,6 +2676,11 @@ function updatePlanModeUI(active) {
     btn.classList.remove('active');
     btn.title = 'Plan mode';
   }
+}
+
+function agentShortName(sender) {
+  const map = {'Claude Code': 'Claude', 'Codex CLI': 'Codex', 'Gemini CLI': 'Gemini'};
+  return map[sender] || sender || 'Device';
 }
 
 function describeToolUse(name, input) {

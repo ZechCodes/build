@@ -641,6 +641,31 @@ body{
 .interaction-submit:hover{opacity:.85}
 .interaction-card.resolved .interaction-options,.interaction-card.resolved .interaction-freeform{display:none}
 .interaction-resolved{font-size:12px;color:var(--text-muted);font-style:italic}
+/* Plan review card — light theme inline card */
+.plan-review-card{background:#fff;border:1px solid #e2e2e8;border-radius:var(--radius);margin-top:.25rem;overflow:hidden;color:#1a1a2e}
+.plan-review-title{display:flex;align-items:center;gap:.4rem;padding:.5rem .75rem;border-bottom:1px solid #e2e2e8;font-size:12.5px;font-weight:600;color:#1a1a2e;font-family:var(--font)}
+.plan-review-title svg{width:14px;height:14px;color:#818cf8;flex-shrink:0}
+.plan-review-body{padding:.75rem}
+.plan-review-content{font-size:12.5px;line-height:1.6;color:#2d2d3f;margin-bottom:.65rem}
+.plan-review-content p{margin:0 0 .4rem}
+.plan-review-content code{background:#f0f0f5;border-radius:3px;padding:.1rem .3rem;font-size:11.5px;font-family:var(--mono)}
+.plan-review-content pre{background:#f5f5fa;border:1px solid #e2e2e8;border-radius:var(--radius-sm);padding:.5rem .75rem;overflow-x:auto;margin:.4rem 0}
+.plan-review-content pre code{background:none;padding:0}
+.plan-review-content ul,.plan-review-content ol{margin:.3rem 0;padding-left:1.25rem}
+.plan-review-content li{margin-bottom:.2rem}
+.plan-review-actions{display:flex;align-items:center;gap:.5rem;padding-top:.5rem;border-top:1px solid #ececf0}
+.plan-review-btn{font-size:12px;padding:.35rem .9rem;border-radius:var(--radius-sm);border:1px solid #d0d0da;background:#fff;cursor:pointer;font-family:var(--font);font-weight:500;transition:background .12s,border-color .12s,opacity .12s;color:#2d2d3f}
+.plan-review-btn:hover:not(:disabled){background:#f5f5fa;border-color:#b0b0be}
+.plan-review-btn.approve{background:#e8faf0;border-color:#86efac;color:#166534}
+.plan-review-btn.approve:hover:not(:disabled){background:#d1fae5;border-color:#4ade80}
+.plan-review-btn.deny{background:#fef2f2;border-color:#fca5a5;color:#991b1b}
+.plan-review-btn.deny:hover:not(:disabled){background:#fee2e2;border-color:#f87171}
+.plan-review-btn:disabled{opacity:.45;cursor:default}
+.plan-review-btn.selected{opacity:1;font-weight:600}
+.plan-review-btn.approve.selected{background:#bbf7d0;border-color:#4ade80}
+.plan-review-btn.deny.selected{background:#fecaca;border-color:#f87171}
+.plan-review-note{font-size:11px;color:#8888a0;margin-left:.25rem;font-style:italic}
+.plan-review-question{font-size:12.5px;line-height:1.5;color:#2d2d3f;margin-bottom:.5rem}
 /* Upload staging area — files queued before send */
 .upload-staging{display:none;flex-wrap:wrap;gap:.35rem;padding:.35rem .5rem 0}
 .upload-staging.has-files{display:flex}
@@ -2396,6 +2421,12 @@ function appendInteractionCard(msg, meta) {
       : msg.created_at
   ) : '';
 
+  // Plan review cards get a special light-themed layout.
+  if (kind === 'plan_review') {
+    appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr);
+    return;
+  }
+
   const div = document.createElement('div');
   div.className = `msg ${resolved ? 'interaction-resolved-msg' : ''}`;
   div.dataset.msgId = msg.id || '';
@@ -2460,6 +2491,105 @@ function appendInteractionCard(msg, meta) {
       respondToInteractionFreeform(submitBtn, interactionId);
     });
   }
+}
+
+function appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr) {
+  const agentName = selectedAgent?.name || 'Agent';
+  // Capitalize first letter for display.
+  const displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.dataset.msgId = msg.id || '';
+
+  // Determine resolved state details.
+  const selectedOption = meta.selected_option || '';
+  const freeformResponse = meta.freeform_response || '';
+  const wasApproved = selectedOption === 'approve';
+  const wasDenied = selectedOption === 'reject';
+  const gaveFeedback = !!freeformResponse;
+
+  let actionsHtml = '';
+  if (resolved) {
+    // Show disabled buttons with selected one highlighted.
+    const approveClass = `plan-review-btn approve${wasApproved ? ' selected' : ''}`;
+    const denyClass = `plan-review-btn deny${wasDenied ? ' selected' : ''}`;
+    actionsHtml = `
+      <div class="plan-review-actions">
+        <button class="${approveClass}" disabled>Approve</button>
+        <button class="${denyClass}" disabled>Deny</button>
+        ${gaveFeedback ? `<span class="plan-review-note">You provided further instructions</span>` : ''}
+      </div>`;
+  } else {
+    actionsHtml = `
+      <div class="plan-review-actions">
+        <button class="plan-review-btn approve" data-opt-id="approve">Approve</button>
+        <button class="plan-review-btn deny" data-opt-id="reject">Deny</button>
+        <span class="plan-review-note">or send a message to provide feedback</span>
+      </div>`;
+  }
+
+  div.innerHTML = `
+    <div class="msg-avatar agent">D</div>
+    <div class="msg-body">
+      <div class="msg-header">
+        <span class="msg-name">Device</span>
+        <span class="msg-time">${timeStr}</span>
+      </div>
+      <div class="plan-review-card" data-interaction-id="${escapeHtml(interactionId)}">
+        <div class="plan-review-title">
+          <svg viewBox="0 0 16 16" fill="none"><path d="M2 4.5h12M2 8h12M2 11.5h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          ${escapeHtml(displayName)}'s Plan
+        </div>
+        <div class="plan-review-body">
+          ${msg.content ? `<div class="plan-review-question">${renderMarkdown(msg.content)}</div>` : ''}
+          ${plan ? `<div class="plan-review-content">${renderMarkdown(plan)}</div>` : ''}
+          ${actionsHtml}
+        </div>
+      </div>
+    </div>`;
+
+  container.appendChild(div);
+
+  if (resolved) return;
+
+  // Bind approve/deny buttons.
+  const card = div.querySelector('.plan-review-card');
+  card.querySelectorAll('.plan-review-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const optId = btn.dataset.optId;
+      respondToInteraction(interactionId, optId, null);
+      // Update buttons to disabled state with selection highlighted.
+      card.querySelectorAll('.plan-review-btn').forEach(b => {
+        b.disabled = true;
+        if (b.dataset.optId === optId) b.classList.add('selected');
+      });
+      // Remove the note.
+      const note = card.querySelector('.plan-review-note');
+      if (note) note.remove();
+    });
+  });
+}
+
+function resolvePendingPlanReviews() {
+  // Find all unresolved plan review cards and mark them as "further instructions".
+  document.querySelectorAll('.plan-review-card').forEach(card => {
+    const btns = card.querySelectorAll('.plan-review-btn:not(:disabled)');
+    if (!btns.length) return; // Already resolved.
+    btns.forEach(b => { b.disabled = true; });
+    const note = card.querySelector('.plan-review-note');
+    if (note) {
+      note.textContent = 'You provided further instructions';
+    }
+  });
+  // Also resolve regular interaction cards.
+  document.querySelectorAll('.interaction-card:not(.resolved)').forEach(card => {
+    card.classList.add('resolved');
+    const opts = card.querySelector('.interaction-options');
+    const ff = card.querySelector('.interaction-freeform');
+    if (opts) opts.remove();
+    if (ff) ff.remove();
+  });
 }
 
 function respondToInteraction(interactionId, selectedOption, freeformResponse) {
@@ -2741,6 +2871,9 @@ async function sendChatMessage() {
   chatMessages.set(chatCurrentChannel, msgs);
   appendMessage(tempMsg);
   scrollChatToBottom();
+
+  // Auto-resolve any pending plan review cards (agent cancels interactions on new messages).
+  resolvePendingPlanReviews();
 
   try {
     // Send via E2EE with attachment metadata.

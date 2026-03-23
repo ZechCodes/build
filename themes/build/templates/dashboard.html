@@ -2225,6 +2225,16 @@ function selectChannel(channelId) {
         channelPlanMode.set(channel_id, planMode);
         if (channel_id === chatCurrentChannel) updatePlanModeUI(planMode);
       }
+      // Handle read notifications from agent.
+      const readIds = agentEvt.read_message_ids;
+      if (readIds && readIds.length) {
+        for (const mid of readIds) {
+          const statusEl = document.querySelector(`[data-msg-id="${mid}"] .msg-status`);
+          if (statusEl) {
+            statusEl.innerHTML = '<span class="read">\u2713\u2713 Read</span>';
+          }
+        }
+      }
     }
   });
 

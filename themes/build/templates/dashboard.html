@@ -428,8 +428,8 @@ body{
 .chat-messages{
   flex:1;overflow-y:auto;padding:1rem 1.25rem .75rem;
   display:flex;flex-direction:column;gap:.875rem;
-  justify-content:flex-end;
 }
+.chat-messages::before{content:'';margin-top:auto}
 .msg{display:flex;gap:.625rem;max-width:100%}
 .msg-avatar{
   width:28px;height:28px;border-radius:50%;

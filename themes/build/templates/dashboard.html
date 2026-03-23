@@ -2566,7 +2566,6 @@ function appendPlanReviewCard(msg, meta, container, resolved, interactionId, opt
           ${escapeHtml(displayName)}'s Plan
         </div>
         <div class="plan-review-body">
-          ${msg.content ? `<div class="plan-review-question">${renderMarkdown(msg.content)}</div>` : ''}
           ${plan ? `<div class="plan-review-content">${renderMarkdown(plan)}</div>` : ''}
           ${actionsHtml}
         </div>

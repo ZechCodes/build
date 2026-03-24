@@ -98,14 +98,23 @@ body{
   border:2px solid var(--rail-bg);
 }
 .rail-spacer{flex:1}
-.rail-e2e{
-  display:flex;flex-direction:column;align-items:center;gap:.15rem;
-  padding:.4rem;
-  color:#059669;
-  font-size:8px;font-weight:700;letter-spacing:.05em;
-  opacity:.7;
+.rail-account{
+  display:flex;align-items:center;justify-content:center;
+  width:100%;
+  padding:.25rem 0;
+  text-decoration:none;
 }
-.rail-e2e svg{width:16px;height:16px}
+.rail-account .msg-avatar{
+  margin-top:0;
+  box-shadow:0 0 0 1px rgba(99,102,241,0.14);
+  transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.rail-account:hover .msg-avatar,
+.rail-account:focus-visible .msg-avatar{
+  transform:translateY(-1px);
+  box-shadow:0 0 0 1px rgba(99,102,241,0.22), 0 4px 12px rgba(99,102,241,0.18);
+  background:rgba(99,102,241,0.14);
+}
 
 /* ===== GLASS CARD ===== */
 .glass{
@@ -1180,11 +1189,15 @@ body{
 
   <div class="rail-spacer"></div>
 
-  <!-- E2E badge at bottom -->
-  <div class="rail-e2e" title="End-to-end encrypted">
-    <svg viewBox="0 0 16 16" fill="none"><path d="M8 1L3 3.5V7c0 3.5 2.1 6.3 5 7.5 2.9-1.2 5-4 5-7.5V3.5L8 1z" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M6 8l1.5 1.5L10.5 6" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    E2E
-  </div>
+  <a
+    class="rail-account"
+    href="/admin/"
+    title="{{ user_name }}"
+    aria-label="Open account"
+  >
+    <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
+  </a>
+
 </div>
 
 <!-- ===== MAIN CONTENT AREA ===== -->

@@ -2122,6 +2122,34 @@ const chatLoadingActivity = new Set(); // channels currently loading activity
 const channelPlanMode = new Map(); // channelId -> boolean
 let cachedHarnesses = null; // harness list from device
 
+// ----- Per-channel localStorage persistence -----
+const CHANNEL_STATE_KEY = 'build_channel_state';
+
+function loadChannelState(channelId) {
+  try {
+    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
+    return data[channelId] || {};
+  } catch { return {}; }
+}
+
+function saveChannelState(channelId, patch) {
+  try {
+    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
+    data[channelId] = { ...(data[channelId] || {}), ...patch };
+    localStorage.setItem(CHANNEL_STATE_KEY, JSON.stringify(data));
+  } catch {}
+}
+
+function clearChannelDraft(channelId) {
+  try {
+    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
+    if (data[channelId]) {
+      delete data[channelId].draft;
+      localStorage.setItem(CHANNEL_STATE_KEY, JSON.stringify(data));
+    }
+  } catch {}
+}
+
 // ----- E2EE connection -----
 
 async function initE2EE() {
@@ -2325,11 +2353,22 @@ function selectChannel(channelId) {
   renderMessages();
   clearConsole(chatLoadingActivity.has(channelId));
   const chName = chatChannels.get(channelId)?.name || '';
-  document.getElementById('chat-input').placeholder = `Message #${chName}...`;
+  const input = document.getElementById('chat-input');
+  input.placeholder = `Message #${chName}...`;
   // Update dropdown label
   const lbl = document.getElementById('channel-dropdown-label');
   if (lbl) lbl.textContent = chName;
   location.hash = `chat/${channelId}`;
+  // Restore persisted state from localStorage.
+  const saved = loadChannelState(channelId);
+  if (input) {
+    input.value = saved.draft || '';
+    input.style.height = 'auto';
+  }
+  // Plan mode: prefer server state, fall back to localStorage.
+  if (!channelPlanMode.has(channelId) && saved.planMode !== undefined) {
+    channelPlanMode.set(channelId, saved.planMode);
+  }
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
 }
@@ -3042,6 +3081,7 @@ async function sendChatMessage() {
 
   input.value = '';
   input.style.height = 'auto';
+  clearChannelDraft(chatCurrentChannel);
 
   // Upload any staged files first.
   let attachments = null;
@@ -3108,6 +3148,12 @@ document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
   }
 });
 
+// Save draft input to localStorage on every change.
+document.getElementById('chat-input')?.addEventListener('input', () => {
+  if (!chatCurrentChannel) return;
+  saveChannelState(chatCurrentChannel, { draft: document.getElementById('chat-input').value });
+});
+
 // ----- Plan mode toggle -----
 document.getElementById('plan-toggle-btn')?.addEventListener('click', () => {
   if (!chatCurrentChannel) return;
@@ -3115,6 +3161,7 @@ document.getElementById('plan-toggle-btn')?.addEventListener('click', () => {
   const next = !current;
   channelPlanMode.set(chatCurrentChannel, next);
   updatePlanModeUI(next);
+  saveChannelState(chatCurrentChannel, { planMode: next });
 });
 
 // ----- File Upload UI -----

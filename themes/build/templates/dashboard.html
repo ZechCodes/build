@@ -2429,13 +2429,16 @@ function selectChannel(channelId) {
         scrollChatToBottom();
       }
     } else if (event_type === 'tool.use') {
+      if (chatCurrentChannel !== channel_id) return;
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
       const desc = describeToolUse(name, input);
       appendConsoleEntry(agentEvt.tool_use_id, name, desc, input, agentEvt.created_at);
     } else if (event_type === 'tool.result') {
+      if (chatCurrentChannel !== channel_id) return;
       markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content, agentEvt.completed_at);
     } else if (event_type === 'activity.end') {
+      if (chatCurrentChannel !== channel_id) return;
       // Update console count.
       updateConsoleCount();
     } else if (event_type === 'interaction.request') {

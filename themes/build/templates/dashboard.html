@@ -2758,17 +2758,18 @@ function appendPlanReviewCard(msg, meta, container, resolved, interactionId, opt
       </div>`;
   }
 
+  const senderName = agentShortName(msg.sender) || displayName;
   div.innerHTML = `
-    <div class="msg-avatar agent">D</div>
+    <div class="msg-avatar agent">${senderName[0]}</div>
     <div class="msg-body">
       <div class="msg-header">
-        <span class="msg-name">Device</span>
+        <span class="msg-name">${escapeHtml(senderName)}</span>
         <span class="msg-time">${timeStr}</span>
       </div>
       <div class="plan-review-card" data-interaction-id="${escapeHtml(interactionId)}">
         <div class="plan-review-title">
           <svg viewBox="0 0 16 16" fill="none"><path d="M2 4.5h12M2 8h12M2 11.5h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-          ${escapeHtml(displayName)}'s Plan
+          ${escapeHtml(senderName)}'s Plan
         </div>
         <div class="plan-review-body">
           ${plan ? `<div class="plan-review-content">${renderMarkdown(plan)}</div>` : ''}

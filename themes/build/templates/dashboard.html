@@ -654,8 +654,9 @@ body{
 .interaction-freeform textarea:focus{border-color:var(--accent)}
 .interaction-submit{font-size:11px;padding:.3rem .6rem;border-radius:var(--radius-sm);border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;font-family:var(--font);white-space:nowrap}
 .interaction-submit:hover{opacity:.85}
-.interaction-card.resolved .interaction-options,.interaction-card.resolved .interaction-freeform{display:none}
-.interaction-resolved{font-size:12px;color:var(--text-muted);font-style:italic}
+.interaction-card.resolved .interaction-freeform{display:none}
+.interaction-card.resolved .interaction-opt{opacity:.5;cursor:default;pointer-events:none}
+.interaction-card.resolved .interaction-opt.selected{opacity:1;background:var(--accent);color:#fff;border-color:var(--accent)}
 /* Plan review card — light theme inline card */
 .plan-review-card{background:#fff;border:1px solid #e2e2e8;border-radius:var(--radius);margin-top:.25rem;overflow:hidden;color:#1a1a2e}
 .plan-review-title{display:flex;align-items:center;gap:.4rem;padding:.5rem .75rem;border-bottom:1px solid #e2e2e8;font-size:12.5px;font-weight:600;color:#1a1a2e;font-family:var(--font)}
@@ -2623,8 +2624,20 @@ function appendInteractionCard(msg, meta) {
   }
 
   if (resolved) {
-    const answer = meta.freeform_response || meta.selected_option || '';
-    cardHtml += `<div class="interaction-resolved">Responded: ${escapeHtml(answer)}</div>`;
+    const selectedOpt = meta.selected_option || '';
+    // Show options as disabled with selected one highlighted.
+    if (options.length) {
+      cardHtml += `<div class="interaction-options">`;
+      for (const opt of options) {
+        const sel = opt.id === selectedOpt ? ' selected' : '';
+        cardHtml += `<button class="interaction-opt${sel}" disabled>${escapeHtml(opt.label || opt.id)}</button>`;
+      }
+      cardHtml += `</div>`;
+    }
+    // Show freeform response if one was given.
+    if (meta.freeform_response) {
+      cardHtml += `<div class="interaction-freeform-response">${escapeHtml(meta.freeform_response)}</div>`;
+    }
   } else {
     // Options.
     if (options.length) {
@@ -2772,16 +2785,14 @@ function respondToInteraction(interactionId, selectedOption, freeformResponse) {
   const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
   if (card) {
     card.classList.add('resolved');
-    const answer = freeformResponse || selectedOption || '';
-    // Hide interactive elements and show response.
-    const opts = card.querySelector('.interaction-options');
+    // Disable all option buttons and highlight the selected one.
+    card.querySelectorAll('.interaction-opt').forEach(btn => {
+      btn.disabled = true;
+      if (btn.dataset.optId === selectedOption) btn.classList.add('selected');
+    });
+    // Hide freeform input.
     const ff = card.querySelector('.interaction-freeform');
-    if (opts) opts.remove();
     if (ff) ff.remove();
-    const resolvedEl = document.createElement('div');
-    resolvedEl.className = 'interaction-resolved';
-    resolvedEl.textContent = `Responded: ${answer}`;
-    card.appendChild(resolvedEl);
   }
 }
 

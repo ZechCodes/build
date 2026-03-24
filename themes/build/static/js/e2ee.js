@@ -521,14 +521,6 @@ class BuildE2EE extends EventTarget {
     });
   }
 
-  async setPlanMode(channelId, planMode) {
-    return this.send({
-      action: 'set_plan_mode',
-      channel_id: channelId,
-      plan_mode: planMode,
-    });
-  }
-
   disconnect() {
     this._connected = false;
     this._sessionKey = null;

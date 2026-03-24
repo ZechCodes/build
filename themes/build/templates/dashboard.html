@@ -3087,9 +3087,10 @@ async function sendChatMessage() {
   resolvePendingPlanReviews();
 
   try {
-    // Send via E2EE with attachment metadata.
+    // Send via E2EE with attachment metadata and plan mode flag.
     const payload = { action: 'message', channel_id: chatCurrentChannel, content: messageContent };
     if (attachments) payload.attachments = attachments;
+    if (channelPlanMode.get(chatCurrentChannel)) payload.plan_mode = true;
     const realMessageId = await e2ee.send(payload);
     const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
     if (el) el.dataset.msgId = realMessageId;
@@ -3109,12 +3110,11 @@ document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
 
 // ----- Plan mode toggle -----
 document.getElementById('plan-toggle-btn')?.addEventListener('click', () => {
-  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
+  if (!chatCurrentChannel) return;
   const current = channelPlanMode.get(chatCurrentChannel) || false;
   const next = !current;
   channelPlanMode.set(chatCurrentChannel, next);
   updatePlanModeUI(next);
-  e2ee.setPlanMode(chatCurrentChannel, next);
 });
 
 // ----- File Upload UI -----

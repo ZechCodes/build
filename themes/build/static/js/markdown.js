@@ -12,6 +12,7 @@
  *   1. ordered lists
  *   [text](url) links
  *   > blockquotes
+ *   | col | col | tables (with alignment)
  *   --- / *** horizontal rules
  *   blank-line paragraph breaks
  *
@@ -141,7 +142,42 @@
         continue;
       }
 
-      // ── blank line ──────────────────────────────────────────────────────
+      // ── table ────────────────────────────────────────────────────────
+      if (/^\|(.+)\|/.test(line) && i + 1 < lines.length && /^\|[\s\-:|]+\|/.test(lines[i + 1])) {
+        var headerCells = line.split('|').slice(1, -1).map(function (c) { return c.trim(); });
+        i++;
+        var aligns = lines[i].split('|').slice(1, -1).map(function (c) {
+          c = c.trim();
+          if (c[0] === ':' && c[c.length - 1] === ':') return 'center';
+          if (c[c.length - 1] === ':') return 'right';
+          return 'left';
+        });
+        i++;
+        var tRows = [];
+        while (i < lines.length && /^\|(.+)\|/.test(lines[i])) {
+          tRows.push(lines[i].split('|').slice(1, -1).map(function (c) { return c.trim(); }));
+          i++;
+        }
+        var tHtml = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
+        headerCells.forEach(function (cell, ci) {
+          var a = aligns[ci] || 'left';
+          tHtml += '<th style="text-align:' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</th>';
+        });
+        tHtml += '</tr></thead><tbody>';
+        tRows.forEach(function (row) {
+          tHtml += '<tr>';
+          row.forEach(function (cell, ci) {
+            var a = aligns[ci] || 'left';
+            tHtml += '<td style="text-align:' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</td>';
+          });
+          tHtml += '</tr>';
+        });
+        tHtml += '</tbody></table></div>';
+        out.push(tHtml);
+        continue;
+      }
+
+    // ── blank line ──────────────────────────────────────────────────────
       if (/^\s*$/.test(line)) {
         i++;
         continue;
@@ -155,7 +191,8 @@
              !lines[i].match(/^>\s?/) &&
              !lines[i].match(/^[\-\*\+]\s+/) &&
              !lines[i].match(/^\d+\.\s+/) &&
-             !lines[i].match(/^(\*\*\*|---|___)\s*$/)) {
+             !lines[i].match(/^(\*\*\*|---|___)\s*$/) &&
+             !(/^\|(.+)\|/.test(lines[i]) && i + 1 < lines.length && /^\|[\s\-:|]+\|/.test(lines[i + 1]))) {
         paraLines.push(lines[i]);
         i++;
       }

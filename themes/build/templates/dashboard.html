@@ -1333,7 +1333,7 @@ body{
   </div>
 
   <!-- Complications -->
-  <div class="complications" id="complications">
+  <div class="complications" id="complications" style="display:none">
     <div class="comp-scroll" id="comp-scroll"></div>
   </div>
   <!-- Complication expanded popover -->
@@ -1738,13 +1738,16 @@ let compPopoverOpen = null; // complication id currently expanded, or null
 
 function renderComplications() {
   const scroll = document.getElementById('comp-scroll');
-  if (!scroll) return;
+  const bar = document.getElementById('complications');
+  if (!scroll || !bar) return;
   const channelComps = complicationState.get(chatCurrentChannel);
   if (!channelComps || channelComps.size === 0) {
     scroll.innerHTML = '';
+    bar.style.display = 'none';
     closeCompPopover();
     return;
   }
+  bar.style.display = '';
   // Sort by timestamp descending (most recent first).
   const sorted = [...channelComps.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   scroll.innerHTML = sorted.map(comp => {

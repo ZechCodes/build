@@ -412,6 +412,30 @@ body{
 .comp.green .val,.comp.green .v{color:var(--green)}
 .comp.amber .val,.comp.amber .v{color:var(--amber)}
 .comp.red .val,.comp.red .v{color:var(--red)}
+.comp.clickable{cursor:pointer}
+.comp.clickable:hover{background:rgba(255,255,255,.9);border-color:rgba(0,0,0,.12)}
+.comp-popover{
+  position:absolute;top:100%;left:0;right:0;
+  background:var(--bg);border-bottom:1px solid var(--border);
+  padding:.5rem .75rem;z-index:6;
+  font-size:11px;color:var(--text);
+  display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-start;
+}
+.comp-popover .cp-section{display:flex;flex-direction:column;gap:.15rem}
+.comp-popover .cp-label{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
+.comp-popover .cp-row{display:flex;gap:.5rem;align-items:center}
+.comp-popover .cp-stat{font-weight:600}
+.comp-popover .cp-stat.green{color:var(--green)}
+.comp-popover .cp-stat.red{color:var(--red)}
+.comp-popover .cp-stat.amber{color:var(--amber)}
+.comp-popover .cp-actions{display:flex;gap:.3rem;margin-left:auto}
+.comp-popover .cp-btn{
+  padding:.2rem .5rem;border-radius:var(--radius-xs);border:1px solid var(--border);
+  background:var(--bg);font-size:10px;cursor:pointer;font-weight:500;
+}
+.comp-popover .cp-btn:hover{background:rgba(0,0,0,.04)}
+.comp-popover .cp-btn:disabled{opacity:.4;cursor:default}
+.comp-popover .cp-btn:disabled:hover{background:var(--bg)}
 
 /* Workspace body (above console) */
 .workspace-body{
@@ -1310,25 +1334,10 @@ body{
 
   <!-- Complications -->
   <div class="complications" id="complications">
-    <div class="comp-scroll" id="comp-scroll">
-      <div class="comp">
-        <span>Model</span>
-        <span class="val" id="comp-model">&mdash;</span>
-      </div>
-      <div class="comp">
-        <span>Tokens</span>
-        <span class="val" id="comp-tokens">&mdash;</span>
-      </div>
-      <div class="comp">
-        <span>Files</span>
-        <span class="val" id="comp-files">&mdash;</span>
-      </div>
-      <div class="comp">
-        <span>Status</span>
-        <span class="val" id="comp-status">&mdash;</span>
-      </div>
-    </div>
+    <div class="comp-scroll" id="comp-scroll"></div>
   </div>
+  <!-- Complication expanded popover -->
+  <div class="comp-popover" id="comp-popover" style="display:none"></div>
 
   <!-- Workspace body -->
   <div class="workspace-body">
@@ -1722,6 +1731,132 @@ consoleBtm.style.display = 'none';
   new ResizeObserver(updateFades).observe(scroll);
   updateFades();
 })();
+
+// ----- Complications state & rendering -----
+const complicationState = new Map(); // channelId -> Map(complicationId -> data)
+let compPopoverOpen = null; // complication id currently expanded, or null
+
+function renderComplications() {
+  const scroll = document.getElementById('comp-scroll');
+  if (!scroll) return;
+  const channelComps = complicationState.get(chatCurrentChannel);
+  if (!channelComps || channelComps.size === 0) {
+    scroll.innerHTML = '';
+    closeCompPopover();
+    return;
+  }
+  // Sort by timestamp descending (most recent first).
+  const sorted = [...channelComps.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  scroll.innerHTML = sorted.map(comp => {
+    if (comp.kind === 'git-status') return renderGitCompChip(comp);
+    return '';
+  }).join('');
+  // Attach click handlers.
+  scroll.querySelectorAll('[data-comp-id]').forEach(el => {
+    el.addEventListener('click', () => toggleCompPopover(el.dataset.compId));
+  });
+}
+
+function renderGitCompChip(comp) {
+  const d = comp.data || {};
+  const branch = escapeHtml(d.branch || '?');
+  const staged = d.staged || {};
+  const unstaged = d.unstaged || {};
+  const ins = (staged.added || 0) + (unstaged.added || 0) + (staged.modified || 0) + (unstaged.modified || 0);
+  const del = (staged.deleted || 0) + (unstaged.deleted || 0);
+  let parts = [`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 3v10M10 3v4"/><circle cx="6" cy="14" r="1.5"/><circle cx="10" cy="8" r="1.5"/></svg>`];
+  parts.push(`<span class="val">${branch}</span>`);
+  if (ins > 0 || del > 0) {
+    parts.push(`<span class="v green">+${ins}</span>`);
+    parts.push(`<span class="v red">&minus;${del}</span>`);
+  }
+  if (d.ahead > 0 || d.behind > 0) {
+    if (d.ahead > 0) parts.push(`<span class="v">&uarr;${d.ahead}</span>`);
+    if (d.behind > 0) parts.push(`<span class="v">&darr;${d.behind}</span>`);
+  }
+  if (d.conflicts > 0) parts.push(`<span class="v red">⚠${d.conflicts}</span>`);
+  const active = compPopoverOpen === comp.id ? ' active' : '';
+  return `<div class="comp clickable${active}" data-comp-id="${escapeHtml(comp.id)}">${parts.join('')}</div>`;
+}
+
+function toggleCompPopover(compId) {
+  if (compPopoverOpen === compId) {
+    closeCompPopover();
+    return;
+  }
+  compPopoverOpen = compId;
+  renderComplications(); // re-render chips to show active state
+  const popover = document.getElementById('comp-popover');
+  if (!popover) return;
+  const channelComps = complicationState.get(chatCurrentChannel);
+  const comp = channelComps?.get(compId);
+  if (!comp || comp.kind !== 'git-status') { closeCompPopover(); return; }
+  const d = comp.data || {};
+  const staged = d.staged || {};
+  const unstaged = d.unstaged || {};
+  let html = `<div class="cp-section"><div class="cp-label">Branch</div><div class="cp-row"><span class="cp-stat">${escapeHtml(d.branch || '?')}</span>`;
+  if (d.upstream) html += ` <span style="opacity:.6">&rarr; ${escapeHtml(d.upstream)}</span>`;
+  html += `</div></div>`;
+  html += `<div class="cp-section"><div class="cp-label">Staged</div><div class="cp-row"><span class="cp-stat green">+${staged.added||0}</span> <span class="cp-stat amber">~${staged.modified||0}</span> <span class="cp-stat red">&minus;${staged.deleted||0}</span></div></div>`;
+  html += `<div class="cp-section"><div class="cp-label">Unstaged</div><div class="cp-row"><span class="cp-stat green">+${unstaged.added||0}</span> <span class="cp-stat amber">~${unstaged.modified||0}</span> <span class="cp-stat red">&minus;${unstaged.deleted||0}</span></div></div>`;
+  if (d.untracked > 0) html += `<div class="cp-section"><div class="cp-label">Untracked</div><div class="cp-row"><span class="cp-stat">${d.untracked}</span></div></div>`;
+  if (d.ahead > 0 || d.behind > 0) {
+    html += `<div class="cp-section"><div class="cp-label">Remote</div><div class="cp-row">`;
+    if (d.ahead > 0) html += `<span class="cp-stat">&uarr;${d.ahead} ahead</span>`;
+    if (d.behind > 0) html += `<span class="cp-stat">&darr;${d.behind} behind</span>`;
+    html += `</div></div>`;
+  }
+  if (d.last_fetch) {
+    const ago = Math.round((Date.now() - d.last_fetch) / 1000);
+    const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;
+    html += `<div class="cp-section"><div class="cp-label">Last fetch</div><div class="cp-row">${agoStr}</div></div>`;
+  }
+  // Action buttons.
+  const options = comp.options || [];
+  if (options.length) {
+    html += `<div class="cp-actions">`;
+    for (const opt of options) {
+      html += `<button class="cp-btn" data-action="${escapeHtml(opt.id)}" ${opt.enabled ? '' : 'disabled'}>${escapeHtml(opt.label)}</button>`;
+    }
+    html += `</div>`;
+  }
+  popover.innerHTML = html;
+  popover.style.display = '';
+  // Attach action handlers.
+  popover.querySelectorAll('.cp-btn[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const actionId = btn.dataset.action;
+      btn.disabled = true;
+      btn.textContent += '…';
+      sendComplicationAction(compId, actionId);
+    });
+  });
+}
+
+function closeCompPopover() {
+  compPopoverOpen = null;
+  const popover = document.getElementById('comp-popover');
+  if (popover) { popover.style.display = 'none'; popover.innerHTML = ''; }
+}
+
+function sendComplicationAction(compId, optionId) {
+  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
+  e2ee.send({
+    action: 'complication:action',
+    channel_id: chatCurrentChannel,
+    complication_id: compId,
+    option_id: optionId,
+  });
+}
+
+// Close popover when clicking outside.
+document.addEventListener('click', (e) => {
+  if (compPopoverOpen && !e.target.closest('.comp-popover') && !e.target.closest('.comp[data-comp-id]')) {
+    closeCompPopover();
+    renderComplications();
+  }
+});
 
 function toggleConsoleEntry(row) {
   const chevron = row.querySelector('.ce-chevron');
@@ -2376,6 +2511,9 @@ function selectChannel(channelId) {
   }
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
+  // Render complications for this channel (instant — already in memory).
+  closeCompPopover();
+  renderComplications();
 }
 
 // ----- Messages -----
@@ -2535,6 +2673,25 @@ function selectChannel(channelId) {
     const { channel_id, plan_mode } = evt.detail;
     channelPlanMode.set(channel_id, plan_mode);
     if (channel_id === chatCurrentChannel) updatePlanModeUI(plan_mode);
+  });
+
+  // ----- Complication events -----
+  e2ee.addEventListener('complication_update', (evt) => {
+    const comp = evt.detail;
+    const channelId = comp.channel_id;
+    if (!channelId) return;
+    if (!complicationState.has(channelId)) complicationState.set(channelId, new Map());
+    complicationState.get(channelId).set(comp.id, comp);
+    if (chatCurrentChannel === channelId) renderComplications();
+  });
+
+  e2ee.addEventListener('complication_remove', (evt) => {
+    const { channel_id, id } = evt.detail;
+    const channelComps = complicationState.get(channel_id);
+    if (channelComps) {
+      channelComps.delete(id);
+      if (chatCurrentChannel === channel_id) renderComplications();
+    }
   });
 } // end bindE2EEEvents
 

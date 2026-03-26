@@ -241,6 +241,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('upload_error', {
         detail: { file_id: payload.file_id, error: payload.error },
       }));
+    } else if (action === 'complication:update') {
+      this.dispatchEvent(new CustomEvent('complication_update', { detail: payload }));
+    } else if (action === 'complication:remove') {
+      this.dispatchEvent(new CustomEvent('complication_remove', { detail: payload }));
     } else if (action === 'plan_mode_updated') {
       this.dispatchEvent(new CustomEvent('plan_mode_updated', {
         detail: { channel_id: payload.channel_id, plan_mode: payload.plan_mode },

@@ -245,6 +245,8 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('complication_update', { detail: payload }));
     } else if (action === 'complication:remove') {
       this.dispatchEvent(new CustomEvent('complication_remove', { detail: payload }));
+    } else if (action === 'complications') {
+      this.dispatchEvent(new CustomEvent('complications', { detail: payload }));
     } else if (action === 'system_message') {
       this.dispatchEvent(new CustomEvent('system_message', {
         detail: { channel_id: payload.channel_id, text: payload.text },
@@ -333,6 +335,10 @@ class BuildE2EE extends EventTarget {
 
   async getActivity(channelId) {
     return this.send({ action: 'get_activity', channel_id: channelId });
+  }
+
+  async getComplications(channelId) {
+    return this.send({ action: 'get_complications', channel_id: channelId });
   }
 
   async sendMessage(channelId, content) {

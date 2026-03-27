@@ -2501,6 +2501,7 @@ function selectChannel(channelId) {
     chatLoadingActivity.add(channelId);
     e2ee.getMessages(channelId);
     e2ee.getActivity(channelId);
+    e2ee.getComplications(channelId);
   }
   renderMessages();
   clearConsole(chatLoadingActivity.has(channelId));
@@ -2712,6 +2713,17 @@ function selectChannel(channelId) {
       channelComps.delete(id);
       if (chatCurrentChannel === channel_id) renderComplications();
     }
+  });
+
+  e2ee.addEventListener('complications', (evt) => {
+    const { channel_id, complications } = evt.detail;
+    if (!channel_id || !complications) return;
+    if (!complicationState.has(channel_id)) complicationState.set(channel_id, new Map());
+    const channelComps = complicationState.get(channel_id);
+    for (const comp of complications) {
+      channelComps.set(comp.id, comp);
+    }
+    if (chatCurrentChannel === channel_id) renderComplications();
   });
 } // end bindE2EEEvents
 

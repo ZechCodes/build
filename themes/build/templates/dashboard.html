@@ -397,7 +397,7 @@ body{
 .complications.fade-left::before{opacity:1}
 .complications.fade-right::after{opacity:1}
 .comp{
-  display:flex;align-items:center;gap:.25rem;
+  display:flex;flex-direction:column;gap:.1rem;
   padding:.2rem .45rem;
   border-radius:var(--radius-xs);
   font-size:10px;
@@ -407,6 +407,8 @@ body{
   white-space:nowrap;flex-shrink:0;
   scroll-snap-align:start;
 }
+.comp-line{display:flex;align-items:center;gap:.25rem}
+.comp-stats{font-size:9px;gap:.2rem}
 .comp svg{width:11px;height:11px;opacity:.6;flex-shrink:0}
 .comp .val,.comp .v{color:var(--text);font-weight:600}
 .comp .sub{font-size:9px;opacity:.7}
@@ -1338,11 +1340,13 @@ body{
   </div>
 
   <!-- Complications -->
-  <div class="complications hidden" id="complications">
-    <div class="comp-scroll" id="comp-scroll"></div>
+  <div class="comp-wrapper" style="position:relative;flex-shrink:0">
+    <div class="complications hidden" id="complications">
+      <div class="comp-scroll" id="comp-scroll"></div>
+    </div>
+    <!-- Complication expanded popover -->
+    <div class="comp-popover hidden" id="comp-popover"></div>
   </div>
-  <!-- Complication expanded popover -->
-  <div class="comp-popover hidden" id="comp-popover"></div>
 
   <!-- Workspace body -->
   <div class="workspace-body">
@@ -1768,23 +1772,26 @@ function renderComplications() {
 function renderGitCompChip(comp) {
   const d = comp.data || {};
   const branch = escapeHtml(d.branch || '?');
-  const staged = d.staged || {};
-  const unstaged = d.unstaged || {};
-  const ins = (staged.added || 0) + (unstaged.added || 0) + (staged.modified || 0) + (unstaged.modified || 0);
-  const del = (staged.deleted || 0) + (unstaged.deleted || 0);
-  let parts = [`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 3v10M10 3v4"/><circle cx="6" cy="14" r="1.5"/><circle cx="10" cy="8" r="1.5"/></svg>`];
-  parts.push(`<span class="val">${branch}</span>`);
+  const remote = d.remote_name ? escapeHtml(d.remote_name) : null;
+  const ins = d.insertions || 0;
+  const del = d.deletions || 0;
+  const gitIcon = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 3v10M10 3v4"/><circle cx="6" cy="14" r="1.5"/><circle cx="10" cy="8" r="1.5"/></svg>`;
+  // Line 1: remote/branch
+  let line1 = `<span class="comp-line">${gitIcon}`;
+  if (remote) line1 += `<span class="val">${remote}</span><span class="v">/</span>`;
+  line1 += `<span class="val">${branch}</span></span>`;
+  // Line 2: stats
+  let stats = [];
   if (ins > 0 || del > 0) {
-    parts.push(`<span class="v green">+${ins}</span>`);
-    parts.push(`<span class="v red">&minus;${del}</span>`);
+    stats.push(`<span class="v green">+${ins}</span>`);
+    stats.push(`<span class="v red">&minus;${del}</span>`);
   }
-  if (d.ahead > 0 || d.behind > 0) {
-    if (d.ahead > 0) parts.push(`<span class="v">&uarr;${d.ahead}</span>`);
-    if (d.behind > 0) parts.push(`<span class="v">&darr;${d.behind}</span>`);
-  }
-  if (d.conflicts > 0) parts.push(`<span class="v red">⚠${d.conflicts}</span>`);
+  if (d.ahead > 0) stats.push(`<span class="v">&uarr;${d.ahead}</span>`);
+  if (d.behind > 0) stats.push(`<span class="v">&darr;${d.behind}</span>`);
+  if (d.conflicts > 0) stats.push(`<span class="v red">⚠${d.conflicts}</span>`);
+  const line2 = stats.length ? `<span class="comp-line comp-stats">${stats.join('')}</span>` : '';
   const active = compPopoverOpen === comp.id ? ' active' : '';
-  return `<div class="comp clickable${active}" data-comp-id="${escapeHtml(comp.id)}">${parts.join('')}</div>`;
+  return `<div class="comp clickable${active}" data-comp-id="${escapeHtml(comp.id)}">${line1}${line2}</div>`;
 }
 
 function toggleCompPopover(compId) {

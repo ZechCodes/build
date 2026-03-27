@@ -940,6 +940,7 @@ body{
 .ce-tag.write{background:rgba(5,150,105,0.15);color:#34d399}
 .ce-tag.edit{background:rgba(217,119,6,0.15);color:#fbbf24}
 .ce-tag.bash{background:rgba(168,85,247,0.15);color:#c084fc}
+.ce-tag.reasoning{background:rgba(113,113,122,0.15);color:#a1a1aa}
 .ce-desc{color:#d4d4d8;font-family:var(--mono);font-size:11px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .ce-summary{font-size:10.5px;color:#71717a;white-space:nowrap;flex-shrink:0}
 .ce-summary .success{color:#34d399}
@@ -957,6 +958,14 @@ body{
   background:rgba(0,0,0,0.15);
 }
 .ce-detail.open{display:block}
+.ce-detail-reasoning{
+  font-size:12px;color:#d4d4d8;line-height:1.55;
+  max-height:300px;overflow-y:auto;
+}
+.ce-detail-reasoning p{margin:.4rem 0}
+.ce-detail-reasoning code{background:rgba(255,255,255,0.08);padding:.1rem .3rem;border-radius:3px;font-size:11px}
+.ce-detail-reasoning pre{background:rgba(0,0,0,0.3);padding:.5rem;border-radius:var(--radius-xs);overflow-x:auto;margin:.4rem 0}
+.ce-detail-reasoning pre code{background:none;padding:0}
 .ce-detail-label{
   font-size:9px;font-weight:600;color:#52525b;
   text-transform:uppercase;letter-spacing:.04em;
@@ -2701,8 +2710,15 @@ function selectChannel(channelId) {
         appendMessage(msg);
         scrollChatToBottom();
       }
+    } else if (event_type === 'activity.delta') {
+      if (chatCurrentChannel !== channel_id) return;
+      const delta = agentEvt.delta || {};
+      if (delta.type === 'text' && delta.content) {
+        appendConsoleReasoning(delta.content, agentEvt.created_at || null);
+      }
     } else if (event_type === 'tool.use') {
       if (chatCurrentChannel !== channel_id) return;
+      currentReasoningEntry = null;
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
       const desc = describeToolUse(name, input);
@@ -2773,6 +2789,13 @@ function selectChannel(channelId) {
       } else if (entry.type === 'tool_result') {
         const d = entry.data || {};
         markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content, entry.created_at);
+      } else if (entry.type === 'text') {
+        const content = (entry.data?.content) || '';
+        if (content) {
+          currentReasoningEntry = null;
+          appendConsoleReasoning(content, entry.created_at);
+          currentReasoningEntry = null;
+        }
       }
     }
     // Use the total count from the device (includes trimmed entries).
@@ -3276,6 +3299,7 @@ function toolTag(name) {
 }
 
 let consoleEntryCount = 0;
+let currentReasoningEntry = null;
 
 function clearConsole(loading) {
   const body = document.querySelector('.console-body');
@@ -3287,6 +3311,68 @@ function clearConsole(loading) {
     }
   }
   consoleEntryCount = 0;
+  currentReasoningEntry = null;
+  updateConsoleCount();
+}
+
+function appendConsoleReasoning(content, timestamp) {
+  const body = document.querySelector('.console-body');
+  if (!body) return;
+
+  // Buffer into existing reasoning entry if one is active.
+  if (currentReasoningEntry) {
+    currentReasoningEntry._reasoningText += content;
+    const desc = currentReasoningEntry.querySelector('.ce-desc');
+    if (desc) {
+      const firstLine = currentReasoningEntry._reasoningText.split('\n').find(l => l.trim()) || '';
+      desc.textContent = firstLine;
+    }
+    const detail = currentReasoningEntry.querySelector('.ce-detail-reasoning');
+    if (detail) detail.innerHTML = renderMarkdown(currentReasoningEntry._reasoningText);
+    body.scrollTop = body.scrollHeight;
+    return;
+  }
+
+  // Auto-expand console.
+  const consoleBtm = document.getElementById('console-bottom');
+  if (consoleBtm && consoleBtm.classList.contains('collapsed')) {
+    consoleBtm.classList.remove('collapsed');
+    consoleCollapsed = false;
+  }
+
+  const ts = timestamp ? new Date(timestamp) : new Date();
+  const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const firstLine = content.split('\n').find(l => l.trim()) || content.slice(0, 100);
+
+  const entry = document.createElement('div');
+  entry.className = 'console-entry';
+  entry._reasoningText = content;
+
+  entry.innerHTML = `
+    <div class="ce-row">
+      <svg class="ce-chevron" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ce-tag reasoning">Reasoning</span>
+      <span class="ce-desc">${escapeHtml(firstLine)}</span>
+      <span class="ce-time">${timeStr}</span>
+    </div>
+    <div class="ce-detail">
+      <div class="ce-detail-reasoning">${renderMarkdown(content)}</div>
+    </div>
+  `;
+
+  const row = entry.querySelector('.ce-row');
+  const chevron = entry.querySelector('.ce-chevron');
+  const detail = entry.querySelector('.ce-detail');
+  row.addEventListener('click', () => {
+    chevron.classList.toggle('open');
+    detail.classList.toggle('open');
+  });
+
+  body.appendChild(entry);
+  body.scrollTop = body.scrollHeight;
+  currentReasoningEntry = entry;
+
+  consoleEntryCount++;
   updateConsoleCount();
 }
 

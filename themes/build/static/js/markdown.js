@@ -161,14 +161,14 @@
         var tHtml = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
         headerCells.forEach(function (cell, ci) {
           var a = aligns[ci] || 'left';
-          tHtml += '<th style="text-align:' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</th>';
+          tHtml += '<th class="md-align-' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</th>';
         });
         tHtml += '</tr></thead><tbody>';
         tRows.forEach(function (row) {
           tHtml += '<tr>';
           row.forEach(function (cell, ci) {
             var a = aligns[ci] || 'left';
-            tHtml += '<td style="text-align:' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</td>';
+            tHtml += '<td class="md-align-' + a + '">' + inlineMarkdown(escapeHtml(cell)) + '</td>';
           });
           tHtml += '</tr>';
         });

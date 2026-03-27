@@ -372,6 +372,7 @@ body{
 .top-runtime{display:none}
 
 /* Complications bar */
+.hidden{display:none!important}
 .complications{
   position:relative;
   flex-shrink:0;
@@ -564,6 +565,8 @@ body{
 .md-table th,.md-table td{border:1px solid var(--border);padding:.35rem .6rem}
 .md-table th{background:var(--bg-alt);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.02em}
 .md-table tr:nth-child(even){background:rgba(255,255,255,.02)}
+.md-align-left{text-align:left}.md-align-center{text-align:center}.md-align-right{text-align:right}
+.text-muted{opacity:.6}
 
 /* New channel dialog */
 .new-channel-overlay{
@@ -1335,11 +1338,11 @@ body{
   </div>
 
   <!-- Complications -->
-  <div class="complications" id="complications" style="display:none">
+  <div class="complications hidden" id="complications">
     <div class="comp-scroll" id="comp-scroll"></div>
   </div>
   <!-- Complication expanded popover -->
-  <div class="comp-popover" id="comp-popover" style="display:none"></div>
+  <div class="comp-popover hidden" id="comp-popover"></div>
 
   <!-- Workspace body -->
   <div class="workspace-body">
@@ -1745,11 +1748,11 @@ function renderComplications() {
   const channelComps = complicationState.get(chatCurrentChannel);
   if (!channelComps || channelComps.size === 0) {
     scroll.innerHTML = '';
-    bar.style.display = 'none';
+    bar.classList.add('hidden');
     closeCompPopover();
     return;
   }
-  bar.style.display = '';
+  bar.classList.remove('hidden');
   // Sort by timestamp descending (most recent first).
   const sorted = [...channelComps.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   scroll.innerHTML = sorted.map(comp => {
@@ -1800,7 +1803,7 @@ function toggleCompPopover(compId) {
   const staged = d.staged || {};
   const unstaged = d.unstaged || {};
   let html = `<div class="cp-section"><div class="cp-label">Branch</div><div class="cp-row"><span class="cp-stat">${escapeHtml(d.branch || '?')}</span>`;
-  if (d.upstream) html += ` <span style="opacity:.6">&rarr; ${escapeHtml(d.upstream)}</span>`;
+  if (d.upstream) html += ` <span class="text-muted">&rarr; ${escapeHtml(d.upstream)}</span>`;
   html += `</div></div>`;
   html += `<div class="cp-section"><div class="cp-label">Staged</div><div class="cp-row"><span class="cp-stat green">+${staged.added||0}</span> <span class="cp-stat amber">~${staged.modified||0}</span> <span class="cp-stat red">&minus;${staged.deleted||0}</span></div></div>`;
   html += `<div class="cp-section"><div class="cp-label">Unstaged</div><div class="cp-row"><span class="cp-stat green">+${unstaged.added||0}</span> <span class="cp-stat amber">~${unstaged.modified||0}</span> <span class="cp-stat red">&minus;${unstaged.deleted||0}</span></div></div>`;
@@ -1826,7 +1829,7 @@ function toggleCompPopover(compId) {
     html += `</div>`;
   }
   popover.innerHTML = html;
-  popover.style.display = '';
+  popover.classList.remove('hidden');
   // Attach action handlers.
   popover.querySelectorAll('.cp-btn[data-action]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1842,7 +1845,7 @@ function toggleCompPopover(compId) {
 function closeCompPopover() {
   compPopoverOpen = null;
   const popover = document.getElementById('comp-popover');
-  if (popover) { popover.style.display = 'none'; popover.innerHTML = ''; }
+  if (popover) { popover.classList.add('hidden'); popover.innerHTML = ''; }
 }
 
 function sendComplicationAction(compId, optionId) {

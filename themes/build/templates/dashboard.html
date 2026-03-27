@@ -413,9 +413,9 @@ body{
 .comp svg{width:11px;height:11px;opacity:.6;flex-shrink:0}
 .comp .val,.comp .v{color:var(--text);font-weight:600}
 .comp .sub{font-size:9px;opacity:.7}
-.comp.green .val,.comp.green .v{color:var(--green)}
-.comp.amber .val,.comp.amber .v{color:var(--amber)}
-.comp.red .val,.comp.red .v{color:var(--red)}
+.comp.green .val,.comp.green .v,.comp .v.green{color:var(--green)}
+.comp.amber .val,.comp.amber .v,.comp .v.amber{color:var(--amber)}
+.comp.red .val,.comp.red .v,.comp .v.red{color:var(--red)}
 .comp.clickable{cursor:pointer}
 .comp.clickable:hover{background:rgba(255,255,255,.9);border-color:rgba(0,0,0,.12)}
 .comp-popover{
@@ -1781,16 +1781,14 @@ function renderGitCompChip(comp) {
   let line1 = `<span class="comp-line">${gitIcon}`;
   if (remote) line1 += `<span class="val">${remote}</span><span class="v">/</span>`;
   line1 += `<span class="val">${branch}</span></span>`;
-  // Line 2: stats
+  // Line 2: stats (always shown)
   let stats = [];
-  if (ins > 0 || del > 0) {
-    stats.push(`<span class="v green">+${ins}</span>`);
-    stats.push(`<span class="v red">&minus;${del}</span>`);
-  }
+  stats.push(`<span class="v green">+${ins}</span>`);
+  stats.push(`<span class="v red">&minus;${del}</span>`);
   if (d.ahead > 0) stats.push(`<span class="v">&uarr;${d.ahead}</span>`);
   if (d.behind > 0) stats.push(`<span class="v">&darr;${d.behind}</span>`);
   if (d.conflicts > 0) stats.push(`<span class="v red">⚠${d.conflicts}</span>`);
-  const line2 = stats.length ? `<span class="comp-line comp-stats">${stats.join('')}</span>` : '';
+  const line2 = `<span class="comp-line comp-stats">${stats.join('')}</span>`;
   const active = compPopoverOpen === comp.id ? ' active' : '';
   return `<div class="comp clickable${active}" data-comp-id="${escapeHtml(comp.id)}">${line1}${line2}</div>`;
 }
@@ -1815,13 +1813,11 @@ function toggleCompPopover(compId) {
   html += `</div></div>`;
   html += `<div class="cp-section"><div class="cp-label">Staged</div><div class="cp-row"><span class="cp-stat green">+${staged.added||0}</span> <span class="cp-stat amber">~${staged.modified||0}</span> <span class="cp-stat red">&minus;${staged.deleted||0}</span></div></div>`;
   html += `<div class="cp-section"><div class="cp-label">Unstaged</div><div class="cp-row"><span class="cp-stat green">+${unstaged.added||0}</span> <span class="cp-stat amber">~${unstaged.modified||0}</span> <span class="cp-stat red">&minus;${unstaged.deleted||0}</span></div></div>`;
-  if (d.untracked > 0) html += `<div class="cp-section"><div class="cp-label">Untracked</div><div class="cp-row"><span class="cp-stat">${d.untracked}</span></div></div>`;
-  if (d.ahead > 0 || d.behind > 0) {
-    html += `<div class="cp-section"><div class="cp-label">Remote</div><div class="cp-row">`;
-    if (d.ahead > 0) html += `<span class="cp-stat">&uarr;${d.ahead} ahead</span>`;
-    if (d.behind > 0) html += `<span class="cp-stat">&darr;${d.behind} behind</span>`;
-    html += `</div></div>`;
-  }
+  html += `<div class="cp-section"><div class="cp-label">Untracked</div><div class="cp-row"><span class="cp-stat">${d.untracked||0}</span></div></div>`;
+  html += `<div class="cp-section"><div class="cp-label">Remote</div><div class="cp-row">`;
+  html += `<span class="cp-stat">&uarr;${d.ahead||0} ahead</span>`;
+  html += `<span class="cp-stat">&darr;${d.behind||0} behind</span>`;
+  html += `</div></div>`;
   if (d.last_fetch) {
     const ago = Math.round((Date.now() - d.last_fetch) / 1000);
     const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;

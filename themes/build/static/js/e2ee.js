@@ -245,6 +245,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('complication_update', { detail: payload }));
     } else if (action === 'complication:remove') {
       this.dispatchEvent(new CustomEvent('complication_remove', { detail: payload }));
+    } else if (action === 'system_message') {
+      this.dispatchEvent(new CustomEvent('system_message', {
+        detail: { channel_id: payload.channel_id, text: payload.text },
+      }));
     } else if (action === 'plan_mode_updated') {
       this.dispatchEvent(new CustomEvent('plan_mode_updated', {
         detail: { channel_id: payload.channel_id, plan_mode: payload.plan_mode },

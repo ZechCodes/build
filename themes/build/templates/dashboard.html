@@ -452,6 +452,74 @@ body{
 
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
+
+/* Channel sidebar (desktop) */
+.channel-sidebar{
+  width:220px;min-width:180px;
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  background:rgba(255,255,255,0.4);
+  flex-shrink:0;
+}
+.channel-sidebar-header{
+  padding:.625rem .75rem;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:.5rem;
+  flex-shrink:0;
+}
+.channel-sidebar-title{
+  font-size:11px;font-weight:600;
+  color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.04em;
+  flex:1;
+}
+.channel-sidebar-new{
+  width:22px;height:22px;
+  border-radius:var(--radius-xs);
+  border:1px solid var(--border);
+  background:none;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--text-muted);
+  transition:all .12s;
+}
+.channel-sidebar-new:hover{
+  background:var(--accent-light);
+  border-color:var(--accent);
+  color:var(--accent);
+}
+.channel-sidebar-new svg{width:12px;height:12px}
+.channel-sidebar-list{flex:1;overflow-y:auto;padding:.375rem 0}
+.channel-sidebar-list::-webkit-scrollbar{width:5px}
+.channel-sidebar-list::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:3px}
+.channel-sidebar-item{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.45rem .75rem;
+  cursor:pointer;transition:all .1s;
+  border-left:2px solid transparent;
+  font-size:12.5px;color:var(--text);
+}
+.channel-sidebar-item:hover{background:rgba(0,0,0,0.02)}
+.channel-sidebar-item.active{
+  background:var(--accent-lighter);
+  border-left-color:var(--accent);
+  color:var(--accent);font-weight:600;
+}
+.channel-sidebar-item .ch-hash{color:var(--text-muted);font-weight:400;font-size:12px}
+.channel-sidebar-item.active .ch-hash{color:var(--accent);opacity:.6}
+.channel-sidebar-item .ch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.channel-sidebar-item .ch-edit{
+  width:20px;height:20px;
+  border-radius:var(--radius-xs);border:none;
+  background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--text-muted);
+  opacity:0;transition:all .12s;flex-shrink:0;
+}
+.channel-sidebar-item:hover .ch-edit{opacity:1}
+.channel-sidebar-item .ch-edit:hover{background:rgba(0,0,0,.06);color:var(--text)}
+.channel-sidebar-item .ch-edit svg{width:11px;height:11px}
+
 /* E2EE dot (hidden source element for status sync) */
 .e2ee-dot{
   width:6px;height:6px;border-radius:50%;
@@ -1190,6 +1258,13 @@ body{
 }
 @media(hover:none){
   .dd-item-edit{opacity:1}
+  .channel-sidebar-item .ch-edit{opacity:1}
+}
+@media(max-width:768px){
+  .channel-sidebar{display:none}
+}
+@media(min-width:769px){
+  #channel-dropdown{display:none}
 }
 .pad-2{padding:2rem}
 .pad-1-5{padding:1.5rem}
@@ -1359,6 +1434,16 @@ body{
           <button id="btn-new-channel"></button>
           <span class="e2ee-dot" id="e2ee-dot"></span>
           <span id="e2ee-label">Not connected</span>
+        </div>
+        <!-- Channel sidebar (desktop) -->
+        <div class="channel-sidebar" id="channel-sidebar">
+          <div class="channel-sidebar-header">
+            <span class="channel-sidebar-title">Channels</span>
+            <button class="channel-sidebar-new" id="sidebar-new-channel" title="New channel">
+              <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="channel-sidebar-list" id="channel-sidebar-list"></div>
         </div>
         <!-- Chat main area -->
         <div class="chat-main">
@@ -2491,6 +2576,38 @@ function renderChannelList() {
     });
     list.appendChild(item);
   }
+  renderChannelSidebar();
+}
+
+function renderChannelSidebar() {
+  const list = document.getElementById('channel-sidebar-list');
+  if (!list) return;
+
+  const sorted = chatChannels.size > 0
+    ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
+    : [];
+
+  list.innerHTML = '';
+  for (const ch of sorted) {
+    const item = document.createElement('div');
+    item.className = 'channel-sidebar-item' + (chatCurrentChannel === ch.id ? ' active' : '');
+    item.innerHTML = `
+      <span class="ch-hash">#</span>
+      <span class="ch-name">${escapeHtml(ch.name)}</span>
+      <button class="ch-edit" title="Edit channel">
+        <svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    `;
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.ch-edit')) return;
+      selectChannel(ch.id);
+    });
+    item.querySelector('.ch-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      console.log('Edit channel:', ch.name);
+    });
+    list.appendChild(item);
+  }
 }
 
 function selectChannel(channelId) {
@@ -3486,6 +3603,10 @@ if (chatPanel) {
 }
 
 // ----- New channel dialog -----
+
+document.getElementById('sidebar-new-channel')?.addEventListener('click', () => {
+  document.getElementById('btn-new-channel')?.click();
+});
 
 document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   if (!e2ee || !e2ee.connected) {

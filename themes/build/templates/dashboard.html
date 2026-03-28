@@ -469,18 +469,18 @@ body{
 .sidebar-new-session{
   display:flex;align-items:center;gap:.4rem;
   padding:.45rem .65rem;
-  border:1px solid var(--border);
+  border:1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius:var(--radius-sm);
-  background:var(--surface);
-  color:var(--text-muted);
-  font-size:12px;font-weight:500;
+  background:color-mix(in srgb, var(--accent) 6%, var(--surface));
+  color:var(--accent);
+  font-size:12px;font-weight:600;
   cursor:pointer;
   width:100%;
   transition:all .12s;
 }
 .sidebar-new-session svg{width:12px;height:12px;flex-shrink:0}
 .sidebar-new-session:hover{
-  background:var(--accent-lighter);
+  background:color-mix(in srgb, var(--accent) 12%, var(--surface));
   border-color:var(--accent);
   color:var(--accent);
 }

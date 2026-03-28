@@ -221,6 +221,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('agent_stopped', { detail: payload }));
     } else if (action === 'agent_restarted') {
       this.dispatchEvent(new CustomEvent('agent_restarted', { detail: payload }));
+    } else if (action === 'channel_renamed') {
+      this.dispatchEvent(new CustomEvent('channel_renamed', { detail: payload }));
+    } else if (action === 'channel_deleted') {
+      this.dispatchEvent(new CustomEvent('channel_deleted', { detail: payload }));
     } else if (action === 'worker_list') {
       this.dispatchEvent(new CustomEvent('worker_list', { detail: payload.workers }));
     } else if (action === 'activity_history') {
@@ -382,6 +386,14 @@ class BuildE2EE extends EventTarget {
 
   async restartAgent(channelId) {
     return this.send({ action: 'restart_agent', channel_id: channelId });
+  }
+
+  async renameChannel(channelId, name) {
+    return this.send({ action: 'rename_channel', channel_id: channelId, name });
+  }
+
+  async deleteChannel(channelId) {
+    return this.send({ action: 'delete_channel', channel_id: channelId });
   }
 
   async listWorkers() {

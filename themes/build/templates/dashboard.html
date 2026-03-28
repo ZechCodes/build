@@ -462,18 +462,29 @@ body{
 }
 .sidebar-device-section .top-dropdown{width:auto;flex:1;min-width:0}
 /* New Session button */
-.sidebar-new-session{
+.sidebar-new-session-wrap{
   flex-shrink:0;
-  padding:.5rem .75rem;
-  border:none;border-top:1px solid var(--border);
-  background:none;
-  color:var(--text-muted);
-  font-size:12px;
-  cursor:pointer;
-  text-align:left;
-  width:100%;
+  padding:.5rem .6rem;
+  border-top:1px solid var(--border);
 }
-.sidebar-new-session:hover{background:rgba(0,0,0,.03);color:var(--text)}
+.sidebar-new-session{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.45rem .65rem;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  color:var(--text-muted);
+  font-size:12px;font-weight:500;
+  cursor:pointer;
+  width:100%;
+  transition:all .12s;
+}
+.sidebar-new-session svg{width:12px;height:12px;flex-shrink:0}
+.sidebar-new-session:hover{
+  background:var(--accent-lighter);
+  border-color:var(--accent);
+  color:var(--accent);
+}
 /* Channel sidebar (desktop) */
 .channel-sidebar{
   width:220px;min-width:180px;
@@ -710,6 +721,30 @@ body{
 .new-channel-advanced-toggle:hover{color:var(--accent)}
 .new-channel-advanced{display:none}
 .new-channel-advanced.is-open{display:block}
+/* Edit channel dialog extras */
+.edit-channel-actions{display:flex;flex-direction:column;gap:.5rem;margin-top:1rem}
+.edit-channel-actions .btn{
+  padding:.45rem .75rem;border-radius:var(--radius-sm);
+  font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);
+  background:var(--surface);color:var(--text);text-align:left;
+}
+.edit-channel-actions .btn:hover{background:rgba(0,0,0,.03)}
+.edit-channel-danger{
+  margin-top:1rem;padding-top:.75rem;
+  border-top:1px solid var(--border);
+}
+.edit-channel-danger-label{
+  font-size:10px;font-weight:600;color:var(--red);
+  text-transform:uppercase;letter-spacing:.5px;margin-bottom:.5rem;
+}
+.btn-danger{
+  background:none;border:1px solid var(--red);color:var(--red);
+  padding:.45rem .75rem;border-radius:var(--radius-sm);
+  font-size:13px;font-weight:500;cursor:pointer;width:100%;text-align:left;
+}
+.btn-danger:hover{background:rgba(239,68,68,.08)}
+.btn-danger-confirm{background:var(--red);color:#fff;border-color:var(--red)}
+.btn-danger-confirm:hover{background:#dc2626}
 
 /* Chat input */
 .chat-input-area{
@@ -1474,7 +1509,12 @@ body{
             </div>
           </div>
           <div class="channel-sidebar-list" id="channel-sidebar-list"></div>
-          <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">New Session</button>
+          <div class="sidebar-new-session-wrap">
+            <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">
+              <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              New Session
+            </button>
+          </div>
         </div>
         <!-- Column 2: Complications + Chat -->
         <div class="chat-main">
@@ -2586,6 +2626,32 @@ function bindE2EEEvents() {
     console.log('[E2EE] Agent restarted:', evt.detail);
   });
 
+  e2ee.addEventListener('channel_renamed', (evt) => {
+    const { channel_id, name } = evt.detail;
+    const ch = chatChannels.get(channel_id);
+    if (ch) {
+      ch.name = name;
+      renderChannelList();
+      renderChannelSidebar();
+    }
+  });
+
+  e2ee.addEventListener('channel_deleted', (evt) => {
+    const { channel_id } = evt.detail;
+    chatChannels.delete(channel_id);
+    if (chatCurrentChannel === channel_id) {
+      const remaining = [...chatChannels.values()];
+      if (remaining.length > 0) {
+        selectChannel(remaining[0].id);
+      } else {
+        chatCurrentChannel = null;
+        renderMessages();
+      }
+    }
+    renderChannelList();
+    renderChannelSidebar();
+  });
+
   e2ee.addEventListener('e2ee_error', (evt) => {
     console.error('[E2EE] Error:', evt.detail);
   });
@@ -2617,8 +2683,7 @@ function renderChannelList() {
     });
     item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
       e.stopPropagation();
-      // TODO: channel edit action
-      console.log('Edit channel:', ch.name);
+      showEditChannelDialog(ch);
     });
     list.appendChild(item);
   }
@@ -2650,7 +2715,7 @@ function renderChannelSidebar() {
     });
     item.querySelector('.ch-edit').addEventListener('click', (e) => {
       e.stopPropagation();
-      console.log('Edit channel:', ch.name);
+      showEditChannelDialog(ch);
     });
     list.appendChild(item);
   }
@@ -3880,6 +3945,84 @@ const _e2eeLabel = document.getElementById('e2ee-label');
 if (_e2eeLabel) {
   new MutationObserver(syncE2EEStatus).observe(_e2eeLabel, { childList: true, characterData: true, subtree: true });
 }
+
+// ===== Edit Channel Dialog =====
+function showEditChannelDialog(ch) {
+  if (!e2ee || !e2ee.connected) return;
+  const chatTab = document.getElementById('tab-chat');
+  if (!chatTab) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'new-channel-overlay';
+  overlay.innerHTML = `
+    <div class="new-channel-dialog">
+      <h3>Edit Channel</h3>
+      <label for="edit-channel-name">Name</label>
+      <input type="text" id="edit-channel-name" value="${escapeHtml(ch.name)}" autofocus>
+      <div class="edit-channel-actions">
+        <button class="btn" id="edit-channel-restart">Restart Agent</button>
+      </div>
+      <div class="edit-channel-danger">
+        <div class="edit-channel-danger-label">Danger Zone</div>
+        <button class="btn-danger" id="edit-channel-delete">Delete Channel</button>
+      </div>
+      <div class="dialog-btns">
+        <button class="btn btn-cancel" id="edit-channel-cancel">Cancel</button>
+        <button class="btn btn-create" id="edit-channel-save">Save</button>
+      </div>
+    </div>
+  `;
+  chatTab.style.position = 'relative';
+  chatTab.appendChild(overlay);
+
+  const nameInput = document.getElementById('edit-channel-name');
+  nameInput.focus();
+  nameInput.select();
+
+  const close = () => overlay.remove();
+
+  // Cancel / close
+  document.getElementById('edit-channel-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  // Save (rename)
+  const save = () => {
+    const newName = nameInput.value.trim();
+    if (newName && newName !== ch.name) {
+      e2ee.renameChannel(ch.id, newName);
+    }
+    close();
+  };
+  document.getElementById('edit-channel-save').addEventListener('click', save);
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+
+  // Restart
+  document.getElementById('edit-channel-restart').addEventListener('click', () => {
+    e2ee.restartAgent(ch.id);
+    close();
+  });
+
+  // Delete with confirmation
+  const deleteBtn = document.getElementById('edit-channel-delete');
+  let deleteConfirm = false;
+  deleteBtn.addEventListener('click', () => {
+    if (!deleteConfirm) {
+      deleteConfirm = true;
+      deleteBtn.textContent = 'Click again to confirm deletion';
+      deleteBtn.classList.add('btn-danger-confirm');
+      setTimeout(() => {
+        deleteConfirm = false;
+        deleteBtn.textContent = 'Delete Channel';
+        deleteBtn.classList.remove('btn-danger-confirm');
+      }, 3000);
+    } else {
+      e2ee.deleteChannel(ch.id);
+      close();
+    }
+  });
+}
+
 
 
 </script>

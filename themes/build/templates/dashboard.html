@@ -1260,6 +1260,19 @@ body{
 }
 .e2ee-waiting-overlay.hidden{opacity:0;pointer-events:none}
 
+/* Device down banner */
+.device-down-banner{
+  display:none;flex-shrink:0;
+  align-items:center;gap:.5rem;
+  padding:.5rem 1rem;
+  background:color-mix(in srgb, var(--red) 12%, var(--surface));
+  border-bottom:1px solid color-mix(in srgb, var(--red) 25%, var(--border));
+  color:var(--red);font-size:12px;font-weight:500;
+}
+.device-down-banner.visible{display:flex}
+.device-down-banner svg{width:14px;height:14px;flex-shrink:0}
+.device-down-banner .device-down-text{flex:1}
+
 /* Skeleton shimmer base */
 @keyframes shimmer{
   0%{background-position:-400px 0}
@@ -1561,6 +1574,10 @@ body{
             </div>
             <div class="comp-popover hidden" id="comp-popover"></div>
           </div>
+          <div class="device-down-banner" id="device-down-banner">
+            <svg viewBox="0 0 16 16" fill="none"><path d="M8 1.5l6.5 13H1.5L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.5" r=".75" fill="currentColor"/></svg>
+            <span class="device-down-text" id="device-down-text">Device disconnected — waiting for reconnection...</span>
+          </div>
           <div class="chat-messages" id="chat-messages">
             <div class="empty-state" id="chat-empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1754,6 +1771,8 @@ let currentView = 'dashboard';
 let currentTab = 'chat';
 let selectedAgent = null;
 let consoleCollapsed = true;
+
+let deviceDown = null; // {id, name} when connected device is offline
 
 // ===== Device State =====
 const devices = new Map(); // id -> device object
@@ -2384,6 +2403,12 @@ document.addEventListener('sk:notification', (e) => {
         `<strong>${escapeHtml(deviceName)}</strong> came <span class="text-green">online</span>`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
+      // If this was the down device, clear banner (e2ee-ready will handle reconnect).
+      if (deviceDown && deviceDown.id === deviceId) {
+        deviceDown = null;
+        const banner = document.getElementById('device-down-banner');
+        if (banner) banner.classList.remove('visible');
+      }
       break;
     }
 
@@ -2398,6 +2423,16 @@ document.addEventListener('sk:notification', (e) => {
         `<strong>${escapeHtml(deviceName)}</strong> went <span class="text-red">offline</span>`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
+      // If this is the currently connected device, show down banner.
+      if (selectedAgent && selectedAgent.name === deviceName) {
+        deviceDown = { id: deviceId, name: deviceName };
+        const banner = document.getElementById('device-down-banner');
+        const bannerText = document.getElementById('device-down-text');
+        if (banner) banner.classList.add('visible');
+        if (bannerText) bannerText.textContent = `${deviceName} disconnected — waiting for reconnection...`;
+        document.getElementById('e2ee-dot').className = 'e2ee-dot error';
+        document.getElementById('e2ee-label').textContent = 'Device offline';
+      }
       break;
     }
 
@@ -2420,6 +2455,12 @@ document.addEventListener('sk:notification', (e) => {
         dev.status = 'online';
       }
       renderDeviceGrid();
+      // Clear device-down banner if this device was down.
+      if (deviceDown && deviceDown.id === deviceId) {
+        deviceDown = null;
+        const banner = document.getElementById('device-down-banner');
+        if (banner) banner.classList.remove('visible');
+      }
       // If not already connected, initiate E2EE.
       if (!e2ee || !e2ee.connected) {
         console.log('[E2EE] Device e2ee-ready notification — connecting...');
@@ -2638,6 +2679,10 @@ function bindE2EEEvents() {
     document.getElementById('cmd-compact-btn').disabled = false;
     document.getElementById('cmd-reset-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
+    // Clear device-down banner on successful reconnect.
+    deviceDown = null;
+    const _ddb = document.getElementById('device-down-banner');
+    if (_ddb) _ddb.classList.remove('visible');
     if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
     e2ee.listChannels();
     e2ee.listHarnesses();
@@ -2652,15 +2697,21 @@ function bindE2EEEvents() {
 
   e2ee.addEventListener('disconnected', () => {
     console.log('[E2EE] Disconnected — waiting for device');
-    document.getElementById('e2ee-dot').className = 'e2ee-dot connecting';
-    document.getElementById('e2ee-label').textContent = 'Waiting for device...';
-    document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
     document.getElementById('cmd-attach-btn').disabled = true;
     document.getElementById('cmd-plan-btn').disabled = true;
     document.getElementById('cmd-compact-btn').disabled = true;
     document.getElementById('cmd-reset-btn').disabled = true;
+    if (deviceDown) {
+      // Device is known to be offline — keep banner visible, skip skeleton overlay.
+      document.getElementById('e2ee-dot').className = 'e2ee-dot error';
+      document.getElementById('e2ee-label').textContent = 'Device offline';
+    } else {
+      document.getElementById('e2ee-dot').className = 'e2ee-dot connecting';
+      document.getElementById('e2ee-label').textContent = 'Waiting for device...';
+      document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
+    }
     // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
     // Don't poll — the e2ee-ready notification will trigger reconnect.

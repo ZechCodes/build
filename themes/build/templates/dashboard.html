@@ -2579,20 +2579,15 @@ let chatCurrentChannel = null;
 const chatChannels = new Map(); // id -> {id, name, created_at}
 const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
+const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
 
-// Last-seen timestamps per channel (persisted in localStorage).
 function getLastSeen(channelId) {
-  try {
-    const store = JSON.parse(localStorage.getItem('channelLastSeen') || '{}');
-    return store[channelId] || null;
-  } catch { return null; }
+  return channelLastSeen.get(channelId) || null;
 }
 function setLastSeen(channelId) {
-  try {
-    const store = JSON.parse(localStorage.getItem('channelLastSeen') || '{}');
-    store[channelId] = new Date().toISOString();
-    localStorage.setItem('channelLastSeen', JSON.stringify(store));
-  } catch {}
+  const now = new Date().toISOString();
+  channelLastSeen.set(channelId, now);
+  if (e2ee && e2ee.connected) e2ee.markSeen(channelId);
 }
 const chatLoadingMessages = new Set(); // channels currently loading messages
 const chatLoadingActivity = new Set(); // channels currently loading activity
@@ -2759,6 +2754,7 @@ function bindE2EEEvents() {
     for (const ch of channels) {
       chatChannels.set(ch.id, ch);
       if (ch.plan_mode != null) channelPlanMode.set(ch.id, ch.plan_mode);
+      if (ch.last_seen_at) channelLastSeen.set(ch.id, ch.last_seen_at);
     }
     renderChannelList();
     // Restore pending channel from hash.

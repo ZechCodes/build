@@ -412,6 +412,10 @@ class BuildE2EE extends EventTarget {
     return this.send({ action: 'compact_session', channel_id: channelId });
   }
 
+  async markSeen(channelId) {
+    return this.send({ action: 'mark_seen', channel_id: channelId });
+  }
+
   async listWorkers() {
     return this.send({ action: 'list_workers' });
   }

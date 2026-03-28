@@ -2713,8 +2713,8 @@ function selectChannel(channelId) {
     } else if (event_type === 'activity.delta') {
       if (chatCurrentChannel !== channel_id) return;
       const delta = agentEvt.delta || {};
-      if (delta.type === 'text' && delta.content) {
-        appendConsoleReasoning(delta.content, agentEvt.created_at || null);
+      if (delta.type === 'text' && delta.text) {
+        appendConsoleReasoning(delta.text, agentEvt.created_at || null);
       }
     } else if (event_type === 'tool.use') {
       if (chatCurrentChannel !== channel_id) return;
@@ -2790,7 +2790,7 @@ function selectChannel(channelId) {
         const d = entry.data || {};
         markConsoleEntryDone(d.tool_use_id || '', d.is_error || false, d.content, entry.created_at);
       } else if (entry.type === 'text') {
-        const content = (entry.data?.content) || '';
+        const content = (entry.data?.text) || '';
         if (content) {
           currentReasoningEntry = null;
           appendConsoleReasoning(content, entry.created_at);

@@ -529,7 +529,7 @@ body{
 .e2ee-dot.connecting{background:var(--amber);animation:pulse 1.5s infinite}
 .e2ee-dot.error{background:var(--red)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
 .chat-messages{
   flex:1;overflow-y:auto;padding:1rem 1.25rem .75rem;
   display:flex;flex-direction:column;gap:.875rem;
@@ -1484,8 +1484,8 @@ body{
                 <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
               </button>
             </div>
-            <div class="chat-drop-overlay" id="chat-drop-overlay">Drop files to attach</div>
           </div>
+          <div class="chat-drop-overlay" id="chat-drop-overlay">Drop files to attach</div>
         </div>
         <!-- E2EE waiting overlay (skeleton shimmer) -->
         <div class="e2ee-waiting-overlay" id="e2ee-waiting-overlay">
@@ -3654,7 +3654,7 @@ function _bindUploadProgress(client) {
 }
 
 // Drag and drop on chat area.
-const chatPanel = document.querySelector('.chat-panel');
+const chatPanel = document.querySelector('.chat-main');
 if (chatPanel) {
   let dragCounter = 0;
   const overlay = document.getElementById('chat-drop-overlay');
@@ -3684,6 +3684,17 @@ if (chatPanel) {
     if (overlay) overlay.classList.remove('visible');
     if (e.dataTransfer?.files?.length) {
       addPendingFiles(e.dataTransfer.files);
+    }
+  });
+}
+
+// Paste files/images into chat area.
+if (chatPanel) {
+  chatPanel.addEventListener('paste', (e) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length) {
+      e.preventDefault();
+      addPendingFiles(files);
     }
   });
 }

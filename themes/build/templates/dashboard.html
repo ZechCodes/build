@@ -762,7 +762,7 @@ body{
 .chat-input-wrap:focus-within{border-color:var(--accent)}
 .chat-input{
   flex:1;border:none;outline:none;
-  font-family:var(--font);font-size:16px;
+  font-family:var(--font);font-size:13px;
   background:none;resize:none;
   min-height:20px;max-height:120px;
   padding:.25rem .375rem;
@@ -1359,6 +1359,11 @@ body{
 }
 @media(max-width:768px),(max-height:500px){
   .channel-sidebar{display:none}
+  .chat-input,
+  .new-channel-dialog input,
+  .new-channel-dialog select,
+  .new-channel-dialog textarea,
+  .interaction-freeform textarea{font-size:16px !important}
 }
 @media(min-width:769px) and (min-height:501px){
   #channel-dropdown{display:none}

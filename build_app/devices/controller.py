@@ -400,6 +400,7 @@ class DeviceApiController(Controller):
     @delete(
         "/{device_id:uuid}",
         guards=[auth_guard, Permission("administrator")],
+        status_code=200,
     )
     async def revoke_device(
         self,

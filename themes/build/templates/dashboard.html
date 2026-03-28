@@ -2579,6 +2579,21 @@ let chatCurrentChannel = null;
 const chatChannels = new Map(); // id -> {id, name, created_at}
 const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
+
+// Last-seen timestamps per channel (persisted in localStorage).
+function getLastSeen(channelId) {
+  try {
+    const store = JSON.parse(localStorage.getItem('channelLastSeen') || '{}');
+    return store[channelId] || null;
+  } catch { return null; }
+}
+function setLastSeen(channelId) {
+  try {
+    const store = JSON.parse(localStorage.getItem('channelLastSeen') || '{}');
+    store[channelId] = new Date().toISOString();
+    localStorage.setItem('channelLastSeen', JSON.stringify(store));
+  } catch {}
+}
 const chatLoadingMessages = new Set(); // channels currently loading messages
 const chatLoadingActivity = new Set(); // channels currently loading activity
 const channelPlanMode = new Map(); // channelId -> boolean
@@ -2920,7 +2935,8 @@ function updateAggregateBadge() {
 
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
-  // Clear unread for this channel.
+  // Mark channel as seen and clear unread.
+  setLastSeen(channelId);
   unreadCounts.delete(channelId);
   renderChannelList();
   if (e2ee && e2ee.connected) {
@@ -2973,8 +2989,16 @@ function selectChannel(channelId) {
         e2ee.markRead(unread);
       }
     } else {
-      // Compute unread count for background channels.
-      const unreadMsgs = messages.filter(m => m.sender !== 'client' && !m.read_at);
+      // Compute unread count for background channels using lastSeen timestamp.
+      const lastSeen = getLastSeen(channel_id);
+      const unreadMsgs = messages.filter(m => {
+        if (m.sender === 'client') return false;
+        if (!lastSeen) return true; // Never seen — all agent messages are unread.
+        const msgTime = typeof m.created_at === 'number'
+          ? new Date(m.created_at * 1000).toISOString()
+          : m.created_at;
+        return msgTime > lastSeen;
+      });
       const hasInteraction = unreadMsgs.some(m => {
         try {
           const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata;
@@ -2983,8 +3007,10 @@ function selectChannel(channelId) {
       });
       if (unreadMsgs.length > 0 || hasInteraction) {
         unreadCounts.set(channel_id, { messages: unreadMsgs.length, hasInteraction });
-        renderChannelList();
+      } else {
+        unreadCounts.delete(channel_id);
       }
+      renderChannelList();
     }
   });
 
@@ -2997,6 +3023,7 @@ function selectChannel(channelId) {
     if (chatCurrentChannel === msg.channel_id) {
       appendMessage(msg);
       scrollChatToBottom();
+      setLastSeen(msg.channel_id);
       if (msg.id) e2ee.markRead([msg.id]);
     } else if (msg.sender !== 'client') {
       incrementUnread(msg.channel_id);
@@ -3023,6 +3050,7 @@ function selectChannel(channelId) {
       if (chatCurrentChannel === channel_id) {
         appendMessage(msg);
         scrollChatToBottom();
+        setLastSeen(channel_id);
       } else {
         incrementUnread(channel_id);
       }

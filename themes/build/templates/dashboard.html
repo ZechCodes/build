@@ -2751,6 +2751,12 @@ function bindE2EEEvents() {
       selectChannel(_pendingChannelId);
       _pendingChannelId = null;
     }
+    // Fetch messages for all non-current channels to compute unread counts.
+    for (const ch of channels) {
+      if (ch.id !== chatCurrentChannel && e2ee && e2ee.connected) {
+        e2ee.getMessages(ch.id);
+      }
+    }
   });
 
   e2ee.addEventListener('channel_created', (evt) => {
@@ -2965,6 +2971,19 @@ function selectChannel(channelId) {
         .filter(Boolean);
       if (unread.length && e2ee && e2ee.connected) {
         e2ee.markRead(unread);
+      }
+    } else {
+      // Compute unread count for background channels.
+      const unreadMsgs = messages.filter(m => m.sender !== 'client' && !m.read_at);
+      const hasInteraction = unreadMsgs.some(m => {
+        try {
+          const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata;
+          return meta && meta.interaction_id && !meta.resolved_at;
+        } catch { return false; }
+      });
+      if (unreadMsgs.length > 0 || hasInteraction) {
+        unreadCounts.set(channel_id, { messages: unreadMsgs.length, hasInteraction });
+        renderChannelList();
       }
     }
   });

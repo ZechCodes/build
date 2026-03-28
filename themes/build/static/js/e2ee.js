@@ -263,6 +263,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('session_reset', {
         detail: { channel_id: payload.channel_id },
       }));
+    } else if (action === 'compact_started') {
+      this.dispatchEvent(new CustomEvent('compact_started', {
+        detail: { channel_id: payload.channel_id },
+      }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -402,6 +406,10 @@ class BuildE2EE extends EventTarget {
 
   async resetSession(channelId) {
     return this.send({ action: 'reset_session', channel_id: channelId });
+  }
+
+  async compactSession(channelId) {
+    return this.send({ action: 'compact_session', channel_id: channelId });
   }
 
   async listWorkers() {

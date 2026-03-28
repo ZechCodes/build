@@ -1580,6 +1580,10 @@ body{
                 <svg viewBox="0 0 16 16" fill="none"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                 <span>Plan</span>
               </button>
+              <button class="cmd-tray-btn" id="cmd-compact-btn" title="Compact" disabled>
+                <svg viewBox="0 0 16 16" fill="none"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Compact</span>
+              </button>
               <button class="cmd-tray-btn" id="cmd-reset-btn" title="Clear" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                 <span>Clear</span>
@@ -2626,6 +2630,7 @@ function bindE2EEEvents() {
     document.getElementById('chat-send-btn').disabled = false;
     document.getElementById('cmd-attach-btn').disabled = false;
     document.getElementById('cmd-plan-btn').disabled = false;
+    document.getElementById('cmd-compact-btn').disabled = false;
     document.getElementById('cmd-reset-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
@@ -2649,6 +2654,7 @@ function bindE2EEEvents() {
     document.getElementById('chat-send-btn').disabled = true;
     document.getElementById('cmd-attach-btn').disabled = true;
     document.getElementById('cmd-plan-btn').disabled = true;
+    document.getElementById('cmd-compact-btn').disabled = true;
     document.getElementById('cmd-reset-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
@@ -3013,11 +3019,28 @@ function selectChannel(channelId) {
   e2ee.addEventListener('session_reset', (evt) => {
     const { channel_id } = evt.detail;
     if (chatCurrentChannel === channel_id) {
+      // Remove any "Compacting session..." indicator.
+      const compacting = document.getElementById('compact-indicator');
+      if (compacting) compacting.remove();
+
       const messagesEl = document.getElementById('chat-messages');
       const divider = document.createElement('div');
       divider.className = 'session-divider';
       divider.textContent = 'New session started';
       messagesEl.appendChild(divider);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  });
+
+  e2ee.addEventListener('compact_started', (evt) => {
+    const { channel_id } = evt.detail;
+    if (chatCurrentChannel === channel_id) {
+      const messagesEl = document.getElementById('chat-messages');
+      const indicator = document.createElement('div');
+      indicator.id = 'compact-indicator';
+      indicator.className = 'session-divider';
+      indicator.textContent = 'Compacting session...';
+      messagesEl.appendChild(indicator);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
   });
@@ -3763,6 +3786,29 @@ document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
   channelPlanMode.set(chatCurrentChannel, !current);
   saveChannelState(chatCurrentChannel, { planMode: !current });
   updatePlanModeUI(!current);
+});
+
+// Compact button (in tray) - double-click confirm pattern
+let compactConfirmTimeout = null;
+document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
+  const btn = document.getElementById('cmd-compact-btn');
+  if (!e2ee || !chatCurrentChannel) return;
+  if (btn.classList.contains('confirm')) {
+    clearTimeout(compactConfirmTimeout);
+    btn.classList.remove('confirm');
+    const label = btn.querySelector('span');
+    if (label) label.textContent = 'Compact';
+    e2ee.compactSession(chatCurrentChannel);
+  } else {
+    btn.classList.add('confirm');
+    const label = btn.querySelector('span');
+    if (label) label.textContent = 'Click to confirm';
+    compactConfirmTimeout = setTimeout(() => {
+      btn.classList.remove('confirm');
+      const label = btn.querySelector('span');
+      if (label) label.textContent = 'Compact';
+    }, 3000);
+  }
 });
 
 // Clear button (in tray) - double-click confirm pattern

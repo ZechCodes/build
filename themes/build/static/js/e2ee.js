@@ -259,6 +259,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('plan_mode_updated', {
         detail: { channel_id: payload.channel_id, plan_mode: payload.plan_mode },
       }));
+    } else if (action === 'session_reset') {
+      this.dispatchEvent(new CustomEvent('session_reset', {
+        detail: { channel_id: payload.channel_id },
+      }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -394,6 +398,10 @@ class BuildE2EE extends EventTarget {
 
   async deleteChannel(channelId) {
     return this.send({ action: 'delete_channel', channel_id: channelId });
+  }
+
+  async resetSession(channelId) {
+    return this.send({ action: 'reset_session', channel_id: channelId });
   }
 
   async listWorkers() {

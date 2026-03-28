@@ -778,27 +778,60 @@ body{
 }
 .chat-send:hover{opacity:.85}
 .chat-send svg{width:12px;height:12px;color:#fff}
-.chat-attach{
+/* Commands tray */
+.commands-tray{
+  display:none;
+  gap:.35rem;
+  padding:0 .5rem .4rem;
+}
+.commands-tray.open{display:flex}
+.cmd-tray-btn{
+  display:flex;align-items:center;gap:.3rem;
+  padding:.3rem .55rem;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  color:var(--text-muted);
+  font-size:11px;font-weight:500;
+  cursor:pointer;
+  transition:all .12s;
+  white-space:nowrap;
+}
+.cmd-tray-btn svg{width:12px;height:12px;flex-shrink:0}
+.cmd-tray-btn:hover{
+  background:var(--accent-lighter);
+  border-color:var(--accent);
+  color:var(--accent);
+}
+.cmd-tray-btn:disabled{opacity:.4;cursor:default}
+.cmd-tray-btn.active{
+  background:var(--accent-light);
+  border-color:var(--accent);
+  color:var(--accent);
+}
+.cmd-tray-btn.active svg{color:var(--accent)}
+.cmd-tray-btn.confirm{
+  background:rgba(239,68,68,0.08);
+  border-color:rgba(239,68,68,0.3);
+  color:#ef4444;
+}
+.cmd-tray-toggle{
   width:28px;height:28px;border-radius:var(--radius-sm);
   background:none;border:1px solid rgba(0,0,0,.12);cursor:pointer;
   display:flex;align-items:center;justify-content:center;
-  transition:background .12s,border-color .12s;flex-shrink:0;
+  transition:all .15s;flex-shrink:0;
 }
-.chat-attach:hover{background:var(--surface);border-color:var(--border-strong)}
-.chat-attach svg{width:14px;height:14px;color:var(--text-muted)}
-.chat-attach:disabled{opacity:.4;cursor:default}
-/* Plan mode toggle */
-.plan-toggle-btn{
-  width:28px;height:28px;border-radius:var(--radius-sm);
-  background:none;border:1px solid rgba(0,0,0,.12);cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  transition:background .15s,border-color .15s,color .15s;flex-shrink:0;
+.cmd-tray-toggle:hover{background:var(--surface);border-color:var(--border-strong)}
+.cmd-tray-toggle svg{width:14px;height:14px;color:var(--text-muted);transition:transform .2s}
+.cmd-tray-toggle.open svg{transform:rotate(45deg)}
+/* Session divider */
+.session-divider{
+  display:flex;align-items:center;gap:.75rem;
+  padding:.75rem 0;color:var(--text-muted);font-size:11px;
 }
-.plan-toggle-btn:hover{background:var(--surface);border-color:var(--border-strong)}
-.plan-toggle-btn svg{width:14px;height:14px;color:var(--text-muted)}
-.plan-toggle-btn:disabled{opacity:.4;cursor:default}
-.plan-toggle-btn.active{background:var(--accent-light);border-color:var(--accent);color:var(--accent)}
-.plan-toggle-btn.active svg{color:var(--accent)}
+.session-divider::before,.session-divider::after{
+  content:'';flex:1;border-top:1px solid var(--border);
+}
 /* Interaction cards inline in chat */
 .interaction-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:.75rem;margin-top:.25rem}
 .interaction-question{font-size:13px;line-height:1.5;margin-bottom:.5rem}
@@ -1538,12 +1571,23 @@ body{
               <div class="upload-progress-bar"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
               <div class="upload-progress-label" id="upload-progress-label"></div>
             </div>
-            <div class="chat-input-wrap">
-              <button class="chat-attach" id="chat-attach-btn" title="Attach file" disabled>
+            <div class="commands-tray" id="commands-tray">
+              <button class="cmd-tray-btn" id="cmd-attach-btn" title="Attach file" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Attach</span>
               </button>
-              <button class="plan-toggle-btn" id="plan-toggle-btn" title="Plan mode" disabled>
+              <button class="cmd-tray-btn" id="cmd-plan-btn" title="Plan mode" disabled>
                 <svg viewBox="0 0 16 16" fill="none"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                <span>Plan</span>
+              </button>
+              <button class="cmd-tray-btn" id="cmd-reset-btn" title="New session" disabled>
+                <svg viewBox="0 0 16 16" fill="none"><path d="M1 4v6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.51 10.49a6 6 0 105.17-8.37L1 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>New Session</span>
+              </button>
+            </div>
+            <div class="chat-input-wrap">
+              <button class="cmd-tray-toggle" id="cmd-tray-toggle" title="Commands">
+                <svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
               </button>
               <input type="file" id="chat-file-input" multiple hidden>
               <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
@@ -2580,8 +2624,9 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-label').textContent = 'E2EE active';
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
-    document.getElementById('chat-attach-btn').disabled = false;
-    document.getElementById('plan-toggle-btn').disabled = false;
+    document.getElementById('cmd-attach-btn').disabled = false;
+    document.getElementById('cmd-plan-btn').disabled = false;
+    document.getElementById('cmd-reset-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
     e2ee.listChannels();
@@ -2602,8 +2647,9 @@ function bindE2EEEvents() {
     document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
     document.getElementById('chat-input').disabled = true;
     document.getElementById('chat-send-btn').disabled = true;
-    document.getElementById('chat-attach-btn').disabled = true;
-    document.getElementById('plan-toggle-btn').disabled = true;
+    document.getElementById('cmd-attach-btn').disabled = true;
+    document.getElementById('cmd-plan-btn').disabled = true;
+    document.getElementById('cmd-reset-btn').disabled = true;
     // Reset e2ee so initE2EE creates a fresh instance on next connect.
     e2ee = null;
     // Don't poll — the e2ee-ready notification will trigger reconnect.
@@ -2961,6 +3007,18 @@ function selectChannel(channelId) {
     if (chatCurrentChannel === channel_id) {
       appendSystemMessage(text);
       scrollChatToBottom();
+    }
+  });
+
+  e2ee.addEventListener('session_reset', (evt) => {
+    const { channel_id } = evt.detail;
+    if (chatCurrentChannel === channel_id) {
+      const messagesEl = document.getElementById('chat-messages');
+      const divider = document.createElement('div');
+      divider.className = 'session-divider';
+      divider.textContent = 'New session started';
+      messagesEl.appendChild(divider);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     }
   });
 
@@ -3331,15 +3389,9 @@ function respondToInteractionFreeform(btn, interactionId) {
 }
 
 function updatePlanModeUI(active) {
-  const btn = document.getElementById('plan-toggle-btn');
+  const btn = document.getElementById('cmd-plan-btn');
   if (!btn) return;
-  if (active) {
-    btn.classList.add('active');
-    btn.title = 'Plan mode (active)';
-  } else {
-    btn.classList.remove('active');
-    btn.title = 'Plan mode';
-  }
+  btn.classList.toggle('active', !!active);
 }
 
 function appendSystemMessage(text) {
@@ -3691,14 +3743,51 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
   saveChannelState(chatCurrentChannel, { draft: document.getElementById('chat-input').value });
 });
 
-// ----- Plan mode toggle -----
-document.getElementById('plan-toggle-btn')?.addEventListener('click', () => {
-  if (!chatCurrentChannel) return;
+// ----- Commands tray toggle -----
+document.getElementById('cmd-tray-toggle')?.addEventListener('click', () => {
+  const tray = document.getElementById('commands-tray');
+  const btn = document.getElementById('cmd-tray-toggle');
+  tray.classList.toggle('open');
+  btn.classList.toggle('open');
+});
+
+// Attach button (in tray)
+document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
+  document.getElementById('chat-file-input').click();
+});
+
+// Plan button (in tray)
+document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
+  if (!e2ee || !chatCurrentChannel) return;
   const current = channelPlanMode.get(chatCurrentChannel) || false;
-  const next = !current;
-  channelPlanMode.set(chatCurrentChannel, next);
-  updatePlanModeUI(next);
-  saveChannelState(chatCurrentChannel, { planMode: next });
+  channelPlanMode.set(chatCurrentChannel, !current);
+  saveChannelState(chatCurrentChannel, { planMode: !current });
+  updatePlanModeUI(!current);
+});
+
+// New Session button (in tray) - double-click confirm pattern
+let resetConfirmTimeout = null;
+document.getElementById('cmd-reset-btn')?.addEventListener('click', () => {
+  const btn = document.getElementById('cmd-reset-btn');
+  if (!e2ee || !chatCurrentChannel) return;
+  if (btn.classList.contains('confirm')) {
+    // Second click - do the reset
+    clearTimeout(resetConfirmTimeout);
+    btn.classList.remove('confirm');
+    const label = btn.querySelector('span');
+    if (label) label.textContent = 'New Session';
+    e2ee.resetSession(chatCurrentChannel);
+  } else {
+    // First click - enter confirm state
+    btn.classList.add('confirm');
+    const label = btn.querySelector('span');
+    if (label) label.textContent = 'Click to confirm';
+    resetConfirmTimeout = setTimeout(() => {
+      btn.classList.remove('confirm');
+      const label = btn.querySelector('span');
+      if (label) label.textContent = 'New Session';
+    }, 3000);
+  }
 });
 
 // ----- File Upload UI -----
@@ -3748,10 +3837,7 @@ function renderPendingFiles() {
   });
 }
 
-// Attach button opens file picker.
-document.getElementById('chat-attach-btn')?.addEventListener('click', () => {
-  document.getElementById('chat-file-input')?.click();
-});
+// Attach button opens file picker (handled by cmd-attach-btn in commands tray).
 
 document.getElementById('chat-file-input')?.addEventListener('change', (e) => {
   if (e.target.files.length) {

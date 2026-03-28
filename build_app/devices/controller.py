@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import UUID
 
-from litestar import Controller, Request, get, post, delete, websocket
+from litestar import Controller, Request, get, patch, post, delete, websocket
 from litestar.connection import WebSocket
 from litestar.exceptions import NotFoundException
 from litestar.response import Response, Template
@@ -312,6 +312,140 @@ class DeviceApiController(Controller):
             }
             for d in devices
         ]
+
+    # ------------------------------------------------------------------
+    # Device management (rename, restart, revoke)
+    # ------------------------------------------------------------------
+
+    @patch(
+        "/{device_id:uuid}",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def update_device(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        device_id: UUID,
+        data: dict[str, Any],
+    ) -> Response:
+        """Rename a device."""
+        user_id = UUID(request.session["user_id"])
+        result = await db_session.execute(
+            select(Device).where(
+                Device.id == device_id,
+                Device.owner_user_id == user_id,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            raise NotFoundException(detail="Device not found")
+
+        name = data.get("name", "").strip()
+        if not name:
+            return Response(content={"error": "name required"}, status_code=400)
+
+        await db_session.execute(
+            update(Device)
+            .where(Device.id == device_id)
+            .values(name=name)
+        )
+        await db_session.commit()
+
+        await notify_device_event(
+            user_id, "renamed", device_id, name,
+        )
+
+        return Response(content={"ok": True, "name": name})
+
+    @post(
+        "/{device_id:uuid}/restart",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def restart_device(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        device_id: UUID,
+    ) -> Response:
+        """Send a restart command to a connected device."""
+        user_id = UUID(request.session["user_id"])
+        result = await db_session.execute(
+            select(Device).where(
+                Device.id == device_id,
+                Device.owner_user_id == user_id,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            raise NotFoundException(detail="Device not found")
+
+        conn = _connected_devices.get(device_id)
+        if not conn:
+            return Response(
+                content={"error": "Device is not connected"},
+                status_code=404,
+            )
+
+        try:
+            await conn.socket.send_json({"type": "restart"})
+        except Exception as exc:
+            logger.error("Failed to send restart to device %s: %s", device_id, exc)
+            return Response(
+                content={"error": "Failed to send restart command"},
+                status_code=502,
+            )
+
+        return Response(content={"ok": True})
+
+    @delete(
+        "/{device_id:uuid}",
+        guards=[auth_guard, Permission("administrator")],
+    )
+    async def revoke_device(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        device_id: UUID,
+    ) -> Response:
+        """Revoke a device — disconnect, clean up sessions, delete record."""
+        user_id = UUID(request.session["user_id"])
+        result = await db_session.execute(
+            select(Device).where(
+                Device.id == device_id,
+                Device.owner_user_id == user_id,
+            )
+        )
+        device = result.scalar_one_or_none()
+        if not device:
+            raise NotFoundException(detail="Device not found")
+
+        device_name = device.name
+
+        # Disconnect WebSocket if connected.
+        conn = _connected_devices.pop(device_id, None)
+        if conn:
+            try:
+                await conn.socket.close()
+            except Exception:
+                pass
+
+        # Clean up E2EE sessions for this device.
+        stale_sessions = [
+            sid for sid, s in _e2e_sessions.items()
+            if s.device_id == device_id
+        ]
+        for sid in stale_sessions:
+            _e2e_sessions.pop(sid, None)
+
+        # Delete from DB.
+        await db_session.delete(device)
+        await db_session.commit()
+
+        await notify_device_event(
+            user_id, "revoked", device_id, device_name,
+        )
+
+        return Response(content={"ok": True})
 
     # ------------------------------------------------------------------
     # E2EE relay endpoints (browser -> device)

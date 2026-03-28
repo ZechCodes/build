@@ -465,7 +465,6 @@ body{
 .sidebar-new-session-wrap{
   flex-shrink:0;
   padding:.5rem .6rem;
-  border-top:1px solid var(--border);
 }
 .sidebar-new-session{
   display:flex;align-items:center;gap:.4rem;
@@ -1804,8 +1803,8 @@ function renderDeviceSelect(selectedDeviceName) {
       });
       item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
         e.stopPropagation();
-        // TODO: device edit action
-        console.log('Edit device:', d.name);
+        closeAllDropdowns();
+        showEditDeviceDialog(d);
       });
       list.appendChild(item);
     }
@@ -2373,6 +2372,33 @@ document.addEventListener('sk:notification', (e) => {
         console.log('[E2EE] Device e2ee-ready notification — connecting...');
         initE2EE();
       }
+      break;
+    }
+
+    case 'renamed': {
+      const device = devices.get(deviceId);
+      if (device) {
+        const oldName = device.name;
+        device.name = deviceName;
+        if (selectedAgent?.name === oldName) {
+          selectedAgent.name = deviceName;
+          selectedAgent.device = deviceName;
+        }
+      }
+      renderDeviceSelect(selectedAgent?.name);
+      renderDeviceGrid();
+      break;
+    }
+
+    case 'revoked': {
+      devices.delete(deviceId);
+      if (selectedAgent?.name === deviceName) {
+        if (e2ee) e2ee.disconnect();
+        selectedAgent = null;
+      }
+      renderDeviceSelect(selectedAgent?.name);
+      renderDeviceGrid();
+      updateStats();
       break;
     }
 
@@ -4023,6 +4049,107 @@ function showEditChannelDialog(ch) {
   });
 }
 
+// ===== Edit Device Dialog =====
+function showEditDeviceDialog(device) {
+  const chatTab = document.getElementById('tab-chat');
+  if (!chatTab) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'new-channel-overlay';
+  overlay.innerHTML = `
+    <div class="new-channel-dialog">
+      <h3>Edit Device</h3>
+      <label for="edit-device-name">Name</label>
+      <input type="text" id="edit-device-name" value="${escapeHtml(device.name)}" autofocus>
+      <div class="edit-channel-actions">
+        <button class="btn" id="edit-device-restart">Restart Device</button>
+      </div>
+      <div class="edit-channel-danger">
+        <div class="edit-channel-danger-label">Danger Zone</div>
+        <button class="btn-danger" id="edit-device-revoke">Revoke Device</button>
+      </div>
+      <div class="dialog-btns">
+        <button class="btn btn-cancel" id="edit-device-cancel">Cancel</button>
+        <button class="btn btn-create" id="edit-device-save">Save</button>
+      </div>
+    </div>
+  `;
+  chatTab.style.position = 'relative';
+  chatTab.appendChild(overlay);
+
+  const nameInput = document.getElementById('edit-device-name');
+  nameInput.focus();
+  nameInput.select();
+
+  const close = () => overlay.remove();
+
+  // Cancel / close
+  document.getElementById('edit-device-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  // Save (rename)
+  const save = async () => {
+    const newName = nameInput.value.trim();
+    if (newName && newName !== device.name) {
+      try {
+        await fetch(`/api/devices/${device.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        });
+        device.name = newName;
+        renderDeviceSelect(selectedAgent?.name === device.name ? newName : selectedAgent?.name);
+      } catch (err) {
+        console.error('Failed to rename device:', err);
+      }
+    }
+    close();
+  };
+  document.getElementById('edit-device-save').addEventListener('click', save);
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+
+  // Restart
+  document.getElementById('edit-device-restart').addEventListener('click', async () => {
+    try {
+      await fetch(`/api/devices/${device.id}/restart`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to restart device:', err);
+    }
+    close();
+  });
+
+  // Revoke with confirmation
+  const revokeBtn = document.getElementById('edit-device-revoke');
+  let revokeConfirm = false;
+  revokeBtn.addEventListener('click', async () => {
+    if (!revokeConfirm) {
+      revokeConfirm = true;
+      revokeBtn.textContent = 'Click again to confirm revocation';
+      revokeBtn.classList.add('btn-danger-confirm');
+      setTimeout(() => {
+        revokeConfirm = false;
+        revokeBtn.textContent = 'Revoke Device';
+        revokeBtn.classList.remove('btn-danger-confirm');
+      }, 3000);
+    } else {
+      try {
+        await fetch(`/api/devices/${device.id}`, { method: 'DELETE' });
+        devices.delete(device.id);
+        // If this was the selected device, disconnect E2EE.
+        if (selectedAgent?.name === device.name) {
+          if (e2ee) e2ee.disconnect();
+          selectedAgent = null;
+        }
+        renderDeviceSelect(selectedAgent?.name);
+        fetchDevices();
+      } catch (err) {
+        console.error('Failed to revoke device:', err);
+      }
+      close();
+    }
+  });
+}
 
 
 </script>

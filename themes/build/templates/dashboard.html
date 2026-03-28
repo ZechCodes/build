@@ -453,6 +453,27 @@ body{
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
 
+/* Sidebar device section */
+.sidebar-device-section{
+  display:flex;align-items:center;gap:.35rem;
+  padding:.625rem .75rem;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.sidebar-device-section .top-dropdown{width:auto;flex:1;min-width:0}
+/* New Session button */
+.sidebar-new-session{
+  flex-shrink:0;
+  padding:.5rem .75rem;
+  border:none;border-top:1px solid var(--border);
+  background:none;
+  color:var(--text-muted);
+  font-size:12px;
+  cursor:pointer;
+  text-align:left;
+  width:100%;
+}
+.sidebar-new-session:hover{background:rgba(0,0,0,.03);color:var(--text)}
 /* Channel sidebar (desktop) */
 .channel-sidebar{
   width:220px;min-width:180px;
@@ -1274,6 +1295,7 @@ body{
 }
 @media(min-width:769px) and (min-height:501px){
   #channel-dropdown{display:none}
+  .top-bar{display:none}
 }
 .pad-2{padding:2rem}
 .pad-1-5{padding:1.5rem}
@@ -1424,15 +1446,6 @@ body{
     </div>
   </div>
 
-  <!-- Complications -->
-  <div class="comp-wrapper">
-    <div class="complications hidden" id="complications">
-      <div class="comp-scroll" id="comp-scroll"></div>
-    </div>
-    <!-- Complication expanded popover -->
-    <div class="comp-popover hidden" id="comp-popover"></div>
-  </div>
-
   <!-- Workspace body -->
   <div class="workspace-body">
     <!-- ===== CHAT TAB ===== -->
@@ -1444,18 +1457,33 @@ body{
           <span class="e2ee-dot" id="e2ee-dot"></span>
           <span id="e2ee-label">Not connected</span>
         </div>
-        <!-- Channel sidebar (desktop) -->
+        <!-- Column 1: Device selector + Channel list -->
         <div class="channel-sidebar" id="channel-sidebar">
-          <div class="channel-sidebar-header">
-            <span class="channel-sidebar-title">Channels</span>
-            <button class="channel-sidebar-new" id="sidebar-new-channel" title="New channel">
-              <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            </button>
+          <div class="sidebar-device-section">
+            <div class="top-e2ee-status sidebar-e2ee-status" id="sidebar-e2ee-status" title="Not connected">
+              <div class="top-e2ee-dot sidebar-e2ee-dot" id="sidebar-e2ee-dot"></div>
+            </div>
+            <div class="top-dropdown" id="sidebar-device">
+              <div class="top-dropdown-trigger" id="sidebar-device-trigger">
+                <span id="sidebar-device-label">Device</span>
+                <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              </div>
+              <div class="top-dropdown-menu" id="sidebar-device-menu">
+                <div class="top-dropdown-list" id="sidebar-device-list"></div>
+              </div>
+            </div>
           </div>
           <div class="channel-sidebar-list" id="channel-sidebar-list"></div>
+          <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">New Session</button>
         </div>
-        <!-- Chat main area -->
+        <!-- Column 2: Complications + Chat -->
         <div class="chat-main">
+          <div class="comp-wrapper">
+            <div class="complications hidden" id="complications">
+              <div class="comp-scroll" id="comp-scroll"></div>
+            </div>
+            <div class="comp-popover hidden" id="comp-popover"></div>
+          </div>
           <div class="chat-messages" id="chat-messages">
             <div class="empty-state" id="chat-empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1715,27 +1743,32 @@ railIcons.forEach(btn => {
 });
 
 function renderDeviceSelect(selectedDeviceName) {
-  const label = document.getElementById('device-dropdown-label');
-  const list = document.getElementById('device-dropdown-list');
-  if (!list) return;
-  if (selectedDeviceName && label) label.textContent = selectedDeviceName;
-  list.innerHTML = '';
+  // Populate both topbar and sidebar device dropdowns
+  const targets = [
+    { label: document.getElementById('device-dropdown-label'), list: document.getElementById('device-dropdown-list') },
+    { label: document.getElementById('sidebar-device-label'), list: document.getElementById('sidebar-device-list') },
+  ];
   const sorted = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
-  for (const d of sorted) {
-    const item = document.createElement('div');
-    item.className = 'dd-item' + (d.name === selectedDeviceName ? ' active' : '');
-    item.innerHTML = `<span class="dd-item-label">${escapeHtml(d.name)}</span><button class="dd-item-edit" title="Edit device"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
-    item.addEventListener('click', (e) => {
-      if (e.target.closest('.dd-item-edit')) return;
-      selectAgent(d.name, d.name);
-      closeAllDropdowns();
-    });
-    item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
-      e.stopPropagation();
-      // TODO: device edit action
-      console.log('Edit device:', d.name);
-    });
-    list.appendChild(item);
+  for (const { label, list } of targets) {
+    if (!list) continue;
+    if (selectedDeviceName && label) label.textContent = selectedDeviceName;
+    list.innerHTML = '';
+    for (const d of sorted) {
+      const item = document.createElement('div');
+      item.className = 'dd-item' + (d.name === selectedDeviceName ? ' active' : '');
+      item.innerHTML = `<span class="dd-item-label">${escapeHtml(d.name)}</span><button class="dd-item-edit" title="Edit device"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.dd-item-edit')) return;
+        selectAgent(d.name, d.name);
+        closeAllDropdowns();
+      });
+      item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
+        e.stopPropagation();
+        // TODO: device edit action
+        console.log('Edit device:', d.name);
+      });
+      list.appendChild(item);
+    }
   }
 }
 
@@ -1799,6 +1832,10 @@ document.addEventListener('click', (e) => {
 document.getElementById('device-dropdown-trigger')?.addEventListener('click', (e) => {
   e.stopPropagation();
   toggleDropdown('device-dropdown');
+});
+document.getElementById('sidebar-device-trigger')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDropdown('sidebar-device');
 });
 document.getElementById('channel-dropdown-trigger')?.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -3807,26 +3844,31 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   });
 });
 
-// Sync E2EE status to topbar indicator
+// Sync E2EE status to topbar and sidebar indicators
 function syncE2EEStatus() {
   const dot = document.getElementById('e2ee-dot');
-  const topStatus = document.getElementById('top-e2ee-status');
-  if (!topStatus || !dot) return;
+  if (!dot) return;
   const isConnected = dot.classList.contains('connected');
   const isConnecting = dot.classList.contains('connecting');
   const isError = dot.classList.contains('error');
-  if (isConnected) {
-    topStatus.title = 'Fully encrypted';
-    topStatus.innerHTML = '<svg viewBox="0 0 12 14" width="14" height="14"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>';
-  } else if (isConnecting) {
-    topStatus.title = 'Connecting to device\u2026';
-    topStatus.innerHTML = '<div class="top-e2ee-dot connecting" id="top-e2ee-dot"></div>';
-  } else if (isError) {
-    topStatus.title = 'Connection error';
-    topStatus.innerHTML = '<div class="top-e2ee-dot error" id="top-e2ee-dot"></div>';
-  } else {
-    topStatus.title = 'Not connected';
-    topStatus.innerHTML = '<div class="top-e2ee-dot" id="top-e2ee-dot"></div>';
+  const statusEls = [
+    document.getElementById('top-e2ee-status'),
+    document.getElementById('sidebar-e2ee-status'),
+  ].filter(Boolean);
+  for (const el of statusEls) {
+    if (isConnected) {
+      el.title = 'Fully encrypted';
+      el.innerHTML = '<svg viewBox="0 0 12 14" width="14" height="14"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>';
+    } else if (isConnecting) {
+      el.title = 'Connecting to device\u2026';
+      el.innerHTML = '<div class="top-e2ee-dot connecting"></div>';
+    } else if (isError) {
+      el.title = 'Connection error';
+      el.innerHTML = '<div class="top-e2ee-dot error"></div>';
+    } else {
+      el.title = 'Not connected';
+      el.innerHTML = '<div class="top-e2ee-dot"></div>';
+    }
   }
 }
 // Observe changes to the desktop E2EE status.

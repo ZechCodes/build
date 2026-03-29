@@ -22,8 +22,8 @@ MAX_MISSED_WINDOWS = 100
 PENDING_EXPIRY_S = 600
 # Max E2EE session age (1 hour).
 SESSION_TTL_S = 3600
-# Max envelope size in bytes (256 KB).
-MAX_ENVELOPE_SIZE = 256 * 1024
+# Max envelope size in bytes (2 MB — needed for chunked image transfer).
+MAX_ENVELOPE_SIZE = 2 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------

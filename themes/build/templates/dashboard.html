@@ -1280,7 +1280,6 @@ body{
 .tree-item .tree-stats .stat-add{color:var(--green)}
 .tree-item .tree-stats .stat-del{color:var(--red, #e5534b)}
 .tree-item.gitignored{opacity:.45}
-.tree-item.gitignored .tree-label{text-decoration:line-through}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
 .tree-children{display:none}
 .tree-children.open{display:block}
@@ -5346,7 +5345,7 @@ function toggleDirectory(path, arrowEl, itemEl) {
 function selectFile(path, entry, initialView) {
   const ext = (path.split('.').pop() || '').toLowerCase();
   filesCurrentIsMarkdown = (ext === 'md' || ext === 'markdown');
-  filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status));
+  filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status || entry.insertions || entry.deletions));
   filesCurrentPath = path;
   filesLastContent = null;
 

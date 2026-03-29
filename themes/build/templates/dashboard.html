@@ -2107,6 +2107,9 @@ consoleBtm.style.display = 'none';
 const consoleActivityPanel = document.querySelector('[data-console-panel="activity"]');
 const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
 let activeConsoleTab = 'activity';
+// Ensure correct initial display state.
+consoleActivityPanel.style.display = '';
+consoleTerminalPanel.style.display = 'none';
 
 document.querySelectorAll('.console-tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -3222,12 +3225,10 @@ function selectChannel(channelId) {
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
   // Reset console to activity tab and update terminal for new channel.
-  if (activeConsoleTab !== 'activity') {
-    activeConsoleTab = 'activity';
-    document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
-    consoleActivityPanel.style.display = '';
-    consoleTerminalPanel.style.display = 'none';
-  }
+  activeConsoleTab = 'activity';
+  document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
+  consoleActivityPanel.style.display = '';
+  consoleTerminalPanel.style.display = 'none';
   renderTerminalForChannel(channelId);
   // Render complications for this channel (instant — already in memory).
   closeCompPopover();

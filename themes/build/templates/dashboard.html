@@ -1309,8 +1309,10 @@ body{
 /* Markdown rendered view */
 .file-markdown-view{padding:1.25rem 1.5rem;font-family:var(--sans);font-size:14px;line-height:1.6;overflow-wrap:break-word}
 /* Image preview */
-.file-image-view{display:flex;align-items:center;justify-content:center;padding:1.5rem;min-height:100%}
-.file-image-view img{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.file-image-view{display:flex;align-items:center;justify-content:center;padding:1.5rem;min-height:100%;
+  background-image:linear-gradient(45deg,var(--checker,#e0e0e0) 25%,transparent 25%),linear-gradient(-45deg,var(--checker,#e0e0e0) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--checker,#e0e0e0) 75%),linear-gradient(-45deg,transparent 75%,var(--checker,#e0e0e0) 75%);
+  background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+.file-image-view img,.file-image-view svg{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
 
 /* File viewer with line numbers */
 .file-viewer{display:flex;width:100%;min-height:100%}
@@ -5209,6 +5211,7 @@ let filesCurrentView = 'source';    // 'source' or 'diff' or 'rendered'
 let filesChannelId = null;          // channel the file tree is loaded for
 let filesCurrentHasDiff = false;
 let filesCurrentIsMarkdown = false;
+let filesCurrentIsSvg = false;
 let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
@@ -5353,6 +5356,7 @@ function toggleDirectory(path, arrowEl, itemEl) {
 function selectFile(path, entry, initialView) {
   const ext = (path.split('.').pop() || '').toLowerCase();
   filesCurrentIsMarkdown = (ext === 'md' || ext === 'markdown');
+  filesCurrentIsSvg = (ext === 'svg');
   filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status || entry.insertions || entry.deletions));
   filesCurrentPath = path;
   filesLastContent = null;
@@ -5360,7 +5364,7 @@ function selectFile(path, entry, initialView) {
   // Determine initial view.
   if (initialView === 'diff' && filesCurrentHasDiff) {
     filesCurrentView = 'diff';
-  } else if (filesCurrentIsMarkdown) {
+  } else if (filesCurrentIsMarkdown || filesCurrentIsSvg) {
     filesCurrentView = 'rendered';
   } else {
     filesCurrentView = 'source';
@@ -5399,7 +5403,7 @@ function updateFloatingToggle() {
     return;
   }
   const tabs = [];
-  if (filesCurrentIsMarkdown) tabs.push({ id: 'rendered', label: 'Preview' });
+  if (filesCurrentIsMarkdown || filesCurrentIsSvg) tabs.push({ id: 'rendered', label: 'Preview' });
   if (filesCurrentHasDiff) tabs.push({ id: 'diff', label: 'Diff' });
   tabs.push({ id: 'source', label: 'Source' });
 
@@ -5426,7 +5430,7 @@ fileFloatToggle.addEventListener('click', (ev) => {
     e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
   } else if (view === 'rendered') {
     if (filesLastContent) {
-      renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
+      renderPreview(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
     } else {
       fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
       e2ee.fileRead(filesChannelId, filesCurrentPath);
@@ -5457,10 +5461,9 @@ function renderFileContent(content, path, size, truncated) {
   // Cache for toggle without re-fetch.
   filesLastContent = { content, path, size, truncated };
 
-  // Markdown rendered view.
-  const ext = (path.split('.').pop() || '').toLowerCase();
-  if ((ext === 'md' || ext === 'markdown') && filesCurrentView === 'rendered') {
-    renderMarkdownFile(content, truncated, size);
+  // Preview mode for markdown/SVG.
+  if (filesCurrentView === 'rendered' && (filesCurrentIsMarkdown || filesCurrentIsSvg)) {
+    renderPreview(content, truncated, size);
     return;
   }
 
@@ -5500,6 +5503,14 @@ function renderFileContent(content, path, size, truncated) {
   }
 }
 
+function renderPreview(content, truncated, size) {
+  if (filesCurrentIsSvg) {
+    renderSvgPreview(content);
+  } else {
+    renderMarkdownFile(content, truncated, size);
+  }
+}
+
 function renderMarkdownFile(content, truncated, size) {
   const wrapper = document.createElement('div');
   wrapper.className = 'file-markdown-view msg-text';
@@ -5512,6 +5523,12 @@ function renderMarkdownFile(content, truncated, size) {
     note.textContent = `File truncated (${formatBytes(size)} total)`;
     fileContentBody.appendChild(note);
   }
+}
+
+function renderSvgPreview(content) {
+  const blob = new Blob([content], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  fileContentBody.innerHTML = '<div class="file-image-view"><img src="' + url + '" alt="SVG preview"></div>';
 }
 
 // ---- Diff Renderer ----
@@ -5686,6 +5703,7 @@ function onFilesTabActivated() {
     filesLastContent = null;
     filesCurrentHasDiff = false;
     filesCurrentIsMarkdown = false;
+    filesCurrentIsSvg = false;
     filesPathText.textContent = 'No file selected';
     filesPathText.classList.add('empty');
     fileFloatToggle.style.display = 'none';

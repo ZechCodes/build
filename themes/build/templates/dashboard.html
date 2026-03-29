@@ -1239,7 +1239,7 @@ body{
 }
 .files-path-bar .path-chevron.open{transform:rotate(180deg)}
 .files-layout{flex:1;display:grid;grid-template-columns:240px 1fr;grid-template-rows:auto 1fr;overflow:hidden;position:relative}
-.file-content-panel{grid-column:2;grid-row:2}
+.file-content-panel{grid-column:2;grid-row:2;position:relative}
 .file-tree-panel{
   grid-column:1;grid-row:1 / -1;
   border-right:1px solid var(--border);
@@ -1286,16 +1286,17 @@ body{
 .tree-item[data-depth="4"]{padding-left:3.75rem}
 .tree-item[data-depth="5"]{padding-left:4.5rem}
 
-/* File viewer toggle */
-.file-view-toggle{
-  display:flex;border:1px solid var(--border);border-radius:var(--radius-xs);overflow:hidden;margin-left:auto;
+/* Floating file toggle */
+.file-float-toggle{
+  position:absolute;bottom:1rem;right:1rem;z-index:5;
+  padding:.4rem .75rem;font-size:12px;font-family:var(--sans);font-weight:500;
+  background:var(--surface-solid, #fff);border:1px solid var(--border);
+  border-radius:var(--radius-sm, 6px);box-shadow:0 2px 8px rgba(0,0,0,.1);
+  cursor:pointer;color:var(--text-muted);display:none;
 }
-.file-view-toggle button{
-  font-size:11px;padding:.2rem .5rem;border:none;background:transparent;cursor:pointer;color:var(--text-muted);
-  font-family:var(--sans);
-}
-.file-view-toggle button.active{background:var(--accent-light);color:var(--accent);font-weight:600}
-.file-view-toggle button:hover:not(.active){background:rgba(0,0,0,.03)}
+.file-float-toggle:hover{color:var(--accent);border-color:var(--accent)}
+/* Markdown rendered view */
+.file-markdown-view{padding:1.25rem 1.5rem;font-family:var(--sans);font-size:14px;line-height:1.6;overflow-wrap:break-word}
 
 /* File viewer with line numbers */
 .file-viewer{display:flex;width:100%;min-height:100%}
@@ -1888,10 +1889,6 @@ body{
         <div class="files-path-bar" id="files-path-bar">
           <span class="path-text empty" id="files-path-text">No file selected</span>
           <svg class="path-chevron open" id="files-path-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 6 8 10 12 6"/></svg>
-          <div class="file-view-toggle" id="file-view-toggle" style="display:none">
-            <button class="active" data-file-view="source">Source</button>
-            <button data-file-view="diff">Diff</button>
-          </div>
         </div>
         <div class="file-tree-panel mobile-open" id="file-tree-panel">
           <div class="file-tree" id="file-tree">
@@ -1906,6 +1903,7 @@ body{
               <p>Select a file to view contents</p>
             </div>
           </div>
+          <button class="file-float-toggle" id="file-float-toggle"></button>
         </div>
       </div>
     </div>
@@ -3869,12 +3867,25 @@ function selectChannel(channelId) {
     const data = fileTreeData.get(channel_id);
     data.set(path || '', { entries: entries || [], truncated: !!truncated });
     renderFileTree();
+
+    // Restore saved file selection after root listing loads.
+    if (filesPendingRestore && (path || '') === '') {
+      const pendingPath = filesPendingRestore;
+      const pendingView = filesPendingView;
+      filesPendingRestore = null;
+      filesPendingView = 'source';
+      // Find the entry in the root listing.
+      const match = (entries || []).find(e => e.name === pendingPath || e.path === pendingPath);
+      if (match && match.type !== 'directory') {
+        selectFile(match.path || match.name, match, pendingView);
+      }
+    }
   });
 
   e2ee.addEventListener('file_read_result', (evt) => {
     const d = evt.detail;
     if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
-    if (filesCurrentView !== 'source') return;
+    if (filesCurrentView === 'diff') return;
 
     if (d.error) {
       fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
@@ -5171,13 +5182,18 @@ const filesPathBar = document.getElementById('files-path-bar');
 const filesPathChevron = document.getElementById('files-path-chevron');
 const fileTreePanel = document.getElementById('file-tree-panel');
 const fileContentBody = document.getElementById('file-content-body');
-const fileViewToggle = document.getElementById('file-view-toggle');
+const fileFloatToggle = document.getElementById('file-float-toggle');
 
 // Per-channel file state.
 const fileTreeData = new Map();     // channelId -> Map(path -> {entries, expanded})
 let filesCurrentPath = null;        // currently selected file path
-let filesCurrentView = 'source';    // 'source' or 'diff'
+let filesCurrentView = 'source';    // 'source' or 'diff' or 'rendered'
 let filesChannelId = null;          // channel the file tree is loaded for
+let filesCurrentHasDiff = false;
+let filesCurrentIsMarkdown = false;
+let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
+let filesPendingRestore = null;     // path to restore after tree loads
+let filesPendingView = 'source';    // view to restore
 
 function filesLoadRoot() {
   if (!chatCurrentChannel || !e2ee || !e2ee.connected) return;
@@ -5316,9 +5332,21 @@ function toggleDirectory(path, arrowEl, itemEl) {
   }
 }
 
-function selectFile(path, entry) {
+function selectFile(path, entry, initialView) {
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  filesCurrentIsMarkdown = (ext === 'md' || ext === 'markdown');
+  filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status));
   filesCurrentPath = path;
-  filesCurrentView = 'source';
+  filesLastContent = null;
+
+  // Determine initial view.
+  if (initialView === 'diff' && filesCurrentHasDiff) {
+    filesCurrentView = 'diff';
+  } else if (filesCurrentIsMarkdown) {
+    filesCurrentView = 'rendered';
+  } else {
+    filesCurrentView = 'source';
+  }
 
   // Update active state in tree.
   fileTree.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
@@ -5333,37 +5361,80 @@ function selectFile(path, entry) {
   fileTreePanel.classList.remove('mobile-open');
   filesPathChevron.classList.remove('open');
 
-  // Show toggle if file has git changes.
-  const hasDiff = entry && (entry.git_status || entry.staged_status);
-  fileViewToggle.style.display = hasDiff ? '' : 'none';
-  fileViewToggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.fileView === 'source'));
+  updateFloatingToggle();
+
+  // Save to localStorage.
+  saveChannelState(filesChannelId, { filesPath: path, filesView: filesCurrentView });
 
   // Load file content.
   fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-  e2ee.fileRead(filesChannelId, path);
+  if (filesCurrentView === 'diff') {
+    e2ee.fileDiff(filesChannelId, path, false);
+  } else {
+    e2ee.fileRead(filesChannelId, path);
+  }
 }
 
-// ---- View toggle ----
-fileViewToggle.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('button[data-file-view]');
-  if (!btn || !filesCurrentPath) return;
-  const view = btn.dataset.fileView;
-  if (view === filesCurrentView) return;
-  filesCurrentView = view;
-  fileViewToggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.fileView === view));
-
-  fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-  if (view === 'diff') {
-    e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
-  } else {
-    e2ee.fileRead(filesChannelId, filesCurrentPath);
+function updateFloatingToggle() {
+  if (!filesCurrentPath) {
+    fileFloatToggle.style.display = 'none';
+    return;
   }
+  if (filesCurrentIsMarkdown) {
+    fileFloatToggle.style.display = '';
+    fileFloatToggle.textContent = filesCurrentView === 'rendered' ? 'Source' : 'Rendered';
+  } else if (filesCurrentHasDiff) {
+    fileFloatToggle.style.display = '';
+    fileFloatToggle.textContent = filesCurrentView === 'diff' ? 'Source' : 'Diff';
+  } else {
+    fileFloatToggle.style.display = 'none';
+  }
+}
+
+// ---- Floating toggle ----
+fileFloatToggle.addEventListener('click', () => {
+  if (!filesCurrentPath) return;
+  if (filesCurrentIsMarkdown) {
+    // Toggle rendered <-> source.
+    if (filesCurrentView === 'rendered') {
+      filesCurrentView = 'source';
+      if (filesLastContent) {
+        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
+      } else {
+        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+        e2ee.fileRead(filesChannelId, filesCurrentPath);
+      }
+    } else {
+      filesCurrentView = 'rendered';
+      if (filesLastContent) {
+        renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
+      } else {
+        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+        e2ee.fileRead(filesChannelId, filesCurrentPath);
+      }
+    }
+  } else if (filesCurrentHasDiff) {
+    // Toggle source <-> diff.
+    if (filesCurrentView === 'diff') {
+      filesCurrentView = 'source';
+      if (filesLastContent) {
+        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
+      } else {
+        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+        e2ee.fileRead(filesChannelId, filesCurrentPath);
+      }
+    } else {
+      filesCurrentView = 'diff';
+      fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+      e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+    }
+  }
+  updateFloatingToggle();
+  saveChannelState(filesChannelId, { filesView: filesCurrentView });
 });
 
 // ---- Mobile file tree dropdown toggle ----
 filesPathBar.addEventListener('click', (ev) => {
-  // Don't toggle if clicking the view toggle buttons.
-  if (ev.target.closest('.file-view-toggle')) return;
   // Only act on mobile (chevron visible).
   if (getComputedStyle(filesPathChevron).display === 'none') return;
   const isOpen = fileTreePanel.classList.toggle('mobile-open');
@@ -5373,6 +5444,16 @@ filesPathBar.addEventListener('click', (ev) => {
 // ---- File Content Renderer ----
 
 function renderFileContent(content, path, size, truncated) {
+  // Cache for toggle without re-fetch.
+  filesLastContent = { content, path, size, truncated };
+
+  // Markdown rendered view.
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  if ((ext === 'md' || ext === 'markdown') && filesCurrentView === 'rendered') {
+    renderMarkdownFile(content, truncated, size);
+    return;
+  }
+
   const lines = content.split('\n');
   // Remove trailing empty line from split.
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -5384,8 +5465,6 @@ function renderFileContent(content, path, size, truncated) {
   lineNums.className = 'line-numbers';
   const codeDiv = document.createElement('div');
   codeDiv.className = 'code-content';
-
-  const ext = (path.split('.').pop() || '').toLowerCase();
 
   for (let i = 0; i < lines.length; i++) {
     const numLine = document.createElement('div');
@@ -5403,6 +5482,20 @@ function renderFileContent(content, path, size, truncated) {
   fileContentBody.innerHTML = '';
   fileContentBody.appendChild(viewer);
 
+  if (truncated) {
+    const note = document.createElement('div');
+    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
+    note.textContent = `File truncated (${formatBytes(size)} total)`;
+    fileContentBody.appendChild(note);
+  }
+}
+
+function renderMarkdownFile(content, truncated, size) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'file-markdown-view msg-text';
+  wrapper.innerHTML = renderMarkdown(content);
+  fileContentBody.innerHTML = '';
+  fileContentBody.appendChild(wrapper);
   if (truncated) {
     const note = document.createElement('div');
     note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
@@ -5580,10 +5673,23 @@ function onFilesTabActivated() {
     fileTreeData.delete(filesChannelId);
     filesCurrentPath = null;
     filesCurrentView = 'source';
+    filesLastContent = null;
+    filesCurrentHasDiff = false;
+    filesCurrentIsMarkdown = false;
     filesPathText.textContent = 'No file selected';
     filesPathText.classList.add('empty');
-    fileViewToggle.style.display = 'none';
+    fileFloatToggle.style.display = 'none';
     fileContentBody.innerHTML = '<div class="empty-state"><p>Select a file to view contents</p></div>';
+
+    // Check for saved state to restore after tree loads.
+    const saved = loadChannelState(chatCurrentChannel);
+    if (saved.filesPath) {
+      filesPendingRestore = saved.filesPath;
+      filesPendingView = saved.filesView || 'source';
+    } else {
+      filesPendingRestore = null;
+    }
+
     filesLoadRoot();
   }
 }

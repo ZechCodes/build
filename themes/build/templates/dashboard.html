@@ -1219,19 +1219,28 @@ body{
 .issue-detail-title{font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.02em;margin-bottom:.75rem;line-height:1.3}
 
 /* ===== FILES TAB ===== */
-.files-layout{flex:1;display:flex;overflow:hidden}
+.files-path-bar{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.45rem .875rem;
+  border-bottom:1px solid var(--border);
+  font-family:var(--mono);font-size:12px;color:var(--text);
+  flex-shrink:0;background:rgba(255,255,255,0.5);
+  min-height:0;
+}
+.files-path-bar .path-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.files-path-bar .path-text.empty{color:var(--text-muted)}
+.files-path-bar .path-chevron{
+  width:16px;height:16px;flex-shrink:0;color:var(--text-muted);
+  transition:transform .15s;display:none;
+}
+.files-path-bar .path-chevron.open{transform:rotate(180deg)}
+.files-layout{flex:1;display:flex;overflow:hidden;position:relative}
 .file-tree-panel{
   width:240px;min-width:200px;
   border-right:1px solid var(--border);
   display:flex;flex-direction:column;
   overflow:hidden;
   background:rgba(255,255,255,0.4);
-}
-.file-tree-header{
-  padding:.625rem .75rem;
-  border-bottom:1px solid var(--border);
-  font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;
-  flex-shrink:0;
 }
 .file-tree{flex:1;overflow-y:auto;padding:.375rem 0;font-size:12.5px}
 .tree-item{
@@ -1255,20 +1264,6 @@ body{
 .tree-badge.modified{background:var(--amber-light);color:var(--amber)}
 
 .file-content-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
-.file-content-header{
-  padding:.5rem .875rem;
-  border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:.5rem;
-  flex-shrink:0;
-  background:rgba(255,255,255,0.5);
-}
-.file-tab{
-  font-size:12px;font-family:var(--mono);
-  padding:.3rem .6rem;border-radius:var(--radius-xs);
-  color:var(--text);font-weight:500;
-  background:rgba(255,255,255,0.6);
-  border:1px solid var(--border);
-}
 .file-content-body{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;line-height:20px;padding:0}
 
 /* File tree enhancements */
@@ -1523,6 +1518,20 @@ body{
   .new-channel-dialog textarea,
   .interaction-freeform textarea,
   .terminal-input{font-size:16px !important}
+  /* Files: mobile dropdown mode */
+  .files-path-bar{cursor:pointer}
+  .files-path-bar .path-chevron{display:block}
+  .file-tree-panel{
+    display:none;
+    position:absolute;top:0;left:0;right:0;
+    width:100%;min-width:0;
+    height:66vh;max-height:66vh;
+    z-index:10;
+    border-right:none;border-bottom:1px solid var(--border);
+    background:var(--bg, #fff);
+    box-shadow:0 4px 16px rgba(0,0,0,.12);
+  }
+  .file-tree-panel.mobile-open{display:flex}
 }
 @media(min-width:769px) and (min-height:501px){
   #channel-dropdown{display:none}
@@ -1867,9 +1876,16 @@ body{
 
     <!-- ===== FILES TAB ===== -->
     <div class="tab-panel" id="tab-files">
+      <div class="files-path-bar" id="files-path-bar">
+        <span class="path-text empty" id="files-path-text">No file selected</span>
+        <svg class="path-chevron" id="files-path-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 6 8 10 12 6"/></svg>
+        <div class="file-view-toggle" id="file-view-toggle" style="display:none">
+          <button class="active" data-file-view="source">Source</button>
+          <button data-file-view="diff">Diff</button>
+        </div>
+      </div>
       <div class="files-layout">
-        <div class="file-tree-panel">
-          <div class="file-tree-header">Files</div>
+        <div class="file-tree-panel" id="file-tree-panel">
           <div class="file-tree" id="file-tree">
             <div class="empty-state pad-1-5" id="file-tree-empty">
               <p class="text-xs">Select a channel to browse files</p>
@@ -1877,13 +1893,6 @@ body{
           </div>
         </div>
         <div class="file-content-panel">
-          <div class="file-content-header">
-            <div class="file-tab" id="file-tab-name">No file selected</div>
-            <div class="file-view-toggle" id="file-view-toggle" style="display:none">
-              <button class="active" data-file-view="source">Source</button>
-              <button data-file-view="diff">Diff</button>
-            </div>
-          </div>
           <div class="file-content-body" id="file-content-body">
             <div class="empty-state">
               <p>Select a file to view contents</p>
@@ -5148,7 +5157,10 @@ function showEditDeviceDialog(device) {
 
 const fileTree = document.getElementById('file-tree');
 const fileTreeEmpty = document.getElementById('file-tree-empty');
-const fileTabName = document.getElementById('file-tab-name');
+const filesPathText = document.getElementById('files-path-text');
+const filesPathBar = document.getElementById('files-path-bar');
+const filesPathChevron = document.getElementById('files-path-chevron');
+const fileTreePanel = document.getElementById('file-tree-panel');
 const fileContentBody = document.getElementById('file-content-body');
 const fileViewToggle = document.getElementById('file-view-toggle');
 
@@ -5304,8 +5316,13 @@ function selectFile(path, entry) {
   const active = fileTree.querySelector(`.tree-item[data-path="${CSS.escape(path)}"]`);
   if (active) active.classList.add('active');
 
-  // Update header.
-  fileTabName.textContent = path;
+  // Update path bar.
+  filesPathText.textContent = path;
+  filesPathText.classList.remove('empty');
+
+  // Close mobile dropdown.
+  fileTreePanel.classList.remove('mobile-open');
+  filesPathChevron.classList.remove('open');
 
   // Show toggle if file has git changes.
   const hasDiff = entry && (entry.git_status || entry.staged_status);
@@ -5332,6 +5349,16 @@ fileViewToggle.addEventListener('click', (ev) => {
   } else {
     e2ee.fileRead(filesChannelId, filesCurrentPath);
   }
+});
+
+// ---- Mobile file tree dropdown toggle ----
+filesPathBar.addEventListener('click', (ev) => {
+  // Don't toggle if clicking the view toggle buttons.
+  if (ev.target.closest('.file-view-toggle')) return;
+  // Only act on mobile (chevron visible).
+  if (getComputedStyle(filesPathChevron).display === 'none') return;
+  const isOpen = fileTreePanel.classList.toggle('mobile-open');
+  filesPathChevron.classList.toggle('open', isOpen);
 });
 
 // ---- File Content Renderer ----
@@ -5544,7 +5571,8 @@ function onFilesTabActivated() {
     fileTreeData.delete(filesChannelId);
     filesCurrentPath = null;
     filesCurrentView = 'source';
-    fileTabName.textContent = 'No file selected';
+    filesPathText.textContent = 'No file selected';
+    filesPathText.classList.add('empty');
     fileViewToggle.style.display = 'none';
     fileContentBody.innerHTML = '<div class="empty-state"><p>Select a file to view contents</p></div>';
     filesLoadRoot();

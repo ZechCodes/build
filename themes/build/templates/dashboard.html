@@ -5467,6 +5467,7 @@ function renderFileContent(content, path, size, truncated) {
     return;
   }
 
+  const ext = (path.match(/\.([^./]+)$/) || ['', ''])[1].toLowerCase();
   const lines = content.split('\n');
   // Remove trailing empty line from split.
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();

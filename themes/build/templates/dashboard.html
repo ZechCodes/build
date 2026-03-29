@@ -975,6 +975,10 @@ body{
   height:36px;min-height:36px;
 }
 .console-bottom.collapsed .console-body{max-height:0;opacity:0;overflow:hidden}
+.console-bottom.expanded{
+  height:66vh;min-height:200px;
+}
+.console-bottom.expanded .console-body{max-height:none}
 .console-drag{
   position:absolute;top:0;left:0;right:0;height:4px;
   cursor:ns-resize;
@@ -1007,9 +1011,9 @@ body{
   font-size:9px;font-weight:600;color:var(--accent);
   background:rgba(99,102,241,0.15);
   padding:.1rem .35rem;border-radius:6px;
+  margin-left:auto;
 }
 .console-toggle{
-  margin-left:auto;
   width:20px;height:20px;
   display:flex;align-items:center;justify-content:center;
   border:none;background:rgba(255,255,255,0.06);
@@ -1134,7 +1138,7 @@ body{
 
 /* Terminal panel */
 .console-terminal{
-  display:flex;flex-direction:column;
+  flex-direction:column;
   font-family:var(--mono);font-size:12px;
   color:#d4d4d8;
   max-height:none;
@@ -1153,20 +1157,15 @@ body{
 .terminal-cmd-output.stderr{color:#f87171}
 .terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
 .terminal-cmd-exit.error{color:#f87171}
-.terminal-input-row{
+.terminal-prompt-row{
   display:flex;align-items:center;gap:.4rem;
-  padding:.35rem .875rem;
-  border-top:1px solid rgba(255,255,255,0.06);
-  flex-shrink:0;
 }
-.terminal-cwd{color:#52525b;font-size:11px;flex-shrink:0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.terminal-cwd{color:var(--accent);font-weight:600;flex-shrink:0;white-space:nowrap}
 .terminal-input{
   flex:1;background:none;border:none;outline:none;
   font-family:var(--mono);font-size:12px;
-  color:#d4d4d8;
+  color:#d4d4d8;caret-color:var(--accent);
 }
-.terminal-input::placeholder{color:#52525b}
-.terminal-input:disabled{opacity:.5}
 
 /* ===== PLANNING TAB ===== */
 .planning-layout{flex:1;display:flex;overflow:hidden}
@@ -1834,16 +1833,20 @@ body{
         <button class="console-tab" data-console-tab="terminal">Terminal</button>
       </div>
       <span class="console-count" id="console-count">0 entries</span>
-      <button class="console-toggle" id="console-toggle" title="Toggle console">
+      <button class="console-toggle" id="console-expand" title="Expand console" style="display:none">
+        <svg viewBox="0 0 14 14" fill="none"><path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="console-toggle" id="console-toggle" title="Collapse console">
         <svg viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>
     <div class="console-body" data-console-panel="activity"></div>
     <div class="console-body console-terminal" data-console-panel="terminal" style="display:none">
-      <div class="terminal-output" id="terminal-output"></div>
-      <div class="terminal-input-row">
-        <span class="terminal-cwd" id="terminal-cwd"></span>
-        <input type="text" class="terminal-input" id="terminal-input" placeholder="Enter command...">
+      <div class="terminal-output" id="terminal-output">
+        <div class="terminal-prompt-row" id="terminal-prompt-row">
+          <span class="terminal-cwd" id="terminal-cwd"></span>
+          <input type="text" class="terminal-input" id="terminal-input" placeholder="">
+        </div>
       </div>
     </div>
   </div>
@@ -1864,7 +1867,7 @@ body{
 let currentView = 'dashboard';
 let currentTab = 'chat';
 let selectedAgent = null;
-let consoleCollapsed = true;
+let consoleState = 'collapsed'; // 'collapsed' | 'open' | 'expanded'
 
 let deviceDown = null; // {id, name} when connected device is offline
 
@@ -1879,6 +1882,7 @@ const viewDash = document.getElementById('view-dashboard');
 const viewWork = document.getElementById('view-workspace');
 const consoleBtm = document.getElementById('console-bottom');
 const consoleToggle = document.getElementById('console-toggle');
+const consoleExpand = document.getElementById('console-expand');
 const railIcons = rail.querySelectorAll('.rail-icon[data-rail]');
 
 // ===== Rail Navigation =====
@@ -2052,15 +2056,50 @@ document.getElementById('dd-new-channel')?.addEventListener('click', (e) => {
   document.getElementById('btn-new-channel')?.click();
 });
 
-function toggleConsole() {
-  consoleCollapsed = !consoleCollapsed;
-  consoleBtm.classList.toggle('collapsed', consoleCollapsed);
-  consoleToggle.querySelector('svg').style.transform = consoleCollapsed ? 'rotate(180deg)' : '';
+function setConsoleState(state) {
+  consoleState = state;
+  consoleBtm.classList.toggle('collapsed', state === 'collapsed');
+  consoleBtm.classList.toggle('expanded', state === 'expanded');
+  updateConsoleButtons();
 }
-consoleToggle.addEventListener('click', toggleConsole);
+function updateConsoleButtons() {
+  const s = consoleState;
+  // Button A (expand): goes to the larger of the two other states.
+  // Button B (toggle): goes to the smaller of the two other states.
+  const expandSvg = '<path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+  const restoreSvg = '<path d="M10 4L4 10M4 10h5M4 10V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+  if (s === 'collapsed') {
+    consoleExpand.title = 'Expand console';
+    consoleExpand.style.display = '';
+    consoleExpand.querySelector('svg').innerHTML = expandSvg;
+    consoleExpand.onclick = () => setConsoleState('expanded');
+    consoleToggle.title = 'Open console';
+    consoleToggle.querySelector('svg').style.transform = 'rotate(180deg)';
+    consoleToggle.onclick = () => setConsoleState('open');
+  } else if (s === 'open') {
+    consoleExpand.title = 'Expand console';
+    consoleExpand.style.display = '';
+    consoleExpand.querySelector('svg').innerHTML = expandSvg;
+    consoleExpand.onclick = () => setConsoleState('expanded');
+    consoleToggle.title = 'Collapse console';
+    consoleToggle.querySelector('svg').style.transform = '';
+    consoleToggle.onclick = () => setConsoleState('collapsed');
+  } else {
+    // expanded: A -> open (restore), B -> collapsed
+    consoleExpand.title = 'Restore console';
+    consoleExpand.style.display = '';
+    consoleExpand.querySelector('svg').innerHTML = restoreSvg;
+    consoleExpand.onclick = () => setConsoleState('open');
+    consoleToggle.title = 'Collapse console';
+    consoleToggle.querySelector('svg').style.transform = '';
+    consoleToggle.onclick = () => setConsoleState('collapsed');
+  }
+}
+updateConsoleButtons();
 document.getElementById('console-header')?.addEventListener('click', (e) => {
   if (e.target.closest('.console-toggle') || e.target.closest('.console-tab')) return;
-  toggleConsole();
+  if (consoleState === 'collapsed') setConsoleState('open');
+  else setConsoleState('collapsed');
 });
 consoleBtm.style.display = 'none';
 
@@ -2076,7 +2115,7 @@ document.querySelectorAll('.console-tab').forEach(tab => {
     activeConsoleTab = target;
     document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === target));
     consoleActivityPanel.style.display = target === 'activity' ? '' : 'none';
-    consoleTerminalPanel.style.display = target === 'terminal' ? '' : 'none';
+    consoleTerminalPanel.style.display = target === 'terminal' ? 'flex' : 'none';
     if (target === 'terminal') document.getElementById('terminal-input')?.focus();
   });
 });
@@ -2095,24 +2134,31 @@ function getTerminalCwd(channelId) {
   return ch?.working_directory || '';
 }
 
+function shortCwd(cwd) {
+  if (!cwd) return '~';
+  const parts = cwd.split('/').filter(Boolean);
+  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : cwd;
+}
+
 function renderTerminalCwd() {
   const el = document.getElementById('terminal-cwd');
   const cwd = getTerminalCwd(chatCurrentChannel) || '~';
-  // Show last 2 path segments
-  const parts = cwd.split('/').filter(Boolean);
-  const short = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : cwd;
-  el.textContent = short + ' $';
+  el.textContent = shortCwd(cwd) + ' $';
   el.title = cwd;
 }
 
 function renderTerminalForChannel(channelId) {
   const output = document.getElementById('terminal-output');
+  const promptRow = document.getElementById('terminal-prompt-row');
+  // Remove prompt row before clearing, we'll re-append it.
+  promptRow?.remove();
   output.innerHTML = '';
   const history = terminalHistoryMap.get(channelId) || [];
   for (const entry of history) {
     const block = document.createElement('div');
     block.className = 'terminal-cmd-block';
-    block.innerHTML = `<div class="terminal-cmd-line">$ ${escapeHtml(entry.cmd)}</div>`;
+    const cwdLabel = entry.cwd ? shortCwd(entry.cwd) + ' $' : '$';
+    block.innerHTML = `<div class="terminal-cmd-line">${escapeHtml(cwdLabel)} ${escapeHtml(entry.cmd)}</div>`;
     if (entry.output) {
       block.innerHTML += `<div class="terminal-cmd-output">${escapeHtml(entry.output)}</div>`;
     }
@@ -2121,6 +2167,11 @@ function renderTerminalForChannel(channelId) {
     }
     output.appendChild(block);
   }
+  // Re-append prompt row and show/hide based on running state.
+  if (promptRow) {
+    output.appendChild(promptRow);
+    promptRow.style.display = terminalRunning ? 'none' : 'flex';
+  }
   output.scrollTop = output.scrollHeight;
   renderTerminalCwd();
 }
@@ -2128,8 +2179,9 @@ function renderTerminalForChannel(channelId) {
 function terminalExec(command) {
   if (!command || !chatCurrentChannel || !e2ee?.connected || terminalRunning) return;
   terminalRunning = true;
+
   const input = document.getElementById('terminal-input');
-  input.disabled = true;
+  const promptRow = document.getElementById('terminal-prompt-row');
   input.value = '';
 
   // Add to command history
@@ -2138,22 +2190,26 @@ function terminalExec(command) {
 
   const channelId = chatCurrentChannel;
   const cwd = getTerminalCwd(channelId);
+  const cwdLabel = cwd ? shortCwd(cwd) + ' $' : '$';
 
-  // Create output block
+  // Hide prompt row while running.
+  promptRow.style.display = 'none';
+
+  // Create output block (inserted before the prompt row).
   const output = document.getElementById('terminal-output');
   const block = document.createElement('div');
   block.className = 'terminal-cmd-block';
-  block.innerHTML = `<div class="terminal-cmd-line">$ ${escapeHtml(command)}</div>`;
+  block.innerHTML = `<div class="terminal-cmd-line">${escapeHtml(cwdLabel)} ${escapeHtml(command)}</div>`;
   const outputDiv = document.createElement('div');
   outputDiv.className = 'terminal-cmd-output';
   block.appendChild(outputDiv);
-  output.appendChild(block);
+  output.insertBefore(block, promptRow);
   output.scrollTop = output.scrollHeight;
   terminalCurrentBlock = { block, outputDiv, channelId, cmd: command, text: '' };
 
   // Track in history
   if (!terminalHistoryMap.has(channelId)) terminalHistoryMap.set(channelId, []);
-  terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null });
+  terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null, cwd });
 
   e2ee.terminalExec(channelId, command, cwd || undefined);
 }
@@ -3165,7 +3221,13 @@ function selectChannel(channelId) {
   }
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
-  // Update terminal for new channel.
+  // Reset console to activity tab and update terminal for new channel.
+  if (activeConsoleTab !== 'activity') {
+    activeConsoleTab = 'activity';
+    document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
+    consoleActivityPanel.style.display = '';
+    consoleTerminalPanel.style.display = 'none';
+  }
   renderTerminalForChannel(channelId);
   // Render complications for this channel (instant — already in memory).
   closeCompPopover();
@@ -3507,9 +3569,14 @@ function selectChannel(channelId) {
         terminalCurrentBlock = null;
       }
       terminalRunning = false;
-      const input = document.getElementById('terminal-input');
-      input.disabled = false;
-      input.focus();
+      // Show prompt row again with updated cwd.
+      if (chatCurrentChannel === channel_id) {
+        const promptRow = document.getElementById('terminal-prompt-row');
+        promptRow.style.display = 'flex';
+        const output = document.getElementById('terminal-output');
+        output.scrollTop = output.scrollHeight;
+        document.getElementById('terminal-input')?.focus();
+      }
     }
   });
 } // end bindE2EEEvents
@@ -4035,11 +4102,7 @@ function appendConsoleReasoning(content, timestamp) {
   }
 
   // Auto-expand console.
-  const consoleBtm = document.getElementById('console-bottom');
-  if (consoleBtm && consoleBtm.classList.contains('collapsed')) {
-    consoleBtm.classList.remove('collapsed');
-    consoleCollapsed = false;
-  }
+  if (consoleState === 'collapsed') setConsoleState('open');
 
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -4082,11 +4145,7 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   if (!body) return;
 
   // Auto-expand console on first tool use.
-  const console = document.getElementById('console-bottom');
-  if (console && console.classList.contains('collapsed')) {
-    console.classList.remove('collapsed');
-    consoleCollapsed = false;
-  }
+  if (consoleState === 'collapsed') setConsoleState('open');
 
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

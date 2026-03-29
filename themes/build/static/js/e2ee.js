@@ -583,14 +583,17 @@ class BuildE2EE extends EventTarget {
     return this.send(payload);
   }
 
-  async terminalExec(channelId, command, cwd) {
+  async terminalExec(channelId, command, cwd, commandId) {
     const payload = { action: 'terminal_exec', channel_id: channelId, command };
     if (cwd) payload.cwd = cwd;
+    if (commandId) payload.command_id = commandId;
     return this.send(payload);
   }
 
-  async terminalKill(channelId) {
-    return this.send({ action: 'terminal_kill', channel_id: channelId });
+  async terminalKill(channelId, commandId) {
+    const payload = { action: 'terminal_kill', channel_id: channelId };
+    if (commandId) payload.command_id = commandId;
+    return this.send(payload);
   }
 
   disconnect() {

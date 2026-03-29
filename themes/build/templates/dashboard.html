@@ -2205,13 +2205,14 @@ function terminalExec(command) {
   block.appendChild(outputDiv);
   output.insertBefore(block, promptRow);
   output.scrollTop = output.scrollHeight;
-  terminalCurrentBlock = { block, outputDiv, channelId, cmd: command, text: '' };
+  const commandId = crypto.randomUUID();
+  terminalCurrentBlock = { block, outputDiv, channelId, cmd: command, text: '', commandId, hasOutput: false };
 
   // Track in history
   if (!terminalHistoryMap.has(channelId)) terminalHistoryMap.set(channelId, []);
   terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null, cwd });
 
-  e2ee.terminalExec(channelId, command, cwd || undefined);
+  e2ee.terminalExec(channelId, command, cwd || undefined, commandId);
 
   // Show kill button while command is running.
   document.getElementById('terminal-kill-btn')?.classList.remove('hidden');
@@ -2231,14 +2232,54 @@ function terminalExec(command) {
       }, 80);
     }
   }, 2000);
+
+
+  // 30s no-output timeout — if no output arrives, assume command is stuck.
+  terminalNoOutputTimer = setTimeout(() => {
+    if (terminalCurrentBlock?.commandId === commandId && !terminalCurrentBlock.hasOutput) {
+      finishTerminalCommand(
+        'Error: Command produced no output for 30 seconds. It may require an interactive terminal.\r\n', 1,
+      );
+    }
+  }, 30000);
 }
 let terminalLoadingTimer = null;
 let terminalLoadingInterval = null;
+let terminalNoOutputTimer = null;
+let terminalKillTimer = null;
 
-function clearTerminalLoading() {
+function clearTerminalTimers() {
   if (terminalLoadingTimer) { clearTimeout(terminalLoadingTimer); terminalLoadingTimer = null; }
   if (terminalLoadingInterval) { clearInterval(terminalLoadingInterval); terminalLoadingInterval = null; }
+  if (terminalNoOutputTimer) { clearTimeout(terminalNoOutputTimer); terminalNoOutputTimer = null; }
+  if (terminalKillTimer) { clearTimeout(terminalKillTimer); terminalKillTimer = null; }
   if (terminalCurrentBlock?.loader) { terminalCurrentBlock.loader.remove(); terminalCurrentBlock.loader = null; }
+}
+
+function finishTerminalCommand(errorData, exitCode) {
+  clearTerminalTimers();
+  if (terminalCurrentBlock) {
+    if (errorData) {
+      const span = document.createElement('span');
+      span.className = 'terminal-cmd-exit error';
+      span.textContent = errorData;
+      terminalCurrentBlock.outputDiv.appendChild(span);
+    }
+    if (exitCode !== 0) {
+      const exitDiv = document.createElement('div');
+      exitDiv.className = 'terminal-cmd-exit error';
+      exitDiv.textContent = `exit ${exitCode}`;
+      terminalCurrentBlock.block.appendChild(exitDiv);
+    }
+    terminalCurrentBlock = null;
+  }
+  terminalRunning = false;
+  document.getElementById('terminal-kill-btn')?.classList.add('hidden');
+  const promptRow = document.getElementById('terminal-prompt-row');
+  if (promptRow) promptRow.classList.remove('hidden');
+  const output = document.getElementById('terminal-output');
+  if (output) output.scrollTop = output.scrollHeight;
+  document.getElementById('terminal-input')?.focus();
 }
 
 document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
@@ -2265,7 +2306,14 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
 
 document.getElementById('terminal-kill-btn')?.addEventListener('click', () => {
   if (e2ee && e2ee.connected && chatCurrentChannel) {
-    e2ee.terminalKill(chatCurrentChannel);
+    const cmdId = terminalCurrentBlock?.commandId || '';
+    e2ee.terminalKill(chatCurrentChannel, cmdId);
+    // If no done frame within 5s, force-reset the terminal locally.
+    terminalKillTimer = setTimeout(() => {
+      if (terminalCurrentBlock?.commandId === cmdId) {
+        finishTerminalCommand('^C (kill timeout)\r\n', 130);
+      }
+    }, 5000);
   }
 });
 
@@ -3550,10 +3598,10 @@ function selectChannel(channelId) {
     const sentinel = '__BUILD_CWD__';
 
     if (!done && data) {
-      // First output received — clear loading animation.
+      // First output received — clear loading animation and reset no-output timer.
       if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
         terminalCurrentBlock.hasOutput = true;
-        clearTerminalLoading();
+        clearTerminalTimers();
       }
 
       // Filter out sentinel line from streaming output.
@@ -3578,7 +3626,7 @@ function selectChannel(channelId) {
     }
 
     if (done) {
-      clearTerminalLoading();
+      clearTerminalTimers();
       document.getElementById('terminal-kill-btn')?.classList.add('hidden');
       // Update cwd.
       if (cwd) {

@@ -3000,7 +3000,10 @@ function restoreFromHash() {
   const hash = location.hash.replace(/^#/, '');
   if (!hash || hash === 'dashboard') return;
 
-  if (hash === 'chat' || hash.startsWith('chat/')) {
+  const parts = hash.split('/');
+  const tab = parts[0];
+
+  if (tab === 'chat' || tab === 'files' || tab === 'planning') {
     // Need an agent selected to show workspace.
     const firstDevice = [...devices.values()][0];
     if (firstDevice && !selectedAgent) {
@@ -3008,9 +3011,8 @@ function restoreFromHash() {
       renderDeviceSelect(firstDevice.name);
       setRailState(true);
     }
-    switchView('workspace', 'chat');
+    switchView('workspace', tab);
 
-    const parts = hash.split('/');
     if (parts[1]) {
       _pendingChannelId = parts[1];
       // If channels are already loaded, select immediately.
@@ -3229,6 +3231,9 @@ function bindE2EEEvents() {
     if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
       selectChannel(_pendingChannelId);
       _pendingChannelId = null;
+    } else if (!chatCurrentChannel && channels.length > 0) {
+      // Auto-select first channel if none selected (e.g. navigated to #files).
+      selectChannel(channels[0].id);
     }
     // Fetch messages for all non-current channels to compute unread counts.
     for (const ch of channels) {
@@ -3419,7 +3424,9 @@ function selectChannel(channelId) {
   // Update dropdown label
   const lbl = document.getElementById('channel-dropdown-label');
   if (lbl) lbl.textContent = chName;
-  location.hash = `chat/${channelId}`;
+  location.hash = `${currentTab || 'chat'}/${channelId}`;
+  // If files tab is active, refresh it for the new channel.
+  if (currentTab === 'files') onFilesTabActivated();
   // Restore persisted state from localStorage.
   const saved = loadChannelState(channelId);
   if (input) {

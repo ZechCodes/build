@@ -1120,6 +1120,54 @@ body{
 .ce-detail-result:empty{display:none}
 .ce-result-preview{color:var(--text-secondary,#888);font-size:.75rem;margin-left:.4rem;opacity:.7}
 
+/* Console tabs */
+.console-tabs{display:flex;gap:0;margin-right:.5rem}
+.console-tab{
+  font-size:10px;font-weight:600;color:#71717a;
+  text-transform:uppercase;letter-spacing:.04em;
+  background:none;border:none;cursor:pointer;
+  padding:.25rem .5rem;border-radius:var(--radius-xs);
+  transition:color .12s,background .12s;
+}
+.console-tab:hover{color:#a1a1aa;background:rgba(255,255,255,0.06)}
+.console-tab.active{color:var(--accent);background:rgba(99,102,241,0.12)}
+
+/* Terminal panel */
+.console-terminal{
+  display:flex;flex-direction:column;
+  font-family:var(--mono);font-size:12px;
+  color:#d4d4d8;
+  max-height:none;
+}
+.terminal-output{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  padding:.5rem .875rem;
+  white-space:pre-wrap;word-break:break-all;
+  line-height:1.5;
+}
+.terminal-output::-webkit-scrollbar{width:5px}
+.terminal-output::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
+.terminal-cmd-block{margin-bottom:.25rem}
+.terminal-cmd-line{color:var(--accent);font-weight:600}
+.terminal-cmd-output{color:#a1a1aa}
+.terminal-cmd-output.stderr{color:#f87171}
+.terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
+.terminal-cmd-exit.error{color:#f87171}
+.terminal-input-row{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.35rem .875rem;
+  border-top:1px solid rgba(255,255,255,0.06);
+  flex-shrink:0;
+}
+.terminal-cwd{color:#52525b;font-size:11px;flex-shrink:0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.terminal-input{
+  flex:1;background:none;border:none;outline:none;
+  font-family:var(--mono);font-size:12px;
+  color:#d4d4d8;
+}
+.terminal-input::placeholder{color:#52525b}
+.terminal-input:disabled{opacity:.5}
+
 /* ===== PLANNING TAB ===== */
 .planning-layout{flex:1;display:flex;overflow:hidden}
 .issue-list-panel{
@@ -1781,13 +1829,23 @@ body{
     <div class="console-drag" id="console-drag"></div>
     <div class="console-header" id="console-header">
       <span class="console-working-dot hidden" id="console-working-dot"></span>
-      <span class="console-title">Console</span>
-      <span class="console-count">0 entries</span>
+      <div class="console-tabs">
+        <button class="console-tab active" data-console-tab="activity">Activity</button>
+        <button class="console-tab" data-console-tab="terminal">Terminal</button>
+      </div>
+      <span class="console-count" id="console-count">0 entries</span>
       <button class="console-toggle" id="console-toggle" title="Toggle console">
         <svg viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>
-    <div class="console-body"></div>
+    <div class="console-body" data-console-panel="activity"></div>
+    <div class="console-body console-terminal" data-console-panel="terminal" style="display:none">
+      <div class="terminal-output" id="terminal-output"></div>
+      <div class="terminal-input-row">
+        <span class="terminal-cwd" id="terminal-cwd"></span>
+        <input type="text" class="terminal-input" id="terminal-input" placeholder="Enter command...">
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2001,10 +2059,126 @@ function toggleConsole() {
 }
 consoleToggle.addEventListener('click', toggleConsole);
 document.getElementById('console-header')?.addEventListener('click', (e) => {
-  if (e.target.closest('.console-toggle')) return;
+  if (e.target.closest('.console-toggle') || e.target.closest('.console-tab')) return;
   toggleConsole();
 });
 consoleBtm.style.display = 'none';
+
+// ----- Console Tab Switching -----
+const consoleActivityPanel = document.querySelector('[data-console-panel="activity"]');
+const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
+let activeConsoleTab = 'activity';
+
+document.querySelectorAll('.console-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const target = tab.dataset.consoleTab;
+    if (target === activeConsoleTab) return;
+    activeConsoleTab = target;
+    document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === target));
+    consoleActivityPanel.style.display = target === 'activity' ? '' : 'none';
+    consoleTerminalPanel.style.display = target === 'terminal' ? '' : 'none';
+    if (target === 'terminal') document.getElementById('terminal-input')?.focus();
+  });
+});
+
+// ----- Terminal -----
+const terminalCwdMap = new Map(); // channelId -> cwd
+const terminalHistoryMap = new Map(); // channelId -> [{cmd, output}]
+const terminalCmdHistory = []; // global command history for up/down
+let terminalCmdIndex = -1;
+let terminalRunning = false;
+let terminalCurrentBlock = null; // current streaming output block
+
+function getTerminalCwd(channelId) {
+  if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
+  const ch = chatChannels.get(channelId);
+  return ch?.working_directory || '';
+}
+
+function renderTerminalCwd() {
+  const el = document.getElementById('terminal-cwd');
+  const cwd = getTerminalCwd(chatCurrentChannel) || '~';
+  // Show last 2 path segments
+  const parts = cwd.split('/').filter(Boolean);
+  const short = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : cwd;
+  el.textContent = short + ' $';
+  el.title = cwd;
+}
+
+function renderTerminalForChannel(channelId) {
+  const output = document.getElementById('terminal-output');
+  output.innerHTML = '';
+  const history = terminalHistoryMap.get(channelId) || [];
+  for (const entry of history) {
+    const block = document.createElement('div');
+    block.className = 'terminal-cmd-block';
+    block.innerHTML = `<div class="terminal-cmd-line">$ ${escapeHtml(entry.cmd)}</div>`;
+    if (entry.output) {
+      block.innerHTML += `<div class="terminal-cmd-output">${escapeHtml(entry.output)}</div>`;
+    }
+    if (entry.exitCode != null && entry.exitCode !== 0) {
+      block.innerHTML += `<div class="terminal-cmd-exit error">exit ${entry.exitCode}</div>`;
+    }
+    output.appendChild(block);
+  }
+  output.scrollTop = output.scrollHeight;
+  renderTerminalCwd();
+}
+
+function terminalExec(command) {
+  if (!command || !chatCurrentChannel || !e2ee?.connected || terminalRunning) return;
+  terminalRunning = true;
+  const input = document.getElementById('terminal-input');
+  input.disabled = true;
+  input.value = '';
+
+  // Add to command history
+  terminalCmdHistory.push(command);
+  terminalCmdIndex = terminalCmdHistory.length;
+
+  const channelId = chatCurrentChannel;
+  const cwd = getTerminalCwd(channelId);
+
+  // Create output block
+  const output = document.getElementById('terminal-output');
+  const block = document.createElement('div');
+  block.className = 'terminal-cmd-block';
+  block.innerHTML = `<div class="terminal-cmd-line">$ ${escapeHtml(command)}</div>`;
+  const outputDiv = document.createElement('div');
+  outputDiv.className = 'terminal-cmd-output';
+  block.appendChild(outputDiv);
+  output.appendChild(block);
+  output.scrollTop = output.scrollHeight;
+  terminalCurrentBlock = { block, outputDiv, channelId, cmd: command, text: '' };
+
+  // Track in history
+  if (!terminalHistoryMap.has(channelId)) terminalHistoryMap.set(channelId, []);
+  terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null });
+
+  e2ee.terminalExec(channelId, command, cwd || undefined);
+}
+
+document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    terminalExec(e.target.value.trim());
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (terminalCmdIndex > 0) {
+      terminalCmdIndex--;
+      e.target.value = terminalCmdHistory[terminalCmdIndex] || '';
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (terminalCmdIndex < terminalCmdHistory.length - 1) {
+      terminalCmdIndex++;
+      e.target.value = terminalCmdHistory[terminalCmdIndex] || '';
+    } else {
+      terminalCmdIndex = terminalCmdHistory.length;
+      e.target.value = '';
+    }
+  }
+});
 
 // Complications scroll fade indicators
 (function() {
@@ -2991,6 +3165,8 @@ function selectChannel(channelId) {
   }
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
+  // Update terminal for new channel.
+  renderTerminalForChannel(channelId);
   // Render complications for this channel (instant — already in memory).
   closeCompPopover();
   renderComplications();
@@ -3278,6 +3454,63 @@ function selectChannel(channelId) {
       channelComps.set(comp.id, comp);
     }
     if (chatCurrentChannel === channel_id) renderComplications();
+  });
+
+  // ----- Terminal Output -----
+  e2ee.addEventListener('terminal_output', (evt) => {
+    const { channel_id, stream, data, done, exit_code, cwd } = evt.detail;
+    if (!channel_id) return;
+
+    const sentinel = '__BUILD_CWD__';
+
+    if (!done && data) {
+      // Filter out sentinel line from streaming output.
+      let text = data;
+      if (text.includes(sentinel)) {
+        text = text.split('\n').filter(l => !l.startsWith(sentinel)).join('\n');
+        if (!text) return;
+      }
+
+      // Append to current streaming block if matching channel.
+      if (terminalCurrentBlock && terminalCurrentBlock.channelId === channel_id) {
+        terminalCurrentBlock.text += text;
+        const cls = stream === 'stderr' ? ' stderr' : '';
+        const span = document.createElement('span');
+        span.className = cls;
+        span.textContent = text;
+        terminalCurrentBlock.outputDiv.appendChild(span);
+        const output = document.getElementById('terminal-output');
+        output.scrollTop = output.scrollHeight;
+      }
+      // Update stored history.
+      const history = terminalHistoryMap.get(channel_id);
+      if (history?.length) history[history.length - 1].output += text;
+    }
+
+    if (done) {
+      // Update cwd.
+      if (cwd) {
+        terminalCwdMap.set(channel_id, cwd);
+        if (chatCurrentChannel === channel_id) renderTerminalCwd();
+      }
+      // Update stored exit code.
+      const history = terminalHistoryMap.get(channel_id);
+      if (history?.length) history[history.length - 1].exitCode = exit_code;
+      // Show exit code if non-zero.
+      if (terminalCurrentBlock && terminalCurrentBlock.channelId === channel_id && exit_code !== 0) {
+        const exitDiv = document.createElement('div');
+        exitDiv.className = 'terminal-cmd-exit error';
+        exitDiv.textContent = `exit ${exit_code}`;
+        terminalCurrentBlock.block.appendChild(exitDiv);
+      }
+      if (terminalCurrentBlock?.channelId === channel_id) {
+        terminalCurrentBlock = null;
+      }
+      terminalRunning = false;
+      const input = document.getElementById('terminal-input');
+      input.disabled = false;
+      input.focus();
+    }
   });
 } // end bindE2EEEvents
 
@@ -3770,7 +4003,7 @@ let consoleEntryCount = 0;
 let currentReasoningEntry = null;
 
 function clearConsole(loading) {
-  const body = document.querySelector('.console-body');
+  const body = document.querySelector('[data-console-panel="activity"]');
   if (body) {
     if (loading) {
       body.innerHTML = '<div class="empty-state"><p>Loading tool uses…</p></div>';
@@ -3784,7 +4017,7 @@ function clearConsole(loading) {
 }
 
 function appendConsoleReasoning(content, timestamp) {
-  const body = document.querySelector('.console-body');
+  const body = document.querySelector('[data-console-panel="activity"]');
   if (!body) return;
 
   // Buffer into existing reasoning entry if one is active.
@@ -3845,7 +4078,7 @@ function appendConsoleReasoning(content, timestamp) {
 }
 
 function appendConsoleEntry(toolId, name, desc, input, timestamp) {
-  const body = document.querySelector('.console-body');
+  const body = document.querySelector('[data-console-panel="activity"]');
   if (!body) return;
 
   // Auto-expand console on first tool use.

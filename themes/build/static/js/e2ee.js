@@ -267,6 +267,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('compact_started', {
         detail: { channel_id: payload.channel_id },
       }));
+    } else if (action === 'terminal_output') {
+      this.dispatchEvent(new CustomEvent('terminal_output', { detail: payload }));
+    } else if (action === 'channel_updated') {
+      this.dispatchEvent(new CustomEvent('channel_updated', { detail: payload }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -576,6 +580,12 @@ class BuildE2EE extends EventTarget {
       freeform_response: freeformResponse || null,
     };
     if (selectedOptions) payload.selected_options = selectedOptions;
+    return this.send(payload);
+  }
+
+  async terminalExec(channelId, command, cwd) {
+    const payload = { action: 'terminal_exec', channel_id: channelId, command };
+    if (cwd) payload.cwd = cwd;
     return this.send(payload);
   }
 

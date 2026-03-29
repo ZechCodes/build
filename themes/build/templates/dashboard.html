@@ -1910,12 +1910,12 @@ function switchView(view, tab) {
   if (view === 'dashboard') {
     viewDash.classList.add('active');
     viewWork.classList.remove('active');
-    consoleBtm.style.display = 'none';
+    consoleBtm.classList.add('hidden');
     setActiveRail('dashboard');
   } else {
     viewDash.classList.remove('active');
     viewWork.classList.add('active');
-    consoleBtm.style.display = '';
+    consoleBtm.classList.remove('hidden');
     currentTab = tab || currentTab;
     setActiveRail(currentTab);
     switchTab(currentTab);
@@ -2098,15 +2098,15 @@ document.getElementById('console-header')?.addEventListener('click', (e) => {
   if (consoleState === 'collapsed') setConsoleState('open');
   else setConsoleState('collapsed');
 });
-consoleBtm.style.display = 'none';
+consoleBtm.classList.add('hidden');
 
 // ----- Console Tab Switching -----
 const consoleActivityPanel = document.querySelector('[data-console-panel="activity"]');
 const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
 let activeConsoleTab = 'activity';
 // Ensure correct initial display state.
-consoleActivityPanel.style.display = '';
-consoleTerminalPanel.style.display = 'none';
+consoleActivityPanel.classList.remove('hidden');
+consoleTerminalPanel.classList.add('hidden');
 
 document.querySelectorAll('.console-tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -2114,8 +2114,8 @@ document.querySelectorAll('.console-tab').forEach(tab => {
     if (target === activeConsoleTab) return;
     activeConsoleTab = target;
     document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === target));
-    consoleActivityPanel.style.display = target === 'activity' ? '' : 'none';
-    consoleTerminalPanel.style.display = target === 'terminal' ? 'flex' : 'none';
+    consoleActivityPanel.classList.toggle('hidden', target !== 'activity');
+    consoleTerminalPanel.classList.toggle('hidden', target !== 'terminal');
     if (target === 'terminal') document.getElementById('terminal-input')?.focus();
   });
 });
@@ -2170,7 +2170,7 @@ function renderTerminalForChannel(channelId) {
   // Re-append prompt row and show/hide based on running state.
   if (promptRow) {
     output.appendChild(promptRow);
-    promptRow.style.display = terminalRunning ? 'none' : 'flex';
+    promptRow.classList.toggle('hidden', terminalRunning);
   }
   output.scrollTop = output.scrollHeight;
   renderTerminalCwd();
@@ -2193,7 +2193,7 @@ function terminalExec(command) {
   const cwdLabel = cwd ? shortCwd(cwd) + ' $' : '$';
 
   // Hide prompt row while running.
-  promptRow.style.display = 'none';
+  promptRow.classList.add('hidden');
 
   // Create output block (inserted before the prompt row).
   const output = document.getElementById('terminal-output');
@@ -2543,13 +2543,13 @@ function renderDeviceGrid() {
   const empty = document.getElementById('devices-empty');
 
   if (devices.size === 0) {
-    if (empty) empty.style.display = '';
+    if (empty) empty.classList.remove('hidden');
     // Remove any device cards
     grid.querySelectorAll('.device-card').forEach(el => el.remove());
     return;
   }
 
-  if (empty) empty.style.display = 'none';
+  if (empty) empty.classList.add('hidden');
 
   // Clear existing cards
   grid.querySelectorAll('.device-card').forEach(el => el.remove());
@@ -3257,8 +3257,8 @@ function selectChannel(channelId) {
   // Reset console to activity tab and update terminal for new channel.
   activeConsoleTab = 'activity';
   document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
-  consoleActivityPanel.style.display = '';
-  consoleTerminalPanel.style.display = 'none';
+  consoleActivityPanel.classList.remove('hidden');
+  consoleTerminalPanel.classList.add('hidden');
   renderTerminalForChannel(channelId);
   // Render complications for this channel (instant — already in memory).
   closeCompPopover();
@@ -3602,7 +3602,7 @@ function selectChannel(channelId) {
       // Show prompt row again with updated cwd.
       if (chatCurrentChannel === channel_id) {
         const promptRow = document.getElementById('terminal-prompt-row');
-        promptRow.style.display = 'flex';
+        promptRow.classList.remove('hidden');
         const output = document.getElementById('terminal-output');
         output.scrollTop = output.scrollHeight;
         document.getElementById('terminal-input')?.focus();

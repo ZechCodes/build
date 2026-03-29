@@ -2342,6 +2342,15 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
       e.target.value = '';
     }
   } else if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') {
+    // Slash while cycling a dir completion — accept it, don't double the slash
+    if (e.key === '/' && terminalCompletions.length && terminalCompletionIndex >= 0) {
+      const current = terminalCompletions[terminalCompletionIndex];
+      if (current.endsWith('/')) {
+        e.preventDefault();
+        clearTerminalCompletions();
+        return;
+      }
+    }
     // Any other key clears completion state
     if (terminalCompletions.length) clearTerminalCompletions();
   }

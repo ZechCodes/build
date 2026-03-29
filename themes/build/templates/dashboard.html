@@ -1007,12 +1007,6 @@ body{
 .console-working-dot.hidden{display:none}
 @keyframes consolePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 .console-title{font-size:10px;font-weight:600;color:#a1a1aa;text-transform:uppercase;letter-spacing:.04em}
-.console-count{
-  font-size:9px;font-weight:600;color:var(--accent);
-  background:rgba(99,102,241,0.15);
-  padding:.1rem .35rem;border-radius:6px;
-  margin-left:auto;
-}
 .console-toggle{
   width:20px;height:20px;
   display:flex;align-items:center;justify-content:center;
@@ -1154,7 +1148,6 @@ body{
 .terminal-cmd-block{margin-bottom:.25rem}
 .terminal-cmd-line{color:var(--accent);font-weight:600}
 .terminal-cmd-output{color:#a1a1aa}
-.terminal-cmd-output.stderr{color:#f87171}
 .terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
 .terminal-cmd-exit.error{color:#f87171}
 .terminal-prompt-row{
@@ -1832,7 +1825,6 @@ body{
         <button class="console-tab active" data-console-tab="activity">Activity</button>
         <button class="console-tab" data-console-tab="terminal">Terminal</button>
       </div>
-      <span class="console-count" id="console-count">0 entries</span>
       <button class="console-toggle" id="console-expand" title="Expand console" style="display:none">
         <svg viewBox="0 0 14 14" fill="none"><path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -3349,8 +3341,6 @@ function selectChannel(channelId) {
       channelAgentActive.set(channel_id, false);
       updateStopButton();
       if (chatCurrentChannel !== channel_id) return;
-      // Update console count.
-      updateConsoleCount();
     } else if (event_type === 'interaction.request') {
       // Agent is asking the user a question — render inline in chat.
       const msg = {
@@ -3398,7 +3388,7 @@ function selectChannel(channelId) {
 
   // Activity history — tool use console entries loaded on channel select / reconnect.
   e2ee.addEventListener('activity_history', (evt) => {
-    const { channel_id, entries, total_tool_uses } = evt.detail;
+    const { channel_id, entries } = evt.detail;
     chatLoadingActivity.delete(channel_id);
     if (chatCurrentChannel !== channel_id) return;
 
@@ -3421,11 +3411,6 @@ function selectChannel(channelId) {
           currentReasoningEntry = null;
         }
       }
-    }
-    // Use the total count from the device (includes trimmed entries).
-    if (total_tool_uses != null) {
-      consoleEntryCount = total_tool_uses;
-      updateConsoleCount();
     }
   });
 
@@ -3521,7 +3506,7 @@ function selectChannel(channelId) {
 
   // ----- Terminal Output -----
   e2ee.addEventListener('terminal_output', (evt) => {
-    const { channel_id, stream, data, done, exit_code, cwd } = evt.detail;
+    const { channel_id, data, done, exit_code, cwd } = evt.detail;
     if (!channel_id) return;
 
     const sentinel = '__BUILD_CWD__';
@@ -3537,9 +3522,7 @@ function selectChannel(channelId) {
       // Append to current streaming block if matching channel.
       if (terminalCurrentBlock && terminalCurrentBlock.channelId === channel_id) {
         terminalCurrentBlock.text += text;
-        const cls = stream === 'stderr' ? ' stderr' : '';
         const span = document.createElement('span');
-        span.className = cls;
         span.textContent = text;
         terminalCurrentBlock.outputDiv.appendChild(span);
         const output = document.getElementById('terminal-output');
@@ -4067,7 +4050,6 @@ function toolTag(name) {
   return map[name] || 'read';
 }
 
-let consoleEntryCount = 0;
 let currentReasoningEntry = null;
 
 function clearConsole(loading) {
@@ -4079,9 +4061,7 @@ function clearConsole(loading) {
       body.innerHTML = '';
     }
   }
-  consoleEntryCount = 0;
   currentReasoningEntry = null;
-  updateConsoleCount();
 }
 
 function appendConsoleReasoning(content, timestamp) {
@@ -4136,9 +4116,6 @@ function appendConsoleReasoning(content, timestamp) {
   body.appendChild(entry);
   body.scrollTop = body.scrollHeight;
   currentReasoningEntry = entry;
-
-  consoleEntryCount++;
-  updateConsoleCount();
 }
 
 function appendConsoleEntry(toolId, name, desc, input, timestamp) {
@@ -4182,9 +4159,6 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
 
   body.appendChild(entry);
   body.scrollTop = body.scrollHeight;
-
-  consoleEntryCount++;
-  updateConsoleCount();
 }
 
 function markConsoleEntryDone(toolId, isError, content, completedAt) {
@@ -4216,12 +4190,6 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
   }
 }
 
-function updateConsoleCount() {
-  const countEl = document.querySelector('.console-count');
-  if (countEl) {
-    countEl.textContent = `${consoleEntryCount} ${consoleEntryCount === 1 ? 'entry' : 'entries'}`;
-  }
-}
 
 function scrollChatToBottom() {
   const container = document.getElementById('chat-messages');

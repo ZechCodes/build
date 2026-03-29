@@ -1301,6 +1301,9 @@ body{
 .file-float-toggle:hover{color:var(--accent);border-color:var(--accent)}
 /* Markdown rendered view */
 .file-markdown-view{padding:1.25rem 1.5rem;font-family:var(--sans);font-size:14px;line-height:1.6;overflow-wrap:break-word}
+/* Image preview */
+.file-image-view{display:flex;align-items:center;justify-content:center;padding:1.5rem;min-height:100%}
+.file-image-view img{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
 
 /* File viewer with line numbers */
 .file-viewer{display:flex;width:100%;min-height:100%}
@@ -3893,6 +3896,10 @@ function selectChannel(channelId) {
 
     if (d.error) {
       fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
+      return;
+    }
+    if (d.is_image && d.content) {
+      fileContentBody.innerHTML = '<div class="file-image-view"><img src="' + d.content + '" alt="' + escapeHtml(d.path) + '"></div>';
       return;
     }
     if (d.is_binary) {

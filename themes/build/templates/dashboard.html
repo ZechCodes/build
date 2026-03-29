@@ -796,13 +796,14 @@ body{
 .chat-send:hover{opacity:.85}
 .chat-send svg{width:12px;height:12px;color:#fff}
 .chat-stop{
-  width:28px;height:28px;border-radius:var(--radius-sm);
-  background:#e54d2e;border:none;cursor:pointer;
+  width:22px;height:22px;border-radius:50%;
+  background:none;border:1.5px solid var(--text-muted);cursor:pointer;
   display:none;align-items:center;justify-content:center;
-  transition:opacity .12s;flex-shrink:0;
+  transition:border-color .12s,color .12s;flex-shrink:0;
+  color:var(--text-muted);padding:0;
 }
-.chat-stop:hover{opacity:.85}
-.chat-stop svg{width:12px;height:12px;color:#fff}
+.chat-stop:hover{border-color:var(--text);color:var(--text)}
+.chat-stop svg{width:8px;height:8px}
 .chat-stop.visible{display:flex}
 /* Commands tray */
 .commands-tray{

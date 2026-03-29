@@ -269,6 +269,8 @@ class BuildE2EE extends EventTarget {
       }));
     } else if (action === 'terminal_output') {
       this.dispatchEvent(new CustomEvent('terminal_output', { detail: payload }));
+    } else if (action === 'terminal_completions') {
+      this.dispatchEvent(new CustomEvent('terminal_completions', { detail: payload }));
     } else if (action === 'channel_updated') {
       this.dispatchEvent(new CustomEvent('channel_updated', { detail: payload }));
     } else if (action === 'error') {
@@ -594,6 +596,16 @@ class BuildE2EE extends EventTarget {
     const payload = { action: 'terminal_kill', channel_id: channelId };
     if (commandId) payload.command_id = commandId;
     return this.send(payload);
+  }
+
+  async terminalComplete(channelId, partial, line, cwd) {
+    return this.send({
+      action: 'terminal_complete',
+      channel_id: channelId,
+      partial: partial || '',
+      line: line || '',
+      cwd: cwd || '',
+    });
   }
 
   disconnect() {

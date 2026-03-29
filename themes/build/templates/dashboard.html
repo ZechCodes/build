@@ -1151,6 +1151,7 @@ body{
 .terminal-cmd-output{color:#a1a1aa}
 .terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
 .terminal-cmd-exit.error{color:#f87171}
+.terminal-completions{color:#a1a1aa;font-size:11px;padding:.2rem 0;white-space:pre-wrap;word-break:break-all}
 .terminal-loader{color:#a1a1aa}
 .terminal-kill-btn{position:absolute;bottom:.5rem;left:.5rem;font-size:11px;font-family:var(--mono);padding:.2rem .5rem;border-radius:var(--radius-sm);border:1px solid #f87171;background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;z-index:2}
 .terminal-kill-btn:hover{background:rgba(248,113,113,0.2)}
@@ -2131,6 +2132,7 @@ const terminalCmdHistory = []; // global command history for up/down
 let terminalCmdIndex = -1;
 let terminalRunning = false;
 let terminalCurrentBlock = null; // current streaming output block
+let terminalCompletionPending = false; // waiting for completions response
 
 function getTerminalCwd(channelId) {
   if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
@@ -2287,7 +2289,20 @@ function finishTerminalCommand(errorData, exitCode) {
 }
 
 document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    if (terminalCompletionPending || terminalRunning) return;
+    const line = e.target.value;
+    if (!line) return;
+    // Extract the partial word (last whitespace-delimited token)
+    const words = line.split(/\s+/);
+    const partial = words[words.length - 1] || '';
+    const cwd = getTerminalCwd(chatCurrentChannel);
+    if (e2ee && e2ee.connected && chatCurrentChannel) {
+      terminalCompletionPending = true;
+      e2ee.terminalComplete(chatCurrentChannel, partial, line, cwd);
+    }
+  } else if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     terminalExec(e.target.value.trim());
   } else if (e.key === 'ArrowUp') {
@@ -3659,6 +3674,44 @@ function selectChannel(channelId) {
         const output = document.getElementById('terminal-output');
         output.scrollTop = output.scrollHeight;
         document.getElementById('terminal-input')?.focus();
+      }
+    }
+  });
+
+  e2ee.addEventListener('terminal_completions', (evt) => {
+    terminalCompletionPending = false;
+    const { completions, partial } = evt.detail;
+    if (!completions || !completions.length) return;
+    const input = document.getElementById('terminal-input');
+    if (!input) return;
+    const line = input.value;
+
+    if (completions.length === 1) {
+      // Single match — substitute it in
+      const match = completions[0];
+      const suffix = match.endsWith('/') ? '' : ' ';
+      const beforePartial = line.slice(0, line.length - partial.length);
+      input.value = beforePartial + match + suffix;
+    } else {
+      // Multiple matches — find common prefix and complete that
+      let common = completions[0];
+      for (let i = 1; i < completions.length; i++) {
+        while (common && !completions[i].startsWith(common)) {
+          common = common.slice(0, -1);
+        }
+      }
+      if (common.length > partial.length) {
+        const beforePartial = line.slice(0, line.length - partial.length);
+        input.value = beforePartial + common;
+      }
+      // Show candidates below the prompt
+      const output = document.getElementById('terminal-output');
+      if (output) {
+        const compDiv = document.createElement('div');
+        compDiv.className = 'terminal-completions';
+        compDiv.textContent = completions.join('  ');
+        output.appendChild(compDiv);
+        output.scrollTop = output.scrollHeight;
       }
     }
   });

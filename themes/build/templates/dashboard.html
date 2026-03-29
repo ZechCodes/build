@@ -463,6 +463,8 @@ body{
   flex:1;display:flex;overflow:hidden;
 }
 
+/* Tab content area (complications + tab panels) */
+.tab-content-area{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
 /* Tab panels */
 .tab-panel{flex:1;display:none;overflow:hidden}
 .tab-panel.active{display:flex}
@@ -1718,6 +1720,14 @@ body{
         </button>
       </div>
     </div>
+    <!-- Complications (shared across tabs) -->
+    <div class="tab-content-area">
+      <div class="comp-wrapper">
+        <div class="complications hidden" id="complications">
+          <div class="comp-scroll" id="comp-scroll"></div>
+        </div>
+        <div class="comp-popover hidden" id="comp-popover"></div>
+      </div>
     <!-- ===== CHAT TAB ===== -->
     <div class="tab-panel active" id="tab-chat">
       <div class="chat-layout">
@@ -1727,14 +1737,7 @@ body{
           <span class="e2ee-dot" id="e2ee-dot"></span>
           <span id="e2ee-label">Not connected</span>
         </div>
-        <!-- Column 2: Complications + Chat -->
         <div class="chat-main">
-          <div class="comp-wrapper">
-            <div class="complications hidden" id="complications">
-              <div class="comp-scroll" id="comp-scroll"></div>
-            </div>
-            <div class="comp-popover hidden" id="comp-popover"></div>
-          </div>
           <div class="device-down-banner" id="device-down-banner">
             <svg viewBox="0 0 16 16" fill="none"><path d="M8 1.5l6.5 13H1.5L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.5" r=".75" fill="currentColor"/></svg>
             <span class="device-down-text" id="device-down-text">Device disconnected — waiting for reconnection...</span>
@@ -1906,6 +1909,7 @@ body{
         </div>
       </div>
     </div>
+    </div><!-- .tab-content-area -->
   </div>
 
   <!-- ===== BOTTOM CONSOLE ===== -->

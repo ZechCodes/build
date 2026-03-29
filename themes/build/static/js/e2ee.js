@@ -273,6 +273,12 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('terminal_completions', { detail: payload }));
     } else if (action === 'channel_updated') {
       this.dispatchEvent(new CustomEvent('channel_updated', { detail: payload }));
+    } else if (action === 'files_list_result') {
+      this.dispatchEvent(new CustomEvent('files_list_result', { detail: payload }));
+    } else if (action === 'file_read_result') {
+      this.dispatchEvent(new CustomEvent('file_read_result', { detail: payload }));
+    } else if (action === 'file_diff_result') {
+      this.dispatchEvent(new CustomEvent('file_diff_result', { detail: payload }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -583,6 +589,23 @@ class BuildE2EE extends EventTarget {
     };
     if (selectedOptions) payload.selected_options = selectedOptions;
     return this.send(payload);
+  }
+
+  // ---- Files View ----
+
+  async filesList(channelId, path) {
+    return this.send({ action: 'files_list', channel_id: channelId, path: path || '' });
+  }
+
+  async fileRead(channelId, path, offset, limit) {
+    const payload = { action: 'file_read', channel_id: channelId, path };
+    if (offset !== undefined) payload.offset = offset;
+    if (limit !== undefined) payload.limit = limit;
+    return this.send(payload);
+  }
+
+  async fileDiff(channelId, path, staged) {
+    return this.send({ action: 'file_diff', channel_id: channelId, path, staged: !!staged });
   }
 
   async terminalExec(channelId, command, cwd, commandId) {

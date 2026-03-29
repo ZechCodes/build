@@ -1271,6 +1271,73 @@ body{
 }
 .file-content-body{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.65;padding:0}
 
+/* File tree enhancements */
+.tree-item .tree-stats{font-size:10px;font-family:var(--mono);margin-left:auto;display:flex;gap:.25rem;flex-shrink:0}
+.tree-item .tree-stats .stat-add{color:var(--green)}
+.tree-item .tree-stats .stat-del{color:var(--red, #e5534b)}
+.tree-item.gitignored{opacity:.45}
+.tree-item.gitignored .tree-label{text-decoration:line-through}
+.tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
+.tree-children{display:none}
+.tree-children.open{display:block}
+.tree-item[data-depth="1"]{padding-left:1.5rem}
+.tree-item[data-depth="2"]{padding-left:2.25rem}
+.tree-item[data-depth="3"]{padding-left:3rem}
+.tree-item[data-depth="4"]{padding-left:3.75rem}
+.tree-item[data-depth="5"]{padding-left:4.5rem}
+
+/* File viewer toggle */
+.file-view-toggle{
+  display:flex;border:1px solid var(--border);border-radius:var(--radius-xs);overflow:hidden;margin-left:auto;
+}
+.file-view-toggle button{
+  font-size:11px;padding:.2rem .5rem;border:none;background:transparent;cursor:pointer;color:var(--text-muted);
+  font-family:var(--sans);
+}
+.file-view-toggle button.active{background:var(--accent-light);color:var(--accent);font-weight:600}
+.file-view-toggle button:hover:not(.active){background:rgba(0,0,0,.03)}
+
+/* File viewer with line numbers */
+.file-viewer{display:flex;width:100%;min-height:100%}
+.file-viewer .line-numbers{
+  padding:.5rem .5rem .5rem .75rem;
+  text-align:right;color:var(--text-muted);opacity:.5;
+  user-select:none;border-right:1px solid var(--border);
+  flex-shrink:0;background:rgba(0,0,0,.015);
+}
+.file-viewer .line-numbers div{white-space:pre}
+.file-viewer .code-content{padding:.5rem .75rem;flex:1;min-width:0;overflow-x:auto;white-space:pre;tab-size:4}
+.file-viewer .code-content div{white-space:pre}
+
+/* Diff viewer */
+.diff-viewer{width:100%;min-height:100%}
+.diff-viewer .diff-hunk-header{
+  background:rgba(54,120,230,.08);color:var(--accent);padding:.15rem .75rem;
+  font-size:11px;font-style:italic;user-select:none;
+}
+.diff-line{display:flex;white-space:pre}
+.diff-line .dl-num{
+  width:3.5rem;text-align:right;padding:0 .4rem;color:var(--text-muted);opacity:.5;
+  user-select:none;flex-shrink:0;
+}
+.diff-line .dl-content{flex:1;padding:0 .5rem;min-width:0}
+.diff-line.added{background:rgba(63,185,80,.12)}
+.diff-line.added .dl-content{color:#1a7f37}
+.diff-line.removed{background:rgba(248,81,73,.1)}
+.diff-line.removed .dl-content{color:#cf222e}
+.diff-line.context .dl-content{color:var(--text)}
+
+/* Syntax highlighting tokens */
+.tok-keyword{color:#cf222e}
+.tok-string{color:#0a3069}
+.tok-comment{color:var(--text-muted);font-style:italic}
+.tok-number{color:#0550ae}
+.tok-func{color:#8250df}
+.tok-type{color:#953800}
+.tok-operator{color:#cf222e}
+.tok-punctuation{color:var(--text-muted)}
+.tok-attr{color:#116329}
+
 /* Empty state */
 .empty-state{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1803,19 +1870,23 @@ body{
       <div class="files-layout">
         <div class="file-tree-panel">
           <div class="file-tree-header">Files</div>
-          <div class="file-tree">
-            <div class="empty-state pad-1-5">
-              <p class="text-xs">No files modified yet</p>
+          <div class="file-tree" id="file-tree">
+            <div class="empty-state pad-1-5" id="file-tree-empty">
+              <p class="text-xs">Select a channel to browse files</p>
             </div>
           </div>
         </div>
         <div class="file-content-panel">
           <div class="file-content-header">
-            <div class="file-tab">No file selected</div>
+            <div class="file-tab" id="file-tab-name">No file selected</div>
+            <div class="file-view-toggle" id="file-view-toggle" style="display:none">
+              <button class="active" data-file-view="source">Source</button>
+              <button data-file-view="diff">Diff</button>
+            </div>
           </div>
-          <div class="file-content-body">
+          <div class="file-content-body" id="file-content-body">
             <div class="empty-state">
-              <p>Select a file to view changes</p>
+              <p>Select a file to view contents</p>
             </div>
           </div>
         </div>
@@ -5024,6 +5095,461 @@ function showEditDeviceDialog(device) {
   });
 }
 
+
+// ===== FILES VIEW =====
+
+const fileTree = document.getElementById('file-tree');
+const fileTreeEmpty = document.getElementById('file-tree-empty');
+const fileTabName = document.getElementById('file-tab-name');
+const fileContentBody = document.getElementById('file-content-body');
+const fileViewToggle = document.getElementById('file-view-toggle');
+
+// Per-channel file state.
+const fileTreeData = new Map();     // channelId -> Map(path -> {entries, expanded})
+let filesCurrentPath = null;        // currently selected file path
+let filesCurrentView = 'source';    // 'source' or 'diff'
+let filesChannelId = null;          // channel the file tree is loaded for
+
+function filesLoadRoot() {
+  if (!chatCurrentChannel || !e2ee || !e2ee.connected) return;
+  filesChannelId = chatCurrentChannel;
+  e2ee.filesList(chatCurrentChannel, '');
+}
+
+// ---- Tree Rendering ----
+
+function renderFileTree() {
+  if (!filesChannelId) return;
+  const data = fileTreeData.get(filesChannelId);
+  if (!data || !data.has('')) {
+    fileTreeEmpty.style.display = '';
+    return;
+  }
+  fileTreeEmpty.style.display = 'none';
+
+  // Remove all nodes except empty state.
+  fileTree.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
+  const rootEntries = data.get('');
+  if (rootEntries) renderTreeLevel(fileTree, rootEntries.entries, 0, data);
+}
+
+function renderTreeLevel(container, entries, depth, data) {
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'tree-item';
+    if (depth > 0) item.setAttribute('data-depth', Math.min(depth, 5));
+    item.dataset.path = entry.path;
+    item.dataset.type = entry.type;
+
+    // Git status classes.
+    if (entry.is_gitignored) item.classList.add('gitignored');
+    if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
+    if (entry.path === filesCurrentPath) item.classList.add('active');
+
+    // Arrow for directories.
+    const arrow = document.createElement('span');
+    arrow.className = 'tree-arrow';
+    if (entry.type === 'dir') {
+      const expanded = data.has(entry.path);
+      arrow.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      if (expanded) arrow.classList.add('open');
+    } else {
+      arrow.classList.add('hidden');
+    }
+    item.appendChild(arrow);
+
+    // Icon.
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon' + (entry.type === 'dir' ? ' folder' : '');
+    icon.innerHTML = entry.type === 'dir'
+      ? '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M1.5 3.5v7a1 1 0 001 1h9a1 1 0 001-1v-5a1 1 0 00-1-1H7L5.5 2.5h-3a1 1 0 00-1 1z" stroke="currentColor" stroke-width="1.2"/></svg>'
+      : '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
+    item.appendChild(icon);
+
+    // Label.
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = entry.name;
+    item.appendChild(label);
+
+    // Git badge + stats.
+    if (entry.git_status || entry.staged_status) {
+      const st = entry.staged_status || entry.git_status;
+      if (st === '?' || st === 'A') {
+        const badge = document.createElement('span');
+        badge.className = 'tree-badge added';
+        badge.textContent = st === '?' ? 'U' : 'A';
+        item.appendChild(badge);
+      } else if (st === 'M') {
+        const badge = document.createElement('span');
+        badge.className = 'tree-badge modified';
+        badge.textContent = 'M';
+        item.appendChild(badge);
+      } else if (st === 'D') {
+        const badge = document.createElement('span');
+        badge.className = 'tree-badge modified';
+        badge.textContent = 'D';
+        item.appendChild(badge);
+      }
+    }
+    if (entry.insertions > 0 || entry.deletions > 0) {
+      const stats = document.createElement('span');
+      stats.className = 'tree-stats';
+      if (entry.insertions > 0) {
+        const add = document.createElement('span');
+        add.className = 'stat-add';
+        add.textContent = '+' + entry.insertions;
+        stats.appendChild(add);
+      }
+      if (entry.deletions > 0) {
+        const del = document.createElement('span');
+        del.className = 'stat-del';
+        del.textContent = '-' + entry.deletions;
+        stats.appendChild(del);
+      }
+      item.appendChild(stats);
+    }
+
+    container.appendChild(item);
+
+    // Click handler.
+    item.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (entry.type === 'dir') {
+        toggleDirectory(entry.path, arrow, item);
+      } else {
+        selectFile(entry.path, entry);
+      }
+    });
+
+    // Render children if expanded.
+    if (entry.type === 'dir' && data.has(entry.path)) {
+      const childContainer = document.createElement('div');
+      childContainer.className = 'tree-children open';
+      childContainer.dataset.parentPath = entry.path;
+      renderTreeLevel(childContainer, data.get(entry.path).entries, depth + 1, data);
+      container.appendChild(childContainer);
+    }
+  }
+}
+
+function toggleDirectory(path, arrowEl, itemEl) {
+  const data = fileTreeData.get(filesChannelId);
+  if (!data) return;
+
+  if (data.has(path)) {
+    // Collapse: remove cached children.
+    data.delete(path);
+    renderFileTree();
+  } else {
+    // Expand: request listing.
+    e2ee.filesList(filesChannelId, path);
+  }
+}
+
+function selectFile(path, entry) {
+  filesCurrentPath = path;
+  filesCurrentView = 'source';
+
+  // Update active state in tree.
+  fileTree.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
+  const active = fileTree.querySelector(`.tree-item[data-path="${CSS.escape(path)}"]`);
+  if (active) active.classList.add('active');
+
+  // Update header.
+  fileTabName.textContent = path;
+
+  // Show toggle if file has git changes.
+  const hasDiff = entry && (entry.git_status || entry.staged_status);
+  fileViewToggle.style.display = hasDiff ? '' : 'none';
+  fileViewToggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.fileView === 'source'));
+
+  // Load file content.
+  fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  e2ee.fileRead(filesChannelId, path);
+}
+
+// ---- View toggle ----
+fileViewToggle.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-file-view]');
+  if (!btn || !filesCurrentPath) return;
+  const view = btn.dataset.fileView;
+  if (view === filesCurrentView) return;
+  filesCurrentView = view;
+  fileViewToggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.fileView === view));
+
+  fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  if (view === 'diff') {
+    e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+  } else {
+    e2ee.fileRead(filesChannelId, filesCurrentPath);
+  }
+});
+
+// ---- E2EE Event Handlers ----
+
+e2ee.addEventListener('files_list_result', (evt) => {
+  const { channel_id, path, entries, error, truncated } = evt.detail;
+  if (error) { console.warn('files_list error:', error); return; }
+  if (channel_id !== filesChannelId) return;
+
+  if (!fileTreeData.has(channel_id)) fileTreeData.set(channel_id, new Map());
+  const data = fileTreeData.get(channel_id);
+  data.set(path || '', { entries: entries || [], truncated: !!truncated });
+  renderFileTree();
+});
+
+e2ee.addEventListener('file_read_result', (evt) => {
+  const d = evt.detail;
+  if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
+  if (filesCurrentView !== 'source') return;
+
+  if (d.error) {
+    fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
+    return;
+  }
+  if (d.is_binary) {
+    fileContentBody.innerHTML = '<div class="empty-state"><p>Binary file (' + formatBytes(d.size) + ')</p></div>';
+    return;
+  }
+  renderFileContent(d.content, d.path, d.size, d.truncated);
+});
+
+e2ee.addEventListener('file_diff_result', (evt) => {
+  const d = evt.detail;
+  if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
+  if (filesCurrentView !== 'diff') return;
+
+  if (!d.diff) {
+    fileContentBody.innerHTML = '<div class="empty-state"><p>No changes</p></div>';
+    return;
+  }
+  renderDiffContent(d.diff, d.truncated);
+});
+
+// ---- File Content Renderer ----
+
+function renderFileContent(content, path, size, truncated) {
+  const lines = content.split('\n');
+  // Remove trailing empty line from split.
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+  const viewer = document.createElement('div');
+  viewer.className = 'file-viewer';
+
+  const lineNums = document.createElement('div');
+  lineNums.className = 'line-numbers';
+  const codeDiv = document.createElement('div');
+  codeDiv.className = 'code-content';
+
+  const ext = (path.split('.').pop() || '').toLowerCase();
+
+  for (let i = 0; i < lines.length; i++) {
+    const numLine = document.createElement('div');
+    numLine.textContent = String(i + 1);
+    lineNums.appendChild(numLine);
+
+    const codeLine = document.createElement('div');
+    codeLine.innerHTML = highlightLine(lines[i], ext);
+    codeDiv.appendChild(codeLine);
+  }
+
+  viewer.appendChild(lineNums);
+  viewer.appendChild(codeDiv);
+
+  fileContentBody.innerHTML = '';
+  fileContentBody.appendChild(viewer);
+
+  if (truncated) {
+    const note = document.createElement('div');
+    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
+    note.textContent = `File truncated (${formatBytes(size)} total)`;
+    fileContentBody.appendChild(note);
+  }
+}
+
+// ---- Diff Renderer ----
+
+function renderDiffContent(diffText, truncated) {
+  const lines = diffText.split('\n');
+  const viewer = document.createElement('div');
+  viewer.className = 'diff-viewer';
+
+  let oldNum = 0, newNum = 0;
+  for (const line of lines) {
+    // Skip diff header lines (---, +++, diff, index).
+    if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) continue;
+
+    if (line.startsWith('@@')) {
+      // Parse hunk header: @@ -a,b +c,d @@
+      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) { oldNum = parseInt(m[1]); newNum = parseInt(m[2]); }
+      const hdr = document.createElement('div');
+      hdr.className = 'diff-hunk-header';
+      hdr.textContent = line;
+      viewer.appendChild(hdr);
+      continue;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'diff-line';
+
+    const numEl = document.createElement('span');
+    numEl.className = 'dl-num';
+    const contentEl = document.createElement('span');
+    contentEl.className = 'dl-content';
+
+    if (line.startsWith('+')) {
+      row.classList.add('added');
+      numEl.textContent = String(newNum++);
+      contentEl.textContent = line.slice(1);
+    } else if (line.startsWith('-')) {
+      row.classList.add('removed');
+      numEl.textContent = String(oldNum++);
+      contentEl.textContent = line.slice(1);
+    } else {
+      row.classList.add('context');
+      numEl.textContent = String(newNum);
+      oldNum++; newNum++;
+      contentEl.textContent = line.startsWith(' ') ? line.slice(1) : line;
+    }
+
+    row.appendChild(numEl);
+    row.appendChild(contentEl);
+    viewer.appendChild(row);
+  }
+
+  fileContentBody.innerHTML = '';
+  fileContentBody.appendChild(viewer);
+
+  if (truncated) {
+    const note = document.createElement('div');
+    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
+    note.textContent = 'Diff truncated';
+    fileContentBody.appendChild(note);
+  }
+}
+
+// ---- Syntax Highlighting (lightweight) ----
+
+const SYNTAX_RULES = {
+  js: [
+    [/\b(const|let|var|function|return|if|else|for|while|class|import|export|from|default|async|await|new|this|throw|try|catch|finally|switch|case|break|continue|typeof|instanceof|in|of|yield|void|delete)\b/g, 'keyword'],
+    [/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+  ],
+  py: [
+    [/\b(def|class|return|if|elif|else|for|while|import|from|as|with|try|except|finally|raise|yield|lambda|pass|break|continue|and|or|not|is|in|True|False|None|async|await|self)\b/g, 'keyword'],
+    [/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, 'string'],
+    [/#.*$/gm, 'comment'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
+  ],
+  html: [
+    [/<!--[\s\S]*?-->/g, 'comment'],
+    [/(<\/?)([\w-]+)/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\b(\w+)=/g, 'attr'],
+  ],
+  css: [
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\b(\d+\.?\d*)(px|em|rem|%|vh|vw|s|ms)?\b/g, 'number'],
+    [/([.#][\w-]+)/g, 'func'],
+    [/\b(color|background|display|flex|grid|margin|padding|border|font|width|height|position|top|left|right|bottom|z-index|overflow|opacity|transition|transform)\b/g, 'keyword'],
+  ],
+  rs: [
+    [/\b(fn|let|mut|const|pub|struct|enum|impl|trait|use|mod|crate|self|super|match|if|else|for|while|loop|return|break|continue|where|async|await|move|type|as|in|ref|unsafe|extern|dyn|static)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+  ],
+  go: [
+    [/\b(func|var|const|type|struct|interface|map|chan|go|select|case|default|if|else|for|range|return|break|continue|switch|package|import|defer|nil|true|false|make|new|len|cap|append|copy|close|delete|panic|recover)\b/g, 'keyword'],
+    [/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+  ],
+};
+
+// Map file extensions to language.
+const EXT_MAP = {
+  js: 'js', jsx: 'js', ts: 'js', tsx: 'js', mjs: 'js', cjs: 'js',
+  py: 'py', pyi: 'py',
+  html: 'html', htm: 'html', xml: 'html', svg: 'html',
+  css: 'css', scss: 'css', less: 'css',
+  rs: 'rs',
+  go: 'go',
+  json: 'js', jsonc: 'js',
+  sh: 'py', bash: 'py', zsh: 'py',  // close enough for comments/strings
+  rb: 'py', yml: 'py', yaml: 'py', toml: 'py',
+};
+
+function highlightLine(text, ext) {
+  const lang = EXT_MAP[ext];
+  const rules = lang ? SYNTAX_RULES[lang] : null;
+  if (!rules || !text) return escHtml(text || '');
+
+  // Tokenize: find all matches, sort by position, apply non-overlapping.
+  const tokens = [];
+  for (const [re, cls] of rules) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      tokens.push({ start: m.index, end: m.index + m[0].length, cls, text: m[0] });
+    }
+  }
+  tokens.sort((a, b) => a.start - b.start || b.end - a.end);
+
+  let result = '';
+  let pos = 0;
+  for (const tok of tokens) {
+    if (tok.start < pos) continue; // overlapping, skip
+    if (tok.start > pos) result += escHtml(text.slice(pos, tok.start));
+    result += `<span class="tok-${tok.cls}">${escHtml(tok.text)}</span>`;
+    pos = tok.end;
+  }
+  if (pos < text.length) result += escHtml(text.slice(pos));
+  return result || '&nbsp;';
+}
+
+function escHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// ---- Load files on tab switch ----
+
+function onFilesTabActivated() {
+  if (!filesChannelId || filesChannelId !== chatCurrentChannel) {
+    // Reset tree for new channel.
+    fileTreeData.delete(filesChannelId);
+    filesCurrentPath = null;
+    filesCurrentView = 'source';
+    fileTabName.textContent = 'No file selected';
+    fileViewToggle.style.display = 'none';
+    fileContentBody.innerHTML = '<div class="empty-state"><p>Select a file to view contents</p></div>';
+    filesLoadRoot();
+  }
+}
+
+// Hook into tab switching.
+const _origSwitchTab = switchTab;
+switchTab = function(tab) {
+  _origSwitchTab(tab);
+  if (tab === 'files') onFilesTabActivated();
+};
 
 </script>
 </body>

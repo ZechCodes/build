@@ -1361,6 +1361,8 @@ body{
   padding:3rem;text-align:center;gap:12px;color:var(--text-muted);
 }
 .empty-state svg{opacity:.3}
+.loading-spinner{width:24px;height:24px;border:2.5px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
 .empty-state h3{font-size:16px;font-weight:600;color:var(--text)}
 .empty-state p{font-size:13px;max-width:360px;line-height:1.6}
 
@@ -3914,13 +3916,13 @@ function selectChannel(channelId) {
       if (d.chunk_total && d.chunk_total > 1) {
         if (!_imageChunks[d.path] || _imageChunks[d.path].total !== d.chunk_total) {
           _imageChunks[d.path] = { chunks: new Array(d.chunk_total), total: d.chunk_total };
-          fileContentBody.innerHTML = '<div class="empty-state"><p>Loading image... (0/' + d.chunk_total + ')</p></div>';
+          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading image... (0/' + d.chunk_total + ')</p></div>';
         }
         const state = _imageChunks[d.path];
         state.chunks[d.chunk_index] = d.content;
         const received = state.chunks.filter(Boolean).length;
         if (received < state.total) {
-          fileContentBody.innerHTML = '<div class="empty-state"><p>Loading image... (' + received + '/' + state.total + ')</p></div>';
+          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading image... (' + received + '/' + state.total + ')</p></div>';
           return;
         }
         // All chunks received — reassemble.
@@ -5411,7 +5413,7 @@ function selectFile(path, entry, initialView) {
   saveChannelState(filesChannelId, { filesPath: path, filesView: filesCurrentView });
 
   // Load file content.
-  fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+  fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
   if (filesCurrentView === 'diff') {
     e2ee.fileDiff(filesChannelId, path, false);
   } else {
@@ -5448,20 +5450,20 @@ fileFloatToggle.addEventListener('click', (ev) => {
 
   filesCurrentView = view;
   if (view === 'diff') {
-    fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+    fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
     e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
   } else if (view === 'rendered') {
     if (filesLastContent) {
       renderPreview(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
     } else {
-      fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+      fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
       e2ee.fileRead(filesChannelId, filesCurrentPath);
     }
   } else {
     if (filesLastContent) {
       renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
     } else {
-      fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+      fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
       e2ee.fileRead(filesChannelId, filesCurrentPath);
     }
   }

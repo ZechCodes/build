@@ -5467,7 +5467,8 @@ function renderFileContent(content, path, size, truncated) {
     return;
   }
 
-  const ext = (path.match(/\.([^./]+)$/) || ['', ''])[1].toLowerCase();
+  const extMatch = path.match(/\.([^./]+)$/);
+  const ext = extMatch ? extMatch[1].toLowerCase() : path.split('/').pop().toLowerCase();
   const lines = content.split('\n');
   // Remove trailing empty line from split.
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -5610,6 +5611,7 @@ const SYNTAX_RULES = {
     [/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, 'string'],
     [/#.*$/gm, 'comment'],
     [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
+    [/@\w+/g, 'func'],
   ],
   html: [
     [/<!--[\s\S]*?-->/g, 'comment'],
@@ -5640,6 +5642,94 @@ const SYNTAX_RULES = {
     [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
     [/\b([A-Z]\w*)\b/g, 'type'],
   ],
+  yaml: [
+    [/#.*$/gm, 'comment'],
+    [/^(\s*)([\w][\w.\-\/]*)(\s*:)/gm, 'attr'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\b(true|false|yes|no|null|~)\b/gi, 'keyword'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
+    [/(\$\w+|\$\{[^}]+\})/g, 'func'],
+    [/^(\s*-)\s/gm, 'operator'],
+  ],
+  toml: [
+    [/#.*$/gm, 'comment'],
+    [/^\s*\[+[\w.\-"]+\]+/gm, 'type'],
+    [/^(\s*)([\w][\w.\-]*)(\s*=)/gm, 'attr'],
+    [/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, 'string'],
+    [/\b(true|false)\b/g, 'keyword'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
+    [/\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?/g, 'number'],
+  ],
+  sh: [
+    [/#.*$/gm, 'comment'],
+    [/\b(if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|exit|local|export|source|set|unset|readonly|declare|typeset|shift|eval|exec|trap)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/(\$\w+|\$\{[^}]+\}|\$\([^)]+\))/g, 'func'],
+    [/\b(\d+)\b/g, 'number'],
+    [/[|&;><]{1,2}/g, 'operator'],
+  ],
+  docker: [
+    [/#.*$/gm, 'comment'],
+    [/^(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL|MAINTAINER|AS)\b/gmi, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/(\$\w+|\$\{[^}]+\})/g, 'func'],
+    [/\b(\d+)\b/g, 'number'],
+  ],
+  c: [
+    [/\b(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|restrict|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while|_Bool|_Complex|_Imaginary|bool|true|false|NULL|nullptr)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/#\s*(include|define|ifdef|ifndef|endif|if|else|elif|undef|pragma|error|warning)\b/g, 'func'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFlLuU]*|0x[\da-f]+[lLuU]*|0b[01]+[lLuU]*)\b/gi, 'number'],
+    [/\b([A-Z][\w]*_[\w]*|[A-Z]{2,})\b/g, 'type'],
+  ],
+  cpp: [
+    [/\b(alignas|alignof|auto|bool|break|case|catch|char|char8_t|char16_t|char32_t|class|concept|const|consteval|constexpr|constinit|continue|co_await|co_return|co_yield|decltype|default|delete|do|double|dynamic_cast|else|enum|explicit|export|extern|false|float|for|friend|goto|if|inline|int|long|mutable|namespace|new|noexcept|nullptr|operator|override|private|protected|public|register|requires|return|short|signed|sizeof|static|static_assert|static_cast|struct|switch|template|this|thread_local|throw|true|try|typedef|typeid|typename|union|unsigned|using|virtual|void|volatile|wchar_t|while)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/#\s*(include|define|ifdef|ifndef|endif|if|else|elif|undef|pragma|error|warning)\b/g, 'func'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFlLuU]*|0x[\da-f]+[lLuU]*|0b[01]+[lLuU]*)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+  ],
+  cs: [
+    [/\b(abstract|as|base|bool|break|byte|case|catch|char|checked|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|private|protected|public|readonly|ref|return|sbyte|sealed|short|sizeof|stackalloc|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|var|virtual|void|volatile|while|async|await|yield|record|init|required|global)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\$"[^"]*"/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/#\s*(if|else|elif|endif|region|endregion|define|undef|pragma|nullable)\b/g, 'func'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFdDmM]?|0x[\da-f]+[lLuU]*)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+    [/\[\w+\]/g, 'attr'],
+  ],
+  bat: [
+    [/\bREM\b.*$/gmi, 'comment'],
+    [/^\s*::\s.*$/gm, 'comment'],
+    [/\b(echo|set|if|else|goto|call|exit|for|in|do|not|exist|defined|errorlevel|pause|cls|rem|setlocal|endlocal|enabledelayedexpansion|pushd|popd|shift|start|choice|timeout)\b/gi, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/(%\w+%|%~?\d|!\w+!)/g, 'func'],
+    [/\b(\d+)\b/g, 'number'],
+    [/^\s*:\w+/gm, 'type'],
+  ],
+  java: [
+    [/\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|null|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while|true|false|var|record|sealed|permits|yield)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/\/\/.*$/gm, 'comment'],
+    [/\/\*[\s\S]*?\*\//g, 'comment'],
+    [/@\w+/g, 'func'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFdDlL]?|0x[\da-f]+[lL]?)\b/gi, 'number'],
+    [/\b([A-Z]\w*)\b/g, 'type'],
+  ],
+  rb: [
+    [/\b(def|class|module|if|elsif|else|unless|case|when|while|until|for|do|end|begin|rescue|ensure|raise|return|yield|block_given\?|require|require_relative|include|extend|attr_accessor|attr_reader|attr_writer|self|super|nil|true|false|and|or|not|in|then|puts|print|lambda|proc)\b/g, 'keyword'],
+    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
+    [/#.*$/gm, 'comment'],
+    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
+    [/(:\w+)/g, 'attr'],
+    [/(@\w+)/g, 'func'],
+  ],
 };
 
 // Map file extensions to language.
@@ -5651,8 +5741,16 @@ const EXT_MAP = {
   rs: 'rs',
   go: 'go',
   json: 'js', jsonc: 'js',
-  sh: 'py', bash: 'py', zsh: 'py',  // close enough for comments/strings
-  rb: 'py', yml: 'py', yaml: 'py', toml: 'py',
+  sh: 'sh', bash: 'sh', zsh: 'sh',
+  yml: 'yaml', yaml: 'yaml',
+  toml: 'toml', ini: 'toml',
+  c: 'c', h: 'c',
+  cpp: 'cpp', cxx: 'cpp', cc: 'cpp', hpp: 'cpp', hxx: 'cpp', hh: 'cpp',
+  cs: 'cs', csx: 'cs',
+  java: 'java', kt: 'java', kts: 'java',
+  rb: 'rb', rake: 'rb', gemspec: 'rb',
+  bat: 'bat', cmd: 'bat',
+  dockerfile: 'docker',
 };
 
 function highlightLine(text, ext) {

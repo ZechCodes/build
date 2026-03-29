@@ -3839,6 +3839,47 @@ function selectChannel(channelId) {
       }
     }
   });
+
+  // ----- Files view events -----
+
+  e2ee.addEventListener('files_list_result', (evt) => {
+    const { channel_id, path, entries, error, truncated } = evt.detail;
+    if (error) { console.warn('files_list error:', error); return; }
+    if (channel_id !== filesChannelId) return;
+
+    if (!fileTreeData.has(channel_id)) fileTreeData.set(channel_id, new Map());
+    const data = fileTreeData.get(channel_id);
+    data.set(path || '', { entries: entries || [], truncated: !!truncated });
+    renderFileTree();
+  });
+
+  e2ee.addEventListener('file_read_result', (evt) => {
+    const d = evt.detail;
+    if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
+    if (filesCurrentView !== 'source') return;
+
+    if (d.error) {
+      fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
+      return;
+    }
+    if (d.is_binary) {
+      fileContentBody.innerHTML = '<div class="empty-state"><p>Binary file (' + formatBytes(d.size) + ')</p></div>';
+      return;
+    }
+    renderFileContent(d.content, d.path, d.size, d.truncated);
+  });
+
+  e2ee.addEventListener('file_diff_result', (evt) => {
+    const d = evt.detail;
+    if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
+    if (filesCurrentView !== 'diff') return;
+
+    if (!d.diff) {
+      fileContentBody.innerHTML = '<div class="empty-state"><p>No changes</p></div>';
+      return;
+    }
+    renderDiffContent(d.diff, d.truncated);
+  });
 } // end bindE2EEEvents
 
 function renderMessages() {
@@ -5291,47 +5332,6 @@ fileViewToggle.addEventListener('click', (ev) => {
   } else {
     e2ee.fileRead(filesChannelId, filesCurrentPath);
   }
-});
-
-// ---- E2EE Event Handlers ----
-
-e2ee.addEventListener('files_list_result', (evt) => {
-  const { channel_id, path, entries, error, truncated } = evt.detail;
-  if (error) { console.warn('files_list error:', error); return; }
-  if (channel_id !== filesChannelId) return;
-
-  if (!fileTreeData.has(channel_id)) fileTreeData.set(channel_id, new Map());
-  const data = fileTreeData.get(channel_id);
-  data.set(path || '', { entries: entries || [], truncated: !!truncated });
-  renderFileTree();
-});
-
-e2ee.addEventListener('file_read_result', (evt) => {
-  const d = evt.detail;
-  if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
-  if (filesCurrentView !== 'source') return;
-
-  if (d.error) {
-    fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
-    return;
-  }
-  if (d.is_binary) {
-    fileContentBody.innerHTML = '<div class="empty-state"><p>Binary file (' + formatBytes(d.size) + ')</p></div>';
-    return;
-  }
-  renderFileContent(d.content, d.path, d.size, d.truncated);
-});
-
-e2ee.addEventListener('file_diff_result', (evt) => {
-  const d = evt.detail;
-  if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
-  if (filesCurrentView !== 'diff') return;
-
-  if (!d.diff) {
-    fileContentBody.innerHTML = '<div class="empty-state"><p>No changes</p></div>';
-    return;
-  }
-  renderDiffContent(d.diff, d.truncated);
 });
 
 // ---- File Content Renderer ----

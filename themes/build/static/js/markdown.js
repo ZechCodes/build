@@ -90,7 +90,7 @@
       }
 
       // ── horizontal rule ─────────────────────────────────────────────────
-      if (/^(\*\*\*|---|___)\s*$/.test(line)) {
+      if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
         out.push('<hr class="md-hr">');
         i++;
         continue;
@@ -191,7 +191,7 @@
              !lines[i].match(/^>\s?/) &&
              !lines[i].match(/^[\-\*\+]\s+/) &&
              !lines[i].match(/^\d+\.\s+/) &&
-             !lines[i].match(/^(\*\*\*|---|___)\s*$/) &&
+             !lines[i].match(/^(\*{3,}|-{3,}|_{3,})\s*$/) &&
              !(/^\|(.+)\|/.test(lines[i]) && i + 1 < lines.length && /^\|[\s\-:|]+\|/.test(lines[i + 1]))) {
         paraLines.push(lines[i]);
         i++;

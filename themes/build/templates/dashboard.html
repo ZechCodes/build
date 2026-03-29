@@ -1290,15 +1290,22 @@ body{
 .tree-item[data-depth="4"]{padding-left:3.75rem}
 .tree-item[data-depth="5"]{padding-left:4.5rem}
 
-/* Floating file toggle */
+/* Floating file toggle (segmented control) */
 .file-float-toggle{
   position:absolute;bottom:1rem;right:1rem;z-index:5;
-  padding:.4rem .75rem;font-size:12px;font-family:var(--sans);font-weight:500;
+  display:none;font-size:12px;font-family:var(--sans);font-weight:500;
   background:var(--surface-solid, #fff);border:1px solid var(--border);
   border-radius:var(--radius-sm, 6px);box-shadow:0 2px 8px rgba(0,0,0,.1);
-  cursor:pointer;color:var(--text-muted);display:none;
+  overflow:hidden;
 }
-.file-float-toggle:hover{color:var(--accent);border-color:var(--accent)}
+.file-float-toggle button{
+  padding:.4rem .75rem;border:none;background:none;cursor:pointer;
+  color:var(--text-muted);font:inherit;font-weight:500;
+  border-right:1px solid var(--border);
+}
+.file-float-toggle button:last-child{border-right:none}
+.file-float-toggle button:hover{color:var(--accent)}
+.file-float-toggle button.active{background:var(--accent);color:#fff}
 /* Markdown rendered view */
 .file-markdown-view{padding:1.25rem 1.5rem;font-family:var(--sans);font-size:14px;line-height:1.6;overflow-wrap:break-word}
 /* Image preview */
@@ -1910,7 +1917,7 @@ body{
               <p>Select a file to view contents</p>
             </div>
           </div>
-          <button class="file-float-toggle" id="file-float-toggle"></button>
+          <div class="file-float-toggle" id="file-float-toggle"></div>
         </div>
       </div>
     </div>
@@ -5391,82 +5398,45 @@ function updateFloatingToggle() {
     fileFloatToggle.style.display = 'none';
     return;
   }
-  if (filesCurrentIsMarkdown && filesCurrentHasDiff) {
-    // Markdown with changes: cycle rendered → source → diff
-    fileFloatToggle.style.display = 'block';
-    if (filesCurrentView === 'rendered') fileFloatToggle.textContent = 'Source';
-    else if (filesCurrentView === 'source') fileFloatToggle.textContent = 'Diff';
-    else fileFloatToggle.textContent = 'Rendered';
-  } else if (filesCurrentIsMarkdown) {
-    fileFloatToggle.style.display = 'block';
-    fileFloatToggle.textContent = filesCurrentView === 'rendered' ? 'Source' : 'Rendered';
-  } else if (filesCurrentHasDiff) {
-    fileFloatToggle.style.display = 'block';
-    fileFloatToggle.textContent = filesCurrentView === 'diff' ? 'Source' : 'Diff';
-  } else {
+  const tabs = [];
+  if (filesCurrentIsMarkdown) tabs.push({ id: 'rendered', label: 'Preview' });
+  if (filesCurrentHasDiff) tabs.push({ id: 'diff', label: 'Diff' });
+  tabs.push({ id: 'source', label: 'Source' });
+
+  if (tabs.length <= 1) {
     fileFloatToggle.style.display = 'none';
+    return;
   }
+  fileFloatToggle.style.display = 'flex';
+  fileFloatToggle.innerHTML = tabs.map(t =>
+    `<button data-view="${t.id}" class="${filesCurrentView === t.id ? 'active' : ''}">${t.label}</button>`
+  ).join('');
 }
 
 // ---- Floating toggle ----
-fileFloatToggle.addEventListener('click', () => {
-  if (!filesCurrentPath) return;
-  if (filesCurrentIsMarkdown && filesCurrentHasDiff) {
-    // Cycle: rendered → source → diff → rendered
-    if (filesCurrentView === 'rendered') {
-      filesCurrentView = 'source';
-      if (filesLastContent) {
-        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
-      } else {
-        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-        e2ee.fileRead(filesChannelId, filesCurrentPath);
-      }
-    } else if (filesCurrentView === 'source') {
-      filesCurrentView = 'diff';
+fileFloatToggle.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-view]');
+  if (!btn || !filesCurrentPath) return;
+  const view = btn.dataset.view;
+  if (view === filesCurrentView) return;
+
+  filesCurrentView = view;
+  if (view === 'diff') {
+    fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+    e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+  } else if (view === 'rendered') {
+    if (filesLastContent) {
+      renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
+    } else {
       fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-      e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
-    } else {
-      filesCurrentView = 'rendered';
-      if (filesLastContent) {
-        renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
-      } else {
-        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-        e2ee.fileRead(filesChannelId, filesCurrentPath);
-      }
+      e2ee.fileRead(filesChannelId, filesCurrentPath);
     }
-  } else if (filesCurrentIsMarkdown) {
-    // Toggle rendered <-> source.
-    if (filesCurrentView === 'rendered') {
-      filesCurrentView = 'source';
-      if (filesLastContent) {
-        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
-      } else {
-        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-        e2ee.fileRead(filesChannelId, filesCurrentPath);
-      }
+  } else {
+    if (filesLastContent) {
+      renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
     } else {
-      filesCurrentView = 'rendered';
-      if (filesLastContent) {
-        renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
-      } else {
-        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-        e2ee.fileRead(filesChannelId, filesCurrentPath);
-      }
-    }
-  } else if (filesCurrentHasDiff) {
-    // Toggle source <-> diff.
-    if (filesCurrentView === 'diff') {
-      filesCurrentView = 'source';
-      if (filesLastContent) {
-        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
-      } else {
-        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-        e2ee.fileRead(filesChannelId, filesCurrentPath);
-      }
-    } else {
-      filesCurrentView = 'diff';
       fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
-      e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+      e2ee.fileRead(filesChannelId, filesCurrentPath);
     }
   }
   updateFloatingToggle();

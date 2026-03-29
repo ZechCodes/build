@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Build Dashboard -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -5390,7 +5391,13 @@ function updateFloatingToggle() {
     fileFloatToggle.style.display = 'none';
     return;
   }
-  if (filesCurrentIsMarkdown) {
+  if (filesCurrentIsMarkdown && filesCurrentHasDiff) {
+    // Markdown with changes: cycle rendered → source → diff
+    fileFloatToggle.style.display = 'block';
+    if (filesCurrentView === 'rendered') fileFloatToggle.textContent = 'Source';
+    else if (filesCurrentView === 'source') fileFloatToggle.textContent = 'Diff';
+    else fileFloatToggle.textContent = 'Rendered';
+  } else if (filesCurrentIsMarkdown) {
     fileFloatToggle.style.display = 'block';
     fileFloatToggle.textContent = filesCurrentView === 'rendered' ? 'Source' : 'Rendered';
   } else if (filesCurrentHasDiff) {
@@ -5404,7 +5411,30 @@ function updateFloatingToggle() {
 // ---- Floating toggle ----
 fileFloatToggle.addEventListener('click', () => {
   if (!filesCurrentPath) return;
-  if (filesCurrentIsMarkdown) {
+  if (filesCurrentIsMarkdown && filesCurrentHasDiff) {
+    // Cycle: rendered → source → diff → rendered
+    if (filesCurrentView === 'rendered') {
+      filesCurrentView = 'source';
+      if (filesLastContent) {
+        renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
+      } else {
+        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+        e2ee.fileRead(filesChannelId, filesCurrentPath);
+      }
+    } else if (filesCurrentView === 'source') {
+      filesCurrentView = 'diff';
+      fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+      e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+    } else {
+      filesCurrentView = 'rendered';
+      if (filesLastContent) {
+        renderMarkdownFile(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
+      } else {
+        fileContentBody.innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+        e2ee.fileRead(filesChannelId, filesCurrentPath);
+      }
+    }
+  } else if (filesCurrentIsMarkdown) {
     // Toggle rendered <-> source.
     if (filesCurrentView === 'rendered') {
       filesCurrentView = 'source';

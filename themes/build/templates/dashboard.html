@@ -677,8 +677,9 @@ body{
 .md-list li:last-child{margin-bottom:0}
 .md-hr{
   border:none;
-  border-top:1px solid var(--border);
-  margin:.5rem 0;
+  height:1px;
+  background:linear-gradient(to right, transparent, var(--border-strong, var(--border)) 15%, var(--border-strong, var(--border)) 85%, transparent);
+  margin:1.25rem 0;
 }
 .md-img{max-width:100%;border-radius:var(--radius-sm);margin:.3rem 0}
 .md-table-wrap{overflow-x:auto;margin:.5rem 0}
@@ -5381,10 +5382,10 @@ function updateFloatingToggle() {
     return;
   }
   if (filesCurrentIsMarkdown) {
-    fileFloatToggle.style.display = '';
+    fileFloatToggle.style.display = 'block';
     fileFloatToggle.textContent = filesCurrentView === 'rendered' ? 'Source' : 'Rendered';
   } else if (filesCurrentHasDiff) {
-    fileFloatToggle.style.display = '';
+    fileFloatToggle.style.display = 'block';
     fileFloatToggle.textContent = filesCurrentView === 'diff' ? 'Source' : 'Diff';
   } else {
     fileFloatToggle.style.display = 'none';

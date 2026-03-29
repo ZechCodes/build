@@ -1007,6 +1007,7 @@ body{
 .console-working-dot.hidden{display:none}
 @keyframes consolePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 .console-title{font-size:10px;font-weight:600;color:#a1a1aa;text-transform:uppercase;letter-spacing:.04em}
+.console-btns{margin-left:auto;display:flex;gap:.25rem;align-items:center}
 .console-toggle{
   width:20px;height:20px;
   display:flex;align-items:center;justify-content:center;
@@ -1829,12 +1830,14 @@ body{
         <button class="console-tab active" data-console-tab="activity">Activity</button>
         <button class="console-tab" data-console-tab="terminal">Terminal</button>
       </div>
-      <button class="console-toggle hidden" id="console-expand" title="Expand console">
-        <svg viewBox="0 0 14 14" fill="none"><path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="console-toggle" id="console-toggle" title="Collapse console">
-        <svg viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
+      <div class="console-btns">
+        <button class="console-toggle hidden" id="console-expand" title="Expand console">
+          <svg viewBox="0 0 14 14" fill="none"><path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="console-toggle" id="console-toggle" title="Collapse console">
+          <svg viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
     </div>
     <div class="console-body" data-console-panel="activity"></div>
     <div class="console-body console-terminal hidden" data-console-panel="terminal">
@@ -2121,6 +2124,7 @@ document.querySelectorAll('.console-tab').forEach(tab => {
 });
 
 // ----- Terminal -----
+let agentCwd = ''; // fallback cwd from agent process (set by channel_list)
 const terminalCwdMap = new Map(); // channelId -> cwd
 const terminalHistoryMap = new Map(); // channelId -> [{cmd, output}]
 const terminalCmdHistory = []; // global command history for up/down
@@ -2131,7 +2135,7 @@ let terminalCurrentBlock = null; // current streaming output block
 function getTerminalCwd(channelId) {
   if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
   const ch = chatChannels.get(channelId);
-  return ch?.working_directory || '';
+  return ch?.working_directory || agentCwd || '';
 }
 
 function shortCwd(cwd) {
@@ -3087,7 +3091,8 @@ function bindE2EEEvents() {
   // ----- Channel list -----
 
   e2ee.addEventListener('channel_list', (evt) => {
-    const channels = evt.detail;
+    const { channels, agent_cwd } = evt.detail;
+    if (agent_cwd) agentCwd = agent_cwd;
     chatChannels.clear();
     for (const ch of channels) {
       chatChannels.set(ch.id, ch);

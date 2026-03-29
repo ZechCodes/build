@@ -196,7 +196,7 @@ class BuildE2EE extends EventTarget {
     const action = payload.action;
 
     if (action === 'channel_list') {
-      this.dispatchEvent(new CustomEvent('channel_list', { detail: payload.channels }));
+      this.dispatchEvent(new CustomEvent('channel_list', { detail: { channels: payload.channels, agent_cwd: payload.agent_cwd } }));
     } else if (action === 'channel_created') {
       this.dispatchEvent(new CustomEvent('channel_created', { detail: payload.channel }));
     } else if (action === 'messages') {

@@ -2133,6 +2133,9 @@ let terminalCmdIndex = -1;
 let terminalRunning = false;
 let terminalCurrentBlock = null; // current streaming output block
 let terminalCompletionPending = false; // waiting for completions response
+let terminalCompletions = [];  // current completion candidates
+let terminalCompletionIndex = -1; // cycling index (-1 = common prefix)
+let terminalCompletionBase = ''; // line before the partial being completed
 
 function getTerminalCwd(channelId) {
   if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
@@ -2288,10 +2291,27 @@ function finishTerminalCommand(errorData, exitCode) {
   document.getElementById('terminal-input')?.focus();
 }
 
+function clearTerminalCompletions() {
+  terminalCompletions = [];
+  terminalCompletionIndex = -1;
+  terminalCompletionBase = '';
+  document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
+}
+
 document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
     if (terminalCompletionPending || terminalRunning) return;
+
+    // If we already have completions, cycle through them
+    if (terminalCompletions.length > 1) {
+      terminalCompletionIndex = (terminalCompletionIndex + 1) % terminalCompletions.length;
+      const match = terminalCompletions[terminalCompletionIndex];
+      const suffix = match.endsWith('/') ? '' : ' ';
+      e.target.value = terminalCompletionBase + match + suffix;
+      return;
+    }
+
     const line = e.target.value;
     if (!line) return;
     // Extract the partial word (last whitespace-delimited token)
@@ -2303,6 +2323,7 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
       e2ee.terminalComplete(chatCurrentChannel, partial, line, cwd);
     }
   } else if (e.key === 'Enter' && !e.shiftKey) {
+    clearTerminalCompletions();
     e.preventDefault();
     terminalExec(e.target.value.trim());
   } else if (e.key === 'ArrowUp') {
@@ -2320,6 +2341,9 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
       terminalCmdIndex = terminalCmdHistory.length;
       e.target.value = '';
     }
+  } else if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') {
+    // Any other key clears completion state
+    if (terminalCompletions.length) clearTerminalCompletions();
   }
 });
 
@@ -3685,13 +3709,17 @@ function selectChannel(channelId) {
     const input = document.getElementById('terminal-input');
     if (!input) return;
     const line = input.value;
+    const beforePartial = line.slice(0, line.length - partial.length);
+
+    // Remove any previous completion display
+    document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
 
     if (completions.length === 1) {
       // Single match — substitute it in
       const match = completions[0];
       const suffix = match.endsWith('/') ? '' : ' ';
-      const beforePartial = line.slice(0, line.length - partial.length);
       input.value = beforePartial + match + suffix;
+      clearTerminalCompletions();
     } else {
       // Multiple matches — find common prefix and complete that
       let common = completions[0];
@@ -3701,9 +3729,12 @@ function selectChannel(channelId) {
         }
       }
       if (common.length > partial.length) {
-        const beforePartial = line.slice(0, line.length - partial.length);
         input.value = beforePartial + common;
       }
+      // Store for Tab cycling
+      terminalCompletions = completions;
+      terminalCompletionIndex = -1;
+      terminalCompletionBase = beforePartial;
       // Show candidates below the prompt
       const output = document.getElementById('terminal-output');
       if (output) {

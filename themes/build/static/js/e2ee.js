@@ -567,14 +567,16 @@ class BuildE2EE extends EventTarget {
     });
   }
 
-  async sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse) {
-    return this.send({
+  async sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse, selectedOptions) {
+    const payload = {
       action: 'interaction_response',
       channel_id: channelId,
       interaction_id: interactionId,
       selected_option: selectedOption || null,
       freeform_response: freeformResponse || null,
-    });
+    };
+    if (selectedOptions) payload.selected_options = selectedOptions;
+    return this.send(payload);
   }
 
   disconnect() {

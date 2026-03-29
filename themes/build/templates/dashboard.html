@@ -3126,6 +3126,7 @@ function selectChannel(channelId) {
           options: agentEvt.options || [],
           allow_freeform: agentEvt.allow_freeform !== false,
           plan: agentEvt.plan || null,
+          multiselect: !!agentEvt.multiselect,
         }),
       };
       const msgs = chatMessages.get(channel_id) || [];
@@ -3378,6 +3379,7 @@ function appendInteractionCard(msg, meta) {
   const kind = meta.kind || 'question';
   const options = meta.options || [];
   const allowFreeform = meta.allow_freeform !== false;
+  const multiselect = !!meta.multiselect;
   const plan = meta.plan || null;
   const timeStr = msg.created_at ? shortTime(
     typeof msg.created_at === 'number'
@@ -3414,11 +3416,12 @@ function appendInteractionCard(msg, meta) {
 
   if (resolved) {
     const selectedOpt = meta.selected_option || '';
-    // Show options as disabled with selected one highlighted.
+    const selectedOpts = meta.selected_options || [];
+    // Show options as disabled with selected one(s) highlighted.
     if (options.length) {
       cardHtml += `<div class="interaction-options">`;
       for (const opt of options) {
-        const sel = opt.id === selectedOpt ? ' selected' : '';
+        const sel = (selectedOpts.length ? selectedOpts.includes(opt.id) : opt.id === selectedOpt) ? ' selected' : '';
         cardHtml += `<button class="interaction-opt${sel}" disabled>${escapeHtml(opt.label || opt.id)}</button>`;
       }
       cardHtml += `</div>`;
@@ -3427,8 +3430,22 @@ function appendInteractionCard(msg, meta) {
     if (meta.freeform_response) {
       cardHtml += `<div class="interaction-freeform-response">${escapeHtml(meta.freeform_response)}</div>`;
     }
+  } else if (multiselect) {
+    // Multiselect: toggleable buttons + submit.
+    if (options.length) {
+      cardHtml += `<div class="interaction-options multiselect">`;
+      for (const opt of options) {
+        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}">${escapeHtml(opt.label || opt.id)}</button>`;
+      }
+      cardHtml += `</div>`;
+    }
+    cardHtml += `
+      <div class="interaction-freeform">
+        ${allowFreeform ? '<textarea placeholder="Type a response..." rows="1"></textarea>' : ''}
+        <button class="interaction-submit">Submit</button>
+      </div>`;
   } else {
-    // Options.
+    // Single-select: options as instant-submit buttons.
     if (options.length) {
       cardHtml += `<div class="interaction-options">`;
       for (const opt of options) {
@@ -3454,19 +3471,36 @@ function appendInteractionCard(msg, meta) {
   const card = div.querySelector('.interaction-card');
   if (!card || resolved) return;
 
-  // Option buttons.
-  card.querySelectorAll('.interaction-opt').forEach(btn => {
-    btn.addEventListener('click', () => {
-      respondToInteraction(interactionId, btn.dataset.optId, null);
+  if (multiselect) {
+    // Multiselect: toggle buttons on click, submit collects all selected.
+    card.querySelectorAll('.interaction-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.classList.toggle('selected');
+      });
     });
-  });
-
-  // Freeform submit.
-  const submitBtn = card.querySelector('.interaction-submit');
-  if (submitBtn) {
-    submitBtn.addEventListener('click', () => {
-      respondToInteractionFreeform(submitBtn, interactionId);
+    const submitBtn = card.querySelector('.interaction-submit');
+    if (submitBtn) {
+      submitBtn.addEventListener('click', () => {
+        const selected = [...card.querySelectorAll('.interaction-opt.selected')].map(b => b.dataset.optId);
+        const textarea = card.querySelector('.interaction-freeform textarea');
+        const freeform = textarea ? textarea.value.trim() : null;
+        respondToMultiselectInteraction(interactionId, selected, freeform || null);
+      });
+    }
+  } else {
+    // Single-select: option buttons submit immediately.
+    card.querySelectorAll('.interaction-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        respondToInteraction(interactionId, btn.dataset.optId, null);
+      });
     });
+    // Freeform submit.
+    const submitBtn = card.querySelector('.interaction-submit');
+    if (submitBtn) {
+      submitBtn.addEventListener('click', () => {
+        respondToInteractionFreeform(submitBtn, interactionId);
+      });
+    }
   }
 }
 
@@ -3619,6 +3653,27 @@ function respondToInteractionFreeform(btn, interactionId) {
   const text = (textarea ? textarea.value : '').trim();
   if (!text) return;
   respondToInteraction(interactionId, null, text);
+}
+
+function respondToMultiselectInteraction(interactionId, selectedOptions, freeformResponse) {
+  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
+  e2ee.sendInteractionResponse(chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
+  // Mark card as resolved in UI.
+  const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
+  if (card) {
+    card.classList.add('resolved');
+    card.querySelectorAll('.interaction-opt').forEach(btn => {
+      btn.disabled = true;
+      if (!selectedOptions.includes(btn.dataset.optId)) btn.classList.remove('selected');
+    });
+    const ff = card.querySelector('.interaction-freeform');
+    if (ff) ff.remove();
+  }
+  const uc = unreadCounts.get(chatCurrentChannel);
+  if (uc) {
+    uc.hasInteraction = false;
+    renderChannelList();
+  }
 }
 
 function updatePlanModeUI(active) {

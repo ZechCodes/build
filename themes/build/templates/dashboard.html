@@ -1150,6 +1150,7 @@ body{
 .terminal-cmd-output{color:#a1a1aa}
 .terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
 .terminal-cmd-exit.error{color:#f87171}
+.terminal-loader{color:#a1a1aa}
 .terminal-prompt-row{
   display:flex;align-items:center;gap:.4rem;
 }
@@ -2207,6 +2208,30 @@ function terminalExec(command) {
   terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null, cwd });
 
   e2ee.terminalExec(channelId, command, cwd || undefined);
+
+  // Show braille loading animation if no output within 2 seconds.
+  terminalLoadingTimer = setTimeout(() => {
+    if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
+      const loader = document.createElement('span');
+      loader.className = 'terminal-loader';
+      terminalCurrentBlock.outputDiv.appendChild(loader);
+      terminalCurrentBlock.loader = loader;
+      let frame = 0;
+      const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+      terminalLoadingInterval = setInterval(() => {
+        loader.textContent = frames[frame % frames.length];
+        frame++;
+      }, 80);
+    }
+  }, 2000);
+}
+let terminalLoadingTimer = null;
+let terminalLoadingInterval = null;
+
+function clearTerminalLoading() {
+  if (terminalLoadingTimer) { clearTimeout(terminalLoadingTimer); terminalLoadingTimer = null; }
+  if (terminalLoadingInterval) { clearInterval(terminalLoadingInterval); terminalLoadingInterval = null; }
+  if (terminalCurrentBlock?.loader) { terminalCurrentBlock.loader.remove(); terminalCurrentBlock.loader = null; }
 }
 
 document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
@@ -3512,6 +3537,12 @@ function selectChannel(channelId) {
     const sentinel = '__BUILD_CWD__';
 
     if (!done && data) {
+      // First output received — clear loading animation.
+      if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
+        terminalCurrentBlock.hasOutput = true;
+        clearTerminalLoading();
+      }
+
       // Filter out sentinel line from streaming output.
       let text = data;
       if (text.includes(sentinel)) {
@@ -3534,6 +3565,7 @@ function selectChannel(channelId) {
     }
 
     if (done) {
+      clearTerminalLoading();
       // Update cwd.
       if (cwd) {
         terminalCwdMap.set(channel_id, cwd);

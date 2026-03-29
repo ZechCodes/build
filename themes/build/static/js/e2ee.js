@@ -400,6 +400,12 @@ class BuildE2EE extends EventTarget {
     return this.send({ action: 'rename_channel', channel_id: channelId, name });
   }
 
+  async updateChannel(channelId, opts = {}) {
+    const payload = { action: 'update_channel', channel_id: channelId };
+    if (opts.working_directory !== undefined) payload.working_directory = opts.working_directory;
+    return this.send(payload);
+  }
+
   async deleteChannel(channelId) {
     return this.send({ action: 'delete_channel', channel_id: channelId });
   }

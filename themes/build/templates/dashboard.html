@@ -4327,6 +4327,8 @@ function showEditChannelDialog(ch) {
       <h3>Edit Channel</h3>
       <label for="edit-channel-name">Name</label>
       <input type="text" id="edit-channel-name" value="${escapeHtml(ch.name)}" autofocus>
+      <label for="edit-channel-workdir">Working Directory</label>
+      <input type="text" id="edit-channel-workdir" value="${escapeHtml(ch.working_directory || '')}" placeholder="/path/to/project">
       <div class="edit-channel-actions">
         <button class="btn" id="edit-channel-restart">Restart Agent</button>
       </div>
@@ -4354,16 +4356,22 @@ function showEditChannelDialog(ch) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
-  // Save (rename)
+  // Save
+  const workdirInput = document.getElementById('edit-channel-workdir');
   const save = () => {
     const newName = nameInput.value.trim();
     if (newName && newName !== ch.name) {
       e2ee.renameChannel(ch.id, newName);
     }
+    const newWorkdir = workdirInput.value.trim();
+    if (newWorkdir !== (ch.working_directory || '')) {
+      e2ee.updateChannel(ch.id, { working_directory: newWorkdir });
+    }
     close();
   };
   document.getElementById('edit-channel-save').addEventListener('click', save);
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+  workdirInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
 
   // Restart
   document.getElementById('edit-channel-restart').addEventListener('click', () => {

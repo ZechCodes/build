@@ -2136,6 +2136,7 @@ let terminalCompletionPending = false; // waiting for completions response
 let terminalCompletions = [];  // current completion candidates
 let terminalCompletionIndex = -1; // cycling index (-1 = common prefix)
 let terminalCompletionBase = ''; // line before the partial being completed
+let terminalCompletionPartial = ''; // the partial word sent in the request
 
 function getTerminalCwd(channelId) {
   if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
@@ -2295,6 +2296,7 @@ function clearTerminalCompletions() {
   terminalCompletions = [];
   terminalCompletionIndex = -1;
   terminalCompletionBase = '';
+  terminalCompletionPartial = '';
   document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
 }
 
@@ -2320,6 +2322,9 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
     const cwd = getTerminalCwd(chatCurrentChannel);
     if (e2ee && e2ee.connected && chatCurrentChannel) {
       terminalCompletionPending = true;
+      // Save context at request time so the response handler uses the right values
+      terminalCompletionPartial = partial;
+      terminalCompletionBase = line.slice(0, line.length - partial.length);
       e2ee.terminalComplete(chatCurrentChannel, partial, line, cwd);
     }
   } else if (e.key === 'Enter' && !e.shiftKey) {
@@ -3713,12 +3718,13 @@ function selectChannel(channelId) {
 
   e2ee.addEventListener('terminal_completions', (evt) => {
     terminalCompletionPending = false;
-    const { completions, partial } = evt.detail;
+    const { completions } = evt.detail;
     if (!completions || !completions.length) return;
     const input = document.getElementById('terminal-input');
     if (!input) return;
-    const line = input.value;
-    const beforePartial = line.slice(0, line.length - partial.length);
+    // Use the context saved at request time (not the echoed partial)
+    const beforePartial = terminalCompletionBase;
+    const partial = terminalCompletionPartial;
 
     // Remove any previous completion display
     document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
@@ -3743,7 +3749,6 @@ function selectChannel(channelId) {
       // Store for Tab cycling
       terminalCompletions = completions;
       terminalCompletionIndex = -1;
-      terminalCompletionBase = beforePartial;
       // Show candidates below the prompt
       const output = document.getElementById('terminal-output');
       if (output) {

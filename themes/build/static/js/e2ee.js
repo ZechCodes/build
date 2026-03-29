@@ -589,6 +589,10 @@ class BuildE2EE extends EventTarget {
     return this.send(payload);
   }
 
+  async terminalKill(channelId) {
+    return this.send({ action: 'terminal_kill', channel_id: channelId });
+  }
+
   disconnect() {
     this._connected = false;
     this._sessionKey = null;

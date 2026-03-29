@@ -1151,6 +1151,9 @@ body{
 .terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
 .terminal-cmd-exit.error{color:#f87171}
 .terminal-loader{color:#a1a1aa}
+.terminal-kill-btn{position:absolute;bottom:.5rem;left:.5rem;font-size:11px;font-family:var(--mono);padding:.2rem .5rem;border-radius:var(--radius-sm);border:1px solid #f87171;background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;z-index:2}
+.terminal-kill-btn:hover{background:rgba(248,113,113,0.2)}
+.console-terminal{position:relative}
 .terminal-prompt-row{
   display:flex;align-items:center;gap:.4rem;
 }
@@ -1834,13 +1837,14 @@ body{
       </button>
     </div>
     <div class="console-body" data-console-panel="activity"></div>
-    <div class="console-body console-terminal" data-console-panel="terminal" style="display:none">
+    <div class="console-body console-terminal hidden" data-console-panel="terminal">
       <div class="terminal-output" id="terminal-output">
         <div class="terminal-prompt-row" id="terminal-prompt-row">
           <span class="terminal-cwd" id="terminal-cwd"></span>
           <input type="text" class="terminal-input" id="terminal-input" placeholder="">
         </div>
       </div>
+      <button class="terminal-kill-btn hidden" id="terminal-kill-btn" title="Kill process (Ctrl+C)">⌃C</button>
     </div>
   </div>
 </div>
@@ -2209,6 +2213,9 @@ function terminalExec(command) {
 
   e2ee.terminalExec(channelId, command, cwd || undefined);
 
+  // Show kill button while command is running.
+  document.getElementById('terminal-kill-btn')?.classList.remove('hidden');
+
   // Show braille loading animation if no output within 2 seconds.
   terminalLoadingTimer = setTimeout(() => {
     if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
@@ -2253,6 +2260,12 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
       terminalCmdIndex = terminalCmdHistory.length;
       e.target.value = '';
     }
+  }
+});
+
+document.getElementById('terminal-kill-btn')?.addEventListener('click', () => {
+  if (e2ee && e2ee.connected && chatCurrentChannel) {
+    e2ee.terminalKill(chatCurrentChannel);
   }
 });
 
@@ -3566,6 +3579,7 @@ function selectChannel(channelId) {
 
     if (done) {
       clearTerminalLoading();
+      document.getElementById('terminal-kill-btn')?.classList.add('hidden');
       // Update cwd.
       if (cwd) {
         terminalCwdMap.set(channel_id, cwd);

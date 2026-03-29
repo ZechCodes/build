@@ -97,7 +97,7 @@
       }
 
       // ── heading ─────────────────────────────────────────────────────────
-      var headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+      var headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
       if (headingMatch) {
         var level = headingMatch[1].length;
         out.push('<h' + level + ' class="md-h' + level + '">' + inlineMarkdown(escapeHtml(headingMatch[2])) + '</h' + level + '>');
@@ -187,7 +187,7 @@
       var paraLines = [];
       while (i < lines.length && !/^\s*$/.test(lines[i]) &&
              !lines[i].match(/^```/) &&
-             !lines[i].match(/^#{1,3}\s/) &&
+             !lines[i].match(/^#{1,6}\s/) &&
              !lines[i].match(/^>\s?/) &&
              !lines[i].match(/^[\-\*\+]\s+/) &&
              !lines[i].match(/^\d+\.\s+/) &&

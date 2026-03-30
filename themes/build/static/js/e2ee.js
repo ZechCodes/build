@@ -275,6 +275,8 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('channel_updated', { detail: payload }));
     } else if (action === 'files_list_result') {
       this.dispatchEvent(new CustomEvent('files_list_result', { detail: payload }));
+    } else if (action === 'files_changes_result') {
+      this.dispatchEvent(new CustomEvent('files_changes_result', { detail: payload }));
     } else if (action === 'file_read_result') {
       this.dispatchEvent(new CustomEvent('file_read_result', { detail: payload }));
     } else if (action === 'file_diff_result') {
@@ -585,6 +587,10 @@ class BuildE2EE extends EventTarget {
 
   async filesList(channelId, path) {
     return this.send({ action: 'files_list', channel_id: channelId, path: path || '' });
+  }
+
+  async filesChanges(channelId) {
+    return this.send({ action: 'files_changes', channel_id: channelId });
   }
 
   async fileRead(channelId, path, offset, limit) {

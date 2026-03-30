@@ -3973,6 +3973,13 @@ function selectChannel(channelId) {
     }
   });
 
+  e2ee.addEventListener('files_changes_result', (evt) => {
+    const { channel_id, entries } = evt.detail;
+    if (channel_id !== filesChannelId) return;
+    filesChangesData.set(channel_id, entries || []);
+    if (filesTreeTab === 'changes') renderFileTree();
+  });
+
   let _imageChunks = {};  // path -> { chunks: [], total: N }
 
   e2ee.addEventListener('file_read_result', (evt) => {
@@ -5402,6 +5409,7 @@ let filesLastContent = null;        // {path, content, size, truncated} cache fo
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
 let filesTreeTab = 'files';        // 'files' or 'changes'
+const filesChangesData = new Map(); // channelId -> [entry, ...]
 
 // Tree tab switching.
 document.querySelectorAll('.tree-tab').forEach(btn => {
@@ -5410,6 +5418,9 @@ document.querySelectorAll('.tree-tab').forEach(btn => {
     document.querySelectorAll('.tree-tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     filesTreeTab = btn.dataset.treeTab;
+    if (filesTreeTab === 'changes' && filesChannelId && e2ee && e2ee.connected) {
+      e2ee.filesChanges(filesChannelId);
+    }
     renderFileTree();
   });
 });
@@ -5435,7 +5446,8 @@ function renderFileTree() {
   fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty').forEach(n => n.remove());
   const rootEntries = data.get('');
   if (filesTreeTab === 'changes') {
-    renderChangesView(fileTreeInner, data);
+    const changes = filesChangesData.get(filesChannelId);
+    renderChangesView(fileTreeInner, changes);
   } else if (rootEntries) {
     renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
   }
@@ -5549,16 +5561,16 @@ function renderTreeLevel(container, entries, depth, data) {
   }
 }
 
-function renderChangesView(container, data) {
-  // Collect all changed files from all loaded directories.
-  const changed = [];
-  for (const [dirPath, dirData] of data) {
-    for (const entry of dirData.entries) {
-      if (entry.type === 'dir') continue;
-      const hasChange = entry.git_status || entry.staged_status || entry.insertions > 0 || entry.deletions > 0;
-      if (hasChange) changed.push(entry);
-    }
+function renderChangesView(container, entries) {
+  // entries is an array of changed file entries from the backend (or undefined if not yet loaded).
+  if (!entries) {
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'empty-state pad-1-5 changes-empty';
+    loadingDiv.innerHTML = '<div class="loading-spinner"></div><p class="text-xs">Loading changes…</p>';
+    container.appendChild(loadingDiv);
+    return;
   }
+  const changed = entries.slice().sort((a, b) => a.path.localeCompare(b.path));
   if (changed.length === 0) {
     const emptyDiv = document.createElement('div');
     emptyDiv.className = 'empty-state pad-1-5 changes-empty';
@@ -5566,8 +5578,6 @@ function renderChangesView(container, data) {
     container.appendChild(emptyDiv);
     return;
   }
-  // Sort by path.
-  changed.sort((a, b) => a.path.localeCompare(b.path));
   for (const entry of changed) {
     const item = document.createElement('div');
     item.className = 'tree-item';
@@ -6221,6 +6231,7 @@ function onFilesTabActivated() {
   if (!filesChannelId || filesChannelId !== chatCurrentChannel) {
     // Reset tree for new channel.
     fileTreeData.delete(filesChannelId);
+    filesChangesData.delete(filesChannelId);
     filesCurrentPath = null;
     filesCurrentView = 'source';
     filesLastContent = null;

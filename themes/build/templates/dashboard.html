@@ -32,7 +32,7 @@
   --console-surface:rgba(255,255,255,0.06);
   --font:'Inter',system-ui,sans-serif;
   --mono:'JetBrains Mono',monospace;
-  --rail-w:48px;
+
   --console-h:200px;
   --radius:10px;
   --radius-sm:6px;
@@ -65,57 +65,8 @@ body{
   z-index:0;
 }
 
-/* App layout: rail + main */
+/* App layout */
 .app{flex:1;display:flex;overflow:hidden;position:relative}
-
-/* ===== FULL-HEIGHT ICON RAIL ===== */
-.icon-rail{
-  width:var(--rail-w);min-width:var(--rail-w);
-  background:var(--rail-bg);
-  display:flex;flex-direction:column;
-  align-items:center;
-  padding:.75rem 0;gap:.25rem;
-  flex-shrink:0;
-  z-index:20;
-}
-.rail-icon{
-  width:34px;height:34px;
-  display:flex;align-items:center;justify-content:center;
-  border-radius:8px;
-  cursor:pointer;
-  transition:all .12s;
-  position:relative;
-  border:none;background:none;
-  color:#71717a;
-}
-.rail-icon:hover:not(.disabled){color:#a1a1aa;background:rgba(255,255,255,0.06)}
-.rail-icon.active{color:var(--accent);background:rgba(99,102,241,.15)}
-.rail-icon.disabled{color:#3f3f46;cursor:default;opacity:.5}
-.rail-icon svg{width:16px;height:16px}
-.rail-icon .notif{
-  position:absolute;top:4px;right:4px;
-  width:8px;height:8px;border-radius:50%;
-  background:var(--accent);
-  border:2px solid var(--rail-bg);
-}
-.rail-spacer{flex:1}
-.rail-account{
-  display:flex;align-items:center;justify-content:center;
-  width:100%;
-  padding:.25rem 0;
-  text-decoration:none;
-}
-.rail-account .msg-avatar{
-  margin-top:0;
-  box-shadow:0 0 0 1px rgba(99,102,241,0.14);
-  transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
-}
-.rail-account:hover .msg-avatar,
-.rail-account:focus-visible .msg-avatar{
-  transform:translateY(-1px);
-  box-shadow:0 0 0 1px rgba(99,102,241,0.22), 0 4px 12px rgba(99,102,241,0.18);
-  background:rgba(99,102,241,0.14);
-}
 
 /* ===== GLASS CARD ===== */
 .glass{
@@ -131,114 +82,34 @@ body{
   box-shadow:0 4px 12px rgba(0,0,0,0.06);
 }
 
-/* Main content area (right of rail) */
-.main-content{
-  flex:1;display:flex;flex-direction:column;overflow:hidden;
+/* Viewer panel (right column) */
+.viewer-panel{
+  flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;
 }
 
-/* ===== DASHBOARD VIEW ===== */
-#view-dashboard{
-  flex:1;display:none;flex-direction:column;overflow:hidden;
-}
-#view-dashboard.active{display:flex}
-.dash-header{
-  padding:1.5rem 2rem 0;
+/* ===== VIEWER TABS ===== */
+.viewer-tabs{
+  display:flex;align-items:center;gap:0;
+  border-bottom:1px solid var(--border);
   flex-shrink:0;
+  padding:0 .75rem;
+  height:40px;
 }
-.dash-header-top{
-  display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;
-}
-.logo{display:flex;align-items:center;gap:.5rem}
-.logo svg{width:28px;height:28px}
-.logo-text{font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.02em}
-.fleet-label{
-  font-size:13px;color:var(--text-muted);font-weight:500;
-  margin-left:.5rem;
-  padding-left:.75rem;
-  border-left:1px solid var(--border-strong);
-}
-.dash-header-right{margin-left:auto;display:flex;align-items:center;gap:.75rem}
-
-/* Stat cards */
-.stat-row{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;
-  padding:0 2rem;margin-bottom:1.25rem;flex-shrink:0;
-}
-.stat-card{
-  padding:.875rem 1rem;
-  display:flex;flex-direction:column;gap:.2rem;
-}
-.stat-label{font-size:11px;font-weight:500;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
-.stat-value{font-size:22px;font-weight:700;color:var(--text);letter-spacing:-.02em}
-.stat-sub{font-size:11px;color:var(--text-muted);font-weight:400}
-
-/* Device cards */
-.dash-body{
-  flex:1;overflow-y:auto;padding:0 2rem 2rem;
-  display:grid;grid-template-columns:1fr 320px;gap:1.25rem;
-  align-content:start;
-}
-.devices-section{display:flex;flex-direction:column;gap:.75rem}
-.section-title{font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem}
-
-.device-card{
-  padding:1rem 1.125rem;
-  cursor:default;
-  transition:all .15s ease;
-}
-.device-card:hover{
-  background:rgba(255,255,255,0.85);
-  box-shadow:0 4px 12px rgba(0,0,0,0.06);
-}
-.device-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem}
-.device-icon{
-  width:32px;height:32px;border-radius:var(--radius-sm);
-  background:var(--accent-light);
-  display:flex;align-items:center;justify-content:center;
-  flex-shrink:0;
-}
-.device-icon svg{width:16px;height:16px;color:var(--accent)}
-.device-icon.offline{background:var(--red-light)}
-.device-icon.offline svg{color:var(--red)}
-.device-name{font-size:13px;font-weight:600;color:var(--text)}
-.device-status{
-  font-size:11px;font-weight:500;
-  margin-left:auto;
-  display:flex;align-items:center;gap:.3rem;
-}
-.device-status .dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0}
-.device-status .dot.offline{background:var(--red)}
-.device-status span{color:var(--text-muted)}
-
-.agent-list{display:flex;flex-direction:column;gap:.375rem}
-.agent-row{
-  display:flex;align-items:center;gap:.5rem;
-  padding:.5rem .625rem;
-  border-radius:var(--radius-sm);
+.viewer-tab{
+  padding:.5rem .875rem;
+  font-size:13px;font-weight:500;
+  color:var(--text-muted);
   cursor:pointer;
-  transition:all .12s ease;
-  background:rgba(255,255,255,0.5);
-  border:1px solid transparent;
+  border:none;background:none;
+  border-bottom:2px solid transparent;
+  transition:color .12s, border-color .12s;
+  font-family:var(--font);
 }
-.agent-row:hover{
-  background:rgba(99,102,241,0.04);
-  border-color:rgba(99,102,241,0.12);
-}
-.agent-status-dot{
-  width:7px;height:7px;border-radius:50%;flex-shrink:0;
-}
-.agent-status-dot.working{background:var(--green);box-shadow:0 0 0 2px rgba(5,150,105,0.15)}
-.agent-status-dot.idle{background:var(--amber);box-shadow:0 0 0 2px rgba(217,119,6,0.15)}
-.agent-status-dot.stopped{background:var(--red);box-shadow:0 0 0 2px rgba(220,38,38,0.15)}
-.agent-name{font-size:12.5px;font-weight:500;color:var(--text);font-family:var(--mono)}
-.agent-state{font-size:11px;color:var(--text-muted);margin-left:auto;font-weight:400}
-.agent-unread{
-  font-size:10px;font-weight:600;color:#fff;
-  background:var(--accent);
-  min-width:18px;height:18px;border-radius:9px;
-  display:flex;align-items:center;justify-content:center;
-  padding:0 5px;
-  margin-left:.25rem;
+.viewer-tab:hover{color:var(--text)}
+.viewer-tab.active{
+  color:var(--accent);
+  border-bottom-color:var(--accent);
+  font-weight:600;
 }
 
 /* Channel unread badges */
@@ -258,60 +129,77 @@ body{
 .top-dropdown-trigger .ch-unread-badge{margin-left:.4rem}
 .top-dropdown-trigger.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
 
-/* Activity feed */
-.activity-section{display:flex;flex-direction:column;gap:.5rem}
-.activity-feed{
-  padding:1rem;
-  display:flex;flex-direction:column;gap:0;
-  max-height:100%;overflow-y:auto;
-}
-.activity-item{
-  display:flex;gap:.625rem;
-  padding:.625rem 0;
-  border-bottom:1px solid var(--border);
-  font-size:12.5px;
-}
-.activity-item:last-child{border-bottom:none}
-.activity-time{color:var(--text-muted);font-size:11px;white-space:nowrap;min-width:42px;font-weight:400}
-.activity-text{color:var(--text);line-height:1.45}
-.activity-text strong{font-weight:600}
-.activity-text .mono{font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:500}
-
-/* ===== WORKSPACE VIEW ===== */
-#view-workspace{
-  flex:1;display:none;flex-direction:column;overflow:hidden;
-}
-#view-workspace.active{display:flex}
-
-/* Top bar */
-.top-bar{
-  height:40px;
-  border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:.75rem;
-  padding:0 1rem;
+/* ===== CHANNEL PANEL (left column) ===== */
+.channel-panel{
+  width:260px;min-width:220px;
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  background:rgba(255,255,255,0.4);
   flex-shrink:0;
-  z-index:20;
 }
-.top-separator{width:1px;height:16px;background:rgba(0,0,0,.15);flex-shrink:0}
-.top-e2ee-status{
+.channel-panel-list{flex:1;overflow-y:auto;padding:.375rem 0}
+.channel-panel-list::-webkit-scrollbar{width:5px}
+.channel-panel-list::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:3px}
+.channel-panel-footer{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.5rem .6rem .75rem;
+  flex-shrink:0;
+}
+.channel-panel-footer .sidebar-new-session{flex:1}
+.channel-panel-footer .panel-account{
   display:flex;align-items:center;justify-content:center;
-  width:20px;height:20px;flex-shrink:0;
-  cursor:default;
+  text-decoration:none;flex-shrink:0;
 }
-.top-e2ee-status svg{width:14px;height:14px;color:var(--green)}
-.top-e2ee-status .top-e2ee-dot{
-  width:7px;height:7px;border-radius:50%;
+.channel-panel-footer .panel-account .msg-avatar{
+  margin-top:0;
+  box-shadow:0 0 0 1px rgba(99,102,241,0.14);
+  transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.channel-panel-footer .panel-account:hover .msg-avatar{
+  transform:translateY(-1px);
+  box-shadow:0 0 0 1px rgba(99,102,241,0.22), 0 4px 12px rgba(99,102,241,0.18);
+  background:rgba(99,102,241,0.14);
+}
+
+/* Device groups in channel panel */
+.device-group{}
+.device-group-header{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.5rem .75rem;
+  cursor:pointer;
+  font-size:11px;font-weight:600;
+  color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.04em;
+  user-select:none;
+  transition:background .1s;
+}
+.device-group-header:hover{background:rgba(0,0,0,0.02)}
+.device-group-chevron{
+  width:12px;height:12px;flex-shrink:0;
+  transition:transform .15s;
+  color:var(--text-muted);
+}
+.device-group-chevron.collapsed{transform:rotate(-90deg)}
+.device-group-dot{
+  width:6px;height:6px;border-radius:50%;flex-shrink:0;
   background:var(--text-muted);
 }
-.top-e2ee-status .top-e2ee-dot.connected{background:var(--green)}
-.top-e2ee-status .top-e2ee-dot.connecting{background:var(--amber);animation:pulse 1.5s infinite}
-.top-e2ee-status .top-e2ee-dot.error{background:var(--red)}
+.device-group-dot.online{background:var(--green)}
+.device-group-dot.offline{background:var(--red)}
+.device-group-e2ee{
+  width:6px;height:6px;border-radius:50%;flex-shrink:0;
+  background:transparent;margin-left:auto;
+}
+.device-group-e2ee.connected{background:var(--green)}
+.device-group-e2ee.connecting{background:var(--amber);animation:pulse 1.5s infinite}
+.device-group-e2ee.error{background:var(--red)}
+.device-group-channels{}
+.device-group-channels.collapsed{display:none}
 /* Custom dropdowns */
 .top-dropdown{
   position:relative;flex-shrink:1;min-width:0;
 }
-#device-dropdown{width:160px;max-width:35vw}
-#channel-dropdown{width:180px;max-width:40vw}
 .top-dropdown-trigger{
   display:flex;align-items:center;gap:.35rem;
   width:100%;
@@ -395,7 +283,7 @@ body{
 .complications{
   position:relative;
   flex-shrink:0;
-  border-bottom:1px solid var(--border);
+  border-top:1px solid var(--border);
   z-index:5;
 }
 .comp-scroll{
@@ -437,8 +325,8 @@ body{
 .comp.clickable{cursor:pointer}
 .comp.clickable:hover{background:rgba(255,255,255,.9);border-color:rgba(0,0,0,.12)}
 .comp-popover{
-  position:absolute;top:100%;left:0;right:0;
-  background:var(--bg);border-bottom:1px solid var(--border);
+  position:absolute;bottom:100%;left:0;right:0;
+  background:var(--bg);border-top:1px solid var(--border);
   padding:.5rem .75rem;z-index:6;
   font-size:11px;color:var(--text);
   display:flex;flex-wrap:wrap;gap:.5rem;align-items:flex-start;
@@ -459,13 +347,8 @@ body{
 .comp-popover .cp-btn:disabled{opacity:.4;cursor:default}
 .comp-popover .cp-btn:disabled:hover{background:var(--bg)}
 
-/* Workspace body (above console) */
-.workspace-body{
-  flex:1;display:flex;overflow:hidden;
-}
-
-/* Tab content area (complications + tab panels) */
-.tab-content-area{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+/* Viewer body (tab panels) */
+.viewer-body{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
 /* Tab panels */
 .tab-panel{flex:1;display:none;overflow:hidden}
 .tab-panel.active{display:flex}
@@ -473,14 +356,6 @@ body{
 /* ===== CHAT TAB ===== */
 .chat-layout{flex:1;display:flex;overflow:hidden;position:relative}
 
-/* Sidebar device section */
-.sidebar-device-section{
-  display:flex;align-items:center;gap:.35rem;
-  padding:.625rem .75rem;
-  border-bottom:1px solid var(--border);
-  flex-shrink:0;
-}
-.sidebar-device-section .top-dropdown{width:auto;flex:1;min-width:0}
 /* New Session button */
 .sidebar-new-session-wrap{
   flex-shrink:0;
@@ -504,45 +379,6 @@ body{
   border-color:var(--accent);
   color:var(--accent);
 }
-/* Channel sidebar (desktop) */
-.channel-sidebar{
-  width:220px;min-width:180px;
-  border-right:1px solid var(--border);
-  display:flex;flex-direction:column;
-  overflow:hidden;
-  background:rgba(255,255,255,0.4);
-  flex-shrink:0;
-}
-.channel-sidebar-header{
-  padding:.625rem .75rem;
-  border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:.5rem;
-  flex-shrink:0;
-}
-.channel-sidebar-title{
-  font-size:11px;font-weight:600;
-  color:var(--text-muted);
-  text-transform:uppercase;letter-spacing:.04em;
-  flex:1;
-}
-.channel-sidebar-new{
-  width:22px;height:22px;
-  border-radius:var(--radius-xs);
-  border:1px solid var(--border);
-  background:none;
-  display:flex;align-items:center;justify-content:center;
-  cursor:pointer;color:var(--text-muted);
-  transition:all .12s;
-}
-.channel-sidebar-new:hover{
-  background:var(--accent-light);
-  border-color:var(--accent);
-  color:var(--accent);
-}
-.channel-sidebar-new svg{width:12px;height:12px}
-.channel-sidebar-list{flex:1;overflow-y:auto;padding:.375rem 0}
-.channel-sidebar-list::-webkit-scrollbar{width:5px}
-.channel-sidebar-list::-webkit-scrollbar-thumb{background:rgba(0,0,0,.12);border-radius:3px}
 .channel-sidebar-item{
   display:flex;align-items:center;gap:.4rem;
   padding:.45rem .75rem;
@@ -1578,8 +1414,42 @@ body{
   .dd-item-edit{opacity:1}
   .channel-sidebar-item .ch-edit{opacity:1}
 }
+/* Mobile nav bar (hidden on desktop) */
+.mobile-nav{
+  display:none;
+  align-items:center;
+  gap:.5rem;
+  padding:0 .75rem;
+  height:44px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.mobile-nav .mobile-channel-trigger{
+  flex:1;min-width:0;
+  display:flex;align-items:center;gap:.35rem;
+  font-size:13px;font-weight:600;color:var(--text);
+  background:transparent;border:1px solid transparent;
+  border-radius:var(--radius-xs);padding:.25rem .5rem;
+  cursor:pointer;transition:all .12s;
+  white-space:nowrap;overflow:hidden;
+}
+.mobile-nav .mobile-channel-trigger:hover{border-color:var(--border-strong);background:var(--surface)}
+.mobile-nav .mobile-channel-trigger span{overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.mobile-nav .viewer-tab{padding:.35rem .6rem;font-size:12px}
 @media(max-width:768px),(max-height:500px){
-  .channel-sidebar{display:none}
+  .channel-panel{display:none}
+  .channel-panel.mobile-open{
+    display:flex;
+    position:absolute;top:44px;left:0;right:0;
+    width:100%;min-width:0;
+    max-height:60vh;
+    z-index:30;
+    border-right:none;border-bottom:1px solid var(--border);
+    background:var(--bg, #fff);
+    box-shadow:0 4px 16px rgba(0,0,0,.12);
+  }
+  .mobile-nav{display:flex !important}
+  .viewer-tabs{display:none}
   .chat-input,
   .new-channel-dialog input,
   .new-channel-dialog select,
@@ -1603,10 +1473,6 @@ body{
   }
   .file-tree-panel.mobile-open{display:flex}
 }
-@media(min-width:769px) and (min-height:501px){
-  #channel-dropdown{display:none}
-  .top-bar{display:none}
-}
 .pad-2{padding:2rem}
 .pad-1-5{padding:1.5rem}
 .text-xs{font-size:12px}
@@ -1622,184 +1488,50 @@ body{
 
 <div class="app content-area">
 
-<!-- ===== FULL-HEIGHT ICON RAIL ===== -->
-<div class="icon-rail" id="main-rail">
-  <!-- Dashboard -->
-  <button class="rail-icon active" data-rail="dashboard" title="Dashboard">
-    <svg viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
-  </button>
-  <!-- Chat -->
-  <button class="rail-icon disabled" data-rail="chat" title="Chat">
-    <svg viewBox="0 0 20 20" fill="none"><path d="M3 4.5A1.5 1.5 0 014.5 3h11A1.5 1.5 0 0117 4.5v8a1.5 1.5 0 01-1.5 1.5H7l-3 3v-3H4.5A1.5 1.5 0 013 12.5v-8z" stroke="currentColor" stroke-width="1.5"/></svg>
-  </button>
-  <!-- Planning -->
-  <button class="rail-icon disabled" data-rail="planning" title="Planning">
-    <svg viewBox="0 0 20 20" fill="none"><rect x="3" y="2" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M7 6h6M7 9.5h6M7 13h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-  </button>
-  <!-- Files -->
-  <button class="rail-icon disabled" data-rail="files" title="Files">
-    <svg viewBox="0 0 20 20" fill="none"><path d="M3 5.5A1.5 1.5 0 014.5 4h3.172a1.5 1.5 0 011.06.44l.768.767a1.5 1.5 0 001.06.439H15.5A1.5 1.5 0 0117 7.146V14.5a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 14.5v-9z" stroke="currentColor" stroke-width="1.5"/></svg>
-  </button>
-
-  <div class="rail-spacer"></div>
-
-  <a
-    class="rail-account"
-    href="/admin/"
-    title="{{ user_name }}"
-    aria-label="Open account"
-  >
-    <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
-  </a>
-
-</div>
-
-<!-- ===== MAIN CONTENT AREA ===== -->
-<div class="main-content">
-
-<!-- ===== DASHBOARD VIEW ===== -->
-<div id="view-dashboard" class="active">
-  <div class="dash-header">
-    <div class="dash-header-top">
-      <div class="logo">
-        <svg viewBox="0 0 28 28" fill="none"><rect x="2" y="2" width="24" height="24" rx="6" fill="#6366f1" opacity=".12"/><path d="M9 10.5L14 7l5 3.5v7L14 21l-5-3.5v-7z" stroke="#6366f1" stroke-width="1.5" fill="none"/><circle cx="14" cy="14" r="2" fill="#6366f1"/><line x1="14" y1="12" x2="14" y2="7" stroke="#6366f1" stroke-width="1.2"/><line x1="14" y1="16" x2="14" y2="21" stroke="#6366f1" stroke-width="1.2"/><line x1="12.3" y1="13" x2="9" y2="10.5" stroke="#6366f1" stroke-width="1.2"/><line x1="15.7" y1="15" x2="19" y2="17.5" stroke="#6366f1" stroke-width="1.2"/><line x1="15.7" y1="13" x2="19" y2="10.5" stroke="#6366f1" stroke-width="1.2"/><line x1="12.3" y1="15" x2="9" y2="17.5" stroke="#6366f1" stroke-width="1.2"/></svg>
-        <span class="logo-text">Build</span>
-      </div>
-      <span class="fleet-label">Fleet Overview</span>
-      <div class="dash-header-right"></div>
-    </div>
-  </div>
-
-  <div class="stat-row">
-    <div class="stat-card glass">
-      <div class="stat-label">Devices</div>
-      <div class="stat-value" id="stat-devices">0</div>
-      <div class="stat-sub" id="stat-devices-sub">No devices registered</div>
-    </div>
-    <div class="stat-card glass">
-      <div class="stat-label">Online</div>
-      <div class="stat-value" id="stat-online">0</div>
-      <div class="stat-sub" id="stat-online-sub">0 offline</div>
-    </div>
-    <div class="stat-card glass">
-      <div class="stat-label">Last Heartbeat</div>
-      <div class="stat-value" id="stat-heartbeat">&mdash;</div>
-      <div class="stat-sub" id="stat-heartbeat-sub">No data yet</div>
-    </div>
-    <div class="stat-card glass">
-      <div class="stat-label">Missed Beats</div>
-      <div class="stat-value" id="stat-missed">0</div>
-      <div class="stat-sub" id="stat-missed-sub">Last 7 days</div>
-    </div>
-  </div>
-
-  <div class="dash-body">
-    <div class="devices-section">
-      <div class="section-title">Devices</div>
-      <div id="device-grid">
-        <div class="empty-state glass pad-2" id="devices-empty">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-          </svg>
-          <h3>No devices yet</h3>
-          <p>Register a device to start managing your agent fleet. Devices connect securely using E2E encrypted transport.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="activity-section">
-      <div class="section-title">Recent Activity</div>
-      <div class="activity-feed glass" id="activity-feed">
-        <div class="activity-item">
-          <span class="activity-time">now</span>
-          <span class="activity-text"><strong>Dashboard</strong> initialized &mdash; waiting for device connections</span>
-        </div>
-      </div>
-    </div>
+<!-- ===== CHANNEL PANEL (left column) ===== -->
+<div class="channel-panel" id="channel-panel">
+  <div class="channel-panel-list" id="channel-panel-list"></div>
+  <div class="channel-panel-footer">
+    <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">
+      <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      New Session
+    </button>
+    <a class="panel-account" href="/admin/" title="{{ user_name }}" aria-label="Open account">
+      <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
+    </a>
   </div>
 </div>
 
-<!-- ===== WORKSPACE VIEW ===== -->
-<div id="view-workspace">
-  <!-- Top bar -->
-  <div class="top-bar">
-    <div class="top-e2ee-status" id="top-e2ee-status" title="Not connected">
-      <div class="top-e2ee-dot" id="top-e2ee-dot"></div>
-    </div>
-    <!-- Device dropdown -->
-    <div class="top-dropdown" id="device-dropdown">
-      <div class="top-dropdown-trigger" id="device-dropdown-trigger">
-        <span id="device-dropdown-label">Device</span>
-        <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      </div>
-      <div class="top-dropdown-menu" id="device-dropdown-menu">
-        <div class="top-dropdown-list" id="device-dropdown-list"></div>
-      </div>
-    </div>
-    <span class="top-separator"></span>
-    <!-- Channel dropdown -->
-    <div class="top-dropdown" id="channel-dropdown">
-      <div class="top-dropdown-trigger" id="channel-dropdown-trigger">
-        <span class="dd-hash">#</span>
-        <span id="channel-dropdown-label">Channel</span>
-        <span class="ch-unread-badge hidden" id="channel-dropdown-badge"></span>
-        <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      </div>
-      <div class="top-dropdown-menu" id="channel-dropdown-menu">
-        <div class="top-dropdown-list" id="channel-dropdown-list"></div>
-        <div class="dd-footer">
-          <button class="dd-footer-btn" id="dd-new-channel">
-            <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            New Channel
-          </button>
-        </div>
-      </div>
-    </div>
+<!-- ===== VIEWER PANEL (right column) ===== -->
+<div class="viewer-panel">
+  <!-- Mobile nav (hidden on desktop) -->
+  <div class="mobile-nav" id="mobile-nav">
+    <button class="mobile-channel-trigger" id="mobile-channel-trigger">
+      <span class="dd-hash">#</span>
+      <span id="mobile-channel-label">Select channel</span>
+      <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+    </button>
+    <button class="viewer-tab active" data-tab="chat">Chat</button>
+    <button class="viewer-tab" data-tab="planning">Planning</button>
+    <button class="viewer-tab" data-tab="files">Files</button>
   </div>
-
-  <!-- Workspace body -->
-  <div class="workspace-body">
-    <!-- Column 1: Device selector + Channel list (shared across tabs) -->
-    <div class="channel-sidebar" id="channel-sidebar">
-      <div class="sidebar-device-section">
-        <div class="top-e2ee-status sidebar-e2ee-status" id="sidebar-e2ee-status" title="Not connected">
-          <div class="top-e2ee-dot sidebar-e2ee-dot" id="sidebar-e2ee-dot"></div>
-        </div>
-        <div class="top-dropdown" id="sidebar-device">
-          <div class="top-dropdown-trigger" id="sidebar-device-trigger">
-            <span id="sidebar-device-label">Device</span>
-            <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-          </div>
-          <div class="top-dropdown-menu" id="sidebar-device-menu">
-            <div class="top-dropdown-list" id="sidebar-device-list"></div>
-          </div>
-        </div>
-      </div>
-      <div class="channel-sidebar-list" id="channel-sidebar-list"></div>
-      <div class="sidebar-new-session-wrap">
-        <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">
-          <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          New Session
-        </button>
-      </div>
-    </div>
-    <!-- Complications (shared across tabs) -->
-    <div class="tab-content-area">
-      <div class="comp-wrapper">
-        <div class="complications hidden" id="complications">
-          <div class="comp-scroll" id="comp-scroll"></div>
-        </div>
-        <div class="comp-popover hidden" id="comp-popover"></div>
-      </div>
+  <!-- Tabs (desktop) -->
+  <div class="viewer-tabs" id="viewer-tabs">
+    <button class="viewer-tab active" data-tab="chat">Chat</button>
+    <button class="viewer-tab" data-tab="planning">Planning</button>
+    <button class="viewer-tab" data-tab="files">Files</button>
+  </div>
+  <!-- Hidden elements for JS references (e2ee status source) -->
+  <div hidden>
+    <button id="btn-new-channel"></button>
+    <span class="e2ee-dot" id="e2ee-dot"></span>
+    <span id="e2ee-label">Not connected</span>
+  </div>
+  <!-- Tab panels -->
+  <div class="viewer-body">
     <!-- ===== CHAT TAB ===== -->
     <div class="tab-panel active" id="tab-chat">
       <div class="chat-layout">
-        <!-- Hidden elements for JS references (e2ee status source, new-channel trigger) -->
-        <div hidden>
-          <button id="btn-new-channel"></button>
-          <span class="e2ee-dot" id="e2ee-dot"></span>
-          <span id="e2ee-label">Not connected</span>
-        </div>
         <div class="chat-main">
           <div class="device-down-banner" id="device-down-banner">
             <svg viewBox="0 0 16 16" fill="none"><path d="M8 1.5l6.5 13H1.5L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="11.5" r=".75" fill="currentColor"/></svg>
@@ -1978,9 +1710,14 @@ body{
         </div>
       </div>
     </div>
-    </div><!-- .tab-content-area -->
+  </div><!-- .viewer-body -->
+  <!-- Complications (shared across tabs) -->
+  <div class="comp-wrapper">
+    <div class="complications hidden" id="complications">
+      <div class="comp-scroll" id="comp-scroll"></div>
+    </div>
+    <div class="comp-popover hidden" id="comp-popover"></div>
   </div>
-
   <!-- ===== BOTTOM CONSOLE ===== -->
   <div class="console-bottom collapsed" id="console-bottom">
     <div class="console-drag" id="console-drag"></div>
@@ -2011,9 +1748,7 @@ body{
       <button class="terminal-kill-btn hidden" id="terminal-kill-btn" title="Kill process (Ctrl+C)">⌃C</button>
     </div>
   </div>
-</div>
-
-</div><!-- /main-content -->
+</div><!-- /viewer-panel -->
 </div><!-- /app -->
 
 <!-- Skrift notification SSE client -->
@@ -2025,7 +1760,6 @@ body{
 
 <script nonce="{{ csp_nonce() }}">
 // ===== UI State =====
-let currentView = 'dashboard';
 let currentTab = 'chat';
 let selectedAgent = null;
 let consoleState = 'collapsed'; // 'collapsed' | 'open' | 'expanded'
@@ -2038,116 +1772,161 @@ const activityItems = [];
 const MAX_ACTIVITY = 50;
 
 // ===== DOM References =====
-const rail = document.getElementById('main-rail');
-const viewDash = document.getElementById('view-dashboard');
-const viewWork = document.getElementById('view-workspace');
 const consoleBtm = document.getElementById('console-bottom');
 const consoleToggle = document.getElementById('console-toggle');
 const consoleExpand = document.getElementById('console-expand');
-const railIcons = rail.querySelectorAll('.rail-icon[data-rail]');
 
-// ===== Rail Navigation =====
-function setRailState(agentSelected) {
-  railIcons.forEach(btn => {
-    const r = btn.dataset.rail;
-    if (r === 'dashboard') {
-      btn.classList.remove('disabled');
-    } else {
-      if (agentSelected) {
-        btn.classList.remove('disabled');
-      } else {
-        btn.classList.add('disabled');
-        btn.classList.remove('active');
-      }
-    }
-  });
-}
-
-function setActiveRail(railName) {
-  railIcons.forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.rail === railName);
-  });
-}
-
-function switchView(view, tab) {
-  currentView = view;
-  if (view === 'dashboard') {
-    viewDash.classList.add('active');
-    viewWork.classList.remove('active');
-    consoleBtm.classList.add('hidden');
-    setActiveRail('dashboard');
-  } else {
-    viewDash.classList.remove('active');
-    viewWork.classList.add('active');
-    consoleBtm.classList.remove('hidden');
-    currentTab = tab || currentTab;
-    setActiveRail(currentTab);
-    switchTab(currentTab);
-  }
-}
-
+// ===== Tab Navigation =====
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   const panel = document.getElementById('tab-' + tab);
   if (panel) panel.classList.add('active');
-  setActiveRail(tab);
+  // Sync all tab buttons (desktop + mobile)
+  document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  if (tab === 'files') onFilesTabActivated();
 }
 
-railIcons.forEach(btn => {
+// Tab click handlers (both desktop and mobile)
+document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
-    if (btn.classList.contains('disabled')) return;
-    const r = btn.dataset.rail;
-    if (r === 'dashboard') {
-      switchView('dashboard');
-      location.hash = 'dashboard';
+    const tab = btn.dataset.tab;
+    switchTab(tab);
+    if (tab === 'chat' && chatCurrentChannel) {
+      location.hash = `chat/${chatCurrentChannel}`;
     } else {
-      switchView('workspace', r);
-      if (r === 'chat' && chatCurrentChannel) {
-        location.hash = `chat/${chatCurrentChannel}`;
-      } else {
-        location.hash = r;
-      }
+      location.hash = tab;
     }
   });
 });
 
-function renderDeviceSelect(selectedDeviceName) {
-  // Populate both topbar and sidebar device dropdowns
-  const targets = [
-    { label: document.getElementById('device-dropdown-label'), list: document.getElementById('device-dropdown-list') },
-    { label: document.getElementById('sidebar-device-label'), list: document.getElementById('sidebar-device-list') },
-  ];
-  const sorted = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
-  for (const { label, list } of targets) {
-    if (!list) continue;
-    if (selectedDeviceName && label) label.textContent = selectedDeviceName;
-    list.innerHTML = '';
-    for (const d of sorted) {
-      const item = document.createElement('div');
-      item.className = 'dd-item' + (d.name === selectedDeviceName ? ' active' : '');
-      item.innerHTML = `<span class="dd-item-label">${escapeHtml(d.name)}</span><button class="dd-item-edit" title="Edit device"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
-      item.addEventListener('click', (e) => {
-        if (e.target.closest('.dd-item-edit')) return;
-        selectAgent(d.name, d.name);
-        closeAllDropdowns();
-      });
-      item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
-        e.stopPropagation();
-        closeAllDropdowns();
-        showEditDeviceDialog(d);
-      });
-      list.appendChild(item);
+// ===== Channel Panel =====
+function renderChannelPanel() {
+  const list = document.getElementById('channel-panel-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const sortedDevices = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const connectedDeviceName = selectedAgent?.device;
+
+  for (const device of sortedDevices) {
+    const group = document.createElement('div');
+    group.className = 'device-group';
+
+    const isConnected = connectedDeviceName === device.name;
+    const isOnline = device.status === 'online';
+
+    // Group header
+    const header = document.createElement('div');
+    header.className = 'device-group-header';
+
+    const chevronClass = isConnected ? '' : ' collapsed';
+    const dotClass = isOnline ? ' online' : ' offline';
+    // E2EE indicator for connected device
+    let e2eeClass = '';
+    if (isConnected) {
+      const e2eeDot = document.getElementById('e2ee-dot');
+      if (e2eeDot) {
+        if (e2eeDot.classList.contains('connected')) e2eeClass = ' connected';
+        else if (e2eeDot.classList.contains('connecting')) e2eeClass = ' connecting';
+        else if (e2eeDot.classList.contains('error')) e2eeClass = ' error';
+      }
     }
+
+    header.innerHTML = `
+      <svg class="device-group-chevron${chevronClass}" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="device-group-dot${dotClass}"></span>
+      <span>${escapeHtml(device.name)}</span>
+      <span class="device-group-e2ee${e2eeClass}"></span>
+    `;
+
+    header.addEventListener('click', () => {
+      if (isConnected) {
+        // Toggle collapse
+        const channels = group.querySelector('.device-group-channels');
+        if (channels) channels.classList.toggle('collapsed');
+        header.querySelector('.device-group-chevron').classList.toggle('collapsed');
+      } else if (isOnline && device.has_transport_key) {
+        // Connect to this device
+        connectToDevice(device);
+      }
+    });
+    group.appendChild(header);
+
+    // Channels (only for connected device)
+    if (isConnected) {
+      const channelsDiv = document.createElement('div');
+      channelsDiv.className = 'device-group-channels';
+      const sorted = [...chatChannels.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      for (const ch of sorted) {
+        const item = createChannelItem(ch);
+        channelsDiv.appendChild(item);
+      }
+      group.appendChild(channelsDiv);
+    }
+
+    list.appendChild(group);
   }
+
+  // Also update mobile channel label
+  updateMobileChannelLabel();
+}
+
+function createChannelItem(ch) {
+  const item = document.createElement('div');
+  const isActive = ch.id === chatCurrentChannel;
+  const uc = (typeof unreadCounts !== 'undefined') ? unreadCounts.get(ch.id) : null;
+  const count = uc?.messages || 0;
+  const hasInt = uc?.hasInteraction || false;
+  item.className = 'channel-sidebar-item' + (isActive ? ' active' : '') + (hasInt ? ' has-interaction' : '');
+
+  const name = ch.name || ch.id.slice(0, 8);
+  const badgeHtml = count > 0 ? `<span class="ch-unread-badge">${count}</span>` : '';
+  item.innerHTML = `
+    <span class="ch-hash">#</span>
+    <span class="ch-name">${escapeHtml(name)}</span>
+    ${badgeHtml}
+    <button class="ch-edit" title="Edit channel"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  `;
+
+  item.addEventListener('click', (e) => {
+    if (e.target.closest('.ch-edit')) return;
+    selectChannel(ch.id);
+  });
+  const editBtn = item.querySelector('.ch-edit');
+  if (editBtn) {
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showEditChannelDialog(ch);
+    });
+  }
+  return item;
+}
+
+function updateMobileChannelLabel() {
+  const label = document.getElementById('mobile-channel-label');
+  if (!label) return;
+  if (chatCurrentChannel) {
+    const ch = chatChannels.get(chatCurrentChannel);
+    label.textContent = ch ? (ch.name || ch.id.slice(0, 8)) : 'Select channel';
+  } else {
+    label.textContent = 'Select channel';
+  }
+}
+
+async function connectToDevice(device) {
+  selectedAgent = { name: device.name, device: device.name };
+  renderChannelPanel();
+  // Trigger E2EE connection
+  await initE2EE();
 }
 
 function selectAgent(name, device) {
   selectedAgent = { name, device };
-  renderDeviceSelect(name);
-  setRailState(true);
-  switchView('workspace', 'chat');
-  // Update hash to reflect chat view (keep channel if set).
+  renderChannelPanel();
+  switchTab('chat');
   if (chatCurrentChannel) {
     location.hash = `chat/${chatCurrentChannel}`;
   } else {
@@ -2215,6 +1994,15 @@ document.getElementById('dd-new-channel')?.addEventListener('click', (e) => {
   e.stopPropagation();
   closeAllDropdowns();
   document.getElementById('btn-new-channel')?.click();
+});
+
+// Mobile channel dropdown — shows channel panel as overlay
+document.getElementById('mobile-channel-trigger')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('channel-panel');
+  if (panel) {
+    panel.classList.toggle('mobile-open');
+  }
 });
 
 function setConsoleState(state) {
@@ -2699,8 +2487,6 @@ document.getElementById('chat-input')?.addEventListener('input', function(){
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
 
-setRailState(false);
-
 // =====================================================================
 // Device Dashboard — live data via Skrift notifications
 // =====================================================================
@@ -2803,102 +2589,9 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function renderDeviceGrid() {
-  const grid = document.getElementById('device-grid');
-  const empty = document.getElementById('devices-empty');
-
-  if (devices.size === 0) {
-    if (empty) empty.classList.remove('hidden');
-    // Remove any device cards
-    grid.querySelectorAll('.device-card').forEach(el => el.remove());
-    return;
-  }
-
-  if (empty) empty.classList.add('hidden');
-
-  // Clear existing cards
-  grid.querySelectorAll('.device-card').forEach(el => el.remove());
-
-  // Sort: online first, then by name
-  const sorted = [...devices.values()].sort((a, b) => {
-    if (a.status === 'online' && b.status !== 'online') return -1;
-    if (a.status !== 'online' && b.status === 'online') return 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  for (const device of sorted) {
-    grid.insertAdjacentHTML('beforeend', renderDeviceCard(device));
-  }
-
-  // Add click handlers to device cards.
-  grid.querySelectorAll('.device-card').forEach(card => {
-    card.classList.add('cursor-pointer');
-    card.addEventListener('click', () => {
-      const deviceId = card.dataset.deviceId;
-      const device = devices.get(deviceId);
-      if (device) {
-        selectAgent(device.name, device.name);
-      }
-    });
-  });
-}
-
-function updateStats() {
-  const total = devices.size;
-  const online = [...devices.values()].filter(d => d.status === 'online').length;
-  const offline = total - online;
-  const totalMissed = [...devices.values()].reduce(
-    (sum, d) => sum + (d.missed_heartbeat_windows || []).length, 0
-  );
-
-  document.getElementById('stat-devices').textContent = total;
-  document.getElementById('stat-devices-sub').textContent =
-    total === 0 ? 'No devices registered' :
-    total === 1 ? '1 device registered' :
-    `${total} devices registered`;
-
-  document.getElementById('stat-online').textContent = online;
-  document.getElementById('stat-online-sub').textContent = `${offline} offline`;
-
-  // Find most recent heartbeat
-  let latestBeat = null;
-  for (const d of devices.values()) {
-    if (d.last_heartbeat_at) {
-      const t = new Date(d.last_heartbeat_at);
-      if (!latestBeat || t > latestBeat) latestBeat = t;
-    }
-  }
-  document.getElementById('stat-heartbeat').textContent =
-    latestBeat ? timeAgo(latestBeat.toISOString()) : '\u2014';
-  document.getElementById('stat-heartbeat-sub').textContent =
-    latestBeat ? shortTime(latestBeat.toISOString()) : 'No data yet';
-
-  document.getElementById('stat-missed').textContent = totalMissed;
-}
-
-function addActivity(text, timestamp) {
-  const feed = document.getElementById('activity-feed');
-  const time = timestamp ? shortTime(timestamp) : shortTime(new Date().toISOString());
-
-  const item = document.createElement('div');
-  item.className = 'activity-item';
-  item.innerHTML = `
-    <span class="activity-time">${time}</span>
-    <span class="activity-text">${text}</span>
-  `;
-
-  // Insert at top
-  if (feed.firstChild) {
-    feed.insertBefore(item, feed.firstChild);
-  } else {
-    feed.appendChild(item);
-  }
-
-  // Limit items
-  while (feed.children.length > MAX_ACTIVITY) {
-    feed.removeChild(feed.lastChild);
-  }
-}
+function renderDeviceGrid() { renderChannelPanel(); }
+function updateStats() { /* no-op, dashboard removed */ }
+function addActivity(text, timestamp) { /* no-op, dashboard activity feed removed */ }
 
 // ----- Initial data fetch -----
 
@@ -2911,15 +2604,7 @@ async function fetchDevices() {
     for (const d of data) {
       devices.set(d.id, d);
     }
-    renderDeviceGrid();
-    updateStats();
-
-    // Add activity for existing devices
-    if (data.length > 0) {
-      addActivity(
-        `<strong>Dashboard</strong> loaded &mdash; ${data.length} device${data.length > 1 ? 's' : ''} found`,
-      );
-    }
+    renderChannelPanel();
   } catch (err) {
     console.error('Failed to fetch devices:', err);
   }
@@ -3045,8 +2730,7 @@ document.addEventListener('sk:notification', (e) => {
           selectedAgent.device = deviceName;
         }
       }
-      renderDeviceSelect(selectedAgent?.name);
-      renderDeviceGrid();
+      renderChannelPanel();
       break;
     }
 
@@ -3056,17 +2740,11 @@ document.addEventListener('sk:notification', (e) => {
         if (e2ee) e2ee.disconnect();
         selectedAgent = null;
       }
-      renderDeviceSelect(selectedAgent?.name);
-      renderDeviceGrid();
-      updateStats();
+      renderChannelPanel();
       break;
     }
 
     case 'status': {
-      addActivity(
-        `<strong>${escapeHtml(deviceName)}</strong> status update`,
-        data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
-      );
       break;
     }
 
@@ -3075,12 +2753,9 @@ document.addEventListener('sk:notification', (e) => {
   }
 });
 
-// ----- Periodic heartbeat time refresh -----
+// ----- Periodic refresh -----
 setInterval(() => {
-  // Update "last heartbeat" stat and device cards with fresh relative times
-  updateStats();
-  // Re-render cards to update "Last beat: Xs ago"
-  renderDeviceGrid();
+  renderChannelPanel();
 }, 15000);
 
 // ----- Hash-based routing -----
@@ -3088,7 +2763,7 @@ let _pendingChannelId = null;
 
 function restoreFromHash() {
   const hash = location.hash.replace(/^#/, '');
-  if (!hash || hash === 'dashboard') return;
+  if (!hash) return;
 
   const parts = hash.split('/');
   const tab = parts[0];
@@ -3098,10 +2773,8 @@ function restoreFromHash() {
     const firstDevice = [...devices.values()][0];
     if (firstDevice && !selectedAgent) {
       selectedAgent = { name: firstDevice.name, device: firstDevice.name };
-      renderDeviceSelect(firstDevice.name);
-      setRailState(true);
     }
-    switchView('workspace', tab);
+    switchTab(tab);
 
     if (parts[1]) {
       _pendingChannelId = parts[1];
@@ -3117,6 +2790,7 @@ function restoreFromHash() {
 // ----- Initialize -----
 fetchDevices().then(() => {
   restoreFromHash();
+  renderChannelPanel();
   initE2EE();
 });
 
@@ -3399,80 +3073,9 @@ function bindE2EEEvents() {
     console.error('[E2EE] Error:', evt.detail);
   });
 
-function renderChannelList() {
-  const label = document.getElementById('channel-dropdown-label');
-  const list = document.getElementById('channel-dropdown-list');
-  if (!list) return;
-
-  const sorted = chatChannels.size > 0
-    ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
-    : [];
-
-  // Update trigger label
-  if (chatCurrentChannel && label) {
-    const cur = chatChannels.get(chatCurrentChannel);
-    if (cur) label.textContent = cur.name;
-  }
-
-  list.innerHTML = '';
-  for (const ch of sorted) {
-    const item = document.createElement('div');
-    const uc = unreadCounts.get(ch.id);
-    const count = uc?.messages || 0;
-    const hasInt = uc?.hasInteraction || false;
-    item.className = 'dd-item' + (chatCurrentChannel === ch.id ? ' active' : '') + (hasInt ? ' has-interaction' : '');
-    const badgeHtml = count > 0 ? `<span class="ch-unread-badge">${count}</span>` : '';
-    item.innerHTML = `<span class="dd-item-label">${escapeHtml(ch.name)}</span>${badgeHtml}<button class="dd-item-edit" title="Edit channel"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
-    item.addEventListener('click', (e) => {
-      if (e.target.closest('.dd-item-edit')) return;
-      selectChannel(ch.id);
-      closeAllDropdowns();
-    });
-    item.querySelector('.dd-item-edit').addEventListener('click', (e) => {
-      e.stopPropagation();
-      showEditChannelDialog(ch);
-    });
-    list.appendChild(item);
-  }
-  updateAggregateBadge();
-  renderChannelSidebar();
-}
-
-function renderChannelSidebar() {
-  const list = document.getElementById('channel-sidebar-list');
-  if (!list) return;
-
-  const sorted = chatChannels.size > 0
-    ? [...chatChannels.values()].sort((a, b) => b.created_at - a.created_at)
-    : [];
-
-  list.innerHTML = '';
-  for (const ch of sorted) {
-    const item = document.createElement('div');
-    const uc = unreadCounts.get(ch.id);
-    const count = uc?.messages || 0;
-    const hasInt = uc?.hasInteraction || false;
-    item.className = 'channel-sidebar-item' + (chatCurrentChannel === ch.id ? ' active' : '') + (hasInt ? ' has-interaction' : '');
-    const badgeHtml = count > 0 ? `<span class="ch-unread-badge">${count}</span>` : '';
-    item.innerHTML = `
-      <span class="ch-hash">#</span>
-      <span class="ch-name">${escapeHtml(ch.name)}</span>
-      ${badgeHtml}
-      <button class="ch-edit" title="Edit channel">
-        <svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-    `;
-    item.addEventListener('click', (e) => {
-      if (e.target.closest('.ch-edit')) return;
-      selectChannel(ch.id);
-    });
-    item.querySelector('.ch-edit').addEventListener('click', (e) => {
-      e.stopPropagation();
-      showEditChannelDialog(ch);
-    });
-    list.appendChild(item);
-  }
-}
+// renderChannelList and renderChannelSidebar are replaced by renderChannelPanel (defined above)
+function renderChannelList() { renderChannelPanel(); }
+function renderChannelSidebar() { /* no-op, merged into renderChannelPanel */ }
 
 function incrementUnread(channelId, isInteraction = false) {
   const uc = unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
@@ -3482,27 +3085,12 @@ function incrementUnread(channelId, isInteraction = false) {
   renderChannelList();
 }
 
-function updateAggregateBadge() {
-  const badge = document.getElementById('channel-dropdown-badge');
-  const trigger = document.getElementById('channel-dropdown-trigger');
-  if (!badge || !trigger) return;
-  let total = 0;
-  let anyInteraction = false;
-  for (const uc of unreadCounts.values()) {
-    total += uc.messages;
-    if (uc.hasInteraction) anyInteraction = true;
-  }
-  if (total > 0) {
-    badge.textContent = total;
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-  trigger.classList.toggle('has-interaction', anyInteraction);
-}
+function updateAggregateBadge() { /* no-op, removed with top bar */ }
 
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
+  // Close mobile channel panel if open
+  document.getElementById('channel-panel')?.classList.remove('mobile-open');
   updateStopButton();
   hideChatBubble();
   hideActivityBubble();
@@ -3522,9 +3110,8 @@ function selectChannel(channelId) {
   const chName = chatChannels.get(channelId)?.name || '';
   const input = document.getElementById('chat-input');
   input.placeholder = `Message #${chName}...`;
-  // Update dropdown label
-  const lbl = document.getElementById('channel-dropdown-label');
-  if (lbl) lbl.textContent = chName;
+  // Update mobile channel label
+  updateMobileChannelLabel();
   location.hash = `${currentTab || 'chat'}/${channelId}`;
   // If files tab is active, refresh it for the new channel.
   if (currentTab === 'files') onFilesTabActivated();
@@ -5167,25 +4754,8 @@ function syncE2EEStatus() {
   const isConnected = dot.classList.contains('connected');
   const isConnecting = dot.classList.contains('connecting');
   const isError = dot.classList.contains('error');
-  const statusEls = [
-    document.getElementById('top-e2ee-status'),
-    document.getElementById('sidebar-e2ee-status'),
-  ].filter(Boolean);
-  for (const el of statusEls) {
-    if (isConnected) {
-      el.title = 'Fully encrypted';
-      el.innerHTML = '<svg viewBox="0 0 12 14" width="14" height="14"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>';
-    } else if (isConnecting) {
-      el.title = 'Connecting to device\u2026';
-      el.innerHTML = '<div class="top-e2ee-dot connecting"></div>';
-    } else if (isError) {
-      el.title = 'Connection error';
-      el.innerHTML = '<div class="top-e2ee-dot error"></div>';
-    } else {
-      el.title = 'Not connected';
-      el.innerHTML = '<div class="top-e2ee-dot"></div>';
-    }
-  }
+  // Re-render channel panel to update per-device E2EE indicators
+  renderChannelPanel();
 }
 // Observe changes to the desktop E2EE status.
 const _e2eeDot = document.getElementById('e2ee-dot');
@@ -5332,7 +4902,7 @@ function showEditDeviceDialog(device) {
           body: JSON.stringify({ name: newName }),
         });
         device.name = newName;
-        renderDeviceSelect(selectedAgent?.name === device.name ? newName : selectedAgent?.name);
+        renderChannelPanel();
       } catch (err) {
         console.error('Failed to rename device:', err);
       }
@@ -5374,7 +4944,7 @@ function showEditDeviceDialog(device) {
           if (e2ee) e2ee.disconnect();
           selectedAgent = null;
         }
-        renderDeviceSelect(selectedAgent?.name);
+        renderChannelPanel();
         fetchDevices();
       } catch (err) {
         console.error('Failed to revoke device:', err);

@@ -306,7 +306,13 @@ class BuildE2EE extends EventTarget {
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: 'send failed' }));
-      throw new Error(err.error || 'send failed');
+      const msg = err.error || 'send failed';
+      // Session gone on relay (e.g. relay restarted) — tear down so dashboard can reconnect.
+      if (resp.status === 404 || msg === 'unknown session') {
+        console.warn('[E2EE] Session lost on relay — disconnecting');
+        this.disconnect();
+      }
+      throw new Error(msg);
     }
 
     return envelope._messageId; // Attached by _encryptFrame for tracking.
@@ -366,23 +372,7 @@ class BuildE2EE extends EventTarget {
   }
 
   async sendMessage(channelId, content) {
-    const messageId = crypto.randomUUID();
-    const envelope = this._encryptFrame({
-      frame_type: 'data',
-      sender: 'client',
-      payload: { action: 'message', channel_id: channelId, content },
-    });
-    // Override message_id to track it.
-    // Actually the message_id is in the encrypted inner frame, so we use the one from _encryptFrame.
-    await fetch('/api/devices/e2ee/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: this._sessionId,
-        envelope,
-      }),
-    });
-    return envelope._messageId;
+    return this.send({ action: 'message', channel_id: channelId, content });
   }
 
   async markRead(messageIds) {

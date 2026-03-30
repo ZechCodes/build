@@ -2997,11 +2997,13 @@ document.addEventListener('sk:notification', (e) => {
         const banner = document.getElementById('device-down-banner');
         if (banner) banner.classList.remove('visible');
       }
-      // If not already connected, initiate E2EE.
-      if (!e2ee || !e2ee.connected) {
-        console.log('[E2EE] Device e2ee-ready notification — connecting...');
-        initE2EE();
+      // Device re-announced — relay likely restarted, old session is dead.
+      if (e2ee && e2ee.connected) {
+        console.log('[E2EE] Device e2ee-ready while connected — relay restarted, reconnecting...');
+        e2ee.disconnect();
       }
+      console.log('[E2EE] Device e2ee-ready notification — connecting...');
+      initE2EE();
       break;
     }
 
@@ -3088,6 +3090,15 @@ function restoreFromHash() {
 fetchDevices().then(() => {
   restoreFromHash();
   initE2EE();
+});
+
+// When SSE reconnects (e.g. relay restart), tear down stale E2EE and re-init.
+document.addEventListener('sk:notification-status', (evt) => {
+  if (evt.detail.status === 'connected' && e2ee && e2ee.connected) {
+    console.log('[E2EE] SSE reconnected — tearing down stale session');
+    e2ee.disconnect(); // fires 'disconnected', sets e2ee=null
+    initE2EE();
+  }
 });
 
 // =====================================================================

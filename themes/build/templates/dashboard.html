@@ -3570,8 +3570,9 @@ function selectChannel(channelId) {
     msgs.push(msg);
     chatMessages.set(msg.channel_id, msgs);
     if (chatCurrentChannel === msg.channel_id) {
+      const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
-      scrollChatToBottom();
+      if (wasNearBottom) scrollChatToBottom();
       setLastSeen(msg.channel_id);
       if (msg.id) e2ee.markRead([msg.id]);
     } else if (msg.sender !== 'client') {
@@ -3601,8 +3602,9 @@ function selectChannel(channelId) {
       msgs.push(msg);
       chatMessages.set(channel_id, msgs);
       if (chatCurrentChannel === channel_id) {
+        const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
-        scrollChatToBottom();
+        if (wasNearBottom) scrollChatToBottom();
         setLastSeen(channel_id);
       } else {
         incrementUnread(channel_id);
@@ -3656,8 +3658,9 @@ function selectChannel(channelId) {
       msgs.push(msg);
       chatMessages.set(channel_id, msgs);
       if (chatCurrentChannel === channel_id) {
+        const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
-        scrollChatToBottom();
+        if (wasNearBottom) scrollChatToBottom();
       } else {
         incrementUnread(channel_id, true);
       }
@@ -4024,7 +4027,7 @@ function renderMessages() {
   for (const msg of msgs) {
     appendMessage(msg);
   }
-  scrollChatToBottom();
+  scrollToFirstUnread(container) || scrollChatToBottom();
 }
 
 function appendMessage(msg) {
@@ -4056,6 +4059,7 @@ function appendMessage(msg) {
   const div = document.createElement('div');
   div.className = 'msg';
   div.dataset.msgId = msg.id || '';
+  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
   div.innerHTML = `
     <div class="msg-avatar ${avatarClass}">${avatarLabel}</div>
     <div class="msg-body">
@@ -4537,10 +4541,14 @@ function appendConsoleReasoning(content, timestamp) {
   row.addEventListener('click', () => {
     chevron.classList.toggle('open');
     detail.classList.toggle('open');
+    if (detail.classList.contains('open')) {
+      entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
   });
 
+  const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
-  body.scrollTop = body.scrollHeight;
+  if (wasNearBottom) body.scrollTop = body.scrollHeight;
   currentReasoningEntry = entry;
 }
 
@@ -4581,10 +4589,14 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   row.addEventListener('click', () => {
     chevron.classList.toggle('open');
     detail.classList.toggle('open');
+    if (detail.classList.contains('open')) {
+      entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
   });
 
+  const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
-  body.scrollTop = body.scrollHeight;
+  if (wasNearBottom) body.scrollTop = body.scrollHeight;
 }
 
 function markConsoleEntryDone(toolId, isError, content, completedAt) {
@@ -4617,9 +4629,34 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
 }
 
 
+function isChatNearBottom(threshold = 80) {
+  const c = document.getElementById('chat-messages');
+  return c.scrollHeight - c.scrollTop - c.clientHeight < threshold;
+}
+
+function isConsoleNearBottom(threshold = 80) {
+  const c = document.querySelector('[data-console-panel="activity"]');
+  if (!c) return true;
+  return c.scrollHeight - c.scrollTop - c.clientHeight < threshold;
+}
+
 function scrollChatToBottom() {
   const container = document.getElementById('chat-messages');
   container.scrollTop = container.scrollHeight;
+}
+
+function scrollToFirstUnread(container) {
+  if (!chatCurrentChannel) return false;
+  const lastSeen = getLastSeen(chatCurrentChannel);
+  if (!lastSeen) return false;
+  const msgEls = container.querySelectorAll('.msg[data-created-at]');
+  for (const el of msgEls) {
+    if (el.dataset.createdAt > lastSeen) {
+      el.scrollIntoView({ block: 'start', behavior: 'instant' });
+      return true;
+    }
+  }
+  return false;
 }
 
 function createEmptyState(title, desc) {

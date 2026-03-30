@@ -183,19 +183,18 @@ body{
   color:var(--text-muted);
 }
 .device-group-chevron.collapsed{transform:rotate(-90deg)}
-.device-group-dot{
-  width:6px;height:6px;border-radius:50%;flex-shrink:0;
+.device-group-status{
+  flex-shrink:0;display:flex;align-items:center;
+}
+.device-group-status .status-dot{
+  width:6px;height:6px;border-radius:50%;
   background:var(--text-muted);
 }
-.device-group-dot.online{background:var(--green)}
-.device-group-dot.offline{background:var(--red)}
-.device-group-e2ee{
-  width:6px;height:6px;border-radius:50%;flex-shrink:0;
-  background:transparent;margin-left:auto;
+.device-group-status .status-dot.connecting{background:var(--amber);animation:pulse 1.5s infinite}
+.device-group-status .status-dot.offline{background:var(--red)}
+.device-group-status .status-lock{
+  width:12px;height:12px;color:var(--green);
 }
-.device-group-e2ee.connected{background:var(--green)}
-.device-group-e2ee.connecting{background:var(--amber);animation:pulse 1.5s infinite}
-.device-group-e2ee.error{background:var(--red)}
 .device-group-channels{}
 .device-group-channels.collapsed{display:none}
 /* Custom dropdowns */
@@ -1438,7 +1437,8 @@ body{
 }
 .mobile-nav .mobile-channel-trigger span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mobile-nav .mobile-channel-trigger .dd-chevron{width:8px;height:6px;color:var(--text-muted);flex-shrink:0}
-.mobile-nav .mobile-channel-trigger .dd-hash{color:var(--text-muted);font-weight:400}
+.mobile-nav .mobile-channel-trigger .dd-hash{color:var(--text-muted);font-weight:400;display:flex;align-items:center}
+.mobile-nav .mobile-channel-trigger .mobile-lock{width:12px;height:12px;color:var(--green)}
 .mobile-nav .viewer-tab{flex:1 1 0;padding:.35rem .6rem;font-size:12px;text-align:center}
 @media(max-width:768px),(max-height:500px){
   .channel-panel{display:none}
@@ -1496,13 +1496,13 @@ body{
 <div class="channel-panel" id="channel-panel">
   <div class="channel-panel-list" id="channel-panel-list"></div>
   <div class="channel-panel-footer">
+    <a class="panel-account" href="/admin/" title="{{ user_name }}" aria-label="Open account">
+      <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
+    </a>
     <button class="sidebar-new-session" id="sidebar-new-channel" title="New session">
       <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       New Session
     </button>
-    <a class="panel-account" href="/admin/" title="{{ user_name }}" aria-label="Open account">
-      <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
-    </a>
   </div>
 </div>
 
@@ -1827,23 +1827,26 @@ function renderChannelPanel() {
     header.className = 'device-group-header';
 
     const chevronClass = isConnected ? '' : ' collapsed';
-    const dotClass = isOnline ? ' online' : ' offline';
-    // E2EE indicator for connected device
-    let e2eeClass = '';
+    // Single status indicator: green lock when connected, pulsing dot when connecting, dot otherwise
+    let statusHtml = '';
     if (isConnected) {
       const e2eeDot = document.getElementById('e2ee-dot');
-      if (e2eeDot) {
-        if (e2eeDot.classList.contains('connected')) e2eeClass = ' connected';
-        else if (e2eeDot.classList.contains('connecting')) e2eeClass = ' connecting';
-        else if (e2eeDot.classList.contains('error')) e2eeClass = ' error';
+      const isE2eeConnected = e2eeDot?.classList.contains('connected');
+      if (isE2eeConnected) {
+        statusHtml = '<svg class="status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
+      } else {
+        statusHtml = '<span class="status-dot connecting"></span>';
       }
+    } else if (!isOnline) {
+      statusHtml = '<span class="status-dot offline"></span>';
+    } else {
+      statusHtml = '<span class="status-dot"></span>';
     }
 
     header.innerHTML = `
       <svg class="device-group-chevron${chevronClass}" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span class="device-group-dot${dotClass}"></span>
+      <span class="device-group-status">${statusHtml}</span>
       <span>${escapeHtml(device.name)}</span>
-      <span class="device-group-e2ee${e2eeClass}"></span>
     `;
 
     header.addEventListener('click', () => {
@@ -1912,11 +1915,23 @@ function createChannelItem(ch) {
 function updateMobileChannelLabel() {
   const label = document.getElementById('mobile-channel-label');
   if (!label) return;
+  const trigger = document.getElementById('mobile-channel-trigger');
+  const hashEl = trigger?.querySelector('.dd-hash');
   if (chatCurrentChannel) {
     const ch = chatChannels.get(chatCurrentChannel);
     label.textContent = ch ? (ch.name || ch.id.slice(0, 8)) : 'Select channel';
+    // Show lock instead of hash when e2ee is connected
+    const isE2eeConnected = document.getElementById('e2ee-dot')?.classList.contains('connected');
+    if (hashEl) {
+      if (isE2eeConnected) {
+        hashEl.innerHTML = '<svg class="mobile-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
+      } else {
+        hashEl.textContent = '#';
+      }
+    }
   } else {
     label.textContent = 'Select channel';
+    if (hashEl) hashEl.textContent = '#';
   }
 }
 

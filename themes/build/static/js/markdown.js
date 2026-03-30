@@ -57,8 +57,8 @@
     text = text.replace(/((?:<a\b[^>]*>.*?<\/a>)|(?:<code\b[^>]*>.*?<\/code>))|(https?:\/\/[^\s<)]+)/g,
       function (match, tagged, url) {
         if (tagged) return tagged; // already wrapped — leave it
-        // Trim trailing punctuation that's likely not part of the URL
-        var clean = url.replace(/[.,;:!?)]+$/, '');
+        // Trim trailing punctuation and HTML entities (&quot; &amp; etc.) that aren't part of the URL
+        var clean = url.replace(/(?:&(?:quot|amp|lt|gt|#\d+|#x[\da-fA-F]+);[.,;:!?)]*|[.,;:!?)]+)+$/, '');
         var trailing = url.slice(clean.length);
         return '<a href="' + clean + '" target="_blank" rel="noopener" class="md-link">' + clean + '</a>' + trailing;
       });

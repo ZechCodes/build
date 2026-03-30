@@ -1285,6 +1285,7 @@ body{
   transition:background .1s;
   white-space:nowrap;
   color:var(--text);
+  overflow:hidden;
 }
 .tree-item:hover{background:rgba(0,0,0,0.03)}
 .tree-item.active{background:var(--accent-light);color:var(--accent)}
@@ -1293,7 +1294,7 @@ body{
 .tree-arrow.hidden{visibility:hidden}
 .tree-icon{width:14px;height:14px;flex-shrink:0;color:var(--text-muted)}
 .tree-icon.folder{color:var(--accent)}
-.tree-label{font-family:var(--mono);font-size:12px}
+.tree-label{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .tree-git-info{
   position:sticky;right:0;
   display:flex;align-items:center;gap:.3rem;

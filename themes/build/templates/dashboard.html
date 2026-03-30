@@ -1285,7 +1285,6 @@ body{
   transition:background .1s;
   white-space:nowrap;
   color:var(--text);
-  overflow:hidden;
 }
 .tree-item:hover{background:rgba(0,0,0,0.03)}
 .tree-item.active{background:var(--accent-light);color:var(--accent)}
@@ -1294,16 +1293,16 @@ body{
 .tree-arrow.hidden{visibility:hidden}
 .tree-icon{width:14px;height:14px;flex-shrink:0;color:var(--text-muted)}
 .tree-icon.folder{color:var(--accent)}
-.tree-label{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.tree-label{font-family:var(--mono);font-size:12px}
 .tree-git-info{
   position:sticky;right:0;
   display:flex;align-items:center;gap:.3rem;
   margin-left:auto;flex-shrink:0;
-  padding-left:1rem;
-  background:linear-gradient(to right, transparent, rgba(255,255,255,0.4) 8px);
+  padding-left:1.5rem;
+  background:linear-gradient(to right, transparent, #fff 14px);
 }
-.tree-item:hover .tree-git-info{background:linear-gradient(to right, transparent, rgba(0,0,0,0.03) 8px)}
-.tree-item.active .tree-git-info{background:linear-gradient(to right, transparent, var(--accent-light) 8px)}
+.tree-item:hover .tree-git-info{background:linear-gradient(to right, transparent, #f7f7f7 14px)}
+.tree-item.active .tree-git-info{background:linear-gradient(to right, transparent, var(--accent-light) 14px)}
 .tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;flex-shrink:0}
 .tree-badge.added{background:var(--green-light);color:var(--green)}
 .tree-badge.modified{background:var(--amber-light);color:var(--amber)}

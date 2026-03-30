@@ -5296,8 +5296,8 @@ function renderFileTree() {
   }
   fileTreeEmpty.style.display = 'none';
 
-  // Remove all nodes except empty state.
-  fileTreeInner.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
+  // Remove all rendered nodes (tree items, children, and changes empty state).
+  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty').forEach(n => n.remove());
   const rootEntries = data.get('');
   if (filesTreeTab === 'changes') {
     renderChangesView(fileTreeInner, data);
@@ -5425,7 +5425,10 @@ function renderChangesView(container, data) {
     }
   }
   if (changed.length === 0) {
-    container.innerHTML = '<div class="empty-state pad-1-5"><p class="text-xs">No changes</p></div>';
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'empty-state pad-1-5 changes-empty';
+    emptyDiv.innerHTML = '<p class="text-xs">No changes</p>';
+    container.appendChild(emptyDiv);
     return;
   }
   // Sort by path.

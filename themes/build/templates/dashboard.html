@@ -1252,8 +1252,7 @@ body{
   overflow:hidden;
   background:rgba(255,255,255,0.4);
 }
-.file-tree{flex:1;overflow:auto;padding:.375rem 0;font-size:12.5px}
-.file-tree-inner{width:max-content;min-width:100%}
+.file-tree{flex:1;overflow-y:auto;overflow-x:hidden;padding:.375rem 0;font-size:12.5px}
 .tree-item{
   display:flex;align-items:center;gap:.3rem;
   padding:.25rem .75rem;
@@ -1269,8 +1268,8 @@ body{
 .tree-arrow.hidden{visibility:hidden}
 .tree-icon{width:14px;height:14px;flex-shrink:0;color:var(--text-muted)}
 .tree-icon.folder{color:var(--accent)}
-.tree-label{font-family:var(--mono);font-size:12px}
-.tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;margin-left:auto}
+.tree-label{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;margin-left:auto;flex-shrink:0}
 .tree-badge.added{background:var(--green-light);color:var(--green)}
 .tree-badge.modified{background:var(--amber-light);color:var(--amber)}
 
@@ -1911,10 +1910,8 @@ body{
         </div>
         <div class="file-tree-panel mobile-open" id="file-tree-panel">
           <div class="file-tree" id="file-tree">
-            <div class="file-tree-inner" id="file-tree-inner">
-              <div class="empty-state pad-1-5" id="file-tree-empty">
-                <p class="text-xs">Select a channel to browse files</p>
-              </div>
+            <div class="empty-state pad-1-5" id="file-tree-empty">
+              <p class="text-xs">Select a channel to browse files</p>
             </div>
           </div>
         </div>
@@ -5223,7 +5220,6 @@ function showEditDeviceDialog(device) {
 // ===== FILES VIEW =====
 
 const fileTree = document.getElementById('file-tree');
-const fileTreeInner = document.getElementById('file-tree-inner');
 const fileTreeEmpty = document.getElementById('file-tree-empty');
 const filesPathText = document.getElementById('files-path-text');
 const filesPathBar = document.getElementById('files-path-bar');
@@ -5262,9 +5258,9 @@ function renderFileTree() {
   fileTreeEmpty.style.display = 'none';
 
   // Remove all nodes except empty state.
-  fileTreeInner.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
+  fileTree.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
   const rootEntries = data.get('');
-  if (rootEntries) renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
+  if (rootEntries) renderTreeLevel(fileTree, rootEntries.entries, 0, data);
 }
 
 function renderTreeLevel(container, entries, depth, data) {
@@ -5304,6 +5300,7 @@ function renderTreeLevel(container, entries, depth, data) {
     const label = document.createElement('span');
     label.className = 'tree-label';
     label.textContent = entry.name;
+    label.title = entry.path || entry.name;
     item.appendChild(label);
 
     // Git badge + stats.

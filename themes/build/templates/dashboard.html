@@ -3083,71 +3083,6 @@ function bindE2EEEvents() {
     console.error('[E2EE] Error:', evt.detail);
   });
 
-// renderChannelList and renderChannelSidebar are replaced by renderChannelPanel (defined above)
-function renderChannelList() { renderChannelPanel(); }
-function renderChannelSidebar() { /* no-op, merged into renderChannelPanel */ }
-
-function incrementUnread(channelId, isInteraction = false) {
-  const uc = unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
-  uc.messages++;
-  if (isInteraction) uc.hasInteraction = true;
-  unreadCounts.set(channelId, uc);
-  renderChannelList();
-}
-
-function updateAggregateBadge() { /* no-op, removed with top bar */ }
-
-function selectChannel(channelId) {
-  chatCurrentChannel = channelId;
-  // Close mobile channel panel if open
-  document.getElementById('channel-panel')?.classList.remove('mobile-open');
-  updateStopButton();
-  hideChatBubble();
-  hideActivityBubble();
-  // Mark channel as seen and clear unread.
-  setLastSeen(channelId);
-  unreadCounts.delete(channelId);
-  renderChannelList();
-  if (e2ee && e2ee.connected) {
-    chatLoadingMessages.add(channelId);
-    chatLoadingActivity.add(channelId);
-    e2ee.getMessages(channelId);
-    e2ee.getActivity(channelId);
-    e2ee.getComplications(channelId);
-  }
-  renderMessages();
-  clearConsole(chatLoadingActivity.has(channelId));
-  const chName = chatChannels.get(channelId)?.name || '';
-  const input = document.getElementById('chat-input');
-  input.placeholder = `Message #${chName}...`;
-  // Update mobile channel label
-  updateMobileChannelLabel();
-  location.hash = `${currentTab || 'chat'}/${channelId}`;
-  // If files tab is active, refresh it for the new channel.
-  if (currentTab === 'files') onFilesTabActivated();
-  // Restore persisted state from localStorage.
-  const saved = loadChannelState(channelId);
-  if (input) {
-    input.value = saved.draft || '';
-    input.style.height = 'auto';
-  }
-  // Plan mode: prefer server state, fall back to localStorage.
-  if (!channelPlanMode.has(channelId) && saved.planMode !== undefined) {
-    channelPlanMode.set(channelId, saved.planMode);
-  }
-  // Sync plan mode toggle.
-  updatePlanModeUI(channelPlanMode.get(channelId) || false);
-  // Reset console to activity tab and update terminal for new channel.
-  activeConsoleTab = 'activity';
-  document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
-  consoleActivityPanel.classList.remove('hidden');
-  consoleTerminalPanel.classList.add('hidden');
-  renderTerminalForChannel(channelId);
-  // Render complications for this channel (instant — already in memory).
-  closeCompPopover();
-  renderComplications();
-}
-
 // ----- Messages -----
 
   e2ee.addEventListener('messages', (evt) => {
@@ -3630,6 +3565,71 @@ function selectChannel(channelId) {
     renderDiffContent(d.diff, d.truncated);
   });
 } // end bindE2EEEvents
+
+// renderChannelList and renderChannelSidebar are replaced by renderChannelPanel (defined above)
+function renderChannelList() { renderChannelPanel(); }
+function renderChannelSidebar() { /* no-op, merged into renderChannelPanel */ }
+
+function incrementUnread(channelId, isInteraction = false) {
+  const uc = unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
+  uc.messages++;
+  if (isInteraction) uc.hasInteraction = true;
+  unreadCounts.set(channelId, uc);
+  renderChannelList();
+}
+
+function updateAggregateBadge() { /* no-op, removed with top bar */ }
+
+function selectChannel(channelId) {
+  chatCurrentChannel = channelId;
+  // Close mobile channel panel if open
+  document.getElementById('channel-panel')?.classList.remove('mobile-open');
+  updateStopButton();
+  hideChatBubble();
+  hideActivityBubble();
+  // Mark channel as seen and clear unread.
+  setLastSeen(channelId);
+  unreadCounts.delete(channelId);
+  renderChannelList();
+  if (e2ee && e2ee.connected) {
+    chatLoadingMessages.add(channelId);
+    chatLoadingActivity.add(channelId);
+    e2ee.getMessages(channelId);
+    e2ee.getActivity(channelId);
+    e2ee.getComplications(channelId);
+  }
+  renderMessages();
+  clearConsole(chatLoadingActivity.has(channelId));
+  const chName = chatChannels.get(channelId)?.name || '';
+  const input = document.getElementById('chat-input');
+  input.placeholder = `Message #${chName}...`;
+  // Update mobile channel label
+  updateMobileChannelLabel();
+  location.hash = `${currentTab || 'chat'}/${channelId}`;
+  // If files tab is active, refresh it for the new channel.
+  if (currentTab === 'files') onFilesTabActivated();
+  // Restore persisted state from localStorage.
+  const saved = loadChannelState(channelId);
+  if (input) {
+    input.value = saved.draft || '';
+    input.style.height = 'auto';
+  }
+  // Plan mode: prefer server state, fall back to localStorage.
+  if (!channelPlanMode.has(channelId) && saved.planMode !== undefined) {
+    channelPlanMode.set(channelId, saved.planMode);
+  }
+  // Sync plan mode toggle.
+  updatePlanModeUI(channelPlanMode.get(channelId) || false);
+  // Reset console to activity tab and update terminal for new channel.
+  activeConsoleTab = 'activity';
+  document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
+  consoleActivityPanel.classList.remove('hidden');
+  consoleTerminalPanel.classList.add('hidden');
+  renderTerminalForChannel(channelId);
+  // Render complications for this channel (instant — already in memory).
+  closeCompPopover();
+  renderComplications();
+}
 
 function renderMessages() {
   const container = document.getElementById('chat-messages');

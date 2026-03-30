@@ -1292,6 +1292,16 @@ body{
 .tree-git-info .tree-stats .stat-del{color:var(--red, #e5534b)}
 .tree-item.gitignored{opacity:.45}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
+.tree-tab-bar{
+  display:flex;border-top:1px solid var(--border);flex-shrink:0;
+}
+.tree-tab{
+  flex:1;padding:.4rem 0;font-size:11px;font-weight:500;
+  background:none;border:none;cursor:pointer;
+  color:var(--text-muted);transition:color .15s,box-shadow .15s;
+}
+.tree-tab:hover{color:var(--text)}
+.tree-tab.active{color:var(--accent);box-shadow:inset 0 2px 0 var(--accent)}
 .tree-children{display:none}
 .tree-children.open{display:block}
 .tree-item[data-depth="1"]{padding-left:1.5rem}
@@ -1925,6 +1935,10 @@ body{
                 <p class="text-xs">Select a channel to browse files</p>
               </div>
             </div>
+          </div>
+          <div class="tree-tab-bar">
+            <button class="tree-tab active" data-tree-tab="files">Files</button>
+            <button class="tree-tab" data-tree-tab="changes">Changes</button>
           </div>
         </div>
         <div class="file-content-panel">
@@ -5252,6 +5266,18 @@ let filesCurrentIsSvg = false;
 let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
+let filesTreeTab = 'files';        // 'files' or 'changes'
+
+// Tree tab switching.
+document.querySelectorAll('.tree-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.treeTab === filesTreeTab) return;
+    document.querySelectorAll('.tree-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    filesTreeTab = btn.dataset.treeTab;
+    renderFileTree();
+  });
+});
 
 function filesLoadRoot() {
   if (!chatCurrentChannel || !e2ee || !e2ee.connected) return;
@@ -5273,7 +5299,11 @@ function renderFileTree() {
   // Remove all nodes except empty state.
   fileTreeInner.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
   const rootEntries = data.get('');
-  if (rootEntries) renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
+  if (filesTreeTab === 'changes') {
+    renderChangesView(fileTreeInner, data);
+  } else if (rootEntries) {
+    renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
+  }
 }
 
 function renderTreeLevel(container, entries, depth, data) {
@@ -5381,6 +5411,94 @@ function renderTreeLevel(container, entries, depth, data) {
       renderTreeLevel(childContainer, data.get(entry.path).entries, depth + 1, data);
       container.appendChild(childContainer);
     }
+  }
+}
+
+function renderChangesView(container, data) {
+  // Collect all changed files from all loaded directories.
+  const changed = [];
+  for (const [dirPath, dirData] of data) {
+    for (const entry of dirData.entries) {
+      if (entry.type === 'dir') continue;
+      const hasChange = entry.git_status || entry.staged_status || entry.insertions > 0 || entry.deletions > 0;
+      if (hasChange) changed.push(entry);
+    }
+  }
+  if (changed.length === 0) {
+    container.innerHTML = '<div class="empty-state pad-1-5"><p class="text-xs">No changes</p></div>';
+    return;
+  }
+  // Sort by path.
+  changed.sort((a, b) => a.path.localeCompare(b.path));
+  for (const entry of changed) {
+    const item = document.createElement('div');
+    item.className = 'tree-item';
+    if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
+    if (entry.path === filesCurrentPath) item.classList.add('active');
+    item.dataset.path = entry.path;
+    item.dataset.type = entry.type;
+
+    // Hidden arrow for alignment.
+    const arrow = document.createElement('span');
+    arrow.className = 'tree-arrow hidden';
+    item.appendChild(arrow);
+
+    // File icon.
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
+    item.appendChild(icon);
+
+    // Label — show full path in changes view.
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = entry.path;
+    label.title = entry.path;
+    item.appendChild(label);
+
+    // Git info.
+    const hasGitBadge = entry.git_status || entry.staged_status;
+    const hasStats = entry.insertions > 0 || entry.deletions > 0;
+    if (hasGitBadge || hasStats) {
+      const gitInfo = document.createElement('span');
+      gitInfo.className = 'tree-git-info';
+      if (hasGitBadge) {
+        const st = entry.staged_status || entry.git_status;
+        const badge = document.createElement('span');
+        if (st === '?' || st === 'A') {
+          badge.className = 'tree-badge added';
+          badge.textContent = st === '?' ? 'U' : 'A';
+        } else if (st === 'M') {
+          badge.className = 'tree-badge modified';
+          badge.textContent = 'M';
+        } else if (st === 'D') {
+          badge.className = 'tree-badge modified';
+          badge.textContent = 'D';
+        }
+        if (badge.textContent) gitInfo.appendChild(badge);
+      }
+      if (hasStats) {
+        const stats = document.createElement('span');
+        stats.className = 'tree-stats';
+        if (entry.insertions > 0) {
+          const add = document.createElement('span');
+          add.className = 'stat-add';
+          add.textContent = '+' + entry.insertions;
+          stats.appendChild(add);
+        }
+        if (entry.deletions > 0) {
+          const del = document.createElement('span');
+          del.className = 'stat-del';
+          del.textContent = '-' + entry.deletions;
+          stats.appendChild(del);
+        }
+        gitInfo.appendChild(stats);
+      }
+      item.appendChild(gitInfo);
+    }
+
+    item.addEventListener('click', () => selectFile(entry.path, entry, 'diff'));
+    container.appendChild(item);
   }
 }
 

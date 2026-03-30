@@ -586,6 +586,26 @@ body{
   display:flex;flex-direction:column;gap:.875rem;
 }
 .chat-messages::before{content:'';margin-top:auto}
+.new-content-bubble{
+  position:absolute;bottom:4.5rem;left:50%;transform:translateX(-50%);
+  background:var(--accent);color:#fff;font-size:12px;font-weight:500;
+  padding:.35rem .75rem;border-radius:999px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:10;
+  opacity:0;pointer-events:none;transition:opacity .15s;
+  white-space:nowrap;
+}
+.new-content-bubble.visible{opacity:1;pointer-events:auto}
+.new-content-bubble:hover{filter:brightness(1.1)}
+.new-activity-bubble{
+  position:absolute;top:.5rem;left:50%;transform:translateX(-50%);
+  background:var(--accent);color:#fff;font-size:11px;font-weight:500;
+  padding:.25rem .6rem;border-radius:999px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:10;
+  opacity:0;pointer-events:none;transition:opacity .15s;
+  white-space:nowrap;
+}
+.new-activity-bubble.visible{opacity:1;pointer-events:auto}
+.new-activity-bubble:hover{filter:brightness(1.1)}
 .msg{display:flex;gap:.625rem;max-width:48rem}
 .msg-avatar{
   width:28px;height:28px;border-radius:50%;
@@ -1790,6 +1810,7 @@ body{
               <p>Choose or create a channel to start chatting.</p>
             </div>
           </div>
+          <div class="new-content-bubble" id="new-chat-bubble">↓ New messages</div>
           <div class="chat-input-area">
             <div class="upload-staging" id="upload-staging"></div>
             <div class="upload-progress" id="upload-progress">
@@ -1973,6 +1994,7 @@ body{
       </div>
     </div>
     <div class="console-body" data-console-panel="activity"></div>
+    <div class="new-activity-bubble" id="new-activity-bubble">↓ New activity</div>
     <div class="console-body console-terminal hidden" data-console-panel="terminal">
       <div class="terminal-output" id="terminal-output">
         <div class="terminal-prompt-row" id="terminal-prompt-row">
@@ -3476,6 +3498,8 @@ function updateAggregateBadge() {
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
   updateStopButton();
+  hideChatBubble();
+  hideActivityBubble();
   // Mark channel as seen and clear unread.
   setLastSeen(channelId);
   unreadCounts.delete(channelId);
@@ -3573,6 +3597,7 @@ function selectChannel(channelId) {
       const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
       if (wasNearBottom) scrollChatToBottom();
+      else showChatBubble(document.getElementById('chat-messages').lastElementChild);
       setLastSeen(msg.channel_id);
       if (msg.id) e2ee.markRead([msg.id]);
     } else if (msg.sender !== 'client') {
@@ -3605,6 +3630,7 @@ function selectChannel(channelId) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         if (wasNearBottom) scrollChatToBottom();
+        else showChatBubble(document.getElementById('chat-messages').lastElementChild);
         setLastSeen(channel_id);
       } else {
         incrementUnread(channel_id);
@@ -3661,6 +3687,7 @@ function selectChannel(channelId) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         if (wasNearBottom) scrollChatToBottom();
+        else showChatBubble(document.getElementById('chat-messages').lastElementChild);
       } else {
         incrementUnread(channel_id, true);
       }
@@ -4549,6 +4576,7 @@ function appendConsoleReasoning(content, timestamp) {
   const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
   if (wasNearBottom) body.scrollTop = body.scrollHeight;
+  else showActivityBubble(entry);
   currentReasoningEntry = entry;
 }
 
@@ -4597,6 +4625,7 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
   if (wasNearBottom) body.scrollTop = body.scrollHeight;
+  else showActivityBubble(entry);
 }
 
 function markConsoleEntryDone(toolId, isError, content, completedAt) {
@@ -4643,7 +4672,59 @@ function isConsoleNearBottom(threshold = 80) {
 function scrollChatToBottom() {
   const container = document.getElementById('chat-messages');
   container.scrollTop = container.scrollHeight;
+  hideChatBubble();
 }
+
+// ---- New content bubbles ----
+
+const newChatBubble = document.getElementById('new-chat-bubble');
+const newActivityBubble = document.getElementById('new-activity-bubble');
+let firstUnseenChatEl = null;
+let firstUnseenActivityEl = null;
+
+function showChatBubble(el) {
+  if (!firstUnseenChatEl) firstUnseenChatEl = el;
+  newChatBubble.classList.add('visible');
+}
+function hideChatBubble() {
+  newChatBubble.classList.remove('visible');
+  firstUnseenChatEl = null;
+}
+function showActivityBubble(el) {
+  if (!firstUnseenActivityEl) firstUnseenActivityEl = el;
+  newActivityBubble.classList.add('visible');
+}
+function hideActivityBubble() {
+  newActivityBubble.classList.remove('visible');
+  firstUnseenActivityEl = null;
+}
+
+newChatBubble.addEventListener('click', () => {
+  if (firstUnseenChatEl) {
+    firstUnseenChatEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } else {
+    scrollChatToBottom();
+  }
+  hideChatBubble();
+});
+
+newActivityBubble.addEventListener('click', () => {
+  if (firstUnseenActivityEl) {
+    firstUnseenActivityEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } else {
+    const body = document.querySelector('[data-console-panel="activity"]');
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+  hideActivityBubble();
+});
+
+// Hide bubbles when user scrolls near bottom.
+document.getElementById('chat-messages').addEventListener('scroll', () => {
+  if (isChatNearBottom()) hideChatBubble();
+});
+document.querySelector('[data-console-panel="activity"]')?.addEventListener('scroll', () => {
+  if (isConsoleNearBottom()) hideActivityBubble();
+});
 
 function scrollToFirstUnread(container) {
   if (!chatCurrentChannel) return false;

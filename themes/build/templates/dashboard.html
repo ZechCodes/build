@@ -1252,7 +1252,8 @@ body{
   overflow:hidden;
   background:rgba(255,255,255,0.4);
 }
-.file-tree{flex:1;overflow-y:auto;overflow-x:hidden;padding:.375rem 0;font-size:12.5px}
+.file-tree{flex:1;overflow:auto;padding:.375rem 0;font-size:12.5px}
+.file-tree-inner{width:max-content;min-width:100%}
 .tree-item{
   display:flex;align-items:center;gap:.3rem;
   padding:.25rem .75rem;
@@ -1268,8 +1269,17 @@ body{
 .tree-arrow.hidden{visibility:hidden}
 .tree-icon{width:14px;height:14px;flex-shrink:0;color:var(--text-muted)}
 .tree-icon.folder{color:var(--accent)}
-.tree-label{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;margin-left:auto;flex-shrink:0}
+.tree-label{font-family:var(--mono);font-size:12px}
+.tree-git-info{
+  position:sticky;right:0;
+  display:flex;align-items:center;gap:.3rem;
+  margin-left:auto;flex-shrink:0;
+  padding-left:1rem;
+  background:linear-gradient(to right, transparent, rgba(255,255,255,0.4) 8px);
+}
+.tree-item:hover .tree-git-info{background:linear-gradient(to right, transparent, rgba(0,0,0,0.03) 8px)}
+.tree-item.active .tree-git-info{background:linear-gradient(to right, transparent, var(--accent-light) 8px)}
+.tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;flex-shrink:0}
 .tree-badge.added{background:var(--green-light);color:var(--green)}
 .tree-badge.modified{background:var(--amber-light);color:var(--amber)}
 
@@ -1277,9 +1287,9 @@ body{
 .file-content-body{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;line-height:20px;padding:0}
 
 /* File tree enhancements */
-.tree-item .tree-stats{font-size:10px;font-family:var(--mono);margin-left:auto;display:flex;gap:.25rem;flex-shrink:0}
-.tree-item .tree-stats .stat-add{color:var(--green)}
-.tree-item .tree-stats .stat-del{color:var(--red, #e5534b)}
+.tree-git-info .tree-stats{font-size:10px;font-family:var(--mono);display:flex;gap:.25rem;flex-shrink:0}
+.tree-git-info .tree-stats .stat-add{color:var(--green)}
+.tree-git-info .tree-stats .stat-del{color:var(--red, #e5534b)}
 .tree-item.gitignored{opacity:.45}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
 .tree-children{display:none}
@@ -1910,8 +1920,10 @@ body{
         </div>
         <div class="file-tree-panel mobile-open" id="file-tree-panel">
           <div class="file-tree" id="file-tree">
-            <div class="empty-state pad-1-5" id="file-tree-empty">
-              <p class="text-xs">Select a channel to browse files</p>
+            <div class="file-tree-inner" id="file-tree-inner">
+              <div class="empty-state pad-1-5" id="file-tree-empty">
+                <p class="text-xs">Select a channel to browse files</p>
+              </div>
             </div>
           </div>
         </div>
@@ -5220,6 +5232,7 @@ function showEditDeviceDialog(device) {
 // ===== FILES VIEW =====
 
 const fileTree = document.getElementById('file-tree');
+const fileTreeInner = document.getElementById('file-tree-inner');
 const fileTreeEmpty = document.getElementById('file-tree-empty');
 const filesPathText = document.getElementById('files-path-text');
 const filesPathBar = document.getElementById('files-path-bar');
@@ -5258,9 +5271,9 @@ function renderFileTree() {
   fileTreeEmpty.style.display = 'none';
 
   // Remove all nodes except empty state.
-  fileTree.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
+  fileTreeInner.querySelectorAll('.tree-item, .tree-children').forEach(n => n.remove());
   const rootEntries = data.get('');
-  if (rootEntries) renderTreeLevel(fileTree, rootEntries.entries, 0, data);
+  if (rootEntries) renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
 }
 
 function renderTreeLevel(container, entries, depth, data) {
@@ -5303,42 +5316,49 @@ function renderTreeLevel(container, entries, depth, data) {
     label.title = entry.path || entry.name;
     item.appendChild(label);
 
-    // Git badge + stats.
-    if (entry.git_status || entry.staged_status) {
-      const st = entry.staged_status || entry.git_status;
-      if (st === '?' || st === 'A') {
-        const badge = document.createElement('span');
-        badge.className = 'tree-badge added';
-        badge.textContent = st === '?' ? 'U' : 'A';
-        item.appendChild(badge);
-      } else if (st === 'M') {
-        const badge = document.createElement('span');
-        badge.className = 'tree-badge modified';
-        badge.textContent = 'M';
-        item.appendChild(badge);
-      } else if (st === 'D') {
-        const badge = document.createElement('span');
-        badge.className = 'tree-badge modified';
-        badge.textContent = 'D';
-        item.appendChild(badge);
+    // Git badge + stats — wrapped in sticky container.
+    const hasGitBadge = entry.git_status || entry.staged_status;
+    const hasStats = entry.insertions > 0 || entry.deletions > 0;
+    if (hasGitBadge || hasStats) {
+      const gitInfo = document.createElement('span');
+      gitInfo.className = 'tree-git-info';
+      if (hasGitBadge) {
+        const st = entry.staged_status || entry.git_status;
+        if (st === '?' || st === 'A') {
+          const badge = document.createElement('span');
+          badge.className = 'tree-badge added';
+          badge.textContent = st === '?' ? 'U' : 'A';
+          gitInfo.appendChild(badge);
+        } else if (st === 'M') {
+          const badge = document.createElement('span');
+          badge.className = 'tree-badge modified';
+          badge.textContent = 'M';
+          gitInfo.appendChild(badge);
+        } else if (st === 'D') {
+          const badge = document.createElement('span');
+          badge.className = 'tree-badge modified';
+          badge.textContent = 'D';
+          gitInfo.appendChild(badge);
+        }
       }
-    }
-    if (entry.insertions > 0 || entry.deletions > 0) {
-      const stats = document.createElement('span');
-      stats.className = 'tree-stats';
-      if (entry.insertions > 0) {
-        const add = document.createElement('span');
-        add.className = 'stat-add';
-        add.textContent = '+' + entry.insertions;
-        stats.appendChild(add);
+      if (hasStats) {
+        const stats = document.createElement('span');
+        stats.className = 'tree-stats';
+        if (entry.insertions > 0) {
+          const add = document.createElement('span');
+          add.className = 'stat-add';
+          add.textContent = '+' + entry.insertions;
+          stats.appendChild(add);
+        }
+        if (entry.deletions > 0) {
+          const del = document.createElement('span');
+          del.className = 'stat-del';
+          del.textContent = '-' + entry.deletions;
+          stats.appendChild(del);
+        }
+        gitInfo.appendChild(stats);
       }
-      if (entry.deletions > 0) {
-        const del = document.createElement('span');
-        del.className = 'stat-del';
-        del.textContent = '-' + entry.deletions;
-        stats.appendChild(del);
-      }
-      item.appendChild(stats);
+      item.appendChild(gitInfo);
     }
 
     container.appendChild(item);

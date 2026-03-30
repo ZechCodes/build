@@ -89,19 +89,21 @@ body{
 
 /* ===== VIEWER TABS ===== */
 .viewer-tabs{
-  display:flex;align-items:center;gap:0;
+  display:flex;align-items:stretch;gap:0;
   border-bottom:1px solid var(--border);
   flex-shrink:0;
   padding:0 .75rem;
   height:40px;
 }
 .viewer-tab{
-  padding:.5rem .875rem;
+  display:flex;align-items:center;
+  padding:0 .875rem;
   font-size:13px;font-weight:500;
   color:var(--text-muted);
   cursor:pointer;
   border:none;background:none;
   border-bottom:2px solid transparent;
+  margin-bottom:-1px;
   transition:color .12s, border-color .12s;
   font-family:var(--font);
 }

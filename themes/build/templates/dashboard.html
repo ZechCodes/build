@@ -1155,14 +1155,16 @@ body{
 .tree-item.gitignored{opacity:.45}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
 .changes-repo-group{border-bottom:1px solid var(--border)}
-.changes-repo-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .35rem;padding:.45rem .5rem .35rem;cursor:pointer;font-size:11px;user-select:none;line-height:1.5}
+.changes-repo-header{display:flex;flex-wrap:wrap;align-items:center;gap:0 .3rem;padding:.35rem .75rem .3rem;cursor:pointer;font-size:11px;user-select:none;line-height:1.5}
 .changes-repo-header:hover{background:rgba(0,0,0,.04)}
-.changes-repo-chevron{flex-shrink:0;display:flex;align-self:center;transition:transform .15s;transform:rotate(90deg)}
+.changes-repo-chevron{width:14px;height:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:transform .15s;transform:rotate(90deg);color:var(--text-muted)}
 .changes-repo-group.collapsed .changes-repo-chevron{transform:rotate(0deg)}
 .changes-repo-group.collapsed .changes-repo-files{display:none}
 .changes-repo-name{font-weight:600;color:var(--fg);white-space:nowrap}
-.changes-repo-meta{width:100%;padding-left:1.1rem;color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.changes-repo-stats{width:100%;padding-left:1.1rem;color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap}
+.changes-repo-meta{width:100%;padding-left:calc(14px + .3rem);color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.changes-repo-stats{width:100%;padding-left:calc(14px + .3rem);color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap}
+.changes-repo-stats .stat-add{color:var(--green)}
+.changes-repo-stats .stat-del{color:var(--red, #dc2626)}
 .tree-tab-bar{
   display:flex;border-top:1px solid var(--border);flex-shrink:0;
 }
@@ -5195,7 +5197,7 @@ function renderChangesView(container, repos) {
 
     const chevron = document.createElement('span');
     chevron.className = 'changes-repo-chevron';
-    chevron.innerHTML = '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M3 2l4 3-4 3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    chevron.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     header.appendChild(chevron);
 
     const nameSpan = document.createElement('span');
@@ -5217,10 +5219,10 @@ function renderChangesView(container, repos) {
     for (const e of repo.entries) { totalIns += e.insertions || 0; totalDels += e.deletions || 0; }
     const statsSpan = document.createElement('span');
     statsSpan.className = 'changes-repo-stats';
-    const statParts = [repo.entries.length + ' file' + (repo.entries.length !== 1 ? 's' : '')];
-    if (totalIns > 0) statParts.push('+' + totalIns);
-    if (totalDels > 0) statParts.push('\u2212' + totalDels);
-    statsSpan.textContent = statParts.join('  ');
+    let statsHTML = repo.entries.length + ' file' + (repo.entries.length !== 1 ? 's' : '');
+    if (totalIns > 0) statsHTML += '&ensp;<span class="stat-add">+' + totalIns + '</span>';
+    if (totalDels > 0) statsHTML += '&ensp;<span class="stat-del">\u2212' + totalDels + '</span>';
+    statsSpan.innerHTML = statsHTML;
     header.appendChild(statsSpan);
 
     group.appendChild(header);

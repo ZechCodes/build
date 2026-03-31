@@ -21,10 +21,10 @@
   --accent:#6366f1;
   --accent-light:rgba(99,102,241,0.08);
   --accent-lighter:rgba(99,102,241,0.04);
-  --green:#059669;
-  --green-light:rgba(5,150,105,0.08);
-  --amber:#d97706;
-  --amber-light:rgba(217,119,6,0.08);
+  --green:#047857;
+  --green-light:rgba(5,150,105,0.12);
+  --amber:#b45309;
+  --amber-light:rgba(217,119,6,0.12);
   --red:#dc2626;
   --red-light:rgba(220,38,38,0.08);
   --console-bg:#27272a;
@@ -1134,14 +1134,14 @@ body{
 .tree-label{font-family:var(--mono);font-size:12px}
 .tree-git-info{
   position:sticky;right:0;
-  display:flex;align-items:center;gap:.3rem;
+  display:flex;align-items:center;gap:.4rem;
   margin-left:auto;flex-shrink:0;
-  padding-left:1.5rem;
-  background:linear-gradient(to right, transparent, #fff 14px);
+  padding-left:1.2rem;
+  background:linear-gradient(to right, transparent, #fff 8px);
 }
-.tree-item:hover .tree-git-info{background:linear-gradient(to right, transparent, #f7f7f7 14px)}
-.tree-item.active .tree-git-info{background:linear-gradient(to right, transparent, var(--accent-light) 14px)}
-.tree-badge{font-size:9px;font-weight:600;padding:.1rem .3rem;border-radius:3px;flex-shrink:0}
+.tree-item:hover .tree-git-info{background:linear-gradient(to right, transparent, #f7f7f7 8px)}
+.tree-item.active .tree-git-info{background:linear-gradient(to right, transparent, var(--accent-light) 8px)}
+.tree-badge{font-size:10px;font-weight:700;font-family:var(--mono);padding:.05rem .35rem;border-radius:3px;flex-shrink:0;letter-spacing:.02em;line-height:1.3}
 .tree-badge.added{background:var(--green-light);color:var(--green)}
 .tree-badge.modified{background:var(--amber-light);color:var(--amber)}
 
@@ -1155,14 +1155,14 @@ body{
 .tree-item.gitignored{opacity:.45}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
 .changes-repo-group{border-bottom:1px solid var(--border)}
-.changes-repo-header{display:flex;align-items:center;gap:.35rem;padding:.4rem .5rem;cursor:pointer;font-size:11px;user-select:none}
+.changes-repo-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .35rem;padding:.45rem .5rem .35rem;cursor:pointer;font-size:11px;user-select:none;line-height:1.5}
 .changes-repo-header:hover{background:rgba(0,0,0,.04)}
-.changes-repo-chevron{flex-shrink:0;display:flex;transition:transform .15s;transform:rotate(90deg)}
+.changes-repo-chevron{flex-shrink:0;display:flex;align-self:center;transition:transform .15s;transform:rotate(90deg)}
 .changes-repo-group.collapsed .changes-repo-chevron{transform:rotate(0deg)}
 .changes-repo-group.collapsed .changes-repo-files{display:none}
 .changes-repo-name{font-weight:600;color:var(--fg);white-space:nowrap}
-.changes-repo-meta{color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
-.changes-repo-stats{color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;flex-shrink:0}
+.changes-repo-meta{width:100%;padding-left:1.1rem;color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.changes-repo-stats{width:100%;padding-left:1.1rem;color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap}
 .tree-tab-bar{
   display:flex;border-top:1px solid var(--border);flex-shrink:0;
 }
@@ -5205,10 +5205,11 @@ function renderChangesView(container, repos) {
 
     const meta = document.createElement('span');
     meta.className = 'changes-repo-meta';
-    const parts = [];
-    if (repo.remote) parts.push(repo.remote);
-    if (repo.branch) parts.push(repo.branch);
-    meta.textContent = parts.join(' / ') || '';
+    if (repo.remote && repo.branch) {
+      meta.textContent = repo.remote + ' @ ' + repo.branch;
+    } else {
+      meta.textContent = repo.remote || repo.branch || '';
+    }
     header.appendChild(meta);
 
     // Aggregate stats.
@@ -5218,7 +5219,7 @@ function renderChangesView(container, repos) {
     statsSpan.className = 'changes-repo-stats';
     const statParts = [repo.entries.length + ' file' + (repo.entries.length !== 1 ? 's' : '')];
     if (totalIns > 0) statParts.push('+' + totalIns);
-    if (totalDels > 0) statParts.push('-' + totalDels);
+    if (totalDels > 0) statParts.push('\u2212' + totalDels);
     statsSpan.textContent = statParts.join('  ');
     header.appendChild(statsSpan);
 

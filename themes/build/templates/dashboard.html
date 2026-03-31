@@ -5952,6 +5952,9 @@ function onFilesTabActivated() {
     }
 
     filesLoadRoot();
+    if (filesTreeTab === 'changes' && e2ee && e2ee.connected) {
+      e2ee.filesChanges(chatCurrentChannel);
+    }
   }
 }
 

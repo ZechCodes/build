@@ -350,7 +350,7 @@ body{
 .comp-popover .cp-btn:disabled:hover{background:var(--bg)}
 
 /* Viewer body (tab panels) */
-.viewer-body{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.viewer-body{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
 /* Tab panels */
 .tab-panel{flex:1;display:none;overflow:hidden}
 .tab-panel.active{display:flex}
@@ -4711,7 +4711,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
     return;
   }
 
-  const chatTab = document.getElementById('tab-chat');
+  const dialogParent = document.querySelector('.viewer-body');
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
 
@@ -4744,8 +4744,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       </div>
     </div>
   `;
-  chatTab.style.position = 'relative';
-  chatTab.appendChild(overlay);
+  dialogParent.appendChild(overlay);
 
   const nameInput = document.getElementById('new-channel-name');
   const harnessSelect = document.getElementById('new-channel-harness');
@@ -4830,8 +4829,8 @@ if (_e2eeLabel) {
 // ===== Edit Channel Dialog =====
 function showEditChannelDialog(ch) {
   if (!e2ee || !e2ee.connected) return;
-  const chatTab = document.getElementById('tab-chat');
-  if (!chatTab) return;
+  const dialogParent = document.querySelector('.viewer-body');
+  if (!dialogParent) return;
 
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
@@ -4855,8 +4854,7 @@ function showEditChannelDialog(ch) {
       </div>
     </div>
   `;
-  chatTab.style.position = 'relative';
-  chatTab.appendChild(overlay);
+  dialogParent.appendChild(overlay);
 
   const nameInput = document.getElementById('edit-channel-name');
   nameInput.focus();
@@ -4914,8 +4912,8 @@ function showEditChannelDialog(ch) {
 
 // ===== Edit Device Dialog =====
 function showEditDeviceDialog(device) {
-  const chatTab = document.getElementById('tab-chat');
-  if (!chatTab) return;
+  const dialogParent = document.querySelector('.viewer-body');
+  if (!dialogParent) return;
 
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
@@ -4937,8 +4935,7 @@ function showEditDeviceDialog(device) {
       </div>
     </div>
   `;
-  chatTab.style.position = 'relative';
-  chatTab.appendChild(overlay);
+  dialogParent.appendChild(overlay);
 
   const nameInput = document.getElementById('edit-device-name');
   nameInput.focus();

@@ -1211,8 +1211,8 @@ body{
 .file-wrap-toggle:hover{color:var(--accent)}
 .file-wrap-toggle.active{background:var(--accent);color:#fff}
 /* Line-wrap mode overrides */
-.file-content-body.line-wrap .file-viewer .code-content,
-.file-content-body.line-wrap .file-viewer .code-content div{white-space:pre-wrap;word-break:break-all;height:auto;min-height:20px}
+.file-content-body.line-wrap .file-line{white-space:pre-wrap;word-break:break-all}
+.file-content-body.line-wrap .file-line .fl-content{word-break:break-all}
 .file-content-body.line-wrap .diff-line{white-space:pre-wrap;word-break:break-all}
 .file-content-body.line-wrap .diff-line .dl-content{word-break:break-all}
 /* Markdown rendered view */
@@ -1223,17 +1223,15 @@ body{
   background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
 .file-image-view img,.file-image-view svg{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
 
-/* File viewer with line numbers */
-.file-viewer{display:flex;width:100%;min-height:100%}
-.file-viewer .line-numbers{
-  padding:.5rem .5rem .5rem .75rem;
-  text-align:right;color:var(--text-muted);opacity:.5;
-  user-select:none;border-right:1px solid var(--border);
-  flex-shrink:0;background:rgba(0,0,0,.015);
+/* File viewer with line numbers (row-based) */
+.file-viewer{width:100%;min-height:100%}
+.file-line{display:flex;white-space:pre}
+.file-line .fl-num{
+  width:3.5rem;text-align:right;padding:0 .5rem 0 .75rem;
+  color:var(--text-muted);opacity:.5;user-select:none;flex-shrink:0;
+  border-right:1px solid var(--border);background:rgba(0,0,0,.015);
 }
-.file-viewer .line-numbers div{white-space:pre;height:20px}
-.file-viewer .code-content{padding:.5rem .75rem;flex:1;min-width:0;overflow-x:auto;white-space:pre;tab-size:4}
-.file-viewer .code-content div{white-space:pre;height:20px}
+.file-line .fl-content{flex:1;padding:0 .75rem;min-width:0;tab-size:4}
 
 /* Diff viewer */
 .diff-viewer{width:100%;min-height:100%}
@@ -1741,9 +1739,9 @@ body{
           <div class="file-float-toggle" id="file-float-toggle"></div>
           <button class="file-wrap-toggle" id="file-wrap-toggle" title="Toggle line wrap">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 4h10M3 8h7a2 2 0 0 1 0 4H8"/>
-              <path d="M10 10l-2 2 2 2"/>
-              <line x1="3" y1="12" x2="5" y2="12"/>
+              <path d="M3 4h10"/>
+              <path d="M3 8h8a2.5 2.5 0 0 1 0 5H9"/>
+              <path d="M11 11l-2 2 2 2"/>
             </svg>
           </button>
         </div>
@@ -5489,23 +5487,22 @@ function renderFileContent(content, path, size, truncated) {
   const viewer = document.createElement('div');
   viewer.className = 'file-viewer';
 
-  const lineNums = document.createElement('div');
-  lineNums.className = 'line-numbers';
-  const codeDiv = document.createElement('div');
-  codeDiv.className = 'code-content';
-
   for (let i = 0; i < lines.length; i++) {
-    const numLine = document.createElement('div');
-    numLine.textContent = String(i + 1);
-    lineNums.appendChild(numLine);
+    const row = document.createElement('div');
+    row.className = 'file-line';
 
-    const codeLine = document.createElement('div');
-    codeLine.innerHTML = highlightLine(lines[i], ext);
-    codeDiv.appendChild(codeLine);
+    const numEl = document.createElement('span');
+    numEl.className = 'fl-num';
+    numEl.textContent = String(i + 1);
+
+    const codeEl = document.createElement('span');
+    codeEl.className = 'fl-content';
+    codeEl.innerHTML = highlightLine(lines[i], ext);
+
+    row.appendChild(numEl);
+    row.appendChild(codeEl);
+    viewer.appendChild(row);
   }
-
-  viewer.appendChild(lineNums);
-  viewer.appendChild(codeDiv);
 
   fileContentBody.innerHTML = '';
   fileContentBody.appendChild(viewer);

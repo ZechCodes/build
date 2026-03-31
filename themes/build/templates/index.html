@@ -1193,8 +1193,10 @@ footer{
   .sc-mobile-nav{display:flex !important}
   /* On portrait mobile: plans/files show only sidebar, no detail */
   .sc-panel-sidebar{display:none}
+  .sc-panel[data-panel="plans"],
+  .sc-panel[data-panel="files"]{flex-direction:column}
   .sc-panel[data-panel="plans"] .sc-panel-sidebar,
-  .sc-panel[data-panel="files"] .sc-panel-sidebar{display:flex;flex:1}
+  .sc-panel[data-panel="files"] .sc-panel-sidebar{display:flex;flex:1;width:100%;border-right:none}
   .sc-detail-pane{display:none !important}
 }
 </style>

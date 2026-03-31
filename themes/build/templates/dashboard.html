@@ -555,7 +555,7 @@ body{
 
 /* New channel dialog */
 .new-channel-overlay{
-  position:absolute;inset:0;z-index:50;
+  position:fixed;inset:0;z-index:50;
   background:rgba(0,0,0,0.2);backdrop-filter:blur(4px);
   display:flex;align-items:center;justify-content:center;
 }
@@ -4711,7 +4711,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
     return;
   }
 
-  const dialogParent = document.querySelector('.viewer-body');
+  const dialogParent = document.body;
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
 
@@ -4829,7 +4829,7 @@ if (_e2eeLabel) {
 // ===== Edit Channel Dialog =====
 function showEditChannelDialog(ch) {
   if (!e2ee || !e2ee.connected) return;
-  const dialogParent = document.querySelector('.viewer-body');
+  const dialogParent = document.body;
   if (!dialogParent) return;
 
   const overlay = document.createElement('div');
@@ -4912,7 +4912,7 @@ function showEditChannelDialog(ch) {
 
 // ===== Edit Device Dialog =====
 function showEditDeviceDialog(device) {
-  const dialogParent = document.querySelector('.viewer-body');
+  const dialogParent = document.body;
   if (!dialogParent) return;
 
   const overlay = document.createElement('div');

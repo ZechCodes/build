@@ -1,8 +1,8 @@
 /**
  * Browser-side E2EE client for Build chat.
  *
- * Implements the secure transport protocol using libsodium-wrappers
- * (expected to be loaded globally as `window.sodium`).
+ * Implements the secure transport protocol using libsodium-wrappers.
+ * Requires libsodium to be loaded globally as `window.sodium`.
  *
  * Usage:
  *   const client = new BuildE2EE();

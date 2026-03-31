@@ -1154,6 +1154,15 @@ body{
 .tree-git-info .tree-stats .stat-del{color:var(--red, #e5534b)}
 .tree-item.gitignored{opacity:.45}
 .tree-item.untracked .tree-badge{background:var(--green-light);color:var(--green)}
+.changes-repo-group{border-bottom:1px solid var(--border)}
+.changes-repo-header{display:flex;align-items:center;gap:.35rem;padding:.4rem .5rem;cursor:pointer;font-size:11px;user-select:none}
+.changes-repo-header:hover{background:rgba(0,0,0,.04)}
+.changes-repo-chevron{flex-shrink:0;display:flex;transition:transform .15s;transform:rotate(90deg)}
+.changes-repo-group.collapsed .changes-repo-chevron{transform:rotate(0deg)}
+.changes-repo-group.collapsed .changes-repo-files{display:none}
+.changes-repo-name{font-weight:600;color:var(--fg);white-space:nowrap}
+.changes-repo-meta{color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.changes-repo-stats{color:var(--fg-muted);font-family:var(--mono);font-size:10px;white-space:nowrap;flex-shrink:0}
 .tree-tab-bar{
   display:flex;border-top:1px solid var(--border);flex-shrink:0;
 }
@@ -3524,9 +3533,9 @@ function bindE2EEEvents() {
   });
 
   e2ee.addEventListener('files_changes_result', (evt) => {
-    const { channel_id, entries } = evt.detail;
+    const { channel_id, repos } = evt.detail;
     if (channel_id !== filesChannelId) return;
-    filesChangesData.set(channel_id, entries || []);
+    filesChangesData.set(channel_id, repos || []);
     if (filesTreeTab === 'changes') renderFileTree();
   });
 
@@ -5007,7 +5016,7 @@ let filesLastContent = null;        // {path, content, size, truncated} cache fo
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
 let filesTreeTab = 'files';        // 'files' or 'changes'
-const filesChangesData = new Map(); // channelId -> [entry, ...]
+const filesChangesData = new Map(); // channelId -> [{path, remote, branch, entries}, ...]
 
 // Tree tab switching.
 document.querySelectorAll('.tree-tab').forEach(btn => {
@@ -5041,7 +5050,7 @@ function renderFileTree() {
   fileTreeEmpty.style.display = 'none';
 
   // Remove all rendered nodes (tree items, children, and changes empty state).
-  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty').forEach(n => n.remove());
+  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty, .changes-repo-group').forEach(n => n.remove());
   const rootEntries = data.get('');
   if (filesTreeTab === 'changes') {
     const changes = filesChangesData.get(filesChannelId);
@@ -5159,92 +5168,147 @@ function renderTreeLevel(container, entries, depth, data) {
   }
 }
 
-function renderChangesView(container, entries) {
-  // entries is an array of changed file entries from the backend (or undefined if not yet loaded).
-  if (!entries) {
+function renderChangesView(container, repos) {
+  // repos is an array of {path, remote, branch, entries[]} from the backend (or undefined if not yet loaded).
+  if (!repos) {
     const loadingDiv = document.createElement('div');
     loadingDiv.className = 'empty-state pad-1-5 changes-empty';
     loadingDiv.innerHTML = '<div class="loading-spinner"></div><p class="text-xs">Loading changes…</p>';
     container.appendChild(loadingDiv);
     return;
   }
-  const changed = entries.slice().sort((a, b) => a.path.localeCompare(b.path));
-  if (changed.length === 0) {
+  if (repos.length === 0) {
     const emptyDiv = document.createElement('div');
     emptyDiv.className = 'empty-state pad-1-5 changes-empty';
     emptyDiv.innerHTML = '<p class="text-xs">No changes</p>';
     container.appendChild(emptyDiv);
     return;
   }
-  for (const entry of changed) {
-    const item = document.createElement('div');
-    item.className = 'tree-item';
-    if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
-    if (entry.path === filesCurrentPath) item.classList.add('active');
-    item.dataset.path = entry.path;
-    item.dataset.type = entry.type;
 
-    // Hidden arrow for alignment.
-    const arrow = document.createElement('span');
-    arrow.className = 'tree-arrow hidden';
-    item.appendChild(arrow);
+  for (const repo of repos) {
+    const group = document.createElement('div');
+    group.className = 'changes-repo-group';
 
-    // File icon.
-    const icon = document.createElement('span');
-    icon.className = 'tree-icon';
-    icon.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
-    item.appendChild(icon);
+    // Repo header.
+    const header = document.createElement('div');
+    header.className = 'changes-repo-header';
 
-    // Label — show full path in changes view.
-    const label = document.createElement('span');
-    label.className = 'tree-label';
-    label.textContent = entry.path;
-    label.title = entry.path;
-    item.appendChild(label);
+    const chevron = document.createElement('span');
+    chevron.className = 'changes-repo-chevron';
+    chevron.innerHTML = '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M3 2l4 3-4 3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    header.appendChild(chevron);
 
-    // Git info.
-    const hasGitBadge = entry.git_status || entry.staged_status;
-    const hasStats = entry.insertions > 0 || entry.deletions > 0;
-    if (hasGitBadge || hasStats) {
-      const gitInfo = document.createElement('span');
-      gitInfo.className = 'tree-git-info';
-      if (hasGitBadge) {
-        const st = entry.staged_status || entry.git_status;
-        const badge = document.createElement('span');
-        if (st === '?' || st === 'A') {
-          badge.className = 'tree-badge added';
-          badge.textContent = st === '?' ? 'U' : 'A';
-        } else if (st === 'M') {
-          badge.className = 'tree-badge modified';
-          badge.textContent = 'M';
-        } else if (st === 'D') {
-          badge.className = 'tree-badge modified';
-          badge.textContent = 'D';
-        }
-        if (badge.textContent) gitInfo.appendChild(badge);
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'changes-repo-name';
+    nameSpan.textContent = repo.path === '.' ? '(root)' : repo.path;
+    header.appendChild(nameSpan);
+
+    const meta = document.createElement('span');
+    meta.className = 'changes-repo-meta';
+    const parts = [];
+    if (repo.remote) parts.push(repo.remote);
+    if (repo.branch) parts.push(repo.branch);
+    meta.textContent = parts.join(' / ') || '';
+    header.appendChild(meta);
+
+    // Aggregate stats.
+    let totalIns = 0, totalDels = 0;
+    for (const e of repo.entries) { totalIns += e.insertions || 0; totalDels += e.deletions || 0; }
+    const statsSpan = document.createElement('span');
+    statsSpan.className = 'changes-repo-stats';
+    const statParts = [repo.entries.length + ' file' + (repo.entries.length !== 1 ? 's' : '')];
+    if (totalIns > 0) statParts.push('+' + totalIns);
+    if (totalDels > 0) statParts.push('-' + totalDels);
+    statsSpan.textContent = statParts.join('  ');
+    header.appendChild(statsSpan);
+
+    group.appendChild(header);
+
+    // File list.
+    const fileList = document.createElement('div');
+    fileList.className = 'changes-repo-files';
+
+    const sorted = repo.entries.slice().sort((a, b) => a.path.localeCompare(b.path));
+    for (const entry of sorted) {
+      const item = document.createElement('div');
+      item.className = 'tree-item';
+      if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
+      if (entry.path === filesCurrentPath) item.classList.add('active');
+      item.dataset.path = entry.path;
+      item.dataset.type = entry.type;
+
+      const arrow = document.createElement('span');
+      arrow.className = 'tree-arrow hidden';
+      item.appendChild(arrow);
+
+      const icon = document.createElement('span');
+      icon.className = 'tree-icon';
+      icon.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
+      item.appendChild(icon);
+
+      // Show path relative to repo (strip repo prefix).
+      const label = document.createElement('span');
+      label.className = 'tree-label';
+      let displayPath = entry.path;
+      if (repo.path !== '.' && displayPath.startsWith(repo.path + '/')) {
+        displayPath = displayPath.slice(repo.path.length + 1);
       }
-      if (hasStats) {
-        const stats = document.createElement('span');
-        stats.className = 'tree-stats';
-        if (entry.insertions > 0) {
-          const add = document.createElement('span');
-          add.className = 'stat-add';
-          add.textContent = '+' + entry.insertions;
-          stats.appendChild(add);
+      label.textContent = displayPath;
+      label.title = entry.path;
+      item.appendChild(label);
+
+      const hasGitBadge = entry.git_status || entry.staged_status;
+      const hasStats = entry.insertions > 0 || entry.deletions > 0;
+      if (hasGitBadge || hasStats) {
+        const gitInfo = document.createElement('span');
+        gitInfo.className = 'tree-git-info';
+        if (hasGitBadge) {
+          const st = entry.staged_status || entry.git_status;
+          const badge = document.createElement('span');
+          if (st === '?' || st === 'A') {
+            badge.className = 'tree-badge added';
+            badge.textContent = st === '?' ? 'U' : 'A';
+          } else if (st === 'M') {
+            badge.className = 'tree-badge modified';
+            badge.textContent = 'M';
+          } else if (st === 'D') {
+            badge.className = 'tree-badge modified';
+            badge.textContent = 'D';
+          }
+          if (badge.textContent) gitInfo.appendChild(badge);
         }
-        if (entry.deletions > 0) {
-          const del = document.createElement('span');
-          del.className = 'stat-del';
-          del.textContent = '-' + entry.deletions;
-          stats.appendChild(del);
+        if (hasStats) {
+          const stats = document.createElement('span');
+          stats.className = 'tree-stats';
+          if (entry.insertions > 0) {
+            const add = document.createElement('span');
+            add.className = 'stat-add';
+            add.textContent = '+' + entry.insertions;
+            stats.appendChild(add);
+          }
+          if (entry.deletions > 0) {
+            const del = document.createElement('span');
+            del.className = 'stat-del';
+            del.textContent = '-' + entry.deletions;
+            stats.appendChild(del);
+          }
+          gitInfo.appendChild(stats);
         }
-        gitInfo.appendChild(stats);
+        item.appendChild(gitInfo);
       }
-      item.appendChild(gitInfo);
+
+      item.addEventListener('click', () => selectFile(entry.path, entry, 'diff'));
+      fileList.appendChild(item);
     }
 
-    item.addEventListener('click', () => selectFile(entry.path, entry, 'diff'));
-    container.appendChild(item);
+    group.appendChild(fileList);
+
+    // Toggle collapse on header click.
+    header.addEventListener('click', () => {
+      group.classList.toggle('collapsed');
+    });
+
+    container.appendChild(group);
   }
 }
 

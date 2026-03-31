@@ -449,7 +449,7 @@ body{
 .new-activity-bubble:hover{filter:brightness(1.1)}
 /* Scroll-to-bottom arrow */
 .scroll-bottom-arrow{
-  position:absolute;bottom:4.5rem;right:1rem;z-index:9;
+  position:absolute;bottom:4.5rem;left:50%;transform:translateX(-50%);z-index:9;
   width:28px;height:28px;border-radius:50%;border:1px solid var(--border);
   background:var(--surface-solid,#fff);box-shadow:0 2px 6px rgba(0,0,0,.1);
   display:flex;align-items:center;justify-content:center;
@@ -459,7 +459,7 @@ body{
 .scroll-bottom-arrow.visible{opacity:1;pointer-events:auto}
 .scroll-bottom-arrow:hover{color:var(--accent);border-color:var(--accent)}
 .console-bottom .scroll-bottom-arrow{
-  bottom:auto;top:.5rem;right:.75rem;
+  bottom:auto;top:.5rem;
   background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.15);
   color:rgba(255,255,255,.5);
 }

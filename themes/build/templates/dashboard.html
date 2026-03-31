@@ -130,6 +130,8 @@ body{
 .dd-item.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
 .top-dropdown-trigger .ch-unread-badge{margin-left:.4rem}
 .top-dropdown-trigger.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
+.mobile-channel-trigger .ch-unread-badge{margin-left:auto;flex-shrink:0}
+.mobile-channel-trigger.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
 
 /* ===== CHANNEL PANEL (left column) ===== */
 .channel-panel{
@@ -1965,6 +1967,31 @@ function updateMobileChannelLabel() {
   } else {
     label.textContent = 'Select channel';
     if (hashEl) hashEl.textContent = '#';
+  }
+
+  // Aggregate unread counter and interaction pulse.
+  if (trigger && typeof unreadCounts !== 'undefined') {
+    let totalUnread = 0;
+    let anyInteraction = false;
+    for (const [chId, uc] of unreadCounts) {
+      if (chId === chatCurrentChannel) continue;
+      totalUnread += uc.messages;
+      if (uc.hasInteraction) anyInteraction = true;
+    }
+
+    let badge = trigger.querySelector('.ch-unread-badge');
+    if (totalUnread > 0) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'ch-unread-badge';
+        trigger.insertBefore(badge, trigger.querySelector('.dd-chevron'));
+      }
+      badge.textContent = totalUnread;
+    } else if (badge) {
+      badge.remove();
+    }
+
+    trigger.classList.toggle('has-interaction', anyInteraction);
   }
 }
 

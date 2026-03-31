@@ -5574,6 +5574,10 @@ function renderDiffContent(diffText, truncated) {
   const viewer = document.createElement('div');
   viewer.className = 'diff-viewer';
 
+  // Derive file extension for syntax highlighting.
+  const extMatch = filesCurrentPath ? filesCurrentPath.match(/\.([^./]+)$/) : null;
+  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+
   let oldNum = 0, newNum = 0;
   for (const line of lines) {
     // Skip diff header lines (---, +++, diff, index).
@@ -5601,16 +5605,16 @@ function renderDiffContent(diffText, truncated) {
     if (line.startsWith('+')) {
       row.classList.add('added');
       numEl.textContent = String(newNum++);
-      contentEl.textContent = line.slice(1);
+      contentEl.innerHTML = highlightLine(line.slice(1), ext);
     } else if (line.startsWith('-')) {
       row.classList.add('removed');
       numEl.textContent = String(oldNum++);
-      contentEl.textContent = line.slice(1);
+      contentEl.innerHTML = highlightLine(line.slice(1), ext);
     } else {
       row.classList.add('context');
       numEl.textContent = String(newNum);
       oldNum++; newNum++;
-      contentEl.textContent = line.startsWith(' ') ? line.slice(1) : line;
+      contentEl.innerHTML = highlightLine(line.startsWith(' ') ? line.slice(1) : line, ext);
     }
 
     row.appendChild(numEl);

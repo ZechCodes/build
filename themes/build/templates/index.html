@@ -463,84 +463,117 @@ nav{
   color:#18181b;
 }
 
-/* Icon rail */
-.sc-rail{
-  width:48px;background:#18181b;
-  display:flex;flex-direction:column;align-items:center;
-  padding:.75rem 0;gap:.25rem;
-  flex-shrink:0;
+/* Channel panel (left column) */
+.sc-channel-panel{
+  width:200px;flex-shrink:0;
+  display:flex;flex-direction:column;
+  border-right:1px solid rgba(0,0,0,.08);
+  background:rgba(255,255,255,.4);
+  overflow:hidden;
 }
-.sc-rail-icon{
-  width:34px;height:34px;border-radius:8px;
-  display:flex;align-items:center;justify-content:center;
+.sc-channel-panel-list{flex:1;overflow-y:auto;padding:.375rem 0}
+.sc-device-group{}
+.sc-device-group-header{
+  display:flex;align-items:center;gap:.35rem;
+  padding:.45rem .65rem;
+  font-size:10px;font-weight:600;
+  color:#71717a;
+  text-transform:uppercase;letter-spacing:.04em;
+  cursor:default;
 }
-.sc-rail-icon.active{background:rgba(129,140,248,.15)}
-.sc-rail-icon svg{width:16px;height:16px;color:#71717a}
-.sc-rail-icon.active svg{color:var(--accent)}
-.sc-spacer{flex:1}
-.sc-e2e{color:#059669;opacity:.6}
-.sc-e2e svg{width:14px;height:14px}
-
-.sc-sidebar-header{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:.65rem .75rem;
-  border-bottom:1px solid rgba(0,0,0,.08);
-}
-.sc-sidebar-title{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em}
-.sc-sidebar-btn{
-  width:22px;height:22px;border-radius:4px;
-  border:1px solid rgba(0,0,0,.12);background:rgba(255,255,255,.7);
-  display:flex;align-items:center;justify-content:center;cursor:default;
-}
-.sc-sidebar-btn svg{width:12px;height:12px;color:var(--accent)}
-.sc-channel-list{flex:1;overflow-y:auto;padding:.35rem}
+.sc-device-group-header .sc-status-lock{width:10px;height:10px;color:#059669}
+.sc-device-group-header .sc-status-dot{width:5px;height:5px;border-radius:50%;background:#dc2626;flex-shrink:0}
+.sc-device-group-header .sc-chevron{width:10px;height:10px;color:#a1a1aa;flex-shrink:0;transition:transform .15s}
+.sc-device-group-header .sc-chevron.collapsed{transform:rotate(-90deg)}
 .sc-channel{
   display:flex;align-items:center;gap:.4rem;
-  padding:.4rem .6rem;
-  border-radius:6px;
-  font-size:12px;color:#18181b;
+  padding:.35rem .6rem .35rem 1.4rem;
+  font-size:11.5px;color:#18181b;
+  cursor:default;
 }
-.sc-channel:not(.active):hover{background:rgba(99,102,241,.04)}
 .sc-channel.active{background:rgba(99,102,241,.08);color:var(--accent);font-weight:600}
-.sc-channel-hash{color:#a1a1aa;font-size:13px;font-weight:400}
-.sc-e2e-bar{
-  padding:.4rem .75rem;
-  border-top:1px solid rgba(0,0,0,.08);
-  display:flex;align-items:center;gap:.35rem;
-  font-size:10px;color:#71717a;
+.sc-channel-hash{color:#a1a1aa;font-size:12px;font-weight:400}
+.sc-channel-panel-footer{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.45rem .6rem .6rem;
+  flex-shrink:0;
 }
-.sc-e2e-dot{width:6px;height:6px;border-radius:50%;background:#059669;flex-shrink:0}
+.sc-panel-avatar{
+  width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:9px;font-weight:700;flex-shrink:0;
+  background:rgba(99,102,241,.1);color:var(--accent);
+}
+.sc-new-session-btn{
+  flex:1;display:flex;align-items:center;gap:.3rem;
+  font-size:10.5px;font-weight:500;color:#71717a;
+  background:none;border:1px solid rgba(0,0,0,.08);
+  border-radius:5px;padding:.3rem .5rem;
+  cursor:default;font-family:var(--sans);
+}
+.sc-new-session-btn svg{width:10px;height:10px;color:var(--accent)}
 
-/* Content area (topbar + body + console) */
-.sc-content{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
-.sc-body{flex:1;display:flex;overflow:hidden;position:relative}
-.sc-topbar{
-  height:40px;
-  display:flex;align-items:center;gap:.75rem;
-  padding:0 1rem;
+/* Viewer tabs */
+.sc-viewer-tabs{
+  display:flex;align-items:stretch;gap:0;
+  border-bottom:1px solid rgba(0,0,0,.08);
+  flex-shrink:0;
+  padding:0 .65rem;
+  height:36px;
+}
+.sc-viewer-tab{
+  display:flex;align-items:center;
+  padding:0 .7rem;
+  font-size:12px;font-weight:500;
+  color:#a1a1aa;
+  cursor:default;
+  border:none;background:none;
+  border-bottom:2px solid transparent;
+  margin-bottom:-1px;
+  font-family:var(--sans);
+}
+.sc-viewer-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+
+/* Mobile nav (hidden on desktop) */
+.sc-mobile-nav{
+  display:none;
+  align-items:stretch;gap:.4rem;
+  padding:0 .6rem;
+  height:36px;
   border-bottom:1px solid rgba(0,0,0,.08);
   flex-shrink:0;
 }
-.sc-device-dropdown{
-  display:flex;align-items:center;gap:.35rem;
-  font-weight:600;color:#18181b;font-size:13px;
-  cursor:default;
-}
-.sc-chevron{color:#a1a1aa;flex-shrink:0}
-.sc-lock{color:#059669;flex-shrink:0}
-.sc-separator{width:1px;height:16px;background:rgba(0,0,0,.15);flex-shrink:0}
-.sc-channel-dropdown{
-  display:flex;align-items:center;gap:.35rem;
+.sc-mobile-trigger{
+  display:flex;align-items:center;gap:.3rem;
   font-size:12px;font-weight:600;color:#18181b;
-  cursor:default;
+  background:none;border:none;
+  cursor:default;font-family:var(--sans);
+  flex:2 1 0;min-width:0;max-width:140px;
+  white-space:nowrap;overflow:hidden;
 }
-.sc-channel-dropdown .sc-channel-hash{color:#a1a1aa;font-weight:400}
+.sc-mobile-trigger .sc-status-lock{width:10px;height:10px;color:#059669}
+.sc-mobile-trigger span{overflow:hidden;text-overflow:ellipsis}
+.sc-mobile-trigger .sc-chevron{width:7px;height:5px;color:#a1a1aa;flex-shrink:0}
+.sc-mobile-tab{
+  flex:1 1 0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:500;color:#a1a1aa;
+  border:none;background:none;
+  border-bottom:2px solid transparent;
+  margin-bottom:-1px;
+  cursor:default;font-family:var(--sans);
+}
+.sc-mobile-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+
+/* Content area (tabs + body + console) */
+.sc-content{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.sc-body{flex:1;display:flex;overflow:hidden;position:relative}
 
 /* Complications strip */
 .sc-complications{
   position:relative;
   flex-shrink:0;
-  border-bottom:1px solid rgba(0,0,0,.08);
+  border-top:1px solid rgba(0,0,0,.08);
 }
 .sc-comp-scroll{
   display:flex;gap:.35rem;
@@ -722,7 +755,6 @@ nav{
   position:relative;
   pointer-events:auto;
 }
-.sc-rail-icon{cursor:default}
 .sc-panel-sidebar{
   width:200px;flex-shrink:0;
   display:flex;flex-direction:column;
@@ -731,80 +763,12 @@ nav{
   overflow:hidden;
 }
 .sc-panel-main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
-
-/* Dashboard panel */
-.sc-dash{flex:1;overflow-y:auto;padding:.75rem}
-.sc-dash-header{
-  display:flex;align-items:center;gap:.5rem;
-  padding:0 .25rem .6rem;
+.sc-sidebar-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:.65rem .75rem;
+  border-bottom:1px solid rgba(0,0,0,.08);
 }
-.sc-dash-logo{font-size:14px;font-weight:700;color:#18181b;letter-spacing:-.02em}
-.sc-dash-fleet{font-size:11px;color:#71717a;font-weight:500;padding-left:.5rem;border-left:1px solid rgba(0,0,0,.12)}
-.sc-stat-row{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;
-  margin-bottom:.75rem;
-}
-.sc-stat-card{
-  background:rgba(255,255,255,.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(0,0,0,.06);border-radius:8px;
-  padding:.6rem .7rem;
-}
-.sc-stat-label{font-size:9px;font-weight:500;color:#71717a;text-transform:uppercase;letter-spacing:.04em}
-.sc-stat-value{font-size:18px;font-weight:700;color:#18181b;letter-spacing:-.02em;line-height:1.2}
-.sc-stat-sub{font-size:9px;color:#a1a1aa}
-.sc-dash-body{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;align-content:start}
-.sc-dash-section-title{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.35rem}
-.sc-device-card{
-  background:rgba(255,255,255,.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(0,0,0,.06);border-radius:8px;
-  padding:.6rem .7rem;margin-bottom:.5rem;
-}
-.sc-device-header{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem}
-.sc-device-icon{
-  width:24px;height:24px;border-radius:5px;
-  background:rgba(99,102,241,.08);
-  display:flex;align-items:center;justify-content:center;flex-shrink:0;
-}
-.sc-device-icon svg{width:12px;height:12px;color:#6366f1}
-.sc-device-icon.offline{background:rgba(220,38,38,.08)}
-.sc-device-icon.offline svg{color:#dc2626}
-.sc-device-name{font-size:11px;font-weight:600;color:#18181b}
-.sc-device-status{font-size:9px;color:#71717a;margin-left:auto;display:flex;align-items:center;gap:.2rem}
-.sc-device-status .dot{width:5px;height:5px;border-radius:50%;background:#059669}
-.sc-device-status .dot.offline{background:#dc2626}
-.sc-agent-row{
-  display:flex;align-items:center;gap:.35rem;
-  padding:.3rem .4rem;border-radius:5px;
-  background:rgba(255,255,255,.5);margin-bottom:.2rem;
-  font-size:10.5px;
-}
-.sc-agent-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.sc-agent-dot.working{background:#059669}
-.sc-agent-dot.idle{background:#d97706}
-.sc-agent-dot.stopped{background:#dc2626}
-.sc-agent-row .name{font-family:var(--mono);font-size:10px;color:#18181b;font-weight:500}
-.sc-agent-row .state{font-size:9px;color:#71717a;margin-left:auto}
-.sc-agent-row .unread{
-  font-size:8px;font-weight:600;color:#fff;background:#6366f1;
-  min-width:14px;height:14px;border-radius:7px;
-  display:flex;align-items:center;justify-content:center;padding:0 3px;margin-left:.15rem;
-}
-.sc-activity-feed{
-  background:rgba(255,255,255,.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border:1px solid rgba(0,0,0,.06);border-radius:8px;
-  padding:.5rem .6rem;
-}
-.sc-activity-item{
-  display:flex;gap:.4rem;padding:.35rem 0;
-  border-bottom:1px solid rgba(0,0,0,.06);font-size:10.5px;
-}
-.sc-activity-item:last-child{border-bottom:none}
-.sc-activity-time{color:#a1a1aa;font-size:9px;min-width:28px;flex-shrink:0}
-.sc-activity-text{color:#18181b;line-height:1.4}
-.sc-activity-text strong{font-weight:600}
-.sc-activity-text .mono{font-family:var(--mono);font-size:10px;color:#6366f1;font-weight:500}
-.sc-activity-text .g{color:#059669}
-.sc-activity-text .r{color:#dc2626}
+.sc-sidebar-title{font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em}
 
 /* Detail pane (plan content, file content) */
 .sc-detail-header{
@@ -1206,9 +1170,6 @@ footer{
   .flow{flex-direction:column;align-items:center}
   .flow-connector{padding-top:0;transform:rotate(90deg);margin:.5rem 0}
   .nav-links{display:none}
-  .sc-panel[data-panel="chat"] .sc-panel-sidebar{display:none}
-  .sc-stat-row{grid-template-columns:repeat(2,1fr)}
-  .sc-dash-body{grid-template-columns:1fr}
   .showcase-reflection{height:40px}
 }
 @media(max-width:600px){
@@ -1226,11 +1187,10 @@ footer{
   .showcase{padding:0 1.5rem 4rem}
   .showcase-frame{max-width:380px;border-radius:24px;border:3px solid rgba(255,255,255,.1)}
   .showcase-app{height:580px}
-  .sc-rail{width:36px;padding:.5rem 0;gap:.2rem}
-  .sc-rail .sc-spacer,.sc-rail .sc-e2e{display:none}
-  .sc-rail-icon{width:28px;height:28px}
-  .sc-rail-icon svg{width:14px;height:14px}
   .showcase-reflection{max-width:380px}
+  .sc-channel-panel{display:none}
+  .sc-viewer-tabs{display:none}
+  .sc-mobile-nav{display:flex !important}
   /* On portrait mobile: plans/files show only sidebar, no detail */
   .sc-panel-sidebar{display:none}
   .sc-panel[data-panel="plans"] .sc-panel-sidebar,
@@ -1351,22 +1311,59 @@ footer{
 <div class="showcase reveal">
   <div class="showcase-frame">
     <div class="showcase-app">
-      <!-- Icon Rail -->
-      <div class="sc-rail">
-        <div class="sc-rail-icon" data-panel="dashboard"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/></svg></div>
-        <div class="sc-rail-icon active" data-panel="chat"><svg viewBox="0 0 16 16" fill="none"><path d="M3 3h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 3V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/></svg></div>
-        <div class="sc-rail-icon" data-panel="plans"><svg viewBox="0 0 16 16" fill="none"><rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M6 5h4M6 7.5h4M6 10h2.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></div>
-        <div class="sc-rail-icon" data-panel="files"><svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h3.5l2 2H13a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg></div>
-        <div class="sc-spacer"></div>
-        <div class="sc-rail-icon sc-e2e"><svg viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.2"/></svg></div>
+      <!-- Channel Panel (left column) -->
+      <div class="sc-channel-panel">
+        <div class="sc-channel-panel-list">
+          <div class="sc-device-group">
+            <div class="sc-device-group-header">
+              <svg class="sc-chevron" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg class="sc-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>
+              Mac mini
+            </div>
+            <div class="sc-channel active"><span class="sc-channel-hash">#</span> refactor-auth</div>
+            <div class="sc-channel"><span class="sc-channel-hash">#</span> add-redis-cache</div>
+            <div class="sc-channel"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
+            <div class="sc-channel"><span class="sc-channel-hash">#</span> update-deps</div>
+          </div>
+          <div class="sc-device-group">
+            <div class="sc-device-group-header">
+              <svg class="sc-chevron collapsed" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg class="sc-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>
+              dev-server
+            </div>
+          </div>
+          <div class="sc-device-group">
+            <div class="sc-device-group-header">
+              <svg class="sc-chevron collapsed" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span class="sc-status-dot"></span>
+              cloud-gpu
+            </div>
+          </div>
+        </div>
+        <div class="sc-channel-panel-footer">
+          <div class="sc-panel-avatar">Z</div>
+          <div class="sc-new-session-btn"><svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> New Session</div>
+        </div>
       </div>
 
-      <!-- Content area: topbar + body + console -->
+      <!-- Viewer (right column) -->
       <div class="sc-content">
-        <div class="sc-topbar">
-          <div class="sc-device-dropdown"><svg class="sc-lock" viewBox="0 0 12 14" width="10" height="12"><rect x="1.5" y="6" width="9" height="6.5" rx="1.2" stroke="currentColor" stroke-width="1.1" fill="none"/><path d="M3.5 6V4.5a2.5 2.5 0 015 0V6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg> Mac mini <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
-          <span class="sc-separator"></span>
-          <div class="sc-channel-dropdown"><span class="sc-channel-hash">#</span> refactor-auth <svg class="sc-chevron" viewBox="0 0 10 6" width="8" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></div>
+        <!-- Mobile nav (hidden on desktop) -->
+        <div class="sc-mobile-nav">
+          <div class="sc-mobile-trigger">
+            <svg class="sc-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>
+            <span>refactor-auth</span>
+            <svg class="sc-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          </div>
+          <div class="sc-mobile-tab active" data-tab="chat">Chat</div>
+          <div class="sc-mobile-tab" data-tab="plans">Planning</div>
+          <div class="sc-mobile-tab" data-tab="files">Files</div>
+        </div>
+        <!-- Viewer tabs (hidden on mobile) -->
+        <div class="sc-viewer-tabs">
+          <div class="sc-viewer-tab active" data-tab="chat">Chat</div>
+          <div class="sc-viewer-tab" data-tab="plans">Planning</div>
+          <div class="sc-viewer-tab" data-tab="files">Files</div>
         </div>
 
         <div class="sc-complications" id="sc-complications">
@@ -1382,99 +1379,8 @@ footer{
         </div>
 
         <div class="sc-body">
-          <!-- Dashboard Panel -->
-          <div class="sc-panel" data-panel="dashboard" style="flex-direction:column">
-            <div class="sc-dash">
-              <div class="sc-dash-header">
-                <span class="sc-dash-logo">Build</span>
-                <span class="sc-dash-fleet">Fleet Overview</span>
-              </div>
-
-              <div class="sc-stat-row">
-                <div class="sc-stat-card">
-                  <div class="sc-stat-label">Devices</div>
-                  <div class="sc-stat-value">3</div>
-                  <div class="sc-stat-sub">2 online, 1 offline</div>
-                </div>
-                <div class="sc-stat-card">
-                  <div class="sc-stat-label">Agents</div>
-                  <div class="sc-stat-value">5</div>
-                  <div class="sc-stat-sub">4 active, 1 stopped</div>
-                </div>
-                <div class="sc-stat-card">
-                  <div class="sc-stat-label">Tasks Today</div>
-                  <div class="sc-stat-value">18</div>
-                  <div class="sc-stat-sub">14 completed, 4 in progress</div>
-                </div>
-                <div class="sc-stat-card">
-                  <div class="sc-stat-label">Uptime</div>
-                  <div class="sc-stat-value">99.8%</div>
-                  <div class="sc-stat-sub">Last 24 hours</div>
-                </div>
-              </div>
-
-              <div class="sc-dash-body">
-                <div>
-                  <div class="sc-dash-section-title">Devices</div>
-                  <div class="sc-device-card">
-                    <div class="sc-device-header">
-                      <div class="sc-device-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="4" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5 4V3a3 3 0 016 0v1" stroke="currentColor" stroke-width="1.2"/></svg></div>
-                      <span class="sc-device-name">Mac mini</span>
-                      <div class="sc-device-status"><div class="dot"></div><span>Online</span></div>
-                    </div>
-                    <div class="sc-agent-row"><div class="sc-agent-dot working"></div><span class="name">refactor-auth</span><span class="state">Working</span><div class="unread">3</div></div>
-                    <div class="sc-agent-row"><div class="sc-agent-dot working"></div><span class="name">migrate-db</span><span class="state">Working</span></div>
-                  </div>
-                  <div class="sc-device-card">
-                    <div class="sc-device-header">
-                      <div class="sc-device-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/><circle cx="5.5" cy="5.5" r="1" fill="currentColor"/><path d="M5 10h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></div>
-                      <span class="sc-device-name">dev-server</span>
-                      <div class="sc-device-status"><div class="dot"></div><span>Online</span></div>
-                    </div>
-                    <div class="sc-agent-row"><div class="sc-agent-dot working"></div><span class="name">build-api-tests</span><span class="state">Working</span></div>
-                    <div class="sc-agent-row"><div class="sc-agent-dot working"></div><span class="name">optimize-queries</span><span class="state">Working</span></div>
-                  </div>
-                  <div class="sc-device-card">
-                    <div class="sc-device-header">
-                      <div class="sc-device-icon offline"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8.5a4 4 0 017.5-2A3 3 0 0113 12.5H4a3.5 3.5 0 01-1-6.5z" stroke="currentColor" stroke-width="1.2"/></svg></div>
-                      <span class="sc-device-name">cloud-gpu</span>
-                      <div class="sc-device-status"><div class="dot offline"></div><span>Offline</span></div>
-                    </div>
-                    <div class="sc-agent-row"><div class="sc-agent-dot stopped"></div><span class="name">train-model-v3</span><span class="state">Stopped</span></div>
-                  </div>
-                </div>
-
-                <div>
-                  <div class="sc-dash-section-title">Recent Activity</div>
-                  <div class="sc-activity-feed">
-                    <div class="sc-activity-item"><span class="sc-activity-time">2m</span><span class="sc-activity-text"><strong>refactor-auth</strong> wrote <span class="mono">auth/jwt.ts</span></span></div>
-                    <div class="sc-activity-item"><span class="sc-activity-time">5m</span><span class="sc-activity-text"><strong>migrate-db</strong> created <span class="mono">004_tokens.sql</span></span></div>
-                    <div class="sc-activity-item"><span class="sc-activity-time">8m</span><span class="sc-activity-text"><strong>build-api-tests</strong> ran tests — <span class="g">47 pass</span>, <span class="r">2 fail</span></span></div>
-                    <div class="sc-activity-item"><span class="sc-activity-time">12m</span><span class="sc-activity-text"><strong>refactor-auth</strong> edited <span class="mono">auth/verify.ts</span></span></div>
-                    <div class="sc-activity-item"><span class="sc-activity-time">15m</span><span class="sc-activity-text"><strong>optimize-queries</strong> — <span class="g">3.2x faster</span></span></div>
-                    <div class="sc-activity-item"><span class="sc-activity-time">25m</span><span class="sc-activity-text"><strong>cloud-gpu</strong> went <span class="r">offline</span></span></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <!-- Chat Panel -->
-          <div class="sc-panel active" data-panel="chat">
-            <div class="sc-panel-sidebar">
-              <div class="sc-sidebar-header">
-                <span class="sc-sidebar-title">Channels</span>
-                <div class="sc-sidebar-btn"><svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
-              </div>
-              <div class="sc-channel-list">
-                <div class="sc-channel active"><span class="sc-channel-hash">#</span> refactor-auth</div>
-                <div class="sc-channel"><span class="sc-channel-hash">#</span> add-redis-cache</div>
-                <div class="sc-channel"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
-                <div class="sc-channel"><span class="sc-channel-hash">#</span> update-deps</div>
-              </div>
-              <div class="sc-e2e-bar"><span class="sc-e2e-dot"></span> E2E Connected</div>
-            </div>
-            <div class="sc-panel-main">
+          <div class="sc-panel active" data-panel="chat" style="flex-direction:column">
               <div class="sc-messages">
                 <div class="sc-msg">
                   <div class="sc-avatar user">Z</div>
@@ -1521,7 +1427,6 @@ footer{
                   <div class="sc-send"><svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg></div>
                 </div>
               </div>
-            </div>
           </div>
 
           <!-- Plans Panel -->
@@ -1885,16 +1790,13 @@ const observer = new IntersectionObserver((entries) => {
 reveals.forEach(el => observer.observe(el));
 
 // Showcase tab switching
-document.querySelectorAll('.sc-rail-icon[data-panel]').forEach(icon => {
-  icon.addEventListener('click', () => {
-    document.querySelectorAll('.sc-rail-icon[data-panel]').forEach(i => i.classList.remove('active'));
-    icon.classList.add('active');
-    const panel = icon.dataset.panel;
-    document.querySelectorAll('.sc-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === panel));
-    const isDash = panel === 'dashboard';
-    document.querySelector('.sc-topbar').style.display = isDash ? 'none' : '';
-    document.getElementById('sc-complications').style.display = isDash ? 'none' : '';
-  });
+function scSwitchTab(tab) {
+  document.querySelectorAll('.sc-viewer-tab[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.sc-mobile-tab[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.sc-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab));
+}
+document.querySelectorAll('.sc-viewer-tab[data-tab], .sc-mobile-tab[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => scSwitchTab(btn.dataset.tab));
 });
 
 // Complications scroll fade indicators

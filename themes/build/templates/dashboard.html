@@ -27,7 +27,7 @@
   --amber-light:rgba(217,119,6,0.08);
   --red:#dc2626;
   --red-light:rgba(220,38,38,0.08);
-  --console-bg:#18181b;
+  --console-bg:#27272a;
   --console-text:#a1a1aa;
   --console-surface:rgba(255,255,255,0.06);
   --font:'Inter',system-ui,sans-serif;
@@ -285,6 +285,7 @@ body{
   position:relative;
   flex-shrink:0;
   border-top:1px solid var(--border);
+  background:rgba(0,0,0,0.03);
   z-index:5;
 }
 .comp-scroll{
@@ -300,8 +301,8 @@ body{
   content:'';position:absolute;top:0;bottom:1px;width:24px;
   pointer-events:none;z-index:1;opacity:0;transition:opacity .15s;
 }
-.complications::before{left:0;background:linear-gradient(to right,#fafafa,transparent)}
-.complications::after{right:0;background:linear-gradient(to left,#fafafa,transparent)}
+.complications::before{left:0;background:linear-gradient(to right,#f5f5f5,transparent)}
+.complications::after{right:0;background:linear-gradient(to left,#f5f5f5,transparent)}
 .complications.fade-left::before{opacity:1}
 .complications.fade-right::after{opacity:1}
 .comp{

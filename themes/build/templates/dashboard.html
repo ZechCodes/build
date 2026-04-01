@@ -2567,10 +2567,10 @@ document.addEventListener('click', (e) => {
 });
 
 function toggleConsoleEntry(row) {
-  const chevron = row.querySelector('.ce-chevron');
+  const expandIcon = row.querySelector('.ce-expand');
   const detail = row.nextElementSibling;
   if (detail && detail.classList.contains('ce-detail')) {
-    chevron.classList.toggle('open');
+    if (expandIcon) expandIcon.classList.toggle('open');
     detail.classList.toggle('open');
   }
 }

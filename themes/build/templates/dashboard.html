@@ -765,6 +765,12 @@ body{
 .interaction-card.resolved .interaction-freeform{display:none}
 .interaction-card.resolved .interaction-opt{opacity:.5;cursor:default;pointer-events:none}
 .interaction-card.resolved .interaction-opt.selected{opacity:1;background:var(--accent);color:#fff;border-color:var(--accent)}
+/* Suggested actions — pill buttons below agent messages */
+.msg-suggestions{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.4rem}
+.suggestion-btn{font-size:12px;padding:.3rem .75rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong);background:var(--surface-solid);cursor:pointer;font-family:var(--font);transition:background .12s,border-color .12s,opacity .2s}
+.suggestion-btn:hover{background:var(--accent-light);border-color:var(--accent)}
+.suggestion-btn.selected{background:var(--accent);color:#fff;border-color:var(--accent);cursor:default}
+.suggestion-btn.dismissed{opacity:.35;cursor:default;pointer-events:none}
 /* Ephemeral system messages */
 .system-msg{text-align:center;padding:.5rem 1rem;color:var(--text-muted);font-size:11px;font-style:italic}
 /* Plan review card — light theme inline card */
@@ -3253,6 +3259,7 @@ function bindE2EEEvents() {
         content: agentEvt.content || '',
         created_at: new Date().toISOString(),
       };
+      if (agentEvt.suggested_actions?.length) msg.suggested_actions = agentEvt.suggested_actions;
       const msgs = chatMessages.get(channel_id) || [];
       msgs.push(msg);
       chatMessages.set(channel_id, msgs);
@@ -3810,8 +3817,27 @@ function appendMessage(msg) {
         ).join('')
       }</div>` : ''}
       ${isUser && msg.id ? `<div class="msg-status ${msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sending'}"><span class="msg-status-state visible"><span class="check ${msg.read_at || msg.delivered_at ? 'active' : ''}">✓</span><span class="check ${msg.read_at ? 'active' : ''}">✓</span> ${msg.read_at ? 'Read' : msg.delivered_at ? 'Delivered' : 'Sending'}</span></div>` : ''}
+      ${msg.suggested_actions?.length ? `<div class="msg-suggestions">${
+        msg.suggested_actions.map(a => `<button class="suggestion-btn">${escapeHtml(a)}</button>`).join('')
+      }</div>` : ''}
     </div>
   `;
+  // Wire up suggestion button clicks.
+  if (msg.suggested_actions?.length) {
+    div.querySelectorAll('.suggestion-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.classList.contains('selected') || btn.classList.contains('dismissed')) return;
+        // Highlight selected, dismiss siblings.
+        div.querySelectorAll('.suggestion-btn').forEach(b => {
+          if (b === btn) b.classList.add('selected');
+          else b.classList.add('dismissed');
+        });
+        // Send as user message.
+        const input = document.getElementById('chat-input');
+        if (input) { input.value = btn.textContent; sendChatMessage(); }
+      });
+    });
+  }
   container.appendChild(div);
 }
 
@@ -4518,6 +4544,10 @@ async function sendChatMessage() {
 
   const messageContent = content || (attachments ? `Sent ${attachments.length} file(s)` : '');
   if (!messageContent) return;
+
+  // Dismiss all pending suggested action buttons.
+  document.querySelectorAll('.msg-suggestions .suggestion-btn:not(.selected):not(.dismissed)').forEach(b => b.classList.add('dismissed'));
+
 
   // Optimistically render the message.
   const tempMsg = {

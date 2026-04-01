@@ -927,13 +927,6 @@ body{
   user-select:none;
 }
 .ce-row:hover{background:rgba(255,255,255,0.03)}
-.ce-chevron{
-  width:14px;height:14px;
-  color:#52525b;
-  flex-shrink:0;
-  transition:transform .15s;
-}
-.ce-chevron.open{transform:rotate(90deg)}
 .ce-tag{
   font-size:10px;font-weight:600;
   padding:.15rem .4rem;border-radius:var(--radius-xs);
@@ -950,11 +943,17 @@ body{
 .ce-summary .success{color:#34d399}
 .ce-summary .fail{color:#f87171}
 .ce-time{font-size:10px;color:#52525b;font-family:var(--mono);flex-shrink:0}
+.ce-expand{
+  width:14px;height:14px;color:#52525b;flex-shrink:0;cursor:pointer;
+  transition:color .12s,transform .15s;
+}
+.ce-expand:hover{color:#a1a1aa}
+.ce-expand.open{color:#a1a1aa;transform:rotate(90deg)}
 
 /* Collapsible detail */
 .ce-detail{
   display:none;
-  padding:.5rem .875rem .625rem 2.75rem;
+  padding:.5rem .875rem .625rem .875rem;
   font-size:11px;
   color:var(--console-text);
   line-height:1.6;
@@ -3367,6 +3366,9 @@ function bindE2EEEvents() {
         }
       }
     }
+    // Scroll to bottom so latest tool use is visible.
+    const body = document.querySelector('[data-console-panel="activity"]');
+    if (body) body.scrollTop = body.scrollHeight;
   });
 
   e2ee.addEventListener('delivered', (evt) => {
@@ -4255,10 +4257,10 @@ function appendConsoleReasoning(content, timestamp) {
 
   entry.innerHTML = `
     <div class="ce-row">
-      <svg class="ce-chevron" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="ce-tag reasoning">Reasoning</span>
       <span class="ce-desc">${escapeHtml(firstLine)}</span>
       <span class="ce-time">${timeStr}</span>
+      <svg class="ce-expand" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
     <div class="ce-detail">
       <div class="ce-detail-reasoning">${renderMarkdown(content)}</div>
@@ -4266,10 +4268,10 @@ function appendConsoleReasoning(content, timestamp) {
   `;
 
   const row = entry.querySelector('.ce-row');
-  const chevron = entry.querySelector('.ce-chevron');
+  const expandIcon = entry.querySelector('.ce-expand');
   const detail = entry.querySelector('.ce-detail');
   row.addEventListener('click', () => {
-    chevron.classList.toggle('open');
+    expandIcon.classList.toggle('open');
     detail.classList.toggle('open');
     if (detail.classList.contains('open')) {
       entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -4300,11 +4302,11 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
 
   entry.innerHTML = `
     <div class="ce-row">
-      <svg class="ce-chevron" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="ce-tag ${tag}">${escapeHtml(name)}</span>
       <span class="ce-desc">${escapeHtml(desc)}</span>
       <span class="ce-summary"></span>
       <span class="ce-time">${timeStr}</span>
+      <svg class="ce-expand" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
     <div class="ce-detail">
       <div class="ce-detail-input">${formatToolDetail(name, input)}</div>
@@ -4315,10 +4317,10 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
 
   // Toggle detail on click.
   const row = entry.querySelector('.ce-row');
-  const chevron = entry.querySelector('.ce-chevron');
+  const expandIcon = entry.querySelector('.ce-expand');
   const detail = entry.querySelector('.ce-detail');
   row.addEventListener('click', () => {
-    chevron.classList.toggle('open');
+    expandIcon.classList.toggle('open');
     detail.classList.toggle('open');
     if (detail.classList.contains('open')) {
       entry.scrollIntoView({ block: 'start', behavior: 'smooth' });

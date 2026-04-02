@@ -3145,7 +3145,8 @@ function bindE2EEEvents(instance, deviceId) {
     if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
       selectChannel(_pendingChannelId);
       _pendingChannelId = null;
-    } else if (!chatCurrentChannel && channels.length > 0) {
+    } else if (!chatCurrentChannel && !_pendingChannelId && channels.length > 0) {
+      // Only auto-select first channel if there's no pending channel waiting for another device.
       selectChannel(channels[0].id);
     }
     // Fetch messages for all non-current channels to compute unread counts.

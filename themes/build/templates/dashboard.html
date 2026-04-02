@@ -1869,30 +1869,26 @@ function renderChannelPanel() {
   list.innerHTML = '';
 
   const sortedDevices = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const connectedDeviceName = selectedAgent?.device;
 
   for (const device of sortedDevices) {
     const group = document.createElement('div');
     group.className = 'device-group';
 
-    const isConnected = connectedDeviceName === device.name;
+    const hasConnection = e2eeConnections.has(device.id);
+    const conn = e2eeConnections.get(device.id);
+    const isE2eeConnected = hasConnection && conn && conn.connected;
     const isOnline = device.status === 'online';
 
     // Group header
     const header = document.createElement('div');
     header.className = 'device-group-header';
 
-    const chevronClass = isConnected ? '' : ' collapsed';
-    // Single status indicator: green lock when connected, pulsing dot when connecting, dot otherwise
+    const chevronClass = hasConnection ? '' : ' collapsed';
     let statusHtml = '';
-    if (isConnected) {
-      const e2eeDot = document.getElementById('e2ee-dot');
-      const isE2eeConnected = e2eeDot?.classList.contains('connected');
-      if (isE2eeConnected) {
-        statusHtml = '<svg class="status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
-      } else {
-        statusHtml = '<span class="status-dot connecting"></span>';
-      }
+    if (isE2eeConnected) {
+      statusHtml = '<svg class="status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
+    } else if (hasConnection) {
+      statusHtml = '<span class="status-dot connecting"></span>';
     } else if (!isOnline) {
       statusHtml = '<span class="status-dot offline"></span>';
     } else {
@@ -1906,23 +1902,23 @@ function renderChannelPanel() {
     `;
 
     header.addEventListener('click', () => {
-      if (isConnected) {
+      if (hasConnection) {
         // Toggle collapse
         const channels = group.querySelector('.device-group-channels');
         if (channels) channels.classList.toggle('collapsed');
         header.querySelector('.device-group-chevron').classList.toggle('collapsed');
       } else if (isOnline && device.has_transport_key) {
-        // Connect to this device
         connectToDevice(device);
       }
     });
     group.appendChild(header);
 
-    // Channels (only for connected device)
-    if (isConnected) {
+    // Channels for all connected devices
+    if (hasConnection) {
       const channelsDiv = document.createElement('div');
       channelsDiv.className = 'device-group-channels';
-      const sorted = [...chatChannels.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const devChans = deviceChannels.get(device.id) || new Map();
+      const sorted = [...devChans.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       for (const ch of sorted) {
         const item = createChannelItem(ch);
         channelsDiv.appendChild(item);
@@ -1977,7 +1973,7 @@ function updateMobileChannelLabel() {
     const ch = chatChannels.get(chatCurrentChannel);
     label.textContent = ch ? (ch.name || ch.id.slice(0, 8)) : 'Select channel';
     // Show lock instead of hash when e2ee is connected
-    const isE2eeConnected = document.getElementById('e2ee-dot')?.classList.contains('connected');
+    const isE2eeConnected = anyE2EEConnected();
     if (hashEl) {
       if (isE2eeConnected) {
         hashEl.innerHTML = '<svg class="mobile-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
@@ -2017,15 +2013,10 @@ function updateMobileChannelLabel() {
 }
 
 async function connectToDevice(device) {
-  selectedAgent = { name: device.name, device: device.name };
-  // Clear channels from previous device.
-  chatChannels.clear();
-  chatCurrentChannel = null;
+  if (!e2eeConnections.has(device.id)) {
+    await connectDeviceE2EE(device.id);
+  }
   renderChannelPanel();
-  // Disconnect existing E2EE session before connecting to new device.
-  if (e2ee && e2ee.connected) e2ee.disconnect();
-  // Connect to the specific device.
-  await initE2EE(device.id);
 }
 
 function selectAgent(name, device) {
@@ -2186,7 +2177,7 @@ document.querySelectorAll('.console-tab').forEach(tab => {
 });
 
 // ----- Terminal -----
-let agentCwd = ''; // fallback cwd from agent process (set by channel_list)
+const deviceAgentCwd = new Map(); // deviceId -> cwd string
 const terminalCwdMap = new Map(); // channelId -> cwd
 const terminalHistoryMap = new Map(); // channelId -> [{cmd, output}]
 const terminalCmdHistory = []; // global command history for up/down
@@ -2202,7 +2193,8 @@ let terminalCompletionPartial = ''; // the partial word sent in the request
 function getTerminalCwd(channelId) {
   if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
   const ch = chatChannels.get(channelId);
-  return ch?.working_directory || agentCwd || '';
+  const devId = channelDeviceMap.get(channelId);
+  return ch?.working_directory || (devId ? deviceAgentCwd.get(devId) : '') || '';
 }
 
 function shortCwd(cwd) {
@@ -2248,7 +2240,7 @@ function renderTerminalForChannel(channelId) {
 }
 
 function terminalExec(command) {
-  if (!command || !chatCurrentChannel || !e2ee?.connected || terminalRunning) return;
+  if (!command || !chatCurrentChannel || !getActiveE2EE()?.connected || terminalRunning) return;
   terminalRunning = true;
 
   const input = document.getElementById('terminal-input');
@@ -2283,7 +2275,7 @@ function terminalExec(command) {
   if (!terminalHistoryMap.has(channelId)) terminalHistoryMap.set(channelId, []);
   terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null, cwd });
 
-  e2ee.terminalExec(channelId, command, cwd || undefined, commandId);
+  getActiveE2EE()?.terminalExec(channelId, command, cwd || undefined, commandId);
 
   // Show kill button while command is running.
   document.getElementById('terminal-kill-btn')?.classList.remove('hidden');
@@ -2381,12 +2373,12 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
     const words = line.split(/\s+/);
     const partial = words[words.length - 1] || '';
     const cwd = getTerminalCwd(chatCurrentChannel);
-    if (e2ee && e2ee.connected && chatCurrentChannel) {
+    const _conn = getActiveE2EE();
+    if (_conn && _conn.connected && chatCurrentChannel) {
       terminalCompletionPending = true;
-      // Save context at request time so the response handler uses the right values
       terminalCompletionPartial = partial;
       terminalCompletionBase = line.slice(0, line.length - partial.length);
-      e2ee.terminalComplete(chatCurrentChannel, partial, line, cwd);
+      _conn.terminalComplete(chatCurrentChannel, partial, line, cwd);
     }
   } else if (e.key === 'Enter' && !e.shiftKey) {
     clearTerminalCompletions();
@@ -2423,9 +2415,10 @@ document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('terminal-kill-btn')?.addEventListener('click', () => {
-  if (e2ee && e2ee.connected && chatCurrentChannel) {
+  const _killConn = getActiveE2EE();
+  if (_killConn && _killConn.connected && chatCurrentChannel) {
     const cmdId = terminalCurrentBlock?.commandId || '';
-    e2ee.terminalKill(chatCurrentChannel, cmdId);
+    _killConn.terminalKill(chatCurrentChannel, cmdId);
     // If no done frame within 5s, force-reset the terminal locally.
     terminalKillTimer = setTimeout(() => {
       if (terminalCurrentBlock?.commandId === cmdId) {
@@ -2560,8 +2553,9 @@ function closeCompPopover() {
 }
 
 function sendComplicationAction(compId, optionId) {
-  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
-  e2ee.send({
+  const _conn = getActiveE2EE();
+  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
+  _conn.send({
     action: 'complication:action',
     channel_id: chatCurrentChannel,
     complication_id: compId,
@@ -2785,15 +2779,16 @@ document.addEventListener('sk:notification', (e) => {
         `<strong>${escapeHtml(deviceName)}</strong> went <span class="text-red">offline</span>`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
-      // If this is the currently connected device, show down banner.
-      if (selectedAgent && selectedAgent.name === deviceName) {
+      // If we have an E2EE connection for this device, disconnect it.
+      const offlineConn = e2eeConnections.get(deviceId);
+      if (offlineConn) {
         deviceDown = { id: deviceId, name: deviceName };
         const banner = document.getElementById('device-down-banner');
         const bannerText = document.getElementById('device-down-text');
         if (banner) banner.classList.add('visible');
         if (bannerText) bannerText.textContent = `${deviceName} disconnected — waiting for reconnection...`;
-        document.getElementById('e2ee-dot').className = 'e2ee-dot error';
-        document.getElementById('e2ee-label').textContent = 'Device offline';
+        offlineConn.disconnect(); // triggers disconnected handler which cleans up
+        syncE2EEStatus();
       }
       break;
     }
@@ -2823,36 +2818,29 @@ document.addEventListener('sk:notification', (e) => {
         const banner = document.getElementById('device-down-banner');
         if (banner) banner.classList.remove('visible');
       }
-      // Device re-announced — relay likely restarted, old session is dead.
-      if (e2ee && e2ee.connected) {
+      // Device re-announced — relay likely restarted, old session for this device is dead.
+      const existingConn = e2eeConnections.get(deviceId);
+      if (existingConn) {
         console.log('[E2EE] Device e2ee-ready while connected — relay restarted, reconnecting...');
-        e2ee.disconnect();
+        existingConn.disconnect();
+        e2eeConnections.delete(deviceId);
       }
       console.log('[E2EE] Device e2ee-ready notification — connecting...');
-      initE2EE();
+      connectDeviceE2EE(deviceId);
       break;
     }
 
     case 'renamed': {
       const device = devices.get(deviceId);
-      if (device) {
-        const oldName = device.name;
-        device.name = deviceName;
-        if (selectedAgent?.name === oldName) {
-          selectedAgent.name = deviceName;
-          selectedAgent.device = deviceName;
-        }
-      }
+      if (device) device.name = deviceName;
       renderChannelPanel();
       break;
     }
 
     case 'revoked': {
       devices.delete(deviceId);
-      if (selectedAgent?.name === deviceName) {
-        if (e2ee) e2ee.disconnect();
-        selectedAgent = null;
-      }
+      const revokedConn = e2eeConnections.get(deviceId);
+      if (revokedConn) revokedConn.disconnect();
       renderChannelPanel();
       break;
     }
@@ -2882,11 +2870,7 @@ function restoreFromHash() {
   const tab = parts[0];
 
   if (tab === 'chat' || tab === 'files' || tab === 'planning') {
-    // Need an agent selected to show workspace.
-    const firstDevice = [...devices.values()][0];
-    if (firstDevice && !selectedAgent) {
-      selectedAgent = { name: firstDevice.name, device: firstDevice.name };
-    }
+    // No longer need selectedAgent — multi-device handles this.
     switchTab(tab);
 
     if (parts[1]) {
@@ -2907,11 +2891,12 @@ fetchDevices().then(() => {
   initE2EE();
 });
 
-// When SSE reconnects (e.g. relay restart), tear down stale E2EE and re-init.
+// When SSE reconnects (e.g. relay restart), tear down all stale sessions and re-init.
 document.addEventListener('sk:notification-status', (evt) => {
-  if (evt.detail.status === 'connected' && e2ee && e2ee.connected) {
-    console.log('[E2EE] SSE reconnected — tearing down stale session');
-    e2ee.disconnect(); // fires 'disconnected', sets e2ee=null
+  if (evt.detail.status === 'connected' && e2eeConnections.size > 0) {
+    console.log('[E2EE] SSE reconnected — tearing down stale sessions');
+    for (const [, conn] of e2eeConnections) conn.disconnect();
+    e2eeConnections.clear();
     initE2EE();
   }
 });
@@ -2920,9 +2905,30 @@ document.addEventListener('sk:notification-status', (evt) => {
 // E2EE Chat — wired to BuildE2EE client
 // =====================================================================
 
-let e2ee = null;
+// Multi-device E2EE state
+const e2eeConnections = new Map();   // deviceId -> BuildE2EE instance
+const channelDeviceMap = new Map();  // channelId -> deviceId
+const deviceChannels = new Map();    // deviceId -> Map(channelId -> channel)
+const deviceHarnesses = new Map();   // deviceId -> harness list
+
+function getE2EE(channelId) {
+  const deviceId = channelDeviceMap.get(channelId);
+  return deviceId ? e2eeConnections.get(deviceId) : null;
+}
+function getActiveE2EE() { return getE2EE(chatCurrentChannel); }
+function anyE2EEConnected() {
+  for (const conn of e2eeConnections.values()) if (conn.connected) return true;
+  return false;
+}
+function rebuildChatChannels() {
+  chatChannels.clear();
+  for (const [, channels] of deviceChannels) {
+    for (const [chId, ch] of channels) chatChannels.set(chId, ch);
+  }
+}
+
 let chatCurrentChannel = null;
-const chatChannels = new Map(); // id -> {id, name, created_at}
+const chatChannels = new Map(); // id -> {id, name, created_at} — merged view
 const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
 const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
@@ -2933,7 +2939,8 @@ function getLastSeen(channelId) {
 function setLastSeen(channelId) {
   const now = new Date().toISOString();
   channelLastSeen.set(channelId, now);
-  if (e2ee && e2ee.connected) e2ee.markSeen(channelId);
+  const conn = getE2EE(channelId);
+  if (conn && conn.connected) conn.markSeen(channelId);
 }
 const channelAgentActive = new Map(); // channelId -> boolean
 
@@ -2947,7 +2954,7 @@ function updateStopButton() {
 const chatLoadingMessages = new Set(); // channels currently loading messages
 const chatLoadingActivity = new Set(); // channels currently loading activity
 const channelPlanMode = new Map(); // channelId -> boolean
-let cachedHarnesses = null; // harness list from device
+// cachedHarnesses per-device stored in deviceHarnesses Map
 
 // ----- Per-channel localStorage persistence -----
 const CHANNEL_STATE_KEY = 'build_channel_state';
@@ -2979,88 +2986,84 @@ function clearChannelDraft(channelId) {
 
 // ----- E2EE connection -----
 
-async function initE2EE(targetDeviceId = null) {
+function syncE2EEStatus() {
   const dot = document.getElementById('e2ee-dot');
   const label = document.getElementById('e2ee-label');
-
-  console.log('[E2EE] Initializing...');
-
-  // Check if BuildE2EE class is available.
-  if (typeof BuildE2EE === 'undefined') {
-    label.textContent = 'E2EE script not loaded';
-    dot.className = 'e2ee-dot error';
-    console.error('[E2EE] BuildE2EE class not found — e2ee.js failed to load');
-    return;
-  }
-
-  if (!e2ee) {
-    e2ee = new BuildE2EE();
-    bindE2EEEvents();
-  }
-
-  try {
-    console.log('[E2EE] Loading libsodium...');
-    await e2ee.ready();
-    console.log('[E2EE] libsodium ready');
-  } catch (err) {
-    label.textContent = 'Crypto unavailable';
-    dot.className = 'e2ee-dot error';
-    console.error('[E2EE] libsodium not available:', err);
-    return;
-  }
-
-  // Wait for a device with a transport key.
-  dot.className = 'e2ee-dot connecting';
-  label.textContent = 'Waiting for device...';
-  const skelText = document.querySelector('.skel-status-text');
-  if (skelText) skelText.textContent = 'Waiting for device…';
-
-  console.log('[E2EE] Looking for online device with transport key...');
-  console.log('[E2EE] Devices:', [...devices.entries()].map(([id, d]) => ({
-    id, name: d.name, status: d.status, has_transport_key: d.has_transport_key,
-  })));
-
-  const connectToDevice = async () => {
-    // If a specific device was requested, connect to it directly.
-    // Otherwise, connect to the first online device with a transport key.
-    const candidates = targetDeviceId
-      ? [devices.get(targetDeviceId)].filter(Boolean)
-      : [...devices.values()];
-    for (const d of candidates) {
-      if (d.status === 'online' && d.has_transport_key) {
-        dot.className = 'e2ee-dot connecting';
-        label.textContent = 'Connecting...';
-        const skelTxt = document.querySelector('.skel-status-text');
-        if (skelTxt) skelTxt.textContent = 'Connecting to device…';
-        console.log('[E2EE] Attempting connect to', d.name, d.id);
-        try {
-          await e2ee.connect(d.id);
-          console.log('[E2EE] Connected!');
-          return true;
-        } catch (err) {
-          console.error('[E2EE] Failed to connect to', d.name, err);
-          label.textContent = 'Connection failed';
-          dot.className = 'e2ee-dot error';
-        }
-      }
-    }
-    return false;
-  };
-
-  if (!await connectToDevice()) {
-    // No device ready — wait for build:device:e2ee-ready notification.
-    console.log('[E2EE] No device ready, waiting for e2ee-ready notification');
+  if (!dot || !label) return;
+  if (anyE2EEConnected()) {
+    const count = [...e2eeConnections.values()].filter(c => c.connected).length;
+    dot.className = 'e2ee-dot connected';
+    label.textContent = count > 1 ? `E2EE active (${count} devices)` : 'E2EE active';
+    document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
+  } else if (e2eeConnections.size > 0) {
+    dot.className = 'e2ee-dot connecting';
+    label.textContent = 'Connecting...';
+  } else {
     dot.className = 'e2ee-dot connecting';
     label.textContent = 'Waiting for device...';
   }
 }
 
-function bindE2EEEvents() {
-  if (!e2ee) return;
-  e2ee.addEventListener('connected', () => {
-    console.log('[E2EE] Session established');
-    document.getElementById('e2ee-dot').className = 'e2ee-dot connected';
-    document.getElementById('e2ee-label').textContent = 'E2EE active';
+async function connectDeviceE2EE(deviceId) {
+  if (e2eeConnections.has(deviceId)) return;
+  console.log('[E2EE] Connecting to device', deviceId);
+
+  const instance = new BuildE2EE();
+  try {
+    await instance.ready();
+  } catch (err) {
+    console.error('[E2EE] libsodium not available:', err);
+    return;
+  }
+
+  bindE2EEEvents(instance, deviceId);
+  e2eeConnections.set(deviceId, instance);
+  syncE2EEStatus();
+
+  try {
+    await instance.connect(deviceId);
+    console.log('[E2EE] Connected to', deviceId);
+  } catch (err) {
+    console.error('[E2EE] Failed to connect to', deviceId, err);
+    e2eeConnections.delete(deviceId);
+    syncE2EEStatus();
+  }
+}
+
+async function initE2EE(targetDeviceId = null) {
+  console.log('[E2EE] Initializing...');
+
+  if (typeof BuildE2EE === 'undefined') {
+    const label = document.getElementById('e2ee-label');
+    const dot = document.getElementById('e2ee-dot');
+    if (label) label.textContent = 'E2EE script not loaded';
+    if (dot) dot.className = 'e2ee-dot error';
+    console.error('[E2EE] BuildE2EE class not found — e2ee.js failed to load');
+    return;
+  }
+
+  if (targetDeviceId) {
+    await connectDeviceE2EE(targetDeviceId);
+    return;
+  }
+
+  // Connect to all online devices with transport keys in parallel.
+  const candidates = [...devices.values()].filter(d => d.status === 'online' && d.has_transport_key);
+  if (candidates.length === 0) {
+    console.log('[E2EE] No device ready, waiting for e2ee-ready notification');
+    syncE2EEStatus();
+    const skelText = document.querySelector('.skel-status-text');
+    if (skelText) skelText.textContent = 'Waiting for device…';
+    return;
+  }
+
+  await Promise.allSettled(candidates.map(d => connectDeviceE2EE(d.id)));
+}
+
+function bindE2EEEvents(instance, deviceId) {
+  if (!instance) return;
+  instance.addEventListener('connected', () => {
+    console.log('[E2EE] Session established for device', deviceId);
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
     document.getElementById('cmd-attach-btn').disabled = false;
@@ -3072,107 +3075,135 @@ function bindE2EEEvents() {
     deviceDown = null;
     const _ddb = document.getElementById('device-down-banner');
     if (_ddb) _ddb.classList.remove('visible');
-    if (typeof _bindUploadProgress === 'function') _bindUploadProgress(e2ee);
-    e2ee.listChannels();
-    e2ee.listHarnesses();
-    // Re-fetch history for the current channel on reconnect.
-    if (chatCurrentChannel) {
+    if (typeof _bindUploadProgress === 'function') _bindUploadProgress(instance);
+    syncE2EEStatus();
+    renderChannelPanel();
+    instance.listChannels();
+    instance.listHarnesses();
+    // Re-fetch history for the current channel if it belongs to this device.
+    if (chatCurrentChannel && channelDeviceMap.get(chatCurrentChannel) === deviceId) {
       chatLoadingMessages.add(chatCurrentChannel);
       chatLoadingActivity.add(chatCurrentChannel);
-      e2ee.getMessages(chatCurrentChannel);
-      e2ee.getActivity(chatCurrentChannel);
+      instance.getMessages(chatCurrentChannel);
+      instance.getActivity(chatCurrentChannel);
     }
   });
 
-  e2ee.addEventListener('disconnected', () => {
-    console.log('[E2EE] Disconnected — waiting for device');
-    document.getElementById('chat-input').disabled = true;
-    document.getElementById('chat-send-btn').disabled = true;
-    document.getElementById('cmd-attach-btn').disabled = true;
-    document.getElementById('cmd-plan-btn').disabled = true;
-    document.getElementById('cmd-compact-btn').disabled = true;
-    document.getElementById('cmd-reset-btn').disabled = true;
-    if (deviceDown) {
-      // Device is known to be offline — keep banner visible, skip skeleton overlay.
-      document.getElementById('e2ee-dot').className = 'e2ee-dot error';
-      document.getElementById('e2ee-label').textContent = 'Device offline';
-    } else {
-      document.getElementById('e2ee-dot').className = 'e2ee-dot connecting';
-      document.getElementById('e2ee-label').textContent = 'Waiting for device...';
-      document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
+  instance.addEventListener('disconnected', () => {
+    console.log('[E2EE] Disconnected device', deviceId);
+    e2eeConnections.delete(deviceId);
+    // Clean up channels for this device.
+    const devChans = deviceChannels.get(deviceId);
+    if (devChans) {
+      for (const chId of devChans.keys()) channelDeviceMap.delete(chId);
+      deviceChannels.delete(deviceId);
     }
-    // Reset e2ee so initE2EE creates a fresh instance on next connect.
-    e2ee = null;
-    // Don't poll — the e2ee-ready notification will trigger reconnect.
+    deviceHarnesses.delete(deviceId);
+    deviceAgentCwd.delete(deviceId);
+    rebuildChatChannels();
+
+    if (!anyE2EEConnected()) {
+      document.getElementById('chat-input').disabled = true;
+      document.getElementById('chat-send-btn').disabled = true;
+      document.getElementById('cmd-attach-btn').disabled = true;
+      document.getElementById('cmd-plan-btn').disabled = true;
+      document.getElementById('cmd-compact-btn').disabled = true;
+      document.getElementById('cmd-reset-btn').disabled = true;
+      if (deviceDown) {
+        // Device is known to be offline — keep banner visible, skip skeleton overlay.
+      } else {
+        document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
+      }
+    }
+    syncE2EEStatus();
+    // If current channel was on this device, auto-select another.
+    if (chatCurrentChannel && !channelDeviceMap.has(chatCurrentChannel)) {
+      const remaining = [...chatChannels.values()];
+      if (remaining.length > 0) selectChannel(remaining[0].id);
+      else { chatCurrentChannel = null; renderMessages(); }
+    }
+    renderChannelPanel();
   });
 
   // ----- Channel list -----
 
-  e2ee.addEventListener('channel_list', (evt) => {
+  instance.addEventListener('channel_list', (evt) => {
     const { channels, agent_cwd } = evt.detail;
-    if (agent_cwd) agentCwd = agent_cwd;
-    chatChannels.clear();
+    if (agent_cwd) deviceAgentCwd.set(deviceId, agent_cwd);
+    // Update per-device channel map.
+    const devChans = new Map();
     for (const ch of channels) {
-      chatChannels.set(ch.id, ch);
+      devChans.set(ch.id, ch);
+      channelDeviceMap.set(ch.id, deviceId);
       if (ch.plan_mode != null) channelPlanMode.set(ch.id, ch.plan_mode);
       if (ch.last_seen_at) channelLastSeen.set(ch.id, ch.last_seen_at);
     }
+    deviceChannels.set(deviceId, devChans);
+    rebuildChatChannels();
     renderChannelList();
     // Restore pending channel from hash.
     if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
       selectChannel(_pendingChannelId);
       _pendingChannelId = null;
     } else if (!chatCurrentChannel && channels.length > 0) {
-      // Auto-select first channel if none selected (e.g. navigated to #files).
       selectChannel(channels[0].id);
     }
     // Fetch messages for all non-current channels to compute unread counts.
     for (const ch of channels) {
-      if (ch.id !== chatCurrentChannel && e2ee && e2ee.connected) {
-        e2ee.getMessages(ch.id);
+      if (ch.id !== chatCurrentChannel && instance.connected) {
+        instance.getMessages(ch.id);
       }
     }
   });
 
-  e2ee.addEventListener('channel_created', (evt) => {
+  instance.addEventListener('channel_created', (evt) => {
     const ch = evt.detail;
-    chatChannels.set(ch.id, ch);
+    channelDeviceMap.set(ch.id, deviceId);
+    const devChans = deviceChannels.get(deviceId) || new Map();
+    devChans.set(ch.id, ch);
+    deviceChannels.set(deviceId, devChans);
+    rebuildChatChannels();
     renderChannelList();
     selectChannel(ch.id);
   });
 
   // ----- Harness & Agent events -----
 
-  e2ee.addEventListener('harness_list', (evt) => {
-    cachedHarnesses = evt.detail;
-    console.log('[E2EE] Harnesses:', cachedHarnesses.map(h => h.name));
+  instance.addEventListener('harness_list', (evt) => {
+    deviceHarnesses.set(deviceId, evt.detail);
+    console.log('[E2EE] Harnesses for', deviceId, ':', evt.detail.map(h => h.name));
   });
 
-  e2ee.addEventListener('agent_started', (evt) => {
+  instance.addEventListener('agent_started', (evt) => {
     console.log('[E2EE] Agent started:', evt.detail);
   });
 
-  e2ee.addEventListener('agent_stopped', (evt) => {
+  instance.addEventListener('agent_stopped', (evt) => {
     console.log('[E2EE] Agent stopped:', evt.detail);
   });
 
-  e2ee.addEventListener('agent_restarted', (evt) => {
+  instance.addEventListener('agent_restarted', (evt) => {
     console.log('[E2EE] Agent restarted:', evt.detail);
   });
 
-  e2ee.addEventListener('channel_renamed', (evt) => {
+  instance.addEventListener('channel_renamed', (evt) => {
     const { channel_id, name } = evt.detail;
     const ch = chatChannels.get(channel_id);
     if (ch) {
       ch.name = name;
+      const devChans = deviceChannels.get(deviceId);
+      if (devChans?.has(channel_id)) devChans.get(channel_id).name = name;
       renderChannelList();
       renderChannelSidebar();
     }
   });
 
-  e2ee.addEventListener('channel_deleted', (evt) => {
+  instance.addEventListener('channel_deleted', (evt) => {
     const { channel_id } = evt.detail;
-    chatChannels.delete(channel_id);
+    channelDeviceMap.delete(channel_id);
+    const devChans = deviceChannels.get(deviceId);
+    if (devChans) devChans.delete(channel_id);
+    rebuildChatChannels();
     unreadCounts.delete(channel_id);
     if (chatCurrentChannel === channel_id) {
       const remaining = [...chatChannels.values()];
@@ -3187,13 +3218,13 @@ function bindE2EEEvents() {
     renderChannelSidebar();
   });
 
-  e2ee.addEventListener('e2ee_error', (evt) => {
+  instance.addEventListener('e2ee_error', (evt) => {
     console.error('[E2EE] Error:', evt.detail);
   });
 
 // ----- Messages -----
 
-  e2ee.addEventListener('messages', (evt) => {
+  instance.addEventListener('messages', (evt) => {
     const { channel_id, messages } = evt.detail;
     chatLoadingMessages.delete(channel_id);
     chatMessages.set(channel_id, messages);
@@ -3204,8 +3235,8 @@ function bindE2EEEvents() {
         .filter(m => m.sender !== 'client' && !m.read_at)
         .map(m => m.id)
         .filter(Boolean);
-      if (unread.length && e2ee && e2ee.connected) {
-        e2ee.markRead(unread);
+      if (unread.length && instance.connected) {
+        instance.markRead(unread);
       }
     } else {
       // Compute unread count for background channels using lastSeen timestamp.
@@ -3233,7 +3264,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('message', (evt) => {
+  instance.addEventListener('message', (evt) => {
     const msg = evt.detail;
     if (!msg || !msg.channel_id) return;
     const msgs = chatMessages.get(msg.channel_id) || [];
@@ -3245,14 +3276,14 @@ function bindE2EEEvents() {
       if (wasNearBottom) scrollChatToBottom();
       else showChatBubble(document.getElementById('chat-messages').lastElementChild);
       setLastSeen(msg.channel_id);
-      if (msg.id) e2ee.markRead([msg.id]);
+      if (msg.id) instance.markRead([msg.id]);
     } else if (msg.sender !== 'client') {
       incrementUnread(msg.channel_id);
     }
   });
 
   // Agent events (chat.response, activity.delta, tool.use, etc.) from spawned agents.
-  e2ee.addEventListener('agent_event', (evt) => {
+  instance.addEventListener('agent_event', (evt) => {
     const { channel_id, event_type, event: agentEvt } = evt.detail;
     if (!channel_id) return;
 
@@ -3358,7 +3389,7 @@ function bindE2EEEvents() {
   });
 
   // Activity history — tool use console entries loaded on channel select / reconnect.
-  e2ee.addEventListener('activity_history', (evt) => {
+  instance.addEventListener('activity_history', (evt) => {
     const { channel_id, entries } = evt.detail;
     chatLoadingActivity.delete(channel_id);
     if (chatCurrentChannel !== channel_id) return;
@@ -3388,7 +3419,7 @@ function bindE2EEEvents() {
     if (body) body.scrollTop = body.scrollHeight;
   });
 
-  e2ee.addEventListener('delivered', (evt) => {
+  instance.addEventListener('delivered', (evt) => {
     const { message_id } = evt.detail;
     const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);
     if (statusEl) {
@@ -3396,7 +3427,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('read', (evt) => {
+  instance.addEventListener('read', (evt) => {
     const { message_ids } = evt.detail;
     for (const mid of (message_ids || [])) {
       const statusEl = document.querySelector(`[data-msg-id="${mid}"] .msg-status`);
@@ -3405,13 +3436,13 @@ function bindE2EEEvents() {
       }
     }
   });
-  e2ee.addEventListener('plan_mode_updated', (evt) => {
+  instance.addEventListener('plan_mode_updated', (evt) => {
     const { channel_id, plan_mode } = evt.detail;
     channelPlanMode.set(channel_id, plan_mode);
     if (channel_id === chatCurrentChannel) updatePlanModeUI(plan_mode);
   });
 
-  e2ee.addEventListener('system_message', (evt) => {
+  instance.addEventListener('system_message', (evt) => {
     const { channel_id, text } = evt.detail;
     if (chatCurrentChannel === channel_id) {
       appendSystemMessage(text);
@@ -3419,7 +3450,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('session_reset', (evt) => {
+  instance.addEventListener('session_reset', (evt) => {
     const { channel_id } = evt.detail;
     if (chatCurrentChannel === channel_id) {
       // Remove any "Compacting session..." indicator.
@@ -3435,7 +3466,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('compact_started', (evt) => {
+  instance.addEventListener('compact_started', (evt) => {
     const { channel_id } = evt.detail;
     if (chatCurrentChannel === channel_id) {
       const messagesEl = document.getElementById('chat-messages');
@@ -3449,7 +3480,7 @@ function bindE2EEEvents() {
   });
 
   // ----- Complication events -----
-  e2ee.addEventListener('complication_update', (evt) => {
+  instance.addEventListener('complication_update', (evt) => {
     const comp = evt.detail;
     const channelId = comp.channel_id;
     if (!channelId) return;
@@ -3458,7 +3489,7 @@ function bindE2EEEvents() {
     if (chatCurrentChannel === channelId) renderComplications();
   });
 
-  e2ee.addEventListener('complication_remove', (evt) => {
+  instance.addEventListener('complication_remove', (evt) => {
     const { channel_id, id } = evt.detail;
     const channelComps = complicationState.get(channel_id);
     if (channelComps) {
@@ -3467,7 +3498,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('complications', (evt) => {
+  instance.addEventListener('complications', (evt) => {
     const { channel_id, complications } = evt.detail;
     if (!channel_id || !complications) return;
     if (!complicationState.has(channel_id)) complicationState.set(channel_id, new Map());
@@ -3479,7 +3510,7 @@ function bindE2EEEvents() {
   });
 
   // ----- Terminal Output -----
-  e2ee.addEventListener('terminal_output', (evt) => {
+  instance.addEventListener('terminal_output', (evt) => {
     const { channel_id, data, done, exit_code, cwd } = evt.detail;
     if (!channel_id) return;
 
@@ -3546,7 +3577,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('terminal_completions', (evt) => {
+  instance.addEventListener('terminal_completions', (evt) => {
     terminalCompletionPending = false;
     const { completions } = evt.detail;
     if (!completions || !completions.length) return;
@@ -3593,7 +3624,7 @@ function bindE2EEEvents() {
 
   // ----- Files view events -----
 
-  e2ee.addEventListener('files_list_result', (evt) => {
+  instance.addEventListener('files_list_result', (evt) => {
     const { channel_id, path, entries, error, truncated } = evt.detail;
     if (error) { console.warn('files_list error:', error); return; }
     if (channel_id !== filesChannelId) return;
@@ -3617,7 +3648,7 @@ function bindE2EEEvents() {
     }
   });
 
-  e2ee.addEventListener('files_changes_result', (evt) => {
+  instance.addEventListener('files_changes_result', (evt) => {
     const { channel_id, repos } = evt.detail;
     if (channel_id !== filesChannelId) return;
     filesChangesData.set(channel_id, repos || []);
@@ -3626,7 +3657,7 @@ function bindE2EEEvents() {
 
   let _imageChunks = {};  // path -> { chunks: [], total: N }
 
-  e2ee.addEventListener('file_read_result', (evt) => {
+  instance.addEventListener('file_read_result', (evt) => {
     const d = evt.detail;
     if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
     if (filesCurrentView === 'diff') return;
@@ -3665,7 +3696,7 @@ function bindE2EEEvents() {
     renderFileContent(d.content, d.path, d.size, d.truncated);
   });
 
-  e2ee.addEventListener('file_diff_result', (evt) => {
+  instance.addEventListener('file_diff_result', (evt) => {
     const d = evt.detail;
     if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
     if (filesCurrentView !== 'diff') return;
@@ -3703,12 +3734,13 @@ function selectChannel(channelId) {
   setLastSeen(channelId);
   unreadCounts.delete(channelId);
   renderChannelList();
-  if (e2ee && e2ee.connected) {
+  const _selConn = getE2EE(channelId);
+  if (_selConn && _selConn.connected) {
     chatLoadingMessages.add(channelId);
     chatLoadingActivity.add(channelId);
-    e2ee.getMessages(channelId);
-    e2ee.getActivity(channelId);
-    e2ee.getComplications(channelId);
+    _selConn.getMessages(channelId);
+    _selConn.getActivity(channelId);
+    _selConn.getComplications(channelId);
   }
   renderMessages();
   clearConsole(chatLoadingActivity.has(channelId));
@@ -4127,8 +4159,9 @@ function resolvePendingPlanReviews() {
 }
 
 function respondToInteraction(interactionId, selectedOption, freeformResponse) {
-  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
-  e2ee.sendInteractionResponse(chatCurrentChannel, interactionId, selectedOption, freeformResponse);
+  const _conn = getActiveE2EE();
+  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
+  _conn.sendInteractionResponse(chatCurrentChannel, interactionId, selectedOption, freeformResponse);
   // Mark card as resolved in UI.
   const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
   if (card) {
@@ -4180,8 +4213,9 @@ function respondToInteractionFreeform(btn, interactionId) {
 }
 
 function respondToMultiselectInteraction(interactionId, selectedOptions, freeformResponse) {
-  if (!e2ee || !e2ee.connected || !chatCurrentChannel) return;
-  e2ee.sendInteractionResponse(chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
+  const _conn = getActiveE2EE();
+  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
+  _conn.sendInteractionResponse(chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
   // Mark card as resolved in UI.
   const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
   if (card) {
@@ -4563,7 +4597,8 @@ async function sendChatMessage() {
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
   const hasFiles = pendingFiles.length > 0;
-  if ((!content && !hasFiles) || !chatCurrentChannel || !e2ee || !e2ee.connected) return;
+  const _sendConn = getActiveE2EE();
+  if ((!content && !hasFiles) || !chatCurrentChannel || !_sendConn || !_sendConn.connected) return;
 
   // Capture channel at send time so async uploads don't target the wrong channel.
   const channelId = chatCurrentChannel;
@@ -4580,7 +4615,7 @@ async function sendChatMessage() {
     attachments = [];
     for (const file of files) {
       try {
-        const result = await e2ee.uploadFile(channelId, file);
+        const result = await _sendConn.uploadFile(channelId, file);
         attachments.push({
           file_id: result.file_id,
           filename: result.filename,
@@ -4624,7 +4659,7 @@ async function sendChatMessage() {
     const payload = { action: 'message', channel_id: channelId, content: messageContent };
     if (attachments) payload.attachments = attachments;
     if (channelPlanMode.get(channelId)) payload.plan_mode = true;
-    const realMessageId = await e2ee.send(payload);
+    const realMessageId = await _sendConn.send(payload);
     const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
     if (el) el.dataset.msgId = realMessageId;
     tempMsg.id = realMessageId;
@@ -4635,8 +4670,9 @@ async function sendChatMessage() {
 
 document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMessage);
 document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
-  if (!chatCurrentChannel || !e2ee?.connected) return;
-  e2ee.cancel(chatCurrentChannel);
+  const _stopConn = getActiveE2EE();
+  if (!chatCurrentChannel || !_stopConn?.connected) return;
+  _stopConn.cancel(chatCurrentChannel);
   channelAgentActive.set(chatCurrentChannel, false);
   updateStopButton();
 });
@@ -4669,7 +4705,7 @@ document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
 
 // Plan button (in tray)
 document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
-  if (!e2ee || !chatCurrentChannel) return;
+  if (!chatCurrentChannel) return;
   const current = channelPlanMode.get(chatCurrentChannel) || false;
   channelPlanMode.set(chatCurrentChannel, !current);
   saveChannelState(chatCurrentChannel, { planMode: !current });
@@ -4680,13 +4716,13 @@ document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
 let compactConfirmTimeout = null;
 document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
   const btn = document.getElementById('cmd-compact-btn');
-  if (!e2ee || !chatCurrentChannel) return;
+  if (!chatCurrentChannel) return;
   if (btn.classList.contains('confirm')) {
     clearTimeout(compactConfirmTimeout);
     btn.classList.remove('confirm');
     const label = btn.querySelector('span');
     if (label) label.textContent = 'Compact';
-    e2ee.compactSession(chatCurrentChannel);
+    getActiveE2EE()?.compactSession(chatCurrentChannel);
   } else {
     btn.classList.add('confirm');
     const label = btn.querySelector('span');
@@ -4703,14 +4739,14 @@ document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
 let resetConfirmTimeout = null;
 document.getElementById('cmd-reset-btn')?.addEventListener('click', () => {
   const btn = document.getElementById('cmd-reset-btn');
-  if (!e2ee || !chatCurrentChannel) return;
+  if (!chatCurrentChannel) return;
   if (btn.classList.contains('confirm')) {
     // Second click - do the reset
     clearTimeout(resetConfirmTimeout);
     btn.classList.remove('confirm');
     const label = btn.querySelector('span');
     if (label) label.textContent = 'Clear';
-    e2ee.resetSession(chatCurrentChannel);
+    getActiveE2EE()?.resetSession(chatCurrentChannel);
   } else {
     // First click - enter confirm state
     btn.classList.add('confirm');
@@ -4780,10 +4816,7 @@ document.getElementById('chat-file-input')?.addEventListener('change', (e) => {
   }
 });
 
-// Upload progress listener.
-if (typeof e2ee !== 'undefined' && e2ee) {
-  _bindUploadProgress(e2ee);
-}
+// Upload progress: bound per-instance in bindE2EEEvents 'connected' handler.
 
 function _bindUploadProgress(client) {
   client.addEventListener('upload_progress', (evt) => {
@@ -4854,18 +4887,23 @@ document.getElementById('sidebar-new-channel')?.addEventListener('click', () => 
 });
 
 document.getElementById('btn-new-channel')?.addEventListener('click', () => {
-  if (!e2ee || !e2ee.connected) {
+  if (!anyE2EEConnected()) {
     alert('E2EE not connected. Waiting for device...');
     return;
   }
+
+  // Determine which device to create the channel on.
+  const _targetDeviceId = channelDeviceMap.get(chatCurrentChannel) || e2eeConnections.keys().next().value;
+  const _createConn = e2eeConnections.get(_targetDeviceId);
 
   const dialogParent = document.body;
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
 
-  // Build harness options from cache.
+  // Build harness options from device's cache.
+  const cachedHarnesses = deviceHarnesses.get(_targetDeviceId) || [];
   let harnessOptions = '<option value="">No agent</option>';
-  if (cachedHarnesses && cachedHarnesses.length) {
+  if (cachedHarnesses.length) {
     harnessOptions = cachedHarnesses.map(h =>
       `<option value="${h.id}">${h.name}</option>`
     ).join('');
@@ -4943,7 +4981,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       if (wd) opts.working_directory = wd;
       const sp = document.getElementById('new-channel-prompt').value.trim();
       if (sp) opts.system_prompt = sp;
-      e2ee.createChannel(name, opts);
+      _createConn?.createChannel(name, opts);
       close();
     }
   };
@@ -4954,29 +4992,13 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   });
 });
 
-// Sync E2EE status to topbar and sidebar indicators
-function syncE2EEStatus() {
-  const dot = document.getElementById('e2ee-dot');
-  if (!dot) return;
-  const isConnected = dot.classList.contains('connected');
-  const isConnecting = dot.classList.contains('connecting');
-  const isError = dot.classList.contains('error');
-  // Re-render channel panel to update per-device E2EE indicators
-  renderChannelPanel();
-}
-// Observe changes to the desktop E2EE status.
-const _e2eeDot = document.getElementById('e2ee-dot');
-if (_e2eeDot) {
-  new MutationObserver(syncE2EEStatus).observe(_e2eeDot, { attributes: true });
-}
-const _e2eeLabel = document.getElementById('e2ee-label');
-if (_e2eeLabel) {
-  new MutationObserver(syncE2EEStatus).observe(_e2eeLabel, { childList: true, characterData: true, subtree: true });
-}
+// syncE2EEStatus is now defined above with initE2EE.
+// MutationObservers no longer needed — syncE2EEStatus is called directly.
 
 // ===== Edit Channel Dialog =====
 function showEditChannelDialog(ch) {
-  if (!e2ee || !e2ee.connected) return;
+  const _editConn = getE2EE(ch.id);
+  if (!_editConn || !_editConn.connected) return;
   const dialogParent = document.body;
   if (!dialogParent) return;
 
@@ -5020,11 +5042,11 @@ function showEditChannelDialog(ch) {
   const save = () => {
     const newName = nameInput.value.trim();
     if (newName && newName !== ch.name) {
-      e2ee.renameChannel(ch.id, newName);
+      _editConn.renameChannel(ch.id, newName);
     }
     const newWorkdir = workdirInput.value.trim();
     if (newWorkdir !== (ch.working_directory || '')) {
-      e2ee.updateChannel(ch.id, { working_directory: newWorkdir });
+      _editConn.updateChannel(ch.id, { working_directory: newWorkdir });
     }
     close();
   };
@@ -5034,7 +5056,7 @@ function showEditChannelDialog(ch) {
 
   // Restart
   document.getElementById('edit-channel-restart').addEventListener('click', () => {
-    e2ee.restartAgent(ch.id);
+    _editConn.restartAgent(ch.id);
     close();
   });
 
@@ -5052,7 +5074,7 @@ function showEditChannelDialog(ch) {
         deleteBtn.classList.remove('btn-danger-confirm');
       }, 3000);
     } else {
-      e2ee.deleteChannel(ch.id);
+      _editConn.deleteChannel(ch.id);
       close();
     }
   });
@@ -5144,11 +5166,9 @@ function showEditDeviceDialog(device) {
       try {
         await fetch(`/api/devices/${device.id}`, { method: 'DELETE' });
         devices.delete(device.id);
-        // If this was the selected device, disconnect E2EE.
-        if (selectedAgent?.name === device.name) {
-          if (e2ee) e2ee.disconnect();
-          selectedAgent = null;
-        }
+        // Disconnect E2EE for this device.
+        const _revokeConn = e2eeConnections.get(device.id);
+        if (_revokeConn) _revokeConn.disconnect();
         renderChannelPanel();
         fetchDevices();
       } catch (err) {
@@ -5193,17 +5213,19 @@ document.querySelectorAll('.tree-tab').forEach(btn => {
     document.querySelectorAll('.tree-tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     filesTreeTab = btn.dataset.treeTab;
-    if (filesTreeTab === 'changes' && filesChannelId && e2ee && e2ee.connected) {
-      e2ee.filesChanges(filesChannelId);
+    const _ftConn = getE2EE(filesChannelId);
+    if (filesTreeTab === 'changes' && filesChannelId && _ftConn && _ftConn.connected) {
+      _ftConn.filesChanges(filesChannelId);
     }
     renderFileTree();
   });
 });
 
 function filesLoadRoot() {
-  if (!chatCurrentChannel || !e2ee || !e2ee.connected) return;
+  const _flConn = getActiveE2EE();
+  if (!chatCurrentChannel || !_flConn || !_flConn.connected) return;
   filesChannelId = chatCurrentChannel;
-  e2ee.filesList(chatCurrentChannel, '');
+  _flConn.filesList(chatCurrentChannel, '');
 }
 
 // ---- Tree Rendering ----
@@ -5491,7 +5513,7 @@ function toggleDirectory(path, arrowEl, itemEl) {
     renderFileTree();
   } else {
     // Expand: request listing.
-    e2ee.filesList(filesChannelId, path);
+    getE2EE(filesChannelId)?.filesList(filesChannelId, path);
   }
 }
 
@@ -5532,10 +5554,11 @@ function selectFile(path, entry, initialView) {
 
   // Load file content.
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
+  const _fileConn = getE2EE(filesChannelId);
   if (filesCurrentView === 'diff') {
-    e2ee.fileDiff(filesChannelId, path, false);
+    _fileConn?.fileDiff(filesChannelId, path, false);
   } else {
-    e2ee.fileRead(filesChannelId, path);
+    _fileConn?.fileRead(filesChannelId, path);
   }
 }
 
@@ -5567,22 +5590,23 @@ fileFloatToggle.addEventListener('click', (ev) => {
   if (view === filesCurrentView) return;
 
   filesCurrentView = view;
+  const _fvConn = getE2EE(filesChannelId);
   if (view === 'diff') {
     fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-    e2ee.fileDiff(filesChannelId, filesCurrentPath, false);
+    _fvConn?.fileDiff(filesChannelId, filesCurrentPath, false);
   } else if (view === 'rendered') {
     if (filesLastContent) {
       renderPreview(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
     } else {
       fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-      e2ee.fileRead(filesChannelId, filesCurrentPath);
+      _fvConn?.fileRead(filesChannelId, filesCurrentPath);
     }
   } else {
     if (filesLastContent) {
       renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
     } else {
       fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-      e2ee.fileRead(filesChannelId, filesCurrentPath);
+      _fvConn?.fileRead(filesChannelId, filesCurrentPath);
     }
   }
   updateFloatingToggle();
@@ -6101,8 +6125,9 @@ function onFilesTabActivated() {
     }
 
     filesLoadRoot();
-    if (filesTreeTab === 'changes' && e2ee && e2ee.connected) {
-      e2ee.filesChanges(chatCurrentChannel);
+    const _ftaConn = getActiveE2EE();
+    if (filesTreeTab === 'changes' && _ftaConn && _ftaConn.connected) {
+      _ftaConn.filesChanges(chatCurrentChannel);
     }
   }
 }

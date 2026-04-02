@@ -2018,9 +2018,14 @@ function updateMobileChannelLabel() {
 
 async function connectToDevice(device) {
   selectedAgent = { name: device.name, device: device.name };
+  // Clear channels from previous device.
+  chatChannels.clear();
+  chatCurrentChannel = null;
   renderChannelPanel();
-  // Trigger E2EE connection
-  await initE2EE();
+  // Disconnect existing E2EE session before connecting to new device.
+  if (e2ee && e2ee.connected) e2ee.disconnect();
+  // Connect to the specific device.
+  await initE2EE(device.id);
 }
 
 function selectAgent(name, device) {
@@ -2974,7 +2979,7 @@ function clearChannelDraft(channelId) {
 
 // ----- E2EE connection -----
 
-async function initE2EE() {
+async function initE2EE(targetDeviceId = null) {
   const dot = document.getElementById('e2ee-dot');
   const label = document.getElementById('e2ee-label');
 
@@ -3016,7 +3021,12 @@ async function initE2EE() {
   })));
 
   const connectToDevice = async () => {
-    for (const d of devices.values()) {
+    // If a specific device was requested, connect to it directly.
+    // Otherwise, connect to the first online device with a transport key.
+    const candidates = targetDeviceId
+      ? [devices.get(targetDeviceId)].filter(Boolean)
+      : [...devices.values()];
+    for (const d of candidates) {
       if (d.status === 'online' && d.has_transport_key) {
         dot.className = 'e2ee-dot connecting';
         label.textContent = 'Connecting...';

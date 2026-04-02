@@ -171,8 +171,8 @@
     </div>
 
     <div class="actions">
-      <button class="btn btn-deny" id="btn-deny" onclick="denyDevice()">Deny</button>
-      <button class="btn btn-approve" id="btn-approve" onclick="approveDevice()">Approve</button>
+      <button class="btn btn-deny" id="btn-deny">Deny</button>
+      <button class="btn btn-approve" id="btn-approve">Approve</button>
     </div>
 
     <div class="result" id="result"></div>
@@ -239,6 +239,9 @@
       showResult('error', 'Device denied.');
       clearInterval(timerInterval);
     }
+
+    document.getElementById('btn-approve').addEventListener('click', approveDevice);
+    document.getElementById('btn-deny').addEventListener('click', denyDevice);
   </script>
 </body>
 </html>

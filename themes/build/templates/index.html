@@ -490,9 +490,12 @@ nav{
   display:flex;align-items:center;gap:.4rem;
   padding:.35rem .6rem .35rem 1.4rem;
   font-size:11.5px;color:#18181b;
-  cursor:default;
+  cursor:pointer;
 }
+.sc-channel:hover{background:rgba(0,0,0,.04)}
 .sc-channel.active{background:rgba(99,102,241,.08);color:var(--accent);font-weight:600}
+.sc-channel-content{display:none}
+.sc-channel-content.active{display:flex}
 .sc-channel-hash{color:#a1a1aa;font-size:12px;font-weight:400}
 .sc-channel-panel-footer{
   display:flex;align-items:center;gap:.4rem;
@@ -548,13 +551,30 @@ nav{
   display:flex;align-items:center;gap:.3rem;
   font-size:12px;font-weight:600;color:#18181b;
   background:none;border:none;
-  cursor:default;font-family:var(--sans);
+  cursor:pointer;font-family:var(--sans);
   flex:2 1 0;min-width:0;max-width:140px;
   white-space:nowrap;overflow:hidden;
+  position:relative;
 }
 .sc-mobile-trigger .sc-status-lock{width:10px;height:10px;color:#059669}
 .sc-mobile-trigger span{overflow:hidden;text-overflow:ellipsis}
-.sc-mobile-trigger .sc-chevron{width:7px;height:5px;color:#a1a1aa;flex-shrink:0}
+.sc-mobile-trigger .sc-chevron{width:7px;height:5px;color:#a1a1aa;flex-shrink:0;transition:transform .15s}
+.sc-mobile-trigger.open .sc-chevron{transform:rotate(180deg)}
+.sc-mobile-dropdown{
+  display:none;position:absolute;top:100%;left:0;
+  background:#fff;border:1px solid rgba(0,0,0,.1);
+  border-radius:8px;padding:.25rem 0;min-width:160px;
+  box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:10;
+  margin-top:4px;
+}
+.sc-mobile-trigger.open .sc-mobile-dropdown{display:block}
+.sc-mobile-dropdown-item{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.4rem .75rem;font-size:11.5px;color:#18181b;
+  cursor:pointer;font-family:var(--sans);font-weight:400;
+}
+.sc-mobile-dropdown-item:hover{background:rgba(0,0,0,.04)}
+.sc-mobile-dropdown-item.active{color:var(--accent);font-weight:600}
 .sc-mobile-tab{
   flex:1 1 0;
   display:flex;align-items:center;justify-content:center;
@@ -1313,10 +1333,10 @@ footer{
               <svg class="sc-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>
               Mac mini
             </div>
-            <div class="sc-channel active"><span class="sc-channel-hash">#</span> refactor-auth</div>
-            <div class="sc-channel"><span class="sc-channel-hash">#</span> add-redis-cache</div>
-            <div class="sc-channel"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
-            <div class="sc-channel"><span class="sc-channel-hash">#</span> update-deps</div>
+            <div class="sc-channel active" data-sc-channel="refactor-auth"><span class="sc-channel-hash">#</span> refactor-auth</div>
+            <div class="sc-channel" data-sc-channel="add-redis-cache"><span class="sc-channel-hash">#</span> add-redis-cache</div>
+            <div class="sc-channel" data-sc-channel="fix-ci-pipeline"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
+            <div class="sc-channel" data-sc-channel="update-deps"><span class="sc-channel-hash">#</span> update-deps</div>
           </div>
           <div class="sc-device-group">
             <div class="sc-device-group-header">
@@ -1343,10 +1363,16 @@ footer{
       <div class="sc-content">
         <!-- Mobile nav (hidden on desktop) -->
         <div class="sc-mobile-nav">
-          <div class="sc-mobile-trigger">
+          <div class="sc-mobile-trigger" id="sc-mobile-trigger">
             <svg class="sc-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>
             <span>refactor-auth</span>
             <svg class="sc-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+            <div class="sc-mobile-dropdown">
+              <div class="sc-mobile-dropdown-item active" data-sc-channel="refactor-auth"><span class="sc-channel-hash">#</span> refactor-auth</div>
+              <div class="sc-mobile-dropdown-item" data-sc-channel="add-redis-cache"><span class="sc-channel-hash">#</span> add-redis-cache</div>
+              <div class="sc-mobile-dropdown-item" data-sc-channel="fix-ci-pipeline"><span class="sc-channel-hash">#</span> fix-ci-pipeline</div>
+              <div class="sc-mobile-dropdown-item" data-sc-channel="update-deps"><span class="sc-channel-hash">#</span> update-deps</div>
+            </div>
           </div>
           <div class="sc-mobile-tab active" data-tab="chat">Chat</div>
           <div class="sc-mobile-tab" data-tab="plans">Planning</div>
@@ -1362,7 +1388,8 @@ footer{
         <div class="sc-body">
           <!-- Chat Panel -->
           <div class="sc-panel active" data-panel="chat">
-              <div class="sc-messages">
+              <!-- refactor-auth -->
+              <div class="sc-messages sc-channel-content active" data-sc-content="refactor-auth">
                 <div class="sc-msg">
                   <div class="sc-avatar user">Z</div>
                   <div class="sc-msg-body">
@@ -1399,6 +1426,67 @@ footer{
                   <div class="sc-msg-body">
                     <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">2:32 PM</span></div>
                     <div class="sc-msg-text">Switching to Redis with composable middleware chain. Running tests now.</div>
+                  </div>
+                </div>
+              </div>
+              <!-- add-redis-cache -->
+              <div class="sc-messages sc-channel-content" data-sc-content="add-redis-cache">
+                <div class="sc-msg">
+                  <div class="sc-avatar user">Z</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">1:15 PM</span></div>
+                    <div class="sc-msg-text">Add a Redis cache layer for the API. Cache GET responses with a 60s TTL, bust on writes.</div>
+                    <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">1:15 PM</span></div>
+                    <div class="sc-msg-text">Adding cache middleware with key derivation from route + query params. I'll use a write-through invalidation pattern so mutations automatically bust relevant cache entries.</div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">1:18 PM</span></div>
+                    <div class="sc-msg-text">Cache layer is wired up. All 23 tests passing, avg response time dropped from 140ms to 8ms on cached routes.</div>
+                  </div>
+                </div>
+              </div>
+              <!-- fix-ci-pipeline -->
+              <div class="sc-messages sc-channel-content" data-sc-content="fix-ci-pipeline">
+                <div class="sc-msg">
+                  <div class="sc-avatar user">Z</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">11:45 AM</span></div>
+                    <div class="sc-msg-text">CI is failing on the lint step. Can you figure out what's going on and fix it?</div>
+                    <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">11:45 AM</span></div>
+                    <div class="sc-msg-text">Found it &mdash; the ESLint config was referencing a removed plugin. Fixed the config and pinned the dependency. Pipeline is green now.</div>
+                  </div>
+                </div>
+              </div>
+              <!-- update-deps -->
+              <div class="sc-messages sc-channel-content" data-sc-content="update-deps">
+                <div class="sc-msg">
+                  <div class="sc-avatar user">Z</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">You</span><span class="sc-msg-time">10:00 AM</span></div>
+                    <div class="sc-msg-text">Run a full dependency update. Major versions are fine, just make sure tests still pass.</div>
+                    <div class="sc-msg-status"><span class="read">&#10003;&#10003; Read</span></div>
+                  </div>
+                </div>
+                <div class="sc-msg">
+                  <div class="sc-avatar agent">C</div>
+                  <div class="sc-msg-body">
+                    <div class="sc-msg-header"><span class="sc-msg-name">Claude</span><span class="sc-msg-time">10:02 AM</span></div>
+                    <div class="sc-msg-text">Bumped 14 packages including Next.js 14 &rarr; 15 and TypeScript 5.3 &rarr; 5.6. Had to update two type imports that changed. All 89 tests passing.</div>
                   </div>
                 </div>
               </div>
@@ -1791,6 +1879,47 @@ function scSwitchTab(tab) {
 document.querySelectorAll('.sc-viewer-tab[data-tab], .sc-mobile-tab[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => scSwitchTab(btn.dataset.tab));
 });
+
+// Showcase channel switching
+function scSwitchChannel(channelName) {
+  // Update sidebar active state
+  document.querySelectorAll('.sc-channel[data-sc-channel]').forEach(c =>
+    c.classList.toggle('active', c.dataset.scChannel === channelName)
+  );
+  // Update chat content
+  document.querySelectorAll('.sc-channel-content[data-sc-content]').forEach(c =>
+    c.classList.toggle('active', c.dataset.scContent === channelName)
+  );
+  // Update mobile trigger label
+  const trigger = document.getElementById('sc-mobile-trigger');
+  if (trigger) trigger.querySelector('span').textContent = channelName;
+  // Update mobile dropdown active state
+  document.querySelectorAll('.sc-mobile-dropdown-item[data-sc-channel]').forEach(d =>
+    d.classList.toggle('active', d.dataset.scChannel === channelName)
+  );
+}
+// Desktop sidebar channel clicks
+document.querySelectorAll('.sc-channel[data-sc-channel]').forEach(ch => {
+  ch.addEventListener('click', () => scSwitchChannel(ch.dataset.scChannel));
+});
+// Mobile trigger toggle
+(function() {
+  const trigger = document.getElementById('sc-mobile-trigger');
+  if (!trigger) return;
+  trigger.addEventListener('click', (e) => {
+    // Don't toggle if clicking a dropdown item (it will handle itself)
+    if (e.target.closest('.sc-mobile-dropdown-item')) return;
+    trigger.classList.toggle('open');
+  });
+  // Mobile dropdown item clicks
+  trigger.querySelectorAll('.sc-mobile-dropdown-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      scSwitchChannel(item.dataset.scChannel);
+      trigger.classList.remove('open');
+    });
+  });
+})();
 
 // Complications scroll fade indicators
 (function(){

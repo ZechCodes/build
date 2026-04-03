@@ -66,10 +66,125 @@
     return text;
   }
 
+  // ── file / diff embed helpers ────────────────────────────────────────────
+
+  var buildFileRe = /<build-file\s+path="([^"]*)"(?:\s+lang="([^"]*)")?(?:\s+lines="(\d+-\d+)")?>\n([\s\S]*?)\n<\/build-file>/g;
+  var buildDiffRe = /<build-diff\s+path="([^"]*)">\n([\s\S]*?)\n<\/build-diff>/g;
+
+  function renderInlineFile(content, path, lang, lineRange) {
+    var lines = content.split('\n');
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    var totalLines = lines.length;
+
+    var ext = lang || '';
+    if (!ext) {
+      var extMatch = path.match(/\.([^./]+)$/);
+      ext = extMatch ? extMatch[1].toLowerCase() : '';
+    }
+
+    var lineStart = 1;
+    var meta = '';
+    if (lineRange) {
+      var parts = lineRange.split('-');
+      lineStart = parseInt(parts[0], 10) || 1;
+      meta = '<span class="build-embed-meta">lines ' + escapeHtml(lineRange) + '</span>';
+    }
+
+    var collapsed = totalLines > 8;
+    var cls = 'build-embed' + (collapsed ? ' collapsed' : '');
+    var toggleBtn = collapsed
+      ? '<button class="build-embed-toggle" data-show-text="Show ' + totalLines + ' lines">Show ' + totalLines + ' lines</button>'
+      : '';
+
+    var viewerHtml = '<div class="file-viewer">';
+    for (var i = 0; i < lines.length; i++) {
+      var hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(lines[i], ext) : escapeHtml(lines[i]);
+      viewerHtml += '<div class="file-line"><span class="fl-num">' + (lineStart + i) + '</span><span class="fl-content">' + hl + '</span></div>';
+    }
+    viewerHtml += '</div>';
+
+    return '<div class="' + cls + '" data-embed-type="file">' +
+      '<div class="build-embed-header">' +
+        '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        meta + toggleBtn +
+      '</div>' +
+      '<div class="build-embed-body">' + viewerHtml + '</div>' +
+    '</div>';
+  }
+
+  function renderInlineDiff(diffText, path) {
+    var lines = diffText.split('\n');
+    var totalLines = 0;
+
+    var extMatch = path.match(/\.([^./]+)$/);
+    var ext = extMatch ? extMatch[1].toLowerCase() : '';
+
+    var viewerHtml = '<div class="diff-viewer">';
+    var oldNum = 0, newNum = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) continue;
+      if (line.startsWith('@@')) {
+        var m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (m) { oldNum = parseInt(m[1]); newNum = parseInt(m[2]); }
+        viewerHtml += '<div class="diff-hunk-header">' + escapeHtml(line) + '</div>';
+        totalLines++;
+        continue;
+      }
+      var hl;
+      var cls = 'diff-line';
+      var numText;
+      if (line.startsWith('+')) {
+        cls += ' added';
+        numText = String(newNum++);
+        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.slice(1), ext) : escapeHtml(line.slice(1));
+      } else if (line.startsWith('-')) {
+        cls += ' removed';
+        numText = String(oldNum++);
+        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.slice(1), ext) : escapeHtml(line.slice(1));
+      } else {
+        cls += ' context';
+        numText = String(newNum);
+        oldNum++; newNum++;
+        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.startsWith(' ') ? line.slice(1) : line, ext) : escapeHtml(line);
+      }
+      viewerHtml += '<div class="' + cls + '"><span class="dl-num">' + numText + '</span><span class="dl-content">' + hl + '</span></div>';
+      totalLines++;
+    }
+    viewerHtml += '</div>';
+
+    var collapsed = totalLines > 8;
+    var wrapCls = 'build-embed' + (collapsed ? ' collapsed' : '');
+    var toggleBtn = collapsed
+      ? '<button class="build-embed-toggle" data-show-text="Show ' + totalLines + ' lines">Show ' + totalLines + ' lines</button>'
+      : '';
+
+    return '<div class="' + wrapCls + '" data-embed-type="diff">' +
+      '<div class="build-embed-header">' +
+        '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        toggleBtn +
+      '</div>' +
+      '<div class="build-embed-body">' + viewerHtml + '</div>' +
+    '</div>';
+  }
+
   // ── block parser ──────────────────────────────────────────────────────────
 
   function renderMarkdown(src) {
     if (!src) return '';
+
+    // Extract <build-file> and <build-diff> blocks before markdown processing.
+    var embeds = [];
+    src = src.replace(buildFileRe, function (match, path, lang, lineRange, content) {
+      var idx = embeds.length;
+      embeds.push(renderInlineFile(content, path, lang || '', lineRange || ''));
+      return '__BUILD_EMBED_' + idx + '__';
+    });
+    src = src.replace(buildDiffRe, function (match, path, content) {
+      var idx = embeds.length;
+      embeds.push(renderInlineDiff(content, path));
+      return '__BUILD_EMBED_' + idx + '__';
+    });
 
     var lines = src.split('\n');
     var out = [];
@@ -209,7 +324,16 @@
       out.push('<p>' + inlineMarkdown(escapeHtml(paraLines.join('\n'))) + '</p>');
     }
 
-    return out.join('');
+    var result = out.join('');
+
+    // Restore embedded file/diff blocks.
+    for (var ei = 0; ei < embeds.length; ei++) {
+      // The placeholder may have been wrapped in a <p> tag by the paragraph parser.
+      result = result.replace('<p>__BUILD_EMBED_' + ei + '__</p>', embeds[ei]);
+      result = result.replace('__BUILD_EMBED_' + ei + '__', embeds[ei]);
+    }
+
+    return result;
   }
 
   // ── exports ───────────────────────────────────────────────────────────────

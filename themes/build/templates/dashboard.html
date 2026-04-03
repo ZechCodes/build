@@ -2822,6 +2822,8 @@ document.addEventListener('sk:notification', (e) => {
       const existingConn = e2eeConnections.get(deviceId);
       if (existingConn) {
         console.log('[E2EE] Device e2ee-ready while connected — relay restarted, reconnecting...');
+        // Preserve current channel so it's restored after reconnect.
+        if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
         existingConn.disconnect();
         e2eeConnections.delete(deviceId);
       }
@@ -2895,6 +2897,8 @@ fetchDevices().then(() => {
 document.addEventListener('sk:notification-status', (evt) => {
   if (evt.detail.status === 'connected' && e2eeConnections.size > 0) {
     console.log('[E2EE] SSE reconnected — tearing down stale sessions');
+    // Preserve current channel so it's restored after reconnect.
+    if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
     for (const [, conn] of e2eeConnections) conn.disconnect();
     e2eeConnections.clear();
     initE2EE();

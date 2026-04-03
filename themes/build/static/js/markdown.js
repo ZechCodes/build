@@ -178,12 +178,12 @@
     src = src.replace(buildFileRe, function (match, path, lang, lineRange, content) {
       var idx = embeds.length;
       embeds.push(renderInlineFile(content, path, lang || '', lineRange || ''));
-      return '__BUILD_EMBED_' + idx + '__';
+      return '\x00BUILD_EMBED_' + idx + '\x00';
     });
     src = src.replace(buildDiffRe, function (match, path, content) {
       var idx = embeds.length;
       embeds.push(renderInlineDiff(content, path));
-      return '__BUILD_EMBED_' + idx + '__';
+      return '\x00BUILD_EMBED_' + idx + '\x00';
     });
 
     var lines = src.split('\n');
@@ -329,8 +329,8 @@
     // Restore embedded file/diff blocks.
     for (var ei = 0; ei < embeds.length; ei++) {
       // The placeholder may have been wrapped in a <p> tag by the paragraph parser.
-      result = result.replace('<p>__BUILD_EMBED_' + ei + '__</p>', embeds[ei]);
-      result = result.replace('__BUILD_EMBED_' + ei + '__', embeds[ei]);
+      result = result.replace('<p>\x00BUILD_EMBED_' + ei + '\x00</p>', embeds[ei]);
+      result = result.replace('\x00BUILD_EMBED_' + ei + '\x00', embeds[ei]);
     }
 
     return result;

@@ -83,18 +83,14 @@
     }
 
     var lineStart = 1;
-    var meta = '';
     if (lineRange) {
       var parts = lineRange.split('-');
       lineStart = parseInt(parts[0], 10) || 1;
-      meta = '<span class="build-embed-meta">lines ' + escapeHtml(lineRange) + '</span>';
     }
 
     var collapsed = totalLines > 8;
     var cls = 'build-embed' + (collapsed ? ' collapsed' : '');
-    var toggleBtn = collapsed
-      ? '<button class="build-embed-toggle" data-show-text="Show ' + totalLines + ' lines">Show ' + totalLines + ' lines</button>'
-      : '';
+    var toggleBtn = '<span class="build-embed-chevron">&#x25B6;</span>';
 
     var viewerHtml = '<div class="file-viewer">';
     for (var i = 0; i < lines.length; i++) {
@@ -105,8 +101,8 @@
 
     return '<div class="' + cls + '" data-embed-type="file">' +
       '<div class="build-embed-header">' +
+        toggleBtn +
         '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
-        meta + toggleBtn +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
     '</div>';
@@ -155,14 +151,12 @@
 
     var collapsed = totalLines > 8;
     var wrapCls = 'build-embed' + (collapsed ? ' collapsed' : '');
-    var toggleBtn = collapsed
-      ? '<button class="build-embed-toggle" data-show-text="Show ' + totalLines + ' lines">Show ' + totalLines + ' lines</button>'
-      : '';
+    var toggleBtn = '<span class="build-embed-chevron">&#x25B6;</span>';
 
     return '<div class="' + wrapCls + '" data-embed-type="diff">' +
       '<div class="build-embed-header">' +
-        '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
         toggleBtn +
+        '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
     '</div>';

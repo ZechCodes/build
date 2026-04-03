@@ -1274,14 +1274,12 @@ body{
 
 /* Inline file/diff embeds in chat */
 .build-embed{border:1px solid var(--border);border-radius:var(--radius-sm);margin:.5rem 0;overflow:hidden}
-.build-embed-header{display:flex;align-items:center;gap:.5rem;padding:.35rem .75rem;background:rgba(0,0,0,.03);border-bottom:1px solid var(--border);font-size:12px}
+.build-embed-header{display:flex;align-items:center;gap:.5rem;padding:.35rem .75rem;background:rgba(0,0,0,.03);border-bottom:1px solid var(--border);font-size:12px;position:sticky;top:0;z-index:1;cursor:pointer;user-select:none}
 .build-embed-path{font-family:var(--mono);color:var(--text-muted)}
-.build-embed-meta{display:none}
 .build-embed-chevron{font-size:8px;color:var(--text-muted);transition:transform .2s ease;transform:rotate(90deg);display:inline-block}
 .build-embed.collapsed .build-embed-chevron{transform:rotate(0deg)}
-.build-embed-header{cursor:pointer;user-select:none}
-.build-embed-body{overflow:hidden;transition:max-height .2s ease}
-.build-embed.collapsed .build-embed-body{max-height:160px;position:relative}
+.build-embed-body{overflow-y:auto;max-height:60vh}
+.build-embed.collapsed .build-embed-body{max-height:160px;overflow:hidden;position:relative}
 .build-embed.collapsed .build-embed-body::after{content:'';position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent,var(--bg));pointer-events:none}
 
 /* Syntax highlighting tokens */

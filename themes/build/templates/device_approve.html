@@ -143,6 +143,22 @@
       text-align: center;
       margin-top: 1rem;
     }
+    @media(prefers-color-scheme:dark){
+      :root {
+        --bg: #111116;
+        --card-bg: rgba(255, 255, 255, 0.05);
+        --card-border: rgba(255, 255, 255, 0.08);
+        --text: #e4e4eb;
+        --text-secondary: #7a7a8e;
+        --accent: #818cf8;
+        --accent-hover: #6366f1;
+        --success: #34d399;
+        --danger: #f87171;
+      }
+      .card { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); }
+      .detail-row { border-bottom-color: rgba(255, 255, 255, 0.06); }
+      .btn-deny { background: rgba(255, 255, 255, 0.06); }
+    }
   </style>
 </head>
 <body>

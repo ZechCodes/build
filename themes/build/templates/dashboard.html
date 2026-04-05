@@ -5960,19 +5960,15 @@ function resolveAssetPath(htmlFilePath, assetHref) {
   return resolved.join('/');
 }
 
-// Script injected into iframe to capture console output and errors.
-const CONSOLE_CAPTURE_SCRIPT = `<script>
-(function(){
-  var _logs = [];
+// Console capture JS (raw code, no <script> tags — injected via DOM).
+const CONSOLE_CAPTURE_JS = `(function(){
   function send(level, args) {
     var parts = [];
     for (var i = 0; i < args.length; i++) {
       try { parts.push(typeof args[i] === 'string' ? args[i] : JSON.stringify(args[i], null, 2)); }
       catch(e) { parts.push(String(args[i])); }
     }
-    var entry = { level: level, text: parts.join(' '), ts: Date.now() };
-    _logs.push(entry);
-    parent.postMessage({ type: '__build_console', entry: entry }, '*');
+    parent.postMessage({ type: '__build_console', entry: { level: level, text: parts.join(' '), ts: Date.now() } }, '*');
   }
   var orig = {};
   ['log','warn','error','info','debug'].forEach(function(m){
@@ -5985,7 +5981,6 @@ const CONSOLE_CAPTURE_SCRIPT = `<script>
   window.addEventListener('unhandledrejection', function(e) {
     send('error', ['Unhandled rejection: ' + (e.reason && e.reason.message || e.reason || 'unknown')]);
   });
-  // Capture resource load errors (images, scripts, stylesheets).
   window.addEventListener('error', function(e) {
     if (e.target && e.target !== window) {
       var tag = e.target.tagName || '';
@@ -5993,11 +5988,14 @@ const CONSOLE_CAPTURE_SCRIPT = `<script>
       send('error', ['Failed to load ' + tag.toLowerCase() + (src ? ': ' + src : '')]);
     }
   }, true);
-})();
-<\/script>`;
+})();`;
+
+// Tracks asset-fetch errors to surface in the console overlay.
+let _htmlPreviewErrors = [];
 
 async function renderHtmlPreview(content, htmlPath) {
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading preview...</p></div>';
+  _htmlPreviewErrors = [];
 
   const parser = new DOMParser();
   const doc = parser.parseFromString(content, 'text/html');
@@ -6015,7 +6013,7 @@ async function renderHtmlPreview(content, htmlPath) {
         style.textContent = result.content;
         el.replaceWith(style);
       }
-    }).catch(() => {}));
+    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load CSS: ' + href + ' (' + err.message + ')' }); }));
   });
 
   // Collect <script src> tags.
@@ -6028,7 +6026,7 @@ async function renderHtmlPreview(content, htmlPath) {
         el.removeAttribute('src');
         el.textContent = result.content;
       }
-    }).catch(() => {}));
+    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load JS: ' + src + ' (' + err.message + ')' }); }));
   });
 
   // Collect <img src> tags.
@@ -6044,7 +6042,7 @@ async function renderHtmlPreview(content, htmlPath) {
         const mime = MIME_TYPES[ext] || 'application/octet-stream';
         el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
       }
-    }).catch(() => {}));
+    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load image: ' + src + ' (' + err.message + ')' }); }));
   });
 
   await Promise.all(fetches);
@@ -6052,9 +6050,10 @@ async function renderHtmlPreview(content, htmlPath) {
   // Bail if user navigated away.
   if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
 
-  // Inject console capture as the very first script in <head>.
-  const headHtml = doc.head.innerHTML;
-  doc.head.innerHTML = CONSOLE_CAPTURE_SCRIPT + headHtml;
+  // Inject console capture script as first child of <head> via DOM (avoids innerHTML re-serialization).
+  const captureScript = doc.createElement('script');
+  captureScript.textContent = CONSOLE_CAPTURE_JS;
+  doc.head.insertBefore(captureScript, doc.head.firstChild);
 
   // Serialize back to HTML.
   const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
@@ -6096,24 +6095,29 @@ async function renderHtmlPreview(content, htmlPath) {
     if (consoleOpen) { badge.style.display = 'none'; consolePanel.scrollTop = consolePanel.scrollHeight; }
   });
 
-  // Listen for console messages from iframe.
-  function onConsoleMsg(evt) {
-    if (!evt.data || evt.data.type !== '__build_console') return;
-    const e = evt.data.entry;
+  function addConsoleEntry(level, text) {
     entryCount++;
     if (!consoleOpen) { badge.style.display = ''; badge.textContent = String(entryCount); }
-
     const row = document.createElement('div');
-    row.className = 'html-console-entry html-console-' + (e.level || 'log');
+    row.className = 'html-console-entry html-console-' + (level || 'log');
     const levelSpan = document.createElement('span');
     levelSpan.className = 'html-console-level';
-    levelSpan.textContent = e.level || 'log';
+    levelSpan.textContent = level || 'log';
     row.appendChild(levelSpan);
     const textSpan = document.createElement('span');
-    textSpan.textContent = e.text;
+    textSpan.textContent = text;
     row.appendChild(textSpan);
     consolePanel.appendChild(row);
     if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
+  }
+
+  // Surface asset-fetch errors that happened before iframe loaded.
+  for (const err of _htmlPreviewErrors) addConsoleEntry(err.level, err.text);
+
+  // Listen for console messages from iframe.
+  function onConsoleMsg(evt) {
+    if (!evt.data || evt.data.type !== '__build_console') return;
+    addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
   }
   window.addEventListener('message', onConsoleMsg);
 

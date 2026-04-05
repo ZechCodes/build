@@ -5996,30 +5996,30 @@ let _htmlPreviewErrors = [];
 async function renderHtmlPreview(content, htmlPath) {
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading preview...</p></div>';
   _htmlPreviewErrors = [];
+  const _dbg = (text) => _htmlPreviewErrors.push({ level: 'debug', text });
 
   const parser = new DOMParser();
   const doc = parser.parseFromString(content, 'text/html');
   const channelId = filesChannelId;
   const fetches = [];
 
-  console.log('[HTML Preview] Rendering', htmlPath, '| content length:', content.length);
+  _dbg('Rendering ' + htmlPath + ' (' + content.length + ' bytes)');
 
   // Collect CSS <link> tags.
   doc.querySelectorAll('link[rel="stylesheet"][href]').forEach(el => {
     const href = el.getAttribute('href');
     const resolved = resolveAssetPath(htmlPath, href);
-    console.log('[HTML Preview] CSS:', href, '→', resolved);
+    _dbg('CSS: ' + href + ' → ' + (resolved || 'SKIP (external)'));
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
-      console.log('[HTML Preview] CSS loaded:', resolved, '| content:', !!result.content, '| binary:', result.is_binary);
+      _dbg('CSS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
       if (result.content && !result.is_binary && !result.is_image) {
         const style = doc.createElement('style');
         style.textContent = result.content;
         el.replaceWith(style);
       }
     }).catch(err => {
-      console.error('[HTML Preview] CSS fetch failed:', resolved, err);
-      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load CSS: ' + href + ' (' + err.message + ')' });
+      _htmlPreviewErrors.push({ level: 'error', text: 'CSS fetch failed: ' + href + ' → ' + resolved + ' (' + err.message + ')' });
     }));
   });
 
@@ -6027,17 +6027,16 @@ async function renderHtmlPreview(content, htmlPath) {
   doc.querySelectorAll('script[src]').forEach(el => {
     const src = el.getAttribute('src');
     const resolved = resolveAssetPath(htmlPath, src);
-    console.log('[HTML Preview] JS:', src, '→', resolved);
+    _dbg('JS: ' + src + ' → ' + (resolved || 'SKIP (external)'));
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
-      console.log('[HTML Preview] JS loaded:', resolved, '| content:', !!result.content, '| binary:', result.is_binary);
+      _dbg('JS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
       if (result.content && !result.is_binary && !result.is_image) {
         el.removeAttribute('src');
         el.textContent = result.content;
       }
     }).catch(err => {
-      console.error('[HTML Preview] JS fetch failed:', resolved, err);
-      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load JS: ' + src + ' (' + err.message + ')' });
+      _htmlPreviewErrors.push({ level: 'error', text: 'JS fetch failed: ' + src + ' → ' + resolved + ' (' + err.message + ')' });
     }));
   });
 
@@ -6045,10 +6044,10 @@ async function renderHtmlPreview(content, htmlPath) {
   doc.querySelectorAll('img[src]').forEach(el => {
     const src = el.getAttribute('src');
     const resolved = resolveAssetPath(htmlPath, src);
-    console.log('[HTML Preview] IMG:', src, '→', resolved);
+    _dbg('IMG: ' + src + ' → ' + (resolved || 'SKIP (external)'));
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
-      console.log('[HTML Preview] IMG loaded:', resolved, '| image:', result.is_image, '| binary:', result.is_binary);
+      _dbg('IMG OK: ' + resolved);
       if (result.is_image && result.content) {
         el.setAttribute('src', result.content);
       } else if (result.content && !result.is_binary) {
@@ -6057,14 +6056,13 @@ async function renderHtmlPreview(content, htmlPath) {
         el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
       }
     }).catch(err => {
-      console.error('[HTML Preview] IMG fetch failed:', resolved, err);
-      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load image: ' + src + ' (' + err.message + ')' });
+      _htmlPreviewErrors.push({ level: 'error', text: 'IMG fetch failed: ' + src + ' → ' + resolved + ' (' + err.message + ')' });
     }));
   });
 
-  console.log('[HTML Preview] Fetching', fetches.length, 'assets...');
+  _dbg('Fetching ' + fetches.length + ' assets...');
   await Promise.all(fetches);
-  console.log('[HTML Preview] All assets loaded. Errors:', _htmlPreviewErrors.length);
+  _dbg('Done. ' + _htmlPreviewErrors.filter(e => e.level === 'error').length + ' errors');
 
   // Bail if user navigated away.
   if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
@@ -6076,7 +6074,6 @@ async function renderHtmlPreview(content, htmlPath) {
 
   // Serialize back to HTML.
   const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
-  console.log('[HTML Preview] Final HTML length:', inlinedHtml.length);
 
   // Build wrapper with iframe and console overlay.
   fileContentBody.innerHTML = '';
@@ -6131,8 +6128,15 @@ async function renderHtmlPreview(content, htmlPath) {
     if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
   }
 
-  // Surface asset-fetch errors that happened before iframe loaded.
+  // Surface asset-fetch errors/debug that happened before iframe loaded.
   for (const err of _htmlPreviewErrors) addConsoleEntry(err.level, err.text);
+  // Auto-open console if there are entries.
+  if (_htmlPreviewErrors.length > 0) {
+    consoleOpen = true;
+    consolePanel.style.display = '';
+    toggleIcon.innerHTML = '&#x25BC;';
+    badge.style.display = 'none';
+  }
 
   // Listen for console messages from iframe.
   function onConsoleMsg(evt) {

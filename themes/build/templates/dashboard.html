@@ -6046,7 +6046,7 @@ async function renderHtmlPreview(content, htmlPath) {
     }
   }
 
-  // Find <script src="..."></script> tags.
+  // Find script[src] tags.
   const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
   for (const m of html.matchAll(scriptRe)) {
     const tag = m[0];

@@ -5998,118 +5998,132 @@ async function renderHtmlPreview(content, htmlPath) {
   _htmlPreviewErrors = [];
   const _dbg = (text) => _htmlPreviewErrors.push({ level: 'debug', text });
 
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(content, 'text/html');
   const channelId = filesChannelId;
-  const fetches = [];
+  let html = content;
 
   _dbg('Rendering ' + htmlPath + ' (' + content.length + ' bytes)');
 
-  // Helper: check if URL is external.
   const isExternal = (url) => url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('//'));
 
-  // Collect CSS <link> tags.
-  doc.querySelectorAll('link[rel="stylesheet"][href]').forEach(el => {
-    const href = el.getAttribute('href');
+  // Use string-based asset resolution (avoids DOMParser mangling style/script content).
+  const replacements = [];
+
+  // Find CSS <link> tags via regex.
+  const linkRe = /<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*>|<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*\brel\s*=\s*["']stylesheet["'][^>]*>/gi;
+  const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/i;
+  for (const m of html.matchAll(linkRe)) {
+    const tag = m[0];
+    const hm = tag.match(hrefRe);
+    if (!hm) continue;
+    const href = hm[1];
     if (isExternal(href)) {
-      // Fetch external CSS from parent page context and inline it.
       const fullUrl = href.startsWith('//') ? 'https:' + href : href;
-      _dbg('CSS (external): ' + href);
-      fetches.push(fetch(fullUrl).then(r => {
+      _dbg('CSS (ext): ' + href);
+      replacements.push(fetch(fullUrl).then(r => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
       }).then(css => {
-        _dbg('CSS OK (external): ' + href + ' (' + css.length + ' bytes)');
-        const style = doc.createElement('style');
-        style.textContent = css;
-        el.replaceWith(style);
+        _dbg('CSS OK: ' + css.length + ' bytes');
+        return { original: tag, replacement: '<style>' + css + '</style>' };
       }).catch(err => {
         _htmlPreviewErrors.push({ level: 'warn', text: 'External CSS failed: ' + href + ' (' + err.message + ')' });
+        return null;
       }));
-      return;
+    } else {
+      const resolved = resolveAssetPath(htmlPath, href);
+      _dbg('CSS (local): ' + href + ' → ' + resolved);
+      if (!resolved) continue;
+      replacements.push(readFileAsync(channelId, resolved).then(result => {
+        if (result.content && !result.is_binary && !result.is_image) {
+          _dbg('CSS OK: ' + result.content.length + ' bytes');
+          return { original: tag, replacement: '<style>' + result.content + '</style>' };
+        }
+        return null;
+      }).catch(err => {
+        _htmlPreviewErrors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' });
+        return null;
+      }));
     }
-    const resolved = resolveAssetPath(htmlPath, href);
-    _dbg('CSS (local): ' + href + ' → ' + resolved);
-    if (!resolved) return;
-    fetches.push(readFileAsync(channelId, resolved).then(result => {
-      _dbg('CSS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
-      if (result.content && !result.is_binary && !result.is_image) {
-        const style = doc.createElement('style');
-        style.textContent = result.content;
-        el.replaceWith(style);
-      }
-    }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'CSS fetch failed: ' + href + ' → ' + resolved + ' (' + err.message + ')' });
-    }));
-  });
+  }
 
-  // Collect <script src> tags.
-  doc.querySelectorAll('script[src]').forEach(el => {
-    const src = el.getAttribute('src');
+  // Find <script src="..."></script> tags.
+  const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
+  for (const m of html.matchAll(scriptRe)) {
+    const tag = m[0];
+    const src = m[1];
     if (isExternal(src)) {
       const fullUrl = src.startsWith('//') ? 'https:' + src : src;
-      _dbg('JS (external): ' + src);
-      fetches.push(fetch(fullUrl).then(r => {
+      _dbg('JS (ext): ' + src);
+      replacements.push(fetch(fullUrl).then(r => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
       }).then(js => {
-        _dbg('JS OK (external): ' + src + ' (' + js.length + ' bytes)');
-        el.removeAttribute('src');
-        el.textContent = js;
+        _dbg('JS OK: ' + js.length + ' bytes');
+        return { original: tag, replacement: '<script>' + js + '<\/script>' };
       }).catch(err => {
         _htmlPreviewErrors.push({ level: 'warn', text: 'External JS failed: ' + src + ' (' + err.message + ')' });
+        return null;
       }));
-      return;
+    } else {
+      const resolved = resolveAssetPath(htmlPath, src);
+      _dbg('JS (local): ' + src + ' → ' + resolved);
+      if (!resolved) continue;
+      replacements.push(readFileAsync(channelId, resolved).then(result => {
+        if (result.content && !result.is_binary && !result.is_image) {
+          _dbg('JS OK: ' + result.content.length + ' bytes');
+          return { original: tag, replacement: '<script>' + result.content + '<\/script>' };
+        }
+        return null;
+      }).catch(err => {
+        _htmlPreviewErrors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' });
+        return null;
+      }));
     }
-    const resolved = resolveAssetPath(htmlPath, src);
-    _dbg('JS (local): ' + src + ' → ' + resolved);
-    if (!resolved) return;
-    fetches.push(readFileAsync(channelId, resolved).then(result => {
-      _dbg('JS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
-      if (result.content && !result.is_binary && !result.is_image) {
-        el.removeAttribute('src');
-        el.textContent = result.content;
-      }
-    }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'JS fetch failed: ' + src + ' → ' + resolved + ' (' + err.message + ')' });
-    }));
-  });
+  }
 
-  // Collect <img src> tags (skip external — they can load directly in the iframe).
-  doc.querySelectorAll('img[src]').forEach(el => {
-    const src = el.getAttribute('src');
-    if (isExternal(src) || src.startsWith('data:')) return;
+  // Find local <img src> tags.
+  const imgRe = /(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
+  for (const m of html.matchAll(imgRe)) {
+    const tag = m[0];
+    const src = m[2];
+    if (isExternal(src) || src.startsWith('data:')) continue;
     const resolved = resolveAssetPath(htmlPath, src);
     _dbg('IMG (local): ' + src + ' → ' + resolved);
-    if (!resolved) return;
-    fetches.push(readFileAsync(channelId, resolved).then(result => {
-      _dbg('IMG OK: ' + resolved);
+    if (!resolved) continue;
+    replacements.push(readFileAsync(channelId, resolved).then(result => {
       if (result.is_image && result.content) {
-        el.setAttribute('src', result.content);
+        _dbg('IMG OK: ' + resolved);
+        return { original: tag, replacement: m[1] + result.content + m[3] };
       } else if (result.content && !result.is_binary) {
         const ext = resolved.split('.').pop().toLowerCase();
         const mime = MIME_TYPES[ext] || 'application/octet-stream';
-        el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
+        return { original: tag, replacement: m[1] + 'data:' + mime + ';base64,' + btoa(result.content) + m[3] };
       }
+      return null;
     }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'IMG fetch failed: ' + src + ' → ' + resolved + ' (' + err.message + ')' });
+      _htmlPreviewErrors.push({ level: 'error', text: 'IMG failed: ' + src + ' (' + err.message + ')' });
+      return null;
     }));
-  });
+  }
 
-  _dbg('Fetching ' + fetches.length + ' assets...');
-  await Promise.all(fetches);
+  _dbg('Fetching ' + replacements.length + ' assets...');
+  const results = await Promise.all(replacements);
+  for (const r of results) {
+    if (r) html = html.replace(r.original, r.replacement);
+  }
   _dbg('Done. ' + _htmlPreviewErrors.filter(e => e.level === 'error').length + ' errors');
 
   // Bail if user navigated away.
   if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
 
-  // Inject console capture script as first child of <head> via DOM (avoids innerHTML re-serialization).
-  const captureScript = doc.createElement('script');
-  captureScript.textContent = CONSOLE_CAPTURE_JS;
-  doc.head.insertBefore(captureScript, doc.head.firstChild);
+  // Inject console capture script right after <head>.
+  const headMatch = html.match(/<head[^>]*>/i);
+  if (headMatch) {
+    const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
+    html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + '<\/script>' + html.slice(idx);
+  }
 
-  // Serialize back to HTML.
-  const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+  const inlinedHtml = html;
 
   // Build wrapper with iframe and console overlay.
   fileContentBody.innerHTML = '';

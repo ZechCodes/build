@@ -6005,11 +6005,31 @@ async function renderHtmlPreview(content, htmlPath) {
 
   _dbg('Rendering ' + htmlPath + ' (' + content.length + ' bytes)');
 
+  // Helper: check if URL is external.
+  const isExternal = (url) => url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('//'));
+
   // Collect CSS <link> tags.
   doc.querySelectorAll('link[rel="stylesheet"][href]').forEach(el => {
     const href = el.getAttribute('href');
+    if (isExternal(href)) {
+      // Fetch external CSS from parent page context and inline it.
+      const fullUrl = href.startsWith('//') ? 'https:' + href : href;
+      _dbg('CSS (external): ' + href);
+      fetches.push(fetch(fullUrl).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }).then(css => {
+        _dbg('CSS OK (external): ' + href + ' (' + css.length + ' bytes)');
+        const style = doc.createElement('style');
+        style.textContent = css;
+        el.replaceWith(style);
+      }).catch(err => {
+        _htmlPreviewErrors.push({ level: 'warn', text: 'External CSS failed: ' + href + ' (' + err.message + ')' });
+      }));
+      return;
+    }
     const resolved = resolveAssetPath(htmlPath, href);
-    _dbg('CSS: ' + href + ' → ' + (resolved || 'SKIP (external)'));
+    _dbg('CSS (local): ' + href + ' → ' + resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
       _dbg('CSS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
@@ -6026,8 +6046,23 @@ async function renderHtmlPreview(content, htmlPath) {
   // Collect <script src> tags.
   doc.querySelectorAll('script[src]').forEach(el => {
     const src = el.getAttribute('src');
+    if (isExternal(src)) {
+      const fullUrl = src.startsWith('//') ? 'https:' + src : src;
+      _dbg('JS (external): ' + src);
+      fetches.push(fetch(fullUrl).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }).then(js => {
+        _dbg('JS OK (external): ' + src + ' (' + js.length + ' bytes)');
+        el.removeAttribute('src');
+        el.textContent = js;
+      }).catch(err => {
+        _htmlPreviewErrors.push({ level: 'warn', text: 'External JS failed: ' + src + ' (' + err.message + ')' });
+      }));
+      return;
+    }
     const resolved = resolveAssetPath(htmlPath, src);
-    _dbg('JS: ' + src + ' → ' + (resolved || 'SKIP (external)'));
+    _dbg('JS (local): ' + src + ' → ' + resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
       _dbg('JS OK: ' + resolved + ' (' + (result.content || '').length + ' bytes)');
@@ -6040,11 +6075,12 @@ async function renderHtmlPreview(content, htmlPath) {
     }));
   });
 
-  // Collect <img src> tags.
+  // Collect <img src> tags (skip external — they can load directly in the iframe).
   doc.querySelectorAll('img[src]').forEach(el => {
     const src = el.getAttribute('src');
+    if (isExternal(src) || src.startsWith('data:')) return;
     const resolved = resolveAssetPath(htmlPath, src);
-    _dbg('IMG: ' + src + ' → ' + (resolved || 'SKIP (external)'));
+    _dbg('IMG (local): ' + src + ' → ' + resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
       _dbg('IMG OK: ' + resolved);

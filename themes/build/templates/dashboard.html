@@ -1247,6 +1247,27 @@ body{
   background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
 .file-image-view img,.file-image-view svg{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
 
+/* HTML preview console overlay */
+.html-console-bar{display:flex;align-items:center;gap:.4rem;padding:.25rem .75rem;background:var(--surface-solid,#1e1e2e);border-top:1px solid var(--border);cursor:pointer;user-select:none;font-size:11px;color:var(--text-secondary,#999);flex-shrink:0}
+.html-console-bar:hover{background:var(--surface-hover,#2a2a3a)}
+.html-console-title{font-family:var(--mono);font-weight:600;letter-spacing:.03em}
+.html-console-badge{background:var(--danger,#e55);color:#fff;font-size:10px;font-weight:700;padding:0 .35rem;border-radius:8px;min-width:1rem;text-align:center;line-height:1.4}
+.html-console-toggle{margin-left:auto;font-size:9px;opacity:.6}
+.html-console-panel{max-height:200px;overflow:auto;background:var(--surface-solid,#1a1a2a);border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;line-height:1.5}
+.html-console-entry{padding:.2rem .75rem;border-bottom:1px solid rgba(128,128,128,.1);display:flex;gap:.5rem;align-items:baseline}
+.html-console-entry:last-child{border-bottom:none}
+.html-console-level{font-weight:700;min-width:3rem;flex-shrink:0;text-transform:uppercase;font-size:9px;letter-spacing:.05em}
+.html-console-log{color:var(--text-secondary,#ccc)}
+.html-console-log .html-console-level{color:var(--text-muted,#888)}
+.html-console-info{color:var(--accent,#58a6ff)}
+.html-console-info .html-console-level{color:var(--accent,#58a6ff)}
+.html-console-warn{color:#e5c07b;background:rgba(229,192,123,.06)}
+.html-console-warn .html-console-level{color:#e5c07b}
+.html-console-error{color:#e06c75;background:rgba(224,108,117,.06)}
+.html-console-error .html-console-level{color:#e06c75}
+.html-console-debug{color:var(--text-muted,#888)}
+.html-console-debug .html-console-level{color:var(--text-muted,#888)}
+
 /* File viewer with line numbers (row-based) */
 .file-viewer{width:100%;min-height:100%}
 .file-line{display:flex;white-space:pre}
@@ -5939,6 +5960,42 @@ function resolveAssetPath(htmlFilePath, assetHref) {
   return resolved.join('/');
 }
 
+// Script injected into iframe to capture console output and errors.
+const CONSOLE_CAPTURE_SCRIPT = `<script>
+(function(){
+  var _logs = [];
+  function send(level, args) {
+    var parts = [];
+    for (var i = 0; i < args.length; i++) {
+      try { parts.push(typeof args[i] === 'string' ? args[i] : JSON.stringify(args[i], null, 2)); }
+      catch(e) { parts.push(String(args[i])); }
+    }
+    var entry = { level: level, text: parts.join(' '), ts: Date.now() };
+    _logs.push(entry);
+    parent.postMessage({ type: '__build_console', entry: entry }, '*');
+  }
+  var orig = {};
+  ['log','warn','error','info','debug'].forEach(function(m){
+    orig[m] = console[m];
+    console[m] = function(){ send(m, arguments); if(orig[m]) orig[m].apply(console, arguments); };
+  });
+  window.onerror = function(msg, src, line, col) {
+    send('error', [msg + (src ? ' at ' + src + ':' + line + ':' + col : '')]);
+  };
+  window.addEventListener('unhandledrejection', function(e) {
+    send('error', ['Unhandled rejection: ' + (e.reason && e.reason.message || e.reason || 'unknown')]);
+  });
+  // Capture resource load errors (images, scripts, stylesheets).
+  window.addEventListener('error', function(e) {
+    if (e.target && e.target !== window) {
+      var tag = e.target.tagName || '';
+      var src = e.target.src || e.target.href || '';
+      send('error', ['Failed to load ' + tag.toLowerCase() + (src ? ': ' + src : '')]);
+    }
+  }, true);
+})();
+<\/script>`;
+
 async function renderHtmlPreview(content, htmlPath) {
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading preview...</p></div>';
 
@@ -5983,7 +6040,6 @@ async function renderHtmlPreview(content, htmlPath) {
       if (result.is_image && result.content) {
         el.setAttribute('src', result.content);
       } else if (result.content && !result.is_binary) {
-        // SVG or other text-based image.
         const ext = resolved.split('.').pop().toLowerCase();
         const mime = MIME_TYPES[ext] || 'application/octet-stream';
         el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
@@ -5991,34 +6047,86 @@ async function renderHtmlPreview(content, htmlPath) {
     }).catch(() => {}));
   });
 
-  // Inline CSS url() references in <style> tags.
-  // (We skip this for simplicity — external CSS is inlined, url() within them stays relative.)
-
   await Promise.all(fetches);
 
   // Bail if user navigated away.
   if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
 
+  // Inject console capture as the very first script in <head>.
+  const headHtml = doc.head.innerHTML;
+  doc.head.innerHTML = CONSOLE_CAPTURE_SCRIPT + headHtml;
+
   // Serialize back to HTML.
   const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
 
-  // Render in sandboxed iframe.
-  const iframe = document.createElement('iframe');
-  iframe.sandbox = 'allow-scripts';
-  iframe.style.cssText = 'width:100%;height:100%;border:none;background:#fff;border-radius:4px';
+  // Build wrapper with iframe and console overlay.
   fileContentBody.innerHTML = '';
   fileContentBody.style.padding = '0';
-  fileContentBody.appendChild(iframe);
-  iframe.srcdoc = inlinedHtml;
 
-  // Auto-resize iframe height to content (best-effort).
-  iframe.addEventListener('load', () => {
-    try {
-      // sandbox prevents cross-origin access, so this may fail — that's fine.
-      const h = iframe.contentDocument?.documentElement?.scrollHeight;
-      if (h) iframe.style.height = h + 'px';
-    } catch (_) {}
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column';
+
+  const iframe = document.createElement('iframe');
+  iframe.sandbox = 'allow-scripts';
+  iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;border-radius:4px 4px 0 0;min-height:0';
+  wrapper.appendChild(iframe);
+
+  // Console overlay.
+  const consoleBar = document.createElement('div');
+  consoleBar.className = 'html-console-bar';
+  consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge" style="display:none">0</span><span class="html-console-toggle">&#x25B2;</span>';
+  wrapper.appendChild(consoleBar);
+
+  const consolePanel = document.createElement('div');
+  consolePanel.className = 'html-console-panel';
+  consolePanel.style.display = 'none';
+  wrapper.appendChild(consolePanel);
+
+  fileContentBody.appendChild(wrapper);
+
+  const badge = consoleBar.querySelector('.html-console-badge');
+  const toggleIcon = consoleBar.querySelector('.html-console-toggle');
+  let consoleOpen = false;
+  let entryCount = 0;
+
+  consoleBar.addEventListener('click', () => {
+    consoleOpen = !consoleOpen;
+    consolePanel.style.display = consoleOpen ? '' : 'none';
+    toggleIcon.innerHTML = consoleOpen ? '&#x25BC;' : '&#x25B2;';
+    if (consoleOpen) { badge.style.display = 'none'; consolePanel.scrollTop = consolePanel.scrollHeight; }
   });
+
+  // Listen for console messages from iframe.
+  function onConsoleMsg(evt) {
+    if (!evt.data || evt.data.type !== '__build_console') return;
+    const e = evt.data.entry;
+    entryCount++;
+    if (!consoleOpen) { badge.style.display = ''; badge.textContent = String(entryCount); }
+
+    const row = document.createElement('div');
+    row.className = 'html-console-entry html-console-' + (e.level || 'log');
+    const levelSpan = document.createElement('span');
+    levelSpan.className = 'html-console-level';
+    levelSpan.textContent = e.level || 'log';
+    row.appendChild(levelSpan);
+    const textSpan = document.createElement('span');
+    textSpan.textContent = e.text;
+    row.appendChild(textSpan);
+    consolePanel.appendChild(row);
+    if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
+  }
+  window.addEventListener('message', onConsoleMsg);
+
+  // Clean up listener when content changes.
+  const observer = new MutationObserver(() => {
+    if (!fileContentBody.contains(wrapper)) {
+      window.removeEventListener('message', onConsoleMsg);
+      observer.disconnect();
+    }
+  });
+  observer.observe(fileContentBody, { childList: true });
+
+  iframe.srcdoc = inlinedHtml;
 }
 
 // ---- Diff Renderer ----

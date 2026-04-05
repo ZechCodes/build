@@ -6023,6 +6023,19 @@ const CONSOLE_CAPTURE_JS = `(function(){
   }, true);
 })();`;
 
+// Script to intercept relative link clicks and navigate via parent.
+const NAV_INTERCEPT_JS = `(function(){
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    if (href.startsWith('http:') || href.startsWith('https:') || href.startsWith('//') || href.startsWith('mailto:')) return;
+    e.preventDefault();
+    parent.postMessage({ type: '__build_preview_navigate', href: href }, '*');
+  });
+})();`;
+
 // Tracks asset-fetch errors to surface in the console overlay.
 let _htmlPreviewErrors = [];
 
@@ -6125,7 +6138,7 @@ async function renderHtmlPreview(content, htmlPath) {
   const headMatch = html.match(/<head[^>]*>/i);
   if (headMatch) {
     const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
-    html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + '<\/script>' + html.slice(idx);
+    html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + NAV_INTERCEPT_JS + '<\/script>' + html.slice(idx);
   }
 
   const inlinedHtml = html;
@@ -6200,6 +6213,24 @@ async function renderHtmlPreview(content, htmlPath) {
     } else if (evt.data.type === '__build_preview_ready') {
       // Preview frame is ready — send the HTML content.
       iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
+    } else if (evt.data.type === '__build_preview_navigate') {
+      // Relative link clicked in preview — navigate to that file.
+      const targetPath = resolveAssetPath(htmlPath, evt.data.href);
+      if (targetPath) {
+        // Find the entry in the file tree data and select it in preview mode.
+        const data = fileTreeData.get(filesChannelId);
+        const dir = targetPath.substring(0, targetPath.lastIndexOf('/') + 1);
+        const dirKey = dir ? dir.slice(0, -1) : '';
+        const entries = data && data.get(dirKey);
+        const entry = entries && entries.entries && entries.entries.find(e => (e.path || e.name) === targetPath);
+        selectFile(targetPath, entry || null, 'rendered');
+        // Fetch and render the file.
+        const conn = getE2EE(filesChannelId);
+        if (conn && conn.connected) {
+          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
+          conn.fileRead(filesChannelId, targetPath);
+        }
+      }
     }
   }
   window.addEventListener('message', onMsg);

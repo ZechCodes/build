@@ -6161,27 +6161,29 @@ async function renderHtmlPreview(content, htmlPath) {
     badge.classList.add('hc-hidden');
   }
 
-  // Listen for console messages from iframe.
-  function onConsoleMsg(evt) {
-    if (!evt.data || evt.data.type !== '__build_console') return;
-    addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
+  // Listen for console messages and preview-ready signal from iframe.
+  function onMsg(evt) {
+    if (!evt.data) return;
+    if (evt.data.type === '__build_console') {
+      addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
+    } else if (evt.data.type === '__build_preview_ready') {
+      // Preview frame is ready — send the HTML content.
+      iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
+    }
   }
-  window.addEventListener('message', onConsoleMsg);
+  window.addEventListener('message', onMsg);
 
   // Clean up listener when content changes.
   const observer = new MutationObserver(() => {
     if (!fileContentBody.contains(wrapper)) {
-      window.removeEventListener('message', onConsoleMsg);
+      window.removeEventListener('message', onMsg);
       observer.disconnect();
     }
   });
   observer.observe(fileContentBody, { childList: true });
 
-  // Use blob URL instead of srcdoc to avoid inheriting parent CSP.
-  const blob = new Blob([inlinedHtml], { type: 'text/html' });
-  const blobUrl = URL.createObjectURL(blob);
-  iframe.src = blobUrl;
-  iframe.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
+  // Load preview frame (has its own permissive CSP).
+  iframe.src = '/preview-frame';
 }
 
 // ---- Diff Renderer ----

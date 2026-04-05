@@ -3,7 +3,7 @@
 import logging
 
 from litestar import Controller, Request, get
-from litestar.response import Redirect, Template
+from litestar.response import Redirect, Response, Template
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from skrift.lib.hooks import add_filter
@@ -21,6 +21,37 @@ async def _redirect_to_confirm(next_url, login_result, request):
 
 
 add_filter("login_redirect", _redirect_to_confirm, priority=5)
+
+
+PREVIEW_FRAME_HTML = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head><body>
+<script>
+window.addEventListener('message', function(e) {
+  if (e.data && e.data.type === '__build_preview') {
+    document.open();
+    document.write(e.data.html);
+    document.close();
+  }
+});
+window.parent.postMessage({type: '__build_preview_ready'}, '*');
+</script>
+</body></html>"""
+
+
+@get("/preview-frame", exclude_from_auth=True)
+async def preview_frame() -> Response:
+    """Serve a minimal HTML page for rendering HTML previews in an iframe.
+
+    This endpoint has a permissive CSP so that arbitrary user HTML
+    (with inline styles, scripts, and external resources) can render.
+    """
+    return Response(
+        content=PREVIEW_FRAME_HTML,
+        media_type="text/html",
+        headers={
+            "Content-Security-Policy": "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:",
+        },
+    )
 
 
 class SignupConfirmController(Controller):

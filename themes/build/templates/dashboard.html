@@ -5369,6 +5369,7 @@ let filesChannelId = null;          // channel the file tree is loaded for
 let filesCurrentHasDiff = false;
 let filesCurrentIsMarkdown = false;
 let filesCurrentIsSvg = false;
+let filesCurrentIsHtml = false;
 let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
@@ -5690,6 +5691,7 @@ function selectFile(path, entry, initialView) {
   const ext = (path.split('.').pop() || '').toLowerCase();
   filesCurrentIsMarkdown = (ext === 'md' || ext === 'markdown');
   filesCurrentIsSvg = (ext === 'svg');
+  filesCurrentIsHtml = (ext === 'html' || ext === 'htm');
   filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status || entry.insertions || entry.deletions));
   filesCurrentPath = path;
   filesLastContent = null;
@@ -5697,7 +5699,7 @@ function selectFile(path, entry, initialView) {
   // Determine initial view.
   if (initialView === 'diff' && filesCurrentHasDiff) {
     filesCurrentView = 'diff';
-  } else if (filesCurrentIsMarkdown || filesCurrentIsSvg) {
+  } else if (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml) {
     filesCurrentView = 'rendered';
   } else {
     filesCurrentView = 'source';
@@ -5737,7 +5739,7 @@ function updateFloatingToggle() {
     return;
   }
   const tabs = [];
-  if (filesCurrentIsMarkdown || filesCurrentIsSvg) tabs.push({ id: 'rendered', label: 'Preview' });
+  if (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml) tabs.push({ id: 'rendered', label: 'Preview' });
   if (filesCurrentHasDiff) tabs.push({ id: 'diff', label: 'Diff' });
   tabs.push({ id: 'source', label: 'Source' });
 
@@ -5809,9 +5811,10 @@ filesPathBar.addEventListener('click', (ev) => {
 function renderFileContent(content, path, size, truncated) {
   // Cache for toggle without re-fetch.
   filesLastContent = { content, path, size, truncated };
+  fileContentBody.style.padding = '';
 
-  // Preview mode for markdown/SVG.
-  if (filesCurrentView === 'rendered' && (filesCurrentIsMarkdown || filesCurrentIsSvg)) {
+  // Preview mode for markdown/SVG/HTML.
+  if (filesCurrentView === 'rendered' && (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml)) {
     renderPreview(content, truncated, size);
     return;
   }
@@ -5856,6 +5859,8 @@ function renderFileContent(content, path, size, truncated) {
 function renderPreview(content, truncated, size) {
   if (filesCurrentIsSvg) {
     renderSvgPreview(content);
+  } else if (filesCurrentIsHtml) {
+    renderHtmlPreview(content, filesCurrentPath);
   } else {
     renderMarkdownFile(content, truncated, size);
   }
@@ -5881,9 +5886,145 @@ function renderSvgPreview(content) {
   fileContentBody.innerHTML = '<div class="file-image-view"><img src="' + url + '" alt="SVG preview"></div>';
 }
 
+// ---- HTML Preview with Asset Inlining ----
+
+// Promise-based file read for fetching assets without conflicting with main file viewer.
+function readFileAsync(channelId, path) {
+  return new Promise((resolve, reject) => {
+    const conn = getE2EE(channelId);
+    if (!conn || !conn.connected) return reject(new Error('not connected'));
+    const chunks = {};
+    function handler(evt) {
+      const d = evt.detail;
+      if (d.path !== path) return;
+      if (d.error) { conn.removeEventListener('file_read_result', handler); return reject(new Error(d.error)); }
+      // Handle chunked images.
+      if (d.is_image && d.chunk_total && d.chunk_total > 1) {
+        if (!chunks.arr) { chunks.arr = new Array(d.chunk_total); chunks.total = d.chunk_total; }
+        chunks.arr[d.chunk_index] = d.content;
+        if (chunks.arr.filter(Boolean).length < chunks.total) return;
+        conn.removeEventListener('file_read_result', handler);
+        return resolve({ ...d, content: chunks.arr.join('') });
+      }
+      conn.removeEventListener('file_read_result', handler);
+      resolve(d);
+    }
+    conn.addEventListener('file_read_result', handler);
+    conn.fileRead(channelId, path);
+  });
+}
+
+const MIME_TYPES = {
+  css: 'text/css', js: 'application/javascript', mjs: 'application/javascript',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', ico: 'image/x-icon', svg: 'image/svg+xml',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', eot: 'application/vnd.ms-fontobject',
+  json: 'application/json',
+};
+
+function resolveAssetPath(htmlFilePath, assetHref) {
+  if (!assetHref || assetHref.startsWith('data:') || assetHref.startsWith('http:') || assetHref.startsWith('https:') || assetHref.startsWith('//')) return null;
+  // Strip query/hash.
+  const clean = assetHref.split('?')[0].split('#')[0];
+  // Resolve relative to HTML file's directory.
+  const dir = htmlFilePath.substring(0, htmlFilePath.lastIndexOf('/') + 1);
+  // Simple path resolution (handles ../ and ./).
+  const parts = (dir + clean).split('/');
+  const resolved = [];
+  for (const p of parts) {
+    if (p === '.' || p === '') continue;
+    if (p === '..') { resolved.pop(); continue; }
+    resolved.push(p);
+  }
+  return resolved.join('/');
+}
+
+async function renderHtmlPreview(content, htmlPath) {
+  fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading preview...</p></div>';
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(content, 'text/html');
+  const channelId = filesChannelId;
+  const fetches = [];
+
+  // Collect CSS <link> tags.
+  doc.querySelectorAll('link[rel="stylesheet"][href]').forEach(el => {
+    const href = el.getAttribute('href');
+    const resolved = resolveAssetPath(htmlPath, href);
+    if (!resolved) return;
+    fetches.push(readFileAsync(channelId, resolved).then(result => {
+      if (result.content && !result.is_binary && !result.is_image) {
+        const style = doc.createElement('style');
+        style.textContent = result.content;
+        el.replaceWith(style);
+      }
+    }).catch(() => {}));
+  });
+
+  // Collect <script src> tags.
+  doc.querySelectorAll('script[src]').forEach(el => {
+    const src = el.getAttribute('src');
+    const resolved = resolveAssetPath(htmlPath, src);
+    if (!resolved) return;
+    fetches.push(readFileAsync(channelId, resolved).then(result => {
+      if (result.content && !result.is_binary && !result.is_image) {
+        el.removeAttribute('src');
+        el.textContent = result.content;
+      }
+    }).catch(() => {}));
+  });
+
+  // Collect <img src> tags.
+  doc.querySelectorAll('img[src]').forEach(el => {
+    const src = el.getAttribute('src');
+    const resolved = resolveAssetPath(htmlPath, src);
+    if (!resolved) return;
+    fetches.push(readFileAsync(channelId, resolved).then(result => {
+      if (result.is_image && result.content) {
+        el.setAttribute('src', result.content);
+      } else if (result.content && !result.is_binary) {
+        // SVG or other text-based image.
+        const ext = resolved.split('.').pop().toLowerCase();
+        const mime = MIME_TYPES[ext] || 'application/octet-stream';
+        el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
+      }
+    }).catch(() => {}));
+  });
+
+  // Inline CSS url() references in <style> tags.
+  // (We skip this for simplicity — external CSS is inlined, url() within them stays relative.)
+
+  await Promise.all(fetches);
+
+  // Bail if user navigated away.
+  if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
+
+  // Serialize back to HTML.
+  const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+
+  // Render in sandboxed iframe.
+  const iframe = document.createElement('iframe');
+  iframe.sandbox = 'allow-scripts';
+  iframe.style.cssText = 'width:100%;height:100%;border:none;background:#fff;border-radius:4px';
+  fileContentBody.innerHTML = '';
+  fileContentBody.style.padding = '0';
+  fileContentBody.appendChild(iframe);
+  iframe.srcdoc = inlinedHtml;
+
+  // Auto-resize iframe height to content (best-effort).
+  iframe.addEventListener('load', () => {
+    try {
+      // sandbox prevents cross-origin access, so this may fail — that's fine.
+      const h = iframe.contentDocument?.documentElement?.scrollHeight;
+      if (h) iframe.style.height = h + 'px';
+    } catch (_) {}
+  });
+}
+
 // ---- Diff Renderer ----
 
 function renderDiffContent(diffText, truncated) {
+  fileContentBody.style.padding = '';
   const lines = diffText.split('\n');
   const viewer = document.createElement('div');
   viewer.className = 'diff-viewer';
@@ -6279,6 +6420,7 @@ function onFilesTabActivated() {
     filesCurrentHasDiff = false;
     filesCurrentIsMarkdown = false;
     filesCurrentIsSvg = false;
+    filesCurrentIsHtml = false;
     filesPathText.textContent = 'No file selected';
     filesPathText.classList.add('empty');
     fileFloatToggle.style.display = 'none';

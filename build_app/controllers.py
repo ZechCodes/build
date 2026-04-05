@@ -50,6 +50,7 @@ async def preview_frame() -> Response:
         media_type="text/html",
         headers={
             "Content-Security-Policy": "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:",
+            "X-Frame-Options": "SAMEORIGIN",
         },
     )
 

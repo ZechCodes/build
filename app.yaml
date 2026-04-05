@@ -36,6 +36,7 @@ controllers:
   - skrift.controllers.web:WebController
 
   - build_app.controllers:SignupConfirmController
+  - build_app.controllers:preview_frame
   - build_app.campaign_signups_api:CampaignSignupsApiController
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
   - build_app.dashboard:DashboardController

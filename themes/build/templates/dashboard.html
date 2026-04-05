@@ -6008,7 +6008,7 @@ async function renderHtmlPreview(content, htmlPath) {
   // Use string-based asset resolution (avoids DOMParser mangling style/script content).
   const replacements = [];
 
-  // Find CSS <link> tags via regex.
+  // Find local CSS <link> tags (external left as-is — blob iframe has no CSP restrictions).
   const linkRe = /<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*>|<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*\brel\s*=\s*["']stylesheet["'][^>]*>/gi;
   const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/i;
   for (const m of html.matchAll(linkRe)) {
@@ -6016,69 +6016,41 @@ async function renderHtmlPreview(content, htmlPath) {
     const hm = tag.match(hrefRe);
     if (!hm) continue;
     const href = hm[1];
-    if (isExternal(href)) {
-      const fullUrl = href.startsWith('//') ? 'https:' + href : href;
-      _dbg('CSS (ext): ' + href);
-      replacements.push(fetch(fullUrl).then(r => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }).then(css => {
-        _dbg('CSS OK: ' + css.length + ' bytes');
-        return { original: tag, replacement: '<style>' + css + '</style>' };
-      }).catch(err => {
-        _htmlPreviewErrors.push({ level: 'warn', text: 'External CSS failed: ' + href + ' (' + err.message + ')' });
-        return null;
-      }));
-    } else {
-      const resolved = resolveAssetPath(htmlPath, href);
-      _dbg('CSS (local): ' + href + ' → ' + resolved);
-      if (!resolved) continue;
-      replacements.push(readFileAsync(channelId, resolved).then(result => {
-        if (result.content && !result.is_binary && !result.is_image) {
-          _dbg('CSS OK: ' + result.content.length + ' bytes');
-          return { original: tag, replacement: '<style>' + result.content + '</style>' };
-        }
-        return null;
-      }).catch(err => {
-        _htmlPreviewErrors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' });
-        return null;
-      }));
-    }
+    if (isExternal(href)) { _dbg('CSS (ext, kept): ' + href); continue; }
+    const resolved = resolveAssetPath(htmlPath, href);
+    _dbg('CSS (local): ' + href + ' → ' + resolved);
+    if (!resolved) continue;
+    replacements.push(readFileAsync(channelId, resolved).then(result => {
+      if (result.content && !result.is_binary && !result.is_image) {
+        _dbg('CSS OK: ' + result.content.length + ' bytes');
+        return { original: tag, replacement: '<style>' + result.content + '</style>' };
+      }
+      return null;
+    }).catch(err => {
+      _htmlPreviewErrors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' });
+      return null;
+    }));
   }
 
-  // Find script[src] tags.
+  // Find local script[src] tags (external left as-is).
   const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
   for (const m of html.matchAll(scriptRe)) {
     const tag = m[0];
     const src = m[1];
-    if (isExternal(src)) {
-      const fullUrl = src.startsWith('//') ? 'https:' + src : src;
-      _dbg('JS (ext): ' + src);
-      replacements.push(fetch(fullUrl).then(r => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }).then(js => {
-        _dbg('JS OK: ' + js.length + ' bytes');
-        return { original: tag, replacement: '<script>' + js + '<\/script>' };
-      }).catch(err => {
-        _htmlPreviewErrors.push({ level: 'warn', text: 'External JS failed: ' + src + ' (' + err.message + ')' });
-        return null;
-      }));
-    } else {
-      const resolved = resolveAssetPath(htmlPath, src);
-      _dbg('JS (local): ' + src + ' → ' + resolved);
-      if (!resolved) continue;
-      replacements.push(readFileAsync(channelId, resolved).then(result => {
-        if (result.content && !result.is_binary && !result.is_image) {
-          _dbg('JS OK: ' + result.content.length + ' bytes');
-          return { original: tag, replacement: '<script>' + result.content + '<\/script>' };
-        }
-        return null;
-      }).catch(err => {
-        _htmlPreviewErrors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' });
-        return null;
-      }));
-    }
+    if (isExternal(src)) { _dbg('JS (ext, kept): ' + src); continue; }
+    const resolved = resolveAssetPath(htmlPath, src);
+    _dbg('JS (local): ' + src + ' → ' + resolved);
+    if (!resolved) continue;
+    replacements.push(readFileAsync(channelId, resolved).then(result => {
+      if (result.content && !result.is_binary && !result.is_image) {
+        _dbg('JS OK: ' + result.content.length + ' bytes');
+        return { original: tag, replacement: '<script>' + result.content + '<\/script>' };
+      }
+      return null;
+    }).catch(err => {
+      _htmlPreviewErrors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' });
+      return null;
+    }));
   }
 
   // Find local <img src> tags.
@@ -6133,7 +6105,7 @@ async function renderHtmlPreview(content, htmlPath) {
   wrapper.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column';
 
   const iframe = document.createElement('iframe');
-  iframe.sandbox = 'allow-scripts';
+  // No sandbox attr — blob URL already has opaque origin (isolated from parent).
   iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;border-radius:4px 4px 0 0;min-height:0';
   wrapper.appendChild(iframe);
 
@@ -6204,7 +6176,11 @@ async function renderHtmlPreview(content, htmlPath) {
   });
   observer.observe(fileContentBody, { childList: true });
 
-  iframe.srcdoc = inlinedHtml;
+  // Use blob URL instead of srcdoc to avoid inheriting parent CSP.
+  const blob = new Blob([inlinedHtml], { type: 'text/html' });
+  const blobUrl = URL.createObjectURL(blob);
+  iframe.src = blobUrl;
+  iframe.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
 }
 
 // ---- Diff Renderer ----

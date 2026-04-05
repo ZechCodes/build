@@ -6002,39 +6002,53 @@ async function renderHtmlPreview(content, htmlPath) {
   const channelId = filesChannelId;
   const fetches = [];
 
+  console.log('[HTML Preview] Rendering', htmlPath, '| content length:', content.length);
+
   // Collect CSS <link> tags.
   doc.querySelectorAll('link[rel="stylesheet"][href]').forEach(el => {
     const href = el.getAttribute('href');
     const resolved = resolveAssetPath(htmlPath, href);
+    console.log('[HTML Preview] CSS:', href, '→', resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
+      console.log('[HTML Preview] CSS loaded:', resolved, '| content:', !!result.content, '| binary:', result.is_binary);
       if (result.content && !result.is_binary && !result.is_image) {
         const style = doc.createElement('style');
         style.textContent = result.content;
         el.replaceWith(style);
       }
-    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load CSS: ' + href + ' (' + err.message + ')' }); }));
+    }).catch(err => {
+      console.error('[HTML Preview] CSS fetch failed:', resolved, err);
+      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load CSS: ' + href + ' (' + err.message + ')' });
+    }));
   });
 
   // Collect <script src> tags.
   doc.querySelectorAll('script[src]').forEach(el => {
     const src = el.getAttribute('src');
     const resolved = resolveAssetPath(htmlPath, src);
+    console.log('[HTML Preview] JS:', src, '→', resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
+      console.log('[HTML Preview] JS loaded:', resolved, '| content:', !!result.content, '| binary:', result.is_binary);
       if (result.content && !result.is_binary && !result.is_image) {
         el.removeAttribute('src');
         el.textContent = result.content;
       }
-    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load JS: ' + src + ' (' + err.message + ')' }); }));
+    }).catch(err => {
+      console.error('[HTML Preview] JS fetch failed:', resolved, err);
+      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load JS: ' + src + ' (' + err.message + ')' });
+    }));
   });
 
   // Collect <img src> tags.
   doc.querySelectorAll('img[src]').forEach(el => {
     const src = el.getAttribute('src');
     const resolved = resolveAssetPath(htmlPath, src);
+    console.log('[HTML Preview] IMG:', src, '→', resolved);
     if (!resolved) return;
     fetches.push(readFileAsync(channelId, resolved).then(result => {
+      console.log('[HTML Preview] IMG loaded:', resolved, '| image:', result.is_image, '| binary:', result.is_binary);
       if (result.is_image && result.content) {
         el.setAttribute('src', result.content);
       } else if (result.content && !result.is_binary) {
@@ -6042,10 +6056,15 @@ async function renderHtmlPreview(content, htmlPath) {
         const mime = MIME_TYPES[ext] || 'application/octet-stream';
         el.setAttribute('src', 'data:' + mime + ';base64,' + btoa(result.content));
       }
-    }).catch(err => { _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load image: ' + src + ' (' + err.message + ')' }); }));
+    }).catch(err => {
+      console.error('[HTML Preview] IMG fetch failed:', resolved, err);
+      _htmlPreviewErrors.push({ level: 'error', text: 'Failed to load image: ' + src + ' (' + err.message + ')' });
+    }));
   });
 
+  console.log('[HTML Preview] Fetching', fetches.length, 'assets...');
   await Promise.all(fetches);
+  console.log('[HTML Preview] All assets loaded. Errors:', _htmlPreviewErrors.length);
 
   // Bail if user navigated away.
   if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
@@ -6057,6 +6076,7 @@ async function renderHtmlPreview(content, htmlPath) {
 
   // Serialize back to HTML.
   const inlinedHtml = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+  console.log('[HTML Preview] Final HTML length:', inlinedHtml.length);
 
   // Build wrapper with iframe and console overlay.
   fileContentBody.innerHTML = '';

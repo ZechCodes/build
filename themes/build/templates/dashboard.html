@@ -3633,8 +3633,9 @@ function bindE2EEEvents(instance, deviceId) {
     if (chatCurrentChannel === msg.channel_id) {
       const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
-      if (wasNearBottom) scrollChatToBottom();
-      else showChatBubble(document.getElementById('chat-messages').lastElementChild);
+      const _newEl = document.getElementById('chat-messages').lastElementChild;
+      if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      else showChatBubble(_newEl);
       setLastSeen(msg.channel_id);
       if (msg.id) instance.markRead([msg.id]);
     } else if (msg.sender !== 'client') {
@@ -3667,8 +3668,9 @@ function bindE2EEEvents(instance, deviceId) {
       if (chatCurrentChannel === channel_id) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
-        if (wasNearBottom) scrollChatToBottom();
-        else showChatBubble(document.getElementById('chat-messages').lastElementChild);
+        const _newEl = document.getElementById('chat-messages').lastElementChild;
+        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        else showChatBubble(_newEl);
         setLastSeen(channel_id);
       } else {
         incrementUnread(channel_id);
@@ -3724,8 +3726,9 @@ function bindE2EEEvents(instance, deviceId) {
       if (chatCurrentChannel === channel_id) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
-        if (wasNearBottom) scrollChatToBottom();
-        else showChatBubble(document.getElementById('chat-messages').lastElementChild);
+        const _newEl = document.getElementById('chat-messages').lastElementChild;
+        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        else showChatBubble(_newEl);
       } else {
         incrementUnread(channel_id, true);
       }
@@ -5036,7 +5039,8 @@ async function sendChatMessage() {
   msgs.push(tempMsg);
   chatMessages.set(channelId, msgs);
   appendMessage(tempMsg);
-  scrollChatToBottom();
+  const _sentEl = document.getElementById('chat-messages').lastElementChild;
+  if (_sentEl) _sentEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
 
   // Auto-resolve any pending plan review cards (agent cancels interactions on new messages).
   resolvePendingPlanReviews();

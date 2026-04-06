@@ -6350,7 +6350,82 @@ async function fetchAndRenderBrowserPage(tab) {
     if (headMatch) {
       const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
       const navJs = `(function(){
+        // --- Patch fetch to proxy through Build ---
+        var _origFetch = window.fetch;
+        var _reqId = 0;
+        var _pending = {};
+        window.addEventListener('message', function(evt) {
+          if (evt.data && evt.data.type === '__build_fetch_response' && _pending[evt.data.reqId]) {
+            _pending[evt.data.reqId](evt.data);
+            delete _pending[evt.data.reqId];
+          }
+        });
+        window.fetch = function(input, init) {
+          init = init || {};
+          var url = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));
+          var method = (init.method || (input && input.method) || 'GET').toUpperCase();
+          var body = init.body || null;
+          var contentType = null;
+          var headers = init.headers;
+          if (headers) {
+            if (typeof headers.get === 'function') contentType = headers.get('content-type');
+            else if (headers['Content-Type']) contentType = headers['Content-Type'];
+            else if (headers['content-type']) contentType = headers['content-type'];
+          }
+          if (body && typeof body !== 'string') {
+            try { body = new URLSearchParams(body).toString(); if (!contentType) contentType = 'application/x-www-form-urlencoded'; } catch(e) { body = String(body); }
+          }
+          var id = '__bf_' + (++_reqId);
+          return new Promise(function(resolve) {
+            _pending[id] = function(data) {
+              var respInit = { status: data.status || 200, headers: { 'Content-Type': data.contentType || 'text/plain' } };
+              resolve(new Response(data.body || '', respInit));
+            };
+            parent.postMessage({ type: '__build_browser_fetch', reqId: id, url: url, method: method, body: body, contentType: contentType }, '*');
+          });
+        };
+
+        // --- Patch XMLHttpRequest to proxy through Build ---
+        var _OrigXHR = XMLHttpRequest;
+        function ProxyXHR() {
+          this._method = 'GET'; this._url = ''; this._headers = {}; this._async = true;
+          this.readyState = 0; this.status = 0; this.statusText = '';
+          this.responseText = ''; this.response = ''; this.responseType = '';
+          this.onreadystatechange = null; this.onload = null; this.onerror = null;
+          this._listeners = {};
+        }
+        ProxyXHR.prototype.open = function(method, url, async) { this._method = method; this._url = url; this._async = async !== false; this.readyState = 1; };
+        ProxyXHR.prototype.setRequestHeader = function(k, v) { this._headers[k.toLowerCase()] = v; };
+        ProxyXHR.prototype.getResponseHeader = function(k) { return this._responseHeaders ? (this._responseHeaders[k.toLowerCase()] || null) : null; };
+        ProxyXHR.prototype.getAllResponseHeaders = function() { return ''; };
+        ProxyXHR.prototype.addEventListener = function(e, fn) { if (!this._listeners[e]) this._listeners[e] = []; this._listeners[e].push(fn); };
+        ProxyXHR.prototype.removeEventListener = function(e, fn) { if (this._listeners[e]) this._listeners[e] = this._listeners[e].filter(function(f){return f !== fn;}); };
+        ProxyXHR.prototype._fire = function(e) { var fns = this._listeners[e] || []; for (var i = 0; i < fns.length; i++) fns[i].call(this, {}); };
+        ProxyXHR.prototype.send = function(body) {
+          var self = this;
+          var id = '__bf_' + (++_reqId);
+          _pending[id] = function(data) {
+            self.status = data.status || 200;
+            self.statusText = data.status ? String(data.status) : 'OK';
+            self.responseText = data.body || '';
+            self.response = data.body || '';
+            self._responseHeaders = { 'content-type': data.contentType || 'text/plain' };
+            self.readyState = 4;
+            if (self.onreadystatechange) self.onreadystatechange();
+            if (self.onload) self.onload();
+            self._fire('readystatechange');
+            self._fire('load');
+            self._fire('loadend');
+          };
+          parent.postMessage({ type: '__build_browser_fetch', reqId: id, url: self._url, method: self._method, body: body || null, contentType: self._headers['content-type'] || null }, '*');
+        };
+        ProxyXHR.prototype.abort = function() {};
+        ProxyXHR.prototype.overrideMimeType = function() {};
+        window.XMLHttpRequest = ProxyXHR;
+
+        // --- Navigation intercept (lower priority: skip if page already handled) ---
         document.addEventListener('click', function(e) {
+          if (e.defaultPrevented) return;
           var a = e.target.closest('a[href]');
           if (!a) return;
           var href = a.getAttribute('href');
@@ -6359,6 +6434,7 @@ async function fetchAndRenderBrowserPage(tab) {
           parent.postMessage({ type: '__build_browser_navigate', href: href }, '*');
         });
         document.addEventListener('submit', function(e) {
+          if (e.defaultPrevented) return;
           var form = e.target;
           if (!form || form.tagName !== 'FORM') return;
           e.preventDefault();
@@ -6461,6 +6537,20 @@ async function fetchAndRenderBrowserPage(tab) {
           renderChannelPanel();
           fetchAndRenderBrowserPage(tab);
         }
+      } else if (evt.data.type === '__build_browser_fetch') {
+        const reqId = evt.data.reqId;
+        const fetchUrl = resolveUrl(baseUrl, evt.data.url);
+        if (!fetchUrl) {
+          iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: 0, body: 'Invalid URL', contentType: 'text/plain' }, '*');
+          return;
+        }
+        urlFetchAsync(deviceId, fetchUrl, tab.id, evt.data.method || 'GET', evt.data.body || undefined, evt.data.contentType || undefined)
+          .then(r => {
+            iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: r.status || 200, body: r.content || '', contentType: r.content_type || 'text/plain' }, '*');
+          })
+          .catch(err => {
+            iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: 0, body: err.message, contentType: 'text/plain' }, '*');
+          });
       }
     }
     window.addEventListener('message', onMsg);

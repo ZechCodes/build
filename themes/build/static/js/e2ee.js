@@ -606,8 +606,8 @@ class BuildE2EE extends EventTarget {
     return this.send({ action: 'file_diff', channel_id: channelId, path, staged: !!staged });
   }
 
-  async urlFetch(url, requestId) {
-    return this.send({ action: 'url_fetch', url, request_id: requestId || '' });
+  async urlFetch(url, requestId, tabId) {
+    return this.send({ action: 'url_fetch', url, request_id: requestId || '', tab_id: tabId || '' });
   }
 
   async terminalExec(channelId, command, cwd, commandId) {

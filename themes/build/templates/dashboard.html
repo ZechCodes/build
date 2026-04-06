@@ -419,25 +419,27 @@ body{
 .browser-tab-item:hover .browser-tab-close{opacity:1}
 .browser-tab-close:hover{color:var(--danger,#e55)}
 .browser-url-bar{
-  display:flex;align-items:center;gap:.4rem;
-  padding:.4rem .6rem;
-  border-bottom:1px solid var(--border);
-  background:var(--surface);
+  display:flex;align-items:center;gap:.5rem;
+  padding:.5rem .75rem;
+  border-bottom:1px solid rgba(255,255,255,0.08);
+  background:var(--console-bg);
   flex-shrink:0;
+  min-height:40px;
 }
 .browser-url-input{
-  flex:1;padding:.35rem .5rem;
-  border:1px solid var(--border);
+  flex:1;padding:.4rem .6rem;
+  border:1px solid rgba(255,255,255,0.1);
   border-radius:var(--radius-sm);
-  background:var(--surface-input,var(--bg));
-  color:var(--text-primary);
+  background:rgba(255,255,255,0.04);
+  color:var(--text-primary,#e4e4e7);
   font-size:12px;font-family:var(--font-mono,'monospace');
   outline:none;
+  transition:border-color .12s;
 }
-.browser-url-input:focus{border-color:var(--accent)}
+.browser-url-input:focus{border-color:var(--accent);background:rgba(255,255,255,0.06)}
 .browser-url-go{
-  padding:.35rem .6rem;
-  border:1px solid var(--accent);
+  padding:.4rem .75rem;
+  border:none;
   border-radius:var(--radius-sm);
   background:var(--accent);
   color:#fff;
@@ -1316,14 +1318,15 @@ body{
 .file-image-view img,.file-image-view svg{max-width:100%;max-height:80vh;border-radius:var(--radius-sm, 6px);box-shadow:0 1px 4px rgba(0,0,0,.08)}
 
 /* HTML preview console overlay */
-.html-console-bar{display:flex;align-items:center;gap:.4rem;padding:.25rem .75rem;background:var(--surface-solid,#1e1e2e);border-top:1px solid var(--border);cursor:pointer;user-select:none;font-size:11px;color:var(--text-secondary,#999);flex-shrink:0}
-.html-console-bar:hover{background:var(--surface-hover,#2a2a3a)}
-.html-console-title{font-family:var(--mono);font-weight:600;letter-spacing:.03em}
+.html-console-bar{display:flex;align-items:center;gap:.5rem;padding:.4rem .875rem;background:var(--console-bg);border-top:1px solid rgba(255,255,255,0.08);cursor:pointer;user-select:none;min-height:36px;flex-shrink:0}
+.html-console-bar:hover{background:rgba(255,255,255,.03)}
+.html-console-title{font-size:10px;font-weight:600;color:#a1a1aa;text-transform:uppercase;letter-spacing:.04em}
 .html-console-badge{background:var(--danger,#e55);color:#fff;font-size:10px;font-weight:700;padding:0 .35rem;border-radius:8px;min-width:1rem;text-align:center;line-height:1.4}
 .html-console-badge.hc-hidden{display:none}
-.html-console-toggle{margin-left:auto;font-size:9px;opacity:.6}
-.html-console-panel{max-height:200px;overflow:auto;background:var(--surface-solid,#1a1a2a);border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;line-height:1.5}
-.html-console-panel.hc-hidden{display:none}
+.html-console-toggle{margin-left:auto;width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);color:#a1a1aa;opacity:.7;transition:opacity .12s}
+.html-console-toggle:hover{opacity:1}
+.html-console-panel{max-height:200px;overflow:auto;background:var(--console-bg);font-family:var(--mono);font-size:11px;line-height:1.5}
+.html-console-panel.hc-hidden{max-height:0;opacity:0;overflow:hidden}
 .html-console-entry{padding:.2rem .75rem;border-bottom:1px solid rgba(128,128,128,.1);display:flex;gap:.5rem;align-items:baseline}
 .html-console-entry:last-child{border-bottom:none}
 .html-console-level{font-weight:700;min-width:3rem;flex-shrink:0;text-transform:uppercase;font-size:9px;letter-spacing:.05em}
@@ -4082,6 +4085,7 @@ function selectChannel(channelId) {
   document.getElementById('tab-browser')?.classList.remove('active');
   // Restore viewer chrome hidden by browser view
   document.getElementById('viewer-tabs')?.classList.remove('hidden');
+  document.querySelector('.viewer-body')?.classList.remove('hidden');
   document.querySelector('.comp-wrapper')?.classList.remove('hidden');
   document.getElementById('console-bottom')?.classList.remove('hidden');
   if (currentTab) {
@@ -6206,7 +6210,7 @@ const NAV_INTERCEPT_JS = `(function(){
 
 // ---- Browser Proxy View ----
 
-function urlFetchAsync(deviceId, url) {
+function urlFetchAsync(deviceId, url, tabId) {
   return new Promise((resolve, reject) => {
     const conn = e2eeConnections.get(deviceId);
     if (!conn || !conn.connected) return reject(new Error('not connected'));
@@ -6219,7 +6223,7 @@ function urlFetchAsync(deviceId, url) {
       resolve(d);
     }
     conn.addEventListener('url_fetch_result', handler);
-    conn.urlFetch(url, requestId);
+    conn.urlFetch(url, requestId, tabId || '');
   });
 }
 
@@ -6240,7 +6244,7 @@ async function fetchAndRenderBrowserPage(tab) {
 
   try {
     _dbg('Fetching ' + url);
-    const result = await urlFetchAsync(deviceId, url);
+    const result = await urlFetchAsync(deviceId, url, tab.id);
     if (result.is_binary) {
       browserContent.innerHTML = '<div class="empty-state"><p>Cannot display binary content</p></div>';
       return;
@@ -6270,7 +6274,7 @@ async function fetchAndRenderBrowserPage(tab) {
       const resolved = resolveUrl(url, href);
       if (!resolved || isExternal(resolved)) { _dbg('CSS (ext): ' + href); continue; }
       _dbg('CSS: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
         if (r.content && !r.is_binary) {
           // Resolve url() references inside CSS
           let css = r.content;
@@ -6292,7 +6296,7 @@ async function fetchAndRenderBrowserPage(tab) {
       const resolved = resolveUrl(url, src);
       if (!resolved || isExternal(resolved)) { _dbg('JS (ext): ' + src); continue; }
       _dbg('JS: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
         if (r.content && !r.is_binary) return { original: tag, replacement: '<script>' + r.content + '<\/script>' };
         return null;
       }).catch(err => { errors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' }); return null; }));
@@ -6307,7 +6311,7 @@ async function fetchAndRenderBrowserPage(tab) {
       const resolved = resolveUrl(url, src);
       if (!resolved || isExternal(resolved)) continue;
       _dbg('IMG: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
         if (r.is_binary && r.content) {
           const ct = r.content_type || 'image/png';
           const mime = ct.split(';')[0].trim();
@@ -6354,10 +6358,10 @@ async function fetchAndRenderBrowserPage(tab) {
     iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;min-height:0';
     wrapper.appendChild(iframe);
 
-    // Console overlay
+    // Console overlay (matches activity/terminal console style)
     const consoleBar = document.createElement('div');
     consoleBar.className = 'html-console-bar';
-    consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge hc-hidden">0</span><span class="html-console-toggle">&#x25B2;</span>';
+    consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge hc-hidden">0</span><span class="html-console-toggle"><svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 9l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
     wrapper.appendChild(consoleBar);
 
     const consolePanel = document.createElement('div');
@@ -6374,7 +6378,9 @@ async function fetchAndRenderBrowserPage(tab) {
     consoleBar.addEventListener('click', () => {
       consoleOpen = !consoleOpen;
       consolePanel.classList.toggle('hc-hidden', !consoleOpen);
-      toggleIcon.innerHTML = consoleOpen ? '&#x25BC;' : '&#x25B2;';
+      toggleIcon.innerHTML = consoleOpen
+        ? '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        : '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 9l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       if (consoleOpen) { badge.classList.add('hc-hidden'); consolePanel.scrollTop = consolePanel.scrollHeight; }
     });
 
@@ -6394,13 +6400,8 @@ async function fetchAndRenderBrowserPage(tab) {
       if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
     }
 
+    // Populate errors but keep console collapsed by default
     for (const err of errors) addConsoleEntry(err.level, err.text);
-    if (errors.length > 0) {
-      consoleOpen = true;
-      consolePanel.classList.remove('hc-hidden');
-      toggleIcon.innerHTML = '&#x25BC;';
-      badge.classList.add('hc-hidden');
-    }
 
     function onMsg(evt) {
       if (!evt.data) return;
@@ -6441,8 +6442,9 @@ function showBrowserView(tab) {
   document.getElementById('tab-browser')?.classList.add('active');
   // Hide tab buttons active state
   document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.remove('active'));
-  // Browser owns the full right column — hide tabs, complications, and console
+  // Browser owns the full right column — hide everything else
   document.getElementById('viewer-tabs')?.classList.add('hidden');
+  document.querySelector('.viewer-body')?.classList.add('hidden');
   document.querySelector('.comp-wrapper')?.classList.add('hidden');
   document.getElementById('console-bottom')?.classList.add('hidden');
 

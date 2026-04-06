@@ -6210,7 +6210,7 @@ const NAV_INTERCEPT_JS = `(function(){
 
 // ---- Browser Proxy View ----
 
-function urlFetchAsync(deviceId, url, tabId) {
+function urlFetchAsync(deviceId, url, tabId, method, body, contentType) {
   return new Promise((resolve, reject) => {
     const conn = e2eeConnections.get(deviceId);
     if (!conn || !conn.connected) return reject(new Error('not connected'));
@@ -6223,7 +6223,7 @@ function urlFetchAsync(deviceId, url, tabId) {
       resolve(d);
     }
     conn.addEventListener('url_fetch_result', handler);
-    conn.urlFetch(url, requestId, tabId || '');
+    conn.urlFetch(url, requestId, tabId || '', method, body, contentType);
   });
 }
 
@@ -6243,8 +6243,22 @@ async function fetchAndRenderBrowserPage(tab) {
   const _dbg = (text) => errors.push({ level: 'debug', text });
 
   try {
-    _dbg('Fetching ' + url);
-    const result = await urlFetchAsync(deviceId, url, tab.id);
+    const method = tab._method || 'GET';
+    const body = tab._body || undefined;
+    const contentType = tab._contentType || undefined;
+    // Clear one-shot POST data after use
+    tab._method = undefined;
+    tab._body = undefined;
+    tab._contentType = undefined;
+    _dbg('Fetching ' + method + ' ' + url);
+    const result = await urlFetchAsync(deviceId, url, tab.id, method, body, contentType);
+    // Update URL bar if server redirected us
+    if (result.final_url && result.final_url !== url) {
+      tab.url = result.final_url;
+      const urlInput = document.getElementById('browser-url-input');
+      if (urlInput) urlInput.value = result.final_url;
+      _dbg('Redirected to ' + result.final_url);
+    }
     if (result.is_binary) {
       browserContent.innerHTML = '<div class="empty-state"><p>Cannot display binary content</p></div>';
       return;
@@ -6254,13 +6268,14 @@ async function fetchAndRenderBrowserPage(tab) {
     }
 
     let html = result.content;
+    const baseUrl = result.final_url || url;
     _dbg('Got ' + html.length + ' bytes');
 
     // Resolve and inline local assets (CSS, JS, images)
     const replacements = [];
     const isExternal = (u) => {
       if (!u) return true;
-      try { const p = new URL(u, url); return p.origin !== new URL(url).origin; } catch { return true; }
+      try { const p = new URL(u, baseUrl); return p.origin !== new URL(baseUrl).origin; } catch { return true; }
     };
 
     // CSS links
@@ -6271,7 +6286,7 @@ async function fetchAndRenderBrowserPage(tab) {
       const hm = tag.match(hrefRe);
       if (!hm) continue;
       const href = hm[1];
-      const resolved = resolveUrl(url, href);
+      const resolved = resolveUrl(baseUrl, href);
       if (!resolved || isExternal(resolved)) { _dbg('CSS (ext): ' + href); continue; }
       _dbg('CSS: ' + resolved);
       replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
@@ -6293,7 +6308,7 @@ async function fetchAndRenderBrowserPage(tab) {
     for (const m of html.matchAll(scriptRe)) {
       const tag = m[0];
       const src = m[1];
-      const resolved = resolveUrl(url, src);
+      const resolved = resolveUrl(baseUrl, src);
       if (!resolved || isExternal(resolved)) { _dbg('JS (ext): ' + src); continue; }
       _dbg('JS: ' + resolved);
       replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
@@ -6308,7 +6323,7 @@ async function fetchAndRenderBrowserPage(tab) {
       const tag = m[0];
       const src = m[2];
       if (src.startsWith('data:')) continue;
-      const resolved = resolveUrl(url, src);
+      const resolved = resolveUrl(baseUrl, src);
       if (!resolved || isExternal(resolved)) continue;
       _dbg('IMG: ' + resolved);
       replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
@@ -6342,6 +6357,21 @@ async function fetchAndRenderBrowserPage(tab) {
           if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
           e.preventDefault();
           parent.postMessage({ type: '__build_browser_navigate', href: href }, '*');
+        });
+        document.addEventListener('submit', function(e) {
+          var form = e.target;
+          if (!form || form.tagName !== 'FORM') return;
+          e.preventDefault();
+          var action = form.getAttribute('action') || window.location.href;
+          var method = (form.getAttribute('method') || 'GET').toUpperCase();
+          var fd = new FormData(form);
+          if (method === 'GET') {
+            var params = new URLSearchParams(fd).toString();
+            var sep = action.indexOf('?') === -1 ? '?' : '&';
+            parent.postMessage({ type: '__build_browser_navigate', href: action + sep + params }, '*');
+          } else {
+            parent.postMessage({ type: '__build_browser_form_submit', action: action, method: method, body: new URLSearchParams(fd).toString(), contentType: 'application/x-www-form-urlencoded' }, '*');
+          }
         });
       })();`;
       html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + navJs + '<\/script>' + html.slice(idx);
@@ -6410,9 +6440,23 @@ async function fetchAndRenderBrowserPage(tab) {
       } else if (evt.data.type === '__build_preview_ready') {
         iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
       } else if (evt.data.type === '__build_browser_navigate') {
-        const target = resolveUrl(url, evt.data.href);
-        if (target && new URL(target).origin === new URL(url).origin) {
+        const target = resolveUrl(baseUrl, evt.data.href);
+        if (target && new URL(target).origin === new URL(baseUrl).origin) {
           tab.url = target;
+          tab._method = undefined;
+          tab._body = undefined;
+          tab._contentType = undefined;
+          document.getElementById('browser-url-input').value = target;
+          renderChannelPanel();
+          fetchAndRenderBrowserPage(tab);
+        }
+      } else if (evt.data.type === '__build_browser_form_submit') {
+        const target = resolveUrl(baseUrl, evt.data.action);
+        if (target && new URL(target).origin === new URL(baseUrl).origin) {
+          tab.url = target;
+          tab._method = evt.data.method;
+          tab._body = evt.data.body;
+          tab._contentType = evt.data.contentType;
           document.getElementById('browser-url-input').value = target;
           renderChannelPanel();
           fetchAndRenderBrowserPage(tab);

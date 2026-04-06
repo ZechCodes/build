@@ -446,6 +446,8 @@ body{
   transition:opacity .12s;
 }
 .browser-url-go:hover{opacity:.85}
+#tab-browser{flex-direction:column}
+#browser-content{flex:1;position:relative;min-height:0;display:flex;flex-direction:column}
 .channel-sidebar-item{
   display:flex;align-items:center;gap:.4rem;
   padding:.45rem .75rem;
@@ -2055,12 +2057,12 @@ body{
     </div>
   </div>
   <!-- Browser tab panel (shown when a browser tab is active) -->
-  <div class="tab-panel" id="tab-browser" style="flex-direction:column">
+  <div class="tab-panel" id="tab-browser">
     <div class="browser-url-bar" id="browser-url-bar">
       <input type="text" class="browser-url-input" id="browser-url-input" placeholder="http://localhost:3000" spellcheck="false">
       <button class="browser-url-go" id="browser-url-go">Go</button>
     </div>
-    <div style="flex:1;position:relative;min-height:0;display:flex;flex-direction:column" id="browser-content"></div>
+    <div id="browser-content"></div>
   </div>
 </div><!-- /viewer-panel -->
 </div><!-- /app -->

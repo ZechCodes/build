@@ -532,6 +532,7 @@ body{
 }
 .console-bottom .scroll-bottom-arrow:hover{color:#fff;border-color:rgba(255,255,255,.3)}
 .msg{display:flex;gap:.625rem;max-width:48rem}
+.msg.unread{background:rgba(251,191,36,0.08);margin-left:-.75rem;margin-right:-.75rem;padding:.5rem .75rem;border-radius:var(--radius-sm);transition:background .4s ease}
 .msg-avatar{
   width:28px;height:28px;border-radius:50%;
   display:flex;align-items:center;justify-content:center;
@@ -3334,6 +3335,7 @@ let _deferredReadListening = false;
 function _flushDeferredReads() {
   const ops = _deferredReadOps.splice(0);
   for (const fn of ops) fn();
+  clearUnreadHighlights();
   if (_deferredReadOps.length === 0 && _deferredReadListening) {
     _deferredReadListening = false;
     for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
@@ -3349,6 +3351,19 @@ function deferMarkRead(fn) {
       document.addEventListener(evt, _flushDeferredReads, { capture: true, once: false, passive: true });
     }
   }
+}
+function markUnreadMessages(container) {
+  const lastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
+  if (!lastSeen) return;
+  const msgEls = container.querySelectorAll('.msg[data-created-at]');
+  for (const el of msgEls) {
+    if (el.dataset.createdAt > lastSeen && !el.classList.contains('unread')) {
+      el.classList.add('unread');
+    }
+  }
+}
+function clearUnreadHighlights() {
+  document.querySelectorAll('.msg.unread').forEach(el => el.classList.remove('unread'));
 }
 const channelAgentActive = new Map(); // channelId -> boolean
 
@@ -4292,6 +4307,8 @@ function renderMessages() {
   for (const msg of msgs) {
     appendMessage(msg);
   }
+  // Mark unread messages with warm background.
+  markUnreadMessages(container);
   // Dismiss old suggestion buttons and restore selected state from history.
   dismissStaleSuggestions(container, msgs);
   scrollToFirstUnread(container) || scrollChatToBottom();

@@ -2392,10 +2392,35 @@ document.addEventListener('click', (e) => {
 });
 
 function setConsoleState(state) {
+  // Preserve chat scroll: find the message currently at the top of the viewport
+  const chatContainer = document.getElementById('chat-messages');
+  let anchorEl = null;
+  let anchorOffset = 0;
+  if (chatContainer) {
+    const containerRect = chatContainer.getBoundingClientRect();
+    const msgs = chatContainer.querySelectorAll('.msg, .interaction-card, .plan-review-card');
+    for (const el of msgs) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > containerRect.top) {
+        anchorEl = el;
+        anchorOffset = r.top - containerRect.top;
+        break;
+      }
+    }
+  }
   consoleState = state;
   consoleBtm.classList.toggle('collapsed', state === 'collapsed');
   consoleBtm.classList.toggle('expanded', state === 'expanded');
   updateConsoleButtons();
+  // After layout recalculates, restore the anchor message's position
+  if (anchorEl && chatContainer) {
+    requestAnimationFrame(() => {
+      const containerRect = chatContainer.getBoundingClientRect();
+      const newRect = anchorEl.getBoundingClientRect();
+      const drift = (newRect.top - containerRect.top) - anchorOffset;
+      chatContainer.scrollTop += drift;
+    });
+  }
 }
 function updateConsoleButtons() {
   const s = consoleState;

@@ -3259,6 +3259,7 @@ const chatChannels = new Map(); // id -> {id, name, created_at} — merged view
 const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
 const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
+let scrollLastSeen = null; // captured lastSeen for scroll positioning during channel switch
 
 // ---- Browser Tabs ----
 const browserTabs = new Map(); // deviceId -> [{id, url, deviceId}]
@@ -4131,6 +4132,8 @@ function selectChannel(channelId) {
   updateStopButton();
   hideChatBubble();
   hideActivityBubble();
+  // Capture lastSeen for scroll positioning before updating it.
+  scrollLastSeen = getLastSeen(channelId) || null;
   // Mark channel as seen and clear unread.
   setLastSeen(channelId);
   unreadCounts.delete(channelId);
@@ -4367,6 +4370,7 @@ function appendInteractionCard(msg, meta) {
   const div = document.createElement('div');
   div.className = `msg ${resolved ? 'interaction-resolved-msg' : ''}`;
   div.dataset.msgId = msg.id || '';
+  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
 
   const senderName = agentShortName(msg.sender);
   let cardHtml = `
@@ -4482,6 +4486,7 @@ function appendPlanReviewCard(msg, meta, container, resolved, interactionId, opt
   const div = document.createElement('div');
   div.className = 'msg';
   div.dataset.msgId = msg.id || '';
+  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
 
   // Determine resolved state details.
   const selectedOption = meta.selected_option || '';
@@ -4981,12 +4986,14 @@ activityScrollArrow.addEventListener('click', () => {
 
 function scrollToFirstUnread(container) {
   if (!chatCurrentChannel) return false;
-  const lastSeen = getLastSeen(chatCurrentChannel);
+  // Use captured lastSeen from channel switch, falling back to live value.
+  const lastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
   if (!lastSeen) return false;
   const msgEls = container.querySelectorAll('.msg[data-created-at]');
   for (const el of msgEls) {
     if (el.dataset.createdAt > lastSeen) {
       el.scrollIntoView({ block: 'start', behavior: 'instant' });
+      scrollLastSeen = null; // consumed
       return true;
     }
   }

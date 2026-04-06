@@ -3327,6 +3327,29 @@ function setLastSeen(channelId) {
   const conn = getE2EE(channelId);
   if (conn && conn.connected) conn.markSeen(channelId);
 }
+
+// Deferred read-marking: queue setLastSeen/markRead until user interacts.
+let _deferredReadOps = []; // array of callbacks
+let _deferredReadListening = false;
+function _flushDeferredReads() {
+  const ops = _deferredReadOps.splice(0);
+  for (const fn of ops) fn();
+  if (_deferredReadOps.length === 0 && _deferredReadListening) {
+    _deferredReadListening = false;
+    for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
+      document.removeEventListener(evt, _flushDeferredReads, { capture: true });
+    }
+  }
+}
+function deferMarkRead(fn) {
+  _deferredReadOps.push(fn);
+  if (!_deferredReadListening) {
+    _deferredReadListening = true;
+    for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
+      document.addEventListener(evt, _flushDeferredReads, { capture: true, once: false, passive: true });
+    }
+  }
+}
 const channelAgentActive = new Map(); // channelId -> boolean
 
 function updateStopButton() {
@@ -3616,13 +3639,14 @@ function bindE2EEEvents(instance, deviceId) {
     chatMessages.set(channel_id, messages);
     if (chatCurrentChannel === channel_id) {
       renderMessages();
-      // Mark unread device messages as read.
+      // Defer marking unread device messages as read until user interacts.
       const unread = messages
         .filter(m => m.sender !== 'client' && !m.read_at)
         .map(m => m.id)
         .filter(Boolean);
       if (unread.length && instance.connected) {
-        instance.markRead(unread);
+        const _inst = instance;
+        deferMarkRead(() => _inst.markRead(unread));
       }
     } else {
       // Compute unread count for background channels using lastSeen timestamp.
@@ -3662,8 +3686,13 @@ function bindE2EEEvents(instance, deviceId) {
       const _newEl = document.getElementById('chat-messages').lastElementChild;
       if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
       else showChatBubble(_newEl);
-      setLastSeen(msg.channel_id);
-      if (msg.id) instance.markRead([msg.id]);
+      const _msgChId = msg.channel_id;
+      const _msgId = msg.id;
+      const _inst = instance;
+      deferMarkRead(() => {
+        setLastSeen(_msgChId);
+        if (_msgId) _inst.markRead([_msgId]);
+      });
     } else if (msg.sender !== 'client') {
       incrementUnread(msg.channel_id);
     }
@@ -3697,7 +3726,8 @@ function bindE2EEEvents(instance, deviceId) {
         const _newEl = document.getElementById('chat-messages').lastElementChild;
         if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
         else showChatBubble(_newEl);
-        setLastSeen(channel_id);
+        const _agChId = channel_id;
+        deferMarkRead(() => setLastSeen(_agChId));
       } else {
         incrementUnread(channel_id);
       }
@@ -4134,9 +4164,13 @@ function selectChannel(channelId) {
   hideActivityBubble();
   // Capture lastSeen for scroll positioning before updating it.
   scrollLastSeen = getLastSeen(channelId) || null;
-  // Mark channel as seen and clear unread.
-  setLastSeen(channelId);
-  unreadCounts.delete(channelId);
+  // Defer marking as seen until user interacts.
+  const _chId = channelId;
+  deferMarkRead(() => {
+    setLastSeen(_chId);
+    unreadCounts.delete(_chId);
+    renderChannelList();
+  });
   renderChannelList();
   const _selConn = getE2EE(channelId);
   if (_selConn && _selConn.connected) {

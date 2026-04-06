@@ -2739,8 +2739,25 @@ function renderComplications() {
     return;
   }
   bar.classList.remove('hidden');
+  // Filter git complications to only those whose repo is a parent of the channel's working directory.
+  const channelWd = getTerminalCwd(chatCurrentChannel);
   // Sort by timestamp descending (most recent first).
-  const sorted = [...channelComps.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const sorted = [...channelComps.values()]
+    .filter(comp => {
+      if (comp.kind === 'git-status' && channelWd && comp.data?.repo) {
+        const repo = comp.data.repo.endsWith('/') ? comp.data.repo : comp.data.repo + '/';
+        const wd = channelWd.endsWith('/') ? channelWd : channelWd + '/';
+        return wd.startsWith(repo);
+      }
+      return true;
+    })
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  if (sorted.length === 0) {
+    scroll.innerHTML = '';
+    bar.classList.add('hidden');
+    closeCompPopover();
+    return;
+  }
   scroll.innerHTML = sorted.map(comp => {
     if (comp.kind === 'git-status') return renderGitCompChip(comp);
     return '';

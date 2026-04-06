@@ -769,6 +769,7 @@ body{
   padding:0 .5rem .4rem;
 }
 .commands-tray.open{display:flex}
+.chat-input-area:focus-within>.commands-tray{display:flex}
 .cmd-tray-btn{
   display:flex;align-items:center;gap:.3rem;
   padding:.3rem .55rem;
@@ -799,15 +800,6 @@ body{
   border-color:rgba(239,68,68,0.3);
   color:#ef4444;
 }
-.cmd-tray-toggle{
-  width:28px;height:28px;border-radius:var(--radius-sm);
-  background:none;border:1px solid rgba(0,0,0,.12);cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  transition:all .15s;flex-shrink:0;
-}
-.cmd-tray-toggle:hover{background:var(--surface);border-color:var(--border-strong)}
-.cmd-tray-toggle svg{width:14px;height:14px;color:var(--text-muted);transition:transform .2s}
-.cmd-tray-toggle.open svg{transform:rotate(45deg)}
 /* Session divider */
 .session-divider{
   display:flex;align-items:center;gap:.75rem;
@@ -1696,7 +1688,6 @@ body{
   .md-code-lang{color:#6c7086;border-bottom-color:rgba(255,255,255,0.06)}
   .chat-input-wrap{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,.1)}
   .chat-stop{border-color:rgba(255,255,255,.12)}
-  .cmd-tray-toggle{border-color:rgba(255,255,255,.12)}
   .cmd-tray-btn.confirm{background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.25);color:#f87171}
   /* Interaction cards */
   .interaction-card{background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,.08)}
@@ -1872,9 +1863,6 @@ body{
               </button>
             </div>
             <div class="chat-input-wrap">
-              <button class="cmd-tray-toggle" id="cmd-tray-toggle" title="Commands">
-                <svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-              </button>
               <input type="file" id="chat-file-input" multiple hidden>
               <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
               <button class="chat-stop" id="chat-stop-btn" title="Stop agent">
@@ -5073,13 +5061,6 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
 });
 
 // ----- Commands tray toggle -----
-document.getElementById('cmd-tray-toggle')?.addEventListener('click', () => {
-  const tray = document.getElementById('commands-tray');
-  const btn = document.getElementById('cmd-tray-toggle');
-  tray.classList.toggle('open');
-  btn.classList.toggle('open');
-});
-
 // Attach button (in tray)
 document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
   document.getElementById('chat-file-input').click();

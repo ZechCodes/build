@@ -281,6 +281,8 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('file_read_result', { detail: payload }));
     } else if (action === 'file_diff_result') {
       this.dispatchEvent(new CustomEvent('file_diff_result', { detail: payload }));
+    } else if (action === 'url_fetch_result') {
+      this.dispatchEvent(new CustomEvent('url_fetch_result', { detail: payload }));
     } else if (action === 'error') {
       this.dispatchEvent(new CustomEvent('e2ee_error', { detail: payload.error }));
     }
@@ -602,6 +604,10 @@ class BuildE2EE extends EventTarget {
 
   async fileDiff(channelId, path, staged) {
     return this.send({ action: 'file_diff', channel_id: channelId, path, staged: !!staged });
+  }
+
+  async urlFetch(url, requestId) {
+    return this.send({ action: 'url_fetch', url, request_id: requestId || '' });
   }
 
   async terminalExec(channelId, command, cwd, commandId) {

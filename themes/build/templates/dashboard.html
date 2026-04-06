@@ -150,7 +150,6 @@ body{
   padding:.5rem .6rem .75rem;
   flex-shrink:0;
 }
-.device-group > .sidebar-new-session{margin:.25rem .75rem .5rem}
 .channel-panel-footer .panel-account{
   display:flex;align-items:center;justify-content:center;
   text-decoration:none;flex-shrink:0;
@@ -380,6 +379,73 @@ body{
   border-color:var(--accent);
   color:var(--accent);
 }
+.device-group-actions{
+  display:flex;gap:.35rem;
+  margin:.25rem .75rem .5rem;
+}
+.device-group-actions .sidebar-new-session{flex:1}
+.sidebar-browse-btn{
+  display:flex;align-items:center;justify-content:center;
+  padding:.45rem .5rem;
+  border:1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius:var(--radius-sm);
+  background:color-mix(in srgb, var(--accent) 6%, var(--surface));
+  color:var(--accent);
+  cursor:pointer;
+  transition:all .12s;
+}
+.sidebar-browse-btn svg{width:12px;height:12px}
+.sidebar-browse-btn:hover{
+  background:color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border-color:var(--accent);
+}
+.browser-tab-item{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.45rem .75rem;
+  cursor:pointer;
+  border-radius:var(--radius-sm);
+  transition:background .1s;
+  font-size:12px;
+  color:var(--text-secondary);
+}
+.browser-tab-item:hover{background:rgba(0,0,0,0.04)}
+.browser-tab-item.active{background:var(--surface-active,rgba(99,102,241,0.08));color:var(--text-primary)}
+.browser-tab-item svg{width:12px;height:12px;flex-shrink:0;color:var(--text-muted)}
+.browser-tab-item .tab-url{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browser-tab-close{
+  background:none;border:none;padding:0;cursor:pointer;
+  color:var(--text-muted);display:flex;opacity:0;transition:opacity .1s;
+}
+.browser-tab-item:hover .browser-tab-close{opacity:1}
+.browser-tab-close:hover{color:var(--danger,#e55)}
+.browser-url-bar{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.4rem .6rem;
+  border-bottom:1px solid var(--border);
+  background:var(--surface);
+  flex-shrink:0;
+}
+.browser-url-input{
+  flex:1;padding:.35rem .5rem;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface-input,var(--bg));
+  color:var(--text-primary);
+  font-size:12px;font-family:var(--font-mono,'monospace');
+  outline:none;
+}
+.browser-url-input:focus{border-color:var(--accent)}
+.browser-url-go{
+  padding:.35rem .6rem;
+  border:1px solid var(--accent);
+  border-radius:var(--radius-sm);
+  background:var(--accent);
+  color:#fff;
+  font-size:11px;font-weight:600;
+  cursor:pointer;
+  transition:opacity .12s;
+}
+.browser-url-go:hover{opacity:.85}
 .channel-sidebar-item{
   display:flex;align-items:center;gap:.4rem;
   padding:.45rem .75rem;
@@ -1988,6 +2054,14 @@ body{
       <button class="terminal-kill-btn hidden" id="terminal-kill-btn" title="Kill process (Ctrl+C)">⌃C</button>
     </div>
   </div>
+  <!-- Browser tab panel (shown when a browser tab is active) -->
+  <div class="tab-panel" id="tab-browser" style="flex-direction:column">
+    <div class="browser-url-bar" id="browser-url-bar">
+      <input type="text" class="browser-url-input" id="browser-url-input" placeholder="http://localhost:3000" spellcheck="false">
+      <button class="browser-url-go" id="browser-url-go">Go</button>
+    </div>
+    <div style="flex:1;position:relative;min-height:0;display:flex;flex-direction:column" id="browser-content"></div>
+  </div>
 </div><!-- /viewer-panel -->
 </div><!-- /app -->
 
@@ -2097,13 +2171,28 @@ function renderChannelPanel() {
     if (hasConnection) {
       const newBtn = document.createElement('button');
       newBtn.className = 'sidebar-new-session';
+      const btnRow = document.createElement('div');
+      btnRow.className = 'device-group-actions';
+
       newBtn.title = 'New session';
       newBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> New Session';
       newBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         document.getElementById('btn-new-channel')?.click();
       });
-      group.appendChild(newBtn);
+      btnRow.appendChild(newBtn);
+
+      const browseBtn = document.createElement('button');
+      browseBtn.className = 'sidebar-browse-btn';
+      browseBtn.title = 'Browse localhost';
+      browseBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 6h9M6 1.5c1.5 1.5 2 3 2 4.5s-.5 3-2 4.5M6 1.5c-1.5 1.5-2 3-2 4.5s.5 3 2 4.5" stroke="currentColor" stroke-width="1"/></svg>';
+      browseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addBrowserTab(device.id);
+      });
+      btnRow.appendChild(browseBtn);
+
+      group.appendChild(btnRow);
     }
 
     // Channels for all connected devices
@@ -2114,6 +2203,12 @@ function renderChannelPanel() {
       const sorted = [...devChans.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       for (const ch of sorted) {
         const item = createChannelItem(ch);
+        channelsDiv.appendChild(item);
+      }
+      // Browser tabs for this device
+      const tabs = browserTabs.get(device.id) || [];
+      for (const tab of tabs) {
+        const item = createBrowserTabItem(tab, device.id);
         channelsDiv.appendChild(item);
       }
       group.appendChild(channelsDiv);
@@ -3130,6 +3225,63 @@ const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
 const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
 
+// ---- Browser Tabs ----
+const browserTabs = new Map(); // deviceId -> [{id, url, deviceId}]
+let activeBrowserTab = null; // tab id
+let _browserTabCounter = 0;
+
+function addBrowserTab(deviceId) {
+  const id = 'browser-' + (++_browserTabCounter);
+  const tab = { id, url: 'http://localhost:', deviceId };
+  if (!browserTabs.has(deviceId)) browserTabs.set(deviceId, []);
+  browserTabs.get(deviceId).push(tab);
+  activeBrowserTab = id;
+  chatCurrentChannel = null;
+  renderChannelPanel();
+  showBrowserView(tab);
+}
+
+function removeBrowserTab(deviceId, tabId) {
+  const tabs = browserTabs.get(deviceId) || [];
+  const idx = tabs.findIndex(t => t.id === tabId);
+  if (idx !== -1) tabs.splice(idx, 1);
+  if (activeBrowserTab === tabId) {
+    activeBrowserTab = null;
+    // Switch to first channel
+    const firstCh = chatChannels.keys().next().value;
+    if (firstCh) selectChannel(firstCh);
+    else { document.getElementById('viewer-content')?.replaceChildren(); }
+  }
+  renderChannelPanel();
+}
+
+function selectBrowserTab(tab) {
+  activeBrowserTab = tab.id;
+  chatCurrentChannel = null;
+  renderChannelPanel();
+  showBrowserView(tab);
+}
+
+function createBrowserTabItem(tab, deviceId) {
+  const item = document.createElement('div');
+  item.className = 'browser-tab-item' + (activeBrowserTab === tab.id ? ' active' : '');
+  const displayUrl = tab.url || 'New tab';
+  item.innerHTML = `
+    <svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 6h9" stroke="currentColor" stroke-width="1"/></svg>
+    <span class="tab-url">${escapeHtml(displayUrl)}</span>
+    <button class="browser-tab-close" title="Close tab"><svg viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
+  `;
+  item.addEventListener('click', (e) => {
+    if (e.target.closest('.browser-tab-close')) {
+      e.stopPropagation();
+      removeBrowserTab(deviceId, tab.id);
+      return;
+    }
+    selectBrowserTab(tab);
+  });
+  return item;
+}
+
 function getLastSeen(channelId) {
   return channelLastSeen.get(channelId) || null;
 }
@@ -3923,6 +4075,14 @@ function updateAggregateBadge() { /* no-op, removed with top bar */ }
 
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
+  activeBrowserTab = null;
+  // Hide browser panel and restore normal tab if it was showing
+  document.getElementById('tab-browser')?.classList.remove('active');
+  if (currentTab) {
+    const panel = document.getElementById('tab-' + currentTab);
+    if (panel) panel.classList.add('active');
+    document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentTab));
+  }
   // Close mobile channel panel if open
   document.getElementById('channel-panel')?.classList.remove('mobile-open');
   updateStopButton();
@@ -6037,6 +6197,281 @@ const NAV_INTERCEPT_JS = `(function(){
     parent.postMessage({ type: '__build_preview_navigate', href: href }, '*');
   });
 })();`;
+
+// ---- Browser Proxy View ----
+
+function urlFetchAsync(deviceId, url) {
+  return new Promise((resolve, reject) => {
+    const conn = e2eeConnections.get(deviceId);
+    if (!conn || !conn.connected) return reject(new Error('not connected'));
+    const requestId = 'rf-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    function handler(evt) {
+      const d = evt.detail;
+      if (d.request_id !== requestId) return;
+      conn.removeEventListener('url_fetch_result', handler);
+      if (d.error) return reject(new Error(d.error));
+      resolve(d);
+    }
+    conn.addEventListener('url_fetch_result', handler);
+    conn.urlFetch(url, requestId);
+  });
+}
+
+function resolveUrl(baseUrl, href) {
+  if (!href || href.startsWith('data:') || href.startsWith('#') || href.startsWith('javascript:')) return null;
+  try { return new URL(href, baseUrl).href; } catch { return null; }
+}
+
+async function fetchAndRenderBrowserPage(tab) {
+  const browserContent = document.getElementById('browser-content');
+  if (!browserContent) return;
+  browserContent.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
+
+  const deviceId = tab.deviceId;
+  const url = tab.url;
+  let errors = [];
+  const _dbg = (text) => errors.push({ level: 'debug', text });
+
+  try {
+    _dbg('Fetching ' + url);
+    const result = await urlFetchAsync(deviceId, url);
+    if (result.is_binary) {
+      browserContent.innerHTML = '<div class="empty-state"><p>Cannot display binary content</p></div>';
+      return;
+    }
+    if (result.status && result.status >= 400) {
+      _dbg('HTTP ' + result.status);
+    }
+
+    let html = result.content;
+    _dbg('Got ' + html.length + ' bytes');
+
+    // Resolve and inline local assets (CSS, JS, images)
+    const replacements = [];
+    const isExternal = (u) => {
+      if (!u) return true;
+      try { const p = new URL(u, url); return p.origin !== new URL(url).origin; } catch { return true; }
+    };
+
+    // CSS links
+    const linkRe = /<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*>|<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*\brel\s*=\s*["']stylesheet["'][^>]*>/gi;
+    const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/i;
+    for (const m of html.matchAll(linkRe)) {
+      const tag = m[0];
+      const hm = tag.match(hrefRe);
+      if (!hm) continue;
+      const href = hm[1];
+      const resolved = resolveUrl(url, href);
+      if (!resolved || isExternal(resolved)) { _dbg('CSS (ext): ' + href); continue; }
+      _dbg('CSS: ' + resolved);
+      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+        if (r.content && !r.is_binary) {
+          // Resolve url() references inside CSS
+          let css = r.content;
+          css = css.replace(/url\(\s*["']?(?!data:|https?:|\/\/)([^"')]+)["']?\s*\)/g, (match, ref) => {
+            const absRef = resolveUrl(resolved, ref);
+            return absRef ? `url(${absRef})` : match;
+          });
+          return { original: tag, replacement: '<style>' + css + '</style>' };
+        }
+        return null;
+      }).catch(err => { errors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' }); return null; }));
+    }
+
+    // Script tags
+    const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
+    for (const m of html.matchAll(scriptRe)) {
+      const tag = m[0];
+      const src = m[1];
+      const resolved = resolveUrl(url, src);
+      if (!resolved || isExternal(resolved)) { _dbg('JS (ext): ' + src); continue; }
+      _dbg('JS: ' + resolved);
+      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+        if (r.content && !r.is_binary) return { original: tag, replacement: '<script>' + r.content + '<\/script>' };
+        return null;
+      }).catch(err => { errors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' }); return null; }));
+    }
+
+    // Images
+    const imgRe = /(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
+    for (const m of html.matchAll(imgRe)) {
+      const tag = m[0];
+      const src = m[2];
+      if (src.startsWith('data:')) continue;
+      const resolved = resolveUrl(url, src);
+      if (!resolved || isExternal(resolved)) continue;
+      _dbg('IMG: ' + resolved);
+      replacements.push(urlFetchAsync(deviceId, resolved).then(r => {
+        if (r.is_binary && r.content) {
+          const ct = r.content_type || 'image/png';
+          const mime = ct.split(';')[0].trim();
+          return { original: tag, replacement: m[1] + 'data:' + mime + ';base64,' + r.content + m[3] };
+        }
+        return null;
+      }).catch(err => { errors.push({ level: 'error', text: 'IMG failed: ' + src + ' (' + err.message + ')' }); return null; }));
+    }
+
+    _dbg('Fetching ' + replacements.length + ' assets...');
+    const results = await Promise.all(replacements);
+    for (const r of results) {
+      if (r) html = html.replace(r.original, r.replacement);
+    }
+
+    // Bail if user navigated away
+    if (activeBrowserTab !== tab.id) return;
+
+    // Inject console capture + navigation intercept
+    const headMatch = html.match(/<head[^>]*>/i);
+    if (headMatch) {
+      const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
+      const navJs = `(function(){
+        document.addEventListener('click', function(e) {
+          var a = e.target.closest('a[href]');
+          if (!a) return;
+          var href = a.getAttribute('href');
+          if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+          e.preventDefault();
+          parent.postMessage({ type: '__build_browser_navigate', href: href }, '*');
+        });
+      })();`;
+      html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + navJs + '<\/script>' + html.slice(idx);
+    }
+
+    const inlinedHtml = html;
+
+    // Build wrapper
+    browserContent.innerHTML = '';
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column';
+
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;min-height:0';
+    wrapper.appendChild(iframe);
+
+    // Console overlay
+    const consoleBar = document.createElement('div');
+    consoleBar.className = 'html-console-bar';
+    consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge hc-hidden">0</span><span class="html-console-toggle">&#x25B2;</span>';
+    wrapper.appendChild(consoleBar);
+
+    const consolePanel = document.createElement('div');
+    consolePanel.className = 'html-console-panel hc-hidden';
+    wrapper.appendChild(consolePanel);
+
+    browserContent.appendChild(wrapper);
+
+    const badge = consoleBar.querySelector('.html-console-badge');
+    const toggleIcon = consoleBar.querySelector('.html-console-toggle');
+    let consoleOpen = false;
+    let entryCount = 0;
+
+    consoleBar.addEventListener('click', () => {
+      consoleOpen = !consoleOpen;
+      consolePanel.classList.toggle('hc-hidden', !consoleOpen);
+      toggleIcon.innerHTML = consoleOpen ? '&#x25BC;' : '&#x25B2;';
+      if (consoleOpen) { badge.classList.add('hc-hidden'); consolePanel.scrollTop = consolePanel.scrollHeight; }
+    });
+
+    function addConsoleEntry(level, text) {
+      entryCount++;
+      if (!consoleOpen) { badge.classList.remove('hc-hidden'); badge.textContent = String(entryCount); }
+      const row = document.createElement('div');
+      row.className = 'html-console-entry html-console-' + (level || 'log');
+      const levelSpan = document.createElement('span');
+      levelSpan.className = 'html-console-level';
+      levelSpan.textContent = level || 'log';
+      row.appendChild(levelSpan);
+      const textSpan = document.createElement('span');
+      textSpan.textContent = text;
+      row.appendChild(textSpan);
+      consolePanel.appendChild(row);
+      if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
+    }
+
+    for (const err of errors) addConsoleEntry(err.level, err.text);
+    if (errors.length > 0) {
+      consoleOpen = true;
+      consolePanel.classList.remove('hc-hidden');
+      toggleIcon.innerHTML = '&#x25BC;';
+      badge.classList.add('hc-hidden');
+    }
+
+    function onMsg(evt) {
+      if (!evt.data) return;
+      if (evt.data.type === '__build_console') {
+        addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
+      } else if (evt.data.type === '__build_preview_ready') {
+        iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
+      } else if (evt.data.type === '__build_browser_navigate') {
+        const target = resolveUrl(url, evt.data.href);
+        if (target && new URL(target).origin === new URL(url).origin) {
+          tab.url = target;
+          document.getElementById('browser-url-input').value = target;
+          renderChannelPanel();
+          fetchAndRenderBrowserPage(tab);
+        }
+      }
+    }
+    window.addEventListener('message', onMsg);
+
+    const observer = new MutationObserver(() => {
+      if (!browserContent.contains(wrapper)) {
+        window.removeEventListener('message', onMsg);
+        observer.disconnect();
+      }
+    });
+    observer.observe(browserContent, { childList: true });
+
+    iframe.src = '/preview-frame';
+
+  } catch (err) {
+    browserContent.innerHTML = '<div class="empty-state"><p>Error: ' + escapeHtml(err.message) + '</p></div>';
+  }
+}
+
+function showBrowserView(tab) {
+  // Hide all tab panels, show browser panel
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-browser')?.classList.add('active');
+  // Hide tab buttons active state
+  document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.remove('active'));
+
+  const urlInput = document.getElementById('browser-url-input');
+  if (urlInput) urlInput.value = tab.url || '';
+
+  // If URL looks valid, load it
+  if (tab.url && tab.url.startsWith('http')) {
+    fetchAndRenderBrowserPage(tab);
+  } else {
+    const browserContent = document.getElementById('browser-content');
+    if (browserContent) browserContent.innerHTML = '<div class="empty-state"><p>Enter a localhost address and press Go</p></div>';
+  }
+}
+
+// Browser URL bar handlers
+document.getElementById('browser-url-go')?.addEventListener('click', () => {
+  if (!activeBrowserTab) return;
+  const urlInput = document.getElementById('browser-url-input');
+  const url = urlInput?.value?.trim();
+  if (!url) return;
+  // Find the active tab and update its URL
+  for (const [, tabs] of browserTabs) {
+    const tab = tabs.find(t => t.id === activeBrowserTab);
+    if (tab) {
+      tab.url = url;
+      renderChannelPanel();
+      fetchAndRenderBrowserPage(tab);
+      break;
+    }
+  }
+});
+
+document.getElementById('browser-url-input')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    document.getElementById('browser-url-go')?.click();
+  }
+});
 
 // Tracks asset-fetch errors to surface in the console overlay.
 let _htmlPreviewErrors = [];

@@ -200,9 +200,11 @@
         i++; // skip closing ```
         var langAttr = lang ? ' data-lang="' + escapeHtml(lang) + '"' : '';
         var langLabel = lang ? '<span class="md-code-lang">' + escapeHtml(lang) + '</span>' : '';
+        var wrapBtn = '<button class="md-code-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
+        var header = '<div class="md-code-header">' + langLabel + wrapBtn + '</div>';
         out.push(
           '<div class="md-code-block"' + langAttr + '>' +
-          langLabel +
+          header +
           '<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre></div>'
         );
         continue;

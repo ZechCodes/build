@@ -4080,6 +4080,10 @@ function selectChannel(channelId) {
   activeBrowserTab = null;
   // Hide browser panel and restore normal tab if it was showing
   document.getElementById('tab-browser')?.classList.remove('active');
+  // Restore viewer chrome hidden by browser view
+  document.getElementById('viewer-tabs')?.classList.remove('hidden');
+  document.querySelector('.comp-wrapper')?.classList.remove('hidden');
+  document.getElementById('console-bottom')?.classList.remove('hidden');
   if (currentTab) {
     const panel = document.getElementById('tab-' + currentTab);
     if (panel) panel.classList.add('active');
@@ -6437,6 +6441,10 @@ function showBrowserView(tab) {
   document.getElementById('tab-browser')?.classList.add('active');
   // Hide tab buttons active state
   document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.remove('active'));
+  // Browser owns the full right column — hide tabs, complications, and console
+  document.getElementById('viewer-tabs')?.classList.add('hidden');
+  document.querySelector('.comp-wrapper')?.classList.add('hidden');
+  document.getElementById('console-bottom')?.classList.add('hidden');
 
   const urlInput = document.getElementById('browser-url-input');
   if (urlInput) urlInput.value = tab.url || '';

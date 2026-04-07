@@ -734,6 +734,7 @@ body{
   padding:.6rem 1rem .75rem;
   border-top:1px solid var(--border);
   flex-shrink:0;
+  position:relative;
 }
 .chat-input-area>.chat-input-wrap,
 .chat-input-area>.commands-tray,
@@ -781,7 +782,11 @@ body{
 .commands-tray{
   display:none;
   gap:.35rem;
-  padding:0 .25rem .3rem;
+  padding:.3rem .25rem;
+  position:absolute;
+  bottom:100%;
+  left:1rem;
+  z-index:2;
 }
 .commands-tray.open{display:flex}
 .chat-input-area:focus-within>.commands-tray{display:flex}

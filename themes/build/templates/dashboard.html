@@ -3284,6 +3284,8 @@ const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
 const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
 let scrollLastSeen = null; // captured lastSeen for scroll positioning during channel switch
+let _unreadHighlightUntil = null; // timestamp: highlights persist until this time
+let _unreadHighlightLastSeen = null; // the lastSeen value to use for highlighting
 
 // ---- Browser Tabs ----
 const browserTabs = new Map(); // deviceId -> [{id, url, deviceId}]
@@ -3357,9 +3359,21 @@ let _deferredReadOps = []; // array of callbacks
 let _deferredReadListening = false;
 function _flushDeferredReads() {
   const ops = _deferredReadOps.splice(0);
+  if (ops.length === 0) return; // no-op if nothing queued
+  // Capture the lastSeen for highlight persistence before running ops.
+  if (!_unreadHighlightLastSeen) {
+    _unreadHighlightLastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
+  }
   for (const fn of ops) fn();
   // Keep unread highlight visible for 60s after being marked as read.
-  setTimeout(clearUnreadHighlights, 60000);
+  _unreadHighlightUntil = Date.now() + 60000;
+  setTimeout(() => {
+    if (Date.now() >= _unreadHighlightUntil) {
+      _unreadHighlightLastSeen = null;
+      _unreadHighlightUntil = null;
+      clearUnreadHighlights();
+    }
+  }, 60000);
   if (_deferredReadOps.length === 0 && _deferredReadListening) {
     _deferredReadListening = false;
     for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
@@ -3377,7 +3391,8 @@ function deferMarkRead(fn) {
   }
 }
 function markUnreadMessages(container) {
-  const lastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
+  // Use persisted highlight lastSeen if still within the 60s window, then scroll capture, then live.
+  const lastSeen = _unreadHighlightLastSeen || scrollLastSeen || getLastSeen(chatCurrentChannel);
   if (!lastSeen) return;
   const msgEls = container.querySelectorAll('.msg[data-created-at]');
   for (const el of msgEls) {
@@ -4205,6 +4220,8 @@ function selectChannel(channelId) {
   hideActivityBubble();
   // Capture lastSeen for scroll positioning before updating it.
   scrollLastSeen = getLastSeen(channelId) || null;
+  _unreadHighlightLastSeen = null;
+  _unreadHighlightUntil = null;
   // Defer marking as seen until user interacts.
   const _chId = channelId;
   deferMarkRead(() => {

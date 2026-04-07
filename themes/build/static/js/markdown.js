@@ -99,10 +99,12 @@
     }
     viewerHtml += '</div>';
 
+    var embedWrapBtn = '<button class="build-embed-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
     return '<div class="' + cls + '" data-embed-type="file">' +
       '<div class="build-embed-header">' +
         toggleBtn +
         '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        embedWrapBtn +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
     '</div>';
@@ -153,10 +155,12 @@
     var wrapCls = 'build-embed' + (collapsed ? ' collapsed' : '');
     var toggleBtn = '<span class="build-embed-chevron">&#x25B6;</span>';
 
+    var diffWrapBtn = '<button class="build-embed-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
     return '<div class="' + wrapCls + '" data-embed-type="diff">' +
       '<div class="build-embed-header">' +
         toggleBtn +
         '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        diffWrapBtn +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
     '</div>';
@@ -201,7 +205,8 @@
         var langAttr = lang ? ' data-lang="' + escapeHtml(lang) + '"' : '';
         var langLabel = lang ? '<span class="md-code-lang">' + escapeHtml(lang) + '</span>' : '';
         var wrapBtn = '<button class="md-code-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
-        var header = '<div class="md-code-header">' + langLabel + wrapBtn + '</div>';
+        var copyBtn = '<button class="md-code-copy" title="Copy code"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>copy</button>';
+        var header = '<div class="md-code-header">' + langLabel + wrapBtn + copyBtn + '</div>';
         out.push(
           '<div class="md-code-block"' + langAttr + '>' +
           header +

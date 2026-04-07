@@ -625,6 +625,14 @@ body{
 }
 .md-code-wrap-toggle:hover{opacity:1}
 .md-code-wrap-toggle svg{width:12px;height:12px}
+.md-code-copy{
+  background:none;border:none;cursor:pointer;
+  color:#6c7086;font-size:10px;font-family:var(--mono);
+  padding:0 .25rem;display:flex;align-items:center;gap:.25rem;
+  opacity:.6;transition:opacity .12s;
+}
+.md-code-copy:hover{opacity:1}
+.md-code-copy svg{width:12px;height:12px}
 .md-link{color:var(--accent);text-decoration:none}
 .md-link:hover{text-decoration:underline}
 .md-blockquote{
@@ -646,8 +654,8 @@ body{
   margin:1.25rem 0;
 }
 .md-img{max-width:100%;border-radius:var(--radius-sm);margin:.3rem 0}
-.md-table-wrap{overflow-x:auto;margin:.5rem 0}
-.md-table{border-collapse:collapse;width:100%;font-size:13px}
+.md-table-wrap{overflow-x:auto;margin:.5rem 0;max-width:100%}
+.md-table{border-collapse:collapse;width:max-content;font-size:13px;white-space:nowrap}
 .md-table th,.md-table td{border:1px solid var(--border);padding:.35rem .6rem}
 .md-table th{background:var(--bg-alt);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.02em}
 .md-table tr:nth-child(even){background:rgba(255,255,255,.02)}
@@ -1383,7 +1391,19 @@ body{
 /* Inline file/diff embeds in chat */
 .build-embed{border:1px solid var(--border);border-radius:var(--radius-sm);margin:.5rem 0;overflow:hidden}
 .build-embed-header{display:flex;align-items:center;gap:.5rem;padding:.35rem .75rem;background:rgba(0,0,0,.03);border-bottom:1px solid var(--border);font-size:12px;position:sticky;top:0;z-index:1;cursor:pointer;user-select:none}
-.build-embed-path{font-family:var(--mono);color:var(--text-muted)}
+.build-embed-path{font-family:var(--mono);color:var(--text-muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.build-embed-wrap-toggle{
+  background:none;border:none;cursor:pointer;
+  color:var(--text-muted);font-size:10px;font-family:var(--mono);
+  padding:0 .25rem;display:flex;align-items:center;gap:.2rem;
+  opacity:.6;transition:opacity .12s;flex-shrink:0;
+}
+.build-embed-wrap-toggle:hover{opacity:1}
+.build-embed-wrap-toggle svg{width:12px;height:12px}
+.build-embed.wrap-on .file-line{white-space:pre-wrap;word-break:break-all}
+.build-embed.wrap-on .file-line .fl-content{word-break:break-all}
+.build-embed.wrap-on .diff-line{white-space:pre-wrap;word-break:break-all}
+.build-embed.wrap-on .diff-line .dl-content{word-break:break-all}
 .build-embed-chevron{font-size:8px;color:var(--text-muted);transition:transform .2s ease;transform:rotate(90deg);display:inline-block}
 .build-embed.collapsed .build-embed-chevron{transform:rotate(0deg)}
 .build-embed-body{overflow-y:auto;max-height:60vh}
@@ -5068,10 +5088,33 @@ function updateActivityScrollArrow() {
 
 // Code block wrap toggle (event delegation)
 document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.md-code-wrap-toggle');
-  if (!btn) return;
-  const block = btn.closest('.md-code-block');
-  if (block) block.classList.toggle('wrap-on');
+  const wrapBtn = e.target.closest('.md-code-wrap-toggle');
+  if (wrapBtn) {
+    const block = wrapBtn.closest('.md-code-block');
+    if (block) block.classList.toggle('wrap-on');
+    return;
+  }
+  const copyBtn = e.target.closest('.md-code-copy');
+  if (copyBtn) {
+    const block = copyBtn.closest('.md-code-block');
+    if (block) {
+      const code = block.querySelector('code');
+      if (code) {
+        navigator.clipboard.writeText(code.textContent).then(() => {
+          copyBtn.textContent = 'copied!';
+          setTimeout(() => { copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>copy'; }, 2000);
+        });
+      }
+    }
+    return;
+  }
+  const embedWrapBtn = e.target.closest('.build-embed-wrap-toggle');
+  if (embedWrapBtn) {
+    e.stopPropagation(); // prevent toggle collapse
+    const embed = embedWrapBtn.closest('.build-embed');
+    if (embed) embed.classList.toggle('wrap-on');
+    return;
+  }
 });
 
 document.getElementById('chat-messages').addEventListener('scroll', updateChatScrollArrow);

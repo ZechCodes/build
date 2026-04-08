@@ -2812,9 +2812,16 @@ function renderComplications() {
   const sorted = [...channelComps.values()]
     .filter(comp => {
       if (comp.kind === 'git-status' && channelWd && comp.data?.repo) {
-        const repo = comp.data.repo.endsWith('/') ? comp.data.repo : comp.data.repo + '/';
-        const wd = channelWd.endsWith('/') ? channelWd : channelWd + '/';
-        return wd.startsWith(repo) || repo.startsWith(wd);
+        const repo = comp.data.repo;
+        let wd = channelWd;
+        // Expand ~ using home dir inferred from the absolute repo path.
+        if (wd.startsWith('~/') && repo.startsWith('/')) {
+          const homeMatch = repo.match(/^(\/(?:Users|home)\/[^/]+)/);
+          if (homeMatch) wd = homeMatch[1] + wd.slice(1);
+        }
+        const r = repo.endsWith('/') ? repo : repo + '/';
+        const w = wd.endsWith('/') ? wd : wd + '/';
+        return w.startsWith(r) || r.startsWith(w);
       }
       return true;
     })

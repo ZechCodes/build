@@ -1112,6 +1112,22 @@ body{
 }
 .console-tab:hover{color:#a1a1aa;background:rgba(255,255,255,0.06)}
 .console-tab.active{color:var(--accent);background:rgba(99,102,241,0.12)}
+.console-tab{position:relative}
+.tasks-badge{background:var(--accent);color:#fff;font-size:9px;border-radius:999px;padding:0 .3rem;margin-left:.25rem;line-height:1.2rem;min-width:.9rem;text-align:center;display:inline-block;vertical-align:middle}
+
+/* Tasks panel */
+.console-tasks{flex-direction:column;padding:.5rem 0;overflow-y:auto}
+.tasks-empty{padding:1.5rem 1rem;text-align:center;color:#52525b;font-size:.8125rem}
+.tasks-summary{padding:.25rem .875rem .5rem;font-size:.6875rem;color:#71717a;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:.5rem}
+.tasks-progress-bar{flex:1;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
+.tasks-progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.task-item{display:flex;align-items:flex-start;gap:.5rem;padding:.3rem .875rem;font-size:.8125rem;line-height:1.4}
+.task-status-icon{flex-shrink:0;width:1rem;text-align:center;font-size:.75rem;line-height:1.4;margin-top:.05rem}
+.task-item.pending .task-status-icon{color:#52525b}
+.task-item.in_progress .task-status-icon{color:var(--accent)}
+.task-item.completed .task-status-icon{color:#4ade80}
+.task-item.completed .task-content{text-decoration:line-through;opacity:.45}
+.task-content{flex:1;color:#d4d4d8}
 
 /* Terminal panel */
 .console-terminal{
@@ -2065,6 +2081,7 @@ body{
       <span class="console-working-dot hidden" id="console-working-dot"></span>
       <div class="console-tabs">
         <button class="console-tab active" data-console-tab="activity">Activity</button>
+        <button class="console-tab" data-console-tab="tasks">Tasks</button>
         <button class="console-tab" data-console-tab="terminal">Terminal</button>
       </div>
       <div class="console-btns">
@@ -2079,6 +2096,10 @@ body{
     <div class="console-body" data-console-panel="activity"></div>
     <div class="new-activity-bubble" id="new-activity-bubble">↓ New activity</div>
     <div class="scroll-bottom-arrow" id="activity-scroll-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M4 9l4 4 4-4"/></svg></div>
+    <div class="console-body console-tasks hidden" data-console-panel="tasks">
+      <div class="tasks-empty" id="tasks-empty">No tasks yet</div>
+      <div class="tasks-list" id="tasks-list"></div>
+    </div>
     <div class="console-body console-terminal hidden" data-console-panel="terminal">
       <div class="terminal-output" id="terminal-output">
         <div class="terminal-prompt-row" id="terminal-prompt-row">
@@ -2507,10 +2528,13 @@ document.getElementById('console-header')?.addEventListener('click', (e) => {
 // ----- Console Tab Switching -----
 const consoleActivityPanel = document.querySelector('[data-console-panel="activity"]');
 const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
+const consoleTasksPanel = document.querySelector('[data-console-panel="tasks"]');
 let activeConsoleTab = 'activity';
+const channelTodos = new Map(); // channelId -> [{id, content, status}]
 // Ensure correct initial display state.
 consoleActivityPanel.classList.remove('hidden');
 consoleTerminalPanel.classList.add('hidden');
+consoleTasksPanel.classList.add('hidden');
 
 document.querySelectorAll('.console-tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -2519,10 +2543,61 @@ document.querySelectorAll('.console-tab').forEach(tab => {
     activeConsoleTab = target;
     document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === target));
     consoleActivityPanel.classList.toggle('hidden', target !== 'activity');
+    consoleTasksPanel.classList.toggle('hidden', target !== 'tasks');
     consoleTerminalPanel.classList.toggle('hidden', target !== 'terminal');
     if (target === 'terminal') document.getElementById('terminal-input')?.focus();
+    if (target === 'tasks') renderTasksPanel(chatCurrentChannel);
   });
 });
+
+// ----- Tasks -----
+function renderTasksPanel(channelId) {
+  const list = document.getElementById('tasks-list');
+  const empty = document.getElementById('tasks-empty');
+  if (!list) return;
+  const todos = channelTodos.get(channelId) || [];
+  list.innerHTML = '';
+  if (todos.length === 0) {
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+  const completed = todos.filter(t => t.status === 'completed').length;
+  const summary = document.createElement('div');
+  summary.className = 'tasks-summary';
+  summary.innerHTML = `<span>${completed}/${todos.length} completed</span><div class="tasks-progress-bar"><div class="tasks-progress-fill" style="width:${Math.round(completed/todos.length*100)}%"></div></div>`;
+  list.appendChild(summary);
+  const order = { in_progress: 0, pending: 1, completed: 2 };
+  const sorted = [...todos].sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
+  for (const todo of sorted) {
+    const row = document.createElement('div');
+    row.className = `task-item ${todo.status}`;
+    const icon = document.createElement('span');
+    icon.className = 'task-status-icon';
+    icon.textContent = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○';
+    const content = document.createElement('span');
+    content.className = 'task-content';
+    content.textContent = todo.content;
+    row.appendChild(icon);
+    row.appendChild(content);
+    list.appendChild(row);
+  }
+}
+
+function updateTasksBadge(channelId) {
+  if (chatCurrentChannel !== channelId) return;
+  const tab = document.querySelector('[data-console-tab="tasks"]');
+  if (!tab) return;
+  const todos = channelTodos.get(channelId) || [];
+  const incomplete = todos.filter(t => t.status !== 'completed').length;
+  let badge = tab.querySelector('.tasks-badge');
+  if (incomplete > 0) {
+    if (!badge) { badge = document.createElement('span'); badge.className = 'tasks-badge'; tab.appendChild(badge); }
+    badge.textContent = incomplete;
+  } else if (badge) {
+    badge.remove();
+  }
+}
 
 // ----- Terminal -----
 const deviceAgentCwd = new Map(); // deviceId -> cwd string
@@ -3827,10 +3902,18 @@ function bindE2EEEvents(instance, deviceId) {
         channelAgentActive.set(channel_id, true);
         updateStopButton();
       }
-      if (chatCurrentChannel !== channel_id) return;
-      currentReasoningEntry = null;
+      // Capture TodoWrite for any channel (before early return)
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
+      if (name === 'TodoWrite' && input.todos) {
+        channelTodos.set(channel_id, input.todos);
+        if (chatCurrentChannel === channel_id) {
+          renderTasksPanel(channel_id);
+          updateTasksBadge(channel_id);
+        }
+      }
+      if (chatCurrentChannel !== channel_id) return;
+      currentReasoningEntry = null;
       const desc = describeToolUse(name, input);
       appendConsoleEntry(agentEvt.tool_use_id, name, desc, input, agentEvt.created_at);
     } else if (event_type === 'tool.result') {
@@ -3900,6 +3983,10 @@ function bindE2EEEvents(instance, deviceId) {
         const d = entry.data || {};
         const name = d.name || 'tool';
         const input = d.input || {};
+        // Capture TodoWrite from history (last one wins)
+        if (name === 'TodoWrite' && input.todos) {
+          channelTodos.set(channel_id, input.todos);
+        }
         const desc = describeToolUse(name, input);
         appendConsoleEntry(d.id || '', name, desc, input, entry.created_at);
       } else if (entry.type === 'tool_result') {
@@ -3913,6 +4000,11 @@ function bindE2EEEvents(instance, deviceId) {
           currentReasoningEntry = null;
         }
       }
+    }
+    // Render tasks if we captured any TodoWrite calls from history.
+    if (channelTodos.has(channel_id)) {
+      renderTasksPanel(channel_id);
+      updateTasksBadge(channel_id);
     }
     // Scroll to bottom so latest tool use is visible.
     const body = document.querySelector('[data-console-panel="activity"]');
@@ -4295,8 +4387,11 @@ function selectChannel(channelId) {
   activeConsoleTab = 'activity';
   document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
   consoleActivityPanel.classList.remove('hidden');
+  consoleTasksPanel.classList.add('hidden');
   consoleTerminalPanel.classList.add('hidden');
   renderTerminalForChannel(channelId);
+  renderTasksPanel(channelId);
+  updateTasksBadge(channelId);
   // Render complications for this channel (instant — already in memory).
   closeCompPopover();
   renderComplications();

@@ -2814,7 +2814,7 @@ function renderComplications() {
       if (comp.kind === 'git-status' && channelWd && comp.data?.repo) {
         const repo = comp.data.repo.endsWith('/') ? comp.data.repo : comp.data.repo + '/';
         const wd = channelWd.endsWith('/') ? channelWd : channelWd + '/';
-        return wd.startsWith(repo);
+        return wd.startsWith(repo) || repo.startsWith(wd);
       }
       return true;
     })

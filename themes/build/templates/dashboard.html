@@ -797,7 +797,7 @@ body{
   z-index:2;
 }
 .commands-tray.open{display:flex}
-.chat-input-area:focus-within>.commands-tray{display:flex}
+.commands-tray.focus-visible{display:flex}
 .cmd-tray-btn{
   display:flex;align-items:center;gap:.3rem;
   padding:.3rem .55rem;
@@ -5359,12 +5359,18 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
 });
 
 // ----- Commands tray toggle -----
-// Prevent mousedown/touchstart on tray buttons from stealing focus from the
-// input, which would hide the tray before the click event fires.
-// touchstart is needed for mobile where touch events fire before mousedown.
+// Show/hide commands tray based on input focus. Uses a short delay on blur
+// so that clicks/taps on tray buttons have time to fire before it hides.
 const cmdTray = document.getElementById('commands-tray');
-cmdTray?.addEventListener('mousedown', (e) => { e.preventDefault(); });
-cmdTray?.addEventListener('touchstart', (e) => { e.preventDefault(); });
+const chatInputArea = document.querySelector('.chat-input-area');
+let trayHideTimeout = null;
+chatInputArea?.addEventListener('focusin', () => {
+  clearTimeout(trayHideTimeout);
+  cmdTray?.classList.add('focus-visible');
+});
+chatInputArea?.addEventListener('focusout', () => {
+  trayHideTimeout = setTimeout(() => cmdTray?.classList.remove('focus-visible'), 200);
+});
 // Attach button (in tray)
 document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
   document.getElementById('chat-file-input').click();

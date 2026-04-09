@@ -5359,6 +5359,11 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
 });
 
 // ----- Commands tray toggle -----
+// Prevent mousedown on tray buttons from stealing focus from the input,
+// which would hide the tray before the click event fires.
+document.getElementById('commands-tray')?.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+});
 // Attach button (in tray)
 document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
   document.getElementById('chat-file-input').click();

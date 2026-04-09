@@ -5371,6 +5371,10 @@ chatInputArea?.addEventListener('focusin', () => {
 chatInputArea?.addEventListener('focusout', () => {
   trayHideTimeout = setTimeout(() => cmdTray?.classList.remove('focus-visible'), 200);
 });
+// Refocus the input after any tray button click so the tray stays visible.
+cmdTray?.addEventListener('click', () => {
+  document.getElementById('chat-input')?.focus();
+});
 // Attach button (in tray)
 document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
   document.getElementById('chat-file-input').click();

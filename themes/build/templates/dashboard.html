@@ -4534,7 +4534,8 @@ function appendMessage(msg) {
   // Wire up file/diff embed toggles.
   div.querySelectorAll('.build-embed-header').forEach(hdr => {
     hdr.style.cursor = 'pointer';
-    hdr.addEventListener('click', () => {
+    hdr.addEventListener('click', (e) => {
+      if (e.target.closest('.build-embed-wrap-toggle')) return;
       const embed = hdr.closest('.build-embed');
       embed.classList.toggle('collapsed');
     });

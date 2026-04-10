@@ -1121,7 +1121,7 @@ body{
 .tasks-empty{padding:1.5rem 1rem;text-align:center;color:#52525b;font-size:.8125rem}
 .tasks-summary{padding:.25rem .875rem .5rem;font-size:.6875rem;color:#71717a;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:.5rem}
 .tasks-progress-bar{flex:1;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
-.tasks-progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.tasks-progress-fill{height:100%;width:0;background:var(--accent);border-radius:2px;transition:width .3s}
 .task-item{display:flex;align-items:flex-start;gap:.5rem;padding:.3rem .875rem;font-size:.8125rem;line-height:1.4}
 .task-status-icon{flex-shrink:0;width:1rem;text-align:center;font-size:.75rem;line-height:1.4;margin-top:.05rem}
 .task-item.pending .task-status-icon{color:#52525b}
@@ -2568,7 +2568,8 @@ function renderTasksPanel(channelId) {
   const completed = todos.filter(t => t.status === 'completed').length;
   const summary = document.createElement('div');
   summary.className = 'tasks-summary';
-  summary.innerHTML = `<span>${completed}/${todos.length} completed</span><div class="tasks-progress-bar"><div class="tasks-progress-fill" style="width:${Math.round(completed/todos.length*100)}%"></div></div>`;
+  const pct = todos.length ? Math.round(completed / todos.length * 100) : 0;
+  summary.innerHTML = `<span>${completed}/${todos.length} completed</span><div class="tasks-progress-bar"><div class="tasks-progress-fill" style="width:${pct}%"></div></div>`;
   list.appendChild(summary);
   const order = { in_progress: 0, pending: 1, completed: 2 };
   const sorted = [...todos].sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));

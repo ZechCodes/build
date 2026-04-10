@@ -1126,6 +1126,8 @@ body{
 .task-status-icon{flex-shrink:0;width:1rem;text-align:center;font-size:.75rem;line-height:1.4;margin-top:.05rem}
 .task-item.pending .task-status-icon{color:#52525b}
 .task-item.in_progress .task-status-icon{color:var(--accent)}
+.task-pulse-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:task-pulse 1.2s ease-in-out infinite}
+@keyframes task-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
 .task-item.completed .task-status-icon{color:#4ade80}
 .task-item.completed .task-content{text-decoration:line-through;opacity:.45}
 .task-content{flex:1;color:#d4d4d8}
@@ -2575,7 +2577,11 @@ function renderTasksPanel(channelId) {
     row.className = `task-item ${todo.status}`;
     const icon = document.createElement('span');
     icon.className = 'task-status-icon';
-    icon.textContent = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○';
+    if (todo.status === 'in_progress') {
+      icon.innerHTML = '<span class="task-pulse-dot"></span>';
+    } else {
+      icon.textContent = todo.status === 'completed' ? '✓' : '○';
+    }
     const content = document.createElement('span');
     content.className = 'task-content';
     content.textContent = todo.content;

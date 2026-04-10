@@ -179,6 +179,7 @@ async def _handle_e2ee_relay(
             })
         return
 
+    session.touch()
     # Forward as ephemeral notification to the browser.
     await notify_user(
         str(session.owner_user_id),

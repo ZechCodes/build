@@ -594,6 +594,7 @@ class DeviceApiController(Controller):
         except Exception:
             return Response(content={"error": "failed to reach device"}, status_code=503)
 
+        session.touch()
         return Response(content={"ok": True}, status_code=200)
 
     # ------------------------------------------------------------------

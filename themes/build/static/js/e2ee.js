@@ -311,9 +311,9 @@ class BuildE2EE extends EventTarget {
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: 'send failed' }));
       const msg = err.error || 'send failed';
-      // Session gone on relay (e.g. relay restarted) — tear down so dashboard can reconnect.
-      if (resp.status === 404 || msg === 'unknown session') {
-        console.warn('[E2EE] Session lost on relay — disconnecting');
+      // Session gone or expired on relay — tear down so dashboard can reconnect.
+      if (resp.status === 404 || resp.status === 410 || msg === 'unknown session' || msg === 'session expired') {
+        console.warn('[E2EE] Session lost on relay (' + msg + ') — disconnecting');
         this.disconnect();
       }
       throw new Error(msg);

@@ -37,10 +37,15 @@ class E2ESession:
     device_id: UUID
     owner_user_id: UUID
     created_at: float = field(default_factory=time.time)
+    last_activity: float = field(default_factory=time.time)
 
     @property
     def expired(self) -> bool:
-        return time.time() - self.created_at > SESSION_TTL_S
+        return time.time() - self.last_activity > SESSION_TTL_S
+
+    def touch(self) -> None:
+        """Refresh session TTL on activity."""
+        self.last_activity = time.time()
 
 
 _e2e_sessions: dict[str, E2ESession] = {}

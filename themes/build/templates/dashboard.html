@@ -3960,6 +3960,31 @@ function bindE2EEEvents(instance, deviceId) {
       } else {
         incrementUnread(channel_id, true);
       }
+    } else if (event_type === 'agent.error') {
+      // Display agent errors as system messages in chat.
+      const errMsg = {
+        id: 'err-' + Date.now(),
+        channel_id,
+        sender: 'system',
+        content: `**Agent error** — ${agentEvt.message || 'Unknown error'}`,
+        created_at: new Date().toISOString(),
+      };
+      const msgs = chatMessages.get(channel_id) || [];
+      msgs.push(errMsg);
+      chatMessages.set(channel_id, msgs);
+      if (chatCurrentChannel === channel_id) {
+        const wasNearBottom = isChatNearBottom();
+        appendMessage(errMsg);
+        const _newEl = document.getElementById('chat-messages').lastElementChild;
+        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        else showChatBubble(_newEl);
+      } else {
+        incrementUnread(channel_id, true);
+      }
+      if (agentEvt.fatal) {
+        channelAgentActive.set(channel_id, false);
+        updateStopButton();
+      }
     } else if (event_type === 'agent.state_update') {
       const planMode = agentEvt.plan_mode;
       if (planMode != null) {

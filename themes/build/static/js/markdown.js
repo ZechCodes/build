@@ -192,7 +192,7 @@
       var line = lines[i];
 
       // ── fenced code block ───────────────────────────────────────────────
-      var fenceMatch = line.match(/^```(\w*)\s*$/);
+      var fenceMatch = line.match(/^```([\w.*-]*)\s*$/);
       if (fenceMatch) {
         var lang = fenceMatch[1] || '';
         var codeLines = [];
@@ -322,7 +322,13 @@
         paraLines.push(lines[i]);
         i++;
       }
-      out.push('<p>' + inlineMarkdown(escapeHtml(paraLines.join('\n'))) + '</p>');
+      if (paraLines.length === 0) {
+        // Safety: skip unrecognised lines so we never infinite-loop.
+        out.push('<p>' + inlineMarkdown(escapeHtml(line)) + '</p>');
+        i++;
+      } else {
+        out.push('<p>' + inlineMarkdown(escapeHtml(paraLines.join('\n'))) + '</p>');
+      }
     }
 
     var result = out.join('');

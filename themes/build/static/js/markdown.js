@@ -66,6 +66,42 @@
     return text;
   }
 
+  // ── word-level diff highlighting ─────────────────────────────────────────
+
+  /**
+   * Compare two strings and return HTML with the changed segments wrapped
+   * in <span class="diff-word-{del|ins}">. Uses common-prefix/suffix
+   * matching — simple but effective for typical single-line edits.
+   */
+  function wordDiffLine(oldStr, newStr) {
+    // Find common prefix length.
+    var maxPre = Math.min(oldStr.length, newStr.length);
+    var pre = 0;
+    while (pre < maxPre && oldStr[pre] === newStr[pre]) pre++;
+
+    // Find common suffix length (not overlapping with prefix).
+    var maxSuf = Math.min(oldStr.length - pre, newStr.length - pre);
+    var suf = 0;
+    while (suf < maxSuf && oldStr[oldStr.length - 1 - suf] === newStr[newStr.length - 1 - suf]) suf++;
+
+    var oldMid = oldStr.substring(pre, oldStr.length - suf);
+    var newMid = newStr.substring(pre, newStr.length - suf);
+    var prefix = oldStr.substring(0, pre);
+    var suffix = oldStr.substring(oldStr.length - suf);
+
+    return {
+      oldHtml: escapeHtml(prefix) +
+        (oldMid ? '<span class="diff-word-del">' + escapeHtml(oldMid) + '</span>' : '') +
+        escapeHtml(suffix),
+      newHtml: escapeHtml(prefix) +
+        (newMid ? '<span class="diff-word-ins">' + escapeHtml(newMid) + '</span>' : '') +
+        escapeHtml(suffix),
+    };
+  }
+
+  // Expose for the dashboard file-viewer diff renderer.
+  global.wordDiffLine = wordDiffLine;
+
   // ── file / diff embed helpers ────────────────────────────────────────────
 
   var buildFileRe = /<build-file\s+path="([^"]*)"(?:\s+lang="([^"]*)")?(?:\s+lines="(\d+-\d+)")?>\n([\s\S]*?)\n<\/build-file>/g;
@@ -117,37 +153,85 @@
     var extMatch = path.match(/\.([^./]+)$/);
     var ext = extMatch ? extMatch[1].toLowerCase() : '';
 
-    var viewerHtml = '<div class="diff-viewer">';
-    var oldNum = 0, newNum = 0;
+    // Pre-parse lines into typed entries, skipping diff headers.
+    var entries = [];
+    var tmpOldNum = 0, tmpNewNum = 0;
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) continue;
       if (line.startsWith('@@')) {
         var m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (m) { oldNum = parseInt(m[1]); newNum = parseInt(m[2]); }
-        viewerHtml += '<div class="diff-hunk-header">' + escapeHtml(line) + '</div>';
+        if (m) { tmpOldNum = parseInt(m[1]); tmpNewNum = parseInt(m[2]); }
+        entries.push({ type: 'hunk', text: line });
+        continue;
+      }
+      if (line.startsWith('+')) {
+        entries.push({ type: 'add', text: line.slice(1), num: String(tmpNewNum++) });
+      } else if (line.startsWith('-')) {
+        entries.push({ type: 'del', text: line.slice(1), num: String(tmpOldNum++) });
+      } else {
+        entries.push({ type: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line, num: String(tmpNewNum) });
+        tmpOldNum++; tmpNewNum++;
+      }
+    }
+
+    var viewerHtml = '<div class="diff-viewer">';
+    var canHL = typeof window !== 'undefined' && window.highlightLine;
+
+    for (var ei = 0; ei < entries.length; ei++) {
+      var e = entries[ei];
+      if (e.type === 'hunk') {
+        viewerHtml += '<div class="diff-hunk-header">' + escapeHtml(e.text) + '</div>';
         totalLines++;
         continue;
       }
-      var hl;
-      var cls = 'diff-line';
-      var numText;
-      if (line.startsWith('+')) {
-        cls += ' added';
-        numText = String(newNum++);
-        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.slice(1), ext) : escapeHtml(line.slice(1));
-      } else if (line.startsWith('-')) {
-        cls += ' removed';
-        numText = String(oldNum++);
-        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.slice(1), ext) : escapeHtml(line.slice(1));
-      } else {
-        cls += ' context';
-        numText = String(newNum);
-        oldNum++; newNum++;
-        hl = (typeof window !== 'undefined' && window.highlightLine) ? window.highlightLine(line.startsWith(' ') ? line.slice(1) : line, ext) : escapeHtml(line);
+      if (e.type === 'ctx') {
+        var hl = canHL ? window.highlightLine(e.text, ext) : escapeHtml(e.text);
+        viewerHtml += '<div class="diff-line context"><span class="dl-num">' + e.num + '</span><span class="dl-content">' + hl + '</span></div>';
+        totalLines++;
+        continue;
       }
-      viewerHtml += '<div class="' + cls + '"><span class="dl-num">' + numText + '</span><span class="dl-content">' + hl + '</span></div>';
-      totalLines++;
+
+      // Collect adjacent del/add runs for word-level diff.
+      if (e.type === 'del') {
+        var dels = [e];
+        while (ei + 1 < entries.length && entries[ei + 1].type === 'del') dels.push(entries[++ei]);
+        var adds = [];
+        while (ei + 1 < entries.length && entries[ei + 1].type === 'add') adds.push(entries[++ei]);
+
+        // Pair up del/add lines for word-level highlighting.
+        var pairs = Math.min(dels.length, adds.length);
+        for (var pi = 0; pi < dels.length; pi++) {
+          var dHl;
+          if (pi < pairs) {
+            var wd = wordDiffLine(dels[pi].text, adds[pi].text);
+            dHl = wd.oldHtml;
+          } else {
+            dHl = canHL ? window.highlightLine(dels[pi].text, ext) : escapeHtml(dels[pi].text);
+          }
+          viewerHtml += '<div class="diff-line removed"><span class="dl-num">' + dels[pi].num + '</span><span class="dl-content">' + dHl + '</span></div>';
+          totalLines++;
+        }
+        for (var ai = 0; ai < adds.length; ai++) {
+          var aHl;
+          if (ai < pairs) {
+            var wd2 = wordDiffLine(dels[ai].text, adds[ai].text);
+            aHl = wd2.newHtml;
+          } else {
+            aHl = canHL ? window.highlightLine(adds[ai].text, ext) : escapeHtml(adds[ai].text);
+          }
+          viewerHtml += '<div class="diff-line added"><span class="dl-num">' + adds[ai].num + '</span><span class="dl-content">' + aHl + '</span></div>';
+          totalLines++;
+        }
+        continue;
+      }
+
+      // Standalone add (no preceding del).
+      if (e.type === 'add') {
+        var sHl = canHL ? window.highlightLine(e.text, ext) : escapeHtml(e.text);
+        viewerHtml += '<div class="diff-line added"><span class="dl-num">' + e.num + '</span><span class="dl-content">' + sHl + '</span></div>';
+        totalLines++;
+      }
     }
     viewerHtml += '</div>';
 

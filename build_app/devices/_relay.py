@@ -14,12 +14,9 @@ from typing import Any
 from uuid import UUID
 
 import redis.asyncio as aioredis
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from skrift.lib.notifications import notify_user, NotificationMode
 
-from build_app.models import Device
 from build_app.devices._state import (
     _e2e_sessions,
     cleanup_expired_sessions,
@@ -38,15 +35,15 @@ RELAY_CONSUMER_GROUP = "relay-consumers"
 _redis: aioredis.Redis | None = None
 _consumer_task: asyncio.Task | None = None
 _session_cleanup_task: asyncio.Task | None = None
-_session_maker: async_sessionmaker | None = None
 
 
-async def init_relay(session_maker: async_sessionmaker) -> None:
+async def init_relay() -> None:
     """Connect to Redis and start the event consumer."""
-    global _redis, _session_maker
+    global _redis
+    if _redis is not None:
+        return  # Already initialized.
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     _redis = aioredis.from_url(redis_url, decode_responses=True)
-    _session_maker = session_maker
 
     # Ensure consumer groups exist.
     for stream, group in [
@@ -61,6 +58,7 @@ async def init_relay(session_maker: async_sessionmaker) -> None:
 
     _start_event_consumer()
     _start_session_cleanup()
+    logger.info("Relay stream consumer started (REDIS_URL=%s)", redis_url)
 
 
 async def close_relay() -> None:

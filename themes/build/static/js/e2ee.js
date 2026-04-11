@@ -358,6 +358,7 @@ class BuildE2EE extends EventTarget {
     const payload = { action: 'create_channel', name };
     if (opts.harness) payload.harness = opts.harness;
     if (opts.model) payload.model = opts.model;
+    if (opts.effort) payload.effort = opts.effort;
     if (opts.system_prompt) payload.system_prompt = opts.system_prompt;
     if (opts.working_directory) payload.working_directory = opts.working_directory;
     return this.send(payload);

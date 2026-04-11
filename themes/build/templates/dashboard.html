@@ -3777,6 +3777,23 @@ function bindE2EEEvents(instance, deviceId) {
     }
   });
 
+  instance.addEventListener('channel_updated', (evt) => {
+    const { channel_id, model, effort, working_directory } = evt.detail;
+    const ch = chatChannels.get(channel_id);
+    if (ch) {
+      if (model) ch.model = model;
+      if (effort !== undefined) ch.effort = effort;
+      if (working_directory !== undefined) ch.working_directory = working_directory;
+      const devChans = deviceChannels.get(deviceId);
+      if (devChans?.has(channel_id)) {
+        const dc = devChans.get(channel_id);
+        if (model) dc.model = model;
+        if (effort !== undefined) dc.effort = effort;
+        if (working_directory !== undefined) dc.working_directory = working_directory;
+      }
+    }
+  });
+
   instance.addEventListener('channel_deleted', (evt) => {
     const { channel_id } = evt.detail;
     channelDeviceMap.delete(channel_id);
@@ -5425,10 +5442,13 @@ async function sendChatMessage() {
   resolvePendingPlanReviews();
 
   try {
-    // Send via E2EE with attachment metadata and plan mode flag.
+    // Send via E2EE with attachment metadata, plan mode, model, and effort.
     const payload = { action: 'message', channel_id: channelId, content: messageContent };
     if (attachments) payload.attachments = attachments;
     if (channelPlanMode.get(channelId)) payload.plan_mode = true;
+    const _chData = chatChannels.get(channelId);
+    if (_chData?.model) payload.model = _chData.model;
+    if (_chData?.effort) payload.effort = _chData.effort;
     const realMessageId = await _sendConn.send(payload);
     const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
     if (el) el.dataset.msgId = realMessageId;
@@ -5692,6 +5712,14 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       <select id="new-channel-harness">${harnessOptions}</select>
       <label for="new-channel-model">Model</label>
       <select id="new-channel-model"><option value="">Select a harness first</option></select>
+      <label for="new-channel-effort">Effort</label>
+      <select id="new-channel-effort">
+        <option value="">Default</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high" selected>High</option>
+        <option value="max">Max</option>
+      </select>
       <button class="new-channel-advanced-toggle" type="button" id="new-channel-advanced-toggle">▶ Advanced</button>
       <div class="new-channel-advanced" id="new-channel-advanced">
         <label for="new-channel-workdir">Working Directory</label>
@@ -5752,6 +5780,8 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       const opts = {};
       if (harnessSelect.value) opts.harness = harnessSelect.value;
       if (modelSelect.value) opts.model = modelSelect.value;
+      const effortVal = document.getElementById('new-channel-effort').value;
+      if (effortVal) opts.effort = effortVal;
       const wd = document.getElementById('new-channel-workdir').value.trim();
       if (wd) opts.working_directory = wd;
       const sp = document.getElementById('new-channel-prompt').value.trim();
@@ -5777,6 +5807,29 @@ function showEditChannelDialog(ch) {
   const dialogParent = document.body;
   if (!dialogParent) return;
 
+  // Build model options from the channel's harness.
+  const deviceId = channelDeviceMap.get(ch.id);
+  const cachedHarnesses = deviceId ? deviceHarnesses.get(deviceId) : [];
+  const harness = cachedHarnesses?.find(h => h.id === ch.harness);
+  let modelOptions = '';
+  if (harness) {
+    modelOptions = harness.models.map(m =>
+      `<option value="${m.id}"${m.id === ch.model ? ' selected' : ''}>${m.name}</option>`
+    ).join('');
+  }
+
+  // Build effort options (shared between Claude and Codex).
+  const effortLevels = [
+    { value: '', label: 'Default' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'max', label: 'Max' },
+  ];
+  const effortOptions = effortLevels.map(e =>
+    `<option value="${e.value}"${e.value === (ch.effort || '') ? ' selected' : ''}>${e.label}</option>`
+  ).join('');
+
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
   overlay.innerHTML = `
@@ -5784,6 +5837,10 @@ function showEditChannelDialog(ch) {
       <h3>Edit Channel</h3>
       <label for="edit-channel-name">Name</label>
       <input type="text" id="edit-channel-name" value="${escapeHtml(ch.name)}" autofocus>
+      ${modelOptions ? `<label for="edit-channel-model">Model</label>
+      <select id="edit-channel-model">${modelOptions}</select>` : ''}
+      <label for="edit-channel-effort">Effort</label>
+      <select id="edit-channel-effort">${effortOptions}</select>
       <label for="edit-channel-workdir">Working Directory</label>
       <input type="text" id="edit-channel-workdir" value="${escapeHtml(ch.working_directory || '')}" placeholder="/path/to/project">
       <div class="edit-channel-actions">
@@ -5814,14 +5871,25 @@ function showEditChannelDialog(ch) {
 
   // Save
   const workdirInput = document.getElementById('edit-channel-workdir');
+  const modelSelect = document.getElementById('edit-channel-model');
+  const effortSelect = document.getElementById('edit-channel-effort');
   const save = () => {
     const newName = nameInput.value.trim();
     if (newName && newName !== ch.name) {
       _editConn.renameChannel(ch.id, newName);
     }
+    const updates = {};
     const newWorkdir = workdirInput.value.trim();
-    if (newWorkdir !== (ch.working_directory || '')) {
-      _editConn.updateChannel(ch.id, { working_directory: newWorkdir });
+    if (newWorkdir !== (ch.working_directory || '')) updates.working_directory = newWorkdir;
+    const newModel = modelSelect?.value;
+    if (newModel && newModel !== ch.model) updates.model = newModel;
+    const newEffort = effortSelect.value;
+    if (newEffort !== (ch.effort || '')) updates.effort = newEffort;
+    if (Object.keys(updates).length) {
+      _editConn.updateChannel(ch.id, updates);
+      // Update local channel data so next message picks up new values.
+      if (updates.model) ch.model = updates.model;
+      if (updates.effort !== undefined) ch.effort = updates.effort;
     }
     close();
   };

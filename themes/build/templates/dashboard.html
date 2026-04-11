@@ -3854,8 +3854,7 @@ function bindE2EEEvents(instance, deviceId) {
       const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
       const _newEl = document.getElementById('chat-messages').lastElementChild;
-      if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      else showChatBubble(_newEl);
+      handleNewMessageScroll(wasNearBottom, _newEl);
       const _msgChId = msg.channel_id;
       const _msgId = msg.id;
       const _inst = instance;
@@ -3894,8 +3893,7 @@ function bindE2EEEvents(instance, deviceId) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
-        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        else showChatBubble(_newEl);
+        handleNewMessageScroll(wasNearBottom, _newEl);
         const _agChId = channel_id;
         deferMarkRead(() => setLastSeen(_agChId));
       } else {
@@ -3961,8 +3959,7 @@ function bindE2EEEvents(instance, deviceId) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
-        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        else showChatBubble(_newEl);
+        handleNewMessageScroll(wasNearBottom, _newEl);
       } else {
         incrementUnread(channel_id, true);
       }
@@ -3982,8 +3979,7 @@ function bindE2EEEvents(instance, deviceId) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(errMsg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
-        if (wasNearBottom) _newEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        else showChatBubble(_newEl);
+        handleNewMessageScroll(wasNearBottom, _newEl);
       } else {
         incrementUnread(channel_id, true);
       }
@@ -5160,6 +5156,77 @@ function scrollChatToBottom() {
   hideChatBubble();
 }
 
+// ---- Chat scroll engine ----
+
+/**
+ * Scroll so a message element is visible in the chat container.
+ * align='auto': short messages → bottom-align (max context above), tall → top-align.
+ * align='top': always top-align (for unread targets).
+ */
+function scrollToMessage(el, behavior = 'instant', align = 'auto') {
+  const container = document.getElementById('chat-messages');
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const elTop = eRect.top - cRect.top + container.scrollTop;
+  const elH = eRect.height;
+  const vpH = container.clientHeight;
+  let target;
+  if (align === 'top' || (align === 'auto' && elH >= vpH)) {
+    target = elTop;
+  } else {
+    target = elTop + elH - vpH;
+  }
+  target = Math.max(0, Math.min(target, container.scrollHeight - vpH));
+  if (behavior === 'smooth') {
+    container.scrollTo({ top: target, behavior: 'smooth' });
+  } else {
+    container.scrollTop = target;
+  }
+}
+
+let _oldestAutoScrollTarget = null;
+let _scrollRAF = null;
+
+/**
+ * Called after appending a new incoming message.
+ * wasNearBottom: result of isChatNearBottom() captured BEFORE the append.
+ * newEl: the newly appended DOM element.
+ */
+function handleNewMessageScroll(wasNearBottom, newEl) {
+  if (!wasNearBottom) {
+    showChatBubble(newEl);
+    return;
+  }
+  // Track the oldest unread message that arrived while user was at bottom.
+  if (!_oldestAutoScrollTarget) _oldestAutoScrollTarget = newEl;
+
+  // Debounce: if multiple messages arrive in one frame, only scroll once.
+  if (_scrollRAF) cancelAnimationFrame(_scrollRAF);
+  _scrollRAF = requestAnimationFrame(() => {
+    _scrollRAF = null;
+    const container = document.getElementById('chat-messages');
+    const cRect = container.getBoundingClientRect();
+
+    // Check if the oldest unread target has scrolled above the viewport.
+    if (_oldestAutoScrollTarget && _oldestAutoScrollTarget !== newEl) {
+      const oldRect = _oldestAutoScrollTarget.getBoundingClientRect();
+      if (oldRect.top < cRect.top) {
+        scrollToMessage(_oldestAutoScrollTarget, 'instant', 'top');
+        return;
+      }
+    }
+    // Otherwise scroll to make the new message visible.
+    scrollToMessage(newEl, 'instant');
+  });
+}
+
+/** For user's own sent messages — always scroll to show it. */
+function handleSentMessageScroll(el) {
+  _oldestAutoScrollTarget = null;
+  if (_scrollRAF) cancelAnimationFrame(_scrollRAF);
+  scrollToMessage(el, 'instant');
+}
+
 // ---- New content bubbles ----
 
 const newChatBubble = document.getElementById('new-chat-bubble');
@@ -5175,6 +5242,7 @@ function showChatBubble(el) {
 function hideChatBubble() {
   newChatBubble.classList.remove('visible');
   firstUnseenChatEl = null;
+  _oldestAutoScrollTarget = null;
 }
 function showActivityBubble(el) {
   if (!firstUnseenActivityEl) firstUnseenActivityEl = el;
@@ -5188,7 +5256,7 @@ function hideActivityBubble() {
 
 newChatBubble.addEventListener('click', () => {
   if (firstUnseenChatEl) {
-    firstUnseenChatEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    scrollToMessage(firstUnseenChatEl, 'smooth', 'top');
   } else {
     scrollChatToBottom();
   }
@@ -5271,7 +5339,7 @@ function scrollToFirstUnread(container) {
   const msgEls = container.querySelectorAll('.msg[data-created-at]');
   for (const el of msgEls) {
     if (el.dataset.createdAt > lastSeen) {
-      el.scrollIntoView({ block: 'start', behavior: 'instant' });
+      scrollToMessage(el, 'instant', 'top');
       scrollLastSeen = null; // consumed
       return true;
     }
@@ -5351,7 +5419,7 @@ async function sendChatMessage() {
   chatMessages.set(channelId, msgs);
   appendMessage(tempMsg);
   const _sentEl = document.getElementById('chat-messages').lastElementChild;
-  if (_sentEl) _sentEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (_sentEl) handleSentMessageScroll(_sentEl);
 
   // Auto-resolve any pending plan review cards (agent cancels interactions on new messages).
   resolvePendingPlanReviews();

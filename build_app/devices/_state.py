@@ -7,23 +7,15 @@ import time
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from litestar.connection import WebSocket
-
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-# How many seconds without a heartbeat before we consider the device offline.
-HEARTBEAT_TIMEOUT_MULTIPLIER = 2.5
-# Max missed windows to keep per device (rolling).
-MAX_MISSED_WINDOWS = 100
 # How long a pending registration is valid (10 minutes).
 PENDING_EXPIRY_S = 600
 # Max E2EE session age (1 hour).
 SESSION_TTL_S = 3600
-# Max envelope size in bytes (2 MB — needed for chunked image transfer).
-MAX_ENVELOPE_SIZE = 2 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -89,24 +81,3 @@ def cleanup_expired_pending() -> None:
     ]
     for code in expired:
         _pending_registrations.pop(code, None)
-
-
-# ---------------------------------------------------------------------------
-# Connected devices registry (for heartbeat monitor + WS relay)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ConnectedDevice:
-    device_id: UUID
-    owner_user_id: UUID
-    socket: WebSocket
-    last_heartbeat: float = field(default_factory=time.time)
-    heartbeat_interval: int = 30
-
-
-_connected_devices: dict[UUID, ConnectedDevice] = {}
-
-
-def get_connected_devices() -> dict[UUID, ConnectedDevice]:
-    """Expose registry for testing."""
-    return _connected_devices

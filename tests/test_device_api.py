@@ -1,36 +1,25 @@
-"""Tests for build_app.devices — device authorization, listing, WS, heartbeat."""
+"""Tests for build_app.devices — device authorization, E2EE sessions, notifications."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import time
 from datetime import datetime, timezone
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-import pytest_asyncio
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from build_app.models import Device
 from build_app.devices import (
-    ConnectedDevice,
-    DeviceApiController,
-    HEARTBEAT_TIMEOUT_MULTIPLIER,
-    MAX_MISSED_WINDOWS,
+    E2ESession,
     load_public_key,
     verify_device_signature,
-    record_heartbeat,
-    record_missed_window,
     notify_device_event,
-    _connected_devices,
-    start_heartbeat_monitor,
-    stop_heartbeat_monitor,
-    get_connected_devices,
+    _e2e_sessions,
 )
 
 
@@ -149,74 +138,51 @@ class TestDeviceMissedWindows:
 
 
 # ---------------------------------------------------------------------------
-# Connected devices registry
+# E2EE sessions
 # ---------------------------------------------------------------------------
 
-class TestConnectedDevicesRegistry:
+class TestE2EESessions:
     def setup_method(self):
-        _connected_devices.clear()
+        _e2e_sessions.clear()
 
     def teardown_method(self):
-        _connected_devices.clear()
+        _e2e_sessions.clear()
 
-    def test_register_and_get(self):
-        device_id = uuid4()
-        conn = ConnectedDevice(
-            device_id=device_id,
+    def test_register_and_lookup(self):
+        session = E2ESession(
+            session_id="s1",
+            device_id=uuid4(),
             owner_user_id=uuid4(),
-            socket=MagicMock(),
         )
-        _connected_devices[device_id] = conn
-        registry = get_connected_devices()
-        assert device_id in registry
-        assert registry[device_id] is conn
+        _e2e_sessions["s1"] = session
+        assert _e2e_sessions["s1"] is session
 
-    def test_unregister(self):
-        device_id = uuid4()
-        _connected_devices[device_id] = ConnectedDevice(
-            device_id=device_id,
+    def test_expired_check(self):
+        session = E2ESession(
+            session_id="s2",
+            device_id=uuid4(),
             owner_user_id=uuid4(),
-            socket=MagicMock(),
+            last_activity=time.time() - 7200,  # 2 hours ago
         )
-        _connected_devices.pop(device_id)
-        assert device_id not in _connected_devices
+        assert session.expired is True
 
+    def test_fresh_not_expired(self):
+        session = E2ESession(
+            session_id="s3",
+            device_id=uuid4(),
+            owner_user_id=uuid4(),
+        )
+        assert session.expired is False
 
-# ---------------------------------------------------------------------------
-# Heartbeat monitor lifecycle
-# ---------------------------------------------------------------------------
-
-class TestHeartbeatMonitorLifecycle:
-    def teardown_method(self):
-        stop_heartbeat_monitor()
-
-    @pytest.mark.asyncio
-    async def test_start_creates_task(self):
-        start_heartbeat_monitor()
-        from build_app.devices._heartbeat import _monitor_task
-        assert _monitor_task is not None
-        assert not _monitor_task.done()
-        stop_heartbeat_monitor()
-
-    @pytest.mark.asyncio
-    async def test_stop_cancels_task(self):
-        start_heartbeat_monitor()
-        from build_app.devices._heartbeat import _monitor_task
-        task = _monitor_task
-        stop_heartbeat_monitor()
-        # Give the event loop a tick so the cancellation propagates.
-        await asyncio.sleep(0)
-        assert task.cancelled()
-
-    @pytest.mark.asyncio
-    async def test_start_is_idempotent(self):
-        start_heartbeat_monitor()
-        from build_app.devices._heartbeat import _monitor_task
-        first_task = _monitor_task
-        start_heartbeat_monitor()
-        from build_app.devices._heartbeat import _monitor_task as second
-        assert first_task is second
-        stop_heartbeat_monitor()
+    def test_touch_refreshes(self):
+        session = E2ESession(
+            session_id="s4",
+            device_id=uuid4(),
+            owner_user_id=uuid4(),
+            last_activity=time.time() - 3500,  # almost expired
+        )
+        session.touch()
+        assert session.expired is False
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +220,6 @@ class TestAuthorizeValidation:
         """Authorize validates the key, so verify our keypair helper works end-to-end."""
         private_key, pub_b64 = _generate_keypair()
         pub_key = load_public_key(pub_b64)
-        # Sign and verify
         ts, sig = _sign_ws_handshake(private_key)
         assert verify_device_signature(pub_key, ts, sig) is True
 
@@ -266,71 +231,7 @@ class TestAuthorizeValidation:
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat timeout calculation
-# ---------------------------------------------------------------------------
-
-class TestHeartbeatTimeout:
-    def test_timeout_multiplier(self):
-        """Default 30s interval * 2.5 multiplier = 75s timeout."""
-        interval = 30
-        timeout = interval * HEARTBEAT_TIMEOUT_MULTIPLIER
-        assert timeout == 75.0
-
-    def test_stale_detection(self):
-        """A heartbeat older than the timeout is stale."""
-        conn = ConnectedDevice(
-            device_id=uuid4(),
-            owner_user_id=uuid4(),
-            socket=MagicMock(),
-            last_heartbeat=time.time() - 100,
-            heartbeat_interval=30,
-        )
-        elapsed = time.time() - conn.last_heartbeat
-        timeout = conn.heartbeat_interval * HEARTBEAT_TIMEOUT_MULTIPLIER
-        assert elapsed > timeout
-
-    def test_fresh_heartbeat_not_stale(self):
-        """A recent heartbeat should not be stale."""
-        conn = ConnectedDevice(
-            device_id=uuid4(),
-            owner_user_id=uuid4(),
-            socket=MagicMock(),
-            last_heartbeat=time.time(),
-            heartbeat_interval=30,
-        )
-        elapsed = time.time() - conn.last_heartbeat
-        timeout = conn.heartbeat_interval * HEARTBEAT_TIMEOUT_MULTIPLIER
-        assert elapsed < timeout
-
-
-# ---------------------------------------------------------------------------
-# Missed window recording
-# ---------------------------------------------------------------------------
-
-class TestMissedWindowRecording:
-    def test_max_windows_cap(self):
-        """Missed windows list should be capped at MAX_MISSED_WINDOWS."""
-        device = _make_device()
-        # Pre-fill with MAX windows.
-        windows = [
-            {"start": f"2026-03-14T{i:02d}:00:00+00:00", "end": f"2026-03-14T{i:02d}:05:00+00:00"}
-            for i in range(MAX_MISSED_WINDOWS)
-        ]
-        device.set_missed_windows(windows)
-        assert len(device.get_missed_windows()) == MAX_MISSED_WINDOWS
-
-        # Add one more — oldest should be dropped.
-        windows.append({"start": "2026-03-15T00:00:00+00:00", "end": "2026-03-15T00:05:00+00:00"})
-        if len(windows) > MAX_MISSED_WINDOWS:
-            windows = windows[-MAX_MISSED_WINDOWS:]
-        device.set_missed_windows(windows)
-        assert len(device.get_missed_windows()) == MAX_MISSED_WINDOWS
-        # The last entry should be our new one.
-        assert device.get_missed_windows()[-1]["start"] == "2026-03-15T00:00:00+00:00"
-
-
-# ---------------------------------------------------------------------------
-# WS message protocol
+# WS message protocol (shape verification — protocol still valid for relay)
 # ---------------------------------------------------------------------------
 
 class TestWSMessageProtocol:

@@ -10,8 +10,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import UUID
 
-from litestar import Controller, Request, get, patch, post, delete, websocket
-from litestar.connection import WebSocket
+from litestar import Controller, Request, get, patch, post, delete
 from litestar.exceptions import NotFoundException
 from litestar.response import Response, Template
 from litestar.response.sse import ServerSentEvent, ServerSentEventMessage
@@ -22,14 +21,10 @@ from skrift.auth.guards import auth_guard, Permission
 
 from build_app.models import Device
 from build_app.devices._state import (
-    ConnectedDevice,
     E2ESession,
     PendingRegistration,
-    _connected_devices,
     _e2e_sessions,
     _pending_registrations,
-    HEARTBEAT_TIMEOUT_MULTIPLIER,
-    MAX_ENVELOPE_SIZE,
     PENDING_EXPIRY_S,
     cleanup_expired_pending,
 )
@@ -37,13 +32,13 @@ from build_app.devices._crypto import load_public_key
 from build_app.devices._helpers import (
     create_device_record,
     notify_device_event,
-    record_missed_window,
     set_device_status,
-    record_heartbeat,
 )
-from build_app.devices._heartbeat import start_heartbeat_monitor
-from build_app.devices._ws_auth import authenticate_device_ws
-from build_app.devices._ws_handlers import handle_ws_message
+from build_app.devices._relay import (
+    send_to_device,
+    disconnect_device,
+    is_device_connected,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -379,15 +374,8 @@ class DeviceApiController(Controller):
         if not device:
             raise NotFoundException(detail="Device not found")
 
-        conn = _connected_devices.get(device_id)
-        if not conn:
-            return Response(
-                content={"error": "Device is not connected"},
-                status_code=404,
-            )
-
         try:
-            await conn.socket.send_json({"type": "restart"})
+            await send_to_device(device_id, {"type": "restart"})
         except Exception as exc:
             logger.error("Failed to send restart to device %s: %s", device_id, exc)
             return Response(
@@ -422,13 +410,11 @@ class DeviceApiController(Controller):
 
         device_name = device.name
 
-        # Disconnect WebSocket if connected.
-        conn = _connected_devices.pop(device_id, None)
-        if conn:
-            try:
-                await conn.socket.close()
-            except Exception:
-                pass
+        # Disconnect device via relay.
+        try:
+            await disconnect_device(device_id)
+        except Exception:
+            pass
 
         # Clean up E2EE sessions for this device.
         stale_sessions = [
@@ -528,10 +514,6 @@ class DeviceApiController(Controller):
         if not device:
             return Response(content={"error": "device not found"}, status_code=404)
 
-        conn = _connected_devices.get(device_id)
-        if not conn:
-            return Response(content={"error": "device is offline"}, status_code=503)
-
         # Register the session.
         _e2e_sessions[session_id] = E2ESession(
             session_id=session_id,
@@ -539,9 +521,9 @@ class DeviceApiController(Controller):
             owner_user_id=user_id,
         )
 
-        # Forward session_init to device over WS.
+        # Forward session_init to device via relay.
         try:
-            await conn.socket.send_json({
+            await send_to_device(device_id, {
                 "type": "session_init",
                 "session_id": session_id,
                 "session_init": session_init_payload,
@@ -581,12 +563,8 @@ class DeviceApiController(Controller):
             _e2e_sessions.pop(session_id, None)
             return Response(content={"error": "session expired"}, status_code=410)
 
-        conn = _connected_devices.get(session.device_id)
-        if not conn:
-            return Response(content={"error": "device is offline"}, status_code=503)
-
         try:
-            await conn.socket.send_json({
+            await send_to_device(session.device_id, {
                 "type": "e2ee_envelope",
                 "session_id": session_id,
                 "envelope": envelope,
@@ -597,124 +575,6 @@ class DeviceApiController(Controller):
         session.touch()
         return Response(content={"ok": True}, status_code=200)
 
-    # ------------------------------------------------------------------
-    # WebSocket
-    # ------------------------------------------------------------------
-
-    @websocket("/ws")
-    async def device_ws(self, socket: WebSocket) -> None:
-        """WebSocket endpoint for device connections.
-
-        Headers required:
-        - ``X-Device-Id``: UUID of the device
-        - ``X-Timestamp``: Unix timestamp string
-        - ``X-Signature``: Base64 Ed25519 signature over ``{timestamp}.GET./api/devices/ws``
-        """
-        # Authenticate BEFORE accepting the WebSocket.
-        # Litestar requires accept() before we can read headers from some
-        # transports, so we accept first but close immediately on auth failure.
-        await socket.accept()
-
-        session_maker = socket.app.state.session_maker_class
-
-        async with session_maker() as db_session:
-            auth = await authenticate_device_ws(socket, db_session)
-
-            if not auth.ok:
-                await socket.send_json({"type": "error", "error": auth.error})
-                await socket.close(code=4001, reason=auth.error)
-                return
-
-            device_id = auth.device_id
-            owner_user_id = auth.owner_user_id
-            device_name = auth.device_name
-            heartbeat_interval = auth.heartbeat_interval
-
-            # Set online.
-            result = await db_session.execute(
-                select(Device).where(Device.id == device_id)
-            )
-            device = result.scalar_one()
-            await set_device_status(db_session, device, "online")
-            await record_heartbeat(db_session, device)
-
-        # Register in connected-devices registry.
-        conn = ConnectedDevice(
-            device_id=device_id,
-            owner_user_id=owner_user_id,
-            socket=socket,
-            last_heartbeat=time.time(),
-            heartbeat_interval=heartbeat_interval,
-        )
-        _connected_devices[device_id] = conn
-
-        await notify_device_event(owner_user_id, "online", device_id, device_name)
-
-        await socket.send_json({
-            "type": "authenticated",
-            "device_id": str(device_id),
-            "heartbeat_interval_s": heartbeat_interval,
-        })
-
-        start_heartbeat_monitor()
-
-        # --- Main message loop ---
-        try:
-            while True:
-                raw = await socket.receive_text()
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    await socket.send_json({"type": "error", "error": "invalid JSON"})
-                    continue
-
-                await handle_ws_message(
-                    msg,
-                    socket=socket,
-                    conn=conn,
-                    device_id=device_id,
-                    owner_user_id=owner_user_id,
-                    device_name=device_name,
-                    session_maker=session_maker,
-                )
-
-        except Exception:
-            pass
-        finally:
-            # --- Cleanup ---
-            _connected_devices.pop(device_id, None)
-
-            # Clean up any E2EE sessions for this device.
-            stale_sessions = [
-                sid for sid, s in _e2e_sessions.items()
-                if s.device_id == device_id
-            ]
-            for sid in stale_sessions:
-                _e2e_sessions.pop(sid, None)
-
-            # Record missed window if last heartbeat was stale.
-            now = time.time()
-            if now - conn.last_heartbeat > heartbeat_interval * HEARTBEAT_TIMEOUT_MULTIPLIER:
-                async with session_maker() as db_session:
-                    result = await db_session.execute(
-                        select(Device).where(Device.id == device_id)
-                    )
-                    dev = result.scalar_one_or_none()
-                    if dev:
-                        await record_missed_window(
-                            db_session, dev, conn.last_heartbeat, now,
-                        )
-
-            # Set offline.
-            async with session_maker() as db_session:
-                await db_session.execute(
-                    update(Device)
-                    .where(Device.id == device_id)
-                    .values(status="offline")
-                )
-                await db_session.commit()
-
-            await notify_device_event(
-                owner_user_id, "offline", device_id, device_name,
-            )
-            logger.info("Device %s (%s) disconnected", device_name, device_id)
+    # Note: Device WebSocket endpoint has been moved to the build-relay service.
+    # Devices now connect to the relay at wss://relay.getbuild.ing/ws/device.
+    # Communication happens via Redis streams (relay:device-events, relay:device-commands).

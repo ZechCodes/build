@@ -48,6 +48,7 @@ page_types:
     icon: file-text
 
 middleware:
+  - build_app.middleware:create_relay_lifecycle_middleware
   - build_app.middleware:create_install_middleware
 
 security_headers:

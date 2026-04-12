@@ -1626,6 +1626,28 @@ body{
   font-size:12px;font-weight:500;color:var(--text-muted);
 }
 
+/* Reconnect pill — shown after 5s when reconnecting (not first load) */
+.reconnect-pill{
+  position:absolute;bottom:72px;left:50%;transform:translateX(-50%);
+  display:none;align-items:center;gap:.5rem;
+  background:rgba(255,255,255,.95);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  padding:.4rem .875rem;border-radius:20px;
+  border:1px solid var(--border);
+  box-shadow:0 2px 8px rgba(0,0,0,.06);
+  z-index:25;
+  opacity:0;transition:opacity .3s ease;
+}
+.reconnect-pill.visible{display:flex;opacity:1}
+.reconnect-pill-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--amber);
+  animation:pulse 1.5s infinite;
+}
+.reconnect-pill-text{
+  font-size:12px;font-weight:500;color:var(--text-muted);
+}
+
 @media(max-width:600px){
   .sk-status-indicator{
     bottom:calc(1rem + env(safe-area-inset-bottom,0px));
@@ -1842,6 +1864,7 @@ body{
   /* Skeleton shimmer */
   .skel{background:#2a2a30;background:linear-gradient(90deg,#2a2a30 25%,#35353d 37%,#2a2a30 63%);background-size:800px 100%}
   .skel-status{background:rgba(26,26,33,.95);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+  .reconnect-pill{background:rgba(26,26,33,.95);box-shadow:0 2px 8px rgba(0,0,0,.3)}
   /* Skrift status indicator */
   .sk-status-indicator{background:rgba(26,26,33,0.7);border-color:rgba(255,255,255,0.06);box-shadow:0 1px 3px rgba(0,0,0,0.3)}
   /* Scrollbar */
@@ -2023,11 +2046,16 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
             <div class="skel skel-input-box"></div>
             <div class="skel skel-input-btn"></div>
           </div>
-          <!-- Floating status pill -->
+          <!-- Floating status pill (first load only) -->
           <div class="skel-status">
             <div class="skel-status-dot"></div>
             <span class="skel-status-text">Connecting to device…</span>
           </div>
+        </div>
+        <!-- Reconnect pill (shown on connection loss, not first load) -->
+        <div class="reconnect-pill" id="reconnect-pill">
+          <div class="reconnect-pill-dot"></div>
+          <span class="reconnect-pill-text" id="reconnect-pill-text">Reconnecting to device…</span>
         </div>
       </div>
     </div>
@@ -3457,6 +3485,8 @@ document.addEventListener('sk:notification-status', (evt) => {
 // =====================================================================
 
 // Multi-device E2EE state
+let e2eeHasConnected = false;        // true after first successful E2EE connection
+let _reconnectPillTimer = null;      // 5s timer to show reconnect pill
 const e2eeConnections = new Map();   // deviceId -> BuildE2EE instance
 const channelDeviceMap = new Map();  // channelId -> deviceId
 const deviceChannels = new Map();    // deviceId -> Map(channelId -> channel)
@@ -3737,6 +3767,7 @@ function bindE2EEEvents(instance, deviceId) {
   if (!instance) return;
   instance.addEventListener('connected', () => {
     console.log('[E2EE] Session established for device', deviceId);
+    e2eeHasConnected = true;
     document.getElementById('chat-input').disabled = false;
     document.getElementById('chat-send-btn').disabled = false;
     document.getElementById('cmd-attach-btn').disabled = false;
@@ -3744,6 +3775,10 @@ function bindE2EEEvents(instance, deviceId) {
     document.getElementById('cmd-compact-btn').disabled = false;
     document.getElementById('cmd-reset-btn').disabled = false;
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
+    // Hide reconnect pill + cancel timer.
+    clearTimeout(_reconnectPillTimer);
+    _reconnectPillTimer = null;
+    document.getElementById('reconnect-pill').classList.remove('visible');
     // Clear device-down banner on successful reconnect.
     deviceDown = null;
     const _ddb = document.getElementById('device-down-banner');
@@ -3783,9 +3818,18 @@ function bindE2EEEvents(instance, deviceId) {
       document.getElementById('cmd-compact-btn').disabled = true;
       document.getElementById('cmd-reset-btn').disabled = true;
       if (deviceDown) {
-        // Device is known to be offline — keep banner visible, skip skeleton overlay.
-      } else {
+        // Device is known to be offline — keep banner visible, skip skeleton/pill.
+      } else if (!e2eeHasConnected) {
+        // First load — show skeleton.
         document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
+      } else {
+        // Reconnection — show pill after 5s delay.
+        clearTimeout(_reconnectPillTimer);
+        _reconnectPillTimer = setTimeout(() => {
+          if (!anyE2EEConnected()) {
+            document.getElementById('reconnect-pill').classList.add('visible');
+          }
+        }, 5000);
       }
     }
     syncE2EEStatus();

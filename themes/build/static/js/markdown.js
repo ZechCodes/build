@@ -46,7 +46,7 @@
       }
       // Treat non-URL targets as file paths
       var pathOnly = url.replace(/:\d+(?::\d+)?$/, '');
-      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '">' + linkText + '</a>';
+      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '" title="' + pathOnly + '">' + linkText + '</a>';
     });
 
     // Bold (**text** or __text__)
@@ -94,7 +94,7 @@
       var pathOnly = filePath.replace(/:\d+(?::\d+)?$/, '');
       var lineMatch = filePath.match(/:(\d+)(?::(\d+))?$/);
       var lineAttr = lineMatch ? ' data-file-line="' + lineMatch[1] + '"' : '';
-      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '"' + lineAttr + '>' + filePath + '</a>';
+      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '"' + lineAttr + ' title="' + pathOnly + '">' + filePath + '</a>';
     });
 
     return text;

@@ -1,7 +1,7 @@
 name: build
 display_name: Build
 description: Landing page theme for getbuild.ing
-version: "1.2.3"
+version: "1.2.4"
 author: "Zech"
 colors:
   - "#818cf8"

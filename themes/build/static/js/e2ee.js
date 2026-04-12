@@ -410,6 +410,8 @@ class BuildE2EE extends EventTarget {
   async updateChannel(channelId, opts = {}) {
     const payload = { action: 'update_channel', channel_id: channelId };
     if (opts.working_directory !== undefined) payload.working_directory = opts.working_directory;
+    if (opts.model !== undefined) payload.model = opts.model;
+    if (opts.effort !== undefined) payload.effort = opts.effort;
     return this.send(payload);
   }
 

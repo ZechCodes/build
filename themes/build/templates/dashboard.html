@@ -3374,14 +3374,18 @@ fetchDevices().then(() => {
   initE2EE();
 });
 
-// When SSE reconnects (e.g. relay restart), tear down all stale sessions and re-init.
-document.addEventListener('sk:notification-status', (evt) => {
+// When SSE reconnects (e.g. deploy, relay restart), tear down stale sessions and re-init.
+document.addEventListener('sk:notification-status', async (evt) => {
   if (evt.detail.status === 'connected' && e2eeConnections.size > 0) {
     console.log('[E2EE] SSE reconnected — tearing down stale sessions');
     // Preserve current channel so it's restored after reconnect.
     if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
     for (const [, conn] of e2eeConnections) conn.disconnect();
     e2eeConnections.clear();
+    // Refresh device list so initE2EE has current status/transport key data.
+    // Without this, the browser waits for e2ee-ready notifications that never
+    // arrive when only the web app restarted (relay + devices stayed up).
+    await fetchDevices();
     initE2EE();
   }
 });

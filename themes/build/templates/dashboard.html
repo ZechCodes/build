@@ -1858,11 +1858,26 @@ body{
   .issue-item:hover{background:rgba(255,255,255,0.03)}
   .issue-status-icon.open{color:#71717a}
 }
+
+/* Electron: push content below traffic lights + draggable title bar */
+body.electron .channel-panel-list{padding-top:36px}
+body.electron .viewer-tabs{padding-top:6px}
+body.electron .titlebar-drag{
+  position:fixed;top:0;left:0;right:0;height:40px;
+  -webkit-app-region:drag;
+  z-index:200;pointer-events:none;
+}
+body.electron .channel-panel-list *,
+body.electron .viewer-tabs *,
+body.electron .viewer-body *{
+  -webkit-app-region:no-drag;
+}
 </style>
 </head>
 <body>
 
 <div class="app content-area">
+<div class="titlebar-drag" style="display:none"></div>
 
 <!-- ===== CHANNEL PANEL (left column) ===== -->
 <div class="channel-panel" id="channel-panel">
@@ -2155,6 +2170,13 @@ body{
 <script nonce="{{ csp_nonce() }}" src="/static/build/js/markdown.js"></script>
 
 <script nonce="{{ csp_nonce() }}">
+// Electron detection
+if (window.buildElectron) {
+  document.body.classList.add('electron');
+  const drag = document.querySelector('.titlebar-drag');
+  if (drag) drag.style.display = '';
+}
+
 // ===== UI State =====
 let currentTab = 'chat';
 let selectedAgent = null;

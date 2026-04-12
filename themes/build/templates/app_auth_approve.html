@@ -1,188 +1,217 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize App — Build</title>
-  <link rel="icon" type="image/svg+xml" href="/static/build/favicon.svg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style nonce="{{ csp_nonce() }}">
-    :root {
-      --bg: #f0f2f5;
-      --card-bg: rgba(255, 255, 255, 0.7);
-      --card-border: rgba(255, 255, 255, 0.5);
-      --text: #1e293b;
-      --text-secondary: #64748b;
-      --accent: #6366f1;
-      --accent-hover: #4f46e5;
-      --success: #10b981;
-      --danger: #ef4444;
-      --radius: 16px;
-    }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: 'Inter', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
-    }
-    .card {
-      background: var(--card-bg);
-      backdrop-filter: blur(20px);
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius);
-      padding: 2.5rem;
-      max-width: 440px;
-      width: 100%;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
-      text-align: center;
-    }
-    .icon {
-      width: 56px;
-      height: 56px;
-      background: linear-gradient(135deg, var(--accent), #818cf8);
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 1.5rem;
-    }
-    .icon svg {
-      width: 28px;
-      height: 28px;
-      stroke: white;
-      fill: none;
-      stroke-width: 2;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin-bottom: 0.5rem;
-    }
-    .subtitle {
-      color: var(--text-secondary);
-      font-size: 0.9rem;
-      margin-bottom: 2rem;
-      line-height: 1.5;
-    }
-    .user-info {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.75rem 1rem;
-      background: rgba(0, 0, 0, 0.03);
-      border-radius: 10px;
-      margin-bottom: 1.5rem;
-      text-align: left;
-    }
-    .user-avatar {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--accent), #818cf8);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-weight: 700;
-      font-size: 0.85rem;
-      flex-shrink: 0;
-    }
-    .user-detail {
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-    .user-label {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      font-weight: 400;
-    }
-    .btn {
-      width: 100%;
-      padding: 0.75rem 1.25rem;
-      border: none;
-      border-radius: 10px;
-      font-family: inherit;
-      font-size: 0.9rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      background: var(--accent);
-      color: white;
-    }
-    .btn:hover { background: var(--accent-hover); transform: translateY(-1px); }
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-      transform: none;
-    }
-    .result {
-      margin-top: 1.5rem;
-      padding: 1rem;
-      border-radius: 10px;
-      font-size: 0.9rem;
-      font-weight: 500;
-      display: none;
-    }
-    .result.success {
-      display: block;
-      background: rgba(16, 185, 129, 0.1);
-      color: var(--success);
-    }
-    .result.error {
-      display: block;
-      background: rgba(239, 68, 68, 0.1);
-      color: var(--danger);
-    }
-    .timer {
-      font-size: 0.8rem;
-      color: var(--text-secondary);
-      margin-top: 1rem;
-    }
-    .close-hint {
-      font-size: 0.8rem;
-      color: var(--text-secondary);
-      margin-top: 1rem;
-      display: none;
-    }
-    @media(prefers-color-scheme:dark){
-      :root {
-        --bg: #111116;
-        --card-bg: rgba(255, 255, 255, 0.05);
-        --card-border: rgba(255, 255, 255, 0.08);
-        --text: #e4e4eb;
-        --text-secondary: #7a7a8e;
-        --accent: #818cf8;
-        --accent-hover: #6366f1;
-        --success: #34d399;
-        --danger: #f87171;
-      }
-      .card { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); }
-      .user-info { background: rgba(255, 255, 255, 0.04); }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorize App — Build</title>
+<link rel="icon" type="image/svg+xml" href="/static/build/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<style nonce="{{ csp_nonce() }}">
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070a;
+  --bg-elevated:#0e0e14;
+  --surface:rgba(255,255,255,0.04);
+  --surface-hover:rgba(255,255,255,0.07);
+  --glass:rgba(255,255,255,0.03);
+  --glass-border:rgba(255,255,255,0.06);
+  --text:#e8e8ed;
+  --text-secondary:#8b8b9e;
+  --text-tertiary:#55556a;
+  --accent:#818cf8;
+  --accent-bright:#a5b4fc;
+  --accent-dim:rgba(129,140,248,0.12);
+  --green:#34d399;
+  --red:#f87171;
+  --cyan:#22d3ee;
+  --serif:'Instrument Serif',Georgia,serif;
+  --sans:'DM Sans',system-ui,sans-serif;
+  --ease:cubic-bezier(0.16,1,0.3,1);
+}
+html{font-size:16px}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+body::after{
+  content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;
+  opacity:.025;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Nav */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:0 clamp(1.5rem,4vw,3rem);
+  height:64px;
+  display:flex;align-items:center;
+  background:rgba(7,7,10,0.7);
+  backdrop-filter:blur(20px) saturate(1.4);
+  -webkit-backdrop-filter:blur(20px) saturate(1.4);
+  border-bottom:1px solid rgba(255,255,255,0.04);
+}
+.nav-logo{
+  display:flex;align-items:center;gap:.6rem;
+  text-decoration:none;color:var(--text);
+}
+.nav-logo svg{width:28px;height:28px}
+.nav-wordmark{
+  font-family:var(--sans);
+  font-size:18px;font-weight:700;
+  letter-spacing:-0.03em;
+}
+
+/* Layout */
+.approve-wrapper{
+  min-height:100vh;min-height:100dvh;
+  display:flex;align-items:center;justify-content:center;
+  padding:5rem 2rem 2rem;
+  position:relative;
+}
+#mesh{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:0;will-change:transform;-webkit-transform:translateZ(0)}
+
+/* Grid bg */
+.approve-wrapper::before{
+  content:'';position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(129,140,248,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(129,140,248,.03) 1px, transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(ellipse 70% 60% at 50% 40%, black 20%, transparent 70%);
+  -webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 40%, black 20%, transparent 70%);
+}
+
+/* Ambient glows */
+.approve-glow{
+  position:absolute;
+  width:800px;height:600px;
+  top:10%;left:50%;transform:translateX(-50%);
+  background:radial-gradient(ellipse, rgba(99,102,241,.08) 0%, rgba(99,102,241,.02) 40%, transparent 70%);
+  pointer-events:none;
+}
+.approve-glow-2{
+  position:absolute;
+  width:400px;height:400px;
+  top:30%;left:20%;
+  background:radial-gradient(circle, rgba(52,211,153,.04) 0%, transparent 60%);
+  pointer-events:none;
+}
+
+/* Card */
+.approve-card{
+  position:relative;z-index:1;
+  width:100%;max-width:440px;
+  background:rgba(14,14,20,.45);
+  backdrop-filter:blur(3px) saturate(1.3);
+  -webkit-backdrop-filter:blur(3px) saturate(1.3);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:16px;
+  padding:2.5rem 2rem 2rem;
+  text-align:center;
+  animation:cardIn .5s var(--ease) both;
+}
+@keyframes cardIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+
+.approve-card h1{
+  font-family:var(--serif);
+  font-size:24px;font-weight:400;
+  margin-bottom:.35rem;
+}
+.approve-sub{
+  font-size:13px;color:var(--text-secondary);
+  margin-bottom:1.5rem;line-height:1.5;
+}
+
+/* User info */
+.user-info{
+  display:flex;align-items:center;gap:.75rem;
+  padding:.75rem 1rem;
+  background:var(--surface);
+  border:1px solid var(--glass-border);
+  border-radius:10px;
+  margin-bottom:1.5rem;
+  text-align:left;
+}
+.user-avatar{
+  width:36px;height:36px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent-bright));
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-weight:700;font-size:14px;
+  flex-shrink:0;
+}
+.user-detail{font-size:14px;font-weight:600}
+.user-label{font-size:12px;color:var(--text-secondary);font-weight:400}
+
+/* Approve button */
+.approve-btn{
+  width:100%;
+  display:flex;align-items:center;justify-content:center;gap:.5rem;
+  padding:.75rem 1rem;
+  border-radius:10px;
+  font-size:14px;font-weight:600;
+  font-family:var(--sans);
+  cursor:pointer;border:none;
+  background:var(--accent);color:#fff;
+  transition:all .2s;
+}
+.approve-btn:hover{background:#6366f1;transform:translateY(-1px)}
+.approve-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+
+/* Result */
+.result{
+  margin-top:1.25rem;padding:.75rem 1rem;
+  border-radius:10px;font-size:13px;font-weight:500;
+  display:none;
+}
+.result.success{
+  display:block;
+  background:rgba(52,211,153,.1);color:var(--green);
+  border:1px solid rgba(52,211,153,.15);
+}
+.result.error{
+  display:block;
+  background:rgba(248,113,113,.1);color:var(--red);
+  border:1px solid rgba(248,113,113,.15);
+}
+
+/* Timer / hint */
+.timer{font-size:12px;color:var(--text-tertiary);margin-top:1rem}
+.timer.hidden{display:none}
+.close-hint{font-size:12px;color:var(--text-secondary);margin-top:.75rem;display:none}
+.close-hint.visible{display:block}
+.gradient-text{font-style:italic;background:linear-gradient(135deg,var(--accent-bright),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+@media(max-width:600px){
+  .approve-card{margin:1rem;padding:2rem 1.5rem 1.5rem}
+}
+</style>
 </head>
 <body>
-  <div class="card">
-    <div class="icon">
-      <svg viewBox="0 0 24 24">
-        <rect x="2" y="3" width="20" height="14" rx="2"/>
-        <line x1="8" y1="21" x2="16" y2="21"/>
-        <line x1="12" y1="17" x2="12" y2="21"/>
-      </svg>
-    </div>
 
-    <h1>Sign in to Build Desktop</h1>
-    <p class="subtitle">
-      The Build desktop app is requesting access to your account.
-    </p>
+<nav>
+  <a class="nav-logo" href="/">
+    <svg viewBox="0 0 28 28" fill="none">
+      <rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/>
+      <path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    <span class="nav-wordmark">Build</span>
+  </a>
+</nav>
+
+<canvas id="mesh"></canvas>
+
+<div class="approve-wrapper">
+  <div class="approve-glow"></div>
+  <div class="approve-glow-2"></div>
+
+  <div class="approve-card">
+    <h1>Authorize <em class="gradient-text">Build Desktop</em></h1>
+    <p class="approve-sub">The Build desktop app is requesting access to your account.</p>
 
     <div class="user-info">
       <div class="user-avatar">{{ user_name[0] | upper if user_name else '?' }}</div>
@@ -192,69 +221,94 @@
       </div>
     </div>
 
-    <button class="btn" id="btn-approve">Approve</button>
+    <button class="approve-btn" id="btn-approve">Approve</button>
 
     <div class="result" id="result"></div>
     <div class="timer" id="timer">Expires in <span id="countdown">{{ expires_in_s }}</span>s</div>
     <div class="close-hint" id="close-hint">You can close this tab and return to the app.</div>
   </div>
+</div>
 
-  <script nonce="{{ csp_nonce() }}">
-    const code = "{{ code }}";
-    let expiresIn = {{ expires_in_s }};
+<script nonce="{{ csp_nonce() }}">
+  const code = "{{ code }}";
+  let expiresIn = {{ expires_in_s }};
 
-    const countdownEl = document.getElementById('countdown');
-    function formatTime(s) {
-      const m = Math.floor(s / 60);
-      const sec = s % 60;
-      return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  const countdownEl = document.getElementById('countdown');
+  function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? m + 'm ' + sec + 's' : sec + 's';
+  }
+  countdownEl.textContent = formatTime(expiresIn);
+  const timerInterval = setInterval(() => {
+    expiresIn--;
+    if (expiresIn <= 0) {
+      clearInterval(timerInterval);
+      showResult('error', 'Authorization expired. Please try again from the app.');
+      document.getElementById('btn-approve').disabled = true;
+    } else {
+      countdownEl.textContent = formatTime(expiresIn);
     }
-    countdownEl.textContent = formatTime(expiresIn);
-    const timerInterval = setInterval(() => {
-      expiresIn--;
-      if (expiresIn <= 0) {
+  }, 1000);
+
+  function showResult(type, message) {
+    const el = document.getElementById('result');
+    el.className = 'result ' + type;
+    el.textContent = message;
+    document.getElementById('timer').classList.add('hidden');
+  }
+
+  document.getElementById('btn-approve').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-approve');
+    btn.disabled = true;
+    btn.textContent = 'Authorizing...';
+
+    try {
+      const resp = await fetch('/app-auth/approve/' + code, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (resp.ok) {
+        showResult('success', 'Authorized! The app should sign you in now.');
+        document.getElementById('close-hint').classList.add('visible');
         clearInterval(timerInterval);
-        showResult('error', 'Authorization expired. Please try again from the app.');
-        document.getElementById('btn-approve').disabled = true;
       } else {
-        countdownEl.textContent = formatTime(expiresIn);
-      }
-    }, 1000);
-
-    function showResult(type, message) {
-      const el = document.getElementById('result');
-      el.className = 'result ' + type;
-      el.textContent = message;
-      document.getElementById('timer').style.display = 'none';
-    }
-
-    document.getElementById('btn-approve').addEventListener('click', async () => {
-      const btn = document.getElementById('btn-approve');
-      btn.disabled = true;
-      btn.textContent = 'Authorizing...';
-
-      try {
-        const resp = await fetch(`/app-auth/approve/${code}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (resp.ok) {
-          showResult('success', 'Authorized! The app should sign you in now.');
-          document.getElementById('close-hint').style.display = 'block';
-          clearInterval(timerInterval);
-        } else {
-          const data = await resp.json();
-          showResult('error', data.error || 'Authorization failed.');
-          btn.disabled = false;
-          btn.textContent = 'Approve';
-        }
-      } catch (err) {
-        showResult('error', 'Network error: ' + err.message);
+        const data = await resp.json();
+        showResult('error', data.error || 'Authorization failed.');
         btn.disabled = false;
         btn.textContent = 'Approve';
       }
-    });
-  </script>
+    } catch (err) {
+      showResult('error', 'Network error: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = 'Approve';
+    }
+  });
+
+// Mesh background
+(function(){
+  const c=document.getElementById('mesh');if(!c)return;const ctx=c.getContext('2d');
+  let w,h,dpr;
+  const GAP=180,SPAWN_INTERVAL=1400,EDGES_PER_BURST=2,EDGE_SPEED=0.5,PROPAGATE_CHANCE=0.35,MAX_PROPAGATE=3;
+  let verts=[],edges=[],trails=[],lastSpawn=0,lastFrame=0;
+  const TRAIL_DURATION=8000;
+  function resize(){dpr=devicePixelRatio||1;w=c.width=innerWidth*dpr;h=c.height=innerHeight*dpr}
+  function buildGrid(){verts=[];const g=GAP*dpr,rh=g*Math.sin(Math.PI/3),cols=Math.ceil(w/g)+2,rows=Math.ceil(h/rh)+2;for(let r=-1;r<rows;r++){const o=(r%2)?g*.5:0;for(let col=-1;col<cols;col++)verts.push({x:col*g+o,y:r*rh})}}
+  function neighbors(v,exclude){const maxD=GAP*dpr*1.15,result=[];for(const u of verts){if(u===v||u===exclude)continue;const dx=u.x-v.x,dy=u.y-v.y;if(Math.sqrt(dx*dx+dy*dy)<maxD)result.push(u)}return result}
+  function spawnEdge(from,to,depth){const dx=to.x-from.x,dy=to.y-from.y,dist=Math.sqrt(dx*dx+dy*dy);edges.push({from,to,ox:from.x,oy:from.y,x:from.x,y:from.y,totalDist:dist,traveled:0,speed:(EDGE_SPEED+Math.random()*0.2)*dpr,alpha:0.22+Math.random()*0.08,life:1,arrived:false,depth:depth||0})}
+  function spawnBurst(){const v=verts[(Math.random()*verts.length)|0],nb=neighbors(v);if(!nb.length)return;const shuffled=nb.sort(()=>Math.random()-0.5),count=Math.min(EDGES_PER_BURST,shuffled.length);for(let i=0;i<count;i++)spawnEdge(v,shuffled[i],0)}
+  function draw(now){ctx.clearRect(0,0,w,h);const rawDt=lastFrame?now-lastFrame:16;const dt=Math.min(rawDt,32);lastFrame=now;if(now-lastSpawn>SPAWN_INTERVAL){spawnBurst();lastSpawn=now}
+  for(let i=edges.length-1;i>=0;i--){const e=edges[i],px=e.x,py=e.y;if(!e.arrived){const dx=e.to.x-e.ox,dy=e.to.y-e.oy,angle=Math.atan2(dy,dx);const step=e.speed*(dt/16);e.x+=Math.cos(angle)*step;e.y+=Math.sin(angle)*step;e.traveled+=step;trails.push({x1:px,y1:py,x2:e.x,y2:e.y,alpha:e.alpha,born:now});if(e.traveled>=e.totalDist){e.x=e.to.x;e.y=e.to.y;e.arrived=true;if(e.depth<MAX_PROPAGATE){const nb=neighbors(e.to,e.from);for(const u of nb){if(Math.random()<PROPAGATE_CHANCE)spawnEdge(e.to,u,e.depth+1)}}}}else{edges.splice(i,1);continue}ctx.beginPath();ctx.arc(e.x,e.y,2.5*dpr,0,Math.PI*2);ctx.fillStyle='rgba(129,140,248,'+(e.alpha*0.8)+')';ctx.fill()}
+  for(let i=trails.length-1;i>=0;i--){const t=trails[i],age=now-t.born,life=1-age/TRAIL_DURATION;if(life<=0){trails.splice(i,1);continue}const a=t.alpha*life;ctx.beginPath();ctx.moveTo(t.x1,t.y1);ctx.lineTo(t.x2,t.y2);ctx.strokeStyle='rgba(129,140,248,'+a+')';ctx.lineWidth=(0.6+life*0.8)*dpr;ctx.stroke()}
+  requestAnimationFrame(draw)}
+  let simTime=performance.now()-TRAIL_DURATION;function simStep(){simTime+=16;for(let i=edges.length-1;i>=0;i--){const e=edges[i],px=e.x,py=e.y;if(!e.arrived){const dx=e.to.x-e.ox,dy=e.to.y-e.oy,angle=Math.atan2(dy,dx);e.x+=Math.cos(angle)*e.speed;e.y+=Math.sin(angle)*e.speed;e.traveled+=e.speed;trails.push({x1:px,y1:py,x2:e.x,y2:e.y,alpha:e.alpha,born:simTime});if(e.traveled>=e.totalDist){e.x=e.to.x;e.y=e.to.y;e.arrived=true;if(e.depth<MAX_PROPAGATE){const nb=neighbors(e.to,e.from);for(const u of nb){if(Math.random()<PROPAGATE_CHANCE)spawnEdge(e.to,u,e.depth+1)}}}}else{edges.splice(i,1)}}for(let i=trails.length-1;i>=0;i--){if(simTime-trails[i].born>TRAIL_DURATION)trails.splice(i,1)}}
+  addEventListener('resize',function(){resize();buildGrid();edges=[];trails=[]});resize();buildGrid();
+  const totalPreFrames=Math.ceil(TRAIL_DURATION/16);const burstEvery=Math.ceil(SPAWN_INTERVAL/16);
+  for(let f=0;f<totalPreFrames;f++){if(f%burstEvery===0)spawnBurst();simStep()}
+  requestAnimationFrame(draw)
+})();
+</script>
+
 </body>
 </html>

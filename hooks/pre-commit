@@ -10,15 +10,16 @@ else
 fi
 
 # Check staged files for theme changes (excluding theme.yaml itself)
+# Note: :(glob) pathspec magic is required — bare wildcards don't work with git diff-index.
 THEME_CHANGES=$(git diff-index --cached --name-only "$against" -- \
-    'themes/*/templates/' 'themes/*/static/')
+    ':(glob)themes/*/templates/**' ':(glob)themes/*/static/**')
 
 if [ -z "$THEME_CHANGES" ]; then
     exit 0
 fi
 
 # Theme files are staged — check if theme.yaml is also staged
-VERSION_CHANGES=$(git diff-index --cached --name-only "$against" -- 'themes/*/theme.yaml')
+VERSION_CHANGES=$(git diff-index --cached --name-only "$against" -- ':(glob)themes/*/theme.yaml')
 
 if [ -z "$VERSION_CHANGES" ]; then
     echo "ERROR: Theme files changed but theme.yaml version was not updated."

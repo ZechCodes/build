@@ -24,7 +24,7 @@ jobs:
           fi
 
           # Get changed files in theme directories (excluding theme.yaml itself)
-          THEME_CHANGES=$(git diff --name-only "$BASE" HEAD -- 'themes/*/templates/' 'themes/*/static/' | head -20)
+          THEME_CHANGES=$(git diff --name-only "$BASE" HEAD -- ':(glob)themes/*/templates/**' ':(glob)themes/*/static/**' | head -20)
 
           if [ -z "$THEME_CHANGES" ]; then
             echo "No theme file changes detected. Skipping version check."
@@ -36,7 +36,7 @@ jobs:
           echo ""
 
           # Check if any theme.yaml was also modified
-          VERSION_CHANGES=$(git diff --name-only "$BASE" HEAD -- 'themes/*/theme.yaml')
+          VERSION_CHANGES=$(git diff --name-only "$BASE" HEAD -- ':(glob)themes/*/theme.yaml')
 
           if [ -z "$VERSION_CHANGES" ]; then
             echo "::error::Theme files were modified but no theme.yaml version was updated."

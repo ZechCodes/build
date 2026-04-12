@@ -1,0 +1,65 @@
+name: Enforce Theme Version Bump
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check-theme-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check theme version was bumped
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=${{ github.event.pull_request.base.sha }}
+          else
+            BASE=${{ github.event.before }}
+          fi
+
+          # Get changed files in theme directories (excluding theme.yaml itself)
+          THEME_CHANGES=$(git diff --name-only "$BASE" HEAD -- 'themes/*/templates/' 'themes/*/static/' | head -20)
+
+          if [ -z "$THEME_CHANGES" ]; then
+            echo "No theme file changes detected. Skipping version check."
+            exit 0
+          fi
+
+          echo "Theme files changed:"
+          echo "$THEME_CHANGES"
+          echo ""
+
+          # Check if any theme.yaml was also modified
+          VERSION_CHANGES=$(git diff --name-only "$BASE" HEAD -- 'themes/*/theme.yaml')
+
+          if [ -z "$VERSION_CHANGES" ]; then
+            echo "::error::Theme files were modified but no theme.yaml version was updated."
+            echo ""
+            echo "Changed theme files:"
+            echo "$THEME_CHANGES"
+            echo ""
+            echo "Please bump the version in the relevant theme.yaml file."
+            exit 1
+          fi
+
+          # Verify the version field actually changed (not just other metadata)
+          for yaml in $VERSION_CHANGES; do
+            OLD_VERSION=$(git show "$BASE:$yaml" 2>/dev/null | grep '^version:' | head -1)
+            NEW_VERSION=$(grep '^version:' "$yaml" | head -1)
+
+            if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+              echo "::error::$yaml was modified but the version field is unchanged ($NEW_VERSION)."
+              echo "Please bump the version number."
+              exit 1
+            fi
+
+            echo "Version bumped in $yaml: $OLD_VERSION -> $NEW_VERSION"
+          done
+
+          echo "Theme version check passed."

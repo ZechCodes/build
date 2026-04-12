@@ -165,6 +165,23 @@ body{
   box-shadow:0 0 0 1px rgba(99,102,241,0.22), 0 4px 12px rgba(99,102,241,0.18);
   background:rgba(99,102,241,0.14);
 }
+.theme-update-badge{
+  width:20px;height:20px;border-radius:50%;
+  background:#f59e0b;color:#fff;
+  font-size:11px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+  border:none;cursor:pointer;flex-shrink:0;
+  transition:transform .12s ease, box-shadow .12s ease;
+  animation:badge-pulse 2s ease-in-out infinite;
+}
+.theme-update-badge:hover{
+  transform:scale(1.15);
+  box-shadow:0 0 0 3px rgba(245,158,11,0.3);
+}
+@keyframes badge-pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0.4)}
+  50%{box-shadow:0 0 0 4px rgba(245,158,11,0)}
+}
 
 /* Device groups in channel panel */
 .device-group{}
@@ -1728,6 +1745,7 @@ body{
   .glass{background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,0.06);box-shadow:0 1px 3px rgba(0,0,0,0.3)}
   .glass-hover:hover{background:rgba(255,255,255,0.07);box-shadow:0 4px 12px rgba(0,0,0,0.4)}
   /* Channel panel */
+  .theme-update-badge{background:#d97706}
   .channel-panel{background:rgba(255,255,255,0.02)}
   .channel-panel-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12)}
   .channel-sidebar-item:hover{background:rgba(255,255,255,0.03)}
@@ -3366,6 +3384,60 @@ document.addEventListener('sk:notification-status', (evt) => {
     e2eeConnections.clear();
     initE2EE();
   }
+});
+
+// =====================================================================
+// Theme version checker — detect deploys via SSE reconnect
+// =====================================================================
+const THEME_VERSION_KEY = 'build_theme_version';
+
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+function showUpdateBadge() {
+  const footer = document.querySelector('.channel-panel-footer');
+  if (!footer || footer.querySelector('.theme-update-badge')) return;
+  const badge = document.createElement('button');
+  badge.className = 'theme-update-badge';
+  badge.title = 'New version available — click to reload';
+  badge.setAttribute('aria-label', 'Update available, click to reload');
+  badge.textContent = '!';
+  badge.addEventListener('click', () => location.reload());
+  const account = footer.querySelector('.panel-account');
+  if (account) footer.insertBefore(badge, account);
+  else footer.appendChild(badge);
+}
+
+async function checkThemeVersion() {
+  try {
+    const res = await fetch('/api/theme/version');
+    if (!res.ok) return;
+    const { version } = await res.json();
+    if (!version) return;
+    const stored = localStorage.getItem(THEME_VERSION_KEY);
+    if (!stored) {
+      localStorage.setItem(THEME_VERSION_KEY, version);
+      return;
+    }
+    if (compareVersions(version, stored) > 0) {
+      showUpdateBadge();
+      localStorage.setItem(THEME_VERSION_KEY, version);
+    }
+  } catch (err) {
+    console.warn('[Theme] version check failed:', err);
+  }
+}
+
+document.addEventListener('sk:notification-status', (evt) => {
+  if (evt.detail.status === 'connected') checkThemeVersion();
 });
 
 // =====================================================================

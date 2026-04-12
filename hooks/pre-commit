@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Pre-commit hook: ensures theme version is bumped when theme files change.
+#
+
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    against=HEAD
+else
+    against=$(git hash-object -t tree /dev/null)
+fi
+
+# Check staged files for theme changes (excluding theme.yaml itself)
+THEME_CHANGES=$(git diff-index --cached --name-only "$against" -- \
+    'themes/*/templates/' 'themes/*/static/')
+
+if [ -z "$THEME_CHANGES" ]; then
+    exit 0
+fi
+
+# Theme files are staged — check if theme.yaml is also staged
+VERSION_CHANGES=$(git diff-index --cached --name-only "$against" -- 'themes/*/theme.yaml')
+
+if [ -z "$VERSION_CHANGES" ]; then
+    echo "ERROR: Theme files changed but theme.yaml version was not updated."
+    echo ""
+    echo "Changed theme files:"
+    echo "$THEME_CHANGES"
+    echo ""
+    echo "Please bump the version in the relevant theme.yaml before committing."
+    exit 1
+fi
+
+# Verify the version field actually changed
+for yaml in $VERSION_CHANGES; do
+    OLD_VERSION=$(git show "$against:$yaml" 2>/dev/null | grep '^version:' | head -1)
+    NEW_VERSION=$(git diff-index --cached -p "$against" -- "$yaml" | grep '^+version:' | head -1 | sed 's/^+//')
+
+    if [ -z "$NEW_VERSION" ]; then
+        echo "ERROR: $yaml is staged but the version field is unchanged."
+        echo "Please bump the version number."
+        exit 1
+    fi
+
+    echo "Theme version bump detected: $OLD_VERSION -> $NEW_VERSION"
+done
+
+exit 0

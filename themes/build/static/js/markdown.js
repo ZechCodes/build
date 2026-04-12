@@ -39,8 +39,15 @@
     // Images (before links so ![...](...) isn't caught by link regex)
     text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" class="md-img">');
 
-    // Links
-    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="md-link">$1</a>');
+    // Links — detect file paths vs URLs
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (m, linkText, url) {
+      if (/^https?:\/\/|^mailto:/i.test(url)) {
+        return '<a href="' + url + '" target="_blank" rel="noopener" class="md-link">' + linkText + '</a>';
+      }
+      // Treat non-URL targets as file paths
+      var pathOnly = url.replace(/:\d+(?::\d+)?$/, '');
+      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '">' + linkText + '</a>';
+    });
 
     // Bold (**text** or __text__)
     text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -62,6 +69,33 @@
         var trailing = url.slice(clean.length);
         return '<a href="' + clean + '" target="_blank" rel="noopener" class="md-link">' + clean + '</a>' + trailing;
       });
+
+    // Auto-link file paths (skip already-tagged content)
+    var _knownExts = '(?:js|jsx|ts|tsx|mjs|cjs|py|pyi|rb|go|rs|java|c|cc|cpp|h|hpp|cs|swift|kt|sh|bash|zsh|yml|yaml|json|jsonc|toml|ini|cfg|conf|xml|html|htm|css|scss|sass|less|md|markdown|txt|sql|graphql|gql|proto|vue|svelte|astro|prisma|tf|lock|gradle|cmake)';
+    var _filePathRe = new RegExp(
+      '((?:<a\\b[^>]*>[\\s\\S]*?<\\/a>)|(?:<code\\b[^>]*>[\\s\\S]*?<\\/code>))|' +
+      '(' +
+        '(?:' +
+          // Paths starting with / ./ or ../
+          '(?:\\.\\.\\/|\\.\\/)[\\/\\w.@-]+\\.' + _knownExts +
+          '|' +
+          '\\/[\\w.@-]+(?:\\/[\\w.@-]+)+\\.' + _knownExts +
+          '|' +
+          // Multi-segment relative paths (must contain /)
+          '[\\w.@-]+\\/[\\w.@\\/-]*\\.' + _knownExts +
+        ')' +
+        '(?::\\d+(?::\\d+)?)?' +  // optional :line:col
+        '|' +
+        // Bare filename requires :line suffix as signal
+        '[\\w@-]+\\.' + _knownExts + ':\\d+(?::\\d+)?' +
+      ')', 'g');
+    text = text.replace(_filePathRe, function (match, tagged, filePath) {
+      if (tagged) return tagged;
+      var pathOnly = filePath.replace(/:\d+(?::\d+)?$/, '');
+      var lineMatch = filePath.match(/:(\d+)(?::(\d+))?$/);
+      var lineAttr = lineMatch ? ' data-file-line="' + lineMatch[1] + '"' : '';
+      return '<a href="#" class="md-link file-path-link" data-file-path="' + pathOnly + '"' + lineAttr + '>' + filePath + '</a>';
+    });
 
     return text;
   }

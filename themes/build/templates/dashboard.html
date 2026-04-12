@@ -636,6 +636,8 @@ body{
 .md-code-copy svg{width:12px;height:12px}
 .md-link{color:var(--accent);text-decoration:none}
 .md-link:hover{text-decoration:underline}
+.file-path-link{cursor:pointer;text-decoration-style:dotted;text-decoration-line:underline;text-decoration-color:var(--accent);text-underline-offset:2px}
+.file-path-link:hover{text-decoration-style:solid}
 .md-blockquote{
   border-left:3px solid var(--border-strong);
   padding:.25rem 0 .25rem .75rem;
@@ -4288,6 +4290,9 @@ function bindE2EEEvents(instance, deviceId) {
       const match = (entries || []).find(e => e.name === pendingPath || e.path === pendingPath);
       if (match && match.type !== 'directory') {
         selectFile(match.path || match.name, match, pendingView);
+      } else if (pendingPath.includes('/')) {
+        // Nested path — select directly (tree won't highlight but file loads).
+        selectFile(pendingPath, null, pendingView);
       }
     }
   });
@@ -7751,6 +7756,29 @@ switchTab = function(tab) {
   if (tab === 'files') onFilesTabActivated();
   if (chatCurrentChannel) saveChannelState(chatCurrentChannel, { activeTab: tab });
 };
+
+// ===== File Path Link Navigation =====
+function navigateToFile(filePath) {
+  // If the files tab is already showing this channel, just select the file.
+  // Otherwise, set pending restore and switch tabs.
+  filesPendingRestore = filePath;
+  filesPendingView = 'source';
+  switchTab('files');
+  location.hash = 'files';
+  // Also select immediately — works when tree is already loaded.
+  if (filesChannelId) {
+    selectFile(filePath, null, 'source');
+  }
+}
+
+// Delegated click handler for file-path-link elements in messages.
+document.addEventListener('click', function(e) {
+  var link = e.target.closest('.file-path-link');
+  if (!link) return;
+  e.preventDefault();
+  var path = link.dataset.filePath;
+  if (path) navigateToFile(path);
+});
 
 </script>
 </body>

@@ -1861,23 +1861,15 @@ body{
 
 /* Electron: push content below traffic lights + draggable title bar */
 body.electron .channel-panel-list{padding-top:36px}
-body.electron .viewer-tabs{padding-top:6px}
-body.electron .titlebar-drag{
-  position:fixed;top:0;left:0;right:0;height:40px;
-  -webkit-app-region:drag;
-  z-index:200;pointer-events:none;
-}
-body.electron .channel-panel-list *,
-body.electron .viewer-tabs *,
-body.electron .viewer-body *{
-  -webkit-app-region:no-drag;
-}
+body.electron .viewer-tabs{-webkit-app-region:drag;padding-top:6px}
+body.electron .viewer-tabs *{-webkit-app-region:no-drag}
+body.electron .channel-panel{-webkit-app-region:drag}
+body.electron .channel-panel *{-webkit-app-region:no-drag}
 </style>
 </head>
 <body>
 
 <div class="app content-area">
-<div class="titlebar-drag" style="display:none"></div>
 
 <!-- ===== CHANNEL PANEL (left column) ===== -->
 <div class="channel-panel" id="channel-panel">
@@ -2173,8 +2165,6 @@ body.electron .viewer-body *{
 // Electron detection
 if (window.buildElectron) {
   document.body.classList.add('electron');
-  const drag = document.querySelector('.titlebar-drag');
-  if (drag) drag.style.display = '';
 }
 
 // ===== UI State =====

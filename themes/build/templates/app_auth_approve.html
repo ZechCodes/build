@@ -44,33 +44,11 @@ body::after{
   background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* Nav */
-nav{
-  position:fixed;top:0;left:0;right:0;z-index:100;
-  padding:0 clamp(1.5rem,4vw,3rem);
-  height:64px;
-  display:flex;align-items:center;
-  background:rgba(7,7,10,0.7);
-  backdrop-filter:blur(20px) saturate(1.4);
-  -webkit-backdrop-filter:blur(20px) saturate(1.4);
-  border-bottom:1px solid rgba(255,255,255,0.04);
-}
-.nav-logo{
-  display:flex;align-items:center;gap:.6rem;
-  text-decoration:none;color:var(--text);
-}
-.nav-logo svg{width:28px;height:28px}
-.nav-wordmark{
-  font-family:var(--sans);
-  font-size:18px;font-weight:700;
-  letter-spacing:-0.03em;
-}
-
 /* Layout */
 .approve-wrapper{
   min-height:100vh;min-height:100dvh;
   display:flex;align-items:center;justify-content:center;
-  padding:5rem 2rem 2rem;
+  padding:2rem;
   position:relative;
 }
 #mesh{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:0;will-change:transform;-webkit-transform:translateZ(0)}
@@ -192,16 +170,6 @@ nav{
 </style>
 </head>
 <body>
-
-<nav>
-  <a class="nav-logo" href="/">
-    <svg viewBox="0 0 28 28" fill="none">
-      <rect x="2" y="2" width="24" height="24" rx="6" fill="#818cf8" opacity=".15"/>
-      <path d="M9 10h10M9 14h7M9 18h10" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    </svg>
-    <span class="nav-wordmark">Build</span>
-  </a>
-</nav>
 
 <canvas id="mesh"></canvas>
 

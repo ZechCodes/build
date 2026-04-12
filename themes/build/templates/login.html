@@ -66,7 +66,7 @@ nav{
   letter-spacing:-0.03em;
 }
 
-/* Electron hides nav */
+/* Electron hides nav and back link */
 body.electron nav{display:none}
 body.electron .login-wrapper{padding-top:0;min-height:100vh}
 
@@ -150,13 +150,6 @@ body.electron .login-wrapper{padding-top:0;min-height:100vh}
   border-color:rgba(255,255,255,.12);
 }
 
-.login-footer{
-  margin-top:1.5rem;
-  font-size:12px;color:var(--text-tertiary);
-}
-.login-footer a{color:var(--text-secondary);text-decoration:none;transition:color .2s}
-.login-footer a:hover{color:var(--text)}
-
 {% if flash %}
 .flash{
   margin-bottom:1rem;padding:.6rem 1rem;
@@ -204,7 +197,8 @@ body.electron .login-wrapper{padding-top:0;min-height:100vh}
     <div class="flash {{ 'error' if flash.type == 'error' else '' }}">{{ flash.message }}</div>
     {% endif %}
 
-    <div class="auth-providers">
+    <!-- Browser auth providers (hidden in Electron) -->
+    <div class="auth-providers" id="browser-auth">
       {% for key, provider in providers.items() %}
       <a class="auth-btn" href="/auth/{{ key }}/login">
         {% if key == 'google' %}
@@ -223,16 +217,79 @@ body.electron .login-wrapper{padding-top:0;min-height:100vh}
       {% endif %}
     </div>
 
-    <div class="login-footer">
-      <a href="/">&larr; Back to home</a>
+    <!-- Electron auth flow (hidden in browser) -->
+    <div class="auth-providers" id="electron-auth" style="display:none">
+      <button class="auth-btn" id="electron-sign-in" style="background:var(--accent);color:#fff;border-color:var(--accent);justify-content:center;font-weight:600">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 2l6 6-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Sign in with Browser
+      </button>
+      <p id="electron-status" style="display:none;font-size:13px;color:var(--text-secondary);text-align:center;padding:.75rem 0">
+        Waiting for browser authorization...
+      </p>
     </div>
+
   </div>
 </div>
 
 <script nonce="{{ csp_nonce() }}">
-// Hide nav in Electron
+// Electron auth flow
 if (window.buildElectron) {
   document.body.classList.add('electron');
+  document.getElementById('browser-auth').style.display = 'none';
+  document.getElementById('electron-auth').style.display = 'flex';
+
+  const btn = document.getElementById('electron-sign-in');
+  const status = document.getElementById('electron-status');
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Opening browser...';
+
+    try {
+      const resp = await fetch('/api/app-auth/init', { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed to start auth');
+      const { code, auth_url } = await resp.json();
+
+      // Open approval page in system browser
+      window.buildElectron.openExternal(auth_url);
+
+      btn.style.display = 'none';
+      status.style.display = 'block';
+      status.textContent = 'Waiting for browser authorization...';
+
+      // Listen for approval via SSE
+      const evtSource = new EventSource('/api/app-auth/' + code + '/events');
+
+      evtSource.addEventListener('approved', (e) => {
+        evtSource.close();
+        const data = JSON.parse(e.data);
+        status.textContent = 'Authorized! Signing in...';
+        // Exchange token for session
+        window.location.href = '/api/app-auth/exchange/' + data.token;
+      });
+
+      evtSource.addEventListener('expired', () => {
+        evtSource.close();
+        status.textContent = 'Authorization expired. Try again.';
+        btn.style.display = '';
+        btn.disabled = false;
+        btn.textContent = 'Sign in with Browser';
+      });
+
+      evtSource.onerror = () => {
+        evtSource.close();
+        status.textContent = 'Connection lost. Try again.';
+        btn.style.display = '';
+        btn.disabled = false;
+        btn.textContent = 'Sign in with Browser';
+      };
+    } catch (err) {
+      status.style.display = 'block';
+      status.textContent = 'Error: ' + err.message;
+      btn.disabled = false;
+      btn.textContent = 'Sign in with Browser';
+    }
+  });
 }
 
 // Mesh background

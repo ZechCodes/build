@@ -41,6 +41,8 @@ controllers:
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
   - build_app.dashboard:DashboardController
   - build_app.devices:DeviceApiController
+  - build_app.app_auth:AppAuthController
+  - build_app.app_auth:AppAuthPageController
   - build_app.theme_api:theme_version
 
 page_types:

@@ -3594,7 +3594,6 @@ function clearUnreadHighlights() {
   document.querySelectorAll('.msg.unread').forEach(el => el.classList.remove('unread'));
 }
 const channelAgentActive = new Map(); // channelId -> boolean
-let pendingStopChannel = null; // channelId awaiting cancel acknowledgement
 
 function updateStopButton() {
   const btn = document.getElementById('chat-stop-btn');
@@ -3836,7 +3835,6 @@ function bindE2EEEvents(instance, deviceId) {
     const ch = evt.detail?.channel_id;
     if (ch) {
       channelAgentActive.set(ch, false);
-      if (pendingStopChannel === ch) pendingStopChannel = null;
       updateStopButton();
     }
   });
@@ -4030,7 +4028,6 @@ function bindE2EEEvents(instance, deviceId) {
       markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content, agentEvt.completed_at);
     } else if (event_type === 'activity.end') {
       channelAgentActive.set(channel_id, false);
-      if (pendingStopChannel === channel_id) pendingStopChannel = null;
       updateStopButton();
       if (chatCurrentChannel !== channel_id) return;
     } else if (event_type === 'interaction.request') {
@@ -5546,23 +5543,11 @@ document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMess
 document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
   const _stopConn = getActiveE2EE();
   if (!chatCurrentChannel || !_stopConn?.connected) return;
-  const ch = chatCurrentChannel;
 
-  // Phase 1: graceful cancel (sends chat.cancel to agent).
-  _stopConn.cancel(ch).catch(() => {});
-  channelAgentActive.set(ch, false);
-  pendingStopChannel = ch;
+  // Device handles two-phase stop: graceful cancel → 3s → process kill.
+  _stopConn.stopAgent(chatCurrentChannel).catch(() => {});
+  channelAgentActive.set(chatCurrentChannel, false);
   updateStopButton();
-
-  // Phase 2: if cancel wasn't acknowledged after 3s, force-kill.
-  // pendingStopChannel is cleared when activity.end or agent_stopped arrives.
-  setTimeout(() => {
-    if (pendingStopChannel === ch) {
-      console.log('[Stop] Cancel not acknowledged, escalating to process kill');
-      _stopConn.stopAgent(ch).catch(() => {});
-      pendingStopChannel = null;
-    }
-  }, 3000);
 });
 const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 document.getElementById('chat-input')?.addEventListener('keydown', (e) => {

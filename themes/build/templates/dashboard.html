@@ -3832,6 +3832,11 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('agent_stopped', (evt) => {
     console.log('[E2EE] Agent stopped:', evt.detail);
+    const ch = evt.detail?.channel_id;
+    if (ch) {
+      channelAgentActive.set(ch, false);
+      updateStopButton();
+    }
   });
 
   instance.addEventListener('agent_restarted', (evt) => {
@@ -5538,9 +5543,23 @@ document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMess
 document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
   const _stopConn = getActiveE2EE();
   if (!chatCurrentChannel || !_stopConn?.connected) return;
-  _stopConn.cancel(chatCurrentChannel);
-  channelAgentActive.set(chatCurrentChannel, false);
+  const ch = chatCurrentChannel;
+
+  // Phase 1: graceful cancel (sends chat.cancel to agent).
+  _stopConn.cancel(ch).catch(() => {});
+  channelAgentActive.set(ch, false);
   updateStopButton();
+
+  // Phase 2: if agent hasn't stopped after 3s, force-kill the process.
+  setTimeout(() => {
+    if (channelAgentActive.get(ch)) {
+      // Agent reactivated (still sending events) — escalate to process kill.
+      console.log('[Stop] Agent still active after cancel, force-stopping');
+      _stopConn.stopAgent(ch).catch(() => {});
+      channelAgentActive.set(ch, false);
+      updateStopButton();
+    }
+  }, 3000);
 });
 const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 document.getElementById('chat-input')?.addEventListener('keydown', (e) => {

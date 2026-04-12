@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 CAMPAIGN_SLUG = "build-launch"
 
 
-async def _redirect_to_confirm(next_url, login_result, request):
-    """After OAuth login, redirect to the email updates confirmation page."""
-    return "/signup/oauth-confirm"
+async def _redirect_to_dashboard(next_url, login_result, request):
+    """After OAuth login, redirect to the dashboard."""
+    return "/dashboard/"
 
 
-add_filter("login_redirect", _redirect_to_confirm, priority=5)
+add_filter("login_redirect", _redirect_to_dashboard, priority=5)
 
 
 PREVIEW_FRAME_HTML = """<!DOCTYPE html>

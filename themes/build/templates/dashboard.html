@@ -5550,15 +5550,12 @@ document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
   channelAgentActive.set(ch, false);
   updateStopButton();
 
-  // Phase 2: if agent hasn't stopped after 3s, force-kill the process.
+  // Phase 2: always escalate to process kill after 3s as backup.
+  // This is idempotent — if the agent already stopped gracefully,
+  // stopAgent returns was_running: false and does nothing.
   setTimeout(() => {
-    if (channelAgentActive.get(ch)) {
-      // Agent reactivated (still sending events) — escalate to process kill.
-      console.log('[Stop] Agent still active after cancel, force-stopping');
-      _stopConn.stopAgent(ch).catch(() => {});
-      channelAgentActive.set(ch, false);
-      updateStopButton();
-    }
+    console.log('[Stop] Escalating to process kill');
+    _stopConn.stopAgent(ch).catch(() => {});
   }, 3000);
 });
 const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);

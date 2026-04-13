@@ -152,8 +152,8 @@ body{
   flex-shrink:0;
 }
 .channel-panel-footer .panel-account{
-  display:flex;align-items:center;justify-content:center;
-  text-decoration:none;flex-shrink:0;
+  display:flex;align-items:center;gap:.4rem;
+  text-decoration:none;min-width:0;
 }
 .channel-panel-footer .panel-account .msg-avatar{
   margin-top:0;
@@ -164,6 +164,18 @@ body{
   transform:translateY(-1px);
   box-shadow:0 0 0 1px rgba(99,102,241,0.22), 0 4px 12px rgba(99,102,241,0.18);
   background:rgba(99,102,241,0.14);
+}
+.panel-account-name{
+  font-size:12px;font-weight:500;
+  color:var(--text-secondary, #9ca3af);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  min-width:0;
+}
+.channel-panel-footer .panel-account:hover .panel-account-name{
+  color:var(--text-primary, #e5e7eb);
+}
+.channel-panel-footer:has(.theme-update-badge) .panel-account-name{
+  display:none;
 }
 .theme-update-badge{
   height:28px;padding:0 .6rem;border-radius:999px;
@@ -1901,6 +1913,7 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   <div class="channel-panel-footer">
     <a class="panel-account" href="/admin/" title="{{ user_name }}" aria-label="Open account">
       <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
+      <span class="panel-account-name">{{ user_name }}</span>
     </a>
   </div>
 </div>

@@ -131,7 +131,8 @@ body{
 .dd-item.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
 .top-dropdown-trigger .ch-unread-badge{margin-left:.4rem}
 .top-dropdown-trigger.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
-.mobile-channel-trigger .ch-unread-badge{flex-shrink:0}
+.mobile-channel-trigger .ch-unread-badge{flex-shrink:0;margin-left:auto}
+.mobile-channel-trigger .ch-unread-badge ~ .dd-chevron{margin-left:0}
 .mobile-channel-trigger.has-interaction{animation:badge-pulse 2s ease-in-out infinite}
 
 /* ===== CHANNEL PANEL (left column) ===== */
@@ -1681,7 +1682,7 @@ body{
   flex-shrink:0;
 }
 .mobile-nav .mobile-channel-trigger{
-  flex:2 1 0;min-width:0;max-width:240px;
+  flex:2 1 0;min-width:0;
   display:flex;align-items:center;gap:.35rem;
   font-size:13px;font-weight:600;color:var(--text);
   background:transparent;border:none;

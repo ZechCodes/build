@@ -595,6 +595,11 @@ body{
 .msg-status .check.active{opacity:1}
 .msg-status.delivered .check.active{color:var(--accent)}
 .msg-status.read .check.active{color:var(--green)}
+.msg-status.failed .retry-btn{
+  background:none;border:none;color:#f59e0b;cursor:pointer;
+  font-size:9px;font-weight:600;padding:0;font-family:var(--font);
+}
+.msg-status.failed .retry-btn:hover{text-decoration:underline}
 
 /* Markdown in messages */
 .msg-text p{margin-bottom:.4rem}
@@ -4241,6 +4246,27 @@ function bindE2EEEvents(instance, deviceId) {
       }
     }
   });
+  instance.addEventListener('delivery_failed', (evt) => {
+    const { message_id, channel_id } = evt.detail;
+    const statusEl = document.querySelector(`[data-msg-id="${message_id}"] .msg-status`);
+    if (statusEl) {
+      const retryHtml = `<button class="retry-btn" data-retry-msg="${message_id}" data-retry-ch="${channel_id}">Failed to reach agent — tap to retry</button>`;
+      crossfadeStatus(statusEl, 'failed', retryHtml);
+      statusEl.querySelector('.retry-btn')?.addEventListener('click', async () => {
+        const msgEl = document.querySelector(`[data-msg-id="${message_id}"]`);
+        const content = msgEl?.querySelector('.msg-text')?.textContent?.trim();
+        if (!content || !instance.connected) return;
+        crossfadeStatus(statusEl, 'sending', '<span class="check">✓</span><span class="check">✓</span> Sending');
+        try {
+          await instance.send({ action: 'retry_message', channel_id, message_id });
+        } catch (err) {
+          console.error('[Chat] Retry failed:', err);
+          crossfadeStatus(statusEl, 'failed', retryHtml);
+        }
+      });
+    }
+  });
+
   instance.addEventListener('plan_mode_updated', (evt) => {
     const { channel_id, plan_mode } = evt.detail;
     channelPlanMode.set(channel_id, plan_mode);
@@ -5030,7 +5056,7 @@ function respondToInteraction(interactionId, selectedOption, freeformResponse) {
 
 function crossfadeStatus(statusEl, newState, newContent) {
   // Remove old state classes and set new one.
-  statusEl.classList.remove('sending', 'delivered', 'read');
+  statusEl.classList.remove('sending', 'delivered', 'read', 'failed');
   statusEl.classList.add(newState);
   // Crossfade: exit old, enter new.
   const oldSpan = statusEl.querySelector('.msg-status-state');

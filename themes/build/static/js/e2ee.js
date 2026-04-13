@@ -213,6 +213,10 @@ class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('read', {
         detail: { message_ids: payload.message_ids, channel_id: payload.channel_id },
       }));
+    } else if (action === 'delivery_failed') {
+      this.dispatchEvent(new CustomEvent('delivery_failed', {
+        detail: { message_id: payload.message_id, channel_id: payload.channel_id },
+      }));
     } else if (action === 'harness_list') {
       this.dispatchEvent(new CustomEvent('harness_list', { detail: payload.harnesses }));
     } else if (action === 'agent_started') {

@@ -6446,7 +6446,14 @@ function renderChangesView(container, repos) {
     return;
   }
 
-  for (const repo of repos) {
+  // Sort repos by most recently modified file (descending).
+  const sortedRepos = repos.slice().sort((a, b) => {
+    const aMax = Math.max(0, ...a.entries.map(e => e.modified || 0));
+    const bMax = Math.max(0, ...b.entries.map(e => e.modified || 0));
+    return bMax - aMax;
+  });
+
+  for (const repo of sortedRepos) {
     const group = document.createElement('div');
     group.className = 'changes-repo-group';
 

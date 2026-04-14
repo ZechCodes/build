@@ -4173,6 +4173,10 @@ function bindE2EEEvents(instance, deviceId) {
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
         handleNewMessageScroll(wasNearBottom, _newEl);
+        // On mobile, collapse the console to give more room for plan review cards.
+        if ((agentEvt.kind || 'question') === 'plan_review' && window.innerWidth <= 768 && consoleState !== 'collapsed') {
+          setConsoleState('collapsed');
+        }
       } else {
         incrementUnread(channel_id, true);
       }

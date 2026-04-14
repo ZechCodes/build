@@ -4173,9 +4173,13 @@ function bindE2EEEvents(instance, deviceId) {
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
         handleNewMessageScroll(wasNearBottom, _newEl);
-        // On mobile, collapse the console to give more room for plan review cards.
+        // On mobile, collapse the console to give more room for plan review cards,
+        // then scroll the plan card to the top of the chat area.
         if ((agentEvt.kind || 'question') === 'plan_review' && window.innerWidth <= 768 && consoleState !== 'collapsed') {
           setConsoleState('collapsed');
+          requestAnimationFrame(() => {
+            if (_newEl) _newEl.scrollIntoView({ block: 'start', behavior: 'instant' });
+          });
         }
       } else {
         incrementUnread(channel_id, true);

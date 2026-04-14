@@ -3140,12 +3140,27 @@ document.getElementById('chat-input')?.addEventListener('input', function(){
 function initNotifications() {
   if (window.__skriftNotifications) {
     window.__skriftNotifications.configure({ persistConnection: true });
+    // Patch _healthCheck to clear _hiddenSince in the CLOSED branch,
+    // preventing a double reconnect when both visibilitychange and focus fire.
+    const sn = window.__skriftNotifications;
+    const origHealthCheck = sn._healthCheck.bind(sn);
+    sn._healthCheck = function () {
+      if (this._es && this._es.readyState === EventSource.CLOSED) {
+        this._hiddenSince = null;
+      }
+      return origHealthCheck();
+    }.bind(sn);
   } else {
     // Retry if not yet initialized
     setTimeout(initNotifications, 100);
   }
 }
 initNotifications();
+
+/** True when the SSE connection has completed sync (replay phase is over). */
+function sseSynced() {
+  return window.__skriftNotifications?._synced === true;
+}
 
 // ----- Helpers -----
 
@@ -3356,6 +3371,14 @@ document.addEventListener('sk:notification', (e) => {
         const banner = document.getElementById('device-down-banner');
         if (banner) banner.classList.remove('visible');
       }
+      // Skip replayed e2ee-ready events during SSE flush — the SSE reconnect
+      // handler will call initE2EE() after sync anyway.
+      if (!sseSynced()) {
+        console.log('[E2EE] Suppressing replayed e2ee-ready (SSE not yet synced)');
+        break;
+      }
+      // Skip if the SSE reconnect handler is already tearing down and reiniting.
+      if (_sseReconnecting) break;
       // Device re-announced — relay likely restarted, old session for this device is dead.
       const existingConn = e2eeConnections.get(deviceId);
       if (existingConn) {
@@ -3432,18 +3455,24 @@ fetchDevices().then(() => {
 });
 
 // When SSE reconnects (e.g. deploy, relay restart), tear down stale sessions and re-init.
+let _sseReconnecting = false;
 document.addEventListener('sk:notification-status', async (evt) => {
-  if (evt.detail.status === 'connected' && e2eeConnections.size > 0) {
+  if (evt.detail.status === 'connected' && e2eeConnections.size > 0 && !_sseReconnecting) {
+    _sseReconnecting = true;
     console.log('[E2EE] SSE reconnected — tearing down stale sessions');
-    // Preserve current channel so it's restored after reconnect.
-    if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
-    for (const [, conn] of e2eeConnections) conn.disconnect();
-    e2eeConnections.clear();
-    // Refresh device list so initE2EE has current status/transport key data.
-    // Without this, the browser waits for e2ee-ready notifications that never
-    // arrive when only the web app restarted (relay + devices stayed up).
-    await fetchDevices();
-    await initE2EE();
+    try {
+      // Preserve current channel so it's restored after reconnect.
+      if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
+      for (const [, conn] of e2eeConnections) conn.disconnect();
+      e2eeConnections.clear();
+      // Refresh device list so initE2EE has current status/transport key data.
+      // Without this, the browser waits for e2ee-ready notifications that never
+      // arrive when only the web app restarted (relay + devices stayed up).
+      await fetchDevices();
+      await initE2EE();
+    } finally {
+      _sseReconnecting = false;
+    }
   }
 });
 
@@ -3738,6 +3767,7 @@ async function connectDeviceE2EE(deviceId) {
     console.log('[E2EE] Connected to', deviceId);
   } catch (err) {
     console.error('[E2EE] Failed to connect to', deviceId, err);
+    instance.disconnect(); // Clean up leaked notification handler on document.
     e2eeConnections.delete(deviceId);
     syncE2EEStatus();
   }

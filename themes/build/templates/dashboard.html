@@ -3579,6 +3579,78 @@ let scrollLastSeen = null; // captured lastSeen for scroll positioning during ch
 let _unreadHighlightUntil = null; // timestamp: highlights persist until this time
 let _unreadHighlightLastSeen = null; // the lastSeen value to use for highlighting
 
+// ---- Channel Navigation (Electron only) ----
+const channelHistory = [];
+let channelHistoryIndex = -1;
+let _navigatingHistory = false;
+
+function getOrderedChannelIds() {
+  const ids = [];
+  const sortedDevices = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const device of sortedDevices) {
+    if (!e2eeConnections.has(device.id)) continue;
+    const devChans = deviceChannels.get(device.id) || new Map();
+    const sorted = [...devChans.values()].sort((a, b) => {
+      const aTs = channelSortTs.get(a.id) || 0;
+      const bTs = channelSortTs.get(b.id) || 0;
+      if (aTs !== bTs) return bTs - aTs;
+      return (b.created_at || 0) - (a.created_at || 0);
+    });
+    for (const ch of sorted) ids.push(ch.id);
+  }
+  return ids;
+}
+
+function pushChannelHistory(channelId) {
+  if (_navigatingHistory) return;
+  if (channelHistory[channelHistoryIndex] === channelId) return;
+  channelHistory.splice(channelHistoryIndex + 1);
+  channelHistory.push(channelId);
+  if (channelHistory.length > 50) channelHistory.shift();
+  channelHistoryIndex = channelHistory.length - 1;
+}
+
+if (window.buildElectron) {
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    if (!e.altKey) return;
+
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const ids = getOrderedChannelIds();
+      if (!ids.length) return;
+      const cur = ids.indexOf(chatCurrentChannel);
+
+      if (e.shiftKey) {
+        // ALT+SHIFT+UP/DOWN: jump to first unread in that direction
+        const dir = e.key === 'ArrowUp' ? -1 : 1;
+        const start = cur === -1 ? 0 : cur + dir;
+        for (let i = start; i >= 0 && i < ids.length; i += dir) {
+          const uc = unreadCounts.get(ids[i]);
+          if (uc && uc.messages > 0) { selectChannel(ids[i]); return; }
+        }
+      } else {
+        // ALT+UP/DOWN: move to adjacent channel
+        const next = e.key === 'ArrowUp' ? cur - 1 : cur + 1;
+        if (next >= 0 && next < ids.length) selectChannel(ids[next]);
+      }
+    } else if (e.key === '[' || e.key === ']') {
+      e.preventDefault();
+      if (e.key === '[' && channelHistoryIndex > 0) {
+        channelHistoryIndex--;
+        _navigatingHistory = true;
+        selectChannel(channelHistory[channelHistoryIndex]);
+        _navigatingHistory = false;
+      } else if (e.key === ']' && channelHistoryIndex < channelHistory.length - 1) {
+        channelHistoryIndex++;
+        _navigatingHistory = true;
+        selectChannel(channelHistory[channelHistoryIndex]);
+        _navigatingHistory = false;
+      }
+    }
+  });
+}
+
 // ---- Browser Tabs ----
 const browserTabs = new Map(); // deviceId -> [{id, url, deviceId}]
 let activeBrowserTab = null; // tab id
@@ -4620,6 +4692,7 @@ function updateAggregateBadge() { /* no-op, removed with top bar */ }
 
 function selectChannel(channelId) {
   chatCurrentChannel = channelId;
+  pushChannelHistory(channelId);
   activeBrowserTab = null;
   // Hide browser panel and restore normal tab if it was showing
   document.getElementById('tab-browser')?.classList.remove('active');

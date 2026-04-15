@@ -2342,7 +2342,12 @@ function renderChannelPanel() {
       const channelsDiv = document.createElement('div');
       channelsDiv.className = 'device-group-channels';
       const devChans = deviceChannels.get(device.id) || new Map();
-      const sorted = [...devChans.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const sorted = [...devChans.values()].sort((a, b) => {
+        const aTs = channelSortTs.get(a.id) || 0;
+        const bTs = channelSortTs.get(b.id) || 0;
+        if (aTs !== bTs) return bTs - aTs;
+        return (b.created_at || 0) - (a.created_at || 0);
+      });
       for (const ch of sorted) {
         const item = createChannelItem(ch);
         channelsDiv.appendChild(item);
@@ -3561,6 +3566,15 @@ const chatChannels = new Map(); // id -> {id, name, created_at} — merged view
 const chatMessages = new Map(); // channelId -> [messages]
 const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
 const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
+const channelSortTs = new Map(); // channelId -> epoch ms when channel was last promoted in sort order
+
+const SORT_STABILITY_MS = 60 * 60 * 1000; // 1 hour
+function promoteChannel(channelId) {
+  const now = Date.now();
+  const prev = channelSortTs.get(channelId) || 0;
+  if (now - prev > SORT_STABILITY_MS) channelSortTs.set(channelId, now);
+}
+
 let scrollLastSeen = null; // captured lastSeen for scroll positioning during channel switch
 let _unreadHighlightUntil = null; // timestamp: highlights persist until this time
 let _unreadHighlightLastSeen = null; // the lastSeen value to use for highlighting
@@ -4017,6 +4031,12 @@ function bindE2EEEvents(instance, deviceId) {
     const { channel_id, messages } = evt.detail;
     chatLoadingMessages.delete(channel_id);
     chatMessages.set(channel_id, messages);
+    // Seed sort timestamp from newest message on initial load (don't override live promotions).
+    if (!channelSortTs.has(channel_id) && messages.length) {
+      const newest = messages[messages.length - 1];
+      const ts = typeof newest.created_at === 'number' ? newest.created_at * 1000 : Date.parse(newest.created_at);
+      if (ts) channelSortTs.set(channel_id, ts);
+    }
     if (chatCurrentChannel === channel_id) {
       renderMessages();
       // Defer marking unread device messages as read until user interacts.
@@ -4062,6 +4082,7 @@ function bindE2EEEvents(instance, deviceId) {
     if (msg.id && msgs.some(m => m.id === msg.id)) return;
     msgs.push(msg);
     chatMessages.set(msg.channel_id, msgs);
+    promoteChannel(msg.channel_id);
     if (chatCurrentChannel === msg.channel_id) {
       const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
@@ -4090,6 +4111,7 @@ function bindE2EEEvents(instance, deviceId) {
         channelAgentActive.set(channel_id, true);
         updateStopButton();
       }
+      promoteChannel(channel_id);
       const msg = {
         id: agentEvt.id || '',
         channel_id,
@@ -4150,6 +4172,7 @@ function bindE2EEEvents(instance, deviceId) {
       if (chatCurrentChannel !== channel_id) return;
     } else if (event_type === 'interaction.request') {
       // Agent is asking the user a question — render inline in chat.
+      promoteChannel(channel_id);
       const msg = {
         id: agentEvt.interaction_id || '',
         channel_id,

@@ -5566,8 +5566,9 @@ function handleNewMessageScroll(wasNearBottom, newEl) {
         return;
       }
     }
-    // Otherwise scroll to make the new message visible.
-    scrollToMessage(newEl, 'instant');
+    // Otherwise scroll to bottom — new messages are always last, and this
+    // shows the container's padding-bottom as breathing room below the message.
+    scrollChatToBottom();
   });
 }
 
@@ -5575,7 +5576,7 @@ function handleNewMessageScroll(wasNearBottom, newEl) {
 function handleSentMessageScroll(el) {
   _oldestAutoScrollTarget = null;
   if (_scrollRAF) cancelAnimationFrame(_scrollRAF);
-  scrollToMessage(el, 'instant');
+  scrollChatToBottom();
 }
 
 // ---- New content bubbles ----

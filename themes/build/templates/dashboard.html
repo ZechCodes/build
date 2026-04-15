@@ -2337,8 +2337,9 @@ function renderChannelPanel() {
       group.appendChild(btnRow);
     }
 
-    // Channels for all connected devices
-    if (hasConnection) {
+    // Channels for connected or cached devices
+    const hasCachedChannels = deviceChannels.has(device.id) && deviceChannels.get(device.id).size > 0;
+    if (hasConnection || hasCachedChannels) {
       const channelsDiv = document.createElement('div');
       channelsDiv.className = 'device-group-channels';
       const devChans = deviceChannels.get(device.id) || new Map();
@@ -3265,10 +3266,11 @@ async function fetchDevices() {
     const resp = await fetch('/api/devices/');
     if (!resp.ok) return;
     const data = await resp.json();
-    devices.clear();
-    for (const d of data) {
-      devices.set(d.id, d);
+    const freshIds = new Set(data.map(d => d.id));
+    for (const id of devices.keys()) {
+      if (!freshIds.has(id)) devices.delete(id);
     }
+    for (const d of data) devices.set(d.id, d);
     renderChannelPanel();
   } catch (err) {
     console.error('Failed to fetch devices:', err);
@@ -3466,8 +3468,7 @@ document.addEventListener('sk:notification-status', async (evt) => {
     _sseReconnecting = true;
     console.log('[E2EE] SSE reconnected — tearing down stale sessions');
     try {
-      // Preserve current channel so it's restored after reconnect.
-      if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
+      // Channel state is cached — user stays on their current channel.
       for (const [, conn] of e2eeConnections) conn.disconnect();
       e2eeConnections.clear();
       // Refresh device list so initE2EE has current status/transport key data.
@@ -3935,15 +3936,9 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('disconnected', () => {
     console.log('[E2EE] Disconnected device', deviceId);
     e2eeConnections.delete(deviceId);
-    // Clean up channels for this device.
-    const devChans = deviceChannels.get(deviceId);
-    if (devChans) {
-      for (const chId of devChans.keys()) channelDeviceMap.delete(chId);
-      deviceChannels.delete(deviceId);
-    }
+    // Keep deviceChannels and channelDeviceMap cached — only clear on server-reported removal.
     deviceHarnesses.delete(deviceId);
     deviceAgentCwd.delete(deviceId);
-    rebuildChatChannels();
 
     if (!anyE2EEConnected()) {
       document.getElementById('chat-input').disabled = true;
@@ -3958,22 +3953,16 @@ function bindE2EEEvents(instance, deviceId) {
         // First load — show skeleton.
         document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
       } else {
-        // Reconnection — show pill after 5s delay.
+        // Reconnection — show pill after 2s delay.
         clearTimeout(_reconnectPillTimer);
         _reconnectPillTimer = setTimeout(() => {
           if (!anyE2EEConnected()) {
             document.getElementById('reconnect-pill').classList.add('visible');
           }
-        }, 5000);
+        }, 2000);
       }
     }
     syncE2EEStatus();
-    // If current channel was on this device, auto-select another.
-    if (chatCurrentChannel && !channelDeviceMap.has(chatCurrentChannel)) {
-      const remaining = [...chatChannels.values()];
-      if (remaining.length > 0) selectChannel(remaining[0].id);
-      else { chatCurrentChannel = null; renderMessages(); }
-    }
     renderChannelPanel();
   });
 
@@ -3982,6 +3971,9 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('channel_list', (evt) => {
     const { channels, agent_cwd } = evt.detail;
     if (agent_cwd) deviceAgentCwd.set(deviceId, agent_cwd);
+    // Diff against cached channels to detect removals.
+    const oldChans = deviceChannels.get(deviceId);
+    const oldIds = oldChans ? new Set(oldChans.keys()) : new Set();
     // Update per-device channel map.
     const devChans = new Map();
     for (const ch of channels) {
@@ -3991,8 +3983,23 @@ function bindE2EEEvents(instance, deviceId) {
       if (ch.last_seen_at) channelLastSeen.set(ch.id, ch.last_seen_at);
     }
     deviceChannels.set(deviceId, devChans);
+    // Clean up channels removed by the device.
+    for (const oldId of oldIds) {
+      if (!devChans.has(oldId)) {
+        channelDeviceMap.delete(oldId);
+        chatMessages.delete(oldId);
+        unreadCounts.delete(oldId);
+        channelSortTs.delete(oldId);
+      }
+    }
     rebuildChatChannels();
     renderChannelList();
+    // If current channel was removed by the device, auto-select another.
+    if (chatCurrentChannel && oldIds.has(chatCurrentChannel) && !devChans.has(chatCurrentChannel)) {
+      const remaining = [...chatChannels.values()];
+      if (remaining.length > 0) selectChannel(remaining[0].id);
+      else { chatCurrentChannel = null; renderMessages(); }
+    }
     // Restore pending channel from hash.
     if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
       selectChannel(_pendingChannelId);
@@ -4730,6 +4737,9 @@ function selectChannel(channelId) {
     _selConn.getMessages(channelId);
     _selConn.getActivity(channelId);
     _selConn.getComplications(channelId);
+  } else if (!chatMessages.has(channelId) || chatMessages.get(channelId).length === 0) {
+    // Device disconnected, no cached messages — show loading state until reconnect.
+    chatLoadingMessages.add(channelId);
   }
   renderMessages();
   clearConsole(chatLoadingActivity.has(channelId));

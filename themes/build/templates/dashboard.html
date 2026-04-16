@@ -3233,6 +3233,17 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+const EFFORT_LABELS = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+  max: 'Max',
+};
+function effortLabel(value) {
+  return EFFORT_LABELS[value] || value;
+}
+
 function modelToFriendlyName(modelId) {
   if (!modelId) return 'Agent';
   const m = modelId.toLowerCase();
@@ -6053,13 +6064,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       <label for="new-channel-model">Model</label>
       <select id="new-channel-model"><option value="">Select a harness first</option></select>
       <label for="new-channel-effort">Effort</label>
-      <select id="new-channel-effort">
-        <option value="">Default</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high" selected>High</option>
-        <option value="max">Max</option>
-      </select>
+      <select id="new-channel-effort"><option value="">Default</option></select>
       <button class="new-channel-advanced-toggle" type="button" id="new-channel-advanced-toggle">▶ Advanced</button>
       <div class="new-channel-advanced" id="new-channel-advanced">
         <label for="new-channel-workdir">Working Directory</label>
@@ -6082,10 +6087,13 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   const advancedSection = document.getElementById('new-channel-advanced');
   nameInput.focus();
 
-  // Populate models when harness changes.
-  function updateModels() {
+  const effortSelect = document.getElementById('new-channel-effort');
+
+  // Populate models and effort options when harness changes.
+  function updateHarnessFields() {
     const harnessId = harnessSelect.value;
     modelSelect.innerHTML = '';
+    effortSelect.innerHTML = '<option value="">Default</option>';
     if (!harnessId || !cachedHarnesses) {
       modelSelect.innerHTML = '<option value="">Select a harness first</option>';
       return;
@@ -6099,10 +6107,17 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       if (m.id === harness.default_model) opt.selected = true;
       modelSelect.appendChild(opt);
     }
+    for (const lvl of (harness.effort_levels || [])) {
+      const opt = document.createElement('option');
+      opt.value = lvl;
+      opt.textContent = effortLabel(lvl);
+      if (lvl === harness.default_effort) opt.selected = true;
+      effortSelect.appendChild(opt);
+    }
   }
-  harnessSelect.addEventListener('change', updateModels);
-  // Init models for first harness.
-  updateModels();
+  harnessSelect.addEventListener('change', updateHarnessFields);
+  // Init for first harness.
+  updateHarnessFields();
 
   // Advanced toggle.
   advancedToggle.addEventListener('click', () => {
@@ -6158,17 +6173,13 @@ function showEditChannelDialog(ch) {
     ).join('');
   }
 
-  // Build effort options (shared between Claude and Codex).
-  const effortLevels = [
-    { value: '', label: 'Default' },
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'max', label: 'Max' },
-  ];
-  const effortOptions = effortLevels.map(e =>
-    `<option value="${e.value}"${e.value === (ch.effort || '') ? ' selected' : ''}>${e.label}</option>`
-  ).join('');
+  // Effort options come from the harness definition.
+  const harnessEffortLevels = harness?.effort_levels || [];
+  const effortOptions =
+    `<option value=""${(ch.effort || '') === '' ? ' selected' : ''}>Default</option>` +
+    harnessEffortLevels.map(lvl =>
+      `<option value="${lvl}"${lvl === (ch.effort || '') ? ' selected' : ''}>${effortLabel(lvl)}</option>`
+    ).join('');
 
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';

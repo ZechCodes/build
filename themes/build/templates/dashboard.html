@@ -3981,7 +3981,10 @@ function bindE2EEEvents(instance, deviceId) {
       channelDeviceMap.set(ch.id, deviceId);
       if (ch.plan_mode != null) channelPlanMode.set(ch.id, ch.plan_mode);
       if (ch.last_seen_at) channelLastSeen.set(ch.id, ch.last_seen_at);
+      // Reset agent active state — real-time events will re-set if agent is mid-turn.
+      channelAgentActive.set(ch.id, false);
     }
+    updateStopButton();
     deviceChannels.set(deviceId, devChans);
     // Clean up channels removed by the device.
     for (const oldId of oldIds) {

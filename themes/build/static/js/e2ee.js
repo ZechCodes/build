@@ -365,6 +365,7 @@ class BuildE2EE extends EventTarget {
     if (opts.effort) payload.effort = opts.effort;
     if (opts.system_prompt) payload.system_prompt = opts.system_prompt;
     if (opts.working_directory) payload.working_directory = opts.working_directory;
+    if (opts.auto_approve_tools !== undefined) payload.auto_approve_tools = !!opts.auto_approve_tools;
     return this.send(payload);
   }
 
@@ -416,6 +417,7 @@ class BuildE2EE extends EventTarget {
     if (opts.working_directory !== undefined) payload.working_directory = opts.working_directory;
     if (opts.model !== undefined) payload.model = opts.model;
     if (opts.effort !== undefined) payload.effort = opts.effort;
+    if (opts.auto_approve_tools !== undefined) payload.auto_approve_tools = !!opts.auto_approve_tools;
     return this.send(payload);
   }
 

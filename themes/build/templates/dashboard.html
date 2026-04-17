@@ -745,6 +745,12 @@ body{
 .new-channel-advanced-toggle:hover{color:var(--accent)}
 .new-channel-advanced{display:none}
 .new-channel-advanced.is-open{display:block}
+.new-channel-checkbox{
+  display:flex;align-items:center;gap:.5rem;font-size:13px;
+  text-transform:none;letter-spacing:0;color:var(--text);
+  font-weight:400;margin-top:.75rem;cursor:pointer;
+}
+.new-channel-checkbox input{margin:0;width:auto}
 /* Edit channel dialog extras */
 .edit-channel-actions{display:flex;flex-direction:column;gap:.5rem;margin-top:1rem}
 .edit-channel-actions .btn{
@@ -6071,6 +6077,10 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
         <input type="text" id="new-channel-workdir" placeholder="/path/to/project">
         <label for="new-channel-prompt">System Prompt</label>
         <textarea id="new-channel-prompt" placeholder="Optional agent instructions..." rows="2"></textarea>
+        <label class="new-channel-checkbox">
+          <input type="checkbox" id="new-channel-auto-approve">
+          Auto-approve all tool uses
+        </label>
       </div>
       <div class="dialog-btns">
         <button class="btn btn-cancel" id="new-channel-cancel">Cancel</button>
@@ -6141,6 +6151,7 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
       if (wd) opts.working_directory = wd;
       const sp = document.getElementById('new-channel-prompt').value.trim();
       if (sp) opts.system_prompt = sp;
+      opts.auto_approve_tools = document.getElementById('new-channel-auto-approve').checked;
       _createConn?.createChannel(name, opts);
       close();
     }
@@ -6194,6 +6205,10 @@ function showEditChannelDialog(ch) {
       <select id="edit-channel-effort">${effortOptions}</select>
       <label for="edit-channel-workdir">Working Directory</label>
       <input type="text" id="edit-channel-workdir" value="${escapeHtml(ch.working_directory || '')}" placeholder="/path/to/project">
+      <label class="new-channel-checkbox">
+        <input type="checkbox" id="edit-channel-auto-approve"${ch.auto_approve_tools ? ' checked' : ''}>
+        Auto-approve all tool uses
+      </label>
       <div class="edit-channel-actions">
         <button class="btn" id="edit-channel-restart">Restart Agent</button>
       </div>
@@ -6236,11 +6251,14 @@ function showEditChannelDialog(ch) {
     if (newModel && newModel !== ch.model) updates.model = newModel;
     const newEffort = effortSelect.value;
     if (newEffort !== (ch.effort || '')) updates.effort = newEffort;
+    const newAutoApprove = document.getElementById('edit-channel-auto-approve').checked;
+    if (newAutoApprove !== !!ch.auto_approve_tools) updates.auto_approve_tools = newAutoApprove;
     if (Object.keys(updates).length) {
       _editConn.updateChannel(ch.id, updates);
       // Update local channel data so next message picks up new values.
       if (updates.model) ch.model = updates.model;
       if (updates.effort !== undefined) ch.effort = updates.effort;
+      if (updates.auto_approve_tools !== undefined) ch.auto_approve_tools = updates.auto_approve_tools;
     }
     close();
   };

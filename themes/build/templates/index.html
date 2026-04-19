@@ -408,9 +408,32 @@ nav{
 
 /* Install snippet */
 .hero-install{
-  margin-top:3rem;
   animation:fadeUp .8s var(--ease) .4s both;
 }
+.hero-steps{
+  display:flex;flex-direction:column;align-items:center;gap:2.5rem;
+  margin-top:2.75rem;
+}
+.hero-step{display:flex;flex-direction:column;align-items:center;gap:.85rem}
+.step-caption{
+  font-size:13px;color:var(--text-tertiary);
+  display:inline-flex;align-items:center;gap:.6rem;
+  letter-spacing:.01em;
+}
+.step-num{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;
+  border-radius:50%;
+  background:var(--accent-dim);
+  color:var(--accent-bright);
+  font-family:var(--mono);font-size:11px;font-weight:600;
+}
+.step-cta{display:flex;flex-direction:column;align-items:center;gap:.9rem}
+.link-subtle{
+  color:var(--text-tertiary);font-size:13px;
+  text-decoration:none;transition:color .15s;
+}
+.link-subtle:hover{color:var(--text-secondary)}
 .install-cmd{
   display:inline-flex;align-items:center;gap:1rem;
   padding:.6rem 1.25rem;
@@ -1266,20 +1289,26 @@ footer{
     Plan, build, and ship with real-time observability across your entire fleet.
   </p>
 
-  <div class="hero-auth">
-    <a class="btn-primary btn-hero" href="/dashboard/">
-      Open Dashboard
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </a>
-    <a class="btn-secondary btn-hero" href="/download">
-      Download the app
-    </a>
-  </div>
+  <div class="hero-steps">
+    <div class="hero-step">
+      <div class="step-caption"><span class="step-num">1</span> Install Build Bridge on each device running your agents</div>
+      <div class="hero-install">
+        <div class="install-cmd">
+          <span class="prompt">$</span> curl -sSf getbuild.ing | sh
+          <span class="copy-hint">click to copy</span>
+        </div>
+      </div>
+    </div>
 
-  <div class="hero-install">
-    <div class="install-cmd">
-      <span class="prompt">$</span> curl -sSf getbuild.ing | sh
-      <span class="copy-hint">click to copy</span>
+    <div class="hero-step">
+      <div class="step-caption"><span class="step-num">2</span> Drive them from your workstation</div>
+      <div class="step-cta">
+        <a class="btn-primary btn-hero" href="/download">
+          Download the app
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        <a class="link-subtle" href="/dashboard/">or use the web dashboard →</a>
+      </div>
     </div>
   </div>
 </section>

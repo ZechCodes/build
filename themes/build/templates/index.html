@@ -443,11 +443,18 @@ nav{
 }
 .install-cmd .prompt{color:var(--accent);user-select:none}
 .install-cmd .copy-hint{
-  font-family:var(--sans);font-size:11px;
-  color:var(--text-tertiary);
-  padding-left:1rem;
+  display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;
+  padding-left:1rem;margin-left:0;
+  box-sizing:content-box;
   border-left:1px solid rgba(255,255,255,.06);
+  color:var(--text-tertiary);
+  transition:color .15s;
 }
+.install-cmd .copy-hint svg{width:14px;height:14px;flex-shrink:0}
+.install-cmd .copy-hint .icon-check{display:none;color:#34d399}
+.install-cmd.copied .copy-hint .icon-copy{display:none}
+.install-cmd.copied .copy-hint .icon-check{display:inline}
 
 @keyframes fadeUp{
   from{opacity:0;transform:translateY(16px)}
@@ -1285,9 +1292,12 @@ footer{
     <div class="hero-step">
       <div class="step-caption">Install Build Bridge on each device running your agents</div>
       <div class="hero-install">
-        <div class="install-cmd">
+        <div class="install-cmd" aria-label="Copy install command" role="button" tabindex="0">
           <span class="prompt">$</span> curl -sSf getbuild.ing | sh
-          <span class="copy-hint">click to copy</span>
+          <span class="copy-hint">
+            <svg class="icon-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.5A1.5 1.5 0 0 1 4.5 2h6.5"/></svg>
+            <svg class="icon-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 8.5 6.5 12 13 4.5"/></svg>
+          </span>
         </div>
       </div>
     </div>
@@ -1917,13 +1927,21 @@ document.querySelector('.sc-console-header').addEventListener('click', () => {
 });
 
 // Copy install command
-document.querySelector('.install-cmd').addEventListener('click', function() {
-  navigator.clipboard.writeText('curl -sSf getbuild.ing | sh');
-  const hint = this.querySelector('.copy-hint');
-  hint.textContent = 'copied!';
-  hint.style.color = '#34d399';
-  setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
-});
+(function() {
+  const el = document.querySelector('.install-cmd');
+  if (!el) return;
+  let resetTimer = null;
+  function copy() {
+    navigator.clipboard.writeText('curl -sSf getbuild.ing | sh');
+    el.classList.add('copied');
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => el.classList.remove('copied'), 2000);
+  }
+  el.addEventListener('click', copy);
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); }
+  });
+})();
 
 // Smooth scroll for nav links
 document.querySelectorAll('a[href^="#"]').forEach(a => {

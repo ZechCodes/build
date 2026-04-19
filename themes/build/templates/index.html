@@ -439,6 +439,18 @@ nav{
   to{opacity:1;transform:translateY(0)}
 }
 
+/* ============ UTILITIES (replaces inline styles for CSP) ============ */
+.btn-primary.btn-hero{font-size:16px;padding:.85rem 2.5rem}
+.sc-plan-meta--spaced{margin-bottom:.5rem}
+.sc-tree-badge--right{margin-left:auto}
+.v--add{color:#059669}
+.v--remove{color:#dc2626}
+.comp-card-icon--accent{background:var(--accent-dim)}
+.comp-card-icon--green{background:var(--green-dim)}
+.comp-card-icon--cyan{background:rgba(34,211,238,.1)}
+.comp-card-icon--purple{background:rgba(192,132,252,.1)}
+.comp-card-icon--amber{background:var(--amber-dim)}
+
 /* ============ PRODUCT SHOWCASE ============ */
 .showcase{
   position:relative;
@@ -1254,15 +1266,18 @@ footer{
     Plan, build, and ship with real-time observability across your entire fleet.
   </p>
 
-  <div class="hero-auth" style="animation:fadeUp .8s var(--ease) .3s both">
-    <a class="btn-primary" href="/dashboard/" style="font-size:16px;padding:.85rem 2.5rem">
+  <div class="hero-auth">
+    <a class="btn-primary btn-hero" href="/dashboard/">
       Open Dashboard
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+    <a class="btn-secondary btn-hero" href="/download">
+      Download the app
     </a>
   </div>
 
   <div class="hero-install">
-    <div class="install-cmd" onclick="navigator.clipboard.writeText('curl -sSf getbuild.ing | sh')">
+    <div class="install-cmd">
       <span class="prompt">$</span> curl -sSf getbuild.ing | sh
       <span class="copy-hint">click to copy</span>
     </div>
@@ -1497,7 +1512,7 @@ footer{
                 <span class="sc-detail-title">Extract JWT verification module</span>
               </div>
               <div class="sc-detail-body">
-                <div class="sc-plan-meta" style="margin-bottom:.5rem">Ready &middot; assigned to refactor-auth</div>
+                <div class="sc-plan-meta sc-plan-meta--spaced">Ready &middot; assigned to refactor-auth</div>
                 <ul class="sc-plan-checklist">
                   <li class="done">Create auth/jwt.ts with verify &amp; refresh</li>
                   <li class="done">Add Redis token store adapter</li>
@@ -1535,7 +1550,7 @@ footer{
               <div class="sc-detail-header">
                 <svg class="sc-tree-icon" viewBox="0 0 12 14" width="11" height="13"><rect x="1.5" y="1" width="9" height="12" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg>
                 <span class="sc-detail-title">src/auth/jwt.ts</span>
-                <span class="sc-tree-badge a" style="margin-left:auto">Added</span>
+                <span class="sc-tree-badge a sc-tree-badge--right">Added</span>
               </div>
               <div class="sc-detail-body sc-code-view">
                 <div><span class="ln">1</span><span class="kw">import</span> { jwtVerify, SignJWT } <span class="kw">from</span> <span class="str">'jose'</span>;</div>
@@ -1569,7 +1584,7 @@ footer{
             <div class="sc-comp"><svg viewBox="0 0 11 11" fill="none"><path d="M2 8l2-2.5 1.5 1.2L9 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg> Tokens <span class="v">12.4k</span> <span class="sub">/ 128k</span></div>
             <div class="sc-comp green"><svg viewBox="0 0 11 11" fill="none"><rect x="1.5" y="1.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1"/><path d="M3.5 5.5l1.5 1.5 2.5-3" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg> Tests <span class="v">47 pass</span> <span class="sub">/ 2 fail</span></div>
             <div class="sc-comp">Files <span class="v">8</span> <span class="sub">modified</span></div>
-            <div class="sc-comp">Git <span class="v" style="color:#059669">+247</span> <span class="v" style="color:#dc2626">-89</span></div>
+            <div class="sc-comp">Git <span class="v v--add">+247</span> <span class="v v--remove">-89</span></div>
             <div class="sc-comp amber"><svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1.1"/><path d="M5.5 3.5v2.5M5.5 7.5v.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg> Warnings <span class="v">3</span></div>
             <div class="sc-comp">Model <span class="v">opus-4</span></div>
           </div>
@@ -1667,23 +1682,23 @@ footer{
     </div>
     <div class="comp-visual">
       <div class="comp-card">
-        <div class="comp-card-icon" style="background:var(--accent-dim)"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#818cf8" stroke-width="1.2"/><path d="M6 8h4M8 6v4" stroke="#818cf8" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+        <div class="comp-card-icon comp-card-icon--accent"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#818cf8" stroke-width="1.2"/><path d="M6 8h4M8 6v4" stroke="#818cf8" stroke-width="1.2" stroke-linecap="round"/></svg></div>
         <div><div class="comp-card-label">Model</div><div class="comp-card-value">claude-opus-4-6</div></div>
       </div>
       <div class="comp-card">
-        <div class="comp-card-icon" style="background:var(--green-dim)"><svg viewBox="0 0 16 16" fill="none"><path d="M3 13V8M6.5 13V5M10 13V7M13.5 13V3" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+        <div class="comp-card-icon comp-card-icon--green"><svg viewBox="0 0 16 16" fill="none"><path d="M3 13V8M6.5 13V5M10 13V7M13.5 13V3" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/></svg></div>
         <div><div class="comp-card-label">Files Changed</div><div class="comp-card-value"><span class="g">+4 added</span> &middot; <span class="a">3 modified</span> &middot; <span class="r">1 deleted</span></div></div>
       </div>
       <div class="comp-card">
-        <div class="comp-card-icon" style="background:rgba(34,211,238,.1)"><svg viewBox="0 0 16 16" fill="none"><path d="M6 8l1.5 1.5L10.5 6" stroke="#22d3ee" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="5.5" stroke="#22d3ee" stroke-width="1.2"/></svg></div>
+        <div class="comp-card-icon comp-card-icon--cyan"><svg viewBox="0 0 16 16" fill="none"><path d="M6 8l1.5 1.5L10.5 6" stroke="#22d3ee" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="5.5" stroke="#22d3ee" stroke-width="1.2"/></svg></div>
         <div><div class="comp-card-label">Tests</div><div class="comp-card-value"><span class="g">47 passed</span> &middot; <span class="a">2 skipped</span> &middot; <span class="r">2 failed</span></div></div>
       </div>
       <div class="comp-card">
-        <div class="comp-card-icon" style="background:rgba(192,132,252,.1)"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#c084fc" stroke-width="1.2"/><path d="M5 8.5l2 2 4-4.5" stroke="#c084fc" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="comp-card-icon comp-card-icon--purple"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#c084fc" stroke-width="1.2"/><path d="M5 8.5l2 2 4-4.5" stroke="#c084fc" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div><div class="comp-card-label">CI/CD</div><div class="comp-card-value"><span class="g">Pipeline passing</span> &middot; Build #142</div></div>
       </div>
       <div class="comp-card">
-        <div class="comp-card-icon" style="background:var(--amber-dim)"><svg viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h10M3 12h6" stroke="#fbbf24" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+        <div class="comp-card-icon comp-card-icon--amber"><svg viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h10M3 12h6" stroke="#fbbf24" stroke-width="1.2" stroke-linecap="round"/></svg></div>
         <div><div class="comp-card-label">Tokens</div><div class="comp-card-value">42,847 in &middot; 8,291 out &middot; ~$1.24</div></div>
       </div>
     </div>
@@ -1882,6 +1897,7 @@ document.querySelector('.sc-console-header').addEventListener('click', () => {
 
 // Copy install command
 document.querySelector('.install-cmd').addEventListener('click', function() {
+  navigator.clipboard.writeText('curl -sSf getbuild.ing | sh');
   const hint = this.querySelector('.copy-hint');
   hint.textContent = 'copied!';
   hint.style.color = '#34d399';

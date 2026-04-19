@@ -443,18 +443,44 @@ nav{
 }
 .install-cmd .prompt{color:var(--accent);user-select:none}
 .install-cmd .copy-hint{
-  display:inline-flex;align-items:center;justify-content:center;
+  display:inline-grid;place-items:center;
   width:16px;height:16px;
   padding-left:1rem;margin-left:0;
   box-sizing:content-box;
   border-left:1px solid rgba(255,255,255,.06);
   color:var(--text-tertiary);
-  transition:color .15s;
+  transition:color .2s;
 }
-.install-cmd .copy-hint svg{width:14px;height:14px;flex-shrink:0}
-.install-cmd .copy-hint .icon-check{display:none;color:#34d399}
-.install-cmd.copied .copy-hint .icon-copy{display:none}
-.install-cmd.copied .copy-hint .icon-check{display:inline}
+.install-cmd.copied .copy-hint{color:#34d399}
+.install-cmd .copy-hint svg{
+  grid-column:1;grid-row:1;
+  width:14px;height:14px;
+  transform-origin:center;
+}
+.install-cmd .copy-hint .icon-copy{
+  opacity:1;transform:scale(1) rotate(0);
+  transition:opacity .2s ease, transform .2s ease;
+}
+.install-cmd.copied .copy-hint .icon-copy{
+  opacity:0;transform:scale(.4) rotate(-10deg);
+  transition:opacity .12s ease, transform .18s ease;
+}
+.install-cmd .copy-hint .icon-check{
+  opacity:0;transform:scale(.5) rotate(-10deg);
+}
+.install-cmd.copied .copy-hint .icon-check{
+  opacity:1;transform:scale(1) rotate(0);
+  transition:
+    opacity .2s .09s ease,
+    transform .28s .09s cubic-bezier(.34,1.56,.64,1);
+}
+.install-cmd .copy-hint .icon-check polyline{
+  stroke-dasharray:18;stroke-dashoffset:18;
+}
+.install-cmd.copied .copy-hint .icon-check polyline{
+  stroke-dashoffset:0;
+  transition:stroke-dashoffset .28s .2s ease-out;
+}
 
 @keyframes fadeUp{
   from{opacity:0;transform:translateY(16px)}

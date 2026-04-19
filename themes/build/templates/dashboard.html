@@ -3630,7 +3630,10 @@ function pushChannelHistory(channelId) {
 
 if (window.buildElectron) {
   document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    // Navigation hotkeys all require Alt, which has no useful default
+    // behavior in chat inputs (Option+letter inserts special chars; we
+    // preventDefault below). So we don't skip when an input is focused —
+    // that was making nav unusable while typing.
     if (!e.altKey) return;
 
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {

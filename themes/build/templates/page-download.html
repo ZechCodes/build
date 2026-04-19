@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Download Build</title>
+<link rel="icon" type="image/svg+xml" href="/static/build/favicon.svg">
+<meta name="description" content="Download the Build desktop app for macOS, Windows, or Linux.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style nonce="{{ csp_nonce() }}">
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07070a;
+  --bg-elevated:#0e0e14;
+  --surface:rgba(255,255,255,0.04);
+  --surface-hover:rgba(255,255,255,0.07);
+  --text:#e8e8ed;
+  --text-secondary:#8b8b9e;
+  --text-tertiary:#55556a;
+  --accent:#818cf8;
+  --accent-bright:#a5b4fc;
+  --accent-dim:rgba(129,140,248,0.12);
+  --border:rgba(255,255,255,0.06);
+  --serif:'Instrument Serif',Georgia,serif;
+  --sans:'DM Sans',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:var(--sans);
+  min-height:100vh;
+  display:flex;flex-direction:column;
+  -webkit-font-smoothing:antialiased;
+}
+main{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  padding:4rem 2rem;
+}
+.wrap{max-width:560px;width:100%}
+.logo{
+  display:inline-flex;align-items:center;gap:.6rem;
+  text-decoration:none;color:var(--text);
+  margin-bottom:2.5rem;
+}
+.logo svg{width:28px;height:28px;color:var(--accent)}
+.logo-word{font-weight:700;font-size:18px;letter-spacing:-0.03em}
+h1{
+  font-family:var(--serif);
+  font-size:clamp(36px,5vw,48px);
+  font-weight:400;font-style:italic;
+  letter-spacing:-0.02em;line-height:1.1;
+  margin-bottom:.5rem;
+}
+.sub{
+  color:var(--text-secondary);
+  font-size:16px;line-height:1.6;
+  margin-bottom:.25rem;
+}
+.version{
+  display:inline-block;
+  font-family:var(--mono);
+  font-size:12px;
+  color:var(--text-tertiary);
+  padding:.25rem .6rem;
+  border:1px solid var(--border);
+  border-radius:6px;
+  margin-bottom:2rem;
+}
+.buttons{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:.75rem;
+  margin-bottom:2rem;
+}
+.btn{
+  display:flex;align-items:center;gap:.75rem;
+  padding:1rem 1.25rem;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  color:var(--text);
+  text-decoration:none;
+  font-size:14px;font-weight:500;
+  transition:background .15s,border-color .15s,transform .15s;
+}
+.btn:hover{
+  background:var(--surface-hover);
+  border-color:rgba(255,255,255,0.12);
+}
+.btn .icon{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;
+  color:var(--text-secondary);flex-shrink:0;
+}
+.btn .label{display:flex;flex-direction:column;gap:.1rem;min-width:0}
+.btn .name{font-weight:600;font-size:14px}
+.btn .detail{font-size:12px;color:var(--text-tertiary);font-family:var(--mono)}
+.btn.recommended{
+  background:var(--accent-dim);
+  border-color:rgba(129,140,248,0.35);
+}
+.btn.recommended:hover{
+  background:rgba(129,140,248,0.18);
+  border-color:rgba(129,140,248,0.5);
+}
+.btn.recommended .icon{color:var(--accent-bright)}
+.btn.recommended .detail{color:var(--accent-bright)}
+.btn.disabled{
+  opacity:.4;pointer-events:none;
+}
+.cli-box{
+  margin-top:1rem;
+  padding:1rem 1.25rem;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:12px;
+  font-family:var(--mono);
+  font-size:13px;
+  color:var(--text-secondary);
+  overflow-x:auto;
+  white-space:nowrap;
+}
+.cli-box .prompt{color:var(--text-tertiary);user-select:none}
+.cli-box .cmd{color:var(--text)}
+.cli-note{
+  font-size:13px;color:var(--text-secondary);margin-top:.75rem;line-height:1.5;
+}
+.back{
+  display:inline-flex;align-items:center;gap:.4rem;
+  margin-top:2.5rem;
+  font-size:13px;color:var(--text-tertiary);
+  text-decoration:none;
+  transition:color .15s;
+}
+.back:hover{color:var(--text-secondary)}
+.unavailable{
+  padding:1rem 1.25rem;
+  background:rgba(251,191,36,0.08);
+  border:1px solid rgba(251,191,36,0.25);
+  border-radius:12px;
+  color:#fcd34d;
+  font-size:13px;line-height:1.5;
+}
+.unavailable a{color:#fde68a;text-decoration:underline}
+hr{
+  border:0;border-top:1px solid var(--border);
+  margin:2rem 0;
+}
+.section-label{
+  font-size:11px;text-transform:uppercase;letter-spacing:.12em;
+  color:var(--text-tertiary);
+  margin-bottom:.75rem;
+}
+@media (max-width:520px){
+  .buttons{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<main>
+  <div class="wrap">
+    <a href="/" class="logo">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
+      <span class="logo-word">Build</span>
+    </a>
+
+    <h1>Download Build.</h1>
+    <p class="sub">The desktop app runs your device client with a native UI.</p>
+    {% if assets.version %}<span class="version">{{ assets.version }}</span>{% endif %}
+
+    {% if assets.macos_dmg or assets.windows_exe or assets.linux_appimage or assets.linux_deb %}
+    <div class="buttons">
+      <a class="btn {% if default_platform == 'macos' %}recommended{% endif %} {% if not assets.macos_dmg %}disabled{% endif %}"
+         href="{{ assets.macos_dmg or '#' }}">
+        <span class="icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.54c-.03-3.15 2.57-4.67 2.69-4.74-1.47-2.14-3.75-2.43-4.56-2.47-1.95-.2-3.79 1.15-4.77 1.15-.99 0-2.51-1.12-4.12-1.09-2.12.03-4.08 1.23-5.17 3.13-2.21 3.83-.56 9.51 1.58 12.62 1.05 1.52 2.3 3.23 3.94 3.17 1.58-.06 2.18-1.02 4.09-1.02 1.91 0 2.45 1.02 4.12.99 1.7-.03 2.78-1.55 3.82-3.08 1.2-1.77 1.7-3.48 1.73-3.57-.04-.02-3.32-1.27-3.35-5.04zM14.6 3.34c.87-1.06 1.46-2.53 1.3-4-1.25.05-2.78.83-3.68 1.89-.81.94-1.52 2.44-1.33 3.88 1.4.11 2.83-.71 3.71-1.77z"/></svg>
+        </span>
+        <span class="label">
+          <span class="name">macOS</span>
+          <span class="detail">Apple Silicon · .dmg</span>
+        </span>
+      </a>
+
+      <a class="btn {% if default_platform == 'windows' %}recommended{% endif %} {% if not assets.windows_exe %}disabled{% endif %}"
+         href="{{ assets.windows_exe or '#' }}">
+        <span class="icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.545L9.504 2.25v9.252H0V3.545zM10.496 2.109L23.5 0v11.502H10.496V2.109zM0 12.498h9.504V21.75L0 20.455v-7.957zm10.496 0H23.5V24l-13.004-2.109V12.498z"/></svg>
+        </span>
+        <span class="label">
+          <span class="name">Windows</span>
+          <span class="detail">x64 · installer (.exe)</span>
+        </span>
+      </a>
+
+      <a class="btn {% if default_platform == 'linux' %}recommended{% endif %} {% if not assets.linux_appimage %}disabled{% endif %}"
+         href="{{ assets.linux_appimage or '#' }}">
+        <span class="icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.480.021c-4.226.333-3.105 4.807-3.17 6.298c-.076 1.092-.3 1.953-1.05 3.02c-.885 1.051-2.127 2.75-2.716 4.521c-.278.832-.41 1.684-.287 2.489a.424.424 0 0 0-.11.135c-.26.268-.45.6-.663.839c-.199.199-.485.267-.797.4c-.313.134-.66.279-.893.567c-.133.167-.229.375-.235.627c-.006.25.09.504.262.789c.344.504.68.815.72 1.329c.026.42-.194 1.165.086 1.862c.35.911 1.28 1.23 2.174 1.17c1.27-.099 2.544-1.004 3.46-2.023c1.12-1.04 2.65-1.01 3.86-.23c2.37 1.12 4.38-.24 4.82-2.9c.28-1.66-.55-2.94-1.66-4.6c-1.06-1.67-2.2-4.06-2.2-7.11C13.5 2.12 12.9 0 12.5 0z"/></svg>
+        </span>
+        <span class="label">
+          <span class="name">Linux</span>
+          <span class="detail">.AppImage</span>
+        </span>
+      </a>
+
+      <a class="btn {% if not assets.linux_deb %}disabled{% endif %}"
+         href="{{ assets.linux_deb or '#' }}">
+        <span class="icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        </span>
+        <span class="label">
+          <span class="name">Debian / Ubuntu</span>
+          <span class="detail">.deb</span>
+        </span>
+      </a>
+    </div>
+    {% else %}
+    <div class="unavailable">
+      The latest release isn't reachable right now. You can browse builds directly at
+      <a href="https://github.com/ZechCodes/build-app/releases" rel="noopener">github.com/ZechCodes/build-app</a>.
+    </div>
+    {% endif %}
+
+    <hr>
+
+    <div class="section-label">Or install the device client from your terminal</div>
+    <div class="cli-box"><span class="prompt">$ </span><span class="cmd">curl -sSf getbuild.ing | sh</span></div>
+    <p class="cli-note">Installs the Build Bridge device client as a background process. No GUI, no sudo — everything lives under your home directory.</p>
+
+    <a class="back" href="/">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      Back to getbuild.ing
+    </a>
+  </div>
+</main>
+</body>
+</html>

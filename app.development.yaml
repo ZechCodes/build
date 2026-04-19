@@ -37,6 +37,7 @@ controllers:
   - build_app.devices:DeviceApiController
   - build_app.app_auth:AppAuthController
   - build_app.app_auth:AppAuthPageController
+  - build_app.download:download_page
 
 page_types:
   - name: page

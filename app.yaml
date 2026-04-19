@@ -44,6 +44,7 @@ controllers:
   - build_app.app_auth:AppAuthController
   - build_app.app_auth:AppAuthPageController
   - build_app.theme_api:theme_version
+  - build_app.download:download_page
 
 page_types:
   - name: page

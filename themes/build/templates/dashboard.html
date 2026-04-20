@@ -2176,11 +2176,36 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   border:1px solid var(--border-strong);
   border-radius:var(--radius);
   box-shadow:var(--shadow-lg);
-  display:none;flex-direction:column;
+  display:flex;flex-direction:column;
   overflow:hidden;z-index:50;
-  transition:width .15s ease, height .15s ease, left .15s ease, right .15s ease, top .15s ease, bottom .15s ease;
+  /* Start hidden; .open flips opacity/visibility and leaves transitions running. */
+  opacity:0;visibility:hidden;pointer-events:none;transform:translateY(6px);
+  transition:
+    opacity .18s ease,
+    transform .18s ease,
+    visibility 0s linear .18s,
+    width .2s ease,
+    height .2s ease,
+    max-height .2s ease,
+    top .2s ease,
+    left .2s ease,
+    right .2s ease,
+    bottom .2s ease;
 }
-#chat-overlay.open{display:flex}
+#chat-overlay.open{
+  opacity:1;visibility:visible;pointer-events:auto;transform:translateY(0);
+  transition:
+    opacity .18s ease,
+    transform .18s ease,
+    visibility 0s linear 0s,
+    width .2s ease,
+    height .2s ease,
+    max-height .2s ease,
+    top .2s ease,
+    left .2s ease,
+    right .2s ease,
+    bottom .2s ease;
+}
 #chat-overlay[data-mode="expanded"]{
   top:16px;bottom:calc(36px + 8px);left:50%;right:auto;
   transform:translateX(-50%);

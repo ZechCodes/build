@@ -1839,6 +1839,20 @@ body{
   }
   .file-tree-panel.mobile-open{display:flex}
   .file-tree-panel.mobile-open ~ .file-content-panel{display:none}
+  /* Chat overlay on mobile: normal open is edge-to-edge; expanded is
+     true fullscreen with no borders, no padding on the edges. */
+  #chat-overlay.open{
+    right:0;left:0;
+    width:100vw;max-width:100vw;
+    bottom:var(--rail-h, 36px);
+    border-left:none;border-right:none;border-radius:0;
+  }
+  #chat-overlay[data-mode="expanded"]{
+    top:0;right:0;bottom:0;left:0;
+    transform:none;
+    width:100vw;height:100vh;height:100dvh;max-height:none;
+    border:none;border-radius:0;
+  }
 }
 .pad-2{padding:2rem}
 .pad-1-5{padding:1.5rem}
@@ -2014,9 +2028,10 @@ body{
   #chat-overlay{background:var(--surface-solid);border-color:var(--border-strong);box-shadow:0 8px 32px rgba(0,0,0,.6)}
   .chat-overlay-header{background:rgba(255,255,255,.03)}
   .chat-overlay-btn:hover{background:rgba(255,255,255,.06)}
-  .chat-overlay-model-row{background:rgba(255,255,255,.02)}
-  .chat-overlay-model-pill{background:rgba(255,255,255,.04)}
-  .chat-overlay-model-pill:hover{background:rgba(255,255,255,.08)}
+  .chat-overlay-toolbar{background:rgba(255,255,255,.02)}
+  .chat-overlay-tool-btn:hover{background:rgba(255,255,255,.06)}
+  .chat-overlay-ctrl-pill{background:rgba(255,255,255,.04)}
+  .chat-overlay-ctrl-pill:hover{background:rgba(255,255,255,.08)}
   .chat-overlay-title .co-tag{background:rgba(255,255,255,.06)}
   /* Files view (dark) */
   .mod-file-row:hover{background:rgba(255,255,255,.03)}
@@ -2218,41 +2233,63 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   position:relative;
 }
 .chat-overlay-body > .chat-layout{flex:1}
-.chat-overlay-model-row{
-  display:flex;align-items:center;gap:.4rem;
+/* Toolbar below the input: attach / plan / …spacer… / model·effort / stop / send. */
+.chat-overlay-toolbar{
+  display:flex;align-items:center;gap:.3rem;
   padding:.35rem .5rem;
   border-top:1px solid var(--border);
   background:var(--surface);flex-shrink:0;
 }
-.chat-overlay-model-pill{
-  position:relative;display:inline-flex;align-items:center;gap:.3rem;
+.chat-overlay-tool-spacer{flex:1}
+.chat-overlay-tool-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;border-radius:var(--radius-sm);
+  background:transparent;border:1px solid transparent;
+  color:var(--text-muted);cursor:pointer;
+  transition:all .12s;padding:0;flex-shrink:0;
+  font-family:var(--font);
+}
+.chat-overlay-tool-btn:hover{background:rgba(0,0,0,.04);color:var(--text)}
+.chat-overlay-tool-btn:disabled{opacity:.4;cursor:default}
+.chat-overlay-tool-btn:disabled:hover{background:transparent;color:var(--text-muted)}
+.chat-overlay-tool-btn.active{background:var(--accent-light);color:var(--accent);border-color:var(--accent-light)}
+.chat-overlay-tool-btn svg{width:14px;height:14px}
+
+.chat-overlay-ctrl-pill{
+  position:relative;display:inline-flex;align-items:center;gap:.35rem;
   background:rgba(0,0,0,.04);border:1px solid var(--border);
   border-radius:999px;padding:.22rem .55rem;
   font-size:11px;font-weight:500;color:var(--text);
   cursor:pointer;transition:background .12s;
   font-family:var(--font);
+  max-width:260px;
 }
-.chat-overlay-model-pill:hover{background:rgba(0,0,0,.07)}
-.chat-overlay-model-pill .co-model-label{
-  color:var(--text-muted);font-size:9.5px;font-weight:600;
-  text-transform:uppercase;letter-spacing:.04em;margin-right:.2rem;
-}
-.chat-overlay-model-pill .co-model-chevron{width:8px;height:5px;color:var(--text-muted)}
-.chat-overlay-model-menu{
-  position:absolute;bottom:calc(100% + 4px);left:0;
-  min-width:180px;max-width:280px;
+.chat-overlay-ctrl-pill:hover{background:rgba(0,0,0,.07)}
+.chat-overlay-ctrl-pill .co-ctrl-part{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-overlay-ctrl-pill .co-ctrl-sep{color:var(--text-muted);font-weight:400;padding:0 .1rem}
+.chat-overlay-ctrl-pill .co-ctrl-chevron{width:8px;height:5px;color:var(--text-muted);flex-shrink:0;margin-left:.15rem}
+.chat-overlay-ctrl-menu{
+  position:absolute;bottom:calc(100% + 6px);right:0;
+  min-width:220px;max-width:320px;
   background:var(--surface-solid);border:1px solid var(--border-strong);
   border-radius:var(--radius);box-shadow:var(--shadow-lg);
-  padding:.3rem;display:none;z-index:60;
-  flex-direction:column;gap:.1rem;
+  padding:.4rem;display:none;z-index:60;
+  flex-direction:column;gap:.4rem;
 }
-.chat-overlay-model-menu.open{display:flex}
-.chat-overlay-model-menu .co-opt{
-  padding:.4rem .55rem;font-size:12px;color:var(--text);
+.chat-overlay-ctrl-menu.open{display:flex}
+.co-ctrl-group{display:flex;flex-direction:column;gap:.1rem}
+.co-ctrl-group-label{
+  font-size:9.5px;font-weight:700;
+  color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;
+  padding:.1rem .55rem;
+}
+.co-ctrl-options{display:flex;flex-direction:column;gap:.08rem}
+.co-ctrl-options .co-opt{
+  padding:.35rem .55rem;font-size:12px;color:var(--text);
   border-radius:var(--radius-sm);cursor:pointer;
 }
-.chat-overlay-model-menu .co-opt:hover{background:rgba(99,102,241,.08)}
-.chat-overlay-model-menu .co-opt.active{background:rgba(99,102,241,.12);color:var(--accent);font-weight:600}
+.co-ctrl-options .co-opt:hover{background:rgba(99,102,241,.08)}
+.co-ctrl-options .co-opt.active{background:rgba(99,102,241,.12);color:var(--accent);font-weight:600}
 /* Legacy placeholder kept for backward compatibility — scrim no longer blocks clicks. */
 .chat-overlay-scrim{display:none !important}
 
@@ -2444,33 +2481,9 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
               <div class="upload-progress-bar"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
               <div class="upload-progress-label" id="upload-progress-label"></div>
             </div>
-            <div class="commands-tray" id="commands-tray">
-              <button class="cmd-tray-btn" id="cmd-attach-btn" title="Attach file" disabled>
-                <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span>Attach</span>
-              </button>
-              <button class="cmd-tray-btn" id="cmd-plan-btn" title="Plan mode" disabled>
-                <svg viewBox="0 0 16 16" fill="none"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                <span>Plan</span>
-              </button>
-              <button class="cmd-tray-btn" id="cmd-compact-btn" title="Compact" disabled>
-                <svg viewBox="0 0 16 16" fill="none"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span>Compact</span>
-              </button>
-              <button class="cmd-tray-btn" id="cmd-reset-btn" title="Clear" disabled>
-                <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                <span>Clear</span>
-              </button>
-            </div>
             <div class="chat-input-wrap">
               <input type="file" id="chat-file-input" multiple hidden>
               <textarea class="chat-input" id="chat-input" placeholder="Message..." rows="1" disabled></textarea>
-              <button class="chat-stop" id="chat-stop-btn" title="Stop agent">
-                <svg viewBox="0 0 16 16" fill="none"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>
-              </button>
-              <button class="chat-send" id="chat-send-btn" disabled>
-                <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
-              </button>
             </div>
           </div>
           <div class="chat-drop-overlay" id="chat-drop-overlay">Drop files to attach</div>
@@ -2677,12 +2690,6 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
       <span id="chat-overlay-channel-name">Select a channel</span>
       <span class="co-tag hidden" id="chat-overlay-status-tag"></span>
     </span>
-    <button class="chat-overlay-btn" id="chat-overlay-compact" title="Compact conversation" disabled>
-      <svg viewBox="0 0 16 16" fill="none"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    <button class="chat-overlay-btn" id="chat-overlay-clear" title="Clear conversation" disabled>
-      <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-    </button>
     <button class="chat-overlay-btn" id="chat-overlay-pin" title="Pin open">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5h8"/><path d="M6.5 2.5v4.3c0 .6-.4 1.2-1 1.6L4 9.5h8l-1.5-1.1c-.6-.4-1-1-1-1.6V2.5"/><path d="M8 9.5v4"/></svg>
     </button>
@@ -2696,19 +2703,36 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   <div class="chat-overlay-body" id="chat-overlay-body">
     <!-- chat-layout is moved here from #tab-chat on DOMContentLoaded -->
   </div>
-  <div class="chat-overlay-model-row">
-    <div class="chat-overlay-model-pill" id="chat-overlay-model-pill" role="button" tabindex="0">
-      <span class="co-model-label">Model</span>
-      <span id="chat-overlay-model-name">—</span>
-      <svg class="co-model-chevron" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      <div class="chat-overlay-model-menu" id="chat-overlay-model-menu"></div>
+  <div class="chat-overlay-toolbar">
+    <button class="chat-overlay-tool-btn" id="cmd-attach-btn" title="Attach file" disabled>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="chat-overlay-tool-btn" id="cmd-plan-btn" title="Plan mode" disabled>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    </button>
+    <div class="chat-overlay-tool-spacer"></div>
+    <div class="chat-overlay-ctrl-pill" id="chat-overlay-ctrl-pill" role="button" tabindex="0" title="Model / effort">
+      <span class="co-ctrl-part" id="chat-overlay-model-name">—</span>
+      <span class="co-ctrl-sep">·</span>
+      <span class="co-ctrl-part" id="chat-overlay-effort-name">—</span>
+      <svg class="co-ctrl-chevron" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <div class="chat-overlay-ctrl-menu" id="chat-overlay-ctrl-menu">
+        <div class="co-ctrl-group">
+          <div class="co-ctrl-group-label">Model</div>
+          <div class="co-ctrl-options" id="chat-overlay-model-opts"></div>
+        </div>
+        <div class="co-ctrl-group">
+          <div class="co-ctrl-group-label">Effort</div>
+          <div class="co-ctrl-options" id="chat-overlay-effort-opts"></div>
+        </div>
+      </div>
     </div>
-    <div class="chat-overlay-model-pill" id="chat-overlay-effort-pill" role="button" tabindex="0">
-      <span class="co-model-label">Effort</span>
-      <span id="chat-overlay-effort-name">—</span>
-      <svg class="co-model-chevron" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-      <div class="chat-overlay-model-menu" id="chat-overlay-effort-menu"></div>
-    </div>
+    <button class="chat-stop" id="chat-stop-btn" title="Stop agent">
+      <svg viewBox="0 0 16 16" fill="none"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>
+    </button>
+    <button class="chat-send" id="chat-send-btn" disabled>
+      <svg viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
+    </button>
   </div>
 </div>
 <div class="chat-overlay-scrim" id="chat-overlay-scrim"></div>
@@ -3175,12 +3199,12 @@ function showToast(msg, ms) {
 const CONSOLE_RECENT_COUNT = 30;
 function fmtRelativeAgo(ageMs) {
   const s = Math.max(0, Math.floor(ageMs / 1000));
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
 function fmtClock24(date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -3221,64 +3245,97 @@ setInterval(renderConsoleTimes, 1000);
   if (reconnect && reconnect.parentElement !== document.body) document.body.appendChild(reconnect);
 })();
 
+const CHAT_OVERLAY_STATE_KEY = 'chat.overlay.state';
+function _readChatOverlayState() {
+  try {
+    const raw = localStorage.getItem(CHAT_OVERLAY_STATE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return (s && typeof s === 'object') ? s : null;
+  } catch (_) { return null; }
+}
+function _writeChatOverlayState(patch) {
+  try {
+    const cur = _readChatOverlayState() || {};
+    localStorage.setItem(CHAT_OVERLAY_STATE_KEY, JSON.stringify({ ...cur, ...patch }));
+  } catch (_) {}
+}
 function isChatOverlayOpen() {
   return !!document.getElementById('chat-overlay')?.classList.contains('open');
 }
-function openChatOverlay() {
+function openChatOverlay(opts) {
   const ov = document.getElementById('chat-overlay');
   if (!ov) return;
   ov.classList.add('open');
   ov.setAttribute('aria-hidden', 'false');
-  // Chat opens pinned by default — user can unpin to make outside-click close again.
-  setChatOverlayPinned(true);
+  // Honor persisted pin/mode if present; otherwise default to pinned.
+  const saved = _readChatOverlayState() || {};
+  const pin = (opts && 'pinned' in opts) ? !!opts.pinned : (saved.pinned !== false);
+  setChatOverlayPinned(pin, { persist: !opts?.suppressPersist });
+  if (saved.mode === 'expanded') _setChatOverlayExpanded(true);
+  if (!opts?.suppressPersist) _writeChatOverlayState({ open: true });
   updateRailButtonStates();
-  // Focus chat input for quick typing
   setTimeout(() => document.getElementById('chat-input')?.focus(), 80);
 }
-function closeChatOverlay() {
+function closeChatOverlay(opts) {
   const ov = document.getElementById('chat-overlay');
   if (!ov) return;
   ov.classList.remove('open');
   ov.removeAttribute('data-mode');
   ov.setAttribute('aria-hidden', 'true');
+  if (!opts?.suppressPersist) _writeChatOverlayState({ open: false, mode: null });
   updateRailButtonStates();
 }
 function toggleChatOverlay() {
   if (isChatOverlayOpen()) closeChatOverlay();
   else openChatOverlay();
 }
-function setChatOverlayPinned(pinned) {
+function setChatOverlayPinned(pinned, opts) {
   const ov = document.getElementById('chat-overlay');
   if (!ov) return;
   ov.setAttribute('data-pinned', pinned ? 'true' : 'false');
   document.getElementById('chat-overlay-pin')?.classList.toggle('active', !!pinned);
+  if (opts?.persist !== false) _writeChatOverlayState({ pinned: !!pinned });
 }
 const CHAT_EXPAND_SVG = '<path d="M9 2h5v5M7 14H2V9"/><path d="M14 2l-5 5M2 14l5-5"/>';
 const CHAT_SHRINK_SVG = '<path d="M14 7h-5V2M2 9h5v5"/><path d="M14 2l-5 5M2 14l5-5"/>';
-function toggleChatOverlayExpanded() {
+function _setChatOverlayExpanded(expanded, opts) {
   const ov = document.getElementById('chat-overlay');
   if (!ov) return;
   const btn = document.getElementById('chat-overlay-expand');
   const svg = btn?.querySelector('svg');
-  if (ov.getAttribute('data-mode') === 'expanded') {
-    ov.removeAttribute('data-mode');
-    btn?.classList.remove('active');
-    if (btn) btn.title = 'Expand';
-    if (svg) svg.innerHTML = CHAT_EXPAND_SVG;
-  } else {
+  if (expanded) {
     ov.setAttribute('data-mode', 'expanded');
     btn?.classList.add('active');
     if (btn) btn.title = 'Shrink';
     if (svg) svg.innerHTML = CHAT_SHRINK_SVG;
+  } else {
+    ov.removeAttribute('data-mode');
+    btn?.classList.remove('active');
+    if (btn) btn.title = 'Expand';
+    if (svg) svg.innerHTML = CHAT_EXPAND_SVG;
   }
+  if (opts?.persist !== false) _writeChatOverlayState({ mode: expanded ? 'expanded' : null });
 }
-document.getElementById('chat-overlay-minimize')?.addEventListener('click', closeChatOverlay);
+function toggleChatOverlayExpanded() {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  _setChatOverlayExpanded(ov.getAttribute('data-mode') !== 'expanded');
+}
+document.getElementById('chat-overlay-minimize')?.addEventListener('click', () => closeChatOverlay());
 document.getElementById('chat-overlay-expand')?.addEventListener('click', toggleChatOverlayExpanded);
 document.getElementById('chat-overlay-pin')?.addEventListener('click', () => {
   const ov = document.getElementById('chat-overlay');
   if (!ov) return;
   setChatOverlayPinned(ov.getAttribute('data-pinned') !== 'true');
 });
+
+// On initial load, restore the persisted chat-overlay state (default: open + pinned).
+(function initChatOverlayState() {
+  const saved = _readChatOverlayState() || {};
+  const shouldOpen = saved.open !== false; // default true
+  if (shouldOpen) openChatOverlay({ suppressPersist: true });
+})();
 // Click-outside closes overlay unless pinned or expanded.
 document.addEventListener('mousedown', (e) => {
   const ov = document.getElementById('chat-overlay');
@@ -3289,15 +3346,6 @@ document.addEventListener('mousedown', (e) => {
   if (e.target.closest('#console-chat-toggle')) return;
   closeChatOverlay();
 });
-// Wire compact/clear proxy buttons (reuse cmd-tray behavior).
-document.getElementById('chat-overlay-compact')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('cmd-compact-btn')?.click();
-});
-document.getElementById('chat-overlay-clear')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  document.getElementById('cmd-reset-btn')?.click();
-});
 function syncChatOverlayHeader() {
   const nameEl = document.getElementById('chat-overlay-channel-name');
   if (!nameEl) return;
@@ -3305,20 +3353,18 @@ function syncChatOverlayHeader() {
   nameEl.textContent = ch ? (ch.name || chatCurrentChannel.slice(0, 8)) : 'Select a channel';
 }
 
-// ===== Chat overlay: Model / Effort switcher =====
-const channelHarnessInfo = new Map(); // channelId -> {available_models:[{name,label}], effort_levels:[{value,label}], model, effort}
-function openCoMenu(menuEl) {
-  document.querySelectorAll('.chat-overlay-model-menu.open').forEach(m => { if (m !== menuEl) m.classList.remove('open'); });
-  menuEl.classList.add('open');
+// ===== Chat overlay: combined Model / Effort switcher =====
+function openCoMenu() {
+  document.getElementById('chat-overlay-ctrl-menu')?.classList.add('open');
 }
 function closeCoMenus() {
-  document.querySelectorAll('.chat-overlay-model-menu.open').forEach(m => m.classList.remove('open'));
+  document.querySelectorAll('.chat-overlay-ctrl-menu.open').forEach(m => m.classList.remove('open'));
 }
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.chat-overlay-model-pill')) closeCoMenus();
+  if (!e.target.closest('#chat-overlay-ctrl-pill')) closeCoMenus();
 });
-function renderCoMenu(menuEl, opts, active, onPick) {
-  menuEl.innerHTML = '';
+function renderCoOptions(container, opts, active, onPick) {
+  container.innerHTML = '';
   for (const o of opts) {
     const el = document.createElement('div');
     el.className = 'co-opt' + (o.value === active ? ' active' : '');
@@ -3328,21 +3374,21 @@ function renderCoMenu(menuEl, opts, active, onPick) {
       closeCoMenus();
       onPick(o.value);
     });
-    menuEl.appendChild(el);
+    container.appendChild(el);
   }
 }
 function applyChannelHarnessInfo(channelId) {
   const modelName = document.getElementById('chat-overlay-model-name');
   const effortName = document.getElementById('chat-overlay-effort-name');
-  const modelMenu = document.getElementById('chat-overlay-model-menu');
-  const effortMenu = document.getElementById('chat-overlay-effort-menu');
+  const modelOpts = document.getElementById('chat-overlay-model-opts');
+  const effortOpts = document.getElementById('chat-overlay-effort-opts');
   if (!modelName || !effortName) return;
   const ch = (typeof chatChannels !== 'undefined' && channelId) ? chatChannels.get(channelId) : null;
   if (!ch) {
     modelName.textContent = '—';
     effortName.textContent = '—';
-    if (modelMenu) modelMenu.innerHTML = '';
-    if (effortMenu) effortMenu.innerHTML = '';
+    if (modelOpts) modelOpts.innerHTML = '';
+    if (effortOpts) effortOpts.innerHTML = '';
     return;
   }
   const deviceId = channelDeviceMap.get(channelId);
@@ -3352,9 +3398,9 @@ function applyChannelHarnessInfo(channelId) {
   const currentEffort = ch.effort || harness?.default_effort || '';
   modelName.textContent = currentModel || '—';
   effortName.textContent = currentEffort || '—';
-  if (modelMenu) {
+  if (modelOpts) {
     const models = (harness?.models || []).map(m => ({ value: m.id, label: m.name || m.id }));
-    renderCoMenu(modelMenu, models, currentModel, (v) => {
+    renderCoOptions(modelOpts, models, currentModel, (v) => {
       modelName.textContent = v;
       if (ch) ch.model = v;
       const conn = getE2EE(channelId);
@@ -3366,9 +3412,9 @@ function applyChannelHarnessInfo(channelId) {
       }
     });
   }
-  if (effortMenu) {
+  if (effortOpts) {
     const efforts = (harness?.effort_levels || []).map(l => ({ value: l, label: l }));
-    renderCoMenu(effortMenu, efforts, currentEffort, (v) => {
+    renderCoOptions(effortOpts, efforts, currentEffort, (v) => {
       effortName.textContent = v;
       if (ch) ch.effort = v;
       const conn = getE2EE(channelId);
@@ -3381,13 +3427,11 @@ function applyChannelHarnessInfo(channelId) {
     });
   }
 }
-document.getElementById('chat-overlay-model-pill')?.addEventListener('click', (e) => {
-  if (e.target.closest('.chat-overlay-model-menu')) return;
-  openCoMenu(document.getElementById('chat-overlay-model-menu'));
-});
-document.getElementById('chat-overlay-effort-pill')?.addEventListener('click', (e) => {
-  if (e.target.closest('.chat-overlay-model-menu')) return;
-  openCoMenu(document.getElementById('chat-overlay-effort-menu'));
+document.getElementById('chat-overlay-ctrl-pill')?.addEventListener('click', (e) => {
+  if (e.target.closest('.chat-overlay-ctrl-menu')) return;
+  const menu = document.getElementById('chat-overlay-ctrl-menu');
+  if (menu?.classList.contains('open')) closeCoMenus();
+  else openCoMenu();
 });
 
 // ===== Review-flow UI stubs =====
@@ -4671,12 +4715,11 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('connected', () => {
     console.log('[E2EE] Session established for device', deviceId);
     e2eeHasConnected = true;
-    document.getElementById('chat-input').disabled = false;
-    document.getElementById('chat-send-btn').disabled = false;
-    document.getElementById('cmd-attach-btn').disabled = false;
-    document.getElementById('cmd-plan-btn').disabled = false;
-    document.getElementById('cmd-compact-btn').disabled = false;
-    document.getElementById('cmd-reset-btn').disabled = false;
+    const _enableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn'];
+    for (const id of _enableBtns) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = false;
+    }
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     // Hide reconnect pill + cancel timer.
     clearTimeout(_reconnectPillTimer);
@@ -4708,12 +4751,11 @@ function bindE2EEEvents(instance, deviceId) {
     deviceAgentCwd.delete(deviceId);
 
     if (!anyE2EEConnected()) {
-      document.getElementById('chat-input').disabled = true;
-      document.getElementById('chat-send-btn').disabled = true;
-      document.getElementById('cmd-attach-btn').disabled = true;
-      document.getElementById('cmd-plan-btn').disabled = true;
-      document.getElementById('cmd-compact-btn').disabled = true;
-      document.getElementById('cmd-reset-btn').disabled = true;
+      const _disableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn'];
+      for (const id of _disableBtns) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = true;
+      }
       if (deviceDown) {
         // Device is known to be offline — keep banner visible, skip skeleton/pill.
       } else if (!e2eeHasConnected) {

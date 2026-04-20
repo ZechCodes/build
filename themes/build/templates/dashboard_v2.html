@@ -11,6 +11,13 @@
 </head>
 <body data-user-name="{{ user_name }}">
   <div id="app"></div>
-  <script src="{{ static_url('build/dist/js/dashboard-v2.js') }}"></script>
+  <!-- Skrift notification SSE client — delivers the `sk:notification` events
+       that BuildE2EE listens on for session_accept / data frames. -->
+  <script src="/static/skrift/js/notifications.js" defer></script>
+  <!-- libsodium (pre-minified vendor) — must load before BuildE2EE.ready(). -->
+  <script src="/static/build/js/libsodium.js" defer></script>
+  <script src="/static/build/js/libsodium-wrappers.js" defer></script>
+  <!-- Dashboard v2 bundle. -->
+  <script src="{{ static_url('build/dist/js/dashboard-v2.js') }}" defer></script>
 </body>
 </html>

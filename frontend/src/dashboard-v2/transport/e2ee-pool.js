@@ -34,6 +34,11 @@ async function connect(deviceId) {
   try {
     await instance.connect(deviceId);
     plog.info('connected', deviceId);
+    // v1 parity: fetch initial channel list and harness list now that the
+    // session is up. Subsequent channel/message traffic streams in via
+    // the dispatcher's event handlers.
+    instance.listChannels();
+    instance.listHarnesses();
   } catch (err) {
     plog.error('failed to connect', deviceId, err);
     try { instance.disconnect(); } catch (_) { /* ignore */ }

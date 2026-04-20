@@ -1813,17 +1813,7 @@ body{
   }
   /* Give Devices room to fill the viewport; flex sections still share space. */
   .channel-panel.mobile-open .channel-panel-sections{flex:1;min-height:0}
-  /* Close affordance when the sidebar is fullscreen — only shown on mobile. */
-  .channel-panel .mobile-close{
-    display:none;
-    position:absolute;top:.6rem;right:.6rem;
-    width:32px;height:32px;border-radius:50%;
-    background:var(--surface-solid);
-    border:1px solid var(--border-strong);
-    color:var(--text);cursor:pointer;z-index:2;
-    align-items:center;justify-content:center;
-  }
-  .channel-panel .mobile-close svg{width:14px;height:14px}
+  /* Show the close button only when the sidebar fills the viewport on mobile. */
   .channel-panel.mobile-open .mobile-close{display:flex}
   .mobile-nav{display:flex !important}
   .viewer-tabs{display:none}
@@ -2046,6 +2036,21 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 
 /* ===== Sidebar accordion sections ===== */
 .channel-panel-sections{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+/* Mobile close button — base rules always apply so the button is sized and
+   hidden on desktop. The @media block flips display:flex only when the
+   sidebar is fullscreen on mobile. */
+.channel-panel .mobile-close{
+  display:none;
+  position:absolute;top:.6rem;right:.6rem;
+  width:32px;height:32px;border-radius:50%;
+  background:var(--surface-solid);
+  border:1px solid var(--border-strong);
+  color:var(--text);cursor:pointer;z-index:2;
+  align-items:center;justify-content:center;
+  padding:0;
+  line-height:0;
+}
+.channel-panel .mobile-close svg{width:14px;height:14px;display:block}
 .sidebar-section[data-section="devices"] .channel-panel-list{padding:.2rem 0;overflow:visible;flex:none}
 /* Open sections evenly share remaining vertical space; collapsed ones shrink to their header. */
 .sidebar-section{

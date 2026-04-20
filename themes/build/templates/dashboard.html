@@ -1997,8 +1997,10 @@ body{
   .issue-item:hover{background:rgba(255,255,255,0.03)}
   .issue-status-icon.open{color:#71717a}
   /* Sidebar accordion (dark) */
-  .sidebar-section{border-bottom-color:rgba(255,255,255,.06)}
-  .sidebar-section-header:hover{background:rgba(255,255,255,.03)}
+  .sidebar-section{border-bottom-color:rgba(255,255,255,.1)}
+  .sidebar-section-header{background:rgba(255,255,255,.04);border-bottom-color:rgba(255,255,255,.08);color:var(--text)}
+  .sidebar-section-header:hover{background:rgba(255,255,255,.07)}
+  .sidebar-section[data-section="devices"] .sidebar-section-header:hover{background:rgba(255,255,255,.04)}
   .sidebar-section-badge{background:rgba(255,255,255,.08);color:var(--text-muted)}
   .sidebar-section .ce-row:hover{background:rgba(255,255,255,.03)}
   .sidebar-section .ce-detail{background:rgba(0,0,0,.25)}
@@ -2031,20 +2033,31 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 /* ===== Sidebar accordion sections ===== */
 .channel-panel-sections{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
 .sidebar-section[data-section="devices"] .channel-panel-list{padding:.2rem 0;overflow:visible;flex:none}
-.sidebar-section{display:flex;flex-direction:column;flex-shrink:0;border-bottom:1px solid var(--border);min-height:0}
-.sidebar-section[data-section="devices"]{flex:1 1 auto;min-height:120px}
+/* Open sections evenly share remaining vertical space; collapsed ones shrink to their header. */
+.sidebar-section{
+  display:flex;flex-direction:column;
+  flex:1 1 0;min-height:0;
+  border-bottom:1px solid var(--border-strong);
+}
+.sidebar-section:last-child{border-bottom:none}
+.sidebar-section.collapsed{flex:0 0 auto}
+.sidebar-section[data-section="devices"]{min-height:120px}
 .sidebar-section-header{
   display:flex;align-items:center;gap:.45rem;
   padding:.55rem .75rem;
-  font-size:10px;font-weight:600;
-  color:var(--text-muted);
-  text-transform:uppercase;letter-spacing:.05em;
+  font-size:10.5px;font-weight:700;
+  color:var(--text);
+  text-transform:uppercase;letter-spacing:.06em;
+  background:rgba(0,0,0,.04);
+  border-bottom:1px solid var(--border-strong);
   user-select:none;cursor:pointer;
   transition:background .1s;
+  flex-shrink:0;
 }
-.sidebar-section-header:hover{background:rgba(0,0,0,.03)}
+.sidebar-section.collapsed .sidebar-section-header{border-bottom:none}
+.sidebar-section-header:hover{background:rgba(0,0,0,.06)}
 .sidebar-section[data-section="devices"] .sidebar-section-header{cursor:default}
-.sidebar-section[data-section="devices"] .sidebar-section-header:hover{background:none}
+.sidebar-section[data-section="devices"] .sidebar-section-header:hover{background:rgba(0,0,0,.04)}
 .sidebar-section-chevron{
   width:10px;height:10px;flex-shrink:0;
   transition:transform .15s;color:var(--text-muted);
@@ -2059,12 +2072,11 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   border-radius:999px;min-width:16px;text-align:center;line-height:1.4;
 }
 .sidebar-section-badge.accent{background:var(--accent);color:#fff}
-.sidebar-section-body{display:flex;flex-direction:column;overflow-y:auto;min-height:0}
+.sidebar-section-body{display:flex;flex-direction:column;overflow-y:auto;min-height:0;flex:1 1 auto}
 .sidebar-section-body.collapsed{display:none}
-.sidebar-section[data-section="devices"] .sidebar-section-body{flex:1;min-height:0}
 .sidebar-section[data-section="tasks"] .sidebar-section-body,
 .sidebar-section[data-section="activity"] .sidebar-section-body{
-  max-height:36vh;padding:.1rem 0 .3rem;
+  padding:.1rem 0 .3rem;
 }
 
 /* Tasks in sidebar */
@@ -3065,14 +3077,17 @@ const consoleTerminalPanel = document.querySelector('[data-console-panel="termin
 const channelTodos = new Map(); // channelId -> [{id, content, status}]
 
 // ===== Sidebar accordion =====
-function setSidebarSectionOpen(name, open) {
+function setSidebarSectionOpen(name, open, persist = true) {
   const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
   if (!section) return;
   const body = section.querySelector('.sidebar-section-body');
   const chevron = section.querySelector('.sidebar-section-chevron');
   body?.classList.toggle('collapsed', !open);
   chevron?.classList.toggle('collapsed', !open);
-  try { localStorage.setItem(`sidebar.section.${name}.collapsed`, open ? '0' : '1'); } catch (_) {}
+  section.classList.toggle('collapsed', !open);
+  if (persist) {
+    try { localStorage.setItem(`sidebar.section.${name}.collapsed`, open ? '0' : '1'); } catch (_) {}
+  }
 }
 function toggleSidebarSection(name) {
   const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
@@ -3081,11 +3096,20 @@ function toggleSidebarSection(name) {
   if (!body) return;
   setSidebarSectionOpen(name, body.classList.contains('collapsed'));
 }
-function expandSidebarSection(name) { setSidebarSectionOpen(name, true); }
+function expandSidebarSection(name) {
+  // Auto-expansion (triggered by arriving activity) does NOT persist, so a
+  // page reload still respects the user's default-collapsed preference.
+  setSidebarSectionOpen(name, true, false);
+}
 document.querySelectorAll('.sidebar-section-header[data-sidebar-toggle]').forEach(h => {
   h.addEventListener('click', () => toggleSidebarSection(h.dataset.sidebarToggle));
 });
-// Restore saved collapse state (tasks default open, activity default collapsed).
+// Sync each section's `.collapsed` class with its body's initial state, then
+// apply any saved override. Ensures collapsed sections get flex:0 0 auto.
+for (const section of document.querySelectorAll('.sidebar-section')) {
+  const body = section.querySelector('.sidebar-section-body');
+  section.classList.toggle('collapsed', !!body?.classList.contains('collapsed'));
+}
 try {
   for (const name of ['tasks', 'activity']) {
     const saved = localStorage.getItem(`sidebar.section.${name}.collapsed`);
@@ -3104,6 +3128,40 @@ function showToast(msg, ms) {
   clearTimeout(_uiToastTimer);
   _uiToastTimer = setTimeout(() => el.classList.remove('show'), ms || 2000);
 }
+
+// ===== Activity timestamps =====
+// Last 30 entries show "Ns/Nm/Nh/Nd ago"; older entries show 24h "HH:MM".
+const CONSOLE_RECENT_COUNT = 30;
+function fmtRelativeAgo(ageMs) {
+  const s = Math.max(0, Math.floor(ageMs / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+function fmtClock24(date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+function renderConsoleTimes() {
+  const body = document.querySelector('[data-console-panel="activity"]');
+  if (!body) return;
+  const entries = body.querySelectorAll('.console-entry');
+  const total = entries.length;
+  const recentFloor = Math.max(0, total - CONSOLE_RECENT_COUNT);
+  const now = Date.now();
+  entries.forEach((entry, idx) => {
+    const el = entry.querySelector('.ce-time');
+    if (!el) return;
+    const ts = parseInt(el.dataset.ts || '0', 10);
+    if (!ts) return;
+    const when = new Date(ts);
+    el.title = when.toLocaleString();
+    el.textContent = idx >= recentFloor ? fmtRelativeAgo(now - ts) : fmtClock24(when);
+  });
+}
+setInterval(renderConsoleTimes, 10000);
 
 // ===== Chat overlay =====
 // The chat-layout originally lives inside #tab-chat; move it into the overlay body on load.
@@ -3130,6 +3188,8 @@ function openChatOverlay() {
   if (!ov) return;
   ov.classList.add('open');
   ov.setAttribute('aria-hidden', 'false');
+  // Chat opens pinned by default — user can unpin to make outside-click close again.
+  setChatOverlayPinned(true);
   updateRailButtonStates();
   // Focus chat input for quick typing
   setTimeout(() => document.getElementById('chat-input')?.focus(), 80);
@@ -6040,9 +6100,6 @@ function appendConsoleReasoning(content, timestamp) {
     return;
   }
 
-  // Auto-expand the sidebar Activity section.
-  expandSidebarSection('activity');
-
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const firstLine = content.split('\n').find(l => l.trim()) || content.slice(0, 100);
@@ -6055,8 +6112,7 @@ function appendConsoleReasoning(content, timestamp) {
     <div class="ce-row">
       <span class="ce-tag reasoning">Reasoning</span>
       <span class="ce-desc">${escapeHtml(firstLine)}</span>
-      <span class="ce-time">${timeStr}</span>
-      <svg class="ce-expand" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ce-time" data-ts="${ts.getTime()}"></span>
     </div>
     <div class="ce-detail">
       <div class="ce-detail-reasoning">${renderMarkdown(content)}</div>
@@ -6064,11 +6120,10 @@ function appendConsoleReasoning(content, timestamp) {
   `;
 
   const row = entry.querySelector('.ce-row');
-  const expandIcon = entry.querySelector('.ce-expand');
   const detail = entry.querySelector('.ce-detail');
   row.addEventListener('click', () => {
-    expandIcon.classList.toggle('open');
     detail.classList.toggle('open');
+    row.classList.toggle('open', detail.classList.contains('open'));
     if (detail.classList.contains('open')) {
       entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
@@ -6076,6 +6131,7 @@ function appendConsoleReasoning(content, timestamp) {
 
   const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
+  renderConsoleTimes();
   if (wasNearBottom) body.scrollTop = body.scrollHeight;
   else showActivityBubble(entry);
   currentReasoningEntry = entry;
@@ -6084,9 +6140,6 @@ function appendConsoleReasoning(content, timestamp) {
 function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   const body = document.querySelector('[data-console-panel="activity"]');
   if (!body) return;
-
-  // Auto-expand the sidebar Activity section on first tool use.
-  expandSidebarSection('activity');
 
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -6101,8 +6154,7 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
       <span class="ce-tag ${tag}">${escapeHtml(name)}</span>
       <span class="ce-desc">${escapeHtml(desc)}</span>
       <span class="ce-summary"></span>
-      <span class="ce-time">${timeStr}</span>
-      <svg class="ce-expand" viewBox="0 0 14 14" fill="none"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ce-time" data-ts="${ts.getTime()}"></span>
     </div>
     <div class="ce-detail">
       <div class="ce-detail-input">${formatToolDetail(name, input)}</div>
@@ -6113,11 +6165,10 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
 
   // Toggle detail on click.
   const row = entry.querySelector('.ce-row');
-  const expandIcon = entry.querySelector('.ce-expand');
   const detail = entry.querySelector('.ce-detail');
   row.addEventListener('click', () => {
-    expandIcon.classList.toggle('open');
     detail.classList.toggle('open');
+    row.classList.toggle('open', detail.classList.contains('open'));
     if (detail.classList.contains('open')) {
       entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
@@ -6125,6 +6176,7 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
 
   const wasNearBottom = isConsoleNearBottom();
   body.appendChild(entry);
+  renderConsoleTimes();
   if (wasNearBottom) body.scrollTop = body.scrollHeight;
   else showActivityBubble(entry);
 }
@@ -6136,9 +6188,9 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
   const summary = entry.querySelector('.ce-summary');
   if (summary) {
     if (isError) {
-      summary.innerHTML = '<span class="fail">error</span>';
+      summary.innerHTML = '<span class="fail" title="error" aria-label="error">✗</span>';
     } else {
-      summary.innerHTML = '<span class="success">done</span>';
+      summary.innerHTML = '<span class="success" title="done" aria-label="done">✓</span>';
     }
   }
   // Update displayed time to completion time.
@@ -6146,7 +6198,8 @@ function markConsoleEntryDone(toolId, isError, content, completedAt) {
     const timeEl = entry.querySelector('.ce-time');
     if (timeEl) {
       const ts = new Date(completedAt);
-      timeEl.textContent = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      timeEl.dataset.ts = String(ts.getTime());
+      renderConsoleTimes();
     }
   }
   // Render result content in the expandable detail section.

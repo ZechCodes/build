@@ -45,7 +45,10 @@ export function buildLayout(root) {
           <div class="v2-tab-panel" data-tab="browser" id="v2-tab-browser"></div>
         </section>
       </main>
-      <footer class="v2-rail" id="v2-rail"></footer>
+      <footer class="v2-rail" id="v2-rail">
+        <div class="v2-rail-controls" id="v2-rail-controls"></div>
+        <div class="v2-rail-body" id="v2-rail-body"></div>
+      </footer>
       <div class="v2-chat-overlay" id="v2-chat-overlay" aria-hidden="true"></div>
       <div class="v2-dropdown-layer" id="v2-dropdown-layer"></div>
     </div>

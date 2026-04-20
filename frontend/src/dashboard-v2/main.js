@@ -15,6 +15,7 @@ import {
 import { initTransport, e2eePool } from './transport/index.js';
 import { initShell } from './shell/app.js';
 import { router } from './shell/router.js';
+import { channelRegistry } from './channel/registry.js';
 
 const plog = log('bootstrap');
 
@@ -22,6 +23,7 @@ function exposeDebug() {
   window.__v2debug = {
     bus,
     router,
+    channelRegistry,
     stores: {
       devicesStore, channelsStore, messagesStore, activityStore,
       presenceStore, unreadStore, filesStore, terminalStore,
@@ -40,6 +42,7 @@ async function boot() {
   initStores();
   exposeDebug();
   initShell(root);
+  channelRegistry.init();
   try {
     await initTransport();
   } catch (err) {

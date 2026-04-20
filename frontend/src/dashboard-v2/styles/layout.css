@@ -36,6 +36,7 @@
   overflow: auto;
   padding: 16px;
 }
+.v2-tab-panel#v2-tab-chat { padding: 0; overflow: hidden; }
 
 body[data-tab="files"]   .v2-tab-panel[data-tab="files"]   { display: block; }
 body[data-tab="chat"]    .v2-tab-panel[data-tab="chat"]    { display: block; }

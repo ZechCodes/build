@@ -28,4 +28,12 @@
   --rail-open-height: 200px;
   --top-bar-height: 40px;
   --tab-bar-height: 38px;
+
+  --msg-user-bg: rgba(111, 163, 255, 0.08);
+  --msg-agent-bg: transparent;
+  --tool-read: #4e9aaa;
+  --tool-edit: #ffb347;
+  --tool-write: #ff8c5a;
+  --tool-bash: #a97bff;
+  --tool-reasoning: var(--fg-dim);
 }

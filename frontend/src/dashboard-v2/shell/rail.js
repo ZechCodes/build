@@ -14,7 +14,7 @@ export class RailView {
   }
 
   activate() {
-    this.root = document.getElementById('v2-rail');
+    this.root = document.getElementById('v2-rail-controls');
     if (!this.root) return;
     this.render();
     this.unsubs.push(uiStore.subscribe(e => {

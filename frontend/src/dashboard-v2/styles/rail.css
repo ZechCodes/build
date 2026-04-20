@@ -1,8 +1,28 @@
 .v2-rail {
   color: var(--fg-muted);
   font-size: 12px;
-  transition: height 160ms ease;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
+
+.v2-rail-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  flex: 0 0 var(--rail-height);
+}
+
+.v2-rail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: none;
+}
+.v2-app[data-rail="open"] .v2-rail-body,
+.v2-app[data-rail="expanded"] .v2-rail-body { display: flex; }
 
 .v2-rail-toggle {
   display: inline-flex;

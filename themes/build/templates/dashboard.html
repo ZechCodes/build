@@ -3161,7 +3161,7 @@ function renderConsoleTimes() {
     el.textContent = idx >= recentFloor ? fmtRelativeAgo(now - ts) : fmtClock24(when);
   });
 }
-setInterval(renderConsoleTimes, 10000);
+setInterval(renderConsoleTimes, 1000);
 
 // ===== Chat overlay =====
 // The chat-layout originally lives inside #tab-chat; move it into the overlay body on load.

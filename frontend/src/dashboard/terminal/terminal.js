@@ -29,6 +29,9 @@ export function renderTerminalForChannel(channelId) {
   // Remove prompt row before clearing, we'll re-append it.
   promptRow?.remove();
   output.innerHTML = '';
+  // Reset Up/Down history navigation index for the new channel — otherwise an
+  // index from a longer prior channel can land on undefined here.
+  state.terminalCmdIndex = state.terminalCmdHistory.length;
   const history = state.terminalHistoryMap.get(channelId) || [];
   for (const entry of history) {
     const block = document.createElement('div');

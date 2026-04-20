@@ -69,15 +69,15 @@ export function bindFileHandlers(instance, deviceId) {
           _imageChunks[d.path] = { chunks: new Array(d.chunk_total), total: d.chunk_total };
           fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading image... (0/' + d.chunk_total + ')</p></div>';
         }
-        const state = _imageChunks[d.path];
-        state.chunks[d.chunk_index] = d.content;
-        const received = state.chunks.filter(Boolean).length;
-        if (received < state.total) {
-          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading image... (' + received + '/' + state.total + ')</p></div>';
+        const chunkRec = _imageChunks[d.path];
+        chunkRec.chunks[d.chunk_index] = d.content;
+        const received = chunkRec.chunks.filter(Boolean).length;
+        if (received < chunkRec.total) {
+          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading image... (' + received + '/' + chunkRec.total + ')</p></div>';
           return;
         }
         // All chunks received — reassemble.
-        const fullDataUri = state.chunks.join('');
+        const fullDataUri = chunkRec.chunks.join('');
         delete _imageChunks[d.path];
         fileContentBody.innerHTML = '<div class="file-image-view"><img src="' + fullDataUri + '" alt="' + escapeHtml(d.path) + '"></div>';
         return;

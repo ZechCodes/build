@@ -246,6 +246,17 @@ export function handleSentMessageScroll(el) {
   scrollChatToBottom();
 }
 
+/**
+ * Drop scroll/bubble anchors that captured DOM elements from a previous
+ * channel. Called by selectChannel() before re-rendering messages.
+ */
+export function resetScrollTargets() {
+  _oldestAutoScrollTarget = null;
+  if (_scrollRAF) { cancelAnimationFrame(_scrollRAF); _scrollRAF = null; }
+  firstUnseenChatEl = null;
+  firstUnseenActivityEl = null;
+}
+
 // ---- New content bubbles ----
 
 const newChatBubble = document.getElementById('new-chat-bubble');

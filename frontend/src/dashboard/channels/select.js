@@ -9,7 +9,7 @@ import { getLastSeen, setLastSeen, deferMarkRead } from './unread.js';
 import { loadChannelState } from './state-store.js';
 import { renderChannelPanel, updateMobileChannelLabel } from './panel.js';
 import { syncChatOverlayHeader, applyChannelHarnessInfo } from '../chat/overlay.js';
-import { hideChatBubble, hideActivityBubble, clearConsole } from '../console/view.js';
+import { hideChatBubble, hideActivityBubble, clearConsole, resetScrollTargets } from '../console/view.js';
 import { switchTab } from '../shell/tabs.js';
 import { onFilesTabActivated } from '../files/mode.js';
 import { renderTerminalForChannel } from '../terminal/terminal.js';
@@ -40,6 +40,8 @@ export function selectChannel(channelId) {
   window.updateStopButton?.();
   hideChatBubble();
   hideActivityBubble();
+  // Drop scroll/bubble anchors that captured the previous channel's DOM.
+  resetScrollTargets();
   // Capture lastSeen for scroll positioning before updating it.
   state.scrollLastSeen = getLastSeen(channelId) || null;
   state._unreadHighlightLastSeen = null;

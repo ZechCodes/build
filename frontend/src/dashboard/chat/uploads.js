@@ -52,18 +52,28 @@ document.getElementById('chat-file-input')?.addEventListener('change', (e) => {
 });
 
 // Upload progress: bound per-E2EE-instance from legacy.js's 'connected' handler.
+// Tracks active uploads by file_id so concurrent uploads don't race the
+// hide-timeout — the bar only hides 1.5 s after the last upload completes.
+const _activeUploads = new Set();
+let _uploadHideTimer = null;
+
 export function _bindUploadProgress(client) {
   client.addEventListener('upload_progress', (evt) => {
-    const { filename, progress, total_chunks, chunks_done } = evt.detail;
+    const { file_id, filename, progress, total_chunks, chunks_done } = evt.detail;
     const bar = document.getElementById('upload-progress');
     const fill = document.getElementById('upload-progress-fill');
     const label = document.getElementById('upload-progress-label');
     if (!bar) return;
+    if (file_id) _activeUploads.add(file_id);
+    clearTimeout(_uploadHideTimer);
     bar.classList.add('active');
     fill.style.width = (progress * 100) + '%';
     label.textContent = `Uploading ${filename}… ${chunks_done || 0}/${total_chunks}`;
     if (progress >= 1) {
-      setTimeout(() => { bar.classList.remove('active'); }, 1500);
+      if (file_id) _activeUploads.delete(file_id);
+      if (_activeUploads.size === 0) {
+        _uploadHideTimer = setTimeout(() => { bar.classList.remove('active'); }, 1500);
+      }
     }
   });
 }

@@ -146,6 +146,9 @@ export function onFilesTabActivated() {
     state.filesCurrentIsMarkdown = false;
     state.filesCurrentIsSvg = false;
     state.filesCurrentIsHtml = false;
+    // Allow renderFileTree's E2EE-timing-race self-heal to fire again on the
+    // new channel (the flag is set true once per attempt, never re-armed).
+    state._filesSelfHealed = false;
     filesPathText.textContent = 'No file selected';
     filesPathText.classList.add('empty');
     fileReloadBtn.classList.add('hc-hidden');

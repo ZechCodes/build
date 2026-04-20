@@ -38,16 +38,11 @@ import { renderTerminalCwd, renderTerminalForChannel, finishTerminalCommand, cle
 import { renderComplications } from '../complications/render.js';
 import { renderTasksPanel, updateTasksBadge } from '../tasks/panel.js';
 import { _bindUploadProgress } from '../chat/uploads.js';
-import {
-  fileContentBody,
-  renderFileContent,
-  renderDiffContent,
-  renderFileTree,
-  selectFile,
-  updateFilesModifiedCount,
-  onFilesTabActivated,
-  onAgentFileChanges,
-} from '../files/view.js';
+import { fileContentBody } from '../files/refs.js';
+import { renderFileContent } from '../files/content.js';
+import { renderDiffContent } from '../files/diff.js';
+import { renderFileTree, selectFile, onAgentFileChanges } from '../files/tree.js';
+import { updateFilesModifiedCount, onFilesTabActivated } from '../files/mode.js';
 import { formatBytes } from '../util/html.js';
 
 export function bindE2EEEvents(instance, deviceId) {

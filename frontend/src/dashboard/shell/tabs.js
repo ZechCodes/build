@@ -1,5 +1,5 @@
 import { state } from '../state.js';
-import { onFilesTabActivated } from '../files/view.js';
+import { onFilesTabActivated } from '../files/mode.js';
 
 export function switchTab(tab) {
   state.currentTab = tab;

@@ -51,37 +51,19 @@ import {
   selectBrowserTab,
   createBrowserTabItem,
 } from './browser/tabs.js';
-import {
-  filesLoadRoot,
-  renderFileTree,
-  renderTreeLevel,
-  renderChangesView,
-  toggleDirectory,
-  selectFile,
-  setFilesMode,
-  updateFloatingToggle,
-  updateFilesModifiedCount,
-  onFilesTabActivated,
-  renderFileContent,
-  renderPreview,
-  renderMarkdownFile,
-  renderSvgPreview,
-  readFileAsync,
-  resolveAssetPath,
-  urlFetchAsync,
-  resolveUrl,
-  showBrowserView,
-  renderDiffContent,
-  onAgentFileChanges,
-  navigateToFile,
-} from './files/view.js';
+import { setFilesMode, updateFilesModifiedCount, updateFloatingToggle, onFilesTabActivated, navigateToFile } from './files/mode.js';
+import { filesLoadRoot, renderFileTree, renderTreeLevel, renderChangesView, toggleDirectory, selectFile, onAgentFileChanges } from './files/tree.js';
+import { renderFileContent, renderPreview, renderMarkdownFile, renderSvgPreview, readFileAsync } from './files/content.js';
+import { resolveAssetPath, urlFetchAsync, resolveUrl } from './files/html-preview.js';
+import { showBrowserView } from './files/browser.js';
+import { renderDiffContent } from './files/diff.js';
 import { renderChannelPanel, createChannelItem, updateMobileChannelLabel } from './channels/panel.js';
 import { showEditChannelDialog } from './channels/edit-dialog.js';
 import { renderDeviceCard } from './devices/render.js';
 import { showEditDeviceDialog } from './devices/edit-dialog.js';
 import { initNotifications, sseSynced } from './net/notifications.js';
 import { getE2EE, getActiveE2EE, anyE2EEConnected } from './e2ee/bridge.js';
-import { fileContentBody } from './files/view.js';
+import { fileContentBody } from './files/refs.js';
 import { switchTab } from './shell/tabs.js';
 import {
   setConsoleState,

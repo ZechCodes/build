@@ -11,7 +11,7 @@ import { renderChannelPanel, updateMobileChannelLabel } from './panel.js';
 import { syncChatOverlayHeader, applyChannelHarnessInfo } from '../chat/overlay.js';
 import { hideChatBubble, hideActivityBubble, clearConsole } from '../console/view.js';
 import { switchTab } from '../shell/tabs.js';
-import { onFilesTabActivated } from '../files/view.js';
+import { onFilesTabActivated } from '../files/mode.js';
 import { renderTerminalForChannel } from '../terminal/terminal.js';
 import { renderTasksPanel, updateTasksBadge } from '../tasks/panel.js';
 import { closeCompPopover, renderComplications } from '../complications/render.js';

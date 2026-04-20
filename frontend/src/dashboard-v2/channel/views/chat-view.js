@@ -29,7 +29,7 @@ export class ChatView {
   }
 
   activate() {
-    this.root = document.getElementById('v2-tab-chat');
+    this.root = document.getElementById('v2-chat-overlay-body');
     if (!this.root) return;
     this._buildShell();
     this._render();
@@ -68,7 +68,6 @@ export class ChatView {
   _buildShell() {
     this.root.innerHTML = `
       <div class="v2-chat">
-        <header class="v2-chat-header" data-slot="header"></header>
         <div class="v2-chat-messages-wrap">
           <div class="v2-chat-messages" data-slot="messages"></div>
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
@@ -106,13 +105,8 @@ export class ChatView {
   }
 
   _renderHeader() {
-    const el = this.root?.querySelector('[data-slot="header"]');
-    if (!el) return;
-    const ch = channelsStore.get(this.channel.id);
-    const name = ch?.name || this.channel.id.slice(0, 8);
-    el.innerHTML = `
-      <span class="v2-chat-name">#${escapeHtml(name)}</span>
-    `;
+    // Overlay renders the channel name in its own header; nothing to do
+    // here. Kept as a no-op for subscribe callbacks.
   }
 
   _render() {

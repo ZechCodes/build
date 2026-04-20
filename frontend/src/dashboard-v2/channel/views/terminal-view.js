@@ -18,7 +18,7 @@ export class TerminalView {
   }
 
   activate() {
-    this.root = document.getElementById('v2-tab-terminal');
+    this.root = document.getElementById('v2-rail-body');
     if (!this.root) return;
     this._buildShell();
     this._renderHistory();

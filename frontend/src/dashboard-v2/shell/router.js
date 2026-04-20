@@ -10,7 +10,9 @@ import { uiStore } from '../domain/ui-store.js';
 import { log } from '../core/log.js';
 
 const plog = log('router');
-const VALID_TABS = new Set(['files', 'chat', 'terminal', 'browser']);
+const VALID_TABS = new Set(['files', 'browser']);
+// Legacy tabs that collapse to 'files' for backward-compatible URLs.
+const LEGACY_MAP = { chat: 'files', terminal: 'files' };
 
 export class Router {
   constructor() {
@@ -29,11 +31,11 @@ export class Router {
   parse(hash) {
     const raw = (hash || '').replace(/^#/, '');
     if (!raw) return { tab: null, channelId: null };
-    const [tab, channelId] = raw.split('/');
-    return {
-      tab: VALID_TABS.has(tab) ? tab : null,
-      channelId: channelId || null,
-    };
+    const [tabRaw, channelId] = raw.split('/');
+    const tab = VALID_TABS.has(tabRaw)
+      ? tabRaw
+      : (LEGACY_MAP[tabRaw] || null);
+    return { tab, channelId: channelId || null };
   }
 
   navigate(tab, channelId) {

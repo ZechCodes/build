@@ -1,4 +1,5 @@
-/* Top-level shell grid. */
+/* Top-level shell grid: sidebar + viewer + rail.
+   Chat overlay is position:fixed and sits above everything. */
 
 #app { display: block; width: 100%; }
 
@@ -19,41 +20,49 @@
 .v2-app[data-rail="expanded"] { grid-template-rows: 1fr 50vh; }
 
 .v2-sidebar { grid-area: sidebar; background: var(--bg-elev); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
-.v2-viewer  { grid-area: viewer; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-.v2-rail    { grid-area: rail; background: var(--bg-elev); border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 12px; gap: 8px; }
+.v2-viewer  { grid-area: viewer; display: flex; flex-direction: column; overflow: hidden; min-width: 0; background: var(--bg); }
+.v2-rail    { grid-area: rail; background: var(--bg-elev); border-top: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 
-.v2-tab-panels {
+/* Path bar at top of viewer */
+
+.v2-path-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--fg);
+}
+.v2-path-text { font-family: var(--font-mono); font-size: 12px; color: var(--fg); }
+.v2-path-text.empty { color: var(--fg-muted); font-family: var(--font); }
+
+/* Main files layout: two columns (tree + content) */
+
+.v2-files-main {
   flex: 1;
   min-height: 0;
-  position: relative;
+  display: grid;
+  grid-template-columns: var(--tree-width, 300px) 1fr;
+}
+
+.v2-files-tree-panel {
+  border-right: 1px solid var(--border);
+  background: var(--bg-elev);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
-.v2-tab-panel {
-  position: absolute;
-  inset: 0;
-  display: none;
-  overflow: auto;
-  padding: 16px;
+.v2-files-content-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
 }
-.v2-tab-panel#v2-tab-chat     { padding: 0; overflow: hidden; }
-.v2-tab-panel#v2-tab-files    { padding: 0; overflow: hidden; }
-.v2-tab-panel#v2-tab-terminal { padding: 0; overflow: hidden; }
-
-body[data-tab="files"]    .v2-tab-panel[data-tab="files"]    { display: block; }
-body[data-tab="chat"]     .v2-tab-panel[data-tab="chat"]     { display: block; }
-body[data-tab="terminal"] .v2-tab-panel[data-tab="terminal"] { display: block; }
-body[data-tab="browser"]  .v2-tab-panel[data-tab="browser"]  { display: block; }
-
-.v2-empty-viewer {
-  color: var(--fg-muted);
-  padding: 48px;
-  text-align: center;
-  font-size: 14px;
-}
-
-.v2-chat-overlay { position: fixed; bottom: var(--rail-height); right: 16px; width: 380px; max-height: 60vh; pointer-events: none; }
-.v2-chat-overlay.open { pointer-events: auto; }
 
 .v2-dropdown-layer { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 .v2-dropdown-layer > * { pointer-events: auto; }
@@ -77,4 +86,5 @@ body[data-tab="browser"]  .v2-tab-panel[data-tab="browser"]  { display: block; }
     z-index: 20;
   }
   .v2-app.sidebar-open .v2-sidebar { transform: translateX(0); }
+  .v2-files-main { grid-template-columns: 1fr; }
 }

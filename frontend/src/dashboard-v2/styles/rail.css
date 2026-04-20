@@ -1,3 +1,5 @@
+/* Bottom rail. Header with Terminal + Chat toggles, drag handle, body. */
+
 .v2-rail {
   color: var(--fg-muted);
   font-size: 12px;
@@ -7,29 +9,32 @@
   overflow: hidden;
 }
 
-.v2-rail-controls {
+.v2-rail-drag {
+  height: 3px;
+  background: transparent;
+  cursor: ns-resize;
+  flex: 0 0 3px;
+}
+.v2-rail-drag:hover { background: var(--accent); }
+
+.v2-rail-header {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 12px;
-  flex: 0 0 var(--rail-height);
+  flex: 0 0 calc(var(--rail-height) - 3px);
+  border-top: 1px solid var(--border-soft);
 }
 
-.v2-rail-body {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  display: none;
-}
-.v2-app[data-rail="open"] .v2-rail-body,
-.v2-app[data-rail="expanded"] .v2-rail-body { display: flex; }
+.v2-rail-group { display: inline-flex; align-items: center; gap: 6px; }
+.v2-rail-group-spacer { flex: 1; }
 
-.v2-rail-toggle {
+.v2-rail-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--fg-muted);
@@ -37,24 +42,37 @@
   font-size: 12px;
   cursor: pointer;
 }
-.v2-rail-toggle:hover { color: var(--fg); background: var(--bg-hover); }
+.v2-rail-btn svg { width: 12px; height: 12px; color: currentColor; }
+.v2-rail-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.v2-rail-btn.active { color: var(--fg); background: var(--bg-active); border-color: var(--border); }
 
-.v2-rail-icon {
-  display: inline-block;
-  width: 10px; height: 10px;
-  border-radius: 2px;
-  background: var(--fg-dim);
+.v2-rail-status {
+  color: var(--fg-dim);
+  font-size: 11px;
+  padding: 0 6px;
 }
-.v2-rail-icon[data-state="open"]     { background: var(--accent); }
-.v2-rail-icon[data-state="expanded"] { background: var(--interaction); }
 
 .v2-rail-unread {
-  margin-left: auto;
+  min-width: 16px;
+  padding: 0 5px;
+  height: 14px;
+  line-height: 14px;
+  border-radius: 7px;
   background: var(--unread);
   color: #0b0d10;
-  padding: 1px 8px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
 }
 .v2-rail-unread.has-interaction { background: var(--interaction); }
+
+.v2-rail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: none;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.v2-app[data-rail="open"] .v2-rail-body,
+.v2-app[data-rail="expanded"] .v2-rail-body { display: flex; }

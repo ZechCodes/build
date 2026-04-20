@@ -19,7 +19,7 @@ export class ConsoleView {
   }
 
   activate() {
-    this.root = document.getElementById('v2-rail-body');
+    this.root = document.getElementById('v2-activity-body');
     if (!this.root) return;
     this._buildShell();
     this._render();

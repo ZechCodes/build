@@ -23,7 +23,7 @@ export class FilesView {
   }
 
   activate() {
-    this.root = document.getElementById('v2-tab-files');
+    this.root = document.getElementById('v2-viewer-main');
     if (!this.root) return;
     this._buildShell();
     this._fetchInitial();
@@ -52,24 +52,28 @@ export class FilesView {
   }
 
   _buildShell() {
-    this.root.innerHTML = `
-      <div class="v2-files">
-        <aside class="v2-files-tree">
-          <header class="v2-files-tree-tabs">
-            <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">Changes</button>
-            <button class="v2-files-tree-tab" data-tree-tab="all" type="button">All files</button>
-          </header>
-          <div class="v2-files-tree-body" data-slot="tree"></div>
-        </aside>
-        <section class="v2-files-viewer">
-          <header class="v2-files-mode-bar" data-slot="mode"></header>
-          <div class="v2-files-viewer-body" data-slot="viewer"></div>
-        </section>
-      </div>
+    // Populate the two pre-built panels in the layout.
+    const treePanel = document.getElementById('v2-files-tree-panel');
+    const contentPanel = document.getElementById('v2-files-content-panel');
+    if (!treePanel || !contentPanel) return;
+    treePanel.innerHTML = `
+      <header class="v2-files-tree-tabs">
+        <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">Modified</button>
+        <button class="v2-files-tree-tab" data-tree-tab="all" type="button">All</button>
+      </header>
+      <div class="v2-files-tree-body" data-slot="tree"></div>
+      <footer class="v2-files-review">
+        <button class="v2-files-review-btn" type="button" data-review="view-pr">View PR</button>
+        <button class="v2-files-review-btn primary" type="button" data-review="approve-all">Approve all</button>
+      </footer>
     `;
-    this.treeEl = this.root.querySelector('[data-slot="tree"]');
-    this.viewerEl = this.root.querySelector('[data-slot="viewer"]');
-    this.modeBarEl = this.root.querySelector('[data-slot="mode"]');
+    contentPanel.innerHTML = `
+      <header class="v2-files-mode-bar" data-slot="mode"></header>
+      <div class="v2-files-viewer-body" data-slot="viewer"></div>
+    `;
+    this.treeEl = treePanel.querySelector('[data-slot="tree"]');
+    this.viewerEl = contentPanel.querySelector('[data-slot="viewer"]');
+    this.modeBarEl = contentPanel.querySelector('[data-slot="mode"]');
 
     this.root.addEventListener('click', this._onClick);
   }
@@ -174,11 +178,14 @@ export class FilesView {
           wrap
         </label>
       </div>
-      <div class="v2-files-review">
-        <button class="v2-files-review-btn" type="button" data-review="approve-all">Approve all</button>
-        <button class="v2-files-review-btn" type="button" data-review="view-pr">View PR</button>
-      </div>
     `;
+
+    // Path bar at top of viewer (shared layout slot) also echoes the path.
+    const pathText = document.getElementById('v2-path-text');
+    if (pathText) {
+      pathText.textContent = path || 'No file selected';
+      pathText.classList.toggle('empty', !path);
+    }
 
     if (!path) {
       this.viewerEl.innerHTML = '<div class="v2-files-empty">Select a file from the tree.</div>';

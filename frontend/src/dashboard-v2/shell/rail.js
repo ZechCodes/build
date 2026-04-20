@@ -1,11 +1,8 @@
-// Bottom rail. Minimal for Wave 3 — toggle state + aggregate unread badge.
-// See planning/dashboard-v2/06-shell.md § Rail.
+// Bottom rail. Terminal + Chat toggles; rail state is driven by uiStore.
+// See planning/dashboard-v2/06-shell.md.
 
 import { uiStore } from '../domain/ui-store.js';
 import { unreadStore } from '../domain/unread-store.js';
-import { escapeHtml } from '../util/html.js';
-
-const CYCLE = { collapsed: 'open', open: 'expanded', expanded: 'collapsed' };
 
 export class RailView {
   constructor() {
@@ -16,11 +13,16 @@ export class RailView {
   activate() {
     this.root = document.getElementById('v2-rail-controls');
     if (!this.root) return;
-    this.render();
+    this._updateActiveStates();
+    this._updateAggregateUnread();
+    this._applyRailState();
+
     this.unsubs.push(uiStore.subscribe(e => {
-      if (e.kind === 'rail') this.render();
+      if (e.kind === 'rail' || e.kind === 'rail_panel') this._applyRailState();
+      if (e.kind === 'overlay') this._updateActiveStates();
     }));
-    this.unsubs.push(unreadStore.subscribe(() => this.render()));
+    this.unsubs.push(unreadStore.subscribe(() => this._updateAggregateUnread()));
+
     this.root.addEventListener('click', this._onClick);
   }
 
@@ -31,27 +33,44 @@ export class RailView {
     this.root = null;
   }
 
-  render() {
-    const state = uiStore.getRailState();
+  _applyRailState() {
+    const s = uiStore.getRailState();
+    const p = uiStore.getRailPanel();
+    document.querySelector('.v2-app')?.setAttribute('data-rail', s);
+    // Toggle active class on terminal button when its panel is showing.
+    const tBtn = document.getElementById('v2-rail-terminal-toggle');
+    if (tBtn) tBtn.classList.toggle('active', p === 'terminal');
+    this._updateActiveStates();
+  }
+
+  _updateActiveStates() {
+    const overlay = uiStore.getOverlay();
+    const cBtn = document.getElementById('v2-rail-chat-toggle');
+    if (cBtn) cBtn.classList.toggle('active', overlay.open);
+  }
+
+  _updateAggregateUnread() {
     const agg = unreadStore.aggregate();
-    this.root.setAttribute('data-state', state);
-    this.root.innerHTML = `
-      <button class="v2-rail-toggle" type="button" title="${escapeHtml(state)}">
-        <span class="v2-rail-icon" data-state="${state}"></span>
-        <span class="v2-rail-label">${label(state)}</span>
-      </button>
-      ${agg.total > 0 ? `<span class="v2-rail-unread ${agg.anyInteraction ? 'has-interaction' : ''}">${agg.total}</span>` : ''}
-    `;
-    document.querySelector('.v2-app')?.setAttribute('data-rail', state);
+    const el = document.getElementById('v2-rail-unread');
+    if (!el) return;
+    if (agg.total > 0) {
+      el.hidden = false;
+      el.textContent = String(agg.total);
+      el.classList.toggle('has-interaction', agg.anyInteraction);
+    } else {
+      el.hidden = true;
+    }
   }
 
   _onClick = (e) => {
-    if (!e.target.closest('.v2-rail-toggle')) return;
-    const cur = uiStore.getRailState();
-    uiStore.setRailState(CYCLE[cur] || 'collapsed');
+    const termBtn = e.target.closest('[data-rail-panel]');
+    if (termBtn) {
+      const panel = termBtn.getAttribute('data-rail-panel');
+      uiStore.setRailPanel(uiStore.getRailPanel() === panel ? null : panel);
+      return;
+    }
+    if (e.target.closest('#v2-rail-chat-toggle')) {
+      uiStore.toggleOverlay();
+    }
   };
-}
-
-function label(state) {
-  return state === 'collapsed' ? 'Activity' : state === 'open' ? 'Minimize' : 'Shrink';
 }

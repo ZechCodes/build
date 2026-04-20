@@ -1,10 +1,11 @@
 import { state } from '../state.js';
 import { escapeHtml } from '../util/html.js';
 import { addBrowserTab, createBrowserTabItem } from '../browser/tabs.js';
+import { showEditChannelDialog } from './edit-dialog.js';
+import { updateChatRailUnreadBadge } from '../shell/rail.js';
 
 // External deps via window during transition:
-//   window.selectChannel, window.anyE2EEConnected, window.showEditChannelDialog,
-//   window.connectToDevice, window.updateChatRailUnreadBadge
+//   window.selectChannel, window.anyE2EEConnected, window.connectToDevice
 
 export function renderChannelPanel() {
   const list = document.getElementById('channel-panel-list');
@@ -135,7 +136,7 @@ export function createChannelItem(ch) {
   if (editBtn) {
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      window.showEditChannelDialog?.(ch);
+      showEditChannelDialog(ch);
     });
   }
   return item;
@@ -186,5 +187,5 @@ export function updateMobileChannelLabel() {
     trigger.classList.toggle('has-interaction', anyInteraction);
   }
 
-  window.updateChatRailUnreadBadge?.();
+  updateChatRailUnreadBadge();
 }

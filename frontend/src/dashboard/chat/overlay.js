@@ -1,4 +1,7 @@
 import { state, CHAT_OVERLAY_STATE_KEY } from '../state.js';
+import { updateRailButtonStates } from '../shell/rail.js';
+import { getE2EE } from '../e2ee/bridge.js';
+import { showToast } from '../util/toast.js';
 
 const CHAT_EXPAND_SVG = '<path d="M9 2h5v5M7 14H2V9"/><path d="M14 2l-5 5M2 14l5-5"/>';
 const CHAT_SHRINK_SVG = '<path d="M14 7h-5V2M2 9h5v5"/><path d="M14 2l-5 5M2 14l5-5"/>';
@@ -33,7 +36,7 @@ export function openChatOverlay(opts) {
   setChatOverlayPinned(pin, { persist: !opts?.suppressPersist });
   if (saved.mode === 'expanded') _setChatOverlayExpanded(true);
   if (!opts?.suppressPersist) _writeChatOverlayState({ open: true });
-  window.updateRailButtonStates?.();
+  updateRailButtonStates();
   setTimeout(() => document.getElementById('chat-input')?.focus(), 80);
 }
 
@@ -44,7 +47,7 @@ export function closeChatOverlay(opts) {
   ov.removeAttribute('data-mode');
   ov.setAttribute('aria-hidden', 'true');
   if (!opts?.suppressPersist) _writeChatOverlayState({ open: false, mode: null });
-  window.updateRailButtonStates?.();
+  updateRailButtonStates();
 }
 
 export function toggleChatOverlay() {
@@ -117,4 +120,87 @@ document.addEventListener('mousedown', (e) => {
   if (ov.contains(e.target)) return;
   if (e.target.closest('#console-chat-toggle')) return;
   closeChatOverlay();
+});
+
+// ===== Chat overlay: combined Model / Effort switcher =====
+function openCoMenu() {
+  document.getElementById('chat-overlay-ctrl-menu')?.classList.add('open');
+}
+function closeCoMenus() {
+  document.querySelectorAll('.chat-overlay-ctrl-menu.open').forEach(m => m.classList.remove('open'));
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#chat-overlay-ctrl-pill')) closeCoMenus();
+});
+function renderCoOptions(container, opts, active, onPick) {
+  container.innerHTML = '';
+  for (const o of opts) {
+    const el = document.createElement('div');
+    el.className = 'co-opt' + (o.value === active ? ' active' : '');
+    el.textContent = o.label;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeCoMenus();
+      onPick(o.value);
+    });
+    container.appendChild(el);
+  }
+}
+
+export function applyChannelHarnessInfo(channelId) {
+  const modelName = document.getElementById('chat-overlay-model-name');
+  const effortName = document.getElementById('chat-overlay-effort-name');
+  const modelOpts = document.getElementById('chat-overlay-model-opts');
+  const effortOpts = document.getElementById('chat-overlay-effort-opts');
+  if (!modelName || !effortName) return;
+  const ch = (typeof state.chatChannels !== 'undefined' && channelId) ? state.chatChannels.get(channelId) : null;
+  if (!ch) {
+    modelName.textContent = '—';
+    effortName.textContent = '—';
+    if (modelOpts) modelOpts.innerHTML = '';
+    if (effortOpts) effortOpts.innerHTML = '';
+    return;
+  }
+  const deviceId = state.channelDeviceMap.get(channelId);
+  const harnesses = deviceId ? state.deviceHarnesses.get(deviceId) : null;
+  const harness = harnesses?.find(h => h.id === ch.harness);
+  const currentModel = ch.model || harness?.default_model || '';
+  const currentEffort = ch.effort || harness?.default_effort || '';
+  modelName.textContent = currentModel || '—';
+  effortName.textContent = currentEffort || '—';
+  if (modelOpts) {
+    const models = (harness?.models || []).map(m => ({ value: m.id, label: m.name || m.id }));
+    renderCoOptions(modelOpts, models, currentModel, (v) => {
+      modelName.textContent = v;
+      if (ch) ch.model = v;
+      const conn = getE2EE(channelId);
+      if (conn?.connected) {
+        conn.updateChannel(channelId, { model: v });
+        showToast(`Model set to ${v}`);
+      } else {
+        showToast('Device not connected');
+      }
+    });
+  }
+  if (effortOpts) {
+    const efforts = (harness?.effort_levels || []).map(l => ({ value: l, label: l }));
+    renderCoOptions(effortOpts, efforts, currentEffort, (v) => {
+      effortName.textContent = v;
+      if (ch) ch.effort = v;
+      const conn = getE2EE(channelId);
+      if (conn?.connected) {
+        conn.updateChannel(channelId, { effort: v });
+        showToast(`Effort set to ${v}`);
+      } else {
+        showToast('Device not connected');
+      }
+    });
+  }
+}
+
+document.getElementById('chat-overlay-ctrl-pill')?.addEventListener('click', (e) => {
+  if (e.target.closest('.chat-overlay-ctrl-menu')) return;
+  const menu = document.getElementById('chat-overlay-ctrl-menu');
+  if (menu?.classList.contains('open')) closeCoMenus();
+  else openCoMenu();
 });

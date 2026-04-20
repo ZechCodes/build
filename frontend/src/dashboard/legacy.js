@@ -24,7 +24,9 @@ import {
   setChatOverlayPinned,
   toggleChatOverlayExpanded,
   syncChatOverlayHeader,
+  applyChannelHarnessInfo,
 } from './chat/overlay.js';
+import './shell/update-badge.js';
 import { renderTasksPanel, updateTasksBadge } from './tasks/panel.js';
 import {
   getTerminalCwd,
@@ -74,10 +76,24 @@ import {
   navigateToFile,
 } from './files/view.js';
 import { renderChannelPanel, createChannelItem, updateMobileChannelLabel } from './channels/panel.js';
+import { showEditChannelDialog } from './channels/edit-dialog.js';
 import { renderDeviceCard } from './devices/render.js';
+import { showEditDeviceDialog } from './devices/edit-dialog.js';
 import { initNotifications, sseSynced } from './net/notifications.js';
 import { getE2EE, getActiveE2EE, anyE2EEConnected } from './e2ee/bridge.js';
 import { fileContentBody } from './files/view.js';
+import { switchTab } from './shell/tabs.js';
+import {
+  setConsoleState,
+  updateConsoleButtons,
+  updateRailButtonStates,
+  updateChatRailUnreadBadge,
+  renderConsoleTimes,
+  toggleConsoleEntry,
+  toggleTree,
+} from './shell/rail.js';
+import './shell/update-badge.js';
+import './chat/input.js';
 
 // Electron detection
 if (window.buildElectron) {
@@ -91,21 +107,7 @@ if (window.buildElectron) {
 // ===== Device State =====
 
 // ===== DOM References =====
-const consoleBtm = document.getElementById('console-bottom');
-const consoleToggle = document.getElementById('console-toggle');
-const consoleExpand = document.getElementById('console-expand');
 
-// ===== Tab Navigation (files is default; chat is in overlay; browser is toggled) =====
-function switchTab(tab) {
-  state.currentTab = tab;
-  // Only show panels that belong to the main viewer (not the detached chat).
-  document.querySelectorAll('.tab-panel').forEach(p => {
-    if (p.dataset.detached === 'true') return;
-    p.classList.toggle('active', p.id === 'tab-' + tab);
-  });
-  if (tab === 'files') onFilesTabActivated();
-  window.onTabSwitched?.(tab);
-}
 
 
 async function connectToDevice(device) {
@@ -169,112 +171,6 @@ document.addEventListener('click', (e) => {
   }
 });
 
-function setConsoleState(next) {
-  state.consoleState = next;
-  const isCollapsed = next === 'collapsed';
-  consoleBtm.classList.toggle('collapsed', isCollapsed);
-  consoleBtm.classList.toggle('rail-only', isCollapsed);
-  consoleBtm.classList.toggle('expanded', next === 'expanded');
-  const term = document.querySelector('[data-console-panel="terminal"]');
-  if (term) term.classList.toggle('hidden', isCollapsed);
-  updateConsoleButtons();
-  updateRailButtonStates();
-}
-function updateConsoleButtons() {
-  const s = state.consoleState;
-  const expandSvg = '<path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
-  const restoreSvg = '<path d="M10 4L4 10M4 10h5M4 10V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
-  if (s === 'collapsed') {
-    consoleExpand.classList.add('hidden');
-    consoleToggle.classList.add('hidden');
-  } else if (s === 'open') {
-    consoleExpand.classList.remove('hidden');
-    consoleToggle.classList.remove('hidden');
-    consoleExpand.title = 'Expand terminal';
-    consoleExpand.querySelector('svg').innerHTML = expandSvg;
-    consoleExpand.onclick = () => setConsoleState('expanded');
-    consoleToggle.title = 'Close terminal';
-    consoleToggle.querySelector('svg').style.transform = '';
-    consoleToggle.onclick = () => setConsoleState('collapsed');
-  } else {
-    consoleExpand.classList.remove('hidden');
-    consoleToggle.classList.remove('hidden');
-    consoleExpand.title = 'Restore terminal';
-    consoleExpand.querySelector('svg').innerHTML = restoreSvg;
-    consoleExpand.onclick = () => setConsoleState('open');
-    consoleToggle.title = 'Close terminal';
-    consoleToggle.querySelector('svg').style.transform = '';
-    consoleToggle.onclick = () => setConsoleState('collapsed');
-  }
-}
-function updateRailButtonStates() {
-  const tBtn = document.getElementById('console-terminal-toggle');
-  if (tBtn) tBtn.classList.toggle('active', state.consoleState !== 'collapsed');
-  const cBtn = document.getElementById('console-chat-toggle');
-  const overlay = document.getElementById('chat-overlay');
-  if (cBtn && overlay) cBtn.classList.toggle('active', overlay.classList.contains('open'));
-}
-
-function updateChatRailUnreadBadge() {
-  const badge = document.getElementById('chat-rail-badge');
-  if (!badge) return;
-  let total = 0;
-  if (typeof state.unreadCounts !== 'undefined') {
-    for (const [chId, uc] of state.unreadCounts) {
-      if (chId === state.chatCurrentChannel) continue;
-      total += (uc && uc.messages) || 0;
-    }
-  }
-  if (total > 0) {
-    badge.textContent = total > 99 ? '99+' : String(total);
-    badge.hidden = false;
-  } else {
-    badge.textContent = '';
-    badge.hidden = true;
-  }
-}
-updateConsoleButtons();
-updateRailButtonStates();
-
-// Terminal rail: toggle terminal open/closed.
-document.getElementById('console-terminal-toggle')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (state.consoleState === 'collapsed') {
-    setConsoleState('open');
-    document.getElementById('terminal-input')?.focus();
-  } else {
-    setConsoleState('collapsed');
-  }
-});
-// Chat rail: toggle chat overlay.
-document.getElementById('console-chat-toggle')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleChatOverlay();
-});
-
-const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
-
-
-// ===== Activity timestamps =====
-// Last 30 entries show "Ns/Nm/Nh/Nd ago"; older entries show 24h "HH:MM".
-function renderConsoleTimes() {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (!body) return;
-  const entries = body.querySelectorAll('.console-entry');
-  const total = entries.length;
-  const recentFloor = Math.max(0, total - CONSOLE_RECENT_COUNT);
-  const now = Date.now();
-  entries.forEach((entry, idx) => {
-    const el = entry.querySelector('.ce-time');
-    if (!el) return;
-    const ts = parseInt(el.dataset.ts || '0', 10);
-    if (!ts) return;
-    const when = new Date(ts);
-    el.title = when.toLocaleString();
-    el.textContent = idx >= recentFloor ? fmtRelativeAgo(now - ts) : fmtClock24(when);
-  });
-}
-setInterval(renderConsoleTimes, 1000);
 
 // ===== Chat overlay =====
 // The chat-layout originally lives inside #tab-chat; move it into the overlay body on load.
@@ -293,87 +189,6 @@ setInterval(renderConsoleTimes, 1000);
   if (reconnect && reconnect.parentElement !== document.body) document.body.appendChild(reconnect);
 })();
 
-
-// ===== Chat overlay: combined Model / Effort switcher =====
-function openCoMenu() {
-  document.getElementById('chat-overlay-ctrl-menu')?.classList.add('open');
-}
-function closeCoMenus() {
-  document.querySelectorAll('.chat-overlay-ctrl-menu.open').forEach(m => m.classList.remove('open'));
-}
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('#chat-overlay-ctrl-pill')) closeCoMenus();
-});
-function renderCoOptions(container, opts, active, onPick) {
-  container.innerHTML = '';
-  for (const o of opts) {
-    const el = document.createElement('div');
-    el.className = 'co-opt' + (o.value === active ? ' active' : '');
-    el.textContent = o.label;
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeCoMenus();
-      onPick(o.value);
-    });
-    container.appendChild(el);
-  }
-}
-function applyChannelHarnessInfo(channelId) {
-  const modelName = document.getElementById('chat-overlay-model-name');
-  const effortName = document.getElementById('chat-overlay-effort-name');
-  const modelOpts = document.getElementById('chat-overlay-model-opts');
-  const effortOpts = document.getElementById('chat-overlay-effort-opts');
-  if (!modelName || !effortName) return;
-  const ch = (typeof state.chatChannels !== 'undefined' && channelId) ? state.chatChannels.get(channelId) : null;
-  if (!ch) {
-    modelName.textContent = '—';
-    effortName.textContent = '—';
-    if (modelOpts) modelOpts.innerHTML = '';
-    if (effortOpts) effortOpts.innerHTML = '';
-    return;
-  }
-  const deviceId = state.channelDeviceMap.get(channelId);
-  const harnesses = deviceId ? state.deviceHarnesses.get(deviceId) : null;
-  const harness = harnesses?.find(h => h.id === ch.harness);
-  const currentModel = ch.model || harness?.default_model || '';
-  const currentEffort = ch.effort || harness?.default_effort || '';
-  modelName.textContent = currentModel || '—';
-  effortName.textContent = currentEffort || '—';
-  if (modelOpts) {
-    const models = (harness?.models || []).map(m => ({ value: m.id, label: m.name || m.id }));
-    renderCoOptions(modelOpts, models, currentModel, (v) => {
-      modelName.textContent = v;
-      if (ch) ch.model = v;
-      const conn = getE2EE(channelId);
-      if (conn?.connected) {
-        conn.updateChannel(channelId, { model: v });
-        showToast(`Model set to ${v}`);
-      } else {
-        showToast('Device not connected');
-      }
-    });
-  }
-  if (effortOpts) {
-    const efforts = (harness?.effort_levels || []).map(l => ({ value: l, label: l }));
-    renderCoOptions(effortOpts, efforts, currentEffort, (v) => {
-      effortName.textContent = v;
-      if (ch) ch.effort = v;
-      const conn = getE2EE(channelId);
-      if (conn?.connected) {
-        conn.updateChannel(channelId, { effort: v });
-        showToast(`Effort set to ${v}`);
-      } else {
-        showToast('Device not connected');
-      }
-    });
-  }
-}
-document.getElementById('chat-overlay-ctrl-pill')?.addEventListener('click', (e) => {
-  if (e.target.closest('.chat-overlay-ctrl-menu')) return;
-  const menu = document.getElementById('chat-overlay-ctrl-menu');
-  if (menu?.classList.contains('open')) closeCoMenus();
-  else openCoMenu();
-});
 
 // ===== Review-flow UI stubs =====
 document.getElementById('files-approve-all-btn')?.addEventListener('click', () => showToast('Review flow not wired up yet'));
@@ -396,28 +211,6 @@ document.getElementById('files-view-pr-btn')?.addEventListener('click', () => sh
 })();
 
 
-function toggleConsoleEntry(row) {
-  const expandIcon = row.querySelector('.ce-expand');
-  const detail = row.nextElementSibling;
-  if (detail && detail.classList.contains('ce-detail')) {
-    if (expandIcon) expandIcon.classList.toggle('open');
-    detail.classList.toggle('open');
-  }
-}
-
-function toggleTree(el) {
-  const children = el.nextElementSibling;
-  if (children && children.classList.contains('tree-children')) {
-    children.classList.toggle('collapsed');
-    const arrow = el.querySelector('.tree-arrow');
-    if (arrow) arrow.classList.toggle('open');
-  }
-}
-
-document.getElementById('chat-input')?.addEventListener('input', function(){
-  this.style.height = 'auto';
-  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-});
 
 // ----- Helpers -----
 
@@ -651,45 +444,6 @@ document.addEventListener('sk:notification-status', async (evt) => {
   }
 });
 
-// =====================================================================
-// Theme version checker — detect deploys via SSE reconnect
-// =====================================================================
-
-function showUpdateBadge() {
-  const footer = document.querySelector('.channel-panel-footer');
-  if (!footer || footer.querySelector('.theme-update-badge')) return;
-  const badge = document.createElement('button');
-  badge.className = 'theme-update-badge';
-  badge.title = 'New version available — click to reload';
-  badge.setAttribute('aria-label', 'Update available, click to reload');
-  badge.textContent = 'Click to Update';
-  badge.addEventListener('click', () => location.reload());
-  footer.appendChild(badge);
-}
-
-async function checkThemeVersion() {
-  try {
-    const res = await fetch('/api/theme/version');
-    if (!res.ok) return;
-    const { version } = await res.json();
-    if (!version) return;
-    const stored = localStorage.getItem(THEME_VERSION_KEY);
-    if (!stored) {
-      localStorage.setItem(THEME_VERSION_KEY, version);
-      return;
-    }
-    if (compareVersions(version, stored) > 0) {
-      showUpdateBadge();
-      localStorage.setItem(THEME_VERSION_KEY, version);
-    }
-  } catch (err) {
-    console.warn('[Theme] version check failed:', err);
-  }
-}
-
-document.addEventListener('sk:notification-status', (evt) => {
-  if (evt.detail.status === 'connected') checkThemeVersion();
-});
 
 // =====================================================================
 // E2EE Chat — wired to BuildE2EE client
@@ -2823,84 +2577,6 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
   saveChannelState(state.chatCurrentChannel, { draft: document.getElementById('chat-input').value });
 });
 
-// ----- Commands tray toggle -----
-// Show/hide commands tray based on input focus. Uses a short delay on blur
-// so that clicks/taps on tray buttons have time to fire before it hides.
-const cmdTray = document.getElementById('commands-tray');
-const chatInputArea = document.querySelector('.chat-input-area');
-let trayHideTimeout = null;
-chatInputArea?.addEventListener('focusin', () => {
-  clearTimeout(trayHideTimeout);
-  cmdTray?.classList.add('focus-visible');
-});
-chatInputArea?.addEventListener('focusout', () => {
-  trayHideTimeout = setTimeout(() => cmdTray?.classList.remove('focus-visible'), 200);
-});
-// Refocus the input after any tray button click so the tray stays visible.
-cmdTray?.addEventListener('click', () => {
-  document.getElementById('chat-input')?.focus();
-});
-// Attach button (in tray)
-document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
-  document.getElementById('chat-file-input').click();
-});
-
-// Plan button (in tray)
-document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
-  if (!state.chatCurrentChannel) return;
-  const current = state.channelPlanMode.get(state.chatCurrentChannel) || false;
-  state.channelPlanMode.set(state.chatCurrentChannel, !current);
-  saveChannelState(state.chatCurrentChannel, { planMode: !current });
-  updatePlanModeUI(!current);
-});
-
-// Compact button (in tray) - double-click confirm pattern
-let compactConfirmTimeout = null;
-document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
-  const btn = document.getElementById('cmd-compact-btn');
-  if (!state.chatCurrentChannel) return;
-  if (btn.classList.contains('confirm')) {
-    clearTimeout(compactConfirmTimeout);
-    btn.classList.remove('confirm');
-    const label = btn.querySelector('span');
-    if (label) label.textContent = 'Compact';
-    getActiveE2EE()?.compactSession(state.chatCurrentChannel);
-  } else {
-    btn.classList.add('confirm');
-    const label = btn.querySelector('span');
-    if (label) label.textContent = 'Click to confirm';
-    compactConfirmTimeout = setTimeout(() => {
-      btn.classList.remove('confirm');
-      const label = btn.querySelector('span');
-      if (label) label.textContent = 'Compact';
-    }, 3000);
-  }
-});
-
-// Clear button (in tray) - double-click confirm pattern
-let resetConfirmTimeout = null;
-document.getElementById('cmd-reset-btn')?.addEventListener('click', () => {
-  const btn = document.getElementById('cmd-reset-btn');
-  if (!state.chatCurrentChannel) return;
-  if (btn.classList.contains('confirm')) {
-    // Second click - do the reset
-    clearTimeout(resetConfirmTimeout);
-    btn.classList.remove('confirm');
-    const label = btn.querySelector('span');
-    if (label) label.textContent = 'Clear';
-    getActiveE2EE()?.resetSession(state.chatCurrentChannel);
-  } else {
-    // First click - enter confirm state
-    btn.classList.add('confirm');
-    const label = btn.querySelector('span');
-    if (label) label.textContent = 'Click to confirm';
-    resetConfirmTimeout = setTimeout(() => {
-      btn.classList.remove('confirm');
-      const label = btn.querySelector('span');
-      if (label) label.textContent = 'Clear';
-    }, 3000);
-  }
-});
 
 // ----- File Upload UI -----
 
@@ -3150,230 +2826,6 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
 // syncE2EEStatus is now defined above with initE2EE.
 // MutationObservers no longer needed — syncE2EEStatus is called directly.
 
-// ===== Edit Channel Dialog =====
-function showEditChannelDialog(ch) {
-  const _editConn = getE2EE(ch.id);
-  if (!_editConn || !_editConn.connected) return;
-  const dialogParent = document.body;
-  if (!dialogParent) return;
-
-  // Build model options from the channel's harness.
-  const deviceId = state.channelDeviceMap.get(ch.id);
-  const cachedHarnesses = deviceId ? state.deviceHarnesses.get(deviceId) : [];
-  const harness = cachedHarnesses?.find(h => h.id === ch.harness);
-  let modelOptions = '';
-  if (harness) {
-    modelOptions = harness.models.map(m =>
-      `<option value="${m.id}"${m.id === ch.model ? ' selected' : ''}>${m.name}</option>`
-    ).join('');
-  }
-
-  // Effort options come from the harness definition.
-  const harnessEffortLevels = harness?.effort_levels || [];
-  const effortOptions =
-    `<option value=""${(ch.effort || '') === '' ? ' selected' : ''}>Default</option>` +
-    harnessEffortLevels.map(lvl =>
-      `<option value="${lvl}"${lvl === (ch.effort || '') ? ' selected' : ''}>${effortLabel(lvl)}</option>`
-    ).join('');
-
-  const overlay = document.createElement('div');
-  overlay.className = 'new-channel-overlay';
-  overlay.innerHTML = `
-    <div class="new-channel-dialog">
-      <h3>Edit Channel</h3>
-      <label for="edit-channel-name">Name</label>
-      <input type="text" id="edit-channel-name" value="${escapeHtml(ch.name)}" autofocus>
-      ${modelOptions ? `<label for="edit-channel-model">Model</label>
-      <select id="edit-channel-model">${modelOptions}</select>` : ''}
-      <label for="edit-channel-effort">Effort</label>
-      <select id="edit-channel-effort">${effortOptions}</select>
-      <label for="edit-channel-workdir">Working Directory</label>
-      <input type="text" id="edit-channel-workdir" value="${escapeHtml(ch.working_directory || '')}" placeholder="/path/to/project">
-      <label class="new-channel-checkbox">
-        <input type="checkbox" id="edit-channel-auto-approve"${ch.auto_approve_tools ? ' checked' : ''}>
-        Auto-approve all tool uses
-      </label>
-      <div class="edit-channel-actions">
-        <button class="btn" id="edit-channel-restart">Restart Agent</button>
-      </div>
-      <div class="edit-channel-danger">
-        <div class="edit-channel-danger-label">Danger Zone</div>
-        <button class="btn-danger" id="edit-channel-delete">Delete Channel</button>
-      </div>
-      <div class="dialog-btns">
-        <button class="btn btn-cancel" id="edit-channel-cancel">Cancel</button>
-        <button class="btn btn-create" id="edit-channel-save">Save</button>
-      </div>
-    </div>
-  `;
-  dialogParent.appendChild(overlay);
-
-  const nameInput = document.getElementById('edit-channel-name');
-  nameInput.focus();
-  nameInput.select();
-
-  const close = () => overlay.remove();
-
-  // Cancel / close
-  document.getElementById('edit-channel-cancel').addEventListener('click', close);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-
-  // Save
-  const workdirInput = document.getElementById('edit-channel-workdir');
-  const modelSelect = document.getElementById('edit-channel-model');
-  const effortSelect = document.getElementById('edit-channel-effort');
-  const save = () => {
-    const newName = nameInput.value.trim();
-    if (newName && newName !== ch.name) {
-      _editConn.renameChannel(ch.id, newName);
-    }
-    const updates = {};
-    const newWorkdir = workdirInput.value.trim();
-    if (newWorkdir !== (ch.working_directory || '')) updates.working_directory = newWorkdir;
-    const newModel = modelSelect?.value;
-    if (newModel && newModel !== ch.model) updates.model = newModel;
-    const newEffort = effortSelect.value;
-    if (newEffort !== (ch.effort || '')) updates.effort = newEffort;
-    const newAutoApprove = document.getElementById('edit-channel-auto-approve').checked;
-    if (newAutoApprove !== !!ch.auto_approve_tools) updates.auto_approve_tools = newAutoApprove;
-    if (Object.keys(updates).length) {
-      _editConn.updateChannel(ch.id, updates);
-      // Update local channel data so next message picks up new values.
-      if (updates.model) ch.model = updates.model;
-      if (updates.effort !== undefined) ch.effort = updates.effort;
-      if (updates.auto_approve_tools !== undefined) ch.auto_approve_tools = updates.auto_approve_tools;
-    }
-    close();
-  };
-  document.getElementById('edit-channel-save').addEventListener('click', save);
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
-  workdirInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
-
-  // Restart
-  document.getElementById('edit-channel-restart').addEventListener('click', () => {
-    _editConn.restartAgent(ch.id);
-    close();
-  });
-
-  // Delete with confirmation
-  const deleteBtn = document.getElementById('edit-channel-delete');
-  let deleteConfirm = false;
-  deleteBtn.addEventListener('click', () => {
-    if (!deleteConfirm) {
-      deleteConfirm = true;
-      deleteBtn.textContent = 'Click again to confirm deletion';
-      deleteBtn.classList.add('btn-danger-confirm');
-      setTimeout(() => {
-        deleteConfirm = false;
-        deleteBtn.textContent = 'Delete Channel';
-        deleteBtn.classList.remove('btn-danger-confirm');
-      }, 3000);
-    } else {
-      _editConn.deleteChannel(ch.id);
-      close();
-    }
-  });
-}
-
-// ===== Edit Device Dialog =====
-function showEditDeviceDialog(device) {
-  const dialogParent = document.body;
-  if (!dialogParent) return;
-
-  const overlay = document.createElement('div');
-  overlay.className = 'new-channel-overlay';
-  overlay.innerHTML = `
-    <div class="new-channel-dialog">
-      <h3>Edit Device</h3>
-      <label for="edit-device-name">Name</label>
-      <input type="text" id="edit-device-name" value="${escapeHtml(device.name)}" autofocus>
-      <div class="edit-channel-actions">
-        <button class="btn" id="edit-device-restart">Restart Device</button>
-      </div>
-      <div class="edit-channel-danger">
-        <div class="edit-channel-danger-label">Danger Zone</div>
-        <button class="btn-danger" id="edit-device-revoke">Revoke Device</button>
-      </div>
-      <div class="dialog-btns">
-        <button class="btn btn-cancel" id="edit-device-cancel">Cancel</button>
-        <button class="btn btn-create" id="edit-device-save">Save</button>
-      </div>
-    </div>
-  `;
-  dialogParent.appendChild(overlay);
-
-  const nameInput = document.getElementById('edit-device-name');
-  nameInput.focus();
-  nameInput.select();
-
-  const close = () => overlay.remove();
-
-  // Cancel / close
-  document.getElementById('edit-device-cancel').addEventListener('click', close);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-
-  // Save (rename)
-  const save = async () => {
-    const newName = nameInput.value.trim();
-    if (newName && newName !== device.name) {
-      try {
-        await fetch(`/api/devices/${device.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newName }),
-        });
-        device.name = newName;
-        renderChannelPanel();
-      } catch (err) {
-        console.error('Failed to rename device:', err);
-      }
-    }
-    close();
-  };
-  document.getElementById('edit-device-save').addEventListener('click', save);
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
-
-  // Restart
-  document.getElementById('edit-device-restart').addEventListener('click', async () => {
-    try {
-      await fetch(`/api/devices/${device.id}/restart`, { method: 'POST' });
-    } catch (err) {
-      console.error('Failed to restart device:', err);
-    }
-    close();
-  });
-
-  // Revoke with confirmation
-  const revokeBtn = document.getElementById('edit-device-revoke');
-  let revokeConfirm = false;
-  revokeBtn.addEventListener('click', async () => {
-    if (!revokeConfirm) {
-      revokeConfirm = true;
-      revokeBtn.textContent = 'Click again to confirm revocation';
-      revokeBtn.classList.add('btn-danger-confirm');
-      setTimeout(() => {
-        revokeConfirm = false;
-        revokeBtn.textContent = 'Revoke Device';
-        revokeBtn.classList.remove('btn-danger-confirm');
-      }, 3000);
-    } else {
-      try {
-        await fetch(`/api/devices/${device.id}`, { method: 'DELETE' });
-        state.devices.delete(device.id);
-        // Disconnect E2EE for this device.
-        const _revokeConn = state.e2eeConnections.get(device.id);
-        if (_revokeConn) _revokeConn.disconnect();
-        renderChannelPanel();
-        fetchDevices();
-      } catch (err) {
-        console.error('Failed to revoke device:', err);
-      }
-      close();
-    }
-  });
-}
 
 
 
@@ -3384,7 +2836,6 @@ window.highlightLine = highlightLine;
 // ---- Expose helpers needed by feature modules during the transition ----
 window.getActiveE2EE = getActiveE2EE;
 window.getE2EE = getE2EE;
-window.updateRailButtonStates = updateRailButtonStates;
 window.renderChannelPanel = renderChannelPanel;
 window.renderMessages = renderMessages;
 window.selectChannel = selectChannel;
@@ -3393,6 +2844,6 @@ window.saveChannelState = saveChannelState;
 window.loadChannelState = loadChannelState;
 window.showBrowserView = showBrowserView;
 window.anyE2EEConnected = anyE2EEConnected;
-window.showEditChannelDialog = showEditChannelDialog;
 window.connectToDevice = connectToDevice;
-window.updateChatRailUnreadBadge = updateChatRailUnreadBadge;
+window.fetchDevices = fetchDevices;
+window.updatePlanModeUI = updatePlanModeUI;

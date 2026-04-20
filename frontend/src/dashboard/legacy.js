@@ -431,7 +431,7 @@ function addActivity(text, timestamp) { /* no-op, dashboard activity feed remove
 
 async function fetchDevices() {
   try {
-    const resp = await fetch('/api/state.devices/');
+    const resp = await fetch('/api/devices/');
     if (!resp.ok) return;
     const data = await resp.json();
     const freshIds = new Set(data.map(d => d.id));
@@ -441,7 +441,7 @@ async function fetchDevices() {
     for (const d of data) state.devices.set(d.id, d);
     renderChannelPanel();
   } catch (err) {
-    console.error('Failed to fetch state.devices:', err);
+    console.error('Failed to fetch devices:', err);
   }
 }
 
@@ -892,7 +892,7 @@ function syncE2EEStatus() {
   if (anyE2EEConnected()) {
     const count = [...state.e2eeConnections.values()].filter(c => c.connected).length;
     dot.className = 'e2ee-dot connected';
-    label.textContent = count > 1 ? `E2EE active (${count} state.devices)` : 'E2EE active';
+    label.textContent = count > 1 ? `E2EE active (${count} devices)` : 'E2EE active';
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
   } else if (state.e2eeConnections.size > 0) {
     dot.className = 'e2ee-dot connecting';
@@ -958,7 +958,7 @@ async function initE2EE(targetDeviceId = null) {
     clearTimeout(initE2EE._retryTimer);
     initE2EE._retryTimer = setTimeout(async () => {
       if (state.e2eeConnections.size > 0) return; // Already connected via e2ee-ready
-      console.log('[E2EE] Retrying — refreshing state.devices...');
+      console.log('[E2EE] Retrying — refreshing devices...');
       await fetchDevices();
       if (state.e2eeConnections.size === 0) initE2EE();
     }, 3000);
@@ -3318,7 +3318,7 @@ function showEditDeviceDialog(device) {
     const newName = nameInput.value.trim();
     if (newName && newName !== device.name) {
       try {
-        await fetch(`/api/state.devices/${device.id}`, {
+        await fetch(`/api/devices/${device.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newName }),
@@ -3337,7 +3337,7 @@ function showEditDeviceDialog(device) {
   // Restart
   document.getElementById('edit-device-restart').addEventListener('click', async () => {
     try {
-      await fetch(`/api/state.devices/${device.id}/restart`, { method: 'POST' });
+      await fetch(`/api/devices/${device.id}/restart`, { method: 'POST' });
     } catch (err) {
       console.error('Failed to restart device:', err);
     }
@@ -3359,7 +3359,7 @@ function showEditDeviceDialog(device) {
       }, 3000);
     } else {
       try {
-        await fetch(`/api/state.devices/${device.id}`, { method: 'DELETE' });
+        await fetch(`/api/devices/${device.id}`, { method: 'DELETE' });
         state.devices.delete(device.id);
         // Disconnect E2EE for this device.
         const _revokeConn = state.e2eeConnections.get(device.id);

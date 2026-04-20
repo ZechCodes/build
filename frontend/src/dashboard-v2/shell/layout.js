@@ -42,6 +42,7 @@ export function buildLayout(root) {
             <div class="v2-empty-viewer">No channel selected. Pick one from the sidebar.</div>
           </div>
           <div class="v2-tab-panel" data-tab="chat" id="v2-tab-chat"></div>
+          <div class="v2-tab-panel" data-tab="terminal" id="v2-tab-terminal"></div>
           <div class="v2-tab-panel" data-tab="browser" id="v2-tab-browser"></div>
         </section>
       </main>

@@ -7,16 +7,34 @@ import { messagesStore } from '../domain/messages-store.js';
 import { unreadStore } from '../domain/unread-store.js';
 import { ChatView } from './views/chat-view.js';
 import { ConsoleView } from './views/console-view.js';
+import { FilesView } from './views/files-view.js';
+import { TerminalView } from './views/terminal-view.js';
 import { log } from '../core/log.js';
 
 const plog = log('channel');
 
 function defaultViewState() {
   return {
+    // Chat
     draftText: '',
     scrollAnchor: null,
     unreadHighlightLastSeen: null,
     consoleScrollNearBottom: true,
+    // Files
+    filesPath: null,
+    filesView: 'source',           // 'source' | 'diff' | 'preview'
+    filesLineWrap: false,
+    filesTreeTab: 'changes',       // 'changes' | 'all'
+    // Terminal
+    terminalCwd: null,
+    terminalCmdHistory: [],
+    terminalCmdIndex: -1,
+    terminalRunning: false,
+    terminalCompletionBase: '',
+    terminalCompletionPartial: '',
+    terminalCompletions: [],
+    terminalCompletionIndex: -1,
+    // Meta
     lastActivatedAt: 0,
   };
 }
@@ -32,6 +50,8 @@ export class Channel {
       this.views = {
         chat: new ChatView(this),
         console: new ConsoleView(this),
+        files: new FilesView(this),
+        terminal: new TerminalView(this),
       };
     }
     this._active = false;

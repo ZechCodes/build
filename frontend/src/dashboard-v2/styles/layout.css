@@ -36,11 +36,14 @@
   overflow: auto;
   padding: 16px;
 }
-.v2-tab-panel#v2-tab-chat { padding: 0; overflow: hidden; }
+.v2-tab-panel#v2-tab-chat     { padding: 0; overflow: hidden; }
+.v2-tab-panel#v2-tab-files    { padding: 0; overflow: hidden; }
+.v2-tab-panel#v2-tab-terminal { padding: 0; overflow: hidden; }
 
-body[data-tab="files"]   .v2-tab-panel[data-tab="files"]   { display: block; }
-body[data-tab="chat"]    .v2-tab-panel[data-tab="chat"]    { display: block; }
-body[data-tab="browser"] .v2-tab-panel[data-tab="browser"] { display: block; }
+body[data-tab="files"]    .v2-tab-panel[data-tab="files"]    { display: block; }
+body[data-tab="chat"]     .v2-tab-panel[data-tab="chat"]     { display: block; }
+body[data-tab="terminal"] .v2-tab-panel[data-tab="terminal"] { display: block; }
+body[data-tab="browser"]  .v2-tab-panel[data-tab="browser"]  { display: block; }
 
 .v2-empty-viewer {
   color: var(--fg-muted);

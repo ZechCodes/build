@@ -10,7 +10,7 @@ import { uiStore } from '../domain/ui-store.js';
 import { log } from '../core/log.js';
 
 const plog = log('router');
-const VALID_TABS = new Set(['files', 'chat', 'browser']);
+const VALID_TABS = new Set(['files', 'chat', 'terminal', 'browser']);
 
 export class Router {
   constructor() {

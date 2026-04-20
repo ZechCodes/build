@@ -28,12 +28,13 @@ export const terminalStore = {
     notify({ kind: 'output', channelId });
   },
 
-  markComplete(channelId, exitCode) {
+  markComplete(channelId, exitCode, cwd) {
     const s = byChannel.get(channelId);
     if (!s) return;
     s.history.push({ type: 'complete', exitCode, at: Date.now() });
     s.running = false;
-    notify({ kind: 'complete', channelId, exitCode });
+    if (cwd) s.cwd = cwd;
+    notify({ kind: 'complete', channelId, exitCode, cwd });
   },
 
   setCompletions(channelId, candidates) {
@@ -55,9 +56,9 @@ bus.on('terminal.output', ({ channelId, text }) => {
   if (!channelId || !text) return;
   terminalStore.appendOutput(channelId, text);
 });
-bus.on('terminal.complete', ({ channelId, exitCode }) => {
+bus.on('terminal.complete', ({ channelId, exitCode, cwd }) => {
   if (!channelId) return;
-  terminalStore.markComplete(channelId, exitCode);
+  terminalStore.markComplete(channelId, exitCode, cwd);
 });
 bus.on('terminal.completions', ({ channelId, candidates }) => {
   if (!channelId) return;

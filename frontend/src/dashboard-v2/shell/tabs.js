@@ -7,6 +7,7 @@ import { router } from './router.js';
 const TABS = [
   { id: 'files', label: 'Files' },
   { id: 'chat',  label: 'Chat'  },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'browser', label: 'Browser' },
 ];
 

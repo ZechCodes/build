@@ -154,12 +154,36 @@ test('files.list_result populates filesStore', () => {
   assert.equal(filesStore.treeFor('sb-f').get('').entries.length, 1);
 });
 
+test('files.read_result populates readResultFor', () => {
+  bus.emit('files.read_result', {
+    channel_id: 'sb-fr', path: 'a.js', content: 'const x = 1;', size: 12, truncated: false,
+  });
+  const r = filesStore.readResultFor('sb-fr');
+  assert.equal(r.path, 'a.js');
+  assert.equal(r.content, 'const x = 1;');
+});
+
+test('files.diff_result populates diffResultFor', () => {
+  bus.emit('files.diff_result', {
+    channel_id: 'sb-fd', path: 'a.js', diff: '--- a\n+++ b\n', truncated: false,
+  });
+  const r = filesStore.diffResultFor('sb-fd');
+  assert.match(r.diff, /^---/);
+});
+
 test('terminal.output + terminal.complete populate terminalStore', () => {
   bus.emit('terminal.output', { channelId: 'sb-t', text: 'out' });
   bus.emit('terminal.complete', { channelId: 'sb-t', exitCode: 0 });
   const slot = terminalStore.forChannel('sb-t');
   assert.equal(slot.history.length, 2);
   assert.equal(slot.running, false);
+});
+
+test('terminal.complete captures cwd when provided', () => {
+  bus.emit('terminal.output', { channelId: 'sb-tc', text: 'x' });
+  bus.emit('terminal.complete', { channelId: 'sb-tc', exitCode: 0, cwd: '/root/work' });
+  const slot = terminalStore.forChannel('sb-tc');
+  assert.equal(slot.cwd, '/root/work');
 });
 
 test('agent.todo_write sets tasks', () => {

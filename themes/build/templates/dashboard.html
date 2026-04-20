@@ -2743,6 +2743,12 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
     <button class="chat-overlay-tool-btn" id="cmd-plan-btn" title="Plan mode" disabled>
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
     </button>
+    <button class="chat-overlay-tool-btn" id="cmd-compact-btn" title="Compact conversation" disabled>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="chat-overlay-tool-btn" id="cmd-reset-btn" title="Clear conversation" disabled>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </button>
     <div class="chat-overlay-tool-spacer"></div>
     <div class="chat-overlay-ctrl-pill" id="chat-overlay-ctrl-pill" role="button" tabindex="0" title="Model / effort">
       <span class="co-ctrl-part" id="chat-overlay-model-name">—</span>
@@ -4770,7 +4776,7 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('connected', () => {
     console.log('[E2EE] Session established for device', deviceId);
     e2eeHasConnected = true;
-    const _enableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn'];
+    const _enableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn', 'cmd-compact-btn', 'cmd-reset-btn'];
     for (const id of _enableBtns) {
       const el = document.getElementById(id);
       if (el) el.disabled = false;
@@ -4812,7 +4818,7 @@ function bindE2EEEvents(instance, deviceId) {
     deviceAgentCwd.delete(deviceId);
 
     if (!anyE2EEConnected()) {
-      const _disableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn'];
+      const _disableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn', 'cmd-compact-btn', 'cmd-reset-btn'];
       for (const id of _disableBtns) {
         const el = document.getElementById(id);
         if (el) el.disabled = true;

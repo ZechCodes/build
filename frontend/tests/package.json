@@ -1,0 +1,12 @@
+{
+  "name": "build-web-frontend-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node dashboard.smoke.mjs",
+    "smoke:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1"
+  }
+}

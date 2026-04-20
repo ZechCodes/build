@@ -2267,3 +2267,9 @@ window.anyE2EEConnected = anyE2EEConnected;
 window.connectToDevice = connectToDevice;
 window.fetchDevices = fetchDevices;
 window.updatePlanModeUI = updatePlanModeUI;
+
+// ---- Test bridges (Playwright smoke harness only) ----
+// Used by frontend/tests/dashboard.smoke.mjs to inject a fake E2EE instance
+// and exercise every bindE2EEEvents listener with synthetic envelopes.
+window.__test_state = state;
+window.__test_bindE2EEEvents = bindE2EEEvents;

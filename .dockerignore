@@ -11,4 +11,5 @@ app.db-journal
 node_modules
 **/node_modules
 themes/build/static/dist
+frontend/tests/test-results
 .DS_Store

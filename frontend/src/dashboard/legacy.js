@@ -94,6 +94,54 @@ import {
 } from './shell/rail.js';
 import './shell/update-badge.js';
 import './chat/input.js';
+import {
+  addPendingFiles,
+  clearPendingFiles,
+  renderPendingFiles,
+  _bindUploadProgress,
+} from './chat/uploads.js';
+import {
+  rebuildChatChannels,
+  promoteChannel,
+  getOrderedChannelIds,
+  pushChannelHistory,
+  renderChannelList,
+  renderChannelSidebar,
+  updateAggregateBadge,
+  incrementUnread,
+} from './channels/list.js';
+import {
+  getLastSeen,
+  setLastSeen,
+  deferMarkRead,
+  markUnreadMessages,
+  clearUnreadHighlights,
+} from './channels/unread.js';
+import {
+  loadChannelState,
+  saveChannelState,
+  clearChannelDraft,
+} from './channels/state-store.js';
+import {
+  clearConsole,
+  appendConsoleReasoning,
+  appendConsoleEntry,
+  markConsoleEntryDone,
+  isChatNearBottom,
+  isConsoleNearBottom,
+  scrollChatToBottom,
+  scrollToMessage,
+  handleNewMessageScroll,
+  handleSentMessageScroll,
+  showChatBubble,
+  hideChatBubble,
+  showActivityBubble,
+  hideActivityBubble,
+  updateChatScrollArrow,
+  updateActivityScrollArrow,
+  scrollToFirstUnread,
+  createEmptyState,
+} from './console/view.js';
 
 // Electron detection
 if (window.buildElectron) {
@@ -451,48 +499,6 @@ document.addEventListener('sk:notification-status', async (evt) => {
 
 // Multi-device E2EE state
 
-function rebuildChatChannels() {
-  state.chatChannels.clear();
-  for (const [, channels] of state.deviceChannels) {
-    for (const [chId, ch] of channels) state.chatChannels.set(chId, ch);
-  }
-}
-
-
-function promoteChannel(channelId) {
-  const now = Date.now();
-  const prev = state.channelSortTs.get(channelId) || 0;
-  if (now - prev > SORT_STABILITY_MS) state.channelSortTs.set(channelId, now);
-}
-
-
-// ---- Channel Navigation (Electron only) ----
-
-function getOrderedChannelIds() {
-  const ids = [];
-  const sortedDevices = [...state.devices.values()].sort((a, b) => a.name.localeCompare(b.name));
-  for (const device of sortedDevices) {
-    if (!state.e2eeConnections.has(device.id)) continue;
-    const devChans = state.deviceChannels.get(device.id) || new Map();
-    const sorted = [...devChans.values()].sort((a, b) => {
-      const aTs = state.channelSortTs.get(a.id) || 0;
-      const bTs = state.channelSortTs.get(b.id) || 0;
-      if (aTs !== bTs) return bTs - aTs;
-      return (b.created_at || 0) - (a.created_at || 0);
-    });
-    for (const ch of sorted) ids.push(ch.id);
-  }
-  return ids;
-}
-
-function pushChannelHistory(channelId) {
-  if (state._navigatingHistory) return;
-  if (state.channelHistory[state.channelHistoryIndex] === channelId) return;
-  state.channelHistory.splice(state.channelHistoryIndex + 1);
-  state.channelHistory.push(channelId);
-  if (state.channelHistory.length > 50) state.channelHistory.shift();
-  state.channelHistoryIndex = state.channelHistory.length - 1;
-}
 
 if (window.buildElectron) {
   document.addEventListener('keydown', (e) => {
@@ -539,68 +545,6 @@ if (window.buildElectron) {
 }
 
 
-function getLastSeen(channelId) {
-  return state.channelLastSeen.get(channelId) || null;
-}
-function setLastSeen(channelId) {
-  const now = new Date().toISOString();
-  state.channelLastSeen.set(channelId, now);
-  const conn = getE2EE(channelId);
-  if (conn && conn.connected) conn.markSeen(channelId);
-}
-
-// Deferred read-marking: queue setLastSeen/markRead until user interacts.
-let _deferredReadOps = []; // array of callbacks
-let _deferredReadListening = false;
-function _flushDeferredReads() {
-  const ops = _deferredReadOps.splice(0);
-  if (ops.length === 0) return; // no-op if nothing queued
-  // Capture the lastSeen for highlight persistence before running ops.
-  if (!state._unreadHighlightLastSeen) {
-    state._unreadHighlightLastSeen = state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
-  }
-  for (const fn of ops) fn();
-  // Keep unread highlight visible for 60s after being marked as read.
-  state._unreadHighlightUntil = Date.now() + 60000;
-  setTimeout(() => {
-    if (Date.now() >= state._unreadHighlightUntil) {
-      state._unreadHighlightLastSeen = null;
-      state._unreadHighlightUntil = null;
-      clearUnreadHighlights();
-    }
-  }, 60000);
-  if (_deferredReadOps.length === 0 && _deferredReadListening) {
-    _deferredReadListening = false;
-    for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
-      document.removeEventListener(evt, _flushDeferredReads, { capture: true });
-    }
-  }
-}
-function deferMarkRead(fn) {
-  _deferredReadOps.push(fn);
-  if (!_deferredReadListening) {
-    _deferredReadListening = true;
-    for (const evt of ['keydown', 'click', 'mousemove', 'scroll']) {
-      document.addEventListener(evt, _flushDeferredReads, { capture: true, once: false, passive: true });
-    }
-  }
-}
-function markUnreadMessages(container) {
-  // Use persisted highlight lastSeen if still within the 60s window, then scroll capture, then live.
-  const lastSeen = state._unreadHighlightLastSeen || state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
-  if (!lastSeen) return;
-  const msgEls = container.querySelectorAll('.msg[data-created-at]');
-  for (const el of msgEls) {
-    if (el.dataset.createdAt > lastSeen && !el.classList.contains('unread')) {
-      // Only highlight agent messages, not user messages.
-      if (el.querySelector('.msg-avatar.user')) continue;
-      el.classList.add('unread');
-    }
-  }
-}
-function clearUnreadHighlights() {
-  document.querySelectorAll('.msg.unread').forEach(el => el.classList.remove('unread'));
-}
 
 function updateStopButton() {
   const btn = document.getElementById('chat-stop-btn');
@@ -611,32 +555,6 @@ function updateStopButton() {
 
 // cachedHarnesses per-device stored in state.deviceHarnesses Map
 
-// ----- Per-channel localStorage persistence -----
-
-function loadChannelState(channelId) {
-  try {
-    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
-    return data[channelId] || {};
-  } catch { return {}; }
-}
-
-function saveChannelState(channelId, patch) {
-  try {
-    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
-    data[channelId] = { ...(data[channelId] || {}), ...patch };
-    localStorage.setItem(CHANNEL_STATE_KEY, JSON.stringify(data));
-  } catch {}
-}
-
-function clearChannelDraft(channelId) {
-  try {
-    const data = JSON.parse(localStorage.getItem(CHANNEL_STATE_KEY) || '{}');
-    if (data[channelId]) {
-      delete data[channelId].draft;
-      localStorage.setItem(CHANNEL_STATE_KEY, JSON.stringify(data));
-    }
-  } catch {}
-}
 
 // ----- E2EE connection -----
 
@@ -1529,19 +1447,6 @@ function bindE2EEEvents(instance, deviceId) {
   });
 } // end bindE2EEEvents
 
-// renderChannelList and renderChannelSidebar are replaced by renderChannelPanel (defined above)
-function renderChannelList() { renderChannelPanel(); }
-function renderChannelSidebar() { /* no-op, merged into renderChannelPanel */ }
-
-function incrementUnread(channelId, isInteraction = false) {
-  const uc = state.unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
-  uc.messages++;
-  if (isInteraction) uc.hasInteraction = true;
-  state.unreadCounts.set(channelId, uc);
-  renderChannelList();
-}
-
-function updateAggregateBadge() { /* no-op, removed with top bar */ }
 
 function selectChannel(channelId) {
   state.chatCurrentChannel = channelId;
@@ -2105,372 +2010,6 @@ function appendSystemMessage(text) {
 }
 
 
-let currentReasoningEntry = null;
-
-function clearConsole(loading) {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (body) {
-    if (loading) {
-      body.innerHTML = '<div class="empty-state"><p>Loading tool uses…</p></div>';
-    } else {
-      body.innerHTML = '';
-    }
-  }
-  currentReasoningEntry = null;
-}
-
-function appendConsoleReasoning(content, timestamp) {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (!body) return;
-
-  // Buffer into existing reasoning entry if one is active.
-  if (currentReasoningEntry) {
-    currentReasoningEntry._reasoningText += content;
-    const desc = currentReasoningEntry.querySelector('.ce-desc');
-    if (desc) {
-      const firstLine = currentReasoningEntry._reasoningText.split('\n').find(l => l.trim()) || '';
-      desc.textContent = firstLine;
-    }
-    const detail = currentReasoningEntry.querySelector('.ce-detail-reasoning');
-    if (detail) detail.innerHTML = renderMarkdown(currentReasoningEntry._reasoningText);
-    body.scrollTop = body.scrollHeight;
-    return;
-  }
-
-  const ts = timestamp ? new Date(timestamp) : new Date();
-  const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const firstLine = content.split('\n').find(l => l.trim()) || content.slice(0, 100);
-
-  const entry = document.createElement('div');
-  entry.className = 'console-entry';
-  entry._reasoningText = content;
-
-  entry.innerHTML = `
-    <div class="ce-row">
-      <span class="ce-tag reasoning">Reasoning</span>
-      <span class="ce-desc">${escapeHtml(firstLine)}</span>
-      <span class="ce-time" data-ts="${ts.getTime()}"></span>
-    </div>
-    <div class="ce-detail">
-      <div class="ce-detail-reasoning">${renderMarkdown(content)}</div>
-    </div>
-  `;
-
-  const row = entry.querySelector('.ce-row');
-  const detail = entry.querySelector('.ce-detail');
-  row.addEventListener('click', () => {
-    detail.classList.toggle('open');
-    row.classList.toggle('open', detail.classList.contains('open'));
-    if (detail.classList.contains('open')) {
-      entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }
-  });
-
-  const wasNearBottom = isConsoleNearBottom();
-  body.appendChild(entry);
-  renderConsoleTimes();
-  if (wasNearBottom) body.scrollTop = body.scrollHeight;
-  else showActivityBubble(entry);
-  currentReasoningEntry = entry;
-}
-
-function appendConsoleEntry(toolId, name, desc, input, timestamp) {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (!body) return;
-
-  const ts = timestamp ? new Date(timestamp) : new Date();
-  const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const tag = toolTag(name);
-
-  const entry = document.createElement('div');
-  entry.className = 'console-entry';
-  if (toolId) entry.dataset.toolId = toolId;
-
-  entry.innerHTML = `
-    <div class="ce-row">
-      <span class="ce-tag ${tag}">${escapeHtml(name)}</span>
-      <span class="ce-desc">${escapeHtml(desc)}</span>
-      <span class="ce-summary"></span>
-      <span class="ce-time" data-ts="${ts.getTime()}"></span>
-    </div>
-    <div class="ce-detail">
-      <div class="ce-detail-input">${formatToolDetail(name, input)}</div>
-      <div class="ce-detail-result" id="ce-result-${toolId || ''}"></div>
-    </div>
-  `;
-  entry._toolName = name;
-
-  // Toggle detail on click.
-  const row = entry.querySelector('.ce-row');
-  const detail = entry.querySelector('.ce-detail');
-  row.addEventListener('click', () => {
-    detail.classList.toggle('open');
-    row.classList.toggle('open', detail.classList.contains('open'));
-    if (detail.classList.contains('open')) {
-      entry.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }
-  });
-
-  const wasNearBottom = isConsoleNearBottom();
-  body.appendChild(entry);
-  renderConsoleTimes();
-  if (wasNearBottom) body.scrollTop = body.scrollHeight;
-  else showActivityBubble(entry);
-}
-
-function markConsoleEntryDone(toolId, isError, content, completedAt) {
-  if (!toolId) return;
-  const entry = document.querySelector(`.console-entry[data-tool-id="${toolId}"]`);
-  if (!entry) return;
-  const summary = entry.querySelector('.ce-summary');
-  if (summary) {
-    if (isError) {
-      summary.innerHTML = '<span class="fail" title="error" aria-label="error">✗</span>';
-    } else {
-      summary.innerHTML = '<span class="success" title="done" aria-label="done">✓</span>';
-    }
-  }
-  // Update displayed time to completion time.
-  if (completedAt) {
-    const timeEl = entry.querySelector('.ce-time');
-    if (timeEl) {
-      const ts = new Date(completedAt);
-      timeEl.dataset.ts = String(ts.getTime());
-      renderConsoleTimes();
-    }
-  }
-  // Render result content in the expandable detail section.
-  if (content) {
-    const resultEl = entry.querySelector('.ce-detail-result');
-    if (resultEl) {
-      resultEl.innerHTML = formatToolResult(entry._toolName || '', content, isError);
-    }
-  }
-}
-
-
-function isChatNearBottom(threshold = 80) {
-  const c = document.getElementById('chat-messages');
-  return c.scrollHeight - c.scrollTop - c.clientHeight < threshold;
-}
-
-function isConsoleNearBottom(threshold = 80) {
-  const c = document.querySelector('[data-console-panel="activity"]');
-  if (!c) return true;
-  return c.scrollHeight - c.scrollTop - c.clientHeight < threshold;
-}
-
-function scrollChatToBottom() {
-  const container = document.getElementById('chat-messages');
-  container.scrollTop = container.scrollHeight;
-  hideChatBubble();
-}
-
-// ---- Chat scroll engine ----
-
-/**
- * Scroll so a message element is visible in the chat container.
- * align='auto': short messages → bottom-align (max context above), tall → top-align.
- * align='top': always top-align (for unread targets).
- */
-function scrollToMessage(el, behavior = 'instant', align = 'auto') {
-  const container = document.getElementById('chat-messages');
-  const cRect = container.getBoundingClientRect();
-  const eRect = el.getBoundingClientRect();
-  const elTop = eRect.top - cRect.top + container.scrollTop;
-  const elH = eRect.height;
-  const vpH = container.clientHeight;
-  let target;
-  if (align === 'top' || (align === 'auto' && elH >= vpH)) {
-    target = elTop;
-  } else {
-    target = elTop + elH - vpH;
-  }
-  target = Math.max(0, Math.min(target, container.scrollHeight - vpH));
-  if (behavior === 'smooth') {
-    container.scrollTo({ top: target, behavior: 'smooth' });
-  } else {
-    container.scrollTop = target;
-  }
-}
-
-let _oldestAutoScrollTarget = null;
-let _scrollRAF = null;
-
-/**
- * Called after appending a new incoming message.
- * wasNearBottom: result of isChatNearBottom() captured BEFORE the append.
- * newEl: the newly appended DOM element.
- */
-function handleNewMessageScroll(wasNearBottom, newEl) {
-  if (!wasNearBottom) {
-    showChatBubble(newEl);
-    return;
-  }
-  // Track the oldest unread message that arrived while user was at bottom.
-  if (!_oldestAutoScrollTarget) _oldestAutoScrollTarget = newEl;
-
-  // Debounce: if multiple messages arrive in one frame, only scroll once.
-  if (_scrollRAF) cancelAnimationFrame(_scrollRAF);
-  _scrollRAF = requestAnimationFrame(() => {
-    _scrollRAF = null;
-    const container = document.getElementById('chat-messages');
-    const cRect = container.getBoundingClientRect();
-
-    // Check if the oldest unread target has scrolled above the viewport.
-    if (_oldestAutoScrollTarget && _oldestAutoScrollTarget !== newEl) {
-      const oldRect = _oldestAutoScrollTarget.getBoundingClientRect();
-      if (oldRect.top < cRect.top) {
-        scrollToMessage(_oldestAutoScrollTarget, 'instant', 'top');
-        return;
-      }
-    }
-    // Otherwise scroll to bottom — new messages are always last, and this
-    // shows the container's padding-bottom as breathing room below the message.
-    scrollChatToBottom();
-  });
-}
-
-/** For user's own sent messages — always scroll to show it. */
-function handleSentMessageScroll(el) {
-  _oldestAutoScrollTarget = null;
-  if (_scrollRAF) cancelAnimationFrame(_scrollRAF);
-  scrollChatToBottom();
-}
-
-// ---- New content bubbles ----
-
-const newChatBubble = document.getElementById('new-chat-bubble');
-const newActivityBubble = document.getElementById('new-activity-bubble');
-let firstUnseenChatEl = null;
-let firstUnseenActivityEl = null;
-
-function showChatBubble(el) {
-  if (!firstUnseenChatEl) firstUnseenChatEl = el;
-  newChatBubble.classList.add('visible');
-  document.getElementById('chat-scroll-arrow')?.classList.remove('visible');
-}
-function hideChatBubble() {
-  newChatBubble.classList.remove('visible');
-  firstUnseenChatEl = null;
-  _oldestAutoScrollTarget = null;
-}
-function showActivityBubble(el) {
-  if (!firstUnseenActivityEl) firstUnseenActivityEl = el;
-  newActivityBubble?.classList.add('visible');
-  document.getElementById('activity-scroll-arrow')?.classList.remove('visible');
-}
-function hideActivityBubble() {
-  newActivityBubble?.classList.remove('visible');
-  firstUnseenActivityEl = null;
-}
-
-newChatBubble?.addEventListener('click', () => {
-  if (firstUnseenChatEl) {
-    scrollToMessage(firstUnseenChatEl, 'smooth', 'top');
-  } else {
-    scrollChatToBottom();
-  }
-  hideChatBubble();
-});
-
-newActivityBubble?.addEventListener('click', () => {
-  if (firstUnseenActivityEl) {
-    firstUnseenActivityEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  } else {
-    const body = document.querySelector('[data-console-panel="activity"]');
-    if (body) body.scrollTop = body.scrollHeight;
-  }
-  hideActivityBubble();
-});
-
-// Scroll-to-bottom arrows (shown when scrolled up and no new-content bubble visible).
-const chatScrollArrow = document.getElementById('chat-scroll-arrow');
-const activityScrollArrow = document.getElementById('activity-scroll-arrow');
-
-function updateChatScrollArrow() {
-  const nearBottom = isChatNearBottom();
-  if (nearBottom) { hideChatBubble(); chatScrollArrow.classList.remove('visible'); return; }
-  const bubbleVisible = newChatBubble.classList.contains('visible');
-  chatScrollArrow.classList.toggle('visible', !bubbleVisible);
-}
-function updateActivityScrollArrow() {
-  if (!activityScrollArrow) return;
-  const nearBottom = isConsoleNearBottom();
-  if (nearBottom) { hideActivityBubble(); activityScrollArrow.classList.remove('visible'); return; }
-  const bubbleVisible = newActivityBubble?.classList.contains('visible') || false;
-  activityScrollArrow.classList.toggle('visible', !bubbleVisible);
-}
-
-// Code block wrap toggle (event delegation)
-document.addEventListener('click', (e) => {
-  const wrapBtn = e.target.closest('.md-code-wrap-toggle');
-  if (wrapBtn) {
-    const block = wrapBtn.closest('.md-code-block');
-    if (block) block.classList.toggle('wrap-on');
-    return;
-  }
-  const copyBtn = e.target.closest('.md-code-copy');
-  if (copyBtn) {
-    const block = copyBtn.closest('.md-code-block');
-    if (block) {
-      const code = block.querySelector('code');
-      if (code) {
-        navigator.clipboard.writeText(code.textContent).then(() => {
-          copyBtn.textContent = 'copied!';
-          setTimeout(() => { copyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>copy'; }, 2000);
-        });
-      }
-    }
-    return;
-  }
-  const embedWrapBtn = e.target.closest('.build-embed-wrap-toggle');
-  if (embedWrapBtn) {
-    e.stopPropagation(); // prevent toggle collapse
-    const embed = embedWrapBtn.closest('.build-embed');
-    if (embed) embed.classList.toggle('wrap-on');
-    return;
-  }
-});
-
-document.getElementById('chat-messages').addEventListener('scroll', updateChatScrollArrow);
-document.querySelector('[data-console-panel="activity"]')?.addEventListener('scroll', updateActivityScrollArrow);
-
-chatScrollArrow?.addEventListener('click', () => { scrollChatToBottom(); chatScrollArrow.classList.remove('visible'); });
-activityScrollArrow?.addEventListener('click', () => {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (body) body.scrollTop = body.scrollHeight;
-  activityScrollArrow.classList.remove('visible');
-});
-
-function scrollToFirstUnread(container) {
-  if (!state.chatCurrentChannel) return false;
-  // Use captured lastSeen from channel switch, falling back to live value.
-  const lastSeen = state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
-  if (!lastSeen) return false;
-  const msgEls = container.querySelectorAll('.msg[data-created-at]');
-  for (const el of msgEls) {
-    if (el.dataset.createdAt > lastSeen) {
-      scrollToMessage(el, 'instant', 'top');
-      state.scrollLastSeen = null; // consumed
-      return true;
-    }
-  }
-  return false;
-}
-
-function createEmptyState(title, desc) {
-  const div = document.createElement('div');
-  div.className = 'empty-state';
-  div.innerHTML = `
-    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-    </svg>
-    <h3>${title}</h3>
-    <p>${desc}</p>
-  `;
-  return div;
-}
 
 // ----- Send message -----
 
@@ -2578,123 +2117,6 @@ document.getElementById('chat-input')?.addEventListener('input', () => {
 });
 
 
-// ----- File Upload UI -----
-
-
-function addPendingFiles(files) {
-  for (const file of files) {
-    if (file.size > MAX_FILE_SIZE) {
-      console.warn(`File too large: ${file.name} (${formatFileSize(file.size)})`);
-      continue;
-    }
-    state.pendingFiles.push(file);
-  }
-  renderPendingFiles();
-}
-
-function removePendingFile(index) {
-  state.pendingFiles.splice(index, 1);
-  renderPendingFiles();
-}
-
-function clearPendingFiles() {
-  state.pendingFiles.length = 0;
-  renderPendingFiles();
-}
-
-function renderPendingFiles() {
-  const staging = document.getElementById('upload-staging');
-  if (!staging) return;
-  if (!state.pendingFiles.length) {
-    staging.innerHTML = '';
-    staging.classList.remove('has-files');
-    return;
-  }
-  staging.classList.add('has-files');
-  staging.innerHTML = state.pendingFiles.map((f, i) =>
-    `<div class="upload-pill">
-      <span class="up-name">${escapeHtml(f.name)}</span>
-      <span class="up-size">${formatFileSize(f.size)}</span>
-      <span class="up-remove" data-index="${i}">&times;</span>
-    </div>`
-  ).join('');
-  staging.querySelectorAll('.up-remove').forEach(btn => {
-    btn.addEventListener('click', () => removePendingFile(parseInt(btn.dataset.index)));
-  });
-}
-
-// Attach button opens file picker (handled by cmd-attach-btn in commands tray).
-
-document.getElementById('chat-file-input')?.addEventListener('change', (e) => {
-  if (e.target.files.length) {
-    addPendingFiles(e.target.files);
-    e.target.value = ''; // Reset so same file can be re-selected.
-  }
-});
-
-// Upload progress: bound per-instance in bindE2EEEvents 'connected' handler.
-
-function _bindUploadProgress(client) {
-  client.addEventListener('upload_progress', (evt) => {
-    const { filename, progress, total_chunks, chunks_done } = evt.detail;
-    const bar = document.getElementById('upload-progress');
-    const fill = document.getElementById('upload-progress-fill');
-    const label = document.getElementById('upload-progress-label');
-    if (!bar) return;
-    bar.classList.add('active');
-    fill.style.width = (progress * 100) + '%';
-    label.textContent = `Uploading ${filename}… ${chunks_done || 0}/${total_chunks}`;
-    if (progress >= 1) {
-      setTimeout(() => { bar.classList.remove('active'); }, 1500);
-    }
-  });
-}
-
-// Drag and drop on chat area.
-const chatPanel = document.querySelector('.chat-main');
-if (chatPanel) {
-  let dragCounter = 0;
-  const overlay = document.getElementById('chat-drop-overlay');
-
-  chatPanel.addEventListener('dragenter', (e) => {
-    e.preventDefault();
-    dragCounter++;
-    if (overlay) overlay.classList.add('visible');
-  });
-
-  chatPanel.addEventListener('dragleave', (e) => {
-    e.preventDefault();
-    dragCounter--;
-    if (dragCounter <= 0) {
-      dragCounter = 0;
-      if (overlay) overlay.classList.remove('visible');
-    }
-  });
-
-  chatPanel.addEventListener('dragover', (e) => {
-    e.preventDefault();
-  });
-
-  chatPanel.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dragCounter = 0;
-    if (overlay) overlay.classList.remove('visible');
-    if (e.dataTransfer?.files?.length) {
-      addPendingFiles(e.dataTransfer.files);
-    }
-  });
-}
-
-// Paste files/images into chat area.
-if (chatPanel) {
-  chatPanel.addEventListener('paste', (e) => {
-    const files = e.clipboardData?.files;
-    if (files && files.length) {
-      e.preventDefault();
-      addPendingFiles(files);
-    }
-  });
-}
 
 // ----- New channel dialog -----
 
@@ -2840,8 +2262,6 @@ window.renderChannelPanel = renderChannelPanel;
 window.renderMessages = renderMessages;
 window.selectChannel = selectChannel;
 window.switchTab = switchTab;
-window.saveChannelState = saveChannelState;
-window.loadChannelState = loadChannelState;
 window.showBrowserView = showBrowserView;
 window.anyE2EEConnected = anyE2EEConnected;
 window.connectToDevice = connectToDevice;

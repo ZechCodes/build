@@ -1,10 +1,11 @@
 import { state } from '../state.js';
 import { escapeHtml, escHtml, formatBytes, formatFileSize } from '../util/html.js';
 import { highlightLine } from './syntax.js';
+import { loadChannelState, saveChannelState } from '../channels/state-store.js';
 
 // External deps kept as window globals during transition:
-//   window.getActiveE2EE, window.getE2EE, window.switchTab, window.saveChannelState,
-//   window.renderMessages (for file-embed rendering), window.loadChannelState
+//   window.getActiveE2EE, window.getE2EE, window.switchTab,
+//   window.renderMessages (for file-embed rendering)
 
 // ===== FILES VIEW =====
 
@@ -400,7 +401,7 @@ export function selectFile(path, entry, initialView) {
   updateFloatingToggle();
 
   // Save to localStorage.
-  window.saveChannelState?.(state.filesChannelId, { filesPath: path, filesView: state.filesCurrentView });
+  saveChannelState(state.filesChannelId, { filesPath: path, filesView: state.filesCurrentView });
 
   // Load file content.
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
@@ -460,7 +461,7 @@ fileFloatToggle.addEventListener('click', (ev) => {
     }
   }
   updateFloatingToggle();
-  window.saveChannelState?.(state.filesChannelId, { filesView: state.filesCurrentView });
+  saveChannelState(state.filesChannelId, { filesView: state.filesCurrentView });
 });
 
 // ---- Line-wrap toggle ----
@@ -1464,7 +1465,7 @@ export function onFilesTabActivated() {
     fileContentBody.innerHTML = '<div class="empty-state"><p>Select a file to view contents</p></div>';
 
     // Check for saved state to restore after tree loads.
-    const saved = window.loadChannelState?.(state.chatCurrentChannel);
+    const saved = loadChannelState(state.chatCurrentChannel);
     if (saved.filesPath) {
       state.filesPendingRestore = saved.filesPath;
       state.filesPendingView = saved.filesView || 'source';
@@ -1484,7 +1485,7 @@ export function onFilesTabActivated() {
 // The shell/tabs module invokes window.onTabSwitched after the DOM toggle.
 window.onTabSwitched = function(tab) {
   if (tab === 'files') onFilesTabActivated();
-  if (state.chatCurrentChannel) window.saveChannelState?.(state.chatCurrentChannel, { activeTab: tab });
+  if (state.chatCurrentChannel) saveChannelState(state.chatCurrentChannel, { activeTab: tab });
 };
 
 // ===== File Path Link Navigation =====

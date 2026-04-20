@@ -1,8 +1,8 @@
 import { state } from '../state.js';
 import { getActiveE2EE } from '../e2ee/bridge.js';
+import { saveChannelState } from '../channels/state-store.js';
 
 // External deps via window during transition:
-//   window.saveChannelState (moves to channels/state-store.js in P2)
 //   window.updatePlanModeUI (moves to chat/interactions.js in P3)
 
 // Show/hide commands tray based on input focus. Uses a short delay on blur
@@ -32,7 +32,7 @@ document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
   if (!state.chatCurrentChannel) return;
   const current = state.channelPlanMode.get(state.chatCurrentChannel) || false;
   state.channelPlanMode.set(state.chatCurrentChannel, !current);
-  window.saveChannelState?.(state.chatCurrentChannel, { planMode: !current });
+  saveChannelState(state.chatCurrentChannel, { planMode: !current });
   window.updatePlanModeUI?.(!current);
 });
 

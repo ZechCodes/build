@@ -4,9 +4,15 @@ import { addBrowserTab, createBrowserTabItem } from '../browser/tabs.js';
 import { showEditChannelDialog } from './edit-dialog.js';
 import { updateChatRailUnreadBadge } from '../shell/rail.js';
 import { selectChannel } from './select.js';
+import { anyE2EEConnected } from '../e2ee/bridge.js';
+import { connectDeviceE2EE } from '../e2ee/connect.js';
 
-// External deps via window during transition:
-//   window.anyE2EEConnected, window.connectToDevice
+async function connectToDevice(device) {
+  if (!state.e2eeConnections.has(device.id)) {
+    await connectDeviceE2EE(device.id);
+  }
+  renderChannelPanel();
+}
 
 export function renderChannelPanel() {
   const list = document.getElementById('channel-panel-list');
@@ -51,7 +57,7 @@ export function renderChannelPanel() {
         if (channels) channels.classList.toggle('collapsed');
         header.querySelector('.device-group-chevron').classList.toggle('collapsed');
       } else if (isOnline && device.has_transport_key) {
-        window.connectToDevice?.(device);
+        connectToDevice(device);
       }
     });
     group.appendChild(header);
@@ -151,7 +157,7 @@ export function updateMobileChannelLabel() {
   if (state.chatCurrentChannel) {
     const ch = state.chatChannels.get(state.chatCurrentChannel);
     label.textContent = ch ? (ch.name || ch.id.slice(0, 8)) : 'Select channel';
-    const isE2eeConnected = window.anyE2EEConnected?.();
+    const isE2eeConnected = anyE2EEConnected();
     if (hashEl) {
       if (isE2eeConnected) {
         hashEl.innerHTML = '<svg class="mobile-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';

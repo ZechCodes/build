@@ -1,6 +1,82 @@
 import { escapeHtml, escHtml, formatBytes, formatFileSize } from './util/html.js';
 import { timeAgo, shortTime, fmtRelativeAgo, fmtClock24 } from './util/time.js';
 import { showToast } from './util/toast.js';
+import { highlightLine } from './files/syntax.js';
+import { effortLabel, modelToFriendlyName, compareVersions } from './util/format.js';
+import { agentShortName, describeToolUse, formatToolDetail, formatToolResult, toolTag } from './console/tools.js';
+import {
+  state,
+  MAX_ACTIVITY,
+  SORT_STABILITY_MS,
+  CHANNEL_STATE_KEY,
+  THEME_VERSION_KEY,
+  MAX_FILE_SIZE,
+  CHAT_OVERLAY_STATE_KEY,
+  CONSOLE_RECENT_COUNT,
+} from './state.js';
+import { closeAllDropdowns, positionDropdownMenu, toggleDropdown } from './shell/dropdown.js';
+import { setSidebarSectionOpen, toggleSidebarSection, expandSidebarSection } from './shell/sidebar.js';
+import {
+  isChatOverlayOpen,
+  openChatOverlay,
+  closeChatOverlay,
+  toggleChatOverlay,
+  setChatOverlayPinned,
+  toggleChatOverlayExpanded,
+  syncChatOverlayHeader,
+} from './chat/overlay.js';
+import { renderTasksPanel, updateTasksBadge } from './tasks/panel.js';
+import {
+  getTerminalCwd,
+  shortCwd,
+  renderTerminalCwd,
+  renderTerminalForChannel,
+  terminalExec,
+  clearTerminalTimers,
+  finishTerminalCommand,
+  clearTerminalCompletions,
+} from './terminal/terminal.js';
+import {
+  renderComplications,
+  renderGitCompChip,
+  toggleCompPopover,
+  closeCompPopover,
+  sendComplicationAction,
+} from './complications/render.js';
+import {
+  addBrowserTab,
+  removeBrowserTab,
+  selectBrowserTab,
+  createBrowserTabItem,
+} from './browser/tabs.js';
+import {
+  filesLoadRoot,
+  renderFileTree,
+  renderTreeLevel,
+  renderChangesView,
+  toggleDirectory,
+  selectFile,
+  setFilesMode,
+  updateFloatingToggle,
+  updateFilesModifiedCount,
+  onFilesTabActivated,
+  renderFileContent,
+  renderPreview,
+  renderMarkdownFile,
+  renderSvgPreview,
+  readFileAsync,
+  resolveAssetPath,
+  urlFetchAsync,
+  resolveUrl,
+  showBrowserView,
+  renderDiffContent,
+  onAgentFileChanges,
+  navigateToFile,
+} from './files/view.js';
+import { renderChannelPanel, createChannelItem, updateMobileChannelLabel } from './channels/panel.js';
+import { renderDeviceCard } from './devices/render.js';
+import { initNotifications, sseSynced } from './net/notifications.js';
+import { getE2EE, getActiveE2EE, anyE2EEConnected } from './e2ee/bridge.js';
 
 // Electron detection
 if (window.buildElectron) {
@@ -9,16 +85,9 @@ if (window.buildElectron) {
 
 // ===== UI State =====
 // 'files' is the default/main view. 'browser' is activated when a browser tab is selected.
-let currentTab = 'files';
-let selectedAgent = null;
-let consoleState = 'collapsed'; // 'collapsed' | 'open' | 'expanded'
 
-let deviceDown = null; // {id, name} when connected device is offline
 
 // ===== Device State =====
-const devices = new Map(); // id -> device object
-const activityItems = [];
-const MAX_ACTIVITY = 50;
 
 // ===== DOM References =====
 const consoleBtm = document.getElementById('console-bottom');
@@ -27,269 +96,35 @@ const consoleExpand = document.getElementById('console-expand');
 
 // ===== Tab Navigation (files is default; chat is in overlay; browser is toggled) =====
 function switchTab(tab) {
-  currentTab = tab;
+  state.currentTab = tab;
   // Only show panels that belong to the main viewer (not the detached chat).
   document.querySelectorAll('.tab-panel').forEach(p => {
     if (p.dataset.detached === 'true') return;
     p.classList.toggle('active', p.id === 'tab-' + tab);
   });
   if (tab === 'files') onFilesTabActivated();
+  window.onTabSwitched?.(tab);
 }
 
-// ===== Channel Panel =====
-function renderChannelPanel() {
-  const list = document.getElementById('channel-panel-list');
-  if (!list) return;
-  list.innerHTML = '';
-
-  const sortedDevices = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
-
-  for (const device of sortedDevices) {
-    const group = document.createElement('div');
-    group.className = 'device-group';
-
-    const hasConnection = e2eeConnections.has(device.id);
-    const conn = e2eeConnections.get(device.id);
-    const isE2eeConnected = hasConnection && conn && conn.connected;
-    const isOnline = device.status === 'online';
-
-    // Group header
-    const header = document.createElement('div');
-    header.className = 'device-group-header';
-
-    const chevronClass = hasConnection ? '' : ' collapsed';
-    let statusHtml = '';
-    if (isE2eeConnected) {
-      statusHtml = '<svg class="status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
-    } else if (hasConnection) {
-      statusHtml = '<span class="status-dot connecting"></span>';
-    } else if (!isOnline) {
-      statusHtml = '<span class="status-dot offline"></span>';
-    } else {
-      statusHtml = '<span class="status-dot"></span>';
-    }
-
-    header.innerHTML = `
-      <svg class="device-group-chevron${chevronClass}" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span class="device-group-status">${statusHtml}</span>
-      <span>${escapeHtml(device.name)}</span>
-    `;
-
-    header.addEventListener('click', () => {
-      if (hasConnection) {
-        // Toggle collapse
-        const channels = group.querySelector('.device-group-channels');
-        if (channels) channels.classList.toggle('collapsed');
-        header.querySelector('.device-group-chevron').classList.toggle('collapsed');
-      } else if (isOnline && device.has_transport_key) {
-        connectToDevice(device);
-      }
-    });
-    group.appendChild(header);
-
-    // New Session button (below device header, above channels)
-    if (hasConnection) {
-      const newBtn = document.createElement('button');
-      newBtn.className = 'sidebar-new-session';
-      const btnRow = document.createElement('div');
-      btnRow.className = 'device-group-actions';
-
-      newBtn.title = 'New session';
-      newBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> New Session';
-      newBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        document.getElementById('btn-new-channel')?.click();
-      });
-      btnRow.appendChild(newBtn);
-
-      const browseBtn = document.createElement('button');
-      browseBtn.className = 'sidebar-browse-btn';
-      browseBtn.title = 'Browse localhost';
-      browseBtn.innerHTML = '<svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 6h9M6 1.5c1.5 1.5 2 3 2 4.5s-.5 3-2 4.5M6 1.5c-1.5 1.5-2 3-2 4.5s.5 3 2 4.5" stroke="currentColor" stroke-width="1"/></svg>';
-      browseBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        addBrowserTab(device.id);
-      });
-      btnRow.appendChild(browseBtn);
-
-      group.appendChild(btnRow);
-    }
-
-    // Channels for connected or cached devices
-    const hasCachedChannels = deviceChannels.has(device.id) && deviceChannels.get(device.id).size > 0;
-    if (hasConnection || hasCachedChannels) {
-      const channelsDiv = document.createElement('div');
-      channelsDiv.className = 'device-group-channels';
-      const devChans = deviceChannels.get(device.id) || new Map();
-      const sorted = [...devChans.values()].sort((a, b) => {
-        const aTs = channelSortTs.get(a.id) || 0;
-        const bTs = channelSortTs.get(b.id) || 0;
-        if (aTs !== bTs) return bTs - aTs;
-        return (b.created_at || 0) - (a.created_at || 0);
-      });
-      for (const ch of sorted) {
-        const item = createChannelItem(ch);
-        channelsDiv.appendChild(item);
-      }
-      // Browser tabs for this device
-      const tabs = browserTabs.get(device.id) || [];
-      for (const tab of tabs) {
-        const item = createBrowserTabItem(tab, device.id);
-        channelsDiv.appendChild(item);
-      }
-      group.appendChild(channelsDiv);
-    }
-
-    list.appendChild(group);
-  }
-
-  // Also update mobile channel label
-  updateMobileChannelLabel();
-}
-
-function createChannelItem(ch) {
-  const item = document.createElement('div');
-  const isActive = ch.id === chatCurrentChannel;
-  const uc = (typeof unreadCounts !== 'undefined') ? unreadCounts.get(ch.id) : null;
-  const count = uc?.messages || 0;
-  const hasInt = uc?.hasInteraction || false;
-  item.className = 'channel-sidebar-item' + (isActive ? ' active' : '') + (hasInt ? ' has-interaction' : '');
-
-  const name = ch.name || ch.id.slice(0, 8);
-  const badgeHtml = count > 0 ? `<span class="ch-unread-badge">${count}</span>` : '';
-  item.innerHTML = `
-    <span class="ch-hash">#</span>
-    <span class="ch-name">${escapeHtml(name)}</span>
-    ${badgeHtml}
-    <button class="ch-edit" title="Edit channel"><svg viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-  `;
-
-  item.addEventListener('click', (e) => {
-    if (e.target.closest('.ch-edit')) return;
-    selectChannel(ch.id);
-  });
-  const editBtn = item.querySelector('.ch-edit');
-  if (editBtn) {
-    editBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      showEditChannelDialog(ch);
-    });
-  }
-  return item;
-}
-
-function updateMobileChannelLabel() {
-  const label = document.getElementById('mobile-channel-label');
-  if (!label) return;
-  const trigger = document.getElementById('mobile-channel-trigger');
-  const hashEl = trigger?.querySelector('.dd-hash');
-  if (chatCurrentChannel) {
-    const ch = chatChannels.get(chatCurrentChannel);
-    label.textContent = ch ? (ch.name || ch.id.slice(0, 8)) : 'Select channel';
-    // Show lock instead of hash when e2ee is connected
-    const isE2eeConnected = anyE2EEConnected();
-    if (hashEl) {
-      if (isE2eeConnected) {
-        hashEl.innerHTML = '<svg class="mobile-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
-      } else {
-        hashEl.textContent = '#';
-      }
-    }
-  } else {
-    label.textContent = 'Select channel';
-    if (hashEl) hashEl.textContent = '#';
-  }
-
-  // Aggregate unread counter and interaction pulse.
-  if (trigger && typeof unreadCounts !== 'undefined') {
-    let totalUnread = 0;
-    let anyInteraction = false;
-    for (const [chId, uc] of unreadCounts) {
-      if (chId === chatCurrentChannel) continue;
-      totalUnread += uc.messages;
-      if (uc.hasInteraction) anyInteraction = true;
-    }
-
-    let badge = trigger.querySelector('.ch-unread-badge');
-    if (totalUnread > 0) {
-      if (!badge) {
-        badge = document.createElement('span');
-        badge.className = 'ch-unread-badge';
-        trigger.insertBefore(badge, trigger.querySelector('.dd-chevron'));
-      }
-      badge.textContent = totalUnread;
-    } else if (badge) {
-      badge.remove();
-    }
-
-    trigger.classList.toggle('has-interaction', anyInteraction);
-  }
-
-  // Keep the bottom-rail Chat badge in sync with the same unread roll-up.
-  if (typeof updateChatRailUnreadBadge === 'function') updateChatRailUnreadBadge();
-}
 
 async function connectToDevice(device) {
-  if (!e2eeConnections.has(device.id)) {
+  if (!state.e2eeConnections.has(device.id)) {
     await connectDeviceE2EE(device.id);
   }
   renderChannelPanel();
 }
 
 function selectAgent(name, device) {
-  selectedAgent = { name, device };
+  state.selectedAgent = { name, device };
   renderChannelPanel();
   switchTab('chat');
-  if (chatCurrentChannel) {
-    location.hash = `chat/${chatCurrentChannel}`;
+  if (state.chatCurrentChannel) {
+    location.hash = `chat/${state.chatCurrentChannel}`;
   } else {
     location.hash = 'chat';
   }
 }
 
-// ===== Custom dropdown toggle logic =====
-let _openDropdown = null;
-
-function closeAllDropdowns() {
-  document.querySelectorAll('.top-dropdown-menu.open').forEach(m => m.classList.remove('open'));
-  document.querySelectorAll('.top-dropdown-trigger.open').forEach(t => t.classList.remove('open'));
-  _openDropdown = null;
-}
-
-function positionDropdownMenu(trigger, menu) {
-  const tr = trigger.getBoundingClientRect();
-  menu.style.top = (tr.bottom + 4) + 'px';
-  menu.style.left = tr.left + 'px';
-  requestAnimationFrame(() => {
-    const mr = menu.getBoundingClientRect();
-    if (mr.right > window.innerWidth - 8) {
-      menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + 'px';
-    }
-  });
-}
-
-function toggleDropdown(dropdownId) {
-  const trigger = document.getElementById(dropdownId + '-trigger');
-  const menu = document.getElementById(dropdownId + '-menu');
-  if (!trigger || !menu) return;
-  const isOpen = menu.classList.contains('open');
-  closeAllDropdowns();
-  if (!isOpen) {
-    trigger.classList.add('open');
-    menu.classList.add('open');
-    positionDropdownMenu(trigger, menu);
-    _openDropdown = dropdownId;
-  }
-}
-
-// Close dropdowns on any click outside
-document.addEventListener('click', (e) => {
-  if (!_openDropdown) return;
-  const dropdown = document.getElementById(_openDropdown);
-  if (dropdown && !dropdown.contains(e.target)) {
-    closeAllDropdowns();
-  }
-}, true);
 
 document.getElementById('device-dropdown-trigger')?.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -333,19 +168,19 @@ document.addEventListener('click', (e) => {
   }
 });
 
-function setConsoleState(state) {
-  consoleState = state;
-  const isCollapsed = state === 'collapsed';
+function setConsoleState(next) {
+  state.consoleState = next;
+  const isCollapsed = next === 'collapsed';
   consoleBtm.classList.toggle('collapsed', isCollapsed);
   consoleBtm.classList.toggle('rail-only', isCollapsed);
-  consoleBtm.classList.toggle('expanded', state === 'expanded');
+  consoleBtm.classList.toggle('expanded', next === 'expanded');
   const term = document.querySelector('[data-console-panel="terminal"]');
   if (term) term.classList.toggle('hidden', isCollapsed);
   updateConsoleButtons();
   updateRailButtonStates();
 }
 function updateConsoleButtons() {
-  const s = consoleState;
+  const s = state.consoleState;
   const expandSvg = '<path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
   const restoreSvg = '<path d="M10 4L4 10M4 10h5M4 10V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
   if (s === 'collapsed') {
@@ -373,7 +208,7 @@ function updateConsoleButtons() {
 }
 function updateRailButtonStates() {
   const tBtn = document.getElementById('console-terminal-toggle');
-  if (tBtn) tBtn.classList.toggle('active', consoleState !== 'collapsed');
+  if (tBtn) tBtn.classList.toggle('active', state.consoleState !== 'collapsed');
   const cBtn = document.getElementById('console-chat-toggle');
   const overlay = document.getElementById('chat-overlay');
   if (cBtn && overlay) cBtn.classList.toggle('active', overlay.classList.contains('open'));
@@ -383,9 +218,9 @@ function updateChatRailUnreadBadge() {
   const badge = document.getElementById('chat-rail-badge');
   if (!badge) return;
   let total = 0;
-  if (typeof unreadCounts !== 'undefined') {
-    for (const [chId, uc] of unreadCounts) {
-      if (chId === chatCurrentChannel) continue;
+  if (typeof state.unreadCounts !== 'undefined') {
+    for (const [chId, uc] of state.unreadCounts) {
+      if (chId === state.chatCurrentChannel) continue;
       total += (uc && uc.messages) || 0;
     }
   }
@@ -403,7 +238,7 @@ updateRailButtonStates();
 // Terminal rail: toggle terminal open/closed.
 document.getElementById('console-terminal-toggle')?.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (consoleState === 'collapsed') {
+  if (state.consoleState === 'collapsed') {
     setConsoleState('open');
     document.getElementById('terminal-input')?.focus();
   } else {
@@ -417,53 +252,10 @@ document.getElementById('console-chat-toggle')?.addEventListener('click', (e) =>
 });
 
 const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
-const channelTodos = new Map(); // channelId -> [{id, content, status}]
 
-// ===== Sidebar accordion =====
-function setSidebarSectionOpen(name, open, persist = true) {
-  const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
-  if (!section) return;
-  const body = section.querySelector('.sidebar-section-body');
-  const chevron = section.querySelector('.sidebar-section-chevron');
-  body?.classList.toggle('collapsed', !open);
-  chevron?.classList.toggle('collapsed', !open);
-  section.classList.toggle('collapsed', !open);
-  if (persist) {
-    try { localStorage.setItem(`sidebar.section.${name}.collapsed`, open ? '0' : '1'); } catch (_) {}
-  }
-}
-function toggleSidebarSection(name) {
-  const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
-  if (!section) return;
-  const body = section.querySelector('.sidebar-section-body');
-  if (!body) return;
-  setSidebarSectionOpen(name, body.classList.contains('collapsed'));
-}
-function expandSidebarSection(name) {
-  // Auto-expansion (triggered by arriving activity) does NOT persist, so a
-  // page reload still respects the user's default-collapsed preference.
-  setSidebarSectionOpen(name, true, false);
-}
-document.querySelectorAll('.sidebar-section-header[data-sidebar-toggle]').forEach(h => {
-  h.addEventListener('click', () => toggleSidebarSection(h.dataset.sidebarToggle));
-});
-// Sync each section's `.collapsed` class with its body's initial state, then
-// apply any saved override. Ensures collapsed sections get flex:0 0 auto.
-for (const section of document.querySelectorAll('.sidebar-section')) {
-  const body = section.querySelector('.sidebar-section-body');
-  section.classList.toggle('collapsed', !!body?.classList.contains('collapsed'));
-}
-try {
-  for (const name of ['tasks', 'activity']) {
-    const saved = localStorage.getItem(`sidebar.section.${name}.collapsed`);
-    if (saved === '1') setSidebarSectionOpen(name, false);
-    else if (saved === '0') setSidebarSectionOpen(name, true);
-  }
-} catch (_) {}
 
 // ===== Activity timestamps =====
 // Last 30 entries show "Ns/Nm/Nh/Nd ago"; older entries show 24h "HH:MM".
-const CONSOLE_RECENT_COUNT = 30;
 function renderConsoleTimes() {
   const body = document.querySelector('[data-console-panel="activity"]');
   if (!body) return;
@@ -500,113 +292,6 @@ setInterval(renderConsoleTimes, 1000);
   if (reconnect && reconnect.parentElement !== document.body) document.body.appendChild(reconnect);
 })();
 
-const CHAT_OVERLAY_STATE_KEY = 'chat.overlay.state';
-function _readChatOverlayState() {
-  try {
-    const raw = localStorage.getItem(CHAT_OVERLAY_STATE_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    return (s && typeof s === 'object') ? s : null;
-  } catch (_) { return null; }
-}
-function _writeChatOverlayState(patch) {
-  try {
-    const cur = _readChatOverlayState() || {};
-    localStorage.setItem(CHAT_OVERLAY_STATE_KEY, JSON.stringify({ ...cur, ...patch }));
-  } catch (_) {}
-}
-function isChatOverlayOpen() {
-  return !!document.getElementById('chat-overlay')?.classList.contains('open');
-}
-function openChatOverlay(opts) {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  ov.classList.add('open');
-  ov.setAttribute('aria-hidden', 'false');
-  // Honor persisted pin/mode if present; otherwise default to pinned.
-  const saved = _readChatOverlayState() || {};
-  const pin = (opts && 'pinned' in opts) ? !!opts.pinned : (saved.pinned !== false);
-  setChatOverlayPinned(pin, { persist: !opts?.suppressPersist });
-  if (saved.mode === 'expanded') _setChatOverlayExpanded(true);
-  if (!opts?.suppressPersist) _writeChatOverlayState({ open: true });
-  updateRailButtonStates();
-  setTimeout(() => document.getElementById('chat-input')?.focus(), 80);
-}
-function closeChatOverlay(opts) {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  ov.classList.remove('open');
-  ov.removeAttribute('data-mode');
-  ov.setAttribute('aria-hidden', 'true');
-  if (!opts?.suppressPersist) _writeChatOverlayState({ open: false, mode: null });
-  updateRailButtonStates();
-}
-function toggleChatOverlay() {
-  if (isChatOverlayOpen()) closeChatOverlay();
-  else openChatOverlay();
-}
-function setChatOverlayPinned(pinned, opts) {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  ov.setAttribute('data-pinned', pinned ? 'true' : 'false');
-  document.getElementById('chat-overlay-pin')?.classList.toggle('active', !!pinned);
-  if (opts?.persist !== false) _writeChatOverlayState({ pinned: !!pinned });
-}
-const CHAT_EXPAND_SVG = '<path d="M9 2h5v5M7 14H2V9"/><path d="M14 2l-5 5M2 14l5-5"/>';
-const CHAT_SHRINK_SVG = '<path d="M14 7h-5V2M2 9h5v5"/><path d="M14 2l-5 5M2 14l5-5"/>';
-function _setChatOverlayExpanded(expanded, opts) {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  const btn = document.getElementById('chat-overlay-expand');
-  const svg = btn?.querySelector('svg');
-  if (expanded) {
-    ov.setAttribute('data-mode', 'expanded');
-    btn?.classList.add('active');
-    if (btn) btn.title = 'Shrink';
-    if (svg) svg.innerHTML = CHAT_SHRINK_SVG;
-  } else {
-    ov.removeAttribute('data-mode');
-    btn?.classList.remove('active');
-    if (btn) btn.title = 'Expand';
-    if (svg) svg.innerHTML = CHAT_EXPAND_SVG;
-  }
-  if (opts?.persist !== false) _writeChatOverlayState({ mode: expanded ? 'expanded' : null });
-}
-function toggleChatOverlayExpanded() {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  _setChatOverlayExpanded(ov.getAttribute('data-mode') !== 'expanded');
-}
-document.getElementById('chat-overlay-minimize')?.addEventListener('click', () => closeChatOverlay());
-document.getElementById('chat-overlay-expand')?.addEventListener('click', toggleChatOverlayExpanded);
-document.getElementById('chat-overlay-pin')?.addEventListener('click', () => {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov) return;
-  setChatOverlayPinned(ov.getAttribute('data-pinned') !== 'true');
-});
-
-// On initial load, restore the persisted chat-overlay state (default: open + pinned).
-(function initChatOverlayState() {
-  const saved = _readChatOverlayState() || {};
-  const shouldOpen = saved.open !== false; // default true
-  if (shouldOpen) openChatOverlay({ suppressPersist: true });
-})();
-// Click-outside closes overlay unless pinned or expanded.
-document.addEventListener('mousedown', (e) => {
-  const ov = document.getElementById('chat-overlay');
-  if (!ov || !ov.classList.contains('open')) return;
-  if (ov.getAttribute('data-pinned') === 'true') return;
-  if (ov.getAttribute('data-mode') === 'expanded') return;
-  if (ov.contains(e.target)) return;
-  if (e.target.closest('#console-chat-toggle')) return;
-  closeChatOverlay();
-});
-function syncChatOverlayHeader() {
-  const nameEl = document.getElementById('chat-overlay-channel-name');
-  if (!nameEl) return;
-  const ch = (typeof chatChannels !== 'undefined' && chatCurrentChannel) ? chatChannels.get(chatCurrentChannel) : null;
-  nameEl.textContent = ch ? (ch.name || chatCurrentChannel.slice(0, 8)) : 'Select a channel';
-}
 
 // ===== Chat overlay: combined Model / Effort switcher =====
 function openCoMenu() {
@@ -638,7 +323,7 @@ function applyChannelHarnessInfo(channelId) {
   const modelOpts = document.getElementById('chat-overlay-model-opts');
   const effortOpts = document.getElementById('chat-overlay-effort-opts');
   if (!modelName || !effortName) return;
-  const ch = (typeof chatChannels !== 'undefined' && channelId) ? chatChannels.get(channelId) : null;
+  const ch = (typeof state.chatChannels !== 'undefined' && channelId) ? state.chatChannels.get(channelId) : null;
   if (!ch) {
     modelName.textContent = '—';
     effortName.textContent = '—';
@@ -646,8 +331,8 @@ function applyChannelHarnessInfo(channelId) {
     if (effortOpts) effortOpts.innerHTML = '';
     return;
   }
-  const deviceId = channelDeviceMap.get(channelId);
-  const harnesses = deviceId ? deviceHarnesses.get(deviceId) : null;
+  const deviceId = state.channelDeviceMap.get(channelId);
+  const harnesses = deviceId ? state.deviceHarnesses.get(deviceId) : null;
   const harness = harnesses?.find(h => h.id === ch.harness);
   const currentModel = ch.model || harness?.default_model || '';
   const currentEffort = ch.effort || harness?.default_effort || '';
@@ -693,312 +378,7 @@ document.getElementById('chat-overlay-ctrl-pill')?.addEventListener('click', (e)
 document.getElementById('files-approve-all-btn')?.addEventListener('click', () => showToast('Review flow not wired up yet'));
 document.getElementById('files-view-pr-btn')?.addEventListener('click', () => showToast('View PR not wired up yet'));
 
-// ----- Tasks -----
-function renderTasksPanel(channelId) {
-  const list = document.getElementById('tasks-list');
-  const empty = document.getElementById('tasks-empty');
-  if (!list) return;
-  const todos = channelTodos.get(channelId) || [];
-  list.innerHTML = '';
-  if (todos.length === 0) {
-    if (empty) empty.classList.remove('hidden');
-    return;
-  }
-  if (empty) empty.classList.add('hidden');
-  const completed = todos.filter(t => t.status === 'completed').length;
-  const summary = document.createElement('div');
-  summary.className = 'tasks-summary';
-  const pct = todos.length ? Math.round(completed / todos.length * 100) : 0;
-  summary.innerHTML = `<span>${completed}/${todos.length} completed</span><div class="tasks-progress-bar"><div class="tasks-progress-fill" style="width:${pct}%"></div></div>`;
-  list.appendChild(summary);
-  const order = { in_progress: 0, pending: 1, completed: 2 };
-  const sorted = [...todos].sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
-  for (const todo of sorted) {
-    const row = document.createElement('div');
-    row.className = `task-item ${todo.status}`;
-    const icon = document.createElement('span');
-    icon.className = 'task-status-icon';
-    if (todo.status === 'in_progress') {
-      icon.innerHTML = '<span class="task-pulse-dot"></span>';
-    } else {
-      icon.textContent = todo.status === 'completed' ? '✓' : '○';
-    }
-    const content = document.createElement('span');
-    content.className = 'task-content';
-    content.textContent = todo.content;
-    row.appendChild(icon);
-    row.appendChild(content);
-    list.appendChild(row);
-  }
-}
 
-function updateTasksBadge(channelId) {
-  if (chatCurrentChannel !== channelId) return;
-  const badge = document.getElementById('sidebar-tasks-badge');
-  if (!badge) return;
-  const todos = channelTodos.get(channelId) || [];
-  const incomplete = todos.filter(t => t.status !== 'completed').length;
-  if (incomplete > 0) {
-    badge.textContent = String(incomplete);
-    badge.classList.remove('hidden');
-    badge.classList.add('accent');
-  } else {
-    badge.classList.add('hidden');
-    badge.classList.remove('accent');
-  }
-}
-
-// ----- Terminal -----
-const deviceAgentCwd = new Map(); // deviceId -> cwd string
-const terminalCwdMap = new Map(); // channelId -> cwd
-const terminalHistoryMap = new Map(); // channelId -> [{cmd, output}]
-const terminalCmdHistory = []; // global command history for up/down
-let terminalCmdIndex = -1;
-let terminalRunning = false;
-let terminalCurrentBlock = null; // current streaming output block
-let terminalCompletionPending = false; // waiting for completions response
-let terminalCompletions = [];  // current completion candidates
-let terminalCompletionIndex = -1; // cycling index (-1 = common prefix)
-let terminalCompletionBase = ''; // line before the partial being completed
-let terminalCompletionPartial = ''; // the partial word sent in the request
-
-function getTerminalCwd(channelId) {
-  if (terminalCwdMap.has(channelId)) return terminalCwdMap.get(channelId);
-  const ch = chatChannels.get(channelId);
-  const devId = channelDeviceMap.get(channelId);
-  return ch?.working_directory || (devId ? deviceAgentCwd.get(devId) : '') || '';
-}
-
-function shortCwd(cwd) {
-  if (!cwd) return '~';
-  const parts = cwd.split('/').filter(Boolean);
-  return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : cwd;
-}
-
-function renderTerminalCwd() {
-  const el = document.getElementById('terminal-cwd');
-  const cwd = getTerminalCwd(chatCurrentChannel) || '~';
-  el.textContent = shortCwd(cwd) + ' $';
-  el.title = cwd;
-}
-
-function renderTerminalForChannel(channelId) {
-  const output = document.getElementById('terminal-output');
-  const promptRow = document.getElementById('terminal-prompt-row');
-  // Remove prompt row before clearing, we'll re-append it.
-  promptRow?.remove();
-  output.innerHTML = '';
-  const history = terminalHistoryMap.get(channelId) || [];
-  for (const entry of history) {
-    const block = document.createElement('div');
-    block.className = 'terminal-cmd-block';
-    const cwdLabel = entry.cwd ? shortCwd(entry.cwd) + ' $' : '$';
-    block.innerHTML = `<div class="terminal-cmd-line">${escapeHtml(cwdLabel)} ${escapeHtml(entry.cmd)}</div>`;
-    if (entry.output) {
-      block.innerHTML += `<div class="terminal-cmd-output">${escapeHtml(entry.output)}</div>`;
-    }
-    if (entry.exitCode != null && entry.exitCode !== 0) {
-      block.innerHTML += `<div class="terminal-cmd-exit error">exit ${entry.exitCode}</div>`;
-    }
-    output.appendChild(block);
-  }
-  // Re-append prompt row and show/hide based on running state.
-  if (promptRow) {
-    output.appendChild(promptRow);
-    promptRow.classList.toggle('hidden', terminalRunning);
-  }
-  output.scrollTop = output.scrollHeight;
-  renderTerminalCwd();
-}
-
-function terminalExec(command) {
-  if (!command || !chatCurrentChannel || !getActiveE2EE()?.connected || terminalRunning) return;
-  terminalRunning = true;
-
-  const input = document.getElementById('terminal-input');
-  const promptRow = document.getElementById('terminal-prompt-row');
-  input.value = '';
-
-  // Add to command history
-  terminalCmdHistory.push(command);
-  terminalCmdIndex = terminalCmdHistory.length;
-
-  const channelId = chatCurrentChannel;
-  const cwd = getTerminalCwd(channelId);
-  const cwdLabel = cwd ? shortCwd(cwd) + ' $' : '$';
-
-  // Hide prompt row while running.
-  promptRow.classList.add('hidden');
-
-  // Create output block (inserted before the prompt row).
-  const output = document.getElementById('terminal-output');
-  const block = document.createElement('div');
-  block.className = 'terminal-cmd-block';
-  block.innerHTML = `<div class="terminal-cmd-line">${escapeHtml(cwdLabel)} ${escapeHtml(command)}</div>`;
-  const outputDiv = document.createElement('div');
-  outputDiv.className = 'terminal-cmd-output';
-  block.appendChild(outputDiv);
-  output.insertBefore(block, promptRow);
-  output.scrollTop = output.scrollHeight;
-  const commandId = crypto.randomUUID();
-  terminalCurrentBlock = { block, outputDiv, channelId, cmd: command, text: '', commandId, hasOutput: false };
-
-  // Track in history
-  if (!terminalHistoryMap.has(channelId)) terminalHistoryMap.set(channelId, []);
-  terminalHistoryMap.get(channelId).push({ cmd: command, output: '', exitCode: null, cwd });
-
-  getActiveE2EE()?.terminalExec(channelId, command, cwd || undefined, commandId);
-
-  // Show kill button while command is running.
-  document.getElementById('terminal-kill-btn')?.classList.remove('hidden');
-
-  // Show braille loading animation if no output within 2 seconds.
-  terminalLoadingTimer = setTimeout(() => {
-    if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
-      const loader = document.createElement('span');
-      loader.className = 'terminal-loader';
-      terminalCurrentBlock.outputDiv.appendChild(loader);
-      terminalCurrentBlock.loader = loader;
-      let frame = 0;
-      const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-      terminalLoadingInterval = setInterval(() => {
-        loader.textContent = frames[frame % frames.length];
-        frame++;
-      }, 80);
-    }
-  }, 2000);
-
-
-  // 30s no-output timeout — if no output arrives, assume command is stuck.
-  terminalNoOutputTimer = setTimeout(() => {
-    if (terminalCurrentBlock?.commandId === commandId && !terminalCurrentBlock.hasOutput) {
-      finishTerminalCommand(
-        'Error: Command produced no output for 30 seconds. It may require an interactive terminal.\r\n', 1,
-      );
-    }
-  }, 30000);
-}
-let terminalLoadingTimer = null;
-let terminalLoadingInterval = null;
-let terminalNoOutputTimer = null;
-let terminalKillTimer = null;
-
-function clearTerminalTimers() {
-  if (terminalLoadingTimer) { clearTimeout(terminalLoadingTimer); terminalLoadingTimer = null; }
-  if (terminalLoadingInterval) { clearInterval(terminalLoadingInterval); terminalLoadingInterval = null; }
-  if (terminalNoOutputTimer) { clearTimeout(terminalNoOutputTimer); terminalNoOutputTimer = null; }
-  if (terminalKillTimer) { clearTimeout(terminalKillTimer); terminalKillTimer = null; }
-  if (terminalCurrentBlock?.loader) { terminalCurrentBlock.loader.remove(); terminalCurrentBlock.loader = null; }
-}
-
-function finishTerminalCommand(errorData, exitCode) {
-  clearTerminalTimers();
-  if (terminalCurrentBlock) {
-    if (errorData) {
-      const span = document.createElement('span');
-      span.className = 'terminal-cmd-exit error';
-      span.textContent = errorData;
-      terminalCurrentBlock.outputDiv.appendChild(span);
-    }
-    if (exitCode !== 0) {
-      const exitDiv = document.createElement('div');
-      exitDiv.className = 'terminal-cmd-exit error';
-      exitDiv.textContent = `exit ${exitCode}`;
-      terminalCurrentBlock.block.appendChild(exitDiv);
-    }
-    terminalCurrentBlock = null;
-  }
-  terminalRunning = false;
-  document.getElementById('terminal-kill-btn')?.classList.add('hidden');
-  const promptRow = document.getElementById('terminal-prompt-row');
-  if (promptRow) promptRow.classList.remove('hidden');
-  const output = document.getElementById('terminal-output');
-  if (output) output.scrollTop = output.scrollHeight;
-  document.getElementById('terminal-input')?.focus();
-}
-
-function clearTerminalCompletions() {
-  terminalCompletions = [];
-  terminalCompletionIndex = -1;
-  terminalCompletionBase = '';
-  terminalCompletionPartial = '';
-  document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
-}
-
-document.getElementById('terminal-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    if (terminalCompletionPending || terminalRunning) return;
-
-    // If we already have completions, cycle through them
-    if (terminalCompletions.length > 1) {
-      terminalCompletionIndex = (terminalCompletionIndex + 1) % terminalCompletions.length;
-      const match = terminalCompletions[terminalCompletionIndex];
-      const suffix = match.endsWith('/') ? '' : ' ';
-      e.target.value = terminalCompletionBase + match + suffix;
-      return;
-    }
-
-    const line = e.target.value;
-    if (!line) return;
-    // Extract the partial word (last whitespace-delimited token)
-    const words = line.split(/\s+/);
-    const partial = words[words.length - 1] || '';
-    const cwd = getTerminalCwd(chatCurrentChannel);
-    const _conn = getActiveE2EE();
-    if (_conn && _conn.connected && chatCurrentChannel) {
-      terminalCompletionPending = true;
-      terminalCompletionPartial = partial;
-      terminalCompletionBase = line.slice(0, line.length - partial.length);
-      _conn.terminalComplete(chatCurrentChannel, partial, line, cwd);
-    }
-  } else if (e.key === 'Enter' && !e.shiftKey) {
-    clearTerminalCompletions();
-    e.preventDefault();
-    terminalExec(e.target.value.trim());
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    if (terminalCmdIndex > 0) {
-      terminalCmdIndex--;
-      e.target.value = terminalCmdHistory[terminalCmdIndex] || '';
-    }
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (terminalCmdIndex < terminalCmdHistory.length - 1) {
-      terminalCmdIndex++;
-      e.target.value = terminalCmdHistory[terminalCmdIndex] || '';
-    } else {
-      terminalCmdIndex = terminalCmdHistory.length;
-      e.target.value = '';
-    }
-  } else if (e.key !== 'Shift' && e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta') {
-    // Slash while cycling a dir completion — accept it, don't double the slash
-    if (e.key === '/' && terminalCompletions.length && terminalCompletionIndex >= 0) {
-      const current = terminalCompletions[terminalCompletionIndex];
-      if (current.endsWith('/')) {
-        e.preventDefault();
-        clearTerminalCompletions();
-        return;
-      }
-    }
-    // Any other key clears completion state
-    if (terminalCompletions.length) clearTerminalCompletions();
-  }
-});
-
-document.getElementById('terminal-kill-btn')?.addEventListener('click', () => {
-  const _killConn = getActiveE2EE();
-  if (_killConn && _killConn.connected && chatCurrentChannel) {
-    const cmdId = terminalCurrentBlock?.commandId || '';
-    _killConn.terminalKill(chatCurrentChannel, cmdId);
-    // If no done frame within 5s, force-reset the terminal locally.
-    terminalKillTimer = setTimeout(() => {
-      if (terminalCurrentBlock?.commandId === cmdId) {
-        finishTerminalCommand('^C (kill timeout)\r\n', 130);
-      }
-    }, 5000);
-  }
-});
 
 // Complications scroll fade indicators
 (function() {
@@ -1014,158 +394,6 @@ document.getElementById('terminal-kill-btn')?.addEventListener('click', () => {
   updateFades();
 })();
 
-// ----- Complications state & rendering -----
-const complicationState = new Map(); // channelId -> Map(complicationId -> data)
-let compPopoverOpen = null; // complication id currently expanded, or null
-
-function renderComplications() {
-  const scroll = document.getElementById('comp-scroll');
-  const bar = document.getElementById('complications');
-  if (!scroll || !bar) return;
-  const channelComps = complicationState.get(chatCurrentChannel);
-  if (!channelComps || channelComps.size === 0) {
-    scroll.innerHTML = '';
-    bar.classList.add('hidden');
-    closeCompPopover();
-    return;
-  }
-  bar.classList.remove('hidden');
-  // Filter git complications to only those whose repo is a parent of the channel's working directory.
-  const channelWd = getTerminalCwd(chatCurrentChannel);
-  // Sort by timestamp descending (most recent first).
-  const sorted = [...channelComps.values()]
-    .filter(comp => {
-      if (comp.kind === 'git-status' && channelWd && comp.data?.repo) {
-        const repo = comp.data.repo;
-        let wd = channelWd;
-        // Expand ~ using home dir inferred from the absolute repo path.
-        if (wd.startsWith('~/') && repo.startsWith('/')) {
-          const homeMatch = repo.match(/^(\/(?:Users|home)\/[^/]+)/);
-          if (homeMatch) wd = homeMatch[1] + wd.slice(1);
-        }
-        const r = repo.endsWith('/') ? repo : repo + '/';
-        const w = wd.endsWith('/') ? wd : wd + '/';
-        return w.startsWith(r) || r.startsWith(w);
-      }
-      return true;
-    })
-    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  if (sorted.length === 0) {
-    scroll.innerHTML = '';
-    bar.classList.add('hidden');
-    closeCompPopover();
-    return;
-  }
-  scroll.innerHTML = sorted.map(comp => {
-    if (comp.kind === 'git-status') return renderGitCompChip(comp);
-    return '';
-  }).join('');
-  // Attach click handlers.
-  scroll.querySelectorAll('[data-comp-id]').forEach(el => {
-    el.addEventListener('click', () => toggleCompPopover(el.dataset.compId));
-  });
-}
-
-function renderGitCompChip(comp) {
-  const d = comp.data || {};
-  const branch = escapeHtml(d.branch || '?');
-  const remote = d.remote_name ? escapeHtml(d.remote_name) : null;
-  const ins = d.insertions || 0;
-  const del = d.deletions || 0;
-  const gitIcon = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 3v10M10 3v4"/><circle cx="6" cy="14" r="1.5"/><circle cx="10" cy="8" r="1.5"/></svg>`;
-  // Line 1: remote/branch
-  let line1 = `<span class="comp-line">${gitIcon}`;
-  if (remote) line1 += `<span class="val">${remote}</span><span class="v">/</span>`;
-  line1 += `<span class="val">${branch}</span></span>`;
-  // Line 2: stats (always shown)
-  let stats = [];
-  stats.push(`<span class="v green">+${ins}</span>`);
-  stats.push(`<span class="v red">&minus;${del}</span>`);
-  if (d.ahead > 0) stats.push(`<span class="v">&uarr;${d.ahead}</span>`);
-  if (d.behind > 0) stats.push(`<span class="v">&darr;${d.behind}</span>`);
-  if (d.conflicts > 0) stats.push(`<span class="v red">⚠${d.conflicts}</span>`);
-  const line2 = `<span class="comp-line comp-stats">${stats.join('')}</span>`;
-  const active = compPopoverOpen === comp.id ? ' active' : '';
-  return `<div class="comp clickable${active}" data-comp-id="${escapeHtml(comp.id)}">${line1}${line2}</div>`;
-}
-
-function toggleCompPopover(compId) {
-  if (compPopoverOpen === compId) {
-    closeCompPopover();
-    return;
-  }
-  compPopoverOpen = compId;
-  renderComplications(); // re-render chips to show active state
-  const popover = document.getElementById('comp-popover');
-  if (!popover) return;
-  const channelComps = complicationState.get(chatCurrentChannel);
-  const comp = channelComps?.get(compId);
-  if (!comp || comp.kind !== 'git-status') { closeCompPopover(); return; }
-  const d = comp.data || {};
-  const staged = d.staged || {};
-  const unstaged = d.unstaged || {};
-  let html = `<div class="cp-section"><div class="cp-label">Branch</div><div class="cp-row"><span class="cp-stat">${escapeHtml(d.branch || '?')}</span>`;
-  if (d.upstream) html += ` <span class="text-muted">&rarr; ${escapeHtml(d.upstream)}</span>`;
-  html += `</div></div>`;
-  html += `<div class="cp-section"><div class="cp-label">Staged</div><div class="cp-row"><span class="cp-stat green">+${staged.added||0}</span> <span class="cp-stat amber">~${staged.modified||0}</span> <span class="cp-stat red">&minus;${staged.deleted||0}</span></div></div>`;
-  html += `<div class="cp-section"><div class="cp-label">Unstaged</div><div class="cp-row"><span class="cp-stat green">+${unstaged.added||0}</span> <span class="cp-stat amber">~${unstaged.modified||0}</span> <span class="cp-stat red">&minus;${unstaged.deleted||0}</span></div></div>`;
-  html += `<div class="cp-section"><div class="cp-label">Untracked</div><div class="cp-row"><span class="cp-stat">${d.untracked||0}</span></div></div>`;
-  html += `<div class="cp-section"><div class="cp-label">Remote</div><div class="cp-row">`;
-  html += `<span class="cp-stat">&uarr;${d.ahead||0} ahead</span>`;
-  html += `<span class="cp-stat">&darr;${d.behind||0} behind</span>`;
-  html += `</div></div>`;
-  if (d.last_fetch) {
-    const ago = Math.round((Date.now() - d.last_fetch) / 1000);
-    const agoStr = ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago/60)}m ago` : `${Math.round(ago/3600)}h ago`;
-    html += `<div class="cp-section"><div class="cp-label">Last fetch</div><div class="cp-row">${agoStr}</div></div>`;
-  }
-  // Action buttons.
-  const options = comp.options || [];
-  if (options.length) {
-    html += `<div class="cp-actions">`;
-    for (const opt of options) {
-      html += `<button class="cp-btn" data-action="${escapeHtml(opt.id)}" ${opt.enabled ? '' : 'disabled'}>${escapeHtml(opt.label)}</button>`;
-    }
-    html += `</div>`;
-  }
-  popover.innerHTML = html;
-  popover.classList.remove('hidden');
-  // Attach action handlers.
-  popover.querySelectorAll('.cp-btn[data-action]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      const actionId = btn.dataset.action;
-      btn.disabled = true;
-      btn.textContent += '…';
-      sendComplicationAction(compId, actionId);
-    });
-  });
-}
-
-function closeCompPopover() {
-  compPopoverOpen = null;
-  const popover = document.getElementById('comp-popover');
-  if (popover) { popover.classList.add('hidden'); popover.innerHTML = ''; }
-}
-
-function sendComplicationAction(compId, optionId) {
-  const _conn = getActiveE2EE();
-  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
-  _conn.send({
-    action: 'complication:action',
-    channel_id: chatCurrentChannel,
-    complication_id: compId,
-    option_id: optionId,
-  });
-}
-
-// Close popover when clicking outside.
-document.addEventListener('click', (e) => {
-  if (compPopoverOpen && !e.target.closest('.comp-popover') && !e.target.closest('.comp[data-comp-id]')) {
-    closeCompPopover();
-    renderComplications();
-  }
-});
 
 function toggleConsoleEntry(row) {
   const expandIcon = row.querySelector('.ce-expand');
@@ -1190,98 +418,10 @@ document.getElementById('chat-input')?.addEventListener('input', function(){
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
 
-// =====================================================================
-// Device Dashboard — live data via Skrift notifications
-// =====================================================================
-
-// Configure Skrift notifications for persistent connection
-function initNotifications() {
-  if (window.__skriftNotifications) {
-    window.__skriftNotifications.configure({ persistConnection: true });
-    // Patch _healthCheck to clear _hiddenSince in the CLOSED branch,
-    // preventing a double reconnect when both visibilitychange and focus fire.
-    const sn = window.__skriftNotifications;
-    const origHealthCheck = sn._healthCheck.bind(sn);
-    sn._healthCheck = function () {
-      if (this._es && this._es.readyState === EventSource.CLOSED) {
-        this._hiddenSince = null;
-      }
-      return origHealthCheck();
-    }.bind(sn);
-  } else {
-    // Retry if not yet initialized
-    setTimeout(initNotifications, 100);
-  }
-}
-initNotifications();
-
-/** True when the SSE connection has completed sync (replay phase is over). */
-function sseSynced() {
-  return window.__skriftNotifications?._synced === true;
-}
-
 // ----- Helpers -----
 
 // ----- Rendering -----
 
-function renderDeviceCard(device) {
-  const isOnline = device.status === 'online';
-  const statusClass = isOnline ? '' : 'offline';
-  const statusText = isOnline ? 'Online' : 'Offline';
-  const heartbeatText = device.last_heartbeat_at
-    ? timeAgo(device.last_heartbeat_at)
-    : 'never';
-  const missedCount = (device.missed_heartbeat_windows || []).length;
-
-  return `
-    <div class="device-card glass" data-device-id="${device.id}">
-      <div class="device-header">
-        <div class="device-icon ${statusClass}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-          </svg>
-        </div>
-        <span class="device-name">${escapeHtml(device.name)}</span>
-        <div class="device-status">
-          <span class="dot ${statusClass}"></span>
-          <span>${statusText}</span>
-        </div>
-      </div>
-      <div class="device-meta device-meta-row">
-        <span title="Last heartbeat">Last beat: ${heartbeatText}</span>
-        <span title="Heartbeat interval">Interval: ${device.heartbeat_interval_s || 30}s</span>
-        ${missedCount > 0 ? `<span class="text-amber" title="Missed heartbeat windows">${missedCount} missed</span>` : ''}
-      </div>
-    </div>
-  `;
-}
-
-const EFFORT_LABELS = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra High',
-  max: 'Max',
-};
-function effortLabel(value) {
-  return EFFORT_LABELS[value] || value;
-}
-
-function modelToFriendlyName(modelId) {
-  if (!modelId) return 'Agent';
-  const m = modelId.toLowerCase();
-  if (m.includes('claude')) return 'Claude';
-  if (m.includes('codex')) return 'Codex';
-  if (m.includes('gpt')) return 'GPT';
-  if (m.includes('gemini')) return 'Gemini';
-  if (m.includes('llama')) return 'Llama';
-  if (m.includes('mistral')) return 'Mistral';
-  if (m.includes('command')) return 'Command';
-  if (m.includes('deepseek')) return 'DeepSeek';
-  // Fallback: capitalize first word
-  const first = modelId.split(/[-_\/]/)[0];
-  return first.charAt(0).toUpperCase() + first.slice(1);
-}
 
 function renderDeviceGrid() { renderChannelPanel(); }
 function updateStats() { /* no-op, dashboard removed */ }
@@ -1291,17 +431,17 @@ function addActivity(text, timestamp) { /* no-op, dashboard activity feed remove
 
 async function fetchDevices() {
   try {
-    const resp = await fetch('/api/devices/');
+    const resp = await fetch('/api/state.devices/');
     if (!resp.ok) return;
     const data = await resp.json();
     const freshIds = new Set(data.map(d => d.id));
-    for (const id of devices.keys()) {
-      if (!freshIds.has(id)) devices.delete(id);
+    for (const id of state.devices.keys()) {
+      if (!freshIds.has(id)) state.devices.delete(id);
     }
-    for (const d of data) devices.set(d.id, d);
+    for (const d of data) state.devices.set(d.id, d);
     renderChannelPanel();
   } catch (err) {
-    console.error('Failed to fetch devices:', err);
+    console.error('Failed to fetch state.devices:', err);
   }
 }
 
@@ -1333,7 +473,7 @@ document.addEventListener('sk:notification', (e) => {
     }
 
     case 'online': {
-      const device = devices.get(deviceId);
+      const device = state.devices.get(deviceId);
       if (device) {
         device.status = 'online';
         device.last_heartbeat_at = new Date().toISOString();
@@ -1348,8 +488,8 @@ document.addEventListener('sk:notification', (e) => {
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
       // If this was the down device, clear banner (e2ee-ready will handle reconnect).
-      if (deviceDown && deviceDown.id === deviceId) {
-        deviceDown = null;
+      if (state.deviceDown && state.deviceDown.id === deviceId) {
+        state.deviceDown = null;
         const banner = document.getElementById('device-down-banner');
         if (banner) banner.classList.remove('visible');
       }
@@ -1357,7 +497,7 @@ document.addEventListener('sk:notification', (e) => {
     }
 
     case 'offline': {
-      const device = devices.get(deviceId);
+      const device = state.devices.get(deviceId);
       if (device) {
         device.status = 'offline';
       }
@@ -1368,9 +508,9 @@ document.addEventListener('sk:notification', (e) => {
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
       );
       // If we have an E2EE connection for this device, disconnect it.
-      const offlineConn = e2eeConnections.get(deviceId);
+      const offlineConn = state.e2eeConnections.get(deviceId);
       if (offlineConn) {
-        deviceDown = { id: deviceId, name: deviceName };
+        state.deviceDown = { id: deviceId, name: deviceName };
         const banner = document.getElementById('device-down-banner');
         const bannerText = document.getElementById('device-down-text');
         if (banner) banner.classList.add('visible');
@@ -1382,7 +522,7 @@ document.addEventListener('sk:notification', (e) => {
     }
 
     case 'heartbeat-missed': {
-      const device = devices.get(deviceId);
+      const device = state.devices.get(deviceId);
       addActivity(
         `<strong>${escapeHtml(deviceName || deviceId)}</strong> <span class="text-amber">missed heartbeat</span> (${data.elapsed_s || '?'}s)`,
         data.created_at ? new Date(data.created_at * 1000).toISOString() : null,
@@ -1394,15 +534,15 @@ document.addEventListener('sk:notification', (e) => {
 
     case 'e2ee-ready': {
       // Device uploaded transport key — update device record and trigger E2EE connect.
-      const dev = devices.get(deviceId);
+      const dev = state.devices.get(deviceId);
       if (dev) {
         dev.has_transport_key = true;
         dev.status = 'online';
       }
       renderDeviceGrid();
       // Clear device-down banner if this device was down.
-      if (deviceDown && deviceDown.id === deviceId) {
-        deviceDown = null;
+      if (state.deviceDown && state.deviceDown.id === deviceId) {
+        state.deviceDown = null;
         const banner = document.getElementById('device-down-banner');
         if (banner) banner.classList.remove('visible');
       }
@@ -1415,13 +555,13 @@ document.addEventListener('sk:notification', (e) => {
       // Skip if the SSE reconnect handler is already tearing down and reiniting.
       if (_sseReconnecting) break;
       // Device re-announced — relay likely restarted, old session for this device is dead.
-      const existingConn = e2eeConnections.get(deviceId);
+      const existingConn = state.e2eeConnections.get(deviceId);
       if (existingConn) {
         console.log('[E2EE] Device e2ee-ready while connected — relay restarted, reconnecting...');
         // Preserve current channel so it's restored after reconnect.
-        if (chatCurrentChannel) _pendingChannelId = chatCurrentChannel;
+        if (state.chatCurrentChannel) _pendingChannelId = state.chatCurrentChannel;
         existingConn.disconnect();
-        e2eeConnections.delete(deviceId);
+        state.e2eeConnections.delete(deviceId);
       }
       console.log('[E2EE] Device e2ee-ready notification — connecting...');
       connectDeviceE2EE(deviceId);
@@ -1429,15 +569,15 @@ document.addEventListener('sk:notification', (e) => {
     }
 
     case 'renamed': {
-      const device = devices.get(deviceId);
+      const device = state.devices.get(deviceId);
       if (device) device.name = deviceName;
       renderChannelPanel();
       break;
     }
 
     case 'revoked': {
-      devices.delete(deviceId);
-      const revokedConn = e2eeConnections.get(deviceId);
+      state.devices.delete(deviceId);
+      const revokedConn = state.e2eeConnections.get(deviceId);
       if (revokedConn) revokedConn.disconnect();
       renderChannelPanel();
       break;
@@ -1468,13 +608,13 @@ function restoreFromHash() {
   const tab = parts[0];
 
   if (tab === 'chat' || tab === 'files' || tab === 'planning') {
-    // No longer need selectedAgent — multi-device handles this.
+    // No longer need state.selectedAgent — multi-device handles this.
     switchTab(tab);
 
     if (parts[1]) {
       _pendingChannelId = parts[1];
       // If channels are already loaded, select immediately.
-      if (chatChannels.has(_pendingChannelId)) {
+      if (state.chatChannels.has(_pendingChannelId)) {
         selectChannel(_pendingChannelId);
         _pendingChannelId = null;
       }
@@ -1492,16 +632,16 @@ fetchDevices().then(() => {
 // When SSE reconnects (e.g. deploy, relay restart), tear down stale sessions and re-init.
 let _sseReconnecting = false;
 document.addEventListener('sk:notification-status', async (evt) => {
-  if (evt.detail.status === 'connected' && e2eeConnections.size > 0 && !_sseReconnecting) {
+  if (evt.detail.status === 'connected' && state.e2eeConnections.size > 0 && !_sseReconnecting) {
     _sseReconnecting = true;
     console.log('[E2EE] SSE reconnected — tearing down stale sessions');
     try {
       // Channel state is cached — user stays on their current channel.
-      for (const [, conn] of e2eeConnections) conn.disconnect();
-      e2eeConnections.clear();
+      for (const [, conn] of state.e2eeConnections) conn.disconnect();
+      state.e2eeConnections.clear();
       // Refresh device list so initE2EE has current status/transport key data.
       // Without this, the browser waits for e2ee-ready notifications that never
-      // arrive when only the web app restarted (relay + devices stayed up).
+      // arrive when only the web app restarted (relay + state.devices stayed up).
       await fetchDevices();
       await initE2EE();
     } finally {
@@ -1513,18 +653,6 @@ document.addEventListener('sk:notification-status', async (evt) => {
 // =====================================================================
 // Theme version checker — detect deploys via SSE reconnect
 // =====================================================================
-const THEME_VERSION_KEY = 'build_theme_version';
-
-function compareVersions(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] || 0;
-    const nb = pb[i] || 0;
-    if (na !== nb) return na - nb;
-  }
-  return 0;
-}
 
 function showUpdateBadge() {
   const footer = document.querySelector('.channel-panel-footer');
@@ -1567,61 +695,33 @@ document.addEventListener('sk:notification-status', (evt) => {
 // =====================================================================
 
 // Multi-device E2EE state
-let e2eeHasConnected = false;        // true after first successful E2EE connection
-let _reconnectPillTimer = null;      // 5s timer to show reconnect pill
-const e2eeConnections = new Map();   // deviceId -> BuildE2EE instance
-const channelDeviceMap = new Map();  // channelId -> deviceId
-const deviceChannels = new Map();    // deviceId -> Map(channelId -> channel)
-const deviceHarnesses = new Map();   // deviceId -> harness list
 
-function getE2EE(channelId) {
-  const deviceId = channelDeviceMap.get(channelId);
-  return deviceId ? e2eeConnections.get(deviceId) : null;
-}
-function getActiveE2EE() { return getE2EE(chatCurrentChannel); }
-function anyE2EEConnected() {
-  for (const conn of e2eeConnections.values()) if (conn.connected) return true;
-  return false;
-}
 function rebuildChatChannels() {
-  chatChannels.clear();
-  for (const [, channels] of deviceChannels) {
-    for (const [chId, ch] of channels) chatChannels.set(chId, ch);
+  state.chatChannels.clear();
+  for (const [, channels] of state.deviceChannels) {
+    for (const [chId, ch] of channels) state.chatChannels.set(chId, ch);
   }
 }
 
-let chatCurrentChannel = null;
-const chatChannels = new Map(); // id -> {id, name, created_at} — merged view
-const chatMessages = new Map(); // channelId -> [messages]
-const unreadCounts = new Map(); // channelId -> {messages: number, hasInteraction: boolean}
-const channelLastSeen = new Map(); // channelId -> ISO timestamp (from device)
-const channelSortTs = new Map(); // channelId -> epoch ms when channel was last promoted in sort order
 
-const SORT_STABILITY_MS = 60 * 60 * 1000; // 1 hour
 function promoteChannel(channelId) {
   const now = Date.now();
-  const prev = channelSortTs.get(channelId) || 0;
-  if (now - prev > SORT_STABILITY_MS) channelSortTs.set(channelId, now);
+  const prev = state.channelSortTs.get(channelId) || 0;
+  if (now - prev > SORT_STABILITY_MS) state.channelSortTs.set(channelId, now);
 }
 
-let scrollLastSeen = null; // captured lastSeen for scroll positioning during channel switch
-let _unreadHighlightUntil = null; // timestamp: highlights persist until this time
-let _unreadHighlightLastSeen = null; // the lastSeen value to use for highlighting
 
 // ---- Channel Navigation (Electron only) ----
-const channelHistory = [];
-let channelHistoryIndex = -1;
-let _navigatingHistory = false;
 
 function getOrderedChannelIds() {
   const ids = [];
-  const sortedDevices = [...devices.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const sortedDevices = [...state.devices.values()].sort((a, b) => a.name.localeCompare(b.name));
   for (const device of sortedDevices) {
-    if (!e2eeConnections.has(device.id)) continue;
-    const devChans = deviceChannels.get(device.id) || new Map();
+    if (!state.e2eeConnections.has(device.id)) continue;
+    const devChans = state.deviceChannels.get(device.id) || new Map();
     const sorted = [...devChans.values()].sort((a, b) => {
-      const aTs = channelSortTs.get(a.id) || 0;
-      const bTs = channelSortTs.get(b.id) || 0;
+      const aTs = state.channelSortTs.get(a.id) || 0;
+      const bTs = state.channelSortTs.get(b.id) || 0;
       if (aTs !== bTs) return bTs - aTs;
       return (b.created_at || 0) - (a.created_at || 0);
     });
@@ -1631,12 +731,12 @@ function getOrderedChannelIds() {
 }
 
 function pushChannelHistory(channelId) {
-  if (_navigatingHistory) return;
-  if (channelHistory[channelHistoryIndex] === channelId) return;
-  channelHistory.splice(channelHistoryIndex + 1);
-  channelHistory.push(channelId);
-  if (channelHistory.length > 50) channelHistory.shift();
-  channelHistoryIndex = channelHistory.length - 1;
+  if (state._navigatingHistory) return;
+  if (state.channelHistory[state.channelHistoryIndex] === channelId) return;
+  state.channelHistory.splice(state.channelHistoryIndex + 1);
+  state.channelHistory.push(channelId);
+  if (state.channelHistory.length > 50) state.channelHistory.shift();
+  state.channelHistoryIndex = state.channelHistory.length - 1;
 }
 
 if (window.buildElectron) {
@@ -1651,14 +751,14 @@ if (window.buildElectron) {
       e.preventDefault();
       const ids = getOrderedChannelIds();
       if (!ids.length) return;
-      const cur = ids.indexOf(chatCurrentChannel);
+      const cur = ids.indexOf(state.chatCurrentChannel);
 
       if (e.shiftKey) {
         // ALT+SHIFT+UP/DOWN: jump to first unread in that direction
         const dir = e.key === 'ArrowUp' ? -1 : 1;
         const start = cur === -1 ? 0 : cur + dir;
         for (let i = start; i >= 0 && i < ids.length; i += dir) {
-          const uc = unreadCounts.get(ids[i]);
+          const uc = state.unreadCounts.get(ids[i]);
           if (uc && uc.messages > 0) { selectChannel(ids[i]); return; }
         }
       } else {
@@ -1668,84 +768,28 @@ if (window.buildElectron) {
       }
     } else if (e.key === '[' || e.key === ']') {
       e.preventDefault();
-      if (e.key === '[' && channelHistoryIndex > 0) {
-        channelHistoryIndex--;
-        _navigatingHistory = true;
-        selectChannel(channelHistory[channelHistoryIndex]);
-        _navigatingHistory = false;
-      } else if (e.key === ']' && channelHistoryIndex < channelHistory.length - 1) {
-        channelHistoryIndex++;
-        _navigatingHistory = true;
-        selectChannel(channelHistory[channelHistoryIndex]);
-        _navigatingHistory = false;
+      if (e.key === '[' && state.channelHistoryIndex > 0) {
+        state.channelHistoryIndex--;
+        state._navigatingHistory = true;
+        selectChannel(state.channelHistory[state.channelHistoryIndex]);
+        state._navigatingHistory = false;
+      } else if (e.key === ']' && state.channelHistoryIndex < state.channelHistory.length - 1) {
+        state.channelHistoryIndex++;
+        state._navigatingHistory = true;
+        selectChannel(state.channelHistory[state.channelHistoryIndex]);
+        state._navigatingHistory = false;
       }
     }
   });
 }
 
-// ---- Browser Tabs ----
-const browserTabs = new Map(); // deviceId -> [{id, url, deviceId}]
-let activeBrowserTab = null; // tab id
-let _browserTabCounter = 0;
-
-function addBrowserTab(deviceId) {
-  const id = 'browser-' + (++_browserTabCounter);
-  const tab = { id, url: 'http://localhost:', deviceId };
-  if (!browserTabs.has(deviceId)) browserTabs.set(deviceId, []);
-  browserTabs.get(deviceId).push(tab);
-  activeBrowserTab = id;
-  chatCurrentChannel = null;
-  renderChannelPanel();
-  showBrowserView(tab);
-}
-
-function removeBrowserTab(deviceId, tabId) {
-  const tabs = browserTabs.get(deviceId) || [];
-  const idx = tabs.findIndex(t => t.id === tabId);
-  if (idx !== -1) tabs.splice(idx, 1);
-  if (activeBrowserTab === tabId) {
-    activeBrowserTab = null;
-    // Switch to first channel
-    const firstCh = chatChannels.keys().next().value;
-    if (firstCh) selectChannel(firstCh);
-    else { document.getElementById('viewer-content')?.replaceChildren(); }
-  }
-  renderChannelPanel();
-}
-
-function selectBrowserTab(tab) {
-  activeBrowserTab = tab.id;
-  chatCurrentChannel = null;
-  renderChannelPanel();
-  showBrowserView(tab);
-}
-
-function createBrowserTabItem(tab, deviceId) {
-  const item = document.createElement('div');
-  item.className = 'browser-tab-item' + (activeBrowserTab === tab.id ? ' active' : '');
-  const displayUrl = tab.url || 'New tab';
-  item.innerHTML = `
-    <svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 6h9" stroke="currentColor" stroke-width="1"/></svg>
-    <span class="tab-url">${escapeHtml(displayUrl)}</span>
-    <button class="browser-tab-close" title="Close tab"><svg viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
-  `;
-  item.addEventListener('click', (e) => {
-    if (e.target.closest('.browser-tab-close')) {
-      e.stopPropagation();
-      removeBrowserTab(deviceId, tab.id);
-      return;
-    }
-    selectBrowserTab(tab);
-  });
-  return item;
-}
 
 function getLastSeen(channelId) {
-  return channelLastSeen.get(channelId) || null;
+  return state.channelLastSeen.get(channelId) || null;
 }
 function setLastSeen(channelId) {
   const now = new Date().toISOString();
-  channelLastSeen.set(channelId, now);
+  state.channelLastSeen.set(channelId, now);
   const conn = getE2EE(channelId);
   if (conn && conn.connected) conn.markSeen(channelId);
 }
@@ -1757,16 +801,16 @@ function _flushDeferredReads() {
   const ops = _deferredReadOps.splice(0);
   if (ops.length === 0) return; // no-op if nothing queued
   // Capture the lastSeen for highlight persistence before running ops.
-  if (!_unreadHighlightLastSeen) {
-    _unreadHighlightLastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
+  if (!state._unreadHighlightLastSeen) {
+    state._unreadHighlightLastSeen = state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
   }
   for (const fn of ops) fn();
   // Keep unread highlight visible for 60s after being marked as read.
-  _unreadHighlightUntil = Date.now() + 60000;
+  state._unreadHighlightUntil = Date.now() + 60000;
   setTimeout(() => {
-    if (Date.now() >= _unreadHighlightUntil) {
-      _unreadHighlightLastSeen = null;
-      _unreadHighlightUntil = null;
+    if (Date.now() >= state._unreadHighlightUntil) {
+      state._unreadHighlightLastSeen = null;
+      state._unreadHighlightUntil = null;
       clearUnreadHighlights();
     }
   }, 60000);
@@ -1788,7 +832,7 @@ function deferMarkRead(fn) {
 }
 function markUnreadMessages(container) {
   // Use persisted highlight lastSeen if still within the 60s window, then scroll capture, then live.
-  const lastSeen = _unreadHighlightLastSeen || scrollLastSeen || getLastSeen(chatCurrentChannel);
+  const lastSeen = state._unreadHighlightLastSeen || state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
   if (!lastSeen) return;
   const msgEls = container.querySelectorAll('.msg[data-created-at]');
   for (const el of msgEls) {
@@ -1802,22 +846,17 @@ function markUnreadMessages(container) {
 function clearUnreadHighlights() {
   document.querySelectorAll('.msg.unread').forEach(el => el.classList.remove('unread'));
 }
-const channelAgentActive = new Map(); // channelId -> boolean
 
 function updateStopButton() {
   const btn = document.getElementById('chat-stop-btn');
   if (!btn) return;
-  const active = chatCurrentChannel && channelAgentActive.get(chatCurrentChannel);
+  const active = state.chatCurrentChannel && state.channelAgentActive.get(state.chatCurrentChannel);
   btn.classList.toggle('visible', !!active);
 }
 
-const chatLoadingMessages = new Set(); // channels currently loading messages
-const chatLoadingActivity = new Set(); // channels currently loading activity
-const channelPlanMode = new Map(); // channelId -> boolean
-// cachedHarnesses per-device stored in deviceHarnesses Map
+// cachedHarnesses per-device stored in state.deviceHarnesses Map
 
 // ----- Per-channel localStorage persistence -----
-const CHANNEL_STATE_KEY = 'build_channel_state';
 
 function loadChannelState(channelId) {
   try {
@@ -1851,11 +890,11 @@ function syncE2EEStatus() {
   const label = document.getElementById('e2ee-label');
   if (!dot || !label) return;
   if (anyE2EEConnected()) {
-    const count = [...e2eeConnections.values()].filter(c => c.connected).length;
+    const count = [...state.e2eeConnections.values()].filter(c => c.connected).length;
     dot.className = 'e2ee-dot connected';
-    label.textContent = count > 1 ? `E2EE active (${count} devices)` : 'E2EE active';
+    label.textContent = count > 1 ? `E2EE active (${count} state.devices)` : 'E2EE active';
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
-  } else if (e2eeConnections.size > 0) {
+  } else if (state.e2eeConnections.size > 0) {
     dot.className = 'e2ee-dot connecting';
     label.textContent = 'Connecting...';
   } else {
@@ -1865,7 +904,7 @@ function syncE2EEStatus() {
 }
 
 async function connectDeviceE2EE(deviceId) {
-  if (e2eeConnections.has(deviceId)) return;
+  if (state.e2eeConnections.has(deviceId)) return;
   console.log('[E2EE] Connecting to device', deviceId);
 
   const instance = new BuildE2EE();
@@ -1877,7 +916,7 @@ async function connectDeviceE2EE(deviceId) {
   }
 
   bindE2EEEvents(instance, deviceId);
-  e2eeConnections.set(deviceId, instance);
+  state.e2eeConnections.set(deviceId, instance);
   syncE2EEStatus();
 
   try {
@@ -1886,7 +925,7 @@ async function connectDeviceE2EE(deviceId) {
   } catch (err) {
     console.error('[E2EE] Failed to connect to', deviceId, err);
     instance.disconnect(); // Clean up leaked notification handler on document.
-    e2eeConnections.delete(deviceId);
+    state.e2eeConnections.delete(deviceId);
     syncE2EEStatus();
   }
 }
@@ -1908,8 +947,8 @@ async function initE2EE(targetDeviceId = null) {
     return;
   }
 
-  // Connect to all online devices with transport keys in parallel.
-  const candidates = [...devices.values()].filter(d => d.status === 'online' && d.has_transport_key);
+  // Connect to all online state.devices with transport keys in parallel.
+  const candidates = [...state.devices.values()].filter(d => d.status === 'online' && d.has_transport_key);
   if (candidates.length === 0) {
     console.log('[E2EE] No device ready, waiting for e2ee-ready notification');
     syncE2EEStatus();
@@ -1918,10 +957,10 @@ async function initE2EE(targetDeviceId = null) {
     // Retry: device may not have sent e2ee-ready yet after SSE reconnect.
     clearTimeout(initE2EE._retryTimer);
     initE2EE._retryTimer = setTimeout(async () => {
-      if (e2eeConnections.size > 0) return; // Already connected via e2ee-ready
-      console.log('[E2EE] Retrying — refreshing devices...');
+      if (state.e2eeConnections.size > 0) return; // Already connected via e2ee-ready
+      console.log('[E2EE] Retrying — refreshing state.devices...');
       await fetchDevices();
-      if (e2eeConnections.size === 0) initE2EE();
+      if (state.e2eeConnections.size === 0) initE2EE();
     }, 3000);
     return;
   }
@@ -1934,7 +973,7 @@ function bindE2EEEvents(instance, deviceId) {
   if (!instance) return;
   instance.addEventListener('connected', () => {
     console.log('[E2EE] Session established for device', deviceId);
-    e2eeHasConnected = true;
+    state.e2eeHasConnected = true;
     const _enableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn', 'cmd-compact-btn', 'cmd-reset-btn'];
     for (const id of _enableBtns) {
       const el = document.getElementById(id);
@@ -1942,11 +981,11 @@ function bindE2EEEvents(instance, deviceId) {
     }
     document.getElementById('e2ee-waiting-overlay').classList.add('hidden');
     // Hide reconnect pill + cancel timer.
-    clearTimeout(_reconnectPillTimer);
-    _reconnectPillTimer = null;
+    clearTimeout(state._reconnectPillTimer);
+    state._reconnectPillTimer = null;
     document.getElementById('reconnect-pill').classList.remove('visible');
     // Clear device-down banner on successful reconnect.
-    deviceDown = null;
+    state.deviceDown = null;
     const _ddb = document.getElementById('device-down-banner');
     if (_ddb) _ddb.classList.remove('visible');
     if (typeof _bindUploadProgress === 'function') _bindUploadProgress(instance);
@@ -1955,15 +994,15 @@ function bindE2EEEvents(instance, deviceId) {
     instance.listChannels();
     instance.listHarnesses();
     // Re-fetch history for the current channel if it belongs to this device.
-    if (chatCurrentChannel && channelDeviceMap.get(chatCurrentChannel) === deviceId) {
-      chatLoadingMessages.add(chatCurrentChannel);
-      chatLoadingActivity.add(chatCurrentChannel);
-      instance.getMessages(chatCurrentChannel);
-      instance.getActivity(chatCurrentChannel);
+    if (state.chatCurrentChannel && state.channelDeviceMap.get(state.chatCurrentChannel) === deviceId) {
+      state.chatLoadingMessages.add(state.chatCurrentChannel);
+      state.chatLoadingActivity.add(state.chatCurrentChannel);
+      instance.getMessages(state.chatCurrentChannel);
+      instance.getActivity(state.chatCurrentChannel);
       // If the files tab is active, retry the tree/changes fetch — the initial
       // selectChannel() may have run before this `connected` flag flipped.
-      if (currentTab === 'files') {
-        filesChannelId = null;
+      if (state.currentTab === 'files') {
+        state.filesChannelId = null;
         if (typeof onFilesTabActivated === 'function') onFilesTabActivated();
       }
     }
@@ -1971,9 +1010,9 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('disconnected', () => {
     console.log('[E2EE] Disconnected device', deviceId);
-    e2eeConnections.delete(deviceId);
-    // Keep deviceChannels and channelDeviceMap cached — only clear on server-reported removal.
-    deviceHarnesses.delete(deviceId);
+    state.e2eeConnections.delete(deviceId);
+    // Keep state.deviceChannels and state.channelDeviceMap cached — only clear on server-reported removal.
+    state.deviceHarnesses.delete(deviceId);
     deviceAgentCwd.delete(deviceId);
 
     if (!anyE2EEConnected()) {
@@ -1982,15 +1021,15 @@ function bindE2EEEvents(instance, deviceId) {
         const el = document.getElementById(id);
         if (el) el.disabled = true;
       }
-      if (deviceDown) {
+      if (state.deviceDown) {
         // Device is known to be offline — keep banner visible, skip skeleton/pill.
-      } else if (!e2eeHasConnected) {
+      } else if (!state.e2eeHasConnected) {
         // First load — show skeleton.
         document.getElementById('e2ee-waiting-overlay').classList.remove('hidden');
       } else {
         // Reconnection — show pill after 2s delay.
-        clearTimeout(_reconnectPillTimer);
-        _reconnectPillTimer = setTimeout(() => {
+        clearTimeout(state._reconnectPillTimer);
+        state._reconnectPillTimer = setTimeout(() => {
           if (!anyE2EEConnected()) {
             document.getElementById('reconnect-pill').classList.add('visible');
           }
@@ -2007,48 +1046,48 @@ function bindE2EEEvents(instance, deviceId) {
     const { channels, agent_cwd } = evt.detail;
     if (agent_cwd) deviceAgentCwd.set(deviceId, agent_cwd);
     // Diff against cached channels to detect removals.
-    const oldChans = deviceChannels.get(deviceId);
+    const oldChans = state.deviceChannels.get(deviceId);
     const oldIds = oldChans ? new Set(oldChans.keys()) : new Set();
     // Update per-device channel map.
     const devChans = new Map();
     for (const ch of channels) {
       devChans.set(ch.id, ch);
-      channelDeviceMap.set(ch.id, deviceId);
-      if (ch.plan_mode != null) channelPlanMode.set(ch.id, ch.plan_mode);
-      if (ch.last_seen_at) channelLastSeen.set(ch.id, ch.last_seen_at);
+      state.channelDeviceMap.set(ch.id, deviceId);
+      if (ch.plan_mode != null) state.channelPlanMode.set(ch.id, ch.plan_mode);
+      if (ch.last_seen_at) state.channelLastSeen.set(ch.id, ch.last_seen_at);
       // Reset agent active state — real-time events will re-set if agent is mid-turn.
-      channelAgentActive.set(ch.id, false);
+      state.channelAgentActive.set(ch.id, false);
     }
     updateStopButton();
-    deviceChannels.set(deviceId, devChans);
+    state.deviceChannels.set(deviceId, devChans);
     // Clean up channels removed by the device.
     for (const oldId of oldIds) {
       if (!devChans.has(oldId)) {
-        channelDeviceMap.delete(oldId);
-        chatMessages.delete(oldId);
-        unreadCounts.delete(oldId);
-        channelSortTs.delete(oldId);
+        state.channelDeviceMap.delete(oldId);
+        state.chatMessages.delete(oldId);
+        state.unreadCounts.delete(oldId);
+        state.channelSortTs.delete(oldId);
       }
     }
     rebuildChatChannels();
     renderChannelList();
     // If current channel was removed by the device, auto-select another.
-    if (chatCurrentChannel && oldIds.has(chatCurrentChannel) && !devChans.has(chatCurrentChannel)) {
-      const remaining = [...chatChannels.values()];
+    if (state.chatCurrentChannel && oldIds.has(state.chatCurrentChannel) && !devChans.has(state.chatCurrentChannel)) {
+      const remaining = [...state.chatChannels.values()];
       if (remaining.length > 0) selectChannel(remaining[0].id);
-      else { chatCurrentChannel = null; renderMessages(); }
+      else { state.chatCurrentChannel = null; renderMessages(); }
     }
     // Restore pending channel from hash.
-    if (_pendingChannelId && chatChannels.has(_pendingChannelId)) {
+    if (_pendingChannelId && state.chatChannels.has(_pendingChannelId)) {
       selectChannel(_pendingChannelId);
       _pendingChannelId = null;
-    } else if (!chatCurrentChannel && !_pendingChannelId && channels.length > 0) {
+    } else if (!state.chatCurrentChannel && !_pendingChannelId && channels.length > 0) {
       // Only auto-select first channel if there's no pending channel waiting for another device.
       selectChannel(channels[0].id);
     }
     // Fetch messages for all non-current channels to compute unread counts.
     for (const ch of channels) {
-      if (ch.id !== chatCurrentChannel && instance.connected) {
+      if (ch.id !== state.chatCurrentChannel && instance.connected) {
         instance.getMessages(ch.id);
       }
     }
@@ -2056,10 +1095,10 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('channel_created', (evt) => {
     const ch = evt.detail;
-    channelDeviceMap.set(ch.id, deviceId);
-    const devChans = deviceChannels.get(deviceId) || new Map();
+    state.channelDeviceMap.set(ch.id, deviceId);
+    const devChans = state.deviceChannels.get(deviceId) || new Map();
     devChans.set(ch.id, ch);
-    deviceChannels.set(deviceId, devChans);
+    state.deviceChannels.set(deviceId, devChans);
     rebuildChatChannels();
     renderChannelList();
     selectChannel(ch.id);
@@ -2068,7 +1107,7 @@ function bindE2EEEvents(instance, deviceId) {
   // ----- Harness & Agent events -----
 
   instance.addEventListener('harness_list', (evt) => {
-    deviceHarnesses.set(deviceId, evt.detail);
+    state.deviceHarnesses.set(deviceId, evt.detail);
     console.log('[E2EE] Harnesses for', deviceId, ':', evt.detail.map(h => h.name));
   });
 
@@ -2080,7 +1119,7 @@ function bindE2EEEvents(instance, deviceId) {
     console.log('[E2EE] Agent stopped:', evt.detail);
     const ch = evt.detail?.channel_id;
     if (ch) {
-      channelAgentActive.set(ch, false);
+      state.channelAgentActive.set(ch, false);
       updateStopButton();
     }
   });
@@ -2091,10 +1130,10 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('channel_renamed', (evt) => {
     const { channel_id, name } = evt.detail;
-    const ch = chatChannels.get(channel_id);
+    const ch = state.chatChannels.get(channel_id);
     if (ch) {
       ch.name = name;
-      const devChans = deviceChannels.get(deviceId);
+      const devChans = state.deviceChannels.get(deviceId);
       if (devChans?.has(channel_id)) devChans.get(channel_id).name = name;
       renderChannelList();
       renderChannelSidebar();
@@ -2103,12 +1142,12 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('channel_updated', (evt) => {
     const { channel_id, model, effort, working_directory } = evt.detail;
-    const ch = chatChannels.get(channel_id);
+    const ch = state.chatChannels.get(channel_id);
     if (ch) {
       if (model) ch.model = model;
       if (effort !== undefined) ch.effort = effort;
       if (working_directory !== undefined) ch.working_directory = working_directory;
-      const devChans = deviceChannels.get(deviceId);
+      const devChans = state.deviceChannels.get(deviceId);
       if (devChans?.has(channel_id)) {
         const dc = devChans.get(channel_id);
         if (model) dc.model = model;
@@ -2117,22 +1156,22 @@ function bindE2EEEvents(instance, deviceId) {
       }
     }
     // If this is the active channel, refresh the chat overlay model/effort pills.
-    if (chatCurrentChannel === channel_id) applyChannelHarnessInfo(channel_id);
+    if (state.chatCurrentChannel === channel_id) applyChannelHarnessInfo(channel_id);
   });
 
   instance.addEventListener('channel_deleted', (evt) => {
     const { channel_id } = evt.detail;
-    channelDeviceMap.delete(channel_id);
-    const devChans = deviceChannels.get(deviceId);
+    state.channelDeviceMap.delete(channel_id);
+    const devChans = state.deviceChannels.get(deviceId);
     if (devChans) devChans.delete(channel_id);
     rebuildChatChannels();
-    unreadCounts.delete(channel_id);
-    if (chatCurrentChannel === channel_id) {
-      const remaining = [...chatChannels.values()];
+    state.unreadCounts.delete(channel_id);
+    if (state.chatCurrentChannel === channel_id) {
+      const remaining = [...state.chatChannels.values()];
       if (remaining.length > 0) {
         selectChannel(remaining[0].id);
       } else {
-        chatCurrentChannel = null;
+        state.chatCurrentChannel = null;
         renderMessages();
       }
     }
@@ -2148,15 +1187,15 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('messages', (evt) => {
     const { channel_id, messages } = evt.detail;
-    chatLoadingMessages.delete(channel_id);
-    chatMessages.set(channel_id, messages);
+    state.chatLoadingMessages.delete(channel_id);
+    state.chatMessages.set(channel_id, messages);
     // Seed sort timestamp from newest message on initial load (don't override live promotions).
-    if (!channelSortTs.has(channel_id) && messages.length) {
+    if (!state.channelSortTs.has(channel_id) && messages.length) {
       const newest = messages[messages.length - 1];
       const ts = typeof newest.created_at === 'number' ? newest.created_at * 1000 : Date.parse(newest.created_at);
-      if (ts) channelSortTs.set(channel_id, ts);
+      if (ts) state.channelSortTs.set(channel_id, ts);
     }
-    if (chatCurrentChannel === channel_id) {
+    if (state.chatCurrentChannel === channel_id) {
       renderMessages();
       // Defer marking unread device messages as read until user interacts.
       const unread = messages
@@ -2185,9 +1224,9 @@ function bindE2EEEvents(instance, deviceId) {
         } catch { return false; }
       });
       if (unreadMsgs.length > 0 || hasInteraction) {
-        unreadCounts.set(channel_id, { messages: unreadMsgs.length, hasInteraction });
+        state.unreadCounts.set(channel_id, { messages: unreadMsgs.length, hasInteraction });
       } else {
-        unreadCounts.delete(channel_id);
+        state.unreadCounts.delete(channel_id);
       }
       renderChannelList();
     }
@@ -2196,13 +1235,13 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('message', (evt) => {
     const msg = evt.detail;
     if (!msg || !msg.channel_id) return;
-    const msgs = chatMessages.get(msg.channel_id) || [];
+    const msgs = state.chatMessages.get(msg.channel_id) || [];
     // Dedup: skip if message with same ID already exists.
     if (msg.id && msgs.some(m => m.id === msg.id)) return;
     msgs.push(msg);
-    chatMessages.set(msg.channel_id, msgs);
+    state.chatMessages.set(msg.channel_id, msgs);
     promoteChannel(msg.channel_id);
-    if (chatCurrentChannel === msg.channel_id) {
+    if (state.chatCurrentChannel === msg.channel_id) {
       const wasNearBottom = isChatNearBottom();
       appendMessage(msg);
       const _newEl = document.getElementById('chat-messages').lastElementChild;
@@ -2226,8 +1265,8 @@ function bindE2EEEvents(instance, deviceId) {
 
     if (event_type === 'chat.response') {
       // Agent sent a chat message — also means agent is active.
-      if (!channelAgentActive.get(channel_id)) {
-        channelAgentActive.set(channel_id, true);
+      if (!state.channelAgentActive.get(channel_id)) {
+        state.channelAgentActive.set(channel_id, true);
         updateStopButton();
       }
       promoteChannel(channel_id);
@@ -2239,11 +1278,11 @@ function bindE2EEEvents(instance, deviceId) {
         created_at: new Date().toISOString(),
       };
       if (agentEvt.suggested_actions?.length) msg.suggested_actions = agentEvt.suggested_actions;
-      const msgs = chatMessages.get(channel_id) || [];
+      const msgs = state.chatMessages.get(channel_id) || [];
       if (msg.id && msgs.some(m => m.id === msg.id)) return;
       msgs.push(msg);
-      chatMessages.set(channel_id, msgs);
-      if (chatCurrentChannel === channel_id) {
+      state.chatMessages.set(channel_id, msgs);
+      if (state.chatCurrentChannel === channel_id) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
@@ -2254,41 +1293,41 @@ function bindE2EEEvents(instance, deviceId) {
         incrementUnread(channel_id);
       }
     } else if (event_type === 'activity.delta') {
-      if (!channelAgentActive.get(channel_id)) {
-        channelAgentActive.set(channel_id, true);
+      if (!state.channelAgentActive.get(channel_id)) {
+        state.channelAgentActive.set(channel_id, true);
         updateStopButton();
       }
-      if (chatCurrentChannel !== channel_id) return;
+      if (state.chatCurrentChannel !== channel_id) return;
       const delta = agentEvt.delta || {};
       if (delta.type === 'text' && delta.text) {
         appendConsoleReasoning(delta.text, agentEvt.created_at || null);
       }
     } else if (event_type === 'tool.use') {
-      if (!channelAgentActive.get(channel_id)) {
-        channelAgentActive.set(channel_id, true);
+      if (!state.channelAgentActive.get(channel_id)) {
+        state.channelAgentActive.set(channel_id, true);
         updateStopButton();
       }
       // Capture TodoWrite for any channel (before early return)
       const name = agentEvt.name || 'tool';
       const input = agentEvt.input || {};
       if (name === 'TodoWrite' && input.todos) {
-        channelTodos.set(channel_id, input.todos);
-        if (chatCurrentChannel === channel_id) {
+        state.channelTodos.set(channel_id, input.todos);
+        if (state.chatCurrentChannel === channel_id) {
           renderTasksPanel(channel_id);
           updateTasksBadge(channel_id);
         }
       }
-      if (chatCurrentChannel !== channel_id) return;
+      if (state.chatCurrentChannel !== channel_id) return;
       currentReasoningEntry = null;
       const desc = describeToolUse(name, input);
       appendConsoleEntry(agentEvt.tool_use_id, name, desc, input, agentEvt.created_at);
     } else if (event_type === 'tool.result') {
-      if (chatCurrentChannel !== channel_id) return;
+      if (state.chatCurrentChannel !== channel_id) return;
       markConsoleEntryDone(agentEvt.tool_use_id, agentEvt.is_error, agentEvt.content, agentEvt.completed_at);
     } else if (event_type === 'activity.end') {
-      channelAgentActive.set(channel_id, false);
+      state.channelAgentActive.set(channel_id, false);
       updateStopButton();
-      if (chatCurrentChannel !== channel_id) return;
+      if (state.chatCurrentChannel !== channel_id) return;
     } else if (event_type === 'interaction.request') {
       // Agent is asking the user a question — render inline in chat.
       promoteChannel(channel_id);
@@ -2307,17 +1346,17 @@ function bindE2EEEvents(instance, deviceId) {
           multiselect: !!agentEvt.multiselect,
         }),
       };
-      const msgs = chatMessages.get(channel_id) || [];
+      const msgs = state.chatMessages.get(channel_id) || [];
       msgs.push(msg);
-      chatMessages.set(channel_id, msgs);
-      if (chatCurrentChannel === channel_id) {
+      state.chatMessages.set(channel_id, msgs);
+      if (state.chatCurrentChannel === channel_id) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(msg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
         handleNewMessageScroll(wasNearBottom, _newEl);
         // On mobile, collapse the console to give more room for plan review cards,
         // then scroll the plan card to the top of the chat area.
-        if ((agentEvt.kind || 'question') === 'plan_review' && window.innerWidth <= 768 && consoleState !== 'collapsed') {
+        if ((agentEvt.kind || 'question') === 'plan_review' && window.innerWidth <= 768 && state.consoleState !== 'collapsed') {
           setConsoleState('collapsed');
           requestAnimationFrame(() => {
             if (_newEl) _newEl.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -2335,10 +1374,10 @@ function bindE2EEEvents(instance, deviceId) {
         content: `**Agent error** — ${agentEvt.message || 'Unknown error'}`,
         created_at: new Date().toISOString(),
       };
-      const msgs = chatMessages.get(channel_id) || [];
+      const msgs = state.chatMessages.get(channel_id) || [];
       msgs.push(errMsg);
-      chatMessages.set(channel_id, msgs);
-      if (chatCurrentChannel === channel_id) {
+      state.chatMessages.set(channel_id, msgs);
+      if (state.chatCurrentChannel === channel_id) {
         const wasNearBottom = isChatNearBottom();
         appendMessage(errMsg);
         const _newEl = document.getElementById('chat-messages').lastElementChild;
@@ -2347,14 +1386,14 @@ function bindE2EEEvents(instance, deviceId) {
         incrementUnread(channel_id, true);
       }
       if (agentEvt.fatal) {
-        channelAgentActive.set(channel_id, false);
+        state.channelAgentActive.set(channel_id, false);
         updateStopButton();
       }
     } else if (event_type === 'agent.state_update') {
       const planMode = agentEvt.plan_mode;
       if (planMode != null) {
-        channelPlanMode.set(channel_id, planMode);
-        if (channel_id === chatCurrentChannel) updatePlanModeUI(planMode);
+        state.channelPlanMode.set(channel_id, planMode);
+        if (channel_id === state.chatCurrentChannel) updatePlanModeUI(planMode);
       }
       // Handle read notifications from agent.
       const readIds = agentEvt.read_message_ids;
@@ -2374,8 +1413,8 @@ function bindE2EEEvents(instance, deviceId) {
   // Activity history — tool use console entries loaded on channel select / reconnect.
   instance.addEventListener('activity_history', (evt) => {
     const { channel_id, entries } = evt.detail;
-    chatLoadingActivity.delete(channel_id);
-    if (chatCurrentChannel !== channel_id) return;
+    state.chatLoadingActivity.delete(channel_id);
+    if (state.chatCurrentChannel !== channel_id) return;
 
     clearConsole();
     for (const entry of entries) {
@@ -2385,7 +1424,7 @@ function bindE2EEEvents(instance, deviceId) {
         const input = d.input || {};
         // Capture TodoWrite from history (last one wins)
         if (name === 'TodoWrite' && input.todos) {
-          channelTodos.set(channel_id, input.todos);
+          state.channelTodos.set(channel_id, input.todos);
         }
         const desc = describeToolUse(name, input);
         appendConsoleEntry(d.id || '', name, desc, input, entry.created_at);
@@ -2402,7 +1441,7 @@ function bindE2EEEvents(instance, deviceId) {
       }
     }
     // Render tasks if we captured any TodoWrite calls from history.
-    if (channelTodos.has(channel_id)) {
+    if (state.channelTodos.has(channel_id)) {
       renderTasksPanel(channel_id);
       updateTasksBadge(channel_id);
     }
@@ -2451,13 +1490,13 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('plan_mode_updated', (evt) => {
     const { channel_id, plan_mode } = evt.detail;
-    channelPlanMode.set(channel_id, plan_mode);
-    if (channel_id === chatCurrentChannel) updatePlanModeUI(plan_mode);
+    state.channelPlanMode.set(channel_id, plan_mode);
+    if (channel_id === state.chatCurrentChannel) updatePlanModeUI(plan_mode);
   });
 
   instance.addEventListener('system_message', (evt) => {
     const { channel_id, text } = evt.detail;
-    if (chatCurrentChannel === channel_id) {
+    if (state.chatCurrentChannel === channel_id) {
       appendSystemMessage(text);
       scrollChatToBottom();
     }
@@ -2465,7 +1504,7 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('session_reset', (evt) => {
     const { channel_id } = evt.detail;
-    if (chatCurrentChannel === channel_id) {
+    if (state.chatCurrentChannel === channel_id) {
       // Remove any "Compacting session..." indicator.
       const compacting = document.getElementById('compact-indicator');
       if (compacting) compacting.remove();
@@ -2481,7 +1520,7 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('compact_started', (evt) => {
     const { channel_id } = evt.detail;
-    if (chatCurrentChannel === channel_id) {
+    if (state.chatCurrentChannel === channel_id) {
       const messagesEl = document.getElementById('chat-messages');
       const indicator = document.createElement('div');
       indicator.id = 'compact-indicator';
@@ -2499,7 +1538,7 @@ function bindE2EEEvents(instance, deviceId) {
     if (!channelId) return;
     if (!complicationState.has(channelId)) complicationState.set(channelId, new Map());
     complicationState.get(channelId).set(comp.id, comp);
-    if (chatCurrentChannel === channelId) renderComplications();
+    if (state.chatCurrentChannel === channelId) renderComplications();
   });
 
   instance.addEventListener('complication_remove', (evt) => {
@@ -2507,7 +1546,7 @@ function bindE2EEEvents(instance, deviceId) {
     const channelComps = complicationState.get(channel_id);
     if (channelComps) {
       channelComps.delete(id);
-      if (chatCurrentChannel === channel_id) renderComplications();
+      if (state.chatCurrentChannel === channel_id) renderComplications();
     }
   });
 
@@ -2519,7 +1558,7 @@ function bindE2EEEvents(instance, deviceId) {
     for (const comp of complications) {
       channelComps.set(comp.id, comp);
     }
-    if (chatCurrentChannel === channel_id) renderComplications();
+    if (state.chatCurrentChannel === channel_id) renderComplications();
   });
 
   // ----- Terminal Output -----
@@ -2563,7 +1602,7 @@ function bindE2EEEvents(instance, deviceId) {
       // Update cwd.
       if (cwd) {
         terminalCwdMap.set(channel_id, cwd);
-        if (chatCurrentChannel === channel_id) renderTerminalCwd();
+        if (state.chatCurrentChannel === channel_id) renderTerminalCwd();
       }
       // Update stored exit code.
       const history = terminalHistoryMap.get(channel_id);
@@ -2580,7 +1619,7 @@ function bindE2EEEvents(instance, deviceId) {
       }
       terminalRunning = false;
       // Show prompt row again with updated cwd.
-      if (chatCurrentChannel === channel_id) {
+      if (state.chatCurrentChannel === channel_id) {
         const promptRow = document.getElementById('terminal-prompt-row');
         promptRow.classList.remove('hidden');
         const output = document.getElementById('terminal-output');
@@ -2640,19 +1679,19 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('files_list_result', (evt) => {
     const { channel_id, path, entries, error, truncated } = evt.detail;
     if (error) { console.warn('files_list error:', error); return; }
-    if (channel_id !== filesChannelId) return;
+    if (channel_id !== state.filesChannelId) return;
 
-    if (!fileTreeData.has(channel_id)) fileTreeData.set(channel_id, new Map());
-    const data = fileTreeData.get(channel_id);
+    if (!state.fileTreeData.has(channel_id)) state.fileTreeData.set(channel_id, new Map());
+    const data = state.fileTreeData.get(channel_id);
     data.set(path || '', { entries: entries || [], truncated: !!truncated });
     renderFileTree();
 
     // Restore saved file selection after root listing loads.
-    if (filesPendingRestore && (path || '') === '') {
-      const pendingPath = filesPendingRestore;
-      const pendingView = filesPendingView;
-      filesPendingRestore = null;
-      filesPendingView = 'source';
+    if (state.filesPendingRestore && (path || '') === '') {
+      const pendingPath = state.filesPendingRestore;
+      const pendingView = state.filesPendingView;
+      state.filesPendingRestore = null;
+      state.filesPendingView = 'source';
       // Find the entry in the root listing.
       const match = (entries || []).find(e => e.name === pendingPath || e.path === pendingPath);
       if (match && match.type !== 'directory') {
@@ -2666,27 +1705,27 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('files_changes_result', (evt) => {
     const { channel_id, repos } = evt.detail;
-    console.debug('[files] files_changes_result', { channel_id, repos_count: repos?.length, filesChannelId, chatCurrentChannel });
-    // Accept if it matches filesChannelId, OR if filesChannelId is unset
+    console.debug('[files] files_changes_result', { channel_id, repos_count: repos?.length, filesChannelId: state.filesChannelId, chatCurrentChannel: state.chatCurrentChannel });
+    // Accept if it matches state.filesChannelId, OR if state.filesChannelId is unset
     // but this is the currently-active chat channel (self-heal race).
-    if (filesChannelId) {
-      if (channel_id !== filesChannelId) return;
-    } else if (channel_id !== chatCurrentChannel) {
+    if (state.filesChannelId) {
+      if (channel_id !== state.filesChannelId) return;
+    } else if (channel_id !== state.chatCurrentChannel) {
       return;
     } else {
-      filesChannelId = channel_id;
+      state.filesChannelId = channel_id;
     }
-    filesChangesData.set(channel_id, repos || []);
+    state.filesChangesData.set(channel_id, repos || []);
     updateFilesModifiedCount();
-    if (filesTreeTab === 'changes') renderFileTree();
+    if (state.filesTreeTab === 'changes') renderFileTree();
   });
 
   let _imageChunks = {};  // path -> { chunks: [], total: N }
 
   instance.addEventListener('file_read_result', (evt) => {
     const d = evt.detail;
-    if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
-    if (filesCurrentView === 'diff') return;
+    if (d.channel_id !== state.filesChannelId || d.path !== state.filesCurrentPath) return;
+    if (state.filesCurrentView === 'diff') return;
 
     if (d.error) {
       fileContentBody.innerHTML = `<div class="empty-state"><p>${escapeHtml(d.error)}</p></div>`;
@@ -2724,8 +1763,8 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('file_diff_result', (evt) => {
     const d = evt.detail;
-    if (d.channel_id !== filesChannelId || d.path !== filesCurrentPath) return;
-    if (filesCurrentView !== 'diff') return;
+    if (d.channel_id !== state.filesChannelId || d.path !== state.filesCurrentPath) return;
+    if (state.filesCurrentView !== 'diff') return;
 
     if (!d.diff) {
       fileContentBody.innerHTML = '<div class="empty-state"><p>No changes</p></div>';
@@ -2740,19 +1779,19 @@ function renderChannelList() { renderChannelPanel(); }
 function renderChannelSidebar() { /* no-op, merged into renderChannelPanel */ }
 
 function incrementUnread(channelId, isInteraction = false) {
-  const uc = unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
+  const uc = state.unreadCounts.get(channelId) || { messages: 0, hasInteraction: false };
   uc.messages++;
   if (isInteraction) uc.hasInteraction = true;
-  unreadCounts.set(channelId, uc);
+  state.unreadCounts.set(channelId, uc);
   renderChannelList();
 }
 
 function updateAggregateBadge() { /* no-op, removed with top bar */ }
 
 function selectChannel(channelId) {
-  chatCurrentChannel = channelId;
+  state.chatCurrentChannel = channelId;
   pushChannelHistory(channelId);
-  activeBrowserTab = null;
+  state.activeBrowserTab = null;
   // Hide browser panel and restore normal tab if it was showing
   document.getElementById('tab-browser')?.classList.remove('active');
   // Restore viewer chrome hidden by browser view
@@ -2771,42 +1810,42 @@ function selectChannel(channelId) {
   hideChatBubble();
   hideActivityBubble();
   // Capture lastSeen for scroll positioning before updating it.
-  scrollLastSeen = getLastSeen(channelId) || null;
-  _unreadHighlightLastSeen = null;
-  _unreadHighlightUntil = null;
+  state.scrollLastSeen = getLastSeen(channelId) || null;
+  state._unreadHighlightLastSeen = null;
+  state._unreadHighlightUntil = null;
   // Defer marking as seen until user interacts.
   const _chId = channelId;
   deferMarkRead(() => {
     setLastSeen(_chId);
-    unreadCounts.delete(_chId);
+    state.unreadCounts.delete(_chId);
     renderChannelList();
   });
   renderChannelList();
   const _selConn = getE2EE(channelId);
   if (_selConn && _selConn.connected) {
-    chatLoadingMessages.add(channelId);
-    chatLoadingActivity.add(channelId);
+    state.chatLoadingMessages.add(channelId);
+    state.chatLoadingActivity.add(channelId);
     _selConn.getMessages(channelId);
     _selConn.getActivity(channelId);
     _selConn.getComplications(channelId);
-  } else if (!chatMessages.has(channelId) || chatMessages.get(channelId).length === 0) {
+  } else if (!state.chatMessages.has(channelId) || state.chatMessages.get(channelId).length === 0) {
     // Device disconnected, no cached messages — show loading state until reconnect.
-    chatLoadingMessages.add(channelId);
+    state.chatLoadingMessages.add(channelId);
   }
   renderMessages();
-  clearConsole(chatLoadingActivity.has(channelId));
-  const chName = chatChannels.get(channelId)?.name || '';
+  clearConsole(state.chatLoadingActivity.has(channelId));
+  const chName = state.chatChannels.get(channelId)?.name || '';
   const input = document.getElementById('chat-input');
   input.placeholder = `Message #${chName}...`;
   // Update mobile channel label
   updateMobileChannelLabel();
-  location.hash = `${currentTab || 'chat'}/${channelId}`;
+  location.hash = `${state.currentTab || 'chat'}/${channelId}`;
   // If files tab is active, refresh it for the new channel.
-  if (currentTab === 'files') onFilesTabActivated();
+  if (state.currentTab === 'files') onFilesTabActivated();
   // Restore persisted state from localStorage.
   const saved = loadChannelState(channelId);
   // Restore last active tab for this channel.
-  if (saved.activeTab && saved.activeTab !== currentTab) {
+  if (saved.activeTab && saved.activeTab !== state.currentTab) {
     _origSwitchTab(saved.activeTab);
     if (saved.activeTab === 'files') onFilesTabActivated();
     location.hash = `${saved.activeTab}/${channelId}`;
@@ -2816,11 +1855,11 @@ function selectChannel(channelId) {
     input.style.height = 'auto';
   }
   // Plan mode: prefer server state, fall back to localStorage.
-  if (!channelPlanMode.has(channelId) && saved.planMode !== undefined) {
-    channelPlanMode.set(channelId, saved.planMode);
+  if (!state.channelPlanMode.has(channelId) && saved.planMode !== undefined) {
+    state.channelPlanMode.set(channelId, saved.planMode);
   }
   // Sync plan mode toggle.
-  updatePlanModeUI(channelPlanMode.get(channelId) || false);
+  updatePlanModeUI(state.channelPlanMode.get(channelId) || false);
   // Update terminal and tasks for the new channel. (Activity/Tasks live in the sidebar accordion now.)
   renderTerminalForChannel(channelId);
   renderTasksPanel(channelId);
@@ -2874,18 +1913,18 @@ function renderMessages() {
   const container = document.getElementById('chat-messages');
   const empty = document.getElementById('chat-empty-state');
 
-  if (!chatCurrentChannel) {
+  if (!state.chatCurrentChannel) {
     container.innerHTML = '';
     container.appendChild(createEmptyState('Select a channel', 'Choose or create a channel to start chatting.'));
     return;
   }
 
-  const msgs = chatMessages.get(chatCurrentChannel) || [];
+  const msgs = state.chatMessages.get(state.chatCurrentChannel) || [];
 
   if (msgs.length === 0) {
     container.innerHTML = '';
-    const ch = chatChannels.get(chatCurrentChannel);
-    if (chatLoadingMessages.has(chatCurrentChannel)) {
+    const ch = state.chatChannels.get(state.chatCurrentChannel);
+    if (state.chatLoadingMessages.has(state.chatCurrentChannel)) {
       container.appendChild(createEmptyState(
         `#${ch?.name || 'channel'}`,
         'Loading messages…',
@@ -3128,7 +2167,7 @@ function appendInteractionCard(msg, meta) {
 }
 
 function appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr) {
-  const channelModel = chatChannels.get(chatCurrentChannel)?.model || '';
+  const channelModel = state.chatChannels.get(state.chatCurrentChannel)?.model || '';
   const displayName = modelToFriendlyName(channelModel);
 
   const div = document.createElement('div');
@@ -3222,8 +2261,8 @@ function resolvePendingPlanReviews() {
 
 function respondToInteraction(interactionId, selectedOption, freeformResponse) {
   const _conn = getActiveE2EE();
-  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
-  _conn.sendInteractionResponse(chatCurrentChannel, interactionId, selectedOption, freeformResponse);
+  if (!_conn || !_conn.connected || !state.chatCurrentChannel) return;
+  _conn.sendInteractionResponse(state.chatCurrentChannel, interactionId, selectedOption, freeformResponse);
   // Mark card as resolved in UI.
   const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
   if (card) {
@@ -3238,7 +2277,7 @@ function respondToInteraction(interactionId, selectedOption, freeformResponse) {
     if (ff) ff.remove();
   }
   // Clear interaction flag for this channel.
-  const uc = unreadCounts.get(chatCurrentChannel);
+  const uc = state.unreadCounts.get(state.chatCurrentChannel);
   if (uc) {
     uc.hasInteraction = false;
     renderChannelList();
@@ -3276,8 +2315,8 @@ function respondToInteractionFreeform(btn, interactionId) {
 
 function respondToMultiselectInteraction(interactionId, selectedOptions, freeformResponse) {
   const _conn = getActiveE2EE();
-  if (!_conn || !_conn.connected || !chatCurrentChannel) return;
-  _conn.sendInteractionResponse(chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
+  if (!_conn || !_conn.connected || !state.chatCurrentChannel) return;
+  _conn.sendInteractionResponse(state.chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
   // Mark card as resolved in UI.
   const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
   if (card) {
@@ -3289,7 +2328,7 @@ function respondToMultiselectInteraction(interactionId, selectedOptions, freefor
     const ff = card.querySelector('.interaction-freeform');
     if (ff) ff.remove();
   }
-  const uc = unreadCounts.get(chatCurrentChannel);
+  const uc = state.unreadCounts.get(state.chatCurrentChannel);
   if (uc) {
     uc.hasInteraction = false;
     renderChannelList();
@@ -3310,81 +2349,6 @@ function appendSystemMessage(text) {
   container.appendChild(div);
 }
 
-function agentShortName(sender) {
-  const map = {'Claude Code': 'Claude', 'Codex CLI': 'Codex', 'Gemini CLI': 'Gemini'};
-  return map[sender] || sender || 'Device';
-}
-
-function describeToolUse(name, input) {
-  // Prefer explicit description field (e.g. Bash has it)
-  if (input.description) return input.description;
-  const descs = {
-    Read: () => (input.file_path || '').split('/').pop() || 'file',
-    Edit: () => (input.file_path || '').split('/').pop() || 'file',
-    Write: () => (input.file_path || '').split('/').pop() || 'file',
-    Bash: () => (input.command || '').substring(0, 80),
-    Glob: () => input.pattern || '',
-    Grep: () => `'${input.pattern || ''}'`,
-    Agent: () => input.prompt ? input.prompt.substring(0, 80) : '',
-    WebFetch: () => input.url || 'web page',
-    WebSearch: () => input.query || '',
-    ToolSearch: () => input.query || '',
-  };
-  const fn = descs[name];
-  return fn ? fn() : name;
-}
-
-function formatToolDetail(name, input) {
-  const parts = [];
-  if (name === 'Bash' && input.command) {
-    parts.push(`<div class="ce-detail-label">Command</div><pre class="ce-detail-code">${escapeHtml(input.command)}</pre>`);
-  } else if (name === 'Edit' && input.file_path) {
-    parts.push(`<div class="ce-detail-label">File</div><div class="ce-detail-val">${escapeHtml(input.file_path)}</div>`);
-    if (input.old_string != null && input.new_string != null) {
-      parts.push(`<div class="ce-detail-label">Diff</div><pre class="ce-detail-diff"><span class="ce-diff-del">${escapeHtml(input.old_string)}</span><span class="ce-diff-add">${escapeHtml(input.new_string)}</span></pre>`);
-    }
-  } else if ((name === 'Read' || name === 'Write') && input.file_path) {
-    parts.push(`<div class="ce-detail-label">File</div><div class="ce-detail-val">${escapeHtml(input.file_path)}</div>`);
-  } else if (name === 'Grep') {
-    parts.push(`<div class="ce-detail-label">Pattern</div><div class="ce-detail-val">${escapeHtml(input.pattern || '')}</div>`);
-    if (input.path) parts.push(`<div class="ce-detail-label">Path</div><div class="ce-detail-val">${escapeHtml(input.path)}</div>`);
-  } else if (name === 'Glob') {
-    parts.push(`<div class="ce-detail-label">Pattern</div><div class="ce-detail-val">${escapeHtml(input.pattern || '')}</div>`);
-  } else if (name === 'Agent') {
-    if (input.prompt) parts.push(`<div class="ce-detail-label">Prompt</div><pre class="ce-detail-code">${escapeHtml(input.prompt)}</pre>`);
-  }
-  return parts.join('') || `<pre class="ce-detail-code">${escapeHtml(JSON.stringify(input || {}, null, 2))}</pre>`;
-}
-
-function formatToolResult(name, content, isError) {
-  if (!content) return '';
-  const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-  if (isError) {
-    return `<div class="ce-detail-label ce-error-label">Error</div><pre class="ce-detail-code ce-error">${escapeHtml(text)}</pre>`;
-  }
-  // For Edit tools, result is usually short confirmation
-  if (name === 'Edit') {
-    return `<div class="ce-detail-label">Result</div><div class="ce-detail-val">${escapeHtml(text.substring(0, 200))}</div>`;
-  }
-  // For Bash, show output
-  if (name === 'Bash') {
-    return `<div class="ce-detail-label">Output</div><pre class="ce-detail-code">${escapeHtml(text)}</pre>`;
-  }
-  // For Read, show file content
-  if (name === 'Read') {
-    return `<div class="ce-detail-label">Content</div><pre class="ce-detail-code">${escapeHtml(text.length > 2000 ? text.substring(0, 2000) + '\n…truncated' : text)}</pre>`;
-  }
-  // Default
-  if (text.length > 500) {
-    return `<div class="ce-detail-label">Result</div><pre class="ce-detail-code">${escapeHtml(text.substring(0, 500) + '\n…truncated')}</pre>`;
-  }
-  return `<div class="ce-detail-label">Result</div><pre class="ce-detail-code">${escapeHtml(text)}</pre>`;
-}
-
-function toolTag(name) {
-  const map = { Read: 'read', Edit: 'edit', Write: 'write', Bash: 'bash', Grep: 'read', Glob: 'read', Agent: 'bash', ToolSearch: 'read' };
-  return map[name] || 'read';
-}
 
 let currentReasoningEntry = null;
 
@@ -3725,15 +2689,15 @@ activityScrollArrow?.addEventListener('click', () => {
 });
 
 function scrollToFirstUnread(container) {
-  if (!chatCurrentChannel) return false;
+  if (!state.chatCurrentChannel) return false;
   // Use captured lastSeen from channel switch, falling back to live value.
-  const lastSeen = scrollLastSeen || getLastSeen(chatCurrentChannel);
+  const lastSeen = state.scrollLastSeen || getLastSeen(state.chatCurrentChannel);
   if (!lastSeen) return false;
   const msgEls = container.querySelectorAll('.msg[data-created-at]');
   for (const el of msgEls) {
     if (el.dataset.createdAt > lastSeen) {
       scrollToMessage(el, 'instant', 'top');
-      scrollLastSeen = null; // consumed
+      state.scrollLastSeen = null; // consumed
       return true;
     }
   }
@@ -3758,12 +2722,12 @@ function createEmptyState(title, desc) {
 async function sendChatMessage() {
   const input = document.getElementById('chat-input');
   const content = input.value.trim();
-  const hasFiles = pendingFiles.length > 0;
+  const hasFiles = state.pendingFiles.length > 0;
   const _sendConn = getActiveE2EE();
-  if ((!content && !hasFiles) || !chatCurrentChannel || !_sendConn || !_sendConn.connected) return;
+  if ((!content && !hasFiles) || !state.chatCurrentChannel || !_sendConn || !_sendConn.connected) return;
 
   // Capture channel at send time so async uploads don't target the wrong channel.
-  const channelId = chatCurrentChannel;
+  const channelId = state.chatCurrentChannel;
 
   input.value = '';
   input.style.height = 'auto';
@@ -3772,7 +2736,7 @@ async function sendChatMessage() {
   // Upload any staged files first.
   let attachments = null;
   if (hasFiles) {
-    const files = [...pendingFiles];
+    const files = [...state.pendingFiles];
     clearPendingFiles();
     attachments = [];
     for (const file of files) {
@@ -3807,9 +2771,9 @@ async function sendChatMessage() {
     created_at: Date.now() / 1000,
     attachments,
   };
-  const msgs = chatMessages.get(channelId) || [];
+  const msgs = state.chatMessages.get(channelId) || [];
   msgs.push(tempMsg);
-  chatMessages.set(channelId, msgs);
+  state.chatMessages.set(channelId, msgs);
   appendMessage(tempMsg);
   const _sentEl = document.getElementById('chat-messages').lastElementChild;
   if (_sentEl) handleSentMessageScroll(_sentEl);
@@ -3821,8 +2785,8 @@ async function sendChatMessage() {
     // Send via E2EE with attachment metadata, plan mode, model, and effort.
     const payload = { action: 'message', channel_id: channelId, content: messageContent };
     if (attachments) payload.attachments = attachments;
-    if (channelPlanMode.get(channelId)) payload.plan_mode = true;
-    const _chData = chatChannels.get(channelId);
+    if (state.channelPlanMode.get(channelId)) payload.plan_mode = true;
+    const _chData = state.chatChannels.get(channelId);
     if (_chData?.model) payload.model = _chData.model;
     if (_chData?.effort) payload.effort = _chData.effort;
     const realMessageId = await _sendConn.send(payload);
@@ -3837,11 +2801,11 @@ async function sendChatMessage() {
 document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMessage);
 document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
   const _stopConn = getActiveE2EE();
-  if (!chatCurrentChannel || !_stopConn?.connected) return;
+  if (!state.chatCurrentChannel || !_stopConn?.connected) return;
 
   // Device handles two-phase stop: graceful cancel → 3s → process kill.
-  _stopConn.stopAgent(chatCurrentChannel).catch(() => {});
-  channelAgentActive.set(chatCurrentChannel, false);
+  _stopConn.stopAgent(state.chatCurrentChannel).catch(() => {});
+  state.channelAgentActive.set(state.chatCurrentChannel, false);
   updateStopButton();
 });
 const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -3854,8 +2818,8 @@ document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
 
 // Save draft input to localStorage on every change.
 document.getElementById('chat-input')?.addEventListener('input', () => {
-  if (!chatCurrentChannel) return;
-  saveChannelState(chatCurrentChannel, { draft: document.getElementById('chat-input').value });
+  if (!state.chatCurrentChannel) return;
+  saveChannelState(state.chatCurrentChannel, { draft: document.getElementById('chat-input').value });
 });
 
 // ----- Commands tray toggle -----
@@ -3882,10 +2846,10 @@ document.getElementById('cmd-attach-btn')?.addEventListener('click', () => {
 
 // Plan button (in tray)
 document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
-  if (!chatCurrentChannel) return;
-  const current = channelPlanMode.get(chatCurrentChannel) || false;
-  channelPlanMode.set(chatCurrentChannel, !current);
-  saveChannelState(chatCurrentChannel, { planMode: !current });
+  if (!state.chatCurrentChannel) return;
+  const current = state.channelPlanMode.get(state.chatCurrentChannel) || false;
+  state.channelPlanMode.set(state.chatCurrentChannel, !current);
+  saveChannelState(state.chatCurrentChannel, { planMode: !current });
   updatePlanModeUI(!current);
 });
 
@@ -3893,13 +2857,13 @@ document.getElementById('cmd-plan-btn')?.addEventListener('click', () => {
 let compactConfirmTimeout = null;
 document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
   const btn = document.getElementById('cmd-compact-btn');
-  if (!chatCurrentChannel) return;
+  if (!state.chatCurrentChannel) return;
   if (btn.classList.contains('confirm')) {
     clearTimeout(compactConfirmTimeout);
     btn.classList.remove('confirm');
     const label = btn.querySelector('span');
     if (label) label.textContent = 'Compact';
-    getActiveE2EE()?.compactSession(chatCurrentChannel);
+    getActiveE2EE()?.compactSession(state.chatCurrentChannel);
   } else {
     btn.classList.add('confirm');
     const label = btn.querySelector('span');
@@ -3916,14 +2880,14 @@ document.getElementById('cmd-compact-btn')?.addEventListener('click', () => {
 let resetConfirmTimeout = null;
 document.getElementById('cmd-reset-btn')?.addEventListener('click', () => {
   const btn = document.getElementById('cmd-reset-btn');
-  if (!chatCurrentChannel) return;
+  if (!state.chatCurrentChannel) return;
   if (btn.classList.contains('confirm')) {
     // Second click - do the reset
     clearTimeout(resetConfirmTimeout);
     btn.classList.remove('confirm');
     const label = btn.querySelector('span');
     if (label) label.textContent = 'Clear';
-    getActiveE2EE()?.resetSession(chatCurrentChannel);
+    getActiveE2EE()?.resetSession(state.chatCurrentChannel);
   } else {
     // First click - enter confirm state
     btn.classList.add('confirm');
@@ -3939,8 +2903,6 @@ document.getElementById('cmd-reset-btn')?.addEventListener('click', () => {
 
 // ----- File Upload UI -----
 
-const pendingFiles = [];
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
 function addPendingFiles(files) {
   for (const file of files) {
@@ -3948,31 +2910,31 @@ function addPendingFiles(files) {
       console.warn(`File too large: ${file.name} (${formatFileSize(file.size)})`);
       continue;
     }
-    pendingFiles.push(file);
+    state.pendingFiles.push(file);
   }
   renderPendingFiles();
 }
 
 function removePendingFile(index) {
-  pendingFiles.splice(index, 1);
+  state.pendingFiles.splice(index, 1);
   renderPendingFiles();
 }
 
 function clearPendingFiles() {
-  pendingFiles.length = 0;
+  state.pendingFiles.length = 0;
   renderPendingFiles();
 }
 
 function renderPendingFiles() {
   const staging = document.getElementById('upload-staging');
   if (!staging) return;
-  if (!pendingFiles.length) {
+  if (!state.pendingFiles.length) {
     staging.innerHTML = '';
     staging.classList.remove('has-files');
     return;
   }
   staging.classList.add('has-files');
-  staging.innerHTML = pendingFiles.map((f, i) =>
+  staging.innerHTML = state.pendingFiles.map((f, i) =>
     `<div class="upload-pill">
       <span class="up-name">${escapeHtml(f.name)}</span>
       <span class="up-size">${formatFileSize(f.size)}</span>
@@ -4066,15 +3028,15 @@ document.getElementById('btn-new-channel')?.addEventListener('click', () => {
   }
 
   // Determine which device to create the channel on.
-  const _targetDeviceId = channelDeviceMap.get(chatCurrentChannel) || e2eeConnections.keys().next().value;
-  const _createConn = e2eeConnections.get(_targetDeviceId);
+  const _targetDeviceId = state.channelDeviceMap.get(state.chatCurrentChannel) || state.e2eeConnections.keys().next().value;
+  const _createConn = state.e2eeConnections.get(_targetDeviceId);
 
   const dialogParent = document.body;
   const overlay = document.createElement('div');
   overlay.className = 'new-channel-overlay';
 
   // Build harness options from device's cache.
-  const cachedHarnesses = deviceHarnesses.get(_targetDeviceId) || [];
+  const cachedHarnesses = state.deviceHarnesses.get(_targetDeviceId) || [];
   let harnessOptions = '<option value="">No agent</option>';
   if (cachedHarnesses.length) {
     harnessOptions = cachedHarnesses.map(h =>
@@ -4195,8 +3157,8 @@ function showEditChannelDialog(ch) {
   if (!dialogParent) return;
 
   // Build model options from the channel's harness.
-  const deviceId = channelDeviceMap.get(ch.id);
-  const cachedHarnesses = deviceId ? deviceHarnesses.get(deviceId) : [];
+  const deviceId = state.channelDeviceMap.get(ch.id);
+  const cachedHarnesses = deviceId ? state.deviceHarnesses.get(deviceId) : [];
   const harness = cachedHarnesses?.find(h => h.id === ch.harness);
   let modelOptions = '';
   if (harness) {
@@ -4356,7 +3318,7 @@ function showEditDeviceDialog(device) {
     const newName = nameInput.value.trim();
     if (newName && newName !== device.name) {
       try {
-        await fetch(`/api/devices/${device.id}`, {
+        await fetch(`/api/state.devices/${device.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: newName }),
@@ -4375,7 +3337,7 @@ function showEditDeviceDialog(device) {
   // Restart
   document.getElementById('edit-device-restart').addEventListener('click', async () => {
     try {
-      await fetch(`/api/devices/${device.id}/restart`, { method: 'POST' });
+      await fetch(`/api/state.devices/${device.id}/restart`, { method: 'POST' });
     } catch (err) {
       console.error('Failed to restart device:', err);
     }
@@ -4397,10 +3359,10 @@ function showEditDeviceDialog(device) {
       }, 3000);
     } else {
       try {
-        await fetch(`/api/devices/${device.id}`, { method: 'DELETE' });
-        devices.delete(device.id);
+        await fetch(`/api/state.devices/${device.id}`, { method: 'DELETE' });
+        state.devices.delete(device.id);
         // Disconnect E2EE for this device.
-        const _revokeConn = e2eeConnections.get(device.id);
+        const _revokeConn = state.e2eeConnections.get(device.id);
         if (_revokeConn) _revokeConn.disconnect();
         renderChannelPanel();
         fetchDevices();
@@ -4413,1833 +3375,23 @@ function showEditDeviceDialog(device) {
 }
 
 
-// ===== FILES VIEW =====
-
-const fileTree = document.getElementById('file-tree');
-const fileTreeInner = document.getElementById('file-tree-inner');
-const fileTreeEmpty = document.getElementById('file-tree-empty');
-const filesPathText = document.getElementById('files-path-text');
-const filesPathBar = document.getElementById('files-path-bar');
-const filesPathChevron = document.getElementById('files-path-chevron');
-const fileReloadBtn = document.getElementById('file-reload-btn');
-const fileTreePanel = document.getElementById('file-tree-panel');
-const fileContentBody = document.getElementById('file-content-body');
-const fileFloatToggle = document.getElementById('file-float-toggle');
-
-// Per-channel file state.
-const fileTreeData = new Map();     // channelId -> Map(path -> {entries, expanded})
-let filesCurrentPath = null;        // currently selected file path
-let filesCurrentView = 'source';    // 'source' or 'diff' or 'rendered'
-let filesChannelId = null;          // channel the file tree is loaded for
-let filesCurrentHasDiff = false;
-let filesCurrentIsMarkdown = false;
-let filesCurrentIsSvg = false;
-let filesCurrentIsHtml = false;
-let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
-let filesPendingRestore = null;     // path to restore after tree loads
-let filesPendingView = 'source';    // view to restore
-let filesTreeTab = 'changes';      // 'files' or 'changes' (default: diff view)
-const filesChangesData = new Map(); // channelId -> [{path, remote, branch, entries}, ...]
-
-function updateFilesModifiedCount() {
-  const el = document.getElementById('files-mode-modified-count');
-  if (!el) return;
-  const repos = filesChangesData.get(filesChannelId) || [];
-  let total = 0;
-  for (const repo of repos) total += (repo.entries || []).length;
-  el.textContent = String(total);
-  el.classList.toggle('hidden', total === 0);
-}
-
-function setFilesMode(mode) {
-  if (mode !== 'files' && mode !== 'changes') return;
-  if (mode === filesTreeTab) return;
-  filesTreeTab = mode;
-  // Sync both the new mode-switch and the legacy tree-tab buttons.
-  document.querySelectorAll('.files-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.filesMode === mode));
-  document.querySelectorAll('.tree-tab').forEach(b => b.classList.toggle('active', b.dataset.treeTab === mode));
-  const _ftConn = getE2EE(filesChannelId);
-  if (mode === 'changes' && filesChannelId && _ftConn && _ftConn.connected) {
-    _ftConn.filesChanges(filesChannelId);
-  }
-  renderFileTree();
-}
-document.querySelectorAll('.tree-tab').forEach(btn => {
-  btn.addEventListener('click', () => setFilesMode(btn.dataset.treeTab));
-});
-document.querySelectorAll('.files-mode-btn').forEach(btn => {
-  btn.addEventListener('click', () => setFilesMode(btn.dataset.filesMode));
-});
-
-function filesLoadRoot() {
-  const _flConn = getActiveE2EE();
-  if (!chatCurrentChannel || !_flConn || !_flConn.connected) return;
-  filesChannelId = chatCurrentChannel;
-  _flConn.filesList(chatCurrentChannel, '');
-}
-
-// ---- Tree Rendering ----
-
-let _filesSelfHealed = false;
-function renderFileTree() {
-  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty, .changes-repo-group').forEach(n => n.remove());
-
-  // If the tab is open with a channel selected but filesChannelId wasn't
-  // set (E2EE timing race), try once to kick off the load so the view
-  // self-heals on re-render instead of showing the "Select a channel" stub.
-  if (!filesChannelId && chatCurrentChannel && typeof onFilesTabActivated === 'function' && !_filesSelfHealed) {
-    _filesSelfHealed = true;
-    onFilesTabActivated();
-  }
-
-  if (filesTreeTab === 'changes') {
-    // Changes view has its own "No modified files" / "Select a channel" empty
-    // states inside renderChangesView; hide the tree-specific placeholder.
-    fileTreeEmpty.style.display = 'none';
-    renderChangesView(fileTreeInner, filesChannelId ? filesChangesData.get(filesChannelId) : null);
-    return;
-  }
-
-  // Files tree mode — requires a channel + root listing in fileTreeData.
-  if (!filesChannelId) { fileTreeEmpty.style.display = ''; return; }
-  const data = fileTreeData.get(filesChannelId);
-  if (!data || !data.has('')) {
-    fileTreeEmpty.style.display = '';
-    return;
-  }
-  fileTreeEmpty.style.display = 'none';
-  const rootEntries = data.get('');
-  if (rootEntries) renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
-}
-
-function renderTreeLevel(container, entries, depth, data) {
-  for (const entry of entries) {
-    const item = document.createElement('div');
-    item.className = 'tree-item';
-    if (depth > 0) item.setAttribute('data-depth', Math.min(depth, 5));
-    item.dataset.path = entry.path;
-    item.dataset.type = entry.type;
-
-    // Git status classes.
-    if (entry.is_gitignored) item.classList.add('gitignored');
-    if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
-    if (entry.path === filesCurrentPath) item.classList.add('active');
-
-    // Arrow for directories.
-    const arrow = document.createElement('span');
-    arrow.className = 'tree-arrow';
-    if (entry.type === 'dir') {
-      const expanded = data.has(entry.path);
-      arrow.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      if (expanded) arrow.classList.add('open');
-    } else {
-      arrow.classList.add('hidden');
-    }
-    item.appendChild(arrow);
-
-    // Icon.
-    const icon = document.createElement('span');
-    icon.className = 'tree-icon' + (entry.type === 'dir' ? ' folder' : '');
-    icon.innerHTML = entry.type === 'dir'
-      ? '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M1.5 3.5v7a1 1 0 001 1h9a1 1 0 001-1v-5a1 1 0 00-1-1H7L5.5 2.5h-3a1 1 0 00-1 1z" stroke="currentColor" stroke-width="1.2"/></svg>'
-      : '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
-    item.appendChild(icon);
-
-    // Label.
-    const label = document.createElement('span');
-    label.className = 'tree-label';
-    label.textContent = entry.name;
-    label.title = entry.path || entry.name;
-    item.appendChild(label);
-
-    // Git badge + stats — wrapped in sticky container.
-    const hasGitBadge = entry.git_status || entry.staged_status;
-    const hasStats = entry.insertions > 0 || entry.deletions > 0;
-    if (hasGitBadge || hasStats) {
-      const gitInfo = document.createElement('span');
-      gitInfo.className = 'tree-git-info';
-      if (hasGitBadge) {
-        const st = entry.staged_status || entry.git_status;
-        if (st === '?' || st === 'A') {
-          const badge = document.createElement('span');
-          badge.className = 'tree-badge added';
-          badge.textContent = st === '?' ? 'U' : 'A';
-          gitInfo.appendChild(badge);
-        } else if (st === 'M') {
-          const badge = document.createElement('span');
-          badge.className = 'tree-badge modified';
-          badge.textContent = 'M';
-          gitInfo.appendChild(badge);
-        } else if (st === 'D') {
-          const badge = document.createElement('span');
-          badge.className = 'tree-badge modified';
-          badge.textContent = 'D';
-          gitInfo.appendChild(badge);
-        }
-      }
-      if (hasStats) {
-        const stats = document.createElement('span');
-        stats.className = 'tree-stats';
-        if (entry.insertions > 0) {
-          const add = document.createElement('span');
-          add.className = 'stat-add';
-          add.textContent = '+' + entry.insertions;
-          stats.appendChild(add);
-        }
-        if (entry.deletions > 0) {
-          const del = document.createElement('span');
-          del.className = 'stat-del';
-          del.textContent = '-' + entry.deletions;
-          stats.appendChild(del);
-        }
-        gitInfo.appendChild(stats);
-      }
-      item.appendChild(gitInfo);
-    }
-
-    container.appendChild(item);
-
-    // Click handler.
-    item.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (entry.type === 'dir') {
-        toggleDirectory(entry.path, arrow, item);
-      } else {
-        selectFile(entry.path, entry);
-      }
-    });
-
-    // Render children if expanded.
-    if (entry.type === 'dir' && data.has(entry.path)) {
-      const childContainer = document.createElement('div');
-      childContainer.className = 'tree-children open';
-      childContainer.dataset.parentPath = entry.path;
-      renderTreeLevel(childContainer, data.get(entry.path).entries, depth + 1, data);
-      container.appendChild(childContainer);
-    }
-  }
-}
-
-function renderChangesView(container, repos) {
-  // repos is an array of {path, remote, branch, entries[]} from the backend (or undefined if not yet loaded).
-  if (!repos) {
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'empty-state pad-1-5 changes-empty';
-    loadingDiv.innerHTML = '<div class="loading-spinner"></div><p class="text-xs">Loading changes…</p>';
-    container.appendChild(loadingDiv);
-    return;
-  }
-  if (repos.length === 0) {
-    const emptyDiv = document.createElement('div');
-    emptyDiv.className = 'empty-state pad-1-5 changes-empty';
-    emptyDiv.innerHTML = '<p class="text-xs">No changes</p>';
-    container.appendChild(emptyDiv);
-    return;
-  }
-
-  // Sort repos by most recently modified file (descending).
-  const sortedRepos = repos.slice().sort((a, b) => {
-    const aMax = Math.max(0, ...a.entries.map(e => e.modified || 0));
-    const bMax = Math.max(0, ...b.entries.map(e => e.modified || 0));
-    return bMax - aMax;
-  });
-
-  for (const repo of sortedRepos) {
-    const group = document.createElement('div');
-    group.className = 'changes-repo-group';
-
-    // Repo header.
-    const header = document.createElement('div');
-    header.className = 'changes-repo-header';
-
-    const chevron = document.createElement('span');
-    chevron.className = 'changes-repo-chevron';
-    chevron.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    header.appendChild(chevron);
-
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'changes-repo-name';
-    nameSpan.textContent = repo.path === '.' ? '(root)' : repo.path;
-    header.appendChild(nameSpan);
-
-    const meta = document.createElement('span');
-    meta.className = 'changes-repo-meta';
-    if (repo.remote && repo.branch) {
-      meta.textContent = repo.remote + ' @ ' + repo.branch;
-    } else {
-      meta.textContent = repo.remote || repo.branch || '';
-    }
-    header.appendChild(meta);
-
-    // Aggregate stats.
-    let totalIns = 0, totalDels = 0;
-    for (const e of repo.entries) { totalIns += e.insertions || 0; totalDels += e.deletions || 0; }
-    const statsSpan = document.createElement('span');
-    statsSpan.className = 'changes-repo-stats';
-    let statsHTML = repo.entries.length + ' file' + (repo.entries.length !== 1 ? 's' : '');
-    if (totalIns > 0) statsHTML += '&ensp;<span class="stat-add">+' + totalIns + '</span>';
-    if (totalDels > 0) statsHTML += '&ensp;<span class="stat-del">\u2212' + totalDels + '</span>';
-    statsSpan.innerHTML = statsHTML;
-    header.appendChild(statsSpan);
-
-    group.appendChild(header);
-
-    // File list.
-    const fileList = document.createElement('div');
-    fileList.className = 'changes-repo-files';
-
-    const sorted = repo.entries.slice().sort((a, b) => a.path.localeCompare(b.path));
-    for (const entry of sorted) {
-      const item = document.createElement('div');
-      item.className = 'tree-item';
-      if (entry.git_status === '?' || entry.staged_status === '?') item.classList.add('untracked');
-      if (entry.path === filesCurrentPath) item.classList.add('active');
-      item.dataset.path = entry.path;
-      item.dataset.type = entry.type;
-
-      const arrow = document.createElement('span');
-      arrow.className = 'tree-arrow hidden';
-      item.appendChild(arrow);
-
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon';
-      icon.innerHTML = '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3.5 1.5h4l3 3v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-9a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1.5v3h3" stroke="currentColor" stroke-width="1.2"/></svg>';
-      item.appendChild(icon);
-
-      // Show path relative to repo (strip repo prefix).
-      const label = document.createElement('span');
-      label.className = 'tree-label';
-      let displayPath = entry.path;
-      if (repo.path !== '.' && displayPath.startsWith(repo.path + '/')) {
-        displayPath = displayPath.slice(repo.path.length + 1);
-      }
-      label.textContent = displayPath;
-      label.title = entry.path;
-      item.appendChild(label);
-
-      const hasGitBadge = entry.git_status || entry.staged_status;
-      const hasStats = entry.insertions > 0 || entry.deletions > 0;
-      if (hasGitBadge || hasStats) {
-        const gitInfo = document.createElement('span');
-        gitInfo.className = 'tree-git-info';
-        if (hasGitBadge) {
-          const st = entry.staged_status || entry.git_status;
-          const badge = document.createElement('span');
-          if (st === '?' || st === 'A') {
-            badge.className = 'tree-badge added';
-            badge.textContent = st === '?' ? 'U' : 'A';
-          } else if (st === 'M') {
-            badge.className = 'tree-badge modified';
-            badge.textContent = 'M';
-          } else if (st === 'D') {
-            badge.className = 'tree-badge modified';
-            badge.textContent = 'D';
-          }
-          if (badge.textContent) gitInfo.appendChild(badge);
-        }
-        if (hasStats) {
-          const stats = document.createElement('span');
-          stats.className = 'tree-stats';
-          if (entry.insertions > 0) {
-            const add = document.createElement('span');
-            add.className = 'stat-add';
-            add.textContent = '+' + entry.insertions;
-            stats.appendChild(add);
-          }
-          if (entry.deletions > 0) {
-            const del = document.createElement('span');
-            del.className = 'stat-del';
-            del.textContent = '-' + entry.deletions;
-            stats.appendChild(del);
-          }
-          gitInfo.appendChild(stats);
-        }
-        item.appendChild(gitInfo);
-      }
-
-      item.addEventListener('click', () => selectFile(entry.path, entry, 'diff'));
-      fileList.appendChild(item);
-    }
-
-    group.appendChild(fileList);
-
-    // Toggle collapse on header click.
-    header.addEventListener('click', () => {
-      group.classList.toggle('collapsed');
-    });
-
-    container.appendChild(group);
-  }
-}
-
-function toggleDirectory(path, arrowEl, itemEl) {
-  const data = fileTreeData.get(filesChannelId);
-  if (!data) return;
-
-  if (data.has(path)) {
-    // Collapse: remove cached children.
-    data.delete(path);
-    renderFileTree();
-  } else {
-    // Expand: request listing.
-    getE2EE(filesChannelId)?.filesList(filesChannelId, path);
-  }
-}
-
-function selectFile(path, entry, initialView) {
-  const ext = (path.split('.').pop() || '').toLowerCase();
-  filesCurrentIsMarkdown = (ext === 'md' || ext === 'markdown');
-  filesCurrentIsSvg = (ext === 'svg');
-  filesCurrentIsHtml = (ext === 'html' || ext === 'htm');
-  filesCurrentHasDiff = !!(entry && (entry.git_status || entry.staged_status || entry.insertions || entry.deletions));
-  filesCurrentPath = path;
-  filesLastContent = null;
-
-  // Determine initial view.
-  if (initialView === 'diff' && filesCurrentHasDiff) {
-    filesCurrentView = 'diff';
-  } else if (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml) {
-    filesCurrentView = 'rendered';
-  } else {
-    filesCurrentView = 'source';
-  }
-
-  // Update active state in tree.
-  fileTree.querySelectorAll('.tree-item.active').forEach(el => el.classList.remove('active'));
-  const active = fileTree.querySelector(`.tree-item[data-path="${CSS.escape(path)}"]`);
-  if (active) active.classList.add('active');
-
-  // Update path bar.
-  filesPathText.textContent = path;
-  filesPathText.classList.remove('empty');
-  fileReloadBtn.classList.remove('hc-hidden');
-
-  // Close mobile dropdown.
-  fileTreePanel.classList.remove('mobile-open');
-  filesPathChevron.classList.remove('open');
-
-  updateFloatingToggle();
-
-  // Save to localStorage.
-  saveChannelState(filesChannelId, { filesPath: path, filesView: filesCurrentView });
-
-  // Load file content.
-  fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-  const _fileConn = getE2EE(filesChannelId);
-  if (filesCurrentView === 'diff') {
-    _fileConn?.fileDiff(filesChannelId, path, false);
-  } else {
-    _fileConn?.fileRead(filesChannelId, path);
-  }
-}
-
-function updateFloatingToggle() {
-  if (!filesCurrentPath) {
-    fileFloatToggle.style.display = 'none';
-    return;
-  }
-  const tabs = [];
-  if (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml) tabs.push({ id: 'rendered', label: 'Preview' });
-  if (filesCurrentHasDiff) tabs.push({ id: 'diff', label: 'Diff' });
-  tabs.push({ id: 'source', label: 'Source' });
-
-  if (tabs.length <= 1) {
-    fileFloatToggle.style.display = 'none';
-    return;
-  }
-  fileFloatToggle.style.display = 'flex';
-  fileFloatToggle.innerHTML = tabs.map(t =>
-    `<button data-view="${t.id}" class="${filesCurrentView === t.id ? 'active' : ''}">${t.label}</button>`
-  ).join('');
-}
-
-// ---- Floating toggle ----
-fileFloatToggle.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('button[data-view]');
-  if (!btn || !filesCurrentPath) return;
-  const view = btn.dataset.view;
-  if (view === filesCurrentView) return;
-
-  filesCurrentView = view;
-  const _fvConn = getE2EE(filesChannelId);
-  if (view === 'diff') {
-    fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-    _fvConn?.fileDiff(filesChannelId, filesCurrentPath, false);
-  } else if (view === 'rendered') {
-    if (filesLastContent) {
-      renderPreview(filesLastContent.content, filesLastContent.truncated, filesLastContent.size);
-    } else {
-      fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-      _fvConn?.fileRead(filesChannelId, filesCurrentPath);
-    }
-  } else {
-    if (filesLastContent) {
-      renderFileContent(filesLastContent.content, filesLastContent.path, filesLastContent.size, filesLastContent.truncated);
-    } else {
-      fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-      _fvConn?.fileRead(filesChannelId, filesCurrentPath);
-    }
-  }
-  updateFloatingToggle();
-  saveChannelState(filesChannelId, { filesView: filesCurrentView });
-});
-
-// ---- Line-wrap toggle ----
-const fileWrapToggle = document.getElementById('file-wrap-toggle');
-let filesLineWrap = localStorage.getItem('filesLineWrap') === '1';
-if (filesLineWrap) {
-  fileContentBody.classList.add('line-wrap');
-  fileWrapToggle.classList.add('active');
-}
-fileWrapToggle.addEventListener('click', () => {
-  filesLineWrap = !filesLineWrap;
-  fileContentBody.classList.toggle('line-wrap', filesLineWrap);
-  fileWrapToggle.classList.toggle('active', filesLineWrap);
-  localStorage.setItem('filesLineWrap', filesLineWrap ? '1' : '0');
-});
-
-// ---- Mobile file tree dropdown toggle ----
-filesPathBar.addEventListener('click', (ev) => {
-  // Only act on mobile (chevron visible).
-  if (getComputedStyle(filesPathChevron).display === 'none') return;
-  const isOpen = fileTreePanel.classList.toggle('mobile-open');
-  filesPathChevron.classList.toggle('open', isOpen);
-});
-
-// ---- Reload button ----
-fileReloadBtn.addEventListener('click', (ev) => {
-  ev.stopPropagation(); // Don't trigger path bar mobile toggle.
-  if (!filesCurrentPath || !filesChannelId) return;
-  filesLastContent = null;
-  const conn = getE2EE(filesChannelId);
-  if (!conn || !conn.connected) return;
-  fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-  if (filesCurrentView === 'diff') {
-    conn.fileDiff(filesChannelId, filesCurrentPath, false);
-  } else {
-    conn.fileRead(filesChannelId, filesCurrentPath);
-  }
-});
-
-// ---- Live file-change refresh (fed by AGENT_FILE_CHANGES) ----
-let _fileChangesRefreshTimer = null;
-function onAgentFileChanges(channelId, paths) {
-  console.debug('[files] agent.file_changes', { channelId, paths, filesChannelId, chatCurrentChannel });
-  // Only react if this channel is the one currently displayed in the files view.
-  if (filesChannelId && filesChannelId !== channelId) return;
-  // Adopt the channel so the files_changes_result handler doesn't drop the
-  // response if filesChannelId was still null at this point.
-  if (!filesChannelId && chatCurrentChannel === channelId) {
-    filesChannelId = channelId;
-  }
-  // Debounce bursts: coalesce multiple events within 150ms.
-  clearTimeout(_fileChangesRefreshTimer);
-  _fileChangesRefreshTimer = setTimeout(() => {
-    const conn = getE2EE(filesChannelId || channelId);
-    if (!conn || !conn.connected) return;
-    // Always refresh the changes list so the Modified count stays live.
-    conn.filesChanges(filesChannelId || channelId);
-    // If the tree is showing, invalidate cached path entries so stale items are re-fetched.
-    if (filesTreeTab === 'files') {
-      const data = fileTreeData.get(filesChannelId);
-      if (data) {
-        for (const p of paths) {
-          const parent = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
-          data.delete(parent);
-        }
-      }
-      conn.filesList(filesChannelId || channelId, '');
-    }
-    // If the currently open file was touched, re-fetch its content/diff.
-    if (filesCurrentPath) {
-      const cur = filesCurrentPath.replace(/\\/g, '/');
-      const touched = paths.some(p => {
-        const pp = (p || '').replace(/\\/g, '/');
-        if (!pp) return false;
-        return pp === cur
-          || cur.endsWith('/' + pp)
-          || pp.endsWith('/' + cur)
-          || pp.split('/').pop() === cur.split('/').pop();
-      });
-      if (touched) {
-        if (filesCurrentView === 'diff') {
-          conn.fileDiff(filesChannelId || channelId, filesCurrentPath, false);
-        } else {
-          conn.fileRead(filesChannelId || channelId, filesCurrentPath);
-        }
-      }
-    }
-  }, 150);
-}
-
-// ---- File Content Renderer ----
-
-function renderFileContent(content, path, size, truncated) {
-  // Cache for toggle without re-fetch.
-  filesLastContent = { content, path, size, truncated };
-  fileContentBody.style.padding = '';
-
-  // Preview mode for markdown/SVG/HTML.
-  if (filesCurrentView === 'rendered' && (filesCurrentIsMarkdown || filesCurrentIsSvg || filesCurrentIsHtml)) {
-    renderPreview(content, truncated, size);
-    return;
-  }
-
-  const extMatch = path.match(/\.([^./]+)$/);
-  const ext = extMatch ? extMatch[1].toLowerCase() : path.split('/').pop().toLowerCase();
-  const lines = content.split('\n');
-  // Remove trailing empty line from split.
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-
-  const viewer = document.createElement('div');
-  viewer.className = 'file-viewer';
-
-  for (let i = 0; i < lines.length; i++) {
-    const row = document.createElement('div');
-    row.className = 'file-line';
-
-    const numEl = document.createElement('span');
-    numEl.className = 'fl-num';
-    numEl.textContent = String(i + 1);
-
-    const codeEl = document.createElement('span');
-    codeEl.className = 'fl-content';
-    codeEl.innerHTML = highlightLine(lines[i], ext);
-
-    row.appendChild(numEl);
-    row.appendChild(codeEl);
-    viewer.appendChild(row);
-  }
-
-  fileContentBody.innerHTML = '';
-  fileContentBody.appendChild(viewer);
-
-  if (truncated) {
-    const note = document.createElement('div');
-    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
-    note.textContent = `File truncated (${formatBytes(size)} total)`;
-    fileContentBody.appendChild(note);
-  }
-}
-
-function renderPreview(content, truncated, size) {
-  if (filesCurrentIsSvg) {
-    renderSvgPreview(content);
-  } else if (filesCurrentIsHtml) {
-    renderHtmlPreview(content, filesCurrentPath);
-  } else {
-    renderMarkdownFile(content, truncated, size);
-  }
-}
-
-function renderMarkdownFile(content, truncated, size) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'file-markdown-view msg-text';
-  wrapper.innerHTML = renderMarkdown(content);
-  fileContentBody.innerHTML = '';
-  fileContentBody.appendChild(wrapper);
-  if (truncated) {
-    const note = document.createElement('div');
-    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
-    note.textContent = `File truncated (${formatBytes(size)} total)`;
-    fileContentBody.appendChild(note);
-  }
-}
-
-function renderSvgPreview(content) {
-  const blob = new Blob([content], { type: 'image/svg+xml' });
-  const url = URL.createObjectURL(blob);
-  fileContentBody.innerHTML = '<div class="file-image-view"><img src="' + url + '" alt="SVG preview"></div>';
-}
-
-// ---- HTML Preview with Asset Inlining ----
-
-// Promise-based file read for fetching assets without conflicting with main file viewer.
-function readFileAsync(channelId, path) {
-  return new Promise((resolve, reject) => {
-    const conn = getE2EE(channelId);
-    if (!conn || !conn.connected) return reject(new Error('not connected'));
-    const chunks = {};
-    function handler(evt) {
-      const d = evt.detail;
-      if (d.path !== path) return;
-      if (d.error) { conn.removeEventListener('file_read_result', handler); return reject(new Error(d.error)); }
-      // Handle chunked images.
-      if (d.is_image && d.chunk_total && d.chunk_total > 1) {
-        if (!chunks.arr) { chunks.arr = new Array(d.chunk_total); chunks.total = d.chunk_total; }
-        chunks.arr[d.chunk_index] = d.content;
-        if (chunks.arr.filter(Boolean).length < chunks.total) return;
-        conn.removeEventListener('file_read_result', handler);
-        return resolve({ ...d, content: chunks.arr.join('') });
-      }
-      conn.removeEventListener('file_read_result', handler);
-      resolve(d);
-    }
-    conn.addEventListener('file_read_result', handler);
-    conn.fileRead(channelId, path);
-  });
-}
-
-const MIME_TYPES = {
-  css: 'text/css', js: 'application/javascript', mjs: 'application/javascript',
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-  webp: 'image/webp', ico: 'image/x-icon', svg: 'image/svg+xml',
-  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', eot: 'application/vnd.ms-fontobject',
-  json: 'application/json',
-};
-
-function resolveAssetPath(htmlFilePath, assetHref) {
-  if (!assetHref || assetHref.startsWith('data:') || assetHref.startsWith('http:') || assetHref.startsWith('https:') || assetHref.startsWith('//')) return null;
-  // Strip query/hash.
-  const clean = assetHref.split('?')[0].split('#')[0];
-  // Resolve relative to HTML file's directory.
-  const dir = htmlFilePath.substring(0, htmlFilePath.lastIndexOf('/') + 1);
-  // Simple path resolution (handles ../ and ./).
-  const parts = (dir + clean).split('/');
-  const resolved = [];
-  for (const p of parts) {
-    if (p === '.' || p === '') continue;
-    if (p === '..') { resolved.pop(); continue; }
-    resolved.push(p);
-  }
-  return resolved.join('/');
-}
-
-// Console capture JS (raw code, no <script> tags — injected via DOM).
-const CONSOLE_CAPTURE_JS = `(function(){
-  function send(level, args) {
-    var parts = [];
-    for (var i = 0; i < args.length; i++) {
-      try { parts.push(typeof args[i] === 'string' ? args[i] : JSON.stringify(args[i], null, 2)); }
-      catch(e) { parts.push(String(args[i])); }
-    }
-    parent.postMessage({ type: '__build_console', entry: { level: level, text: parts.join(' '), ts: Date.now() } }, '*');
-  }
-  var orig = {};
-  ['log','warn','error','info','debug'].forEach(function(m){
-    orig[m] = console[m];
-    console[m] = function(){ send(m, arguments); if(orig[m]) orig[m].apply(console, arguments); };
-  });
-  window.onerror = function(msg, src, line, col) {
-    send('error', [msg + (src ? ' at ' + src + ':' + line + ':' + col : '')]);
-  };
-  window.addEventListener('unhandledrejection', function(e) {
-    send('error', ['Unhandled rejection: ' + (e.reason && e.reason.message || e.reason || 'unknown')]);
-  });
-  window.addEventListener('error', function(e) {
-    if (e.target && e.target !== window) {
-      var tag = e.target.tagName || '';
-      var src = e.target.src || e.target.href || '';
-      send('error', ['Failed to load ' + tag.toLowerCase() + (src ? ': ' + src : '')]);
-    }
-  }, true);
-})();`;
-
-// Script to intercept relative link clicks and navigate via parent.
-const NAV_INTERCEPT_JS = `(function(){
-  document.addEventListener('click', function(e) {
-    var a = e.target.closest('a[href]');
-    if (!a) return;
-    var href = a.getAttribute('href');
-    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
-    if (href.startsWith('http:') || href.startsWith('https:') || href.startsWith('//') || href.startsWith('mailto:')) return;
-    e.preventDefault();
-    parent.postMessage({ type: '__build_preview_navigate', href: href }, '*');
-  });
-})();`;
-
-// ---- Browser Proxy View ----
-
-function urlFetchAsync(deviceId, url, tabId, method, body, contentType) {
-  return new Promise((resolve, reject) => {
-    const conn = e2eeConnections.get(deviceId);
-    if (!conn || !conn.connected) return reject(new Error('not connected'));
-    const requestId = 'rf-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    function handler(evt) {
-      const d = evt.detail;
-      if (d.request_id !== requestId) return;
-      conn.removeEventListener('url_fetch_result', handler);
-      if (d.error) return reject(new Error(d.error));
-      resolve(d);
-    }
-    conn.addEventListener('url_fetch_result', handler);
-    conn.urlFetch(url, requestId, tabId || '', method, body, contentType);
-  });
-}
-
-function resolveUrl(baseUrl, href) {
-  if (!href || href.startsWith('data:') || href.startsWith('#') || href.startsWith('javascript:')) return null;
-  try { return new URL(href, baseUrl).href; } catch { return null; }
-}
-
-async function fetchAndRenderBrowserPage(tab) {
-  const browserContent = document.getElementById('browser-content');
-  if (!browserContent) return;
-  browserContent.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-
-  const deviceId = tab.deviceId;
-  const url = tab.url;
-  let errors = [];
-  const _dbg = (text) => errors.push({ level: 'debug', text });
-
-  try {
-    const method = tab._method || 'GET';
-    const body = tab._body || undefined;
-    const contentType = tab._contentType || undefined;
-    // Clear one-shot POST data after use
-    tab._method = undefined;
-    tab._body = undefined;
-    tab._contentType = undefined;
-    _dbg('Fetching ' + method + ' ' + url);
-    const result = await urlFetchAsync(deviceId, url, tab.id, method, body, contentType);
-    // Update URL bar if server redirected us
-    if (result.final_url && result.final_url !== url) {
-      tab.url = result.final_url;
-      const urlInput = document.getElementById('browser-url-input');
-      if (urlInput) urlInput.value = result.final_url;
-      _dbg('Redirected to ' + result.final_url);
-    }
-    if (result.is_binary) {
-      browserContent.innerHTML = '<div class="empty-state"><p>Cannot display binary content</p></div>';
-      return;
-    }
-    if (result.status && result.status >= 400) {
-      _dbg('HTTP ' + result.status);
-    }
-
-    let html = result.content;
-    const baseUrl = result.final_url || url;
-    _dbg('Got ' + html.length + ' bytes');
-
-    // Resolve and inline local assets (CSS, JS, images)
-    const replacements = [];
-    const isExternal = (u) => {
-      if (!u) return true;
-      try { const p = new URL(u, baseUrl); return p.origin !== new URL(baseUrl).origin; } catch { return true; }
-    };
-
-    // CSS links
-    const linkRe = /<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*>|<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*\brel\s*=\s*["']stylesheet["'][^>]*>/gi;
-    const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/i;
-    for (const m of html.matchAll(linkRe)) {
-      const tag = m[0];
-      const hm = tag.match(hrefRe);
-      if (!hm) continue;
-      const href = hm[1];
-      const resolved = resolveUrl(baseUrl, href);
-      if (!resolved || isExternal(resolved)) { _dbg('CSS (ext): ' + href); continue; }
-      _dbg('CSS: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
-        if (r.content && !r.is_binary) {
-          // Resolve url() references inside CSS
-          let css = r.content;
-          css = css.replace(/url\(\s*["']?(?!data:|https?:|\/\/)([^"')]+)["']?\s*\)/g, (match, ref) => {
-            const absRef = resolveUrl(resolved, ref);
-            return absRef ? `url(${absRef})` : match;
-          });
-          return { original: tag, replacement: '<style>' + css + '</style>' };
-        }
-        return null;
-      }).catch(err => { errors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' }); return null; }));
-    }
-
-    // Script tags
-    const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
-    for (const m of html.matchAll(scriptRe)) {
-      const tag = m[0];
-      const src = m[1];
-      const resolved = resolveUrl(baseUrl, src);
-      if (!resolved || isExternal(resolved)) { _dbg('JS (ext): ' + src); continue; }
-      _dbg('JS: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
-        if (r.content && !r.is_binary) return { original: tag, replacement: '<script>' + r.content + '<\/script>' };
-        return null;
-      }).catch(err => { errors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' }); return null; }));
-    }
-
-    // Images
-    const imgRe = /(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
-    for (const m of html.matchAll(imgRe)) {
-      const tag = m[0];
-      const src = m[2];
-      if (src.startsWith('data:')) continue;
-      const resolved = resolveUrl(baseUrl, src);
-      if (!resolved || isExternal(resolved)) continue;
-      _dbg('IMG: ' + resolved);
-      replacements.push(urlFetchAsync(deviceId, resolved, tab.id).then(r => {
-        if (r.is_binary && r.content) {
-          const ct = r.content_type || 'image/png';
-          const mime = ct.split(';')[0].trim();
-          return { original: tag, replacement: m[1] + 'data:' + mime + ';base64,' + r.content + m[3] };
-        }
-        return null;
-      }).catch(err => { errors.push({ level: 'error', text: 'IMG failed: ' + src + ' (' + err.message + ')' }); return null; }));
-    }
-
-    _dbg('Fetching ' + replacements.length + ' assets...');
-    const results = await Promise.all(replacements);
-    for (const r of results) {
-      if (r) html = html.replace(r.original, r.replacement);
-    }
-
-    // Bail if user navigated away
-    if (activeBrowserTab !== tab.id) return;
-
-    // Inject console capture + navigation intercept
-    const headMatch = html.match(/<head[^>]*>/i);
-    if (headMatch) {
-      const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
-      const navJs = `(function(){
-        // --- Patch fetch to proxy through Build ---
-        var _origFetch = window.fetch;
-        var _reqId = 0;
-        var _pending = {};
-        window.addEventListener('message', function(evt) {
-          if (evt.data && evt.data.type === '__build_fetch_response' && _pending[evt.data.reqId]) {
-            _pending[evt.data.reqId](evt.data);
-            delete _pending[evt.data.reqId];
-          }
-        });
-        window.fetch = function(input, init) {
-          init = init || {};
-          var url = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));
-          var method = (init.method || (input && input.method) || 'GET').toUpperCase();
-          var body = init.body || null;
-          var contentType = null;
-          var headers = init.headers;
-          if (headers) {
-            if (typeof headers.get === 'function') contentType = headers.get('content-type');
-            else if (headers['Content-Type']) contentType = headers['Content-Type'];
-            else if (headers['content-type']) contentType = headers['content-type'];
-          }
-          if (body && typeof body !== 'string') {
-            try { body = new URLSearchParams(body).toString(); if (!contentType) contentType = 'application/x-www-form-urlencoded'; } catch(e) { body = String(body); }
-          }
-          var id = '__bf_' + (++_reqId);
-          return new Promise(function(resolve) {
-            _pending[id] = function(data) {
-              var respInit = { status: data.status || 200, headers: { 'Content-Type': data.contentType || 'text/plain' } };
-              resolve(new Response(data.body || '', respInit));
-            };
-            parent.postMessage({ type: '__build_browser_fetch', reqId: id, url: url, method: method, body: body, contentType: contentType }, '*');
-          });
-        };
-
-        // --- Patch XMLHttpRequest to proxy through Build ---
-        var _OrigXHR = XMLHttpRequest;
-        function ProxyXHR() {
-          this._method = 'GET'; this._url = ''; this._headers = {}; this._async = true;
-          this.readyState = 0; this.status = 0; this.statusText = '';
-          this.responseText = ''; this.response = ''; this.responseType = '';
-          this.onreadystatechange = null; this.onload = null; this.onerror = null;
-          this._listeners = {};
-        }
-        ProxyXHR.prototype.open = function(method, url, async) { this._method = method; this._url = url; this._async = async !== false; this.readyState = 1; };
-        ProxyXHR.prototype.setRequestHeader = function(k, v) { this._headers[k.toLowerCase()] = v; };
-        ProxyXHR.prototype.getResponseHeader = function(k) { return this._responseHeaders ? (this._responseHeaders[k.toLowerCase()] || null) : null; };
-        ProxyXHR.prototype.getAllResponseHeaders = function() { return ''; };
-        ProxyXHR.prototype.addEventListener = function(e, fn) { if (!this._listeners[e]) this._listeners[e] = []; this._listeners[e].push(fn); };
-        ProxyXHR.prototype.removeEventListener = function(e, fn) { if (this._listeners[e]) this._listeners[e] = this._listeners[e].filter(function(f){return f !== fn;}); };
-        ProxyXHR.prototype._fire = function(e) { var fns = this._listeners[e] || []; for (var i = 0; i < fns.length; i++) fns[i].call(this, {}); };
-        ProxyXHR.prototype.send = function(body) {
-          var self = this;
-          var id = '__bf_' + (++_reqId);
-          _pending[id] = function(data) {
-            self.status = data.status || 200;
-            self.statusText = data.status ? String(data.status) : 'OK';
-            self.responseText = data.body || '';
-            self.response = data.body || '';
-            self._responseHeaders = { 'content-type': data.contentType || 'text/plain' };
-            self.readyState = 4;
-            if (self.onreadystatechange) self.onreadystatechange();
-            if (self.onload) self.onload();
-            self._fire('readystatechange');
-            self._fire('load');
-            self._fire('loadend');
-          };
-          parent.postMessage({ type: '__build_browser_fetch', reqId: id, url: self._url, method: self._method, body: body || null, contentType: self._headers['content-type'] || null }, '*');
-        };
-        ProxyXHR.prototype.abort = function() {};
-        ProxyXHR.prototype.overrideMimeType = function() {};
-        window.XMLHttpRequest = ProxyXHR;
-
-        // --- Navigation intercept (lower priority: skip if page already handled) ---
-        document.addEventListener('click', function(e) {
-          if (e.defaultPrevented) return;
-          var a = e.target.closest('a[href]');
-          if (!a) return;
-          var href = a.getAttribute('href');
-          if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
-          e.preventDefault();
-          parent.postMessage({ type: '__build_browser_navigate', href: href }, '*');
-        });
-        document.addEventListener('submit', function(e) {
-          if (e.defaultPrevented) return;
-          var form = e.target;
-          if (!form || form.tagName !== 'FORM') return;
-          e.preventDefault();
-          var action = form.getAttribute('action') || window.location.href;
-          var method = (form.getAttribute('method') || 'GET').toUpperCase();
-          var fd = new FormData(form);
-          if (method === 'GET') {
-            var params = new URLSearchParams(fd).toString();
-            var sep = action.indexOf('?') === -1 ? '?' : '&';
-            parent.postMessage({ type: '__build_browser_navigate', href: action + sep + params }, '*');
-          } else {
-            parent.postMessage({ type: '__build_browser_form_submit', action: action, method: method, body: new URLSearchParams(fd).toString(), contentType: 'application/x-www-form-urlencoded' }, '*');
-          }
-        });
-      })();`;
-      html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + navJs + '<\/script>' + html.slice(idx);
-    }
-
-    const inlinedHtml = html;
-
-    // Build wrapper
-    browserContent.innerHTML = '';
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column';
-
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;min-height:0';
-    wrapper.appendChild(iframe);
-
-    // Console overlay (matches activity/terminal console style)
-    const consoleBar = document.createElement('div');
-    consoleBar.className = 'html-console-bar';
-    consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge hc-hidden">0</span><span class="html-console-toggle"><svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 9l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
-    wrapper.appendChild(consoleBar);
-
-    const consolePanel = document.createElement('div');
-    consolePanel.className = 'html-console-panel hc-hidden';
-    wrapper.appendChild(consolePanel);
-
-    browserContent.appendChild(wrapper);
-
-    const badge = consoleBar.querySelector('.html-console-badge');
-    const toggleIcon = consoleBar.querySelector('.html-console-toggle');
-    let consoleOpen = false;
-    let entryCount = 0;
-
-    consoleBar.addEventListener('click', () => {
-      consoleOpen = !consoleOpen;
-      consolePanel.classList.toggle('hc-hidden', !consoleOpen);
-      toggleIcon.innerHTML = consoleOpen
-        ? '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        : '<svg viewBox="0 0 14 14" fill="none" width="14" height="14"><path d="M3 9l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      if (consoleOpen) { badge.classList.add('hc-hidden'); consolePanel.scrollTop = consolePanel.scrollHeight; }
-    });
-
-    function addConsoleEntry(level, text) {
-      entryCount++;
-      if (!consoleOpen) { badge.classList.remove('hc-hidden'); badge.textContent = String(entryCount); }
-      const row = document.createElement('div');
-      row.className = 'html-console-entry html-console-' + (level || 'log');
-      const levelSpan = document.createElement('span');
-      levelSpan.className = 'html-console-level';
-      levelSpan.textContent = level || 'log';
-      row.appendChild(levelSpan);
-      const textSpan = document.createElement('span');
-      textSpan.textContent = text;
-      row.appendChild(textSpan);
-      consolePanel.appendChild(row);
-      if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
-    }
-
-    // Populate errors but keep console collapsed by default
-    for (const err of errors) addConsoleEntry(err.level, err.text);
-
-    function onMsg(evt) {
-      if (!evt.data) return;
-      if (evt.data.type === '__build_console') {
-        addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
-      } else if (evt.data.type === '__build_preview_ready') {
-        iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
-      } else if (evt.data.type === '__build_browser_navigate') {
-        const target = resolveUrl(baseUrl, evt.data.href);
-        if (target && new URL(target).origin === new URL(baseUrl).origin) {
-          tab.url = target;
-          tab._method = undefined;
-          tab._body = undefined;
-          tab._contentType = undefined;
-          document.getElementById('browser-url-input').value = target;
-          renderChannelPanel();
-          fetchAndRenderBrowserPage(tab);
-        }
-      } else if (evt.data.type === '__build_browser_form_submit') {
-        const target = resolveUrl(baseUrl, evt.data.action);
-        if (target && new URL(target).origin === new URL(baseUrl).origin) {
-          tab.url = target;
-          tab._method = evt.data.method;
-          tab._body = evt.data.body;
-          tab._contentType = evt.data.contentType;
-          document.getElementById('browser-url-input').value = target;
-          renderChannelPanel();
-          fetchAndRenderBrowserPage(tab);
-        }
-      } else if (evt.data.type === '__build_browser_fetch') {
-        const reqId = evt.data.reqId;
-        const fetchUrl = resolveUrl(baseUrl, evt.data.url);
-        if (!fetchUrl) {
-          iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: 0, body: 'Invalid URL', contentType: 'text/plain' }, '*');
-          return;
-        }
-        urlFetchAsync(deviceId, fetchUrl, tab.id, evt.data.method || 'GET', evt.data.body || undefined, evt.data.contentType || undefined)
-          .then(r => {
-            iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: r.status || 200, body: r.content || '', contentType: r.content_type || 'text/plain' }, '*');
-          })
-          .catch(err => {
-            iframe.contentWindow.postMessage({ type: '__build_fetch_response', reqId, status: 0, body: err.message, contentType: 'text/plain' }, '*');
-          });
-      }
-    }
-    window.addEventListener('message', onMsg);
-
-    const observer = new MutationObserver(() => {
-      if (!browserContent.contains(wrapper)) {
-        window.removeEventListener('message', onMsg);
-        observer.disconnect();
-      }
-    });
-    observer.observe(browserContent, { childList: true });
-
-    iframe.src = '/preview-frame';
-
-  } catch (err) {
-    browserContent.innerHTML = '<div class="empty-state"><p>Error: ' + escapeHtml(err.message) + '</p></div>';
-  }
-}
-
-function showBrowserView(tab) {
-  // Hide all tab panels, show browser panel
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('tab-browser')?.classList.add('active');
-  // Hide tab buttons active state
-  document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.remove('active'));
-  // Browser owns the full right column — hide everything else
-  document.getElementById('viewer-tabs')?.classList.add('hidden');
-  document.querySelector('.viewer-body')?.classList.add('hidden');
-  document.querySelector('.comp-wrapper')?.classList.add('hidden');
-  document.getElementById('console-bottom')?.classList.add('hidden');
-
-  const urlInput = document.getElementById('browser-url-input');
-  if (urlInput) urlInput.value = tab.url || '';
-
-  // If URL looks valid, load it
-  if (tab.url && tab.url.startsWith('http')) {
-    fetchAndRenderBrowserPage(tab);
-  } else {
-    const browserContent = document.getElementById('browser-content');
-    if (browserContent) browserContent.innerHTML = '<div class="empty-state"><p>Enter a localhost address and press Go</p></div>';
-  }
-}
-
-// Browser URL bar handlers
-document.getElementById('browser-url-go')?.addEventListener('click', () => {
-  if (!activeBrowserTab) return;
-  const urlInput = document.getElementById('browser-url-input');
-  const url = urlInput?.value?.trim();
-  if (!url) return;
-  // Find the active tab and update its URL
-  for (const [, tabs] of browserTabs) {
-    const tab = tabs.find(t => t.id === activeBrowserTab);
-    if (tab) {
-      tab.url = url;
-      renderChannelPanel();
-      fetchAndRenderBrowserPage(tab);
-      break;
-    }
-  }
-});
-
-document.getElementById('browser-url-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    document.getElementById('browser-url-go')?.click();
-  }
-});
-
-// Tracks asset-fetch errors to surface in the console overlay.
-let _htmlPreviewErrors = [];
-
-async function renderHtmlPreview(content, htmlPath) {
-  fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading preview...</p></div>';
-  _htmlPreviewErrors = [];
-  const _dbg = (text) => _htmlPreviewErrors.push({ level: 'debug', text });
-
-  const channelId = filesChannelId;
-  let html = content;
-
-  _dbg('Rendering ' + htmlPath + ' (' + content.length + ' bytes)');
-
-  const isExternal = (url) => url && (url.startsWith('http:') || url.startsWith('https:') || url.startsWith('//'));
-
-  // Use string-based asset resolution (avoids DOMParser mangling style/script content).
-  const replacements = [];
-
-  // Find local CSS <link> tags (external left as-is — blob iframe has no CSP restrictions).
-  const linkRe = /<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*>|<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*\brel\s*=\s*["']stylesheet["'][^>]*>/gi;
-  const hrefRe = /\bhref\s*=\s*["']([^"']+)["']/i;
-  for (const m of html.matchAll(linkRe)) {
-    const tag = m[0];
-    const hm = tag.match(hrefRe);
-    if (!hm) continue;
-    const href = hm[1];
-    if (isExternal(href)) { _dbg('CSS (ext, kept): ' + href); continue; }
-    const resolved = resolveAssetPath(htmlPath, href);
-    _dbg('CSS (local): ' + href + ' → ' + resolved);
-    if (!resolved) continue;
-    replacements.push(readFileAsync(channelId, resolved).then(result => {
-      if (result.content && !result.is_binary && !result.is_image) {
-        _dbg('CSS OK: ' + result.content.length + ' bytes');
-        return { original: tag, replacement: '<style>' + result.content + '</style>' };
-      }
-      return null;
-    }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'CSS failed: ' + href + ' (' + err.message + ')' });
-      return null;
-    }));
-  }
-
-  // Find local script[src] tags (external left as-is).
-  const scriptRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi;
-  for (const m of html.matchAll(scriptRe)) {
-    const tag = m[0];
-    const src = m[1];
-    if (isExternal(src)) { _dbg('JS (ext, kept): ' + src); continue; }
-    const resolved = resolveAssetPath(htmlPath, src);
-    _dbg('JS (local): ' + src + ' → ' + resolved);
-    if (!resolved) continue;
-    replacements.push(readFileAsync(channelId, resolved).then(result => {
-      if (result.content && !result.is_binary && !result.is_image) {
-        _dbg('JS OK: ' + result.content.length + ' bytes');
-        return { original: tag, replacement: '<script>' + result.content + '<\/script>' };
-      }
-      return null;
-    }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'JS failed: ' + src + ' (' + err.message + ')' });
-      return null;
-    }));
-  }
-
-  // Find local <img src> tags.
-  const imgRe = /(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
-  for (const m of html.matchAll(imgRe)) {
-    const tag = m[0];
-    const src = m[2];
-    if (isExternal(src) || src.startsWith('data:')) continue;
-    const resolved = resolveAssetPath(htmlPath, src);
-    _dbg('IMG (local): ' + src + ' → ' + resolved);
-    if (!resolved) continue;
-    replacements.push(readFileAsync(channelId, resolved).then(result => {
-      if (result.is_image && result.content) {
-        _dbg('IMG OK: ' + resolved);
-        return { original: tag, replacement: m[1] + result.content + m[3] };
-      } else if (result.content && !result.is_binary) {
-        const ext = resolved.split('.').pop().toLowerCase();
-        const mime = MIME_TYPES[ext] || 'application/octet-stream';
-        return { original: tag, replacement: m[1] + 'data:' + mime + ';base64,' + btoa(result.content) + m[3] };
-      }
-      return null;
-    }).catch(err => {
-      _htmlPreviewErrors.push({ level: 'error', text: 'IMG failed: ' + src + ' (' + err.message + ')' });
-      return null;
-    }));
-  }
-
-  _dbg('Fetching ' + replacements.length + ' assets...');
-  const results = await Promise.all(replacements);
-  for (const r of results) {
-    if (r) html = html.replace(r.original, r.replacement);
-  }
-  _dbg('Done. ' + _htmlPreviewErrors.filter(e => e.level === 'error').length + ' errors');
-
-  // Bail if user navigated away.
-  if (filesCurrentPath !== htmlPath || filesChannelId !== channelId) return;
-
-  // Inject console capture script right after <head>.
-  const headMatch = html.match(/<head[^>]*>/i);
-  if (headMatch) {
-    const idx = html.indexOf(headMatch[0]) + headMatch[0].length;
-    html = html.slice(0, idx) + '<script>' + CONSOLE_CAPTURE_JS + NAV_INTERCEPT_JS + '<\/script>' + html.slice(idx);
-  }
-
-  const inlinedHtml = html;
-
-  // Build wrapper with iframe and console overlay.
-  fileContentBody.innerHTML = '';
-  fileContentBody.style.padding = '0';
-
-  const wrapper = document.createElement('div');
-  wrapper.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column';
-
-  const iframe = document.createElement('iframe');
-  // No sandbox attr — blob URL already has opaque origin (isolated from parent).
-  iframe.style.cssText = 'width:100%;flex:1;border:none;background:#fff;border-radius:4px 4px 0 0;min-height:0';
-  wrapper.appendChild(iframe);
-
-  // Console overlay.
-  const consoleBar = document.createElement('div');
-  consoleBar.className = 'html-console-bar';
-  consoleBar.innerHTML = '<span class="html-console-title">Console</span><span class="html-console-badge hc-hidden">0</span><span class="html-console-toggle">&#x25B2;</span>';
-  wrapper.appendChild(consoleBar);
-
-  const consolePanel = document.createElement('div');
-  consolePanel.className = 'html-console-panel hc-hidden';
-  wrapper.appendChild(consolePanel);
-
-  fileContentBody.appendChild(wrapper);
-
-  const badge = consoleBar.querySelector('.html-console-badge');
-  const toggleIcon = consoleBar.querySelector('.html-console-toggle');
-  let consoleOpen = false;
-  let entryCount = 0;
-
-  consoleBar.addEventListener('click', () => {
-    consoleOpen = !consoleOpen;
-    consolePanel.classList.toggle('hc-hidden', !consoleOpen);
-    toggleIcon.innerHTML = consoleOpen ? '&#x25BC;' : '&#x25B2;';
-    if (consoleOpen) { badge.classList.add('hc-hidden'); consolePanel.scrollTop = consolePanel.scrollHeight; }
-  });
-
-  function addConsoleEntry(level, text) {
-    entryCount++;
-    if (!consoleOpen) { badge.classList.remove('hc-hidden'); badge.textContent = String(entryCount); }
-    const row = document.createElement('div');
-    row.className = 'html-console-entry html-console-' + (level || 'log');
-    const levelSpan = document.createElement('span');
-    levelSpan.className = 'html-console-level';
-    levelSpan.textContent = level || 'log';
-    row.appendChild(levelSpan);
-    const textSpan = document.createElement('span');
-    textSpan.textContent = text;
-    row.appendChild(textSpan);
-    consolePanel.appendChild(row);
-    if (consoleOpen) consolePanel.scrollTop = consolePanel.scrollHeight;
-  }
-
-  // Surface asset-fetch errors/debug that happened before iframe loaded.
-  for (const err of _htmlPreviewErrors) addConsoleEntry(err.level, err.text);
-  // Auto-open console if there are entries.
-  if (_htmlPreviewErrors.length > 0) {
-    consoleOpen = true;
-    consolePanel.classList.remove('hc-hidden');
-    toggleIcon.innerHTML = '&#x25BC;';
-    badge.classList.add('hc-hidden');
-  }
-
-  // Listen for console messages and preview-ready signal from iframe.
-  function onMsg(evt) {
-    if (!evt.data) return;
-    if (evt.data.type === '__build_console') {
-      addConsoleEntry(evt.data.entry.level, evt.data.entry.text);
-    } else if (evt.data.type === '__build_preview_ready') {
-      // Preview frame is ready — send the HTML content.
-      iframe.contentWindow.postMessage({ type: '__build_preview', html: inlinedHtml }, '*');
-    } else if (evt.data.type === '__build_preview_navigate') {
-      // Relative link clicked in preview — navigate to that file.
-      const targetPath = resolveAssetPath(htmlPath, evt.data.href);
-      if (targetPath) {
-        // Find the entry in the file tree data and select it in preview mode.
-        const data = fileTreeData.get(filesChannelId);
-        const dir = targetPath.substring(0, targetPath.lastIndexOf('/') + 1);
-        const dirKey = dir ? dir.slice(0, -1) : '';
-        const entries = data && data.get(dirKey);
-        const entry = entries && entries.entries && entries.entries.find(e => (e.path || e.name) === targetPath);
-        selectFile(targetPath, entry || null, 'rendered');
-        // Fetch and render the file.
-        const conn = getE2EE(filesChannelId);
-        if (conn && conn.connected) {
-          fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-          conn.fileRead(filesChannelId, targetPath);
-        }
-      }
-    }
-  }
-  window.addEventListener('message', onMsg);
-
-  // Clean up listener when content changes.
-  const observer = new MutationObserver(() => {
-    if (!fileContentBody.contains(wrapper)) {
-      window.removeEventListener('message', onMsg);
-      observer.disconnect();
-    }
-  });
-  observer.observe(fileContentBody, { childList: true });
-
-  // Load preview frame (has its own permissive CSP).
-  iframe.src = '/preview-frame';
-}
-
-// ---- Diff Renderer ----
-
-function renderDiffContent(diffText, truncated) {
-  fileContentBody.style.padding = '';
-  const lines = diffText.split('\n');
-  const viewer = document.createElement('div');
-  viewer.className = 'diff-viewer';
-
-  // Derive file extension for syntax highlighting.
-  const extMatch = filesCurrentPath ? filesCurrentPath.match(/\.([^./]+)$/) : null;
-  const ext = extMatch ? extMatch[1].toLowerCase() : '';
-
-  // Pre-parse lines into typed entries.
-  const entries = [];
-  let oldNum = 0, newNum = 0;
-  for (const line of lines) {
-    if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) continue;
-    if (line.startsWith('@@')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (m) { oldNum = parseInt(m[1]); newNum = parseInt(m[2]); }
-      entries.push({ type: 'hunk', text: line });
-      continue;
-    }
-    if (line.startsWith('+')) {
-      entries.push({ type: 'add', text: line.slice(1), num: String(newNum++) });
-    } else if (line.startsWith('-')) {
-      entries.push({ type: 'del', text: line.slice(1), num: String(oldNum++) });
-    } else {
-      entries.push({ type: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line, num: String(newNum) });
-      oldNum++; newNum++;
-    }
-  }
-
-  function addRow(cls, num, html) {
-    const row = document.createElement('div');
-    row.className = 'diff-line ' + cls;
-    const numEl = document.createElement('span');
-    numEl.className = 'dl-num';
-    numEl.textContent = num;
-    const contentEl = document.createElement('span');
-    contentEl.className = 'dl-content';
-    contentEl.innerHTML = html;
-    row.appendChild(numEl);
-    row.appendChild(contentEl);
-    viewer.appendChild(row);
-  }
-
-  for (let ei = 0; ei < entries.length; ei++) {
-    const e = entries[ei];
-    if (e.type === 'hunk') {
-      const hdr = document.createElement('div');
-      hdr.className = 'diff-hunk-header';
-      hdr.textContent = e.text;
-      viewer.appendChild(hdr);
-      continue;
-    }
-    if (e.type === 'ctx') {
-      addRow('context', e.num, highlightLine(e.text, ext));
-      continue;
-    }
-    if (e.type === 'del') {
-      const dels = [e];
-      while (ei + 1 < entries.length && entries[ei + 1].type === 'del') dels.push(entries[++ei]);
-      const adds = [];
-      while (ei + 1 < entries.length && entries[ei + 1].type === 'add') adds.push(entries[++ei]);
-      const pairs = Math.min(dels.length, adds.length);
-      for (let pi = 0; pi < dels.length; pi++) {
-        const html = pi < pairs ? wordDiffLine(dels[pi].text, adds[pi].text).oldHtml : highlightLine(dels[pi].text, ext);
-        addRow('removed', dels[pi].num, html);
-      }
-      for (let ai = 0; ai < adds.length; ai++) {
-        const html = ai < pairs ? wordDiffLine(dels[ai].text, adds[ai].text).newHtml : highlightLine(adds[ai].text, ext);
-        addRow('added', adds[ai].num, html);
-      }
-      continue;
-    }
-    if (e.type === 'add') {
-      addRow('added', e.num, highlightLine(e.text, ext));
-    }
-  }
-
-  fileContentBody.innerHTML = '';
-  fileContentBody.appendChild(viewer);
-
-  if (truncated) {
-    const note = document.createElement('div');
-    note.style.cssText = 'padding:.5rem .75rem;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border)';
-    note.textContent = 'Diff truncated';
-    fileContentBody.appendChild(note);
-  }
-}
-
-// ---- Syntax Highlighting (lightweight) ----
-
-const SYNTAX_RULES = {
-  js: [
-    [/\b(const|let|var|function|return|if|else|for|while|class|import|export|from|default|async|await|new|this|throw|try|catch|finally|switch|case|break|continue|typeof|instanceof|in|of|yield|void|delete)\b/g, 'keyword'],
-    [/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  py: [
-    [/\b(def|class|return|if|elif|else|for|while|import|from|as|with|try|except|finally|raise|yield|lambda|pass|break|continue|and|or|not|is|in|True|False|None|async|await|self)\b/g, 'keyword'],
-    [/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, 'string'],
-    [/#.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
-    [/@\w+/g, 'func'],
-  ],
-  html: [
-    [/<!--[\s\S]*?-->/g, 'comment'],
-    [/(<\/?)([\w-]+)/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\b(\w+)=/g, 'attr'],
-  ],
-  css: [
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\b(\d+\.?\d*)(px|em|rem|%|vh|vw|s|ms)?\b/g, 'number'],
-    [/([.#][\w-]+)/g, 'func'],
-    [/\b(color|background|display|flex|grid|margin|padding|border|font|width|height|position|top|left|right|bottom|z-index|overflow|opacity|transition|transform)\b/g, 'keyword'],
-  ],
-  rs: [
-    [/\b(fn|let|mut|const|pub|struct|enum|impl|trait|use|mod|crate|self|super|match|if|else|for|while|loop|return|break|continue|where|async|await|move|type|as|in|ref|unsafe|extern|dyn|static)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  go: [
-    [/\b(func|var|const|type|struct|interface|map|chan|go|select|case|default|if|else|for|range|return|break|continue|switch|package|import|defer|nil|true|false|make|new|len|cap|append|copy|close|delete|panic|recover)\b/g, 'keyword'],
-    [/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?|0x[\da-f]+|0b[01]+|0o[0-7]+)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  yaml: [
-    [/#.*$/gm, 'comment'],
-    [/^(\s*)([\w][\w.\-\/]*)(\s*:)/gm, 'attr'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\b(true|false|yes|no|null|~)\b/gi, 'keyword'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/(\$\w+|\$\{[^}]+\})/g, 'func'],
-    [/^(\s*-)\s/gm, 'operator'],
-  ],
-  toml: [
-    [/#.*$/gm, 'comment'],
-    [/^\s*\[+[\w.\-"]+\]+/gm, 'type'],
-    [/^(\s*)([\w][\w.\-]*)(\s*=)/gm, 'attr'],
-    [/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, 'string'],
-    [/\b(true|false)\b/g, 'keyword'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?/g, 'number'],
-  ],
-  sh: [
-    [/#.*$/gm, 'comment'],
-    [/\b(if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|exit|local|export|source|set|unset|readonly|declare|typeset|shift|eval|exec|trap)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/(\$\w+|\$\{[^}]+\}|\$\([^)]+\))/g, 'func'],
-    [/\b(\d+)\b/g, 'number'],
-    [/[|&;><]{1,2}/g, 'operator'],
-  ],
-  docker: [
-    [/#.*$/gm, 'comment'],
-    [/^(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL|MAINTAINER|AS)\b/gmi, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/(\$\w+|\$\{[^}]+\})/g, 'func'],
-    [/\b(\d+)\b/g, 'number'],
-  ],
-  c: [
-    [/\b(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|restrict|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while|_Bool|_Complex|_Imaginary|bool|true|false|NULL|nullptr)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/#\s*(include|define|ifdef|ifndef|endif|if|else|elif|undef|pragma|error|warning)\b/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFlLuU]*|0x[\da-f]+[lLuU]*|0b[01]+[lLuU]*)\b/gi, 'number'],
-    [/\b([A-Z][\w]*_[\w]*|[A-Z]{2,})\b/g, 'type'],
-  ],
-  cpp: [
-    [/\b(alignas|alignof|auto|bool|break|case|catch|char|char8_t|char16_t|char32_t|class|concept|const|consteval|constexpr|constinit|continue|co_await|co_return|co_yield|decltype|default|delete|do|double|dynamic_cast|else|enum|explicit|export|extern|false|float|for|friend|goto|if|inline|int|long|mutable|namespace|new|noexcept|nullptr|operator|override|private|protected|public|register|requires|return|short|signed|sizeof|static|static_assert|static_cast|struct|switch|template|this|thread_local|throw|true|try|typedef|typeid|typename|union|unsigned|using|virtual|void|volatile|wchar_t|while)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/#\s*(include|define|ifdef|ifndef|endif|if|else|elif|undef|pragma|error|warning)\b/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFlLuU]*|0x[\da-f]+[lLuU]*|0b[01]+[lLuU]*)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  cs: [
-    [/\b(abstract|as|base|bool|break|byte|case|catch|char|checked|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|private|protected|public|readonly|ref|return|sbyte|sealed|short|sizeof|stackalloc|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|var|virtual|void|volatile|while|async|await|yield|record|init|required|global)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\$"[^"]*"/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/#\s*(if|else|elif|endif|region|endregion|define|undef|pragma|nullable)\b/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFdDmM]?|0x[\da-f]+[lLuU]*)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-    [/\[\w+\]/g, 'attr'],
-  ],
-  bat: [
-    [/\bREM\b.*$/gmi, 'comment'],
-    [/^\s*::\s.*$/gm, 'comment'],
-    [/\b(echo|set|if|else|goto|call|exit|for|in|do|not|exist|defined|errorlevel|pause|cls|rem|setlocal|endlocal|enabledelayedexpansion|pushd|popd|shift|start|choice|timeout)\b/gi, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/(%\w+%|%~?\d|!\w+!)/g, 'func'],
-    [/\b(\d+)\b/g, 'number'],
-    [/^\s*:\w+/gm, 'type'],
-  ],
-  java: [
-    [/\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|null|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while|true|false|var|record|sealed|permits|yield)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/@\w+/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFdDlL]?|0x[\da-f]+[lL]?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  rb: [
-    [/\b(def|class|module|if|elsif|else|unless|case|when|while|until|for|do|end|begin|rescue|ensure|raise|return|yield|block_given\?|require|require_relative|include|extend|attr_accessor|attr_reader|attr_writer|self|super|nil|true|false|and|or|not|in|then|puts|print|lambda|proc)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/#.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/(:\w+)/g, 'attr'],
-    [/(@\w+)/g, 'func'],
-  ],
-  php: [
-    [/\b(abstract|and|array|as|break|callable|case|catch|class|clone|const|continue|declare|default|do|echo|else|elseif|empty|enddeclare|endfor|endforeach|endif|endswitch|endwhile|enum|eval|exit|extends|final|finally|fn|for|foreach|function|global|goto|if|implements|include|include_once|instanceof|insteadof|interface|isset|list|match|namespace|new|null|or|print|private|protected|public|readonly|require|require_once|return|static|switch|this|throw|trait|try|unset|use|var|while|xor|yield|true|false|self)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/#.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/\$\w+/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  swift: [
-    [/\b(actor|associatedtype|async|await|break|case|catch|class|continue|default|defer|deinit|do|else|enum|extension|fallthrough|fileprivate|for|func|guard|if|import|in|init|inout|internal|is|let|nil|open|operator|private|protocol|public|repeat|rethrows|return|self|Self|static|struct|subscript|super|switch|throw|throws|try|typealias|var|weak|where|while|true|false|some|any)\b/g, 'keyword'],
-    [/("""|"(?:[^"\\]|\\.)*")/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/@\w+/g, 'attr'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  dart: [
-    [/\b(abstract|as|assert|async|await|base|break|case|catch|class|const|continue|covariant|default|deferred|do|dynamic|else|enum|export|extends|extension|external|factory|false|final|finally|for|Function|get|hide|if|implements|import|in|interface|is|late|library|mixin|new|null|on|operator|part|required|rethrow|return|sealed|set|show|static|super|switch|sync|this|throw|true|try|typedef|var|void|when|while|with|yield)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/@\w+/g, 'attr'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  scala: [
-    [/\b(abstract|case|catch|class|def|do|else|enum|export|extends|extension|false|final|finally|for|forSome|given|if|implicit|import|lazy|match|new|null|object|override|package|private|protected|return|sealed|super|this|then|throw|trait|true|try|type|using|val|var|while|with|yield)\b/g, 'keyword'],
-    [/("""|"(?:[^"\\]|\\.)*")/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/@\w+/g, 'attr'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[fFdDlL]?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  lua: [
-    [/\b(and|break|do|else|elseif|end|false|for|function|goto|if|in|local|nil|not|or|repeat|return|then|true|until|while)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/--\[\[[\s\S]*?\]\]/g, 'comment'],
-    [/--.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-  ],
-  sql: [
-    [/\b(SELECT|FROM|WHERE|INSERT|INTO|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|JOIN|INNER|LEFT|RIGHT|OUTER|FULL|CROSS|ON|AND|OR|NOT|IN|IS|NULL|AS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|EXISTS|BETWEEN|LIKE|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|TRANSACTION|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|CHECK|UNIQUE|CONSTRAINT|VALUES|COUNT|SUM|AVG|MIN|MAX|CASCADE|IF|FUNCTION|PROCEDURE|TRIGGER|GRANT|REVOKE|WITH|RECURSIVE|OVER|PARTITION|RANK|ROW_NUMBER|COALESCE|CAST|CONVERT)\b/gi, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/--.*$/gm, 'comment'],
-    [/\/\*[\s\S]*?\*\//g, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-  ],
-  r: [
-    [/\b(if|else|repeat|while|function|for|in|next|break|TRUE|FALSE|NULL|Inf|NaN|NA|NA_integer_|NA_real_|NA_complex_|NA_character_|return|invisible|library|require|source|stop|warning|message|cat|print|paste|paste0|sprintf)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/#.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?[iL]?)\b/gi, 'number'],
-    [/<-|->|<<-|->>|%%|%in%|%\*%/g, 'operator'],
-  ],
-  perl: [
-    [/\b(my|our|local|sub|if|elsif|else|unless|while|until|for|foreach|do|last|next|redo|return|use|require|package|BEGIN|END|die|warn|print|say|chomp|chop|push|pop|shift|unshift|sort|reverse|map|grep|join|split|open|close|read|write|defined|undef|exists|delete|ref|bless|tie|untie|eval|qw)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/#.*$/gm, 'comment'],
-    [/(\$[\w:]+|@[\w:]+|%[\w:]+)/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/=~|!~|&&|\|\||\/\//g, 'operator'],
-  ],
-  elixir: [
-    [/\b(def|defp|defmodule|defmacro|defmacrop|defstruct|defprotocol|defimpl|defguard|defdelegate|do|end|if|else|unless|case|cond|when|with|for|in|fn|raise|rescue|catch|after|try|receive|send|spawn|import|use|alias|require|true|false|nil|and|or|not|is_atom|is_binary|is_boolean|is_float|is_function|is_integer|is_list|is_map|is_nil|is_number|is_pid|is_tuple)\b/g, 'keyword'],
-    [/("""|"(?:[^"\\]|\\.)*")/g, 'string'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/#.*$/gm, 'comment'],
-    [/(:\w+)/g, 'attr'],
-    [/@\w+/g, 'func'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-    [/\|>/g, 'operator'],
-  ],
-  erlang: [
-    [/\b(after|and|andalso|band|begin|bnot|bor|bsl|bsr|bxor|case|catch|div|end|fun|if|let|not|of|or|orelse|receive|rem|try|when|xor|true|false|undefined)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/%.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-    [/\b(\w+):/g, 'func'],
-  ],
-  zig: [
-    [/\b(align|allowzero|and|anyframe|anytype|asm|async|await|break|callconv|catch|comptime|const|continue|defer|else|enum|errdefer|error|export|extern|fn|for|if|inline|linksection|noalias|nosuspend|null|opaque|or|orelse|packed|pub|resume|return|struct|suspend|switch|test|threadlocal|true|false|try|undefined|union|unreachable|var|volatile|while)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\/\/.*$/gm, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-  ],
-  haskell: [
-    [/\b(as|case|class|data|default|deriving|do|else|family|forall|foreign|hiding|if|import|in|infix|infixl|infixr|instance|let|module|newtype|of|qualified|then|type|where|True|False|Nothing|Just|Left|Right|IO|Maybe|Either|String|Int|Integer|Float|Double|Bool|Char)\b/g, 'keyword'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/--.*$/gm, 'comment'],
-    [/\{-[\s\S]*?-\}/g, 'comment'],
-    [/\b(\d+\.?\d*(?:e[+-]?\d+)?)\b/gi, 'number'],
-    [/\b([A-Z]\w*)\b/g, 'type'],
-    [/::|=>|->|<-|\.\./g, 'operator'],
-  ],
-  make: [
-    [/#.*$/gm, 'comment'],
-    [/^[\w.\-\/]+\s*[:+?]?=/gm, 'attr'],
-    [/^[\w.\-\/\%]+\s*:/gm, 'type'],
-    [/\$[\(\{][\w@<^+*?%]+[\)\}]/g, 'func'],
-    [/\$[@<^+*?%]/g, 'func'],
-    [/(["'])(?:(?!\1|\\).|\\.)*?\1/g, 'string'],
-    [/\b(ifeq|ifneq|ifdef|ifndef|else|endif|include|override|export|unexport|define|endef|vpath)\b/g, 'keyword'],
-  ],
-};
-
-// Map file extensions to language.
-const EXT_MAP = {
-  js: 'js', jsx: 'js', ts: 'js', tsx: 'js', mjs: 'js', cjs: 'js',
-  py: 'py', pyi: 'py',
-  html: 'html', htm: 'html', xml: 'html', svg: 'html',
-  css: 'css', scss: 'css', less: 'css',
-  rs: 'rs',
-  go: 'go',
-  json: 'js', jsonc: 'js',
-  sh: 'sh', bash: 'sh', zsh: 'sh',
-  yml: 'yaml', yaml: 'yaml',
-  toml: 'toml', ini: 'toml',
-  c: 'c', h: 'c',
-  cpp: 'cpp', cxx: 'cpp', cc: 'cpp', hpp: 'cpp', hxx: 'cpp', hh: 'cpp',
-  cs: 'cs', csx: 'cs',
-  java: 'java', kt: 'java', kts: 'java',
-  rb: 'rb', rake: 'rb', gemspec: 'rb',
-  bat: 'bat', cmd: 'bat',
-  dockerfile: 'docker',
-  php: 'php', phtml: 'php',
-  swift: 'swift',
-  dart: 'dart',
-  scala: 'scala', sc: 'scala',
-  lua: 'lua',
-  sql: 'sql',
-  r: 'r',
-  pl: 'perl', pm: 'perl', perl: 'perl',
-  ex: 'elixir', exs: 'elixir',
-  erl: 'erlang', hrl: 'erlang',
-  zig: 'zig',
-  hs: 'haskell', lhs: 'haskell',
-  makefile: 'make', mk: 'make',
-};
-
-function highlightLine(text, ext) {
-  const lang = EXT_MAP[ext];
-  const rules = lang ? SYNTAX_RULES[lang] : null;
-  if (!rules || !text) return escHtml(text || '');
-
-  // Tokenize: find all matches, sort by position, apply non-overlapping.
-  const tokens = [];
-  for (const [re, cls] of rules) {
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      tokens.push({ start: m.index, end: m.index + m[0].length, cls, text: m[0] });
-    }
-  }
-  tokens.sort((a, b) => a.start - b.start || b.end - a.end);
-
-  let result = '';
-  let pos = 0;
-  for (const tok of tokens) {
-    if (tok.start < pos) continue; // overlapping, skip
-    if (tok.start > pos) result += escHtml(text.slice(pos, tok.start));
-    result += `<span class="tok-${tok.cls}">${escHtml(tok.text)}</span>`;
-    pos = tok.end;
-  }
-  if (pos < text.length) result += escHtml(text.slice(pos));
-  return result || '&nbsp;';
-}
-
-// ---- Load files on tab switch ----
-
-function onFilesTabActivated() {
-  if (!filesChannelId || filesChannelId !== chatCurrentChannel) {
-    // Reset tree for new channel.
-    fileTreeData.delete(filesChannelId);
-    filesChangesData.delete(filesChannelId);
-    filesCurrentPath = null;
-    filesCurrentView = 'source';
-    filesLastContent = null;
-    filesCurrentHasDiff = false;
-    filesCurrentIsMarkdown = false;
-    filesCurrentIsSvg = false;
-    filesCurrentIsHtml = false;
-    filesPathText.textContent = 'No file selected';
-    filesPathText.classList.add('empty');
-    fileReloadBtn.classList.add('hc-hidden');
-    fileFloatToggle.style.display = 'none';
-    fileContentBody.innerHTML = '<div class="empty-state"><p>Select a file to view contents</p></div>';
-
-    // Check for saved state to restore after tree loads.
-    const saved = loadChannelState(chatCurrentChannel);
-    if (saved.filesPath) {
-      filesPendingRestore = saved.filesPath;
-      filesPendingView = saved.filesView || 'source';
-    } else {
-      filesPendingRestore = null;
-    }
-
-    filesLoadRoot();
-    const _ftaConn = getActiveE2EE();
-    if (filesTreeTab === 'changes' && _ftaConn && _ftaConn.connected) {
-      _ftaConn.filesChanges(chatCurrentChannel);
-    }
-  }
-}
-
-// Hook into tab switching — save active tab per channel.
-const _origSwitchTab = switchTab;
-switchTab = function(tab) {
-  _origSwitchTab(tab);
-  if (tab === 'files') onFilesTabActivated();
-  if (chatCurrentChannel) saveChannelState(chatCurrentChannel, { activeTab: tab });
-};
-
-// ===== File Path Link Navigation =====
-function navigateToFile(filePath) {
-  // If the files tab is already showing this channel, just select the file.
-  // Otherwise, set pending restore and switch tabs.
-  filesPendingRestore = filePath;
-  filesPendingView = 'source';
-  switchTab('files');
-  location.hash = 'files';
-  // Also select immediately — works when tree is already loaded.
-  if (filesChannelId) {
-    selectFile(filePath, null, 'source');
-  }
-}
-
-// Delegated click handler for file-path-link elements in messages.
-document.addEventListener('click', function(e) {
-  var link = e.target.closest('.file-path-link');
-  if (!link) return;
-  e.preventDefault();
-  var path = link.dataset.filePath;
-  if (path) navigateToFile(path);
-});
 
 
 // ---- Expose helpers needed by vendor/markdown.js ----
 window.highlightLine = highlightLine;
+
+// ---- Expose helpers needed by feature modules during the transition ----
+window.getActiveE2EE = getActiveE2EE;
+window.getE2EE = getE2EE;
+window.updateRailButtonStates = updateRailButtonStates;
+window.renderChannelPanel = renderChannelPanel;
+window.renderMessages = renderMessages;
+window.selectChannel = selectChannel;
+window.switchTab = switchTab;
+window.saveChannelState = saveChannelState;
+window.loadChannelState = loadChannelState;
+window.showBrowserView = showBrowserView;
+window.anyE2EEConnected = anyE2EEConnected;
+window.showEditChannelDialog = showEditChannelDialog;
+window.connectToDevice = connectToDevice;
+window.updateChatRailUnreadBadge = updateChatRailUnreadBadge;

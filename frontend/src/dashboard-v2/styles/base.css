@@ -1,0 +1,16 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100%;
+}
+
+#app { min-height: 100vh; display: flex; }
+
+code, pre { font-family: var(--font-mono); }

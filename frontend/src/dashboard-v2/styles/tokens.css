@@ -1,0 +1,11 @@
+:root {
+  --bg: #0b0d10;
+  --bg-elev: #14181d;
+  --fg: #e6eaf0;
+  --fg-muted: #8a94a3;
+  --accent: #6fa3ff;
+  --border: #20262e;
+  --radius: 10px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}

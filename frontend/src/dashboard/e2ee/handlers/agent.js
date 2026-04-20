@@ -12,8 +12,12 @@ import {
   appendConsoleEntry,
   markConsoleEntryDone,
   clearConsole,
+  endReasoningEntry,
 } from '../../console/view.js';
 import { renderTasksPanel, updateTasksBadge } from '../../tasks/panel.js';
+import { setConsoleState } from '../../shell/rail.js';
+import { crossfadeStatus } from '../../chat/interactions.js';
+import { onAgentFileChanges } from '../../files/tree.js';
 
 export function bindAgentHandlers(instance, deviceId) {
   instance.addEventListener('harness_list', (evt) => {
@@ -105,7 +109,7 @@ export function bindAgentHandlers(instance, deviceId) {
         }
       }
       if (state.chatCurrentChannel !== channel_id) return;
-      currentReasoningEntry = null;
+      endReasoningEntry();
       const desc = describeToolUse(name, input);
       appendConsoleEntry(agentEvt.tool_use_id, name, desc, input, agentEvt.created_at);
     } else if (event_type === 'tool.result') {
@@ -221,9 +225,9 @@ export function bindAgentHandlers(instance, deviceId) {
       } else if (entry.type === 'text') {
         const content = (entry.data?.text) || '';
         if (content) {
-          currentReasoningEntry = null;
+          endReasoningEntry();
           appendConsoleReasoning(content, entry.created_at);
-          currentReasoningEntry = null;
+          endReasoningEntry();
         }
       }
     }

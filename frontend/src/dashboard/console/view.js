@@ -8,6 +8,13 @@ import { markUnreadMessages, getLastSeen } from '../channels/unread.js';
 
 let currentReasoningEntry = null;
 
+// Called from outside (e.g. agent.js when a tool.use lands) to break
+// the current reasoning chunk so the next appendConsoleReasoning starts a
+// fresh entry instead of buffering into the prior one.
+export function endReasoningEntry() {
+  currentReasoningEntry = null;
+}
+
 export function clearConsole(loading) {
   const body = document.querySelector('[data-console-panel="activity"]');
   if (body) {

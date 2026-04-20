@@ -235,6 +235,45 @@ try {
       detail: { channel_id: 'ch-1', event_type: 'activity.done', event: { tool_id: 't1', is_error: false, content: 'ok' } },
     },
     {
+      // Exercises endReasoningEntry() — previously bare currentReasoningEntry assignment crashed.
+      name: 'agent_event tool.use',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'tool.use', event: { tool_use_id: 'tu-1', name: 'Read', input: { file_path: '/x' } } },
+    },
+    {
+      name: 'agent_event tool.result',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'tool.result', event: { tool_use_id: 'tu-1', is_error: false, content: 'ok' } },
+    },
+    {
+      name: 'agent_event activity.end',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'activity.end', event: {} },
+    },
+    {
+      // Exercises setConsoleState('collapsed') on mobile-width plan_review interaction.
+      name: 'agent_event interaction.request',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'interaction.request', event: { interaction_id: 'i-1', sender: 'agent', question: 'do this?', kind: 'question', options: [{ id: 'yes', label: 'Yes' }] } },
+    },
+    {
+      name: 'agent_event agent.error',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'agent.error', event: { message: 'something blew up' } },
+    },
+    {
+      // Exercises crossfadeStatus on read_message_ids — previously bare crossfadeStatus crashed.
+      name: 'agent_event agent.state_update read',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'agent.state_update', event: { read_message_ids: ['m1'] } },
+    },
+    {
+      // Exercises onAgentFileChanges — previously bare reference crashed.
+      name: 'agent_event agent.file_changes',
+      eventName: 'agent_event',
+      detail: { channel_id: 'ch-1', event_type: 'agent.file_changes', event: { paths: ['/foo.txt'] } },
+    },
+    {
       name: 'activity_history',
       detail: { channel_id: 'ch-1', entries: [], total_tool_uses: 0 },
     },

@@ -86,7 +86,6 @@ try {
     sodium: typeof window.sodium,
     switchTab: typeof window.switchTab,
     renderChannelPanel: typeof window.renderChannelPanel,
-    renderMessages: typeof window.renderMessages,
     getE2EE: typeof window.getE2EE,
     getActiveE2EE: typeof window.getActiveE2EE,
     anyE2EEConnected: typeof window.anyE2EEConnected,

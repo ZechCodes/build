@@ -3,9 +3,8 @@ import { getActiveE2EE } from '../e2ee/bridge.js';
 import { clearChannelDraft, saveChannelState } from '../channels/state-store.js';
 import { clearPendingFiles } from './uploads.js';
 import { handleSentMessageScroll } from '../console/view.js';
-
-// Functions still in legacy.js (until Wave B) — bridged via window:
-//   window.appendMessage, window.resolvePendingPlanReviews, window.updateStopButton
+import { appendMessage, updateStopButton } from './messages.js';
+import { resolvePendingPlanReviews } from './interactions.js';
 
 const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
@@ -63,12 +62,12 @@ export async function sendChatMessage() {
   const msgs = state.chatMessages.get(channelId) || [];
   msgs.push(tempMsg);
   state.chatMessages.set(channelId, msgs);
-  window.appendMessage?.(tempMsg);
+  appendMessage(tempMsg);
   const _sentEl = document.getElementById('chat-messages').lastElementChild;
   if (_sentEl) handleSentMessageScroll(_sentEl);
 
   // Auto-resolve any pending plan review cards (agent cancels interactions on new messages).
-  window.resolvePendingPlanReviews?.();
+  resolvePendingPlanReviews();
 
   try {
     const payload = { action: 'message', channel_id: channelId, content: messageContent };
@@ -94,7 +93,7 @@ document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
   // Device handles two-phase stop: graceful cancel → 3s → process kill.
   _stopConn.stopAgent(state.chatCurrentChannel).catch(() => {});
   state.channelAgentActive.set(state.chatCurrentChannel, false);
-  window.updateStopButton?.();
+  updateStopButton();
 });
 
 document.getElementById('chat-input')?.addEventListener('keydown', (e) => {

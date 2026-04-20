@@ -126,6 +126,22 @@ import { selectChannel, selectAgent, dismissStaleSuggestions } from './channels/
 import { sendChatMessage } from './chat/composer.js';
 import './chat/new-channel-dialog.js';
 import {
+  renderMessages,
+  appendMessage,
+  appendSystemMessage,
+  updateStopButton,
+} from './chat/messages.js';
+import {
+  appendInteractionCard,
+  appendPlanReviewCard,
+  resolvePendingPlanReviews,
+  respondToInteraction,
+  crossfadeStatus,
+  respondToInteractionFreeform,
+  respondToMultiselectInteraction,
+  updatePlanModeUI,
+} from './chat/interactions.js';
+import {
   clearConsole,
   appendConsoleReasoning,
   appendConsoleEntry,
@@ -496,12 +512,6 @@ document.addEventListener('sk:notification-status', async (evt) => {
 
 
 
-function updateStopButton() {
-  const btn = document.getElementById('chat-stop-btn');
-  if (!btn) return;
-  const active = state.chatCurrentChannel && state.channelAgentActive.get(state.chatCurrentChannel);
-  btn.classList.toggle('visible', !!active);
-}
 
 // cachedHarnesses per-device stored in state.deviceHarnesses Map
 
@@ -1400,445 +1410,9 @@ function bindE2EEEvents(instance, deviceId) {
 
 
 
-function renderMessages() {
-  const container = document.getElementById('chat-messages');
-  const empty = document.getElementById('chat-empty-state');
 
-  if (!state.chatCurrentChannel) {
-    container.innerHTML = '';
-    container.appendChild(createEmptyState('Select a channel', 'Choose or create a channel to start chatting.'));
-    return;
-  }
 
-  const msgs = state.chatMessages.get(state.chatCurrentChannel) || [];
 
-  if (msgs.length === 0) {
-    container.innerHTML = '';
-    const ch = state.chatChannels.get(state.chatCurrentChannel);
-    if (state.chatLoadingMessages.has(state.chatCurrentChannel)) {
-      container.appendChild(createEmptyState(
-        `#${ch?.name || 'channel'}`,
-        'Loading messages…',
-      ));
-    } else {
-      container.appendChild(createEmptyState(
-        `#${ch?.name || 'channel'}`,
-        'No messages yet. Send one to get started.',
-      ));
-    }
-    return;
-  }
-
-  container.innerHTML = '';
-  for (const msg of msgs) {
-    appendMessage(msg);
-  }
-  // Mark unread messages with warm background.
-  markUnreadMessages(container);
-  // Dismiss old suggestion buttons and restore selected state from history.
-  dismissStaleSuggestions(container, msgs);
-  scrollToFirstUnread(container) || scrollChatToBottom();
-}
-
-function appendMessage(msg) {
-  // Delegate to interaction card if metadata present.
-  if (msg.metadata) {
-    const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata;
-    if (meta.interaction_id) {
-      appendInteractionCard(msg, meta);
-      return;
-    }
-  }
-
-  const container = document.getElementById('chat-messages');
-  // Remove empty state if present.
-  const empty = container.querySelector('.empty-state');
-  if (empty) empty.remove();
-
-  const isUser = msg.sender === 'client';
-  const avatarClass = isUser ? 'user' : 'agent';
-  const displayName = isUser ? 'You' : agentShortName(msg.sender);
-  const avatarLabel = isUser ? 'Y' : displayName[0];
-  const nameLabel = displayName;
-  const timeStr = msg.created_at ? shortTime(
-    typeof msg.created_at === 'number'
-      ? new Date(msg.created_at * 1000).toISOString()
-      : msg.created_at
-  ) : '';
-
-  const div = document.createElement('div');
-  div.className = 'msg';
-  div.dataset.msgId = msg.id || '';
-  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
-  div.innerHTML = `
-    <div class="msg-avatar ${avatarClass}">${avatarLabel}</div>
-    <div class="msg-body">
-      <div class="msg-header">
-        <span class="msg-name">${nameLabel}</span>
-        <span class="msg-time">${timeStr}</span>
-      </div>
-      <div class="msg-text">${renderMarkdown(msg.content || '')}</div>
-      ${msg.attachments && msg.attachments.length ? `<div class="msg-attachments">${
-        msg.attachments.map(att =>
-          `<div class="msg-attachment">
-            <svg viewBox="0 0 16 16" fill="none"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="att-name">${escapeHtml(att.filename || att.name || 'file')}</span>
-            <span class="att-size">${formatFileSize(att.size || 0)}</span>
-          </div>`
-        ).join('')
-      }</div>` : ''}
-      ${isUser && msg.id ? `<div class="msg-status ${msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sending'}"><span class="msg-status-state visible"><span class="check ${msg.read_at || msg.delivered_at ? 'active' : ''}">✓</span><span class="check ${msg.read_at ? 'active' : ''}">✓</span> ${msg.read_at ? 'Read' : msg.delivered_at ? 'Delivered' : 'Sending'}</span></div>` : ''}
-      ${msg.suggested_actions?.length ? `<div class="msg-suggestions">${
-        msg.suggested_actions.map(a => `<button class="suggestion-btn">${escapeHtml(a)}</button>`).join('')
-      }</div>` : ''}
-    </div>
-  `;
-  // Wire up file/diff embed toggles.
-  div.querySelectorAll('.build-embed-header').forEach(hdr => {
-    hdr.style.cursor = 'pointer';
-    hdr.addEventListener('click', (e) => {
-      if (e.target.closest('.build-embed-wrap-toggle')) return;
-      const embed = hdr.closest('.build-embed');
-      embed.classList.toggle('collapsed');
-    });
-  });
-  // Wire up suggestion button clicks.
-  if (msg.suggested_actions?.length) {
-    div.querySelectorAll('.suggestion-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.classList.contains('selected') || btn.classList.contains('dismissed')) return;
-        // Highlight selected, dismiss siblings.
-        div.querySelectorAll('.suggestion-btn').forEach(b => {
-          if (b === btn) b.classList.add('selected');
-          else b.classList.add('dismissed');
-        });
-        // Send as user message.
-        const input = document.getElementById('chat-input');
-        if (input) { input.value = btn.textContent; sendChatMessage(); }
-      });
-    });
-  }
-  container.appendChild(div);
-}
-
-function appendInteractionCard(msg, meta) {
-  const container = document.getElementById('chat-messages');
-  const empty = container.querySelector('.empty-state');
-  if (empty) empty.remove();
-
-  const resolved = !!meta.resolved_at;
-  const interactionId = meta.interaction_id;
-  const kind = meta.kind || 'question';
-  const options = meta.options || [];
-  const allowFreeform = meta.allow_freeform !== false;
-  const multiselect = !!meta.multiselect;
-  const plan = meta.plan || null;
-  const timeStr = msg.created_at ? shortTime(
-    typeof msg.created_at === 'number'
-      ? new Date(msg.created_at * 1000).toISOString()
-      : msg.created_at
-  ) : '';
-
-  // Plan review cards get a special light-themed layout.
-  if (kind === 'plan_review') {
-    appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr);
-    return;
-  }
-
-  const div = document.createElement('div');
-  div.className = `msg ${resolved ? 'interaction-resolved-msg' : ''}`;
-  div.dataset.msgId = msg.id || '';
-  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
-
-  const senderName = agentShortName(msg.sender);
-  let cardHtml = `
-    <div class="msg-avatar agent">${senderName[0]}</div>
-    <div class="msg-body">
-      <div class="msg-header">
-        <span class="msg-name">${escapeHtml(senderName)}</span>
-        <span class="msg-time">${timeStr}</span>
-      </div>
-      <div class="interaction-card ${resolved ? 'resolved' : ''}" data-interaction-id="${escapeHtml(interactionId)}">
-        <div class="interaction-question">${renderMarkdown(msg.content || '')}</div>`;
-
-  // Plan content (fully expanded).
-  if (plan) {
-    cardHtml += `
-        <div class="interaction-plan-content">${renderMarkdown(plan)}</div>`;
-  }
-
-  if (resolved) {
-    const selectedOpt = meta.selected_option || '';
-    const selectedOpts = meta.selected_options || [];
-    // Show options as disabled with selected one(s) highlighted.
-    if (options.length) {
-      cardHtml += `<div class="interaction-options">`;
-      for (const opt of options) {
-        const sel = (selectedOpts.length ? selectedOpts.includes(opt.id) : opt.id === selectedOpt) ? ' selected' : '';
-        cardHtml += `<button class="interaction-opt${sel}" disabled>${escapeHtml(opt.label || opt.id)}</button>`;
-      }
-      cardHtml += `</div>`;
-    }
-    // Show freeform response if one was given.
-    if (meta.freeform_response) {
-      cardHtml += `<div class="interaction-freeform-response">${escapeHtml(meta.freeform_response)}</div>`;
-    }
-  } else if (multiselect) {
-    // Multiselect: toggleable buttons + submit.
-    if (options.length) {
-      cardHtml += `<div class="interaction-options multiselect">`;
-      for (const opt of options) {
-        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}">${escapeHtml(opt.label || opt.id)}</button>`;
-      }
-      cardHtml += `</div>`;
-    }
-    cardHtml += `
-      <div class="interaction-freeform">
-        ${allowFreeform ? '<textarea placeholder="Type a response..." rows="1"></textarea>' : ''}
-        <button class="interaction-submit">Submit</button>
-      </div>`;
-  } else {
-    // Single-select: options as instant-submit buttons.
-    if (options.length) {
-      cardHtml += `<div class="interaction-options">`;
-      for (const opt of options) {
-        cardHtml += `<button class="interaction-opt" data-opt-id="${escapeHtml(opt.id)}">${escapeHtml(opt.label || opt.id)}</button>`;
-      }
-      cardHtml += `</div>`;
-    }
-    // Freeform input.
-    if (allowFreeform) {
-      cardHtml += `
-        <div class="interaction-freeform">
-          <textarea placeholder="Type a response..." rows="1"></textarea>
-          <button class="interaction-submit">Send</button>
-        </div>`;
-    }
-  }
-
-  cardHtml += `</div></div>`;
-  div.innerHTML = cardHtml;
-  container.appendChild(div);
-
-  // Bind event listeners (CSP blocks inline onclick handlers).
-  const card = div.querySelector('.interaction-card');
-  if (!card || resolved) return;
-
-  if (multiselect) {
-    // Multiselect: toggle buttons on click, submit collects all selected.
-    card.querySelectorAll('.interaction-opt').forEach(btn => {
-      btn.addEventListener('click', () => {
-        btn.classList.toggle('selected');
-      });
-    });
-    const submitBtn = card.querySelector('.interaction-submit');
-    if (submitBtn) {
-      submitBtn.addEventListener('click', () => {
-        const selected = [...card.querySelectorAll('.interaction-opt.selected')].map(b => b.dataset.optId);
-        const textarea = card.querySelector('.interaction-freeform textarea');
-        const freeform = textarea ? textarea.value.trim() : null;
-        respondToMultiselectInteraction(interactionId, selected, freeform || null);
-      });
-    }
-  } else {
-    // Single-select: option buttons submit immediately.
-    card.querySelectorAll('.interaction-opt').forEach(btn => {
-      btn.addEventListener('click', () => {
-        respondToInteraction(interactionId, btn.dataset.optId, null);
-      });
-    });
-    // Freeform submit.
-    const submitBtn = card.querySelector('.interaction-submit');
-    if (submitBtn) {
-      submitBtn.addEventListener('click', () => {
-        respondToInteractionFreeform(submitBtn, interactionId);
-      });
-    }
-  }
-}
-
-function appendPlanReviewCard(msg, meta, container, resolved, interactionId, options, plan, timeStr) {
-  const channelModel = state.chatChannels.get(state.chatCurrentChannel)?.model || '';
-  const displayName = modelToFriendlyName(channelModel);
-
-  const div = document.createElement('div');
-  div.className = 'msg';
-  div.dataset.msgId = msg.id || '';
-  if (msg.created_at) div.dataset.createdAt = typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at;
-
-  // Determine resolved state details.
-  const selectedOption = meta.selected_option || '';
-  const freeformResponse = meta.freeform_response || '';
-  const wasApproved = selectedOption === 'approve';
-  const wasDenied = selectedOption === 'reject';
-  const gaveFeedback = !!freeformResponse;
-
-  let actionsHtml = '';
-  if (resolved) {
-    // Show disabled buttons with selected one highlighted.
-    const approveClass = `plan-review-btn approve${wasApproved ? ' selected' : ''}`;
-    const denyClass = `plan-review-btn deny${wasDenied ? ' selected' : ''}`;
-    actionsHtml = `
-      <div class="plan-review-actions">
-        <button class="${approveClass}" disabled>Approve</button>
-        <button class="${denyClass}" disabled>Deny</button>
-        ${gaveFeedback ? `<span class="plan-review-note">You provided further instructions</span>` : ''}
-      </div>`;
-  } else {
-    actionsHtml = `
-      <div class="plan-review-actions">
-        <button class="plan-review-btn approve" data-opt-id="approve">Approve</button>
-        <button class="plan-review-btn deny" data-opt-id="reject">Deny</button>
-        <span class="plan-review-note">or send a message to provide feedback</span>
-      </div>`;
-  }
-
-  const senderName = agentShortName(msg.sender) || displayName;
-  div.innerHTML = `
-    <div class="plan-review-card" data-interaction-id="${escapeHtml(interactionId)}">
-      <div class="plan-review-title">
-        <span class="plan-review-avatar">${senderName[0]}</span>
-        ${escapeHtml(senderName)}'s Plan
-        <span class="plan-review-time">${timeStr}</span>
-      </div>
-      <div class="plan-review-body">
-        ${plan ? `<div class="plan-review-content">${renderMarkdown(plan)}</div>` : ''}
-        ${actionsHtml}
-      </div>
-    </div>`;
-
-  container.appendChild(div);
-
-  if (resolved) return;
-
-  // Bind approve/deny buttons.
-  const card = div.querySelector('.plan-review-card');
-  card.querySelectorAll('.plan-review-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const optId = btn.dataset.optId;
-      respondToInteraction(interactionId, optId, null);
-      // Update buttons to disabled state with selection highlighted.
-      card.querySelectorAll('.plan-review-btn').forEach(b => {
-        b.disabled = true;
-        if (b.dataset.optId === optId) b.classList.add('selected');
-      });
-      // Remove the note.
-      const note = card.querySelector('.plan-review-note');
-      if (note) note.remove();
-    });
-  });
-}
-
-function resolvePendingPlanReviews() {
-  // Find all unresolved plan review cards and mark them as "further instructions".
-  document.querySelectorAll('.plan-review-card').forEach(card => {
-    const btns = card.querySelectorAll('.plan-review-btn:not(:disabled)');
-    if (!btns.length) return; // Already resolved.
-    btns.forEach(b => { b.disabled = true; });
-    const note = card.querySelector('.plan-review-note');
-    if (note) {
-      note.textContent = 'You provided further instructions';
-    }
-  });
-  // Also resolve regular interaction cards.
-  document.querySelectorAll('.interaction-card:not(.resolved)').forEach(card => {
-    card.classList.add('resolved');
-    const opts = card.querySelector('.interaction-options');
-    const ff = card.querySelector('.interaction-freeform');
-    if (opts) opts.remove();
-    if (ff) ff.remove();
-  });
-}
-
-function respondToInteraction(interactionId, selectedOption, freeformResponse) {
-  const _conn = getActiveE2EE();
-  if (!_conn || !_conn.connected || !state.chatCurrentChannel) return;
-  _conn.sendInteractionResponse(state.chatCurrentChannel, interactionId, selectedOption, freeformResponse);
-  // Mark card as resolved in UI.
-  const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
-  if (card) {
-    card.classList.add('resolved');
-    // Disable all option buttons and highlight the selected one.
-    card.querySelectorAll('.interaction-opt').forEach(btn => {
-      btn.disabled = true;
-      if (btn.dataset.optId === selectedOption) btn.classList.add('selected');
-    });
-    // Hide freeform input.
-    const ff = card.querySelector('.interaction-freeform');
-    if (ff) ff.remove();
-  }
-  // Clear interaction flag for this channel.
-  const uc = state.unreadCounts.get(state.chatCurrentChannel);
-  if (uc) {
-    uc.hasInteraction = false;
-    renderChannelList();
-  }
-}
-
-function crossfadeStatus(statusEl, newState, newContent) {
-  // Remove old state classes and set new one.
-  statusEl.classList.remove('sending', 'delivered', 'read', 'failed');
-  statusEl.classList.add(newState);
-  // Exit every existing state span so stacked states don't pile up.
-  const oldSpans = statusEl.querySelectorAll('.msg-status-state');
-  const newSpan = document.createElement('span');
-  newSpan.className = 'msg-status-state enter';
-  newSpan.innerHTML = newContent;
-  statusEl.appendChild(newSpan);
-  oldSpans.forEach(oldSpan => {
-    oldSpan.classList.remove('visible', 'enter');
-    oldSpan.classList.add('exit');
-    setTimeout(() => oldSpan.remove(), 300);
-  });
-  // Trigger reflow then make new span visible.
-  requestAnimationFrame(() => {
-    newSpan.classList.remove('enter');
-    newSpan.classList.add('visible');
-  });
-}
-
-function respondToInteractionFreeform(btn, interactionId) {
-  const textarea = btn.parentElement.querySelector('textarea');
-  const text = (textarea ? textarea.value : '').trim();
-  if (!text) return;
-  respondToInteraction(interactionId, null, text);
-}
-
-function respondToMultiselectInteraction(interactionId, selectedOptions, freeformResponse) {
-  const _conn = getActiveE2EE();
-  if (!_conn || !_conn.connected || !state.chatCurrentChannel) return;
-  _conn.sendInteractionResponse(state.chatCurrentChannel, interactionId, null, freeformResponse, selectedOptions);
-  // Mark card as resolved in UI.
-  const card = document.querySelector(`[data-interaction-id="${interactionId}"]`);
-  if (card) {
-    card.classList.add('resolved');
-    card.querySelectorAll('.interaction-opt').forEach(btn => {
-      btn.disabled = true;
-      if (!selectedOptions.includes(btn.dataset.optId)) btn.classList.remove('selected');
-    });
-    const ff = card.querySelector('.interaction-freeform');
-    if (ff) ff.remove();
-  }
-  const uc = state.unreadCounts.get(state.chatCurrentChannel);
-  if (uc) {
-    uc.hasInteraction = false;
-    renderChannelList();
-  }
-}
-
-function updatePlanModeUI(active) {
-  const btn = document.getElementById('cmd-plan-btn');
-  if (!btn) return;
-  btn.classList.toggle('active', !!active);
-}
-
-function appendSystemMessage(text) {
-  const container = document.getElementById('chat-messages');
-  const div = document.createElement('div');
-  div.className = 'system-msg';
-  div.textContent = text;
-  container.appendChild(div);
-}
 
 
 
@@ -1860,17 +1434,11 @@ window.highlightLine = highlightLine;
 window.getActiveE2EE = getActiveE2EE;
 window.getE2EE = getE2EE;
 window.renderChannelPanel = renderChannelPanel;
-window.renderMessages = renderMessages;
-// composer.js needs these until Wave B moves them into chat/messages.js + chat/interactions.js.
-window.appendMessage = appendMessage;
-window.resolvePendingPlanReviews = resolvePendingPlanReviews;
-window.updateStopButton = updateStopButton;
 window.switchTab = switchTab;
 window.showBrowserView = showBrowserView;
 window.anyE2EEConnected = anyE2EEConnected;
 window.connectToDevice = connectToDevice;
 window.fetchDevices = fetchDevices;
-window.updatePlanModeUI = updatePlanModeUI;
 
 // ---- Test bridges (Playwright smoke harness only) ----
 // Used by frontend/tests/dashboard.smoke.mjs to inject a fake E2EE instance

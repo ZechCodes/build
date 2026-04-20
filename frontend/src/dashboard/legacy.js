@@ -1013,7 +1013,7 @@ function bindE2EEEvents(instance, deviceId) {
     state.e2eeConnections.delete(deviceId);
     // Keep state.deviceChannels and state.channelDeviceMap cached — only clear on server-reported removal.
     state.deviceHarnesses.delete(deviceId);
-    deviceAgentCwd.delete(deviceId);
+    state.deviceAgentCwd.delete(deviceId);
 
     if (!anyE2EEConnected()) {
       const _disableBtns = ['chat-input', 'chat-send-btn', 'cmd-attach-btn', 'cmd-plan-btn', 'cmd-compact-btn', 'cmd-reset-btn'];
@@ -1044,7 +1044,7 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('channel_list', (evt) => {
     const { channels, agent_cwd } = evt.detail;
-    if (agent_cwd) deviceAgentCwd.set(deviceId, agent_cwd);
+    if (agent_cwd) state.deviceAgentCwd.set(deviceId, agent_cwd);
     // Diff against cached channels to detect removals.
     const oldChans = state.deviceChannels.get(deviceId);
     const oldIds = oldChans ? new Set(oldChans.keys()) : new Set();
@@ -1536,14 +1536,14 @@ function bindE2EEEvents(instance, deviceId) {
     const comp = evt.detail;
     const channelId = comp.channel_id;
     if (!channelId) return;
-    if (!complicationState.has(channelId)) complicationState.set(channelId, new Map());
-    complicationState.get(channelId).set(comp.id, comp);
+    if (!state.complicationState.has(channelId)) state.complicationState.set(channelId, new Map());
+    state.complicationState.get(channelId).set(comp.id, comp);
     if (state.chatCurrentChannel === channelId) renderComplications();
   });
 
   instance.addEventListener('complication_remove', (evt) => {
     const { channel_id, id } = evt.detail;
-    const channelComps = complicationState.get(channel_id);
+    const channelComps = state.complicationState.get(channel_id);
     if (channelComps) {
       channelComps.delete(id);
       if (state.chatCurrentChannel === channel_id) renderComplications();
@@ -1553,8 +1553,8 @@ function bindE2EEEvents(instance, deviceId) {
   instance.addEventListener('complications', (evt) => {
     const { channel_id, complications } = evt.detail;
     if (!channel_id || !complications) return;
-    if (!complicationState.has(channel_id)) complicationState.set(channel_id, new Map());
-    const channelComps = complicationState.get(channel_id);
+    if (!state.complicationState.has(channel_id)) state.complicationState.set(channel_id, new Map());
+    const channelComps = state.complicationState.get(channel_id);
     for (const comp of complications) {
       channelComps.set(comp.id, comp);
     }
@@ -1570,8 +1570,8 @@ function bindE2EEEvents(instance, deviceId) {
 
     if (!done && data) {
       // First output received — clear loading animation and reset no-output timer.
-      if (terminalCurrentBlock && !terminalCurrentBlock.hasOutput) {
-        terminalCurrentBlock.hasOutput = true;
+      if (state.terminalCurrentBlock && !state.terminalCurrentBlock.hasOutput) {
+        state.terminalCurrentBlock.hasOutput = true;
         clearTerminalTimers();
       }
 
@@ -1583,16 +1583,16 @@ function bindE2EEEvents(instance, deviceId) {
       }
 
       // Append to current streaming block if matching channel.
-      if (terminalCurrentBlock && terminalCurrentBlock.channelId === channel_id) {
-        terminalCurrentBlock.text += text;
+      if (state.terminalCurrentBlock && state.terminalCurrentBlock.channelId === channel_id) {
+        state.terminalCurrentBlock.text += text;
         const span = document.createElement('span');
         span.textContent = text;
-        terminalCurrentBlock.outputDiv.appendChild(span);
+        state.terminalCurrentBlock.outputDiv.appendChild(span);
         const output = document.getElementById('terminal-output');
         output.scrollTop = output.scrollHeight;
       }
       // Update stored history.
-      const history = terminalHistoryMap.get(channel_id);
+      const history = state.terminalHistoryMap.get(channel_id);
       if (history?.length) history[history.length - 1].output += text;
     }
 
@@ -1601,23 +1601,23 @@ function bindE2EEEvents(instance, deviceId) {
       document.getElementById('terminal-kill-btn')?.classList.add('hidden');
       // Update cwd.
       if (cwd) {
-        terminalCwdMap.set(channel_id, cwd);
+        state.terminalCwdMap.set(channel_id, cwd);
         if (state.chatCurrentChannel === channel_id) renderTerminalCwd();
       }
       // Update stored exit code.
-      const history = terminalHistoryMap.get(channel_id);
+      const history = state.terminalHistoryMap.get(channel_id);
       if (history?.length) history[history.length - 1].exitCode = exit_code;
       // Show exit code if non-zero.
-      if (terminalCurrentBlock && terminalCurrentBlock.channelId === channel_id && exit_code !== 0) {
+      if (state.terminalCurrentBlock && state.terminalCurrentBlock.channelId === channel_id && exit_code !== 0) {
         const exitDiv = document.createElement('div');
         exitDiv.className = 'terminal-cmd-exit error';
         exitDiv.textContent = `exit ${exit_code}`;
-        terminalCurrentBlock.block.appendChild(exitDiv);
+        state.terminalCurrentBlock.block.appendChild(exitDiv);
       }
-      if (terminalCurrentBlock?.channelId === channel_id) {
-        terminalCurrentBlock = null;
+      if (state.terminalCurrentBlock?.channelId === channel_id) {
+        state.terminalCurrentBlock = null;
       }
-      terminalRunning = false;
+      state.terminalRunning = false;
       // Show prompt row again with updated cwd.
       if (state.chatCurrentChannel === channel_id) {
         const promptRow = document.getElementById('terminal-prompt-row');
@@ -1630,14 +1630,14 @@ function bindE2EEEvents(instance, deviceId) {
   });
 
   instance.addEventListener('terminal_completions', (evt) => {
-    terminalCompletionPending = false;
+    state.terminalCompletionPending = false;
     const { completions } = evt.detail;
     if (!completions || !completions.length) return;
     const input = document.getElementById('terminal-input');
     if (!input) return;
     // Use the context saved at request time (not the echoed partial)
-    const beforePartial = terminalCompletionBase;
-    const partial = terminalCompletionPartial;
+    const beforePartial = state.terminalCompletionBase;
+    const partial = state.terminalCompletionPartial;
 
     // Remove any previous completion display
     document.querySelectorAll('.terminal-completions').forEach(el => el.remove());
@@ -1660,8 +1660,8 @@ function bindE2EEEvents(instance, deviceId) {
         input.value = beforePartial + common;
       }
       // Store for Tab cycling
-      terminalCompletions = completions;
-      terminalCompletionIndex = -1;
+      state.terminalCompletions = completions;
+      state.terminalCompletionIndex = -1;
       // Show candidates below the prompt
       const output = document.getElementById('terminal-output');
       if (output) {

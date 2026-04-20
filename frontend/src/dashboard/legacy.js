@@ -77,6 +77,7 @@ import { renderChannelPanel, createChannelItem, updateMobileChannelLabel } from 
 import { renderDeviceCard } from './devices/render.js';
 import { initNotifications, sseSynced } from './net/notifications.js';
 import { getE2EE, getActiveE2EE, anyE2EEConnected } from './e2ee/bridge.js';
+import { fileContentBody } from './files/view.js';
 
 // Electron detection
 if (window.buildElectron) {
@@ -1846,7 +1847,7 @@ function selectChannel(channelId) {
   const saved = loadChannelState(channelId);
   // Restore last active tab for this channel.
   if (saved.activeTab && saved.activeTab !== state.currentTab) {
-    _origSwitchTab(saved.activeTab);
+    switchTab(saved.activeTab);
     if (saved.activeTab === 'files') onFilesTabActivated();
     location.hash = `${saved.activeTab}/${channelId}`;
   }

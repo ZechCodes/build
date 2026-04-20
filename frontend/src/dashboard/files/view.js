@@ -16,7 +16,7 @@ const filesPathBar = document.getElementById('files-path-bar');
 const filesPathChevron = document.getElementById('files-path-chevron');
 const fileReloadBtn = document.getElementById('file-reload-btn');
 const fileTreePanel = document.getElementById('file-tree-panel');
-const fileContentBody = document.getElementById('file-content-body');
+export const fileContentBody = document.getElementById('file-content-body');
 const fileFloatToggle = document.getElementById('file-float-toggle');
 
 // Per-channel file state.

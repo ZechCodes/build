@@ -5,6 +5,7 @@
 // once UI CRUD is wired.
 
 import { makeSubscribable } from '../core/store.js';
+import { bus } from '../core/bus.js';
 
 const { subscribe, notify } = makeSubscribable('tasks');
 const byChannel = new Map();       // channelId → Todo[]
@@ -19,3 +20,9 @@ export const tasksStore = {
 
   subscribe,
 };
+
+// ----- Bus bindings -----
+bus.on('agent.todo_write', ({ channelId, todos }) => {
+  if (!channelId || !Array.isArray(todos)) return;
+  tasksStore.set(channelId, todos);
+});

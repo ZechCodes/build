@@ -63,6 +63,12 @@ slice — they decide what to re-read. Keep change events small.
   compute it on read from `channelsStore` + `devicesStore`.
 - **Persistence is a middleware.** A store may persist to IndexedDB/localStorage
   via a subscriber, not inside the store. Keep the store pure.
+- **No store imports another store** — with one documented exception:
+  `unreadStore` reads `uiStore.getActiveChannel()` to decide whether an
+  incoming message is "background" (increments unread) or "foreground"
+  (does not). This is a *read*, not a mutation, and `uiStore` has no
+  transport inputs, so there is no reactive cycle. Any new cross-store
+  coupling must be added through the bus, not imports.
 
 ## `uiStore` is special
 

@@ -3,6 +3,7 @@
 // Append is idempotent on msg.id. Bulk replaces the per-channel list.
 
 import { makeSubscribable } from '../core/store.js';
+import { bus } from '../core/bus.js';
 
 const { subscribe, notify } = makeSubscribable('messages');
 const byChannel = new Map();       // channelId → Message[]
@@ -46,5 +47,40 @@ export const messagesStore = {
     if (changed) notify({ kind: 'read', channelId });
   },
 
+  markDelivered(channelId, msgId) {
+    const arr = byChannel.get(channelId);
+    if (!arr) return;
+    const m = arr.find(x => x.id === msgId);
+    if (!m || m.delivered_at) return;
+    m.delivered_at = new Date().toISOString();
+    notify({ kind: 'delivered', channelId, msgId });
+  },
+
+  markFailed(channelId, msgId) {
+    const arr = byChannel.get(channelId);
+    if (!arr) return;
+    const m = arr.find(x => x.id === msgId);
+    if (!m) return;
+    m.delivery_failed = true;
+    notify({ kind: 'delivery_failed', channelId, msgId });
+  },
+
   subscribe,
 };
+
+// ----- Bus bindings -----
+bus.on('message.bulk', ({ channelId, msgs }) => {
+  messagesStore.bulk(channelId, msgs || []);
+});
+bus.on('message.received', ({ channelId, msg }) => {
+  messagesStore.append(channelId, msg);
+});
+bus.on('message.read', ({ channelId, msgIds }) => {
+  messagesStore.markRead(channelId, msgIds || []);
+});
+bus.on('message.delivered', ({ channelId, msgId }) => {
+  messagesStore.markDelivered(channelId, msgId);
+});
+bus.on('message.delivery_failed', ({ channelId, msgId }) => {
+  messagesStore.markFailed(channelId, msgId);
+});

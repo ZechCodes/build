@@ -2,6 +2,7 @@
 // See planning/dashboard-v2/02-stores.md.
 
 import { makeSubscribable } from '../core/store.js';
+import { bus } from '../core/bus.js';
 
 const { subscribe, notify } = makeSubscribable('terminal');
 const byChannel = new Map();       // channelId → {history, completions, running}
@@ -48,3 +49,17 @@ export const terminalStore = {
 
   subscribe,
 };
+
+// ----- Bus bindings -----
+bus.on('terminal.output', ({ channelId, text }) => {
+  if (!channelId || !text) return;
+  terminalStore.appendOutput(channelId, text);
+});
+bus.on('terminal.complete', ({ channelId, exitCode }) => {
+  if (!channelId) return;
+  terminalStore.markComplete(channelId, exitCode);
+});
+bus.on('terminal.completions', ({ channelId, candidates }) => {
+  if (!channelId) return;
+  terminalStore.setCompletions(channelId, candidates || []);
+});

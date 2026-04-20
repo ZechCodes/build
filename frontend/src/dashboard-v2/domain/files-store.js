@@ -1,6 +1,7 @@
 // Files tree + changeset per channel. See planning/dashboard-v2/02-stores.md.
 
 import { makeSubscribable } from '../core/store.js';
+import { bus } from '../core/bus.js';
 
 const { subscribe, notify } = makeSubscribable('files');
 const byChannel = new Map();       // channelId → {tree, changes}
@@ -30,3 +31,13 @@ export const filesStore = {
 
   subscribe,
 };
+
+// ----- Bus bindings -----
+bus.on('files.list_result', ({ channelId, path, entries, truncated }) => {
+  if (!channelId) return;
+  filesStore.setTree(channelId, path || '', { entries: entries || [], truncated: !!truncated });
+});
+bus.on('files.changes_result', ({ channelId, repos }) => {
+  if (!channelId) return;
+  filesStore.setChanges(channelId, repos || []);
+});

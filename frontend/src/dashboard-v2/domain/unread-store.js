@@ -4,6 +4,8 @@
 // message was an interaction request, the channel highlights until seen.
 
 import { makeSubscribable } from '../core/store.js';
+import { bus } from '../core/bus.js';
+import { uiStore } from './ui-store.js';
 
 const { subscribe, notify } = makeSubscribable('unread');
 const byChannel = new Map();       // channelId → {count, hasInteraction, lastSeen}
@@ -48,3 +50,19 @@ export const unreadStore = {
 
   subscribe,
 };
+
+// ----- Bus bindings -----
+// Only the unreadStore reads from another store (uiStore) — documented
+// exception in 02-stores.md. The read is for the active-channel filter
+// and is safe because uiStore has no bus inputs (user-driven only).
+bus.on('message.received', ({ channelId, msg }) => {
+  if (!channelId || !msg) return;
+  if (msg.sender === 'client') return;
+  if (channelId === uiStore.getActiveChannel()) return;
+  unreadStore.increment(channelId);
+});
+bus.on('interaction.requested', ({ channelId }) => {
+  if (!channelId) return;
+  if (channelId === uiStore.getActiveChannel()) return;
+  unreadStore.increment(channelId, true);
+});

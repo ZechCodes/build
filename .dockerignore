@@ -9,4 +9,6 @@ uploads
 app.db
 app.db-journal
 node_modules
+**/node_modules
+themes/build/static/dist
 .DS_Store

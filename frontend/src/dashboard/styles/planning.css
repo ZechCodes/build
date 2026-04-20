@@ -1,0 +1,52 @@
+/* ===== PLANNING TAB ===== */
+.planning-layout{flex:1;display:flex;overflow:hidden}
+.issue-list-panel{
+  width:280px;min-width:240px;
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  background:rgba(255,255,255,0.4);
+}
+.issue-list-header{
+  padding:.625rem .75rem;
+  border-bottom:1px solid var(--border);
+  display:flex;flex-direction:column;gap:.5rem;
+  flex-shrink:0;
+}
+.issue-list-title-row{display:flex;align-items:center;gap:.5rem}
+.issue-list-title{font-size:13px;font-weight:600;color:var(--text)}
+.issue-count-badge{
+  font-size:10px;font-weight:600;
+  background:var(--accent-light);color:var(--accent);
+  padding:.1rem .4rem;border-radius:8px;
+}
+.issue-list{flex:1;overflow-y:auto}
+.issue-item{
+  display:flex;align-items:flex-start;gap:.5rem;
+  padding:.6rem .75rem;
+  cursor:pointer;
+  transition:all .1s;
+  border-bottom:1px solid var(--border);
+  border-left:2px solid transparent;
+}
+.issue-item:hover{background:rgba(0,0,0,0.02)}
+.issue-item.active{background:var(--accent-lighter);border-left-color:var(--accent)}
+.issue-status-icon{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.issue-status-icon svg{width:12px;height:12px}
+.issue-status-icon.done{color:var(--green)}
+.issue-status-icon.in-progress{color:var(--accent)}
+.issue-status-icon.open{color:#a1a1aa}
+.issue-status-icon.blocked{color:var(--red)}
+.issue-item-body{flex:1;min-width:0}
+.issue-item-title{font-size:12.5px;font-weight:500;color:var(--text);line-height:1.35}
+.issue-item.active .issue-item-title{color:var(--accent);font-weight:600}
+.issue-item-meta{display:flex;align-items:center;gap:.35rem;margin-top:.25rem}
+.priority-badge{font-size:9px;font-weight:700;padding:.1rem .3rem;border-radius:3px;letter-spacing:.02em}
+.priority-badge.p0{background:var(--red-light);color:var(--red)}
+.priority-badge.p1{background:var(--amber-light);color:var(--amber)}
+.priority-badge.p2{background:rgba(0,0,0,0.05);color:var(--text-muted)}
+
+.issue-detail-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.issue-detail-scroll{flex:1;overflow-y:auto;padding:1.25rem 1.5rem}
+.issue-detail-title{font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.02em;margin-bottom:.75rem;line-height:1.3}
+

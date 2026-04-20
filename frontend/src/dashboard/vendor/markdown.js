@@ -18,10 +18,7 @@
  *
  * HTML in source text is always escaped.
  */
-(function (global) {
-  'use strict';
-
-  // ── helpers ────────────────────────────────────────────────────────────────
+// ── helpers ────────────────────────────────────────────────────────────────
 
   function escapeHtml(str) {
     return str
@@ -134,7 +131,6 @@
   }
 
   // Expose for the dashboard file-viewer diff renderer.
-  global.wordDiffLine = wordDiffLine;
 
   // ── file / diff embed helpers ────────────────────────────────────────────
 
@@ -461,7 +457,5 @@
     return result;
   }
 
-  // ── exports ───────────────────────────────────────────────────────────────
-  global.renderMarkdown = renderMarkdown;
-
-})(typeof window !== 'undefined' ? window : this);
+// ── exports ───────────────────────────────────────────────────────────────
+export { renderMarkdown, wordDiffLine };

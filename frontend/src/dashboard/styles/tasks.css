@@ -1,0 +1,16 @@
+/* Tasks panel */
+.console-tasks{flex-direction:column;padding:.5rem 0;overflow-y:auto}
+.tasks-empty{padding:1.5rem 1rem;text-align:center;color:#52525b;font-size:.8125rem}
+.tasks-summary{padding:.25rem .875rem .5rem;font-size:.6875rem;color:#71717a;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:.5rem}
+.tasks-progress-bar{flex:1;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
+.tasks-progress-fill{height:100%;width:0;background:var(--accent);border-radius:2px;transition:width .3s}
+.task-item{display:flex;align-items:flex-start;gap:.5rem;padding:.3rem .875rem;font-size:.8125rem;line-height:1.4}
+.task-status-icon{flex-shrink:0;width:1rem;text-align:center;font-size:.75rem;line-height:1.4;margin-top:.05rem}
+.task-item.pending .task-status-icon{color:#52525b}
+.task-item.in_progress .task-status-icon{color:var(--accent)}
+.task-pulse-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:task-pulse 1.2s ease-in-out infinite}
+@keyframes task-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
+.task-item.completed .task-status-icon{color:#4ade80}
+.task-item.completed .task-content{text-decoration:line-through;opacity:.45}
+.task-content{flex:1;color:#d4d4d8}
+

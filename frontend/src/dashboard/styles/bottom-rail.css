@@ -1,0 +1,28 @@
+/* ===== Simplified bottom rail ===== */
+.console-bottom{--rail-h:36px}
+.console-bottom.rail-only{height:var(--rail-h);min-height:var(--rail-h)}
+.console-bottom.rail-only .console-body{max-height:0;opacity:0;overflow:hidden}
+.console-rail-btn{
+  display:flex;align-items:center;gap:.35rem;
+  font-size:10px;font-weight:600;color:#71717a;
+  text-transform:uppercase;letter-spacing:.05em;
+  background:none;border:none;cursor:pointer;
+  padding:.35rem .6rem;border-radius:var(--radius-xs);
+  transition:color .12s, background .12s;
+  font-family:var(--font);
+}
+.console-rail-btn:hover{color:#a1a1aa;background:rgba(255,255,255,.06)}
+.console-rail-btn.active{color:var(--accent);background:rgba(99,102,241,.14)}
+.console-rail-btn svg{width:12px;height:12px}
+.chat-rail-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:16px;height:16px;border-radius:8px;
+  font-size:10px;font-weight:700;
+  background:var(--accent);color:#fff;
+  margin-left:.3rem;padding:0 4px;
+  line-height:1;
+}
+.chat-rail-badge[hidden]{display:none}
+.console-rail-spacer{flex:1}
+.console-rail-group{display:flex;align-items:center;gap:.15rem}
+

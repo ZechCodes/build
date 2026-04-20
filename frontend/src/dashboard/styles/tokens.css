@@ -1,0 +1,34 @@
+:root{
+  --rail-bg:#18181b;
+  --bg:#fafafa;
+  --surface:rgba(255,255,255,0.7);
+  --surface-solid:#fff;
+  --surface-hover:rgba(255,255,255,0.85);
+  --text:#18181b;
+  --text-muted:#71717a;
+  --border:rgba(0,0,0,0.08);
+  --border-strong:rgba(0,0,0,0.12);
+  --accent:#6366f1;
+  --accent-light:rgba(99,102,241,0.08);
+  --accent-lighter:rgba(99,102,241,0.04);
+  --green:#047857;
+  --green-light:rgba(5,150,105,0.12);
+  --amber:#b45309;
+  --amber-light:rgba(217,119,6,0.12);
+  --red:#dc2626;
+  --red-light:rgba(220,38,38,0.08);
+  --console-bg:#27272a;
+  --console-text:#a1a1aa;
+  --console-surface:rgba(255,255,255,0.06);
+  --font:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+
+  --console-h:200px;
+  --radius:10px;
+  --radius-sm:6px;
+  --radius-xs:4px;
+  --shadow-sm:0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md:0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg:0 8px 24px rgba(0,0,0,0.08);
+  --blur:blur(12px);
+}

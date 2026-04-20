@@ -1,0 +1,23 @@
+/* App layout */
+.app{flex:1;display:flex;overflow:hidden;position:relative}
+
+/* ===== GLASS CARD ===== */
+.glass{
+  background:rgba(255,255,255,0.7);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
+  border:1px solid rgba(0,0,0,0.06);
+  box-shadow:0 1px 3px rgba(0,0,0,0.04);
+  border-radius:var(--radius);
+}
+.glass-hover:hover{
+  background:rgba(255,255,255,0.85);
+  box-shadow:0 4px 12px rgba(0,0,0,0.06);
+}
+
+/* Viewer body (tab panels) */
+.viewer-body{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
+/* Tab panels */
+.tab-panel{flex:1;display:none;overflow:hidden}
+.tab-panel.active{display:flex}
+

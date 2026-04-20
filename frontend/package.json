@@ -1,0 +1,13 @@
+{
+  "name": "build-web-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "NODE_ENV=production node esbuild.config.mjs --prod",
+    "dev": "node esbuild.config.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

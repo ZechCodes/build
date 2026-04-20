@@ -16,7 +16,7 @@ const PROTOCOL_VERSION = 1;
 const NONCE_BYTES = 24;
 const SESSION_KEY_BYTES = 32;
 
-class BuildE2EE extends EventTarget {
+export class BuildE2EE extends EventTarget {
   constructor() {
     super();
     this._sodium = null;
@@ -661,6 +661,3 @@ class BuildE2EE extends EventTarget {
   get connected() { return this._connected; }
   get sessionId() { return this._sessionId; }
 }
-
-// Export globally.
-window.BuildE2EE = BuildE2EE;

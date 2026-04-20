@@ -1,0 +1,35 @@
+/* Terminal panel */
+.console-terminal{
+  flex-direction:column;
+  font-family:var(--mono);font-size:12px;
+  color:#d4d4d8;
+  max-height:none;
+}
+.terminal-output{
+  flex:1;overflow-y:auto;overflow-x:hidden;
+  padding:.5rem .875rem;
+  white-space:pre-wrap;word-break:break-all;
+  line-height:1.5;
+}
+.terminal-output::-webkit-scrollbar{width:5px}
+.terminal-output::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
+.terminal-cmd-block{margin-bottom:.25rem}
+.terminal-cmd-line{color:var(--accent);font-weight:600}
+.terminal-cmd-output{color:#a1a1aa}
+.terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
+.terminal-cmd-exit.error{color:#f87171}
+.terminal-completions{color:#a1a1aa;font-size:11px;padding:.2rem 0;white-space:pre-wrap;word-break:break-all}
+.terminal-loader{color:#a1a1aa}
+.terminal-kill-btn{position:absolute;bottom:.5rem;left:.5rem;font-size:11px;font-family:var(--mono);padding:.2rem .5rem;border-radius:var(--radius-sm);border:1px solid #f87171;background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;z-index:2}
+.terminal-kill-btn:hover{background:rgba(248,113,113,0.2)}
+.console-terminal{position:relative}
+.terminal-prompt-row{
+  display:flex;align-items:center;gap:.4rem;
+}
+.terminal-cwd{color:var(--accent);font-weight:600;flex-shrink:0;white-space:nowrap}
+.terminal-input{
+  flex:1;background:none;border:none;outline:none;
+  font-family:var(--mono);font-size:12px;
+  color:#d4d4d8;caret-color:var(--accent);
+}
+

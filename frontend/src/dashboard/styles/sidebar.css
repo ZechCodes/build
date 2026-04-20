@@ -1,0 +1,111 @@
+/* ===== Sidebar accordion sections ===== */
+.channel-panel-sections{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+/* Mobile close button — base rules always apply so the button is sized and
+   hidden on desktop. The @media block flips display:flex only when the
+   sidebar is fullscreen on mobile. */
+.channel-panel .mobile-close{
+  display:none;
+  position:absolute;top:.6rem;right:.6rem;
+  width:32px;height:32px;border-radius:50%;
+  background:var(--surface-solid);
+  border:1px solid var(--border-strong);
+  color:var(--text);cursor:pointer;z-index:2;
+  align-items:center;justify-content:center;
+  padding:0;
+  line-height:0;
+}
+.channel-panel .mobile-close svg{width:14px;height:14px;display:block}
+.sidebar-section[data-section="devices"] .channel-panel-list{padding:.2rem 0;overflow:visible;flex:none}
+/* Open sections evenly share remaining vertical space; collapsed ones shrink to their header. */
+.sidebar-section{
+  display:flex;flex-direction:column;
+  flex:1 1 0;min-height:0;
+  border-bottom:1px solid var(--border-strong);
+  transition:flex-grow .22s ease;
+}
+.sidebar-section:last-child{border-bottom:none}
+.sidebar-section.collapsed{flex:0 0 auto}
+.sidebar-section[data-section="devices"]{min-height:120px}
+.sidebar-section-header{
+  display:flex;align-items:center;gap:.45rem;
+  padding:.55rem .75rem;
+  font-size:10.5px;font-weight:700;
+  color:var(--text);
+  text-transform:uppercase;letter-spacing:.06em;
+  background:rgba(0,0,0,.04);
+  border-bottom:1px solid var(--border-strong);
+  user-select:none;cursor:pointer;
+  transition:background .1s;
+  flex-shrink:0;
+}
+.sidebar-section.collapsed .sidebar-section-header{border-bottom:none}
+.sidebar-section-header:hover{background:rgba(0,0,0,.06)}
+.sidebar-section[data-section="devices"] .sidebar-section-header{cursor:default}
+.sidebar-section[data-section="devices"] .sidebar-section-header:hover{background:rgba(0,0,0,.04)}
+.sidebar-section-chevron{
+  width:10px;height:10px;flex-shrink:0;
+  transition:transform .15s;color:var(--text-muted);
+  transform:rotate(90deg);
+}
+.sidebar-section-chevron.collapsed{transform:rotate(0deg)}
+.sidebar-section[data-section="devices"] .sidebar-section-chevron{display:none}
+.sidebar-section-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sidebar-section-badge{
+  background:rgba(0,0,0,.06);color:var(--text-muted);
+  font-size:9px;font-weight:700;padding:.05rem .38rem;
+  border-radius:999px;min-width:16px;text-align:center;line-height:1.4;
+}
+.sidebar-section-badge.accent{background:var(--accent);color:#fff}
+.sidebar-section-body{
+  display:flex;flex-direction:column;
+  overflow-y:auto;min-height:0;flex:1 1 auto;
+  /* Animate expand/collapse by transitioning max-height — a cheap
+     workaround for display:none not being animatable. */
+  max-height:100vh;
+  transition:max-height .22s ease, padding .22s ease;
+}
+.sidebar-section-body.collapsed{
+  max-height:0;
+  overflow:hidden;
+  padding:0;
+  pointer-events:none;
+}
+.sidebar-section[data-section="tasks"] .sidebar-section-body,
+.sidebar-section[data-section="activity"] .sidebar-section-body{
+  padding:.1rem 0 .3rem;
+}
+
+/* Tasks in sidebar */
+.sidebar-section .task-item{
+  padding:.25rem .75rem;font-size:12px;color:var(--text);line-height:1.35;
+  display:flex;align-items:flex-start;gap:.4rem;
+}
+.sidebar-section .task-item .task-status-icon{color:var(--text-muted);width:14px;text-align:center;font-size:11px;flex-shrink:0}
+.sidebar-section .task-item.in_progress .task-status-icon{color:var(--accent)}
+.sidebar-section .task-item.completed .task-status-icon{color:var(--green)}
+.sidebar-section .task-item.completed .task-content{text-decoration:line-through;opacity:.5}
+.sidebar-section .task-content{flex:1;color:var(--text);word-break:break-word}
+.sidebar-section .tasks-summary{
+  padding:.2rem .75rem .35rem;font-size:10px;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:.45rem;
+}
+.sidebar-section .tasks-progress-bar{flex:1;height:2px;background:rgba(0,0,0,.08);border-radius:2px;overflow:hidden}
+.sidebar-section .tasks-progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.sidebar-section .tasks-empty{padding:.65rem .75rem;color:var(--text-muted);font-size:11px}
+
+/* Activity (console entries) in sidebar — light theme */
+.sidebar-section .console-entry{border-bottom:1px solid var(--border)}
+.sidebar-section .console-entry:last-child{border-bottom:none}
+.sidebar-section .ce-row{padding:.3rem .75rem;gap:.35rem}
+.sidebar-section .ce-row:hover{background:rgba(0,0,0,.03)}
+.sidebar-section .ce-tag{font-size:9px;padding:.1rem .3rem}
+.sidebar-section .ce-desc{color:var(--text);font-size:11px}
+.sidebar-section .ce-summary{color:var(--text-muted);font-size:10px}
+.sidebar-section .ce-time{color:var(--text-muted);font-size:9.5px}
+.sidebar-section .ce-detail{background:rgba(0,0,0,.03);color:var(--text);padding:.4rem .75rem .5rem .75rem;border-top-color:var(--border)}
+.sidebar-section .ce-detail-reasoning{color:var(--text);font-size:11px;max-height:200px}
+.sidebar-section .ce-detail-code,.sidebar-section .ce-detail-diff{background:rgba(0,0,0,.05);color:var(--text);max-height:160px}
+.sidebar-section .ce-diff-del{color:var(--red);background:rgba(220,38,38,.08)}
+.sidebar-section .ce-diff-add{color:var(--green);background:rgba(5,150,105,.08)}
+.sidebar-section .activity-empty{padding:.65rem .75rem;color:var(--text-muted);font-size:11px}
+

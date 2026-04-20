@@ -1,0 +1,9 @@
+/* Toast for UI stubs */
+.ui-toast{
+  position:fixed;bottom:56px;left:50%;transform:translateX(-50%) translateY(8px);
+  background:var(--console-bg);color:#e4e4e7;font-size:12px;
+  padding:.5rem .9rem;border-radius:999px;
+  box-shadow:var(--shadow-lg);z-index:200;
+  opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;
+}
+.ui-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}

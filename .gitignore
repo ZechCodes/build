@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 app.db
 migrations/
+node_modules/
+themes/build/static/dist/
+frontend/dist/

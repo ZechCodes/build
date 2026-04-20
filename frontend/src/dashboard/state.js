@@ -11,6 +11,8 @@
 export const state = {
   // ----- Shell / UI -----
   currentTab: 'files',
+  // Channel id captured from the URL hash before channels arrive over E2EE.
+  _pendingChannelId: null,
   selectedAgent: null,
   consoleState: 'collapsed', // 'collapsed' | 'open' | 'expanded'
   deviceDown: null,

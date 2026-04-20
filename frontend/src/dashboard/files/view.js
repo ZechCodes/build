@@ -2,10 +2,10 @@ import { state } from '../state.js';
 import { escapeHtml, escHtml, formatBytes, formatFileSize } from '../util/html.js';
 import { highlightLine } from './syntax.js';
 import { loadChannelState, saveChannelState } from '../channels/state-store.js';
+import { getE2EE, getActiveE2EE } from '../e2ee/bridge.js';
 
 // External deps kept as window globals during transition:
-//   window.getActiveE2EE, window.getE2EE, window.switchTab,
-//   window.renderMessages (for file-embed rendering)
+//   window.switchTab, window.renderMessages (for file-embed rendering)
 
 // ===== FILES VIEW =====
 
@@ -39,7 +39,7 @@ export function setFilesMode(mode) {
   // Sync both the new mode-switch and the legacy tree-tab buttons.
   document.querySelectorAll('.files-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.filesMode === mode));
   document.querySelectorAll('.tree-tab').forEach(b => b.classList.toggle('active', b.dataset.treeTab === mode));
-  const _ftConn = window.getE2EE?.(state.filesChannelId);
+  const _ftConn = getE2EE(state.filesChannelId);
   if (mode === 'changes' && state.filesChannelId && _ftConn && _ftConn.connected) {
     _ftConn.filesChanges(state.filesChannelId);
   }
@@ -53,7 +53,7 @@ document.querySelectorAll('.files-mode-btn').forEach(btn => {
 });
 
 export function filesLoadRoot() {
-  const _flConn = window.getActiveE2EE?.();
+  const _flConn = getActiveE2EE();
   if (!state.chatCurrentChannel || !_flConn || !_flConn.connected) return;
   state.filesChannelId = state.chatCurrentChannel;
   _flConn.filesList(state.chatCurrentChannel, '');
@@ -362,7 +362,7 @@ export function toggleDirectory(path, arrowEl, itemEl) {
     renderFileTree();
   } else {
     // Expand: request listing.
-    window.getE2EE?.(state.filesChannelId)?.filesList(state.filesChannelId, path);
+    getE2EE(state.filesChannelId)?.filesList(state.filesChannelId, path);
   }
 }
 
@@ -405,7 +405,7 @@ export function selectFile(path, entry, initialView) {
 
   // Load file content.
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
-  const _fileConn = window.getE2EE?.(state.filesChannelId);
+  const _fileConn = getE2EE(state.filesChannelId);
   if (state.filesCurrentView === 'diff') {
     _fileConn?.fileDiff(state.filesChannelId, path, false);
   } else {
@@ -441,7 +441,7 @@ fileFloatToggle.addEventListener('click', (ev) => {
   if (view === state.filesCurrentView) return;
 
   state.filesCurrentView = view;
-  const _fvConn = window.getE2EE?.(state.filesChannelId);
+  const _fvConn = getE2EE(state.filesChannelId);
   if (view === 'diff') {
     fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
     _fvConn?.fileDiff(state.filesChannelId, state.filesCurrentPath, false);
@@ -491,7 +491,7 @@ fileReloadBtn.addEventListener('click', (ev) => {
   ev.stopPropagation(); // Don't trigger path bar mobile toggle.
   if (!state.filesCurrentPath || !state.filesChannelId) return;
   state.filesLastContent = null;
-  const conn = window.getE2EE?.(state.filesChannelId);
+  const conn = getE2EE(state.filesChannelId);
   if (!conn || !conn.connected) return;
   fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
   if (state.filesCurrentView === 'diff') {
@@ -515,7 +515,7 @@ export function onAgentFileChanges(channelId, paths) {
   // Debounce bursts: coalesce multiple events within 150ms.
   clearTimeout(_fileChangesRefreshTimer);
   _fileChangesRefreshTimer = setTimeout(() => {
-    const conn = window.getE2EE?.(state.filesChannelId || channelId);
+    const conn = getE2EE(state.filesChannelId || channelId);
     if (!conn || !conn.connected) return;
     // Always refresh the changes list so the Modified count stays live.
     conn.filesChanges(state.filesChannelId || channelId);
@@ -637,7 +637,7 @@ export function renderSvgPreview(content) {
 // Promise-based file read for fetching assets without conflicting with main file viewer.
 export function readFileAsync(channelId, path) {
   return new Promise((resolve, reject) => {
-    const conn = window.getE2EE?.(channelId);
+    const conn = getE2EE(channelId);
     if (!conn || !conn.connected) return reject(new Error('not connected'));
     const chunks = {};
     function handler(evt) {
@@ -1328,7 +1328,7 @@ async function renderHtmlPreview(content, htmlPath) {
         const entry = entries && entries.entries && entries.entries.find(e => (e.path || e.name) === targetPath);
         selectFile(targetPath, entry || null, 'rendered');
         // Fetch and render the file.
-        const conn = window.getE2EE?.(state.filesChannelId);
+        const conn = getE2EE(state.filesChannelId);
         if (conn && conn.connected) {
           fileContentBody.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div><p>Loading...</p></div>';
           conn.fileRead(state.filesChannelId, targetPath);
@@ -1474,7 +1474,7 @@ export function onFilesTabActivated() {
     }
 
     filesLoadRoot();
-    const _ftaConn = window.getActiveE2EE?.();
+    const _ftaConn = getActiveE2EE();
     if (state.filesTreeTab === 'changes' && _ftaConn && _ftaConn.connected) {
       _ftaConn.filesChanges(state.chatCurrentChannel);
     }

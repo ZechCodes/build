@@ -1,8 +1,6 @@
 import { state } from '../state.js';
 import { escapeHtml } from '../util/html.js';
-
-// External deps kept as window globals during transition:
-//   window.getActiveE2EE — defined in legacy.js
+import { getActiveE2EE } from '../e2ee/bridge.js';
 
 
 export function getTerminalCwd(channelId) {

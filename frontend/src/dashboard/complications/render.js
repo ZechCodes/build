@@ -1,8 +1,7 @@
 import { state } from '../state.js';
 import { escapeHtml } from '../util/html.js';
 import { getTerminalCwd } from '../terminal/terminal.js';
-
-// External deps kept as window globals during transition: window.getActiveE2EE
+import { getActiveE2EE } from '../e2ee/bridge.js';
 
 export function renderComplications() {
   const scroll = document.getElementById('comp-scroll');

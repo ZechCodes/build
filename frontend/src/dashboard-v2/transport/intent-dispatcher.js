@@ -19,6 +19,12 @@ function connFor(channelId) {
 }
 
 export function bindIntentDispatcher() {
+  bus.on('intent.connect_device', async ({ deviceId }) => {
+    if (!deviceId) return;
+    try { await e2eePool.connect(deviceId); }
+    catch (err) { plog.error('connect_device failed', err); }
+  });
+
   bus.on('intent.send_message', async ({ channelId, text }) => {
     const conn = connFor(channelId);
     if (!conn || !text) return;

@@ -11,6 +11,8 @@ html, body {
   height: 100%;
 }
 
-#app { min-height: 100vh; display: flex; }
+#app { width: 100%; min-height: 100vh; }
 
 code, pre { font-family: var(--font-mono); }
+
+button { font-family: inherit; }

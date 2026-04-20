@@ -1,0 +1,22 @@
+.v2-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: var(--tab-bar-height);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.v2-tab-btn {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.v2-tab-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.v2-tab-btn.active { color: var(--fg); background: var(--bg-elev-2); }

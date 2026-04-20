@@ -4,7 +4,7 @@ import { fmtClock24 } from '../util/time.js';
 import { toolTag, agentShortName, describeToolUse, formatToolDetail, formatToolResult } from './tools.js';
 import { renderMarkdown } from '../vendor/markdown.js';
 import { toggleConsoleEntry } from '../shell/rail.js';
-import { markUnreadMessages } from '../channels/unread.js';
+import { markUnreadMessages, getLastSeen } from '../channels/unread.js';
 
 let currentReasoningEntry = null;
 

@@ -3,9 +3,10 @@ import { escapeHtml } from '../util/html.js';
 import { addBrowserTab, createBrowserTabItem } from '../browser/tabs.js';
 import { showEditChannelDialog } from './edit-dialog.js';
 import { updateChatRailUnreadBadge } from '../shell/rail.js';
+import { selectChannel } from './select.js';
 
 // External deps via window during transition:
-//   window.selectChannel, window.anyE2EEConnected, window.connectToDevice
+//   window.anyE2EEConnected, window.connectToDevice
 
 export function renderChannelPanel() {
   const list = document.getElementById('channel-panel-list');
@@ -130,7 +131,7 @@ export function createChannelItem(ch) {
 
   item.addEventListener('click', (e) => {
     if (e.target.closest('.ch-edit')) return;
-    window.selectChannel?.(ch.id);
+    selectChannel(ch.id);
   });
   const editBtn = item.querySelector('.ch-edit');
   if (editBtn) {

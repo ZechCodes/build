@@ -122,6 +122,9 @@ import {
   saveChannelState,
   clearChannelDraft,
 } from './channels/state-store.js';
+import { selectChannel, selectAgent, dismissStaleSuggestions } from './channels/select.js';
+import { sendChatMessage } from './chat/composer.js';
+import './chat/new-channel-dialog.js';
 import {
   clearConsole,
   appendConsoleReasoning,
@@ -165,16 +168,6 @@ async function connectToDevice(device) {
   renderChannelPanel();
 }
 
-function selectAgent(name, device) {
-  state.selectedAgent = { name, device };
-  renderChannelPanel();
-  switchTab('chat');
-  if (state.chatCurrentChannel) {
-    location.hash = `chat/${state.chatCurrentChannel}`;
-  } else {
-    location.hash = 'chat';
-  }
-}
 
 
 document.getElementById('device-dropdown-trigger')?.addEventListener('click', (e) => {
@@ -500,49 +493,6 @@ document.addEventListener('sk:notification-status', async (evt) => {
 // Multi-device E2EE state
 
 
-if (window.buildElectron) {
-  document.addEventListener('keydown', (e) => {
-    // Navigation hotkeys all require Alt, which has no useful default
-    // behavior in chat inputs (Option+letter inserts special chars; we
-    // preventDefault below). So we don't skip when an input is focused —
-    // that was making nav unusable while typing.
-    if (!e.altKey) return;
-
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      const ids = getOrderedChannelIds();
-      if (!ids.length) return;
-      const cur = ids.indexOf(state.chatCurrentChannel);
-
-      if (e.shiftKey) {
-        // ALT+SHIFT+UP/DOWN: jump to first unread in that direction
-        const dir = e.key === 'ArrowUp' ? -1 : 1;
-        const start = cur === -1 ? 0 : cur + dir;
-        for (let i = start; i >= 0 && i < ids.length; i += dir) {
-          const uc = state.unreadCounts.get(ids[i]);
-          if (uc && uc.messages > 0) { selectChannel(ids[i]); return; }
-        }
-      } else {
-        // ALT+UP/DOWN: move to adjacent channel
-        const next = e.key === 'ArrowUp' ? cur - 1 : cur + 1;
-        if (next >= 0 && next < ids.length) selectChannel(ids[next]);
-      }
-    } else if (e.key === '[' || e.key === ']') {
-      e.preventDefault();
-      if (e.key === '[' && state.channelHistoryIndex > 0) {
-        state.channelHistoryIndex--;
-        state._navigatingHistory = true;
-        selectChannel(state.channelHistory[state.channelHistoryIndex]);
-        state._navigatingHistory = false;
-      } else if (e.key === ']' && state.channelHistoryIndex < state.channelHistory.length - 1) {
-        state.channelHistoryIndex++;
-        state._navigatingHistory = true;
-        selectChannel(state.channelHistory[state.channelHistoryIndex]);
-        state._navigatingHistory = false;
-      }
-    }
-  });
-}
 
 
 
@@ -1448,126 +1398,7 @@ function bindE2EEEvents(instance, deviceId) {
 } // end bindE2EEEvents
 
 
-function selectChannel(channelId) {
-  state.chatCurrentChannel = channelId;
-  pushChannelHistory(channelId);
-  state.activeBrowserTab = null;
-  // Hide browser panel and restore normal tab if it was showing
-  document.getElementById('tab-browser')?.classList.remove('active');
-  // Restore viewer chrome hidden by browser view
-  document.querySelector('.viewer-body')?.classList.remove('hidden');
-  document.querySelector('.comp-wrapper')?.classList.remove('hidden');
-  document.getElementById('console-bottom')?.classList.remove('hidden');
-  // Restore files view as the main panel.
-  const filesPanel = document.getElementById('tab-files');
-  if (filesPanel) filesPanel.classList.add('active');
-  // Sync the chat overlay header + model/effort pills for this channel.
-  syncChatOverlayHeader();
-  applyChannelHarnessInfo(channelId);
-  // Close mobile channel panel if open
-  document.getElementById('channel-panel')?.classList.remove('mobile-open');
-  updateStopButton();
-  hideChatBubble();
-  hideActivityBubble();
-  // Capture lastSeen for scroll positioning before updating it.
-  state.scrollLastSeen = getLastSeen(channelId) || null;
-  state._unreadHighlightLastSeen = null;
-  state._unreadHighlightUntil = null;
-  // Defer marking as seen until user interacts.
-  const _chId = channelId;
-  deferMarkRead(() => {
-    setLastSeen(_chId);
-    state.unreadCounts.delete(_chId);
-    renderChannelList();
-  });
-  renderChannelList();
-  const _selConn = getE2EE(channelId);
-  if (_selConn && _selConn.connected) {
-    state.chatLoadingMessages.add(channelId);
-    state.chatLoadingActivity.add(channelId);
-    _selConn.getMessages(channelId);
-    _selConn.getActivity(channelId);
-    _selConn.getComplications(channelId);
-  } else if (!state.chatMessages.has(channelId) || state.chatMessages.get(channelId).length === 0) {
-    // Device disconnected, no cached messages — show loading state until reconnect.
-    state.chatLoadingMessages.add(channelId);
-  }
-  renderMessages();
-  clearConsole(state.chatLoadingActivity.has(channelId));
-  const chName = state.chatChannels.get(channelId)?.name || '';
-  const input = document.getElementById('chat-input');
-  input.placeholder = `Message #${chName}...`;
-  // Update mobile channel label
-  updateMobileChannelLabel();
-  location.hash = `${state.currentTab || 'chat'}/${channelId}`;
-  // If files tab is active, refresh it for the new channel.
-  if (state.currentTab === 'files') onFilesTabActivated();
-  // Restore persisted state from localStorage.
-  const saved = loadChannelState(channelId);
-  // Restore last active tab for this channel.
-  if (saved.activeTab && saved.activeTab !== state.currentTab) {
-    switchTab(saved.activeTab);
-    if (saved.activeTab === 'files') onFilesTabActivated();
-    location.hash = `${saved.activeTab}/${channelId}`;
-  }
-  if (input) {
-    input.value = saved.draft || '';
-    input.style.height = 'auto';
-  }
-  // Plan mode: prefer server state, fall back to localStorage.
-  if (!state.channelPlanMode.has(channelId) && saved.planMode !== undefined) {
-    state.channelPlanMode.set(channelId, saved.planMode);
-  }
-  // Sync plan mode toggle.
-  updatePlanModeUI(state.channelPlanMode.get(channelId) || false);
-  // Update terminal and tasks for the new channel. (Activity/Tasks live in the sidebar accordion now.)
-  renderTerminalForChannel(channelId);
-  renderTasksPanel(channelId);
-  updateTasksBadge(channelId);
-  // Render complications for this channel (instant — already in memory).
-  closeCompPopover();
-  renderComplications();
-}
 
-function dismissStaleSuggestions(container, msgs) {
-  // For each message with suggested_actions, check if a user message follows it.
-  // If so, the suggestions are stale — dismiss them (and mark the matching one as selected).
-  const suggestionDivs = container.querySelectorAll('.msg-suggestions');
-  if (!suggestionDivs.length) return;
-
-  // Build a map of msg index → next user message content (if any).
-  const msgsWithSuggestions = [];
-  for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].suggested_actions?.length) {
-      // Find the next user message after this one.
-      let nextUserContent = null;
-      for (let j = i + 1; j < msgs.length; j++) {
-        if (msgs[j].sender === 'client') {
-          nextUserContent = msgs[j].content;
-          break;
-        }
-      }
-      msgsWithSuggestions.push({ msgIndex: i, nextUserContent, actions: msgs[i].suggested_actions });
-    }
-  }
-
-  // Apply states to the DOM suggestion divs (they appear in the same order).
-  suggestionDivs.forEach((div, idx) => {
-    const info = msgsWithSuggestions[idx];
-    if (!info) return;
-    if (info.nextUserContent !== null) {
-      // A user message followed — dismiss all, mark the matching one as selected.
-      div.querySelectorAll('.suggestion-btn').forEach(btn => {
-        if (btn.textContent === info.nextUserContent) {
-          btn.classList.add('selected');
-        } else {
-          btn.classList.add('dismissed');
-        }
-      });
-    }
-    // If no user message follows, leave buttons active (it's the latest).
-  });
-}
 
 function renderMessages() {
   const container = document.getElementById('chat-messages');
@@ -2011,239 +1842,9 @@ function appendSystemMessage(text) {
 
 
 
-// ----- Send message -----
-
-async function sendChatMessage() {
-  const input = document.getElementById('chat-input');
-  const content = input.value.trim();
-  const hasFiles = state.pendingFiles.length > 0;
-  const _sendConn = getActiveE2EE();
-  if ((!content && !hasFiles) || !state.chatCurrentChannel || !_sendConn || !_sendConn.connected) return;
-
-  // Capture channel at send time so async uploads don't target the wrong channel.
-  const channelId = state.chatCurrentChannel;
-
-  input.value = '';
-  input.style.height = 'auto';
-  clearChannelDraft(channelId);
-
-  // Upload any staged files first.
-  let attachments = null;
-  if (hasFiles) {
-    const files = [...state.pendingFiles];
-    clearPendingFiles();
-    attachments = [];
-    for (const file of files) {
-      try {
-        const result = await _sendConn.uploadFile(channelId, file);
-        attachments.push({
-          file_id: result.file_id,
-          filename: result.filename,
-          size: result.size,
-          mime_type: result.mime_type,
-        });
-      } catch (err) {
-        console.error('[Chat] File upload failed:', err);
-      }
-    }
-    if (!attachments.length) attachments = null;
-  }
-
-  const messageContent = content || (attachments ? `Sent ${attachments.length} file(s)` : '');
-  if (!messageContent) return;
-
-  // Dismiss all pending suggested action buttons.
-  document.querySelectorAll('.msg-suggestions .suggestion-btn:not(.selected):not(.dismissed)').forEach(b => b.classList.add('dismissed'));
-
-
-  // Optimistically render the message.
-  const tempMsg = {
-    id: crypto.randomUUID(),
-    channel_id: channelId,
-    sender: 'client',
-    content: messageContent,
-    created_at: Date.now() / 1000,
-    attachments,
-  };
-  const msgs = state.chatMessages.get(channelId) || [];
-  msgs.push(tempMsg);
-  state.chatMessages.set(channelId, msgs);
-  appendMessage(tempMsg);
-  const _sentEl = document.getElementById('chat-messages').lastElementChild;
-  if (_sentEl) handleSentMessageScroll(_sentEl);
-
-  // Auto-resolve any pending plan review cards (agent cancels interactions on new messages).
-  resolvePendingPlanReviews();
-
-  try {
-    // Send via E2EE with attachment metadata, plan mode, model, and effort.
-    const payload = { action: 'message', channel_id: channelId, content: messageContent };
-    if (attachments) payload.attachments = attachments;
-    if (state.channelPlanMode.get(channelId)) payload.plan_mode = true;
-    const _chData = state.chatChannels.get(channelId);
-    if (_chData?.model) payload.model = _chData.model;
-    if (_chData?.effort) payload.effort = _chData.effort;
-    const realMessageId = await _sendConn.send(payload);
-    const el = document.querySelector(`[data-msg-id="${tempMsg.id}"]`);
-    if (el) el.dataset.msgId = realMessageId;
-    tempMsg.id = realMessageId;
-  } catch (err) {
-    console.error('[Chat] Send failed:', err);
-  }
-}
-
-document.getElementById('chat-send-btn')?.addEventListener('click', sendChatMessage);
-document.getElementById('chat-stop-btn')?.addEventListener('click', () => {
-  const _stopConn = getActiveE2EE();
-  if (!state.chatCurrentChannel || !_stopConn?.connected) return;
-
-  // Device handles two-phase stop: graceful cancel → 3s → process kill.
-  _stopConn.stopAgent(state.chatCurrentChannel).catch(() => {});
-  state.channelAgentActive.set(state.chatCurrentChannel, false);
-  updateStopButton();
-});
-const _isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-document.getElementById('chat-input')?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !_isMobile) {
-    e.preventDefault();
-    sendChatMessage();
-  }
-});
-
-// Save draft input to localStorage on every change.
-document.getElementById('chat-input')?.addEventListener('input', () => {
-  if (!state.chatCurrentChannel) return;
-  saveChannelState(state.chatCurrentChannel, { draft: document.getElementById('chat-input').value });
-});
 
 
 
-// ----- New channel dialog -----
-
-document.getElementById('btn-new-channel')?.addEventListener('click', () => {
-  if (!anyE2EEConnected()) {
-    alert('E2EE not connected. Waiting for device...');
-    return;
-  }
-
-  // Determine which device to create the channel on.
-  const _targetDeviceId = state.channelDeviceMap.get(state.chatCurrentChannel) || state.e2eeConnections.keys().next().value;
-  const _createConn = state.e2eeConnections.get(_targetDeviceId);
-
-  const dialogParent = document.body;
-  const overlay = document.createElement('div');
-  overlay.className = 'new-channel-overlay';
-
-  // Build harness options from device's cache.
-  const cachedHarnesses = state.deviceHarnesses.get(_targetDeviceId) || [];
-  let harnessOptions = '<option value="">No agent</option>';
-  if (cachedHarnesses.length) {
-    harnessOptions = cachedHarnesses.map(h =>
-      `<option value="${h.id}">${h.name}</option>`
-    ).join('');
-  }
-
-  overlay.innerHTML = `
-    <div class="new-channel-dialog">
-      <h3>New Channel</h3>
-      <input type="text" id="new-channel-name" placeholder="Channel name..." autofocus>
-      <label for="new-channel-harness">Harness</label>
-      <select id="new-channel-harness">${harnessOptions}</select>
-      <label for="new-channel-model">Model</label>
-      <select id="new-channel-model"><option value="">Select a harness first</option></select>
-      <label for="new-channel-effort">Effort</label>
-      <select id="new-channel-effort"><option value="">Default</option></select>
-      <button class="new-channel-advanced-toggle" type="button" id="new-channel-advanced-toggle">▶ Advanced</button>
-      <div class="new-channel-advanced" id="new-channel-advanced">
-        <label for="new-channel-workdir">Working Directory</label>
-        <input type="text" id="new-channel-workdir" placeholder="/path/to/project">
-        <label for="new-channel-prompt">System Prompt</label>
-        <textarea id="new-channel-prompt" placeholder="Optional agent instructions..." rows="2"></textarea>
-        <label class="new-channel-checkbox">
-          <input type="checkbox" id="new-channel-auto-approve">
-          Auto-approve all tool uses
-        </label>
-      </div>
-      <div class="dialog-btns">
-        <button class="btn btn-cancel" id="new-channel-cancel">Cancel</button>
-        <button class="btn btn-create" id="new-channel-create">Create</button>
-      </div>
-    </div>
-  `;
-  dialogParent.appendChild(overlay);
-
-  const nameInput = document.getElementById('new-channel-name');
-  const harnessSelect = document.getElementById('new-channel-harness');
-  const modelSelect = document.getElementById('new-channel-model');
-  const advancedToggle = document.getElementById('new-channel-advanced-toggle');
-  const advancedSection = document.getElementById('new-channel-advanced');
-  nameInput.focus();
-
-  const effortSelect = document.getElementById('new-channel-effort');
-
-  // Populate models and effort options when harness changes.
-  function updateHarnessFields() {
-    const harnessId = harnessSelect.value;
-    modelSelect.innerHTML = '';
-    effortSelect.innerHTML = '<option value="">Default</option>';
-    if (!harnessId || !cachedHarnesses) {
-      modelSelect.innerHTML = '<option value="">Select a harness first</option>';
-      return;
-    }
-    const harness = cachedHarnesses.find(h => h.id === harnessId);
-    if (!harness) return;
-    for (const m of harness.models) {
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.name;
-      if (m.id === harness.default_model) opt.selected = true;
-      modelSelect.appendChild(opt);
-    }
-    for (const lvl of (harness.effort_levels || [])) {
-      const opt = document.createElement('option');
-      opt.value = lvl;
-      opt.textContent = effortLabel(lvl);
-      if (lvl === harness.default_effort) opt.selected = true;
-      effortSelect.appendChild(opt);
-    }
-  }
-  harnessSelect.addEventListener('change', updateHarnessFields);
-  // Init for first harness.
-  updateHarnessFields();
-
-  // Advanced toggle.
-  advancedToggle.addEventListener('click', () => {
-    advancedSection.classList.toggle('is-open');
-    advancedToggle.textContent = advancedSection.classList.contains('is-open') ? '▼ Advanced' : '▶ Advanced';
-  });
-
-  const close = () => overlay.remove();
-  document.getElementById('new-channel-cancel').addEventListener('click', close);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-
-  const create = () => {
-    const name = nameInput.value.trim();
-    if (name) {
-      const opts = {};
-      if (harnessSelect.value) opts.harness = harnessSelect.value;
-      if (modelSelect.value) opts.model = modelSelect.value;
-      const effortVal = document.getElementById('new-channel-effort').value;
-      if (effortVal) opts.effort = effortVal;
-      const wd = document.getElementById('new-channel-workdir').value.trim();
-      if (wd) opts.working_directory = wd;
-      const sp = document.getElementById('new-channel-prompt').value.trim();
-      if (sp) opts.system_prompt = sp;
-      opts.auto_approve_tools = document.getElementById('new-channel-auto-approve').checked;
-      _createConn?.createChannel(name, opts);
-      close();
-    }
-  };
-  document.getElementById('new-channel-create').addEventListener('click', create);
-  nameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') create();
-    if (e.key === 'Escape') close();
-  });
-});
 
 // syncE2EEStatus is now defined above with initE2EE.
 // MutationObservers no longer needed — syncE2EEStatus is called directly.
@@ -2260,7 +1861,10 @@ window.getActiveE2EE = getActiveE2EE;
 window.getE2EE = getE2EE;
 window.renderChannelPanel = renderChannelPanel;
 window.renderMessages = renderMessages;
-window.selectChannel = selectChannel;
+// composer.js needs these until Wave B moves them into chat/messages.js + chat/interactions.js.
+window.appendMessage = appendMessage;
+window.resolvePendingPlanReviews = resolvePendingPlanReviews;
+window.updateStopButton = updateStopButton;
 window.switchTab = switchTab;
 window.showBrowserView = showBrowserView;
 window.anyE2EEConnected = anyE2EEConnected;

@@ -85,7 +85,6 @@ try {
     highlightLine: typeof window.highlightLine,
     sodium: typeof window.sodium,
     switchTab: typeof window.switchTab,
-    selectChannel: typeof window.selectChannel,
     renderChannelPanel: typeof window.renderChannelPanel,
     renderMessages: typeof window.renderMessages,
     getE2EE: typeof window.getE2EE,
@@ -397,6 +396,30 @@ try {
     await page.evaluate(() => window.__test_fake.dispatchEvent(new Event('disconnected')));
     await page.waitForTimeout(40);
     check('E2EE disconnected: no pageerror', pageErrors.length === priorErrors,
+      pageErrors.slice(priorErrors).join('; '));
+  }
+
+  // ============================================================
+  // Imperative state-mutating calls extracted into modules
+  // ============================================================
+  // Re-establish the fake connection (disconnected wiped it above).
+  await page.evaluate(() => {
+    window.__test_fake.connected = true;
+    window.__test_fake.dispatchEvent(new CustomEvent('channel_list', {
+      detail: { channels: [{ id: 'ch-1', name: 'test', harness: 'claude', created_at: Date.now() }], agent_cwd: '/tmp' },
+    }));
+  });
+  await page.waitForTimeout(60);
+
+  for (const [label, code, after] of [
+    ['updatePlanModeUI(true)', "window.updatePlanModeUI?.(true)"],
+    ['updatePlanModeUI(false)', "window.updatePlanModeUI?.(false)"],
+    ['updateStopButton', "window.updateStopButton?.()"],
+  ]) {
+    const priorErrors = pageErrors.length;
+    await page.evaluate((c) => eval(c), code).catch((e) => pageErrors.push(`${label}: ${e.message}`));
+    await page.waitForTimeout(40);
+    check(`${label} threw nothing`, pageErrors.length === priorErrors,
       pageErrors.slice(priorErrors).join('; '));
   }
 

@@ -1,8 +1,9 @@
 import { state } from '../state.js';
 import { escapeHtml } from '../util/html.js';
+import { selectChannel } from '../channels/select.js';
 
 // External deps kept on window during transition:
-//   window.renderChannelPanel, window.showBrowserView, window.selectChannel
+//   window.renderChannelPanel, window.showBrowserView
 
 export function addBrowserTab(deviceId) {
   const id = 'browser-' + (++state._browserTabCounter);
@@ -22,7 +23,7 @@ export function removeBrowserTab(deviceId, tabId) {
   if (state.activeBrowserTab === tabId) {
     state.activeBrowserTab = null;
     const firstCh = state.chatChannels.keys().next().value;
-    if (firstCh) window.selectChannel?.(firstCh);
+    if (firstCh) selectChannel(firstCh);
     else { document.getElementById('viewer-content')?.replaceChildren(); }
   }
   window.renderChannelPanel?.();

@@ -1803,14 +1803,28 @@ body{
   .channel-panel{display:none}
   .channel-panel.mobile-open{
     display:flex;
-    position:absolute;top:44px;left:0;right:0;
+    position:fixed;inset:0;
     width:100%;min-width:0;
-    max-height:60vh;
-    z-index:30;
-    border-right:none;border-bottom:1px solid var(--border);
+    height:100vh;height:100dvh;max-height:none;
+    z-index:100;
+    border:none;
     background:var(--bg, #fff);
-    box-shadow:0 4px 16px rgba(0,0,0,.12);
+    box-shadow:none;
   }
+  /* Give Devices room to fill the viewport; flex sections still share space. */
+  .channel-panel.mobile-open .channel-panel-sections{flex:1;min-height:0}
+  /* Close affordance when the sidebar is fullscreen — only shown on mobile. */
+  .channel-panel .mobile-close{
+    display:none;
+    position:absolute;top:.6rem;right:.6rem;
+    width:32px;height:32px;border-radius:50%;
+    background:var(--surface-solid);
+    border:1px solid var(--border-strong);
+    color:var(--text);cursor:pointer;z-index:2;
+    align-items:center;justify-content:center;
+  }
+  .channel-panel .mobile-close svg{width:14px;height:14px}
+  .channel-panel.mobile-open .mobile-close{display:flex}
   .mobile-nav{display:flex !important}
   .viewer-tabs{display:none}
   .chat-input,
@@ -1987,7 +2001,7 @@ body{
   ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12)}
   ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.2)}
   /* Mobile */
-  .channel-panel.mobile-open{background:var(--bg);box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .channel-panel.mobile-open{background:var(--bg);box-shadow:none}
   .file-tree-panel{background:rgba(255,255,255,0.02)}
   /* Priority badge */
   .priority-badge.p2{background:rgba(255,255,255,0.06)}
@@ -2038,6 +2052,7 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   display:flex;flex-direction:column;
   flex:1 1 0;min-height:0;
   border-bottom:1px solid var(--border-strong);
+  transition:flex-grow .22s ease;
 }
 .sidebar-section:last-child{border-bottom:none}
 .sidebar-section.collapsed{flex:0 0 auto}
@@ -2072,8 +2087,20 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   border-radius:999px;min-width:16px;text-align:center;line-height:1.4;
 }
 .sidebar-section-badge.accent{background:var(--accent);color:#fff}
-.sidebar-section-body{display:flex;flex-direction:column;overflow-y:auto;min-height:0;flex:1 1 auto}
-.sidebar-section-body.collapsed{display:none}
+.sidebar-section-body{
+  display:flex;flex-direction:column;
+  overflow-y:auto;min-height:0;flex:1 1 auto;
+  /* Animate expand/collapse by transitioning max-height — a cheap
+     workaround for display:none not being animatable. */
+  max-height:100vh;
+  transition:max-height .22s ease, padding .22s ease;
+}
+.sidebar-section-body.collapsed{
+  max-height:0;
+  overflow:hidden;
+  padding:0;
+  pointer-events:none;
+}
 .sidebar-section[data-section="tasks"] .sidebar-section-body,
 .sidebar-section[data-section="activity"] .sidebar-section-body{
   padding:.1rem 0 .3rem;
@@ -2322,6 +2349,9 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 
 <!-- ===== CHANNEL PANEL (left column) ===== -->
 <div class="channel-panel" id="channel-panel">
+  <button class="mobile-close" id="channel-panel-close" aria-label="Close sidebar" type="button">
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
   <div class="channel-panel-sections" id="channel-panel-sections">
     <!-- Devices & Channels (always expanded) -->
     <div class="sidebar-section" data-section="devices">
@@ -2991,7 +3021,7 @@ document.getElementById('dd-new-channel')?.addEventListener('click', (e) => {
   document.getElementById('btn-new-channel')?.click();
 });
 
-// Mobile channel dropdown — shows channel panel as overlay
+// Mobile channel dropdown — shows channel panel as a full-viewport overlay
 document.getElementById('mobile-channel-trigger')?.addEventListener('click', (e) => {
   e.stopPropagation();
   const panel = document.getElementById('channel-panel');
@@ -2999,7 +3029,13 @@ document.getElementById('mobile-channel-trigger')?.addEventListener('click', (e)
     panel.classList.toggle('mobile-open');
   }
 });
-// Click outside closes mobile channel dropdown
+// Close button (visible in mobile-open state)
+document.getElementById('channel-panel-close')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('channel-panel')?.classList.remove('mobile-open');
+});
+// Click outside closes mobile channel dropdown (no-op on mobile where the
+// sidebar fills the viewport; click the close button or pick a channel instead).
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('channel-panel');
   if (panel && panel.classList.contains('mobile-open')) {

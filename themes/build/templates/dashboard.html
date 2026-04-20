@@ -587,10 +587,10 @@ body{
   color:var(--text);
 }
 .msg-status{font-size:9px;color:var(--text-muted);margin-top:.15rem;position:relative;height:1.3em;overflow:hidden}
-.msg-status-state{display:inline-flex;align-items:center;gap:.2rem;position:absolute;left:0;transition:opacity .3s ease,transform .3s ease}
-.msg-status-state.enter{opacity:0;transform:translateY(4px)}
+.msg-status-state{display:inline-flex;align-items:center;gap:.2rem;position:absolute;left:0;top:0;white-space:nowrap;transition:opacity .3s ease,transform .3s ease}
+.msg-status-state.enter{opacity:0;transform:translateY(4px);pointer-events:none}
 .msg-status-state.visible{opacity:1;transform:translateY(0)}
-.msg-status-state.exit{opacity:0;transform:translateY(-4px)}
+.msg-status-state.exit{opacity:0;transform:translateY(-4px);pointer-events:none}
 .msg-status .check{opacity:.35}
 .msg-status .check.active{opacity:1}
 .msg-status.delivered .check.active{color:var(--accent)}
@@ -1542,7 +1542,7 @@ body{
 .sk-status-label{font-weight:500}
 /* ===== E2EE WAITING OVERLAY (Skeleton Shimmer) ===== */
 .e2ee-waiting-overlay{
-  position:absolute;inset:0;z-index:20;
+  position:fixed;inset:0;z-index:80;
   background:var(--bg);
   display:flex;flex-direction:column;
   transition:opacity .4s ease;
@@ -1630,6 +1630,98 @@ body{
 }
 .skel-input-btn{width:36px;height:36px;border-radius:var(--radius)}
 
+/* ===== Layout-shaped skeleton (new) ===== */
+.skel-layout{flex:1;display:flex;min-height:0;overflow:hidden}
+.skel-sidebar{
+  width:260px;flex-shrink:0;
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  background:rgba(0,0,0,.02);
+}
+.skel-section{border-bottom:1px solid var(--border)}
+.skel-section-header{padding:.55rem .75rem;display:flex;align-items:center;gap:.45rem}
+.skel-section-title{width:60px;height:10px;border-radius:3px}
+.skel-section-title.w-narrow{width:42px}
+.skel-section-body{padding:.25rem 0 .5rem}
+.skel-device-row{display:flex;align-items:center;gap:.5rem;padding:.4rem .75rem}
+.skel-device-dot{width:8px;height:8px;border-radius:50%}
+.skel-device-name{flex:1;height:11px;max-width:140px}
+.skel-device-name.w-short{max-width:100px}
+.skel-channel-row{display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem .3rem 1.6rem}
+.skel-channel-hash{width:8px;height:10px}
+.skel-channel-name{flex:1;height:10px;max-width:150px}
+.skel-channel-name.w-short{max-width:90px}
+.skel-task-row{display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem}
+.skel-task-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.skel-task-line{flex:1;height:10px;max-width:170px}
+.skel-task-line.w-short{max-width:110px}
+
+.skel-main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.skel-path-bar{
+  height:36px;padding:.3rem .75rem;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:.5rem;
+}
+.skel-path-pill{width:220px;height:12px}
+.skel-files-layout{flex:1;display:flex;min-height:0}
+.skel-files-tree{
+  width:240px;flex-shrink:0;
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  background:rgba(0,0,0,.01);
+}
+.skel-mode-switch{display:flex;gap:.2rem;padding:.3rem .4rem;border-bottom:1px solid var(--border)}
+.skel-mode-btn{flex:1;height:22px;border-radius:var(--radius-xs)}
+.skel-mode-btn.w-short{flex:0 0 56px}
+.skel-mod-row{
+  display:flex;align-items:center;gap:.45rem;
+  padding:.4rem .65rem;
+  border-bottom:1px solid var(--border);
+}
+.skel-mod-status{width:18px;height:14px;border-radius:3px;flex-shrink:0}
+.skel-mod-path{flex:1;height:10px;min-width:0}
+.skel-mod-path.w-short{max-width:120px}
+.skel-mod-path.w-narrow{max-width:80px}
+.skel-mod-stats{width:40px;height:10px;flex-shrink:0}
+.skel-review-footer{
+  margin-top:auto;display:flex;gap:.4rem;
+  padding:.5rem .6rem;border-top:1px solid var(--border);
+}
+.skel-review-btn{flex:1;height:28px;border-radius:var(--radius-sm)}
+
+.skel-diff{
+  flex:1;min-width:0;overflow:hidden;
+  display:flex;flex-direction:column;
+  padding:.5rem 0;
+}
+.skel-diff-hunk-header{
+  padding:.3rem .75rem;
+  background:var(--accent-light);
+  border-bottom:1px solid var(--border);
+}
+.skel-hunk-label{width:180px;height:10px}
+.skel-diff-line{display:flex;align-items:center;gap:.5rem;padding:.15rem 0 .15rem .5rem}
+.skel-diff-line.added{background:rgba(5,150,105,.08)}
+.skel-diff-line.removed{background:rgba(220,38,38,.08)}
+.skel-diff-ln{width:26px;height:10px;flex-shrink:0;opacity:.7}
+.skel-diff-code{height:11px}
+.skel-diff-code.w-full{width:calc(100% - 60px)}
+.skel-diff-code.w-3-4{width:70%}
+.skel-diff-code.w-2-3{width:55%}
+.skel-diff-code.w-1-2{width:42%}
+
+.skel-rail{
+  height:36px;flex-shrink:0;
+  border-top:1px solid rgba(255,255,255,0.08);
+  background:var(--console-bg);
+  display:flex;align-items:center;padding:0 .75rem;gap:.5rem;
+}
+.skel-rail-btn{width:70px;height:18px;border-radius:var(--radius-xs);
+  background:linear-gradient(90deg, rgba(255,255,255,.08) 25%, rgba(255,255,255,.14) 37%, rgba(255,255,255,.08) 63%);
+  background-size:800px 100%;
+}
+.skel-rail-spacer{flex:1}
+
 /* Connecting status text */
 .skel-status{
   position:absolute;bottom:72px;left:50%;transform:translateX(-50%);
@@ -1652,14 +1744,14 @@ body{
 
 /* Reconnect pill — shown after 5s when reconnecting (not first load) */
 .reconnect-pill{
-  position:absolute;bottom:72px;left:50%;transform:translateX(-50%);
+  position:fixed;bottom:56px;left:50%;transform:translateX(-50%);
   display:none;align-items:center;gap:.5rem;
   background:rgba(255,255,255,.95);
   backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
   padding:.4rem .875rem;border-radius:20px;
   border:1px solid var(--border);
   box-shadow:0 2px 8px rgba(0,0,0,.06);
-  z-index:25;
+  z-index:90;
   opacity:0;transition:opacity .3s ease;
 }
 .reconnect-pill.visible{display:flex;opacity:1}
@@ -1904,15 +1996,312 @@ body{
   /* Issue item */
   .issue-item:hover{background:rgba(255,255,255,0.03)}
   .issue-status-icon.open{color:#71717a}
+  /* Sidebar accordion (dark) */
+  .sidebar-section{border-bottom-color:rgba(255,255,255,.06)}
+  .sidebar-section-header:hover{background:rgba(255,255,255,.03)}
+  .sidebar-section-badge{background:rgba(255,255,255,.08);color:var(--text-muted)}
+  .sidebar-section .ce-row:hover{background:rgba(255,255,255,.03)}
+  .sidebar-section .ce-detail{background:rgba(0,0,0,.25)}
+  .sidebar-section .ce-detail-code,.sidebar-section .ce-detail-diff{background:rgba(0,0,0,.35)}
+  .sidebar-section .tasks-progress-bar{background:rgba(255,255,255,.08)}
+  /* Chat overlay (dark) */
+  #chat-overlay{background:var(--surface-solid);border-color:var(--border-strong);box-shadow:0 8px 32px rgba(0,0,0,.6)}
+  .chat-overlay-header{background:rgba(255,255,255,.03)}
+  .chat-overlay-btn:hover{background:rgba(255,255,255,.06)}
+  .chat-overlay-model-row{background:rgba(255,255,255,.02)}
+  .chat-overlay-model-pill{background:rgba(255,255,255,.04)}
+  .chat-overlay-model-pill:hover{background:rgba(255,255,255,.08)}
+  .chat-overlay-title .co-tag{background:rgba(255,255,255,.06)}
+  /* Files view (dark) */
+  .mod-file-row:hover{background:rgba(255,255,255,.03)}
+  .mod-file-status{filter:brightness(1.1)}
+  .files-mode-count{background:rgba(255,255,255,.08)}
+  .files-review-footer{background:rgba(255,255,255,.02)}
+  .diff-hunk-actions{background:rgba(255,255,255,.02)}
+  /* Rail (dark) */
+  .console-rail-btn:hover{background:rgba(255,255,255,.06)}
 }
 
 /* Electron: push content below traffic lights + draggable title bar */
-body.electron .channel-panel-list{padding-top:36px}
-body.electron .viewer-tabs{-webkit-app-region:drag;padding-top:6px}
-body.electron .viewer-tabs *{-webkit-app-region:no-drag}
+body.electron .channel-panel-sections{padding-top:36px}
 body.electron .channel-panel{-webkit-app-region:drag}
-body.electron .channel-panel-list > *{-webkit-app-region:no-drag}
+body.electron .channel-panel-sections > *{-webkit-app-region:no-drag}
 body.electron .channel-panel-footer{-webkit-app-region:no-drag}
+
+/* ===== Sidebar accordion sections ===== */
+.channel-panel-sections{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.sidebar-section[data-section="devices"] .channel-panel-list{padding:.2rem 0;overflow:visible;flex:none}
+.sidebar-section{display:flex;flex-direction:column;flex-shrink:0;border-bottom:1px solid var(--border);min-height:0}
+.sidebar-section[data-section="devices"]{flex:1 1 auto;min-height:120px}
+.sidebar-section-header{
+  display:flex;align-items:center;gap:.45rem;
+  padding:.55rem .75rem;
+  font-size:10px;font-weight:600;
+  color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.05em;
+  user-select:none;cursor:pointer;
+  transition:background .1s;
+}
+.sidebar-section-header:hover{background:rgba(0,0,0,.03)}
+.sidebar-section[data-section="devices"] .sidebar-section-header{cursor:default}
+.sidebar-section[data-section="devices"] .sidebar-section-header:hover{background:none}
+.sidebar-section-chevron{
+  width:10px;height:10px;flex-shrink:0;
+  transition:transform .15s;color:var(--text-muted);
+  transform:rotate(90deg);
+}
+.sidebar-section-chevron.collapsed{transform:rotate(0deg)}
+.sidebar-section[data-section="devices"] .sidebar-section-chevron{display:none}
+.sidebar-section-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sidebar-section-badge{
+  background:rgba(0,0,0,.06);color:var(--text-muted);
+  font-size:9px;font-weight:700;padding:.05rem .38rem;
+  border-radius:999px;min-width:16px;text-align:center;line-height:1.4;
+}
+.sidebar-section-badge.accent{background:var(--accent);color:#fff}
+.sidebar-section-body{display:flex;flex-direction:column;overflow-y:auto;min-height:0}
+.sidebar-section-body.collapsed{display:none}
+.sidebar-section[data-section="devices"] .sidebar-section-body{flex:1;min-height:0}
+.sidebar-section[data-section="tasks"] .sidebar-section-body,
+.sidebar-section[data-section="activity"] .sidebar-section-body{
+  max-height:36vh;padding:.1rem 0 .3rem;
+}
+
+/* Tasks in sidebar */
+.sidebar-section .task-item{
+  padding:.25rem .75rem;font-size:12px;color:var(--text);line-height:1.35;
+  display:flex;align-items:flex-start;gap:.4rem;
+}
+.sidebar-section .task-item .task-status-icon{color:var(--text-muted);width:14px;text-align:center;font-size:11px;flex-shrink:0}
+.sidebar-section .task-item.in_progress .task-status-icon{color:var(--accent)}
+.sidebar-section .task-item.completed .task-status-icon{color:var(--green)}
+.sidebar-section .task-item.completed .task-content{text-decoration:line-through;opacity:.5}
+.sidebar-section .task-content{flex:1;color:var(--text);word-break:break-word}
+.sidebar-section .tasks-summary{
+  padding:.2rem .75rem .35rem;font-size:10px;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:.45rem;
+}
+.sidebar-section .tasks-progress-bar{flex:1;height:2px;background:rgba(0,0,0,.08);border-radius:2px;overflow:hidden}
+.sidebar-section .tasks-progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s}
+.sidebar-section .tasks-empty{padding:.65rem .75rem;color:var(--text-muted);font-size:11px}
+
+/* Activity (console entries) in sidebar — light theme */
+.sidebar-section .console-entry{border-bottom:1px solid var(--border)}
+.sidebar-section .console-entry:last-child{border-bottom:none}
+.sidebar-section .ce-row{padding:.3rem .75rem;gap:.35rem}
+.sidebar-section .ce-row:hover{background:rgba(0,0,0,.03)}
+.sidebar-section .ce-tag{font-size:9px;padding:.1rem .3rem}
+.sidebar-section .ce-desc{color:var(--text);font-size:11px}
+.sidebar-section .ce-summary{color:var(--text-muted);font-size:10px}
+.sidebar-section .ce-time{color:var(--text-muted);font-size:9.5px}
+.sidebar-section .ce-detail{background:rgba(0,0,0,.03);color:var(--text);padding:.4rem .75rem .5rem .75rem;border-top-color:var(--border)}
+.sidebar-section .ce-detail-reasoning{color:var(--text);font-size:11px;max-height:200px}
+.sidebar-section .ce-detail-code,.sidebar-section .ce-detail-diff{background:rgba(0,0,0,.05);color:var(--text);max-height:160px}
+.sidebar-section .ce-diff-del{color:var(--red);background:rgba(220,38,38,.08)}
+.sidebar-section .ce-diff-add{color:var(--green);background:rgba(5,150,105,.08)}
+.sidebar-section .activity-empty{padding:.65rem .75rem;color:var(--text-muted);font-size:11px}
+
+/* ===== Simplified bottom rail ===== */
+.console-bottom{--rail-h:36px}
+.console-bottom.rail-only{height:var(--rail-h);min-height:var(--rail-h)}
+.console-bottom.rail-only .console-body{max-height:0;opacity:0;overflow:hidden}
+.console-rail-btn{
+  display:flex;align-items:center;gap:.35rem;
+  font-size:10px;font-weight:600;color:#71717a;
+  text-transform:uppercase;letter-spacing:.05em;
+  background:none;border:none;cursor:pointer;
+  padding:.35rem .6rem;border-radius:var(--radius-xs);
+  transition:color .12s, background .12s;
+  font-family:var(--font);
+}
+.console-rail-btn:hover{color:#a1a1aa;background:rgba(255,255,255,.06)}
+.console-rail-btn.active{color:var(--accent);background:rgba(99,102,241,.14)}
+.console-rail-btn svg{width:12px;height:12px}
+.console-rail-spacer{flex:1}
+.console-rail-group{display:flex;align-items:center;gap:.15rem}
+
+/* ===== Chat overlay ===== */
+#chat-overlay{
+  position:fixed;
+  bottom:calc(36px + 8px);
+  right:8px;
+  width:440px;max-width:calc(100vw - 16px);
+  height:66vh;max-height:calc(100vh - 56px);
+  background:var(--surface-solid);
+  border:1px solid var(--border-strong);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow-lg);
+  display:none;flex-direction:column;
+  overflow:hidden;z-index:50;
+  transition:width .15s ease, height .15s ease, left .15s ease, right .15s ease, top .15s ease, bottom .15s ease;
+}
+#chat-overlay.open{display:flex}
+#chat-overlay[data-mode="expanded"]{
+  top:16px;bottom:calc(36px + 8px);left:50%;right:auto;
+  transform:translateX(-50%);
+  width:min(1100px,92vw);height:auto;max-height:none;
+}
+.chat-overlay-header{
+  display:flex;align-items:center;gap:.35rem;
+  padding:.45rem .55rem;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+  background:var(--surface);
+}
+.chat-overlay-title{
+  font-size:11.5px;font-weight:600;color:var(--text);
+  display:flex;align-items:center;gap:.4rem;flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.chat-overlay-title .co-hash{color:var(--text-muted);font-weight:400}
+.chat-overlay-title .co-tag{
+  font-size:9.5px;font-weight:600;padding:.05rem .4rem;
+  border-radius:999px;background:rgba(0,0,0,.05);color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.05em;
+}
+.chat-overlay-btn{
+  width:24px;height:24px;border-radius:var(--radius-xs);
+  border:1px solid transparent;background:transparent;
+  color:var(--text-muted);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .12s;flex-shrink:0;
+}
+.chat-overlay-btn:hover{background:rgba(0,0,0,.04);color:var(--text)}
+.chat-overlay-btn.active{background:var(--accent-light);color:var(--accent)}
+.chat-overlay-btn svg{width:12px;height:12px}
+.chat-overlay-body{
+  flex:1;display:flex;flex-direction:column;
+  overflow:hidden;min-height:0;
+  position:relative;
+}
+.chat-overlay-body > .chat-layout{flex:1}
+.chat-overlay-model-row{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.35rem .5rem;
+  border-top:1px solid var(--border);
+  background:var(--surface);flex-shrink:0;
+}
+.chat-overlay-model-pill{
+  position:relative;display:inline-flex;align-items:center;gap:.3rem;
+  background:rgba(0,0,0,.04);border:1px solid var(--border);
+  border-radius:999px;padding:.22rem .55rem;
+  font-size:11px;font-weight:500;color:var(--text);
+  cursor:pointer;transition:background .12s;
+  font-family:var(--font);
+}
+.chat-overlay-model-pill:hover{background:rgba(0,0,0,.07)}
+.chat-overlay-model-pill .co-model-label{
+  color:var(--text-muted);font-size:9.5px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em;margin-right:.2rem;
+}
+.chat-overlay-model-pill .co-model-chevron{width:8px;height:5px;color:var(--text-muted)}
+.chat-overlay-model-menu{
+  position:absolute;bottom:calc(100% + 4px);left:0;
+  min-width:180px;max-width:280px;
+  background:var(--surface-solid);border:1px solid var(--border-strong);
+  border-radius:var(--radius);box-shadow:var(--shadow-lg);
+  padding:.3rem;display:none;z-index:60;
+  flex-direction:column;gap:.1rem;
+}
+.chat-overlay-model-menu.open{display:flex}
+.chat-overlay-model-menu .co-opt{
+  padding:.4rem .55rem;font-size:12px;color:var(--text);
+  border-radius:var(--radius-sm);cursor:pointer;
+}
+.chat-overlay-model-menu .co-opt:hover{background:rgba(99,102,241,.08)}
+.chat-overlay-model-menu .co-opt.active{background:rgba(99,102,241,.12);color:var(--accent);font-weight:600}
+/* Legacy placeholder kept for backward compatibility — scrim no longer blocks clicks. */
+.chat-overlay-scrim{display:none !important}
+
+/* Make the existing chat panel fit the overlay */
+#chat-overlay .chat-layout{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;position:relative;width:100%;height:100%}
+#chat-overlay .chat-main{width:100%;flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+#chat-overlay .chat-messages-wrap{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;overflow:hidden}
+#chat-overlay .chat-messages{flex:1;min-height:0;overflow-y:auto}
+#chat-overlay .chat-input-area{flex-shrink:0}
+
+/* ===== Files-main view (no tabs) ===== */
+.viewer-body .files-layout{flex:1}
+.files-mode-switch{
+  display:flex;align-items:center;gap:.2rem;
+  padding:.3rem .4rem;border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.files-mode-btn{
+  flex:1;padding:.3rem .5rem;font-size:11px;font-weight:500;
+  color:var(--text-muted);background:transparent;border:none;
+  border-radius:var(--radius-xs);cursor:pointer;font-family:var(--font);
+  transition:all .12s;display:flex;align-items:center;justify-content:center;gap:.3rem;
+}
+.files-mode-btn:hover{color:var(--text);background:rgba(0,0,0,.03)}
+.files-mode-btn.active{color:var(--accent);background:var(--accent-light);font-weight:600}
+.files-mode-count{
+  font-size:10px;font-weight:600;padding:0 .35rem;border-radius:999px;
+  background:rgba(0,0,0,.06);color:var(--text-muted);min-width:16px;text-align:center;
+}
+.files-mode-btn.active .files-mode-count{background:var(--accent);color:#fff}
+
+.mod-files-list{display:flex;flex-direction:column;overflow-y:auto;flex:1;min-height:0}
+.mod-files-empty{padding:1rem .75rem;color:var(--text-muted);font-size:12px;text-align:center}
+.mod-file-row{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.4rem .65rem;font-size:12px;
+  border-bottom:1px solid var(--border);
+  cursor:pointer;transition:background .1s;color:var(--text);
+}
+.mod-file-row:hover{background:rgba(0,0,0,.03)}
+.mod-file-row.active{background:var(--accent-light);color:var(--accent)}
+.mod-file-status{font-size:10px;font-weight:600;padding:.05rem .3rem;border-radius:var(--radius-xs);flex-shrink:0;min-width:20px;text-align:center}
+.mod-file-status.M{background:var(--amber-light);color:var(--amber)}
+.mod-file-status.A{background:var(--green-light);color:var(--green)}
+.mod-file-status.D{background:var(--red-light);color:var(--red)}
+.mod-file-status.R,.mod-file-status.C{background:rgba(99,102,241,.1);color:var(--accent)}
+.mod-file-status.U{background:rgba(251,191,36,.1);color:var(--amber)}
+.mod-file-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px;direction:rtl;text-align:left}
+.mod-file-stats{display:flex;align-items:center;gap:.3rem;flex-shrink:0;font-size:10.5px;font-family:var(--mono)}
+.mod-file-add{color:var(--green);font-weight:600}
+.mod-file-del{color:var(--red);font-weight:600}
+
+.files-review-footer{
+  display:flex;gap:.4rem;padding:.5rem .6rem;
+  border-top:1px solid var(--border);flex-shrink:0;background:var(--surface);
+}
+.files-review-btn{
+  flex:1;padding:.4rem .55rem;font-size:11.5px;font-weight:600;
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface-solid);color:var(--text);cursor:pointer;
+  font-family:var(--font);transition:all .12s;
+}
+.files-review-btn:hover{border-color:var(--accent);color:var(--accent)}
+.files-review-btn.primary{background:var(--green);color:#fff;border-color:var(--green)}
+.files-review-btn.primary:hover{filter:brightness(.95);color:#fff;border-color:var(--green)}
+
+.diff-hunk-actions{
+  display:flex;gap:.3rem;
+  padding:.3rem .55rem;
+  border-top:1px dashed var(--border);
+  border-bottom:1px solid var(--border);
+  background:rgba(0,0,0,.02);
+}
+.diff-hunk-btn{
+  font-size:10px;font-weight:600;color:var(--text-muted);
+  padding:.18rem .5rem;border-radius:var(--radius-xs);
+  background:transparent;border:1px solid transparent;cursor:pointer;
+  font-family:var(--font);text-transform:uppercase;letter-spacing:.04em;
+  transition:all .12s;
+}
+.diff-hunk-btn:hover{background:rgba(0,0,0,.04);color:var(--text)}
+.diff-hunk-btn.approve:hover{color:var(--green);border-color:var(--green-light)}
+.diff-hunk-btn.reject:hover{color:var(--red);border-color:var(--red-light)}
+.diff-hunk-btn.comment:hover{color:var(--accent);border-color:var(--accent-light)}
+
+/* Toast for UI stubs */
+.ui-toast{
+  position:fixed;bottom:56px;left:50%;transform:translateX(-50%) translateY(8px);
+  background:var(--console-bg);color:#e4e4e7;font-size:12px;
+  padding:.5rem .9rem;border-radius:999px;
+  box-shadow:var(--shadow-lg);z-index:200;
+  opacity:0;pointer-events:none;transition:opacity .2s, transform .2s;
+}
+.ui-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
 </head>
 <body>
@@ -1921,7 +2310,40 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 
 <!-- ===== CHANNEL PANEL (left column) ===== -->
 <div class="channel-panel" id="channel-panel">
-  <div class="channel-panel-list" id="channel-panel-list"></div>
+  <div class="channel-panel-sections" id="channel-panel-sections">
+    <!-- Devices & Channels (always expanded) -->
+    <div class="sidebar-section" data-section="devices">
+      <div class="sidebar-section-header">
+        <svg class="sidebar-section-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="sidebar-section-title">Devices</span>
+      </div>
+      <div class="sidebar-section-body" id="sidebar-devices-body">
+        <div class="channel-panel-list" id="channel-panel-list"></div>
+      </div>
+    </div>
+    <!-- Tasks (default expanded) -->
+    <div class="sidebar-section" data-section="tasks">
+      <div class="sidebar-section-header" data-sidebar-toggle="tasks">
+        <svg class="sidebar-section-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="sidebar-section-title">Tasks</span>
+        <span class="sidebar-section-badge hidden" id="sidebar-tasks-badge">0</span>
+      </div>
+      <div class="sidebar-section-body" id="sidebar-tasks-body">
+        <div class="tasks-empty" id="tasks-empty">No tasks yet</div>
+        <div class="tasks-list" id="tasks-list"></div>
+      </div>
+    </div>
+    <!-- Activity (default collapsed) -->
+    <div class="sidebar-section" data-section="activity">
+      <div class="sidebar-section-header" data-sidebar-toggle="activity">
+        <svg class="sidebar-section-chevron collapsed" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="sidebar-section-title">Activity</span>
+      </div>
+      <div class="sidebar-section-body collapsed" id="sidebar-activity-body" data-console-panel="activity">
+        <div class="activity-empty" id="sidebar-activity-empty">No activity yet</div>
+      </div>
+    </div>
+  </div>
   <div class="channel-panel-footer">
     <a class="panel-account" href="/admin/" title="{{ user_name }}" aria-label="Open account">
       <span class="msg-avatar user">{{ user_name[:1]|upper }}</span>
@@ -1939,15 +2361,6 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
       <span id="mobile-channel-label">Select channel</span>
       <svg class="dd-chevron" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     </button>
-    <button class="viewer-tab active" data-tab="chat">Chat</button>
-    <button class="viewer-tab" data-tab="planning">Planning</button>
-    <button class="viewer-tab" data-tab="files">Files</button>
-  </div>
-  <!-- Tabs (desktop) -->
-  <div class="viewer-tabs" id="viewer-tabs">
-    <button class="viewer-tab active" data-tab="chat">Chat</button>
-    <button class="viewer-tab" data-tab="planning">Planning</button>
-    <button class="viewer-tab" data-tab="files">Files</button>
   </div>
   <!-- Hidden elements for JS references (e2ee status source) -->
   <div hidden>
@@ -1955,10 +2368,10 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
     <span class="e2ee-dot" id="e2ee-dot"></span>
     <span id="e2ee-label">Not connected</span>
   </div>
-  <!-- Tab panels -->
+  <!-- Main view (files-first) -->
   <div class="viewer-body">
-    <!-- ===== CHAT TAB ===== -->
-    <div class="tab-panel active" id="tab-chat">
+    <!-- ===== CHAT (content is relocated to #chat-overlay on load) ===== -->
+    <div class="tab-panel" id="tab-chat" data-detached="true" hidden>
       <div class="chat-layout">
         <div class="chat-main">
           <div class="device-down-banner" id="device-down-banner">
@@ -2015,66 +2428,78 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
           </div>
           <div class="chat-drop-overlay" id="chat-drop-overlay">Drop files to attach</div>
         </div>
-        <!-- E2EE waiting overlay (skeleton shimmer) -->
+        <!-- E2EE waiting overlay — layout-shaped skeleton matching the new dashboard (sidebar + files view + rail) -->
         <div class="e2ee-waiting-overlay" id="e2ee-waiting-overlay">
-          <!-- Skeleton topbar -->
-          <div class="skel-topbar">
-            <div class="skel skel-topbar-pill"></div>
-            <div class="skel-topbar-sep"></div>
-            <div class="skel skel-topbar-pill2"></div>
-          </div>
-          <!-- Skeleton complications -->
-          <div class="skel-comp-bar">
-            <div class="skel skel-comp-chip"></div>
-            <div class="skel skel-comp-chip"></div>
-            <div class="skel skel-comp-chip"></div>
-            <div class="skel skel-comp-chip"></div>
-            <div class="skel skel-comp-chip"></div>
-          </div>
-          <!-- Skeleton messages -->
-          <div class="skel-messages">
-            <div class="skel-msg">
-              <div class="skel skel-msg-avatar"></div>
-              <div class="skel-msg-body">
-                <div class="skel-msg-header"><div class="skel skel-msg-name"></div><div class="skel skel-msg-time"></div></div>
-                <div class="skel skel-msg-line w-full"></div>
-                <div class="skel skel-msg-line w-3-4"></div>
+          <div class="skel-layout">
+            <!-- Sidebar skeleton -->
+            <aside class="skel-sidebar">
+              <div class="skel-section">
+                <div class="skel-section-header">
+                  <div class="skel skel-section-title"></div>
+                </div>
+                <div class="skel-section-body">
+                  <div class="skel-device-row"><div class="skel skel-device-dot"></div><div class="skel skel-device-name"></div></div>
+                  <div class="skel-channel-row"><div class="skel skel-channel-hash"></div><div class="skel skel-channel-name"></div></div>
+                  <div class="skel-channel-row"><div class="skel skel-channel-hash"></div><div class="skel skel-channel-name w-short"></div></div>
+                  <div class="skel-device-row"><div class="skel skel-device-dot"></div><div class="skel skel-device-name w-short"></div></div>
+                </div>
               </div>
-            </div>
-            <div class="skel-msg">
-              <div class="skel skel-msg-avatar"></div>
-              <div class="skel-msg-body">
-                <div class="skel-msg-header"><div class="skel skel-msg-name"></div><div class="skel skel-msg-time"></div></div>
-                <div class="skel skel-msg-line w-full"></div>
-                <div class="skel skel-msg-code skel"></div>
-                <div class="skel skel-msg-line w-1-2"></div>
+              <div class="skel-section">
+                <div class="skel-section-header">
+                  <div class="skel skel-section-title w-narrow"></div>
+                </div>
+                <div class="skel-section-body">
+                  <div class="skel-task-row"><div class="skel skel-task-dot"></div><div class="skel skel-task-line"></div></div>
+                  <div class="skel-task-row"><div class="skel skel-task-dot"></div><div class="skel skel-task-line w-short"></div></div>
+                </div>
               </div>
-            </div>
-            <div class="skel-msg">
-              <div class="skel skel-msg-avatar"></div>
-              <div class="skel-msg-body">
-                <div class="skel-msg-header"><div class="skel skel-msg-name"></div><div class="skel skel-msg-time"></div></div>
-                <div class="skel skel-msg-line w-2-3"></div>
+              <div class="skel-section">
+                <div class="skel-section-header">
+                  <div class="skel skel-section-title w-narrow"></div>
+                </div>
               </div>
-            </div>
-            <div class="skel-msg">
-              <div class="skel skel-msg-avatar"></div>
-              <div class="skel-msg-body">
-                <div class="skel-msg-header"><div class="skel skel-msg-name"></div><div class="skel skel-msg-time"></div></div>
-                <div class="skel skel-msg-line w-full"></div>
-                <div class="skel skel-msg-line w-1-3"></div>
+            </aside>
+            <!-- Main view skeleton (files tree + diff) -->
+            <main class="skel-main">
+              <div class="skel-path-bar"><div class="skel skel-path-pill"></div></div>
+              <div class="skel-files-layout">
+                <div class="skel-files-tree">
+                  <div class="skel-mode-switch">
+                    <div class="skel skel-mode-btn"></div>
+                    <div class="skel skel-mode-btn w-short"></div>
+                  </div>
+                  <div class="skel-mod-row"><div class="skel skel-mod-status"></div><div class="skel skel-mod-path"></div><div class="skel skel-mod-stats"></div></div>
+                  <div class="skel-mod-row"><div class="skel skel-mod-status"></div><div class="skel skel-mod-path w-short"></div><div class="skel skel-mod-stats"></div></div>
+                  <div class="skel-mod-row"><div class="skel skel-mod-status"></div><div class="skel skel-mod-path"></div><div class="skel skel-mod-stats"></div></div>
+                  <div class="skel-mod-row"><div class="skel skel-mod-status"></div><div class="skel skel-mod-path w-narrow"></div><div class="skel skel-mod-stats"></div></div>
+                  <div class="skel-review-footer">
+                    <div class="skel skel-review-btn"></div>
+                    <div class="skel skel-review-btn"></div>
+                  </div>
+                </div>
+                <div class="skel-diff">
+                  <div class="skel-diff-hunk-header"><div class="skel skel-hunk-label"></div></div>
+                  <div class="skel-diff-line"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-full"></div></div>
+                  <div class="skel-diff-line"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-3-4"></div></div>
+                  <div class="skel-diff-line added"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-2-3"></div></div>
+                  <div class="skel-diff-line added"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-full"></div></div>
+                  <div class="skel-diff-line removed"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-1-2"></div></div>
+                  <div class="skel-diff-line"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-full"></div></div>
+                  <div class="skel-diff-line"><div class="skel skel-diff-ln"></div><div class="skel skel-diff-code w-3-4"></div></div>
+                </div>
               </div>
-            </div>
+            </main>
           </div>
-          <!-- Skeleton input -->
-          <div class="skel-input-area">
-            <div class="skel skel-input-box"></div>
-            <div class="skel skel-input-btn"></div>
+          <!-- Bottom rail skeleton -->
+          <div class="skel-rail">
+            <div class="skel skel-rail-btn"></div>
+            <div class="skel-rail-spacer"></div>
+            <div class="skel skel-rail-btn"></div>
           </div>
-          <!-- Floating status pill (first load only) -->
+          <!-- Floating status pill -->
           <div class="skel-status">
             <div class="skel-status-dot"></div>
-            <span class="skel-status-text">Connecting to device…</span>
+            <span class="skel-status-text">Waiting for device…</span>
           </div>
         </div>
         <!-- Reconnect pill (shown on connection loss, not first load) -->
@@ -2085,35 +2510,14 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
       </div>
     </div>
 
-    <!-- ===== PLANNING TAB ===== -->
-    <div class="tab-panel" id="tab-planning">
-      <div class="planning-layout">
-        <div class="issue-list-panel">
-          <div class="issue-list-header">
-            <div class="issue-list-title-row">
-              <span class="issue-list-title">Issues</span>
-              <span class="issue-count-badge">0</span>
-            </div>
-          </div>
-          <div class="issue-list">
-            <div class="empty-state pad-2">
-              <p class="text-xs">No issues yet</p>
-            </div>
-          </div>
-        </div>
-        <div class="issue-detail-panel">
-          <div class="issue-detail-scroll">
-            <div class="empty-state">
-              <p>Select an issue to view details</p>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- ===== PLANNING (hidden stub — feature removed from main view) ===== -->
+    <div class="tab-panel" id="tab-planning" hidden>
+      <div class="planning-layout"></div>
     </div>
 
-    <!-- ===== FILES TAB ===== -->
-    <div class="tab-panel" id="tab-files">
-      <div class="files-layout">
+    <!-- ===== FILES (main view — always active) ===== -->
+    <div class="tab-panel active" id="tab-files">
+      <div class="files-layout" id="files-main">
         <div class="files-path-bar" id="files-path-bar">
           <span class="path-text empty" id="files-path-text">No file selected</span>
           <button class="file-reload-btn hc-hidden" id="file-reload-btn" title="Reload file">
@@ -2124,6 +2528,10 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
           <svg class="path-chevron open" id="files-path-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 6 8 10 12 6"/></svg>
         </div>
         <div class="file-tree-panel mobile-open" id="file-tree-panel">
+          <div class="files-mode-switch" id="files-mode-switch">
+            <button class="files-mode-btn active" data-files-mode="changes">Modified <span class="files-mode-count" id="files-mode-modified-count">0</span></button>
+            <button class="files-mode-btn" data-files-mode="files">All</button>
+          </div>
           <div class="file-tree" id="file-tree">
             <div class="file-tree-inner" id="file-tree-inner">
               <div class="empty-state pad-1-5" id="file-tree-empty">
@@ -2131,15 +2539,20 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
               </div>
             </div>
           </div>
-          <div class="tree-tab-bar">
-            <button class="tree-tab active" data-tree-tab="files">Files</button>
-            <button class="tree-tab" data-tree-tab="changes">Changes</button>
+          <!-- Legacy hidden shim: .tree-tab elements proxy clicks from .files-mode-btn -->
+          <div class="tree-tab-bar hidden">
+            <button class="tree-tab" data-tree-tab="files">Files</button>
+            <button class="tree-tab active" data-tree-tab="changes">Changes</button>
+          </div>
+          <div class="files-review-footer" id="files-review-footer">
+            <button class="files-review-btn" id="files-view-pr-btn" title="Open PR (not wired up yet)">View PR</button>
+            <button class="files-review-btn primary" id="files-approve-all-btn" title="Approve all (not wired up yet)">Approve all</button>
           </div>
         </div>
         <div class="file-content-panel">
           <div class="file-content-body" id="file-content-body">
             <div class="empty-state">
-              <p>Select a file to view contents</p>
+              <p>Select a file to view changes</p>
             </div>
           </div>
           <div class="file-float-toggle" id="file-float-toggle"></div>
@@ -2161,31 +2574,32 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
     </div>
     <div class="comp-popover hidden" id="comp-popover"></div>
   </div>
-  <!-- ===== BOTTOM CONSOLE ===== -->
-  <div class="console-bottom collapsed" id="console-bottom">
+  <!-- ===== BOTTOM RAIL ===== -->
+  <div class="console-bottom collapsed rail-only" id="console-bottom">
     <div class="console-drag" id="console-drag"></div>
     <div class="console-header" id="console-header">
-      <span class="console-working-dot hidden" id="console-working-dot"></span>
-      <div class="console-tabs">
-        <button class="console-tab active" data-console-tab="activity">Activity</button>
-        <button class="console-tab" data-console-tab="tasks">Tasks</button>
-        <button class="console-tab" data-console-tab="terminal">Terminal</button>
+      <div class="console-rail-group">
+        <span class="console-working-dot hidden" id="console-working-dot" title="Agent working"></span>
+        <button class="console-rail-btn" id="console-terminal-toggle" data-rail="terminal" title="Toggle terminal">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2 2-2 2M7.5 10.5H11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Terminal</span>
+        </button>
       </div>
+      <div class="console-rail-spacer"></div>
       <div class="console-btns">
-        <button class="console-toggle hidden" id="console-expand" title="Expand console">
+        <button class="console-toggle hidden" id="console-expand" title="Expand terminal">
           <svg viewBox="0 0 14 14" fill="none"><path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button class="console-toggle" id="console-toggle" title="Collapse console">
+        <button class="console-toggle hidden" id="console-toggle" title="Collapse terminal">
           <svg viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
-    </div>
-    <div class="console-body" data-console-panel="activity"></div>
-    <div class="new-activity-bubble" id="new-activity-bubble">↓ New activity</div>
-    <div class="scroll-bottom-arrow" id="activity-scroll-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M4 9l4 4 4-4"/></svg></div>
-    <div class="console-body console-tasks hidden" data-console-panel="tasks">
-      <div class="tasks-empty" id="tasks-empty">No tasks yet</div>
-      <div class="tasks-list" id="tasks-list"></div>
+      <div class="console-rail-group">
+        <button class="console-rail-btn" id="console-chat-toggle" data-rail="chat" title="Toggle chat">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3.5a1 1 0 011-1h10a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2.5V11.5a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <span>Chat</span>
+        </button>
+      </div>
     </div>
     <div class="console-body console-terminal hidden" data-console-panel="terminal">
       <div class="terminal-output" id="terminal-output">
@@ -2208,6 +2622,51 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 </div><!-- /viewer-panel -->
 </div><!-- /app -->
 
+<!-- ===== CHAT OVERLAY ===== -->
+<div id="chat-overlay" aria-hidden="true">
+  <div class="chat-overlay-header">
+    <span class="chat-overlay-title">
+      <span class="co-hash">#</span>
+      <span id="chat-overlay-channel-name">Select a channel</span>
+      <span class="co-tag hidden" id="chat-overlay-status-tag"></span>
+    </span>
+    <button class="chat-overlay-btn" id="chat-overlay-compact" title="Compact conversation" disabled>
+      <svg viewBox="0 0 16 16" fill="none"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="chat-overlay-btn" id="chat-overlay-clear" title="Clear conversation" disabled>
+      <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </button>
+    <button class="chat-overlay-btn" id="chat-overlay-pin" title="Pin open">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5h8"/><path d="M6.5 2.5v4.3c0 .6-.4 1.2-1 1.6L4 9.5h8l-1.5-1.1c-.6-.4-1-1-1-1.6V2.5"/><path d="M8 9.5v4"/></svg>
+    </button>
+    <button class="chat-overlay-btn" id="chat-overlay-expand" title="Expand">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h5v5M7 14H2V9"/><path d="M14 2l-5 5M2 14l5-5"/></svg>
+    </button>
+    <button class="chat-overlay-btn" id="chat-overlay-minimize" title="Minimize">
+      <svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="chat-overlay-body" id="chat-overlay-body">
+    <!-- chat-layout is moved here from #tab-chat on DOMContentLoaded -->
+  </div>
+  <div class="chat-overlay-model-row">
+    <div class="chat-overlay-model-pill" id="chat-overlay-model-pill" role="button" tabindex="0">
+      <span class="co-model-label">Model</span>
+      <span id="chat-overlay-model-name">—</span>
+      <svg class="co-model-chevron" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <div class="chat-overlay-model-menu" id="chat-overlay-model-menu"></div>
+    </div>
+    <div class="chat-overlay-model-pill" id="chat-overlay-effort-pill" role="button" tabindex="0">
+      <span class="co-model-label">Effort</span>
+      <span id="chat-overlay-effort-name">—</span>
+      <svg class="co-model-chevron" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <div class="chat-overlay-model-menu" id="chat-overlay-effort-menu"></div>
+    </div>
+  </div>
+</div>
+<div class="chat-overlay-scrim" id="chat-overlay-scrim"></div>
+<div class="ui-toast" id="ui-toast" role="status" aria-live="polite"></div>
+
 <!-- Skrift notification SSE client -->
 <script nonce="{{ csp_nonce() }}" src="/static/skrift/js/notifications.js"></script>
 <script nonce="{{ csp_nonce() }}" src="/static/build/js/libsodium.js"></script>
@@ -2222,7 +2681,8 @@ if (window.buildElectron) {
 }
 
 // ===== UI State =====
-let currentTab = 'chat';
+// 'files' is the default/main view. 'browser' is activated when a browser tab is selected.
+let currentTab = 'files';
 let selectedAgent = null;
 let consoleState = 'collapsed'; // 'collapsed' | 'open' | 'expanded'
 
@@ -2238,31 +2698,16 @@ const consoleBtm = document.getElementById('console-bottom');
 const consoleToggle = document.getElementById('console-toggle');
 const consoleExpand = document.getElementById('console-expand');
 
-// ===== Tab Navigation =====
+// ===== Tab Navigation (files is default; chat is in overlay; browser is toggled) =====
 function switchTab(tab) {
   currentTab = tab;
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  const panel = document.getElementById('tab-' + tab);
-  if (panel) panel.classList.add('active');
-  // Sync all tab buttons (desktop + mobile)
-  document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
+  // Only show panels that belong to the main viewer (not the detached chat).
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    if (p.dataset.detached === 'true') return;
+    p.classList.toggle('active', p.id === 'tab-' + tab);
   });
   if (tab === 'files') onFilesTabActivated();
 }
-
-// Tab click handlers (both desktop and mobile)
-document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const tab = btn.dataset.tab;
-    switchTab(tab);
-    if (tab === 'chat' && chatCurrentChannel) {
-      location.hash = `chat/${chatCurrentChannel}`;
-    } else {
-      location.hash = tab;
-    }
-  });
-});
 
 // ===== Channel Panel =====
 function renderChannelPanel() {
@@ -2553,100 +2998,300 @@ document.addEventListener('click', (e) => {
 });
 
 function setConsoleState(state) {
-  // Preserve chat scroll: find the message currently at the top of the viewport
-  const chatContainer = document.getElementById('chat-messages');
-  let anchorEl = null;
-  let anchorOffset = 0;
-  if (chatContainer) {
-    const containerRect = chatContainer.getBoundingClientRect();
-    const msgs = chatContainer.querySelectorAll('.msg, .interaction-card, .plan-review-card');
-    for (const el of msgs) {
-      const r = el.getBoundingClientRect();
-      if (r.bottom > containerRect.top) {
-        anchorEl = el;
-        anchorOffset = r.top - containerRect.top;
-        break;
-      }
-    }
-  }
   consoleState = state;
-  consoleBtm.classList.toggle('collapsed', state === 'collapsed');
+  const isCollapsed = state === 'collapsed';
+  consoleBtm.classList.toggle('collapsed', isCollapsed);
+  consoleBtm.classList.toggle('rail-only', isCollapsed);
   consoleBtm.classList.toggle('expanded', state === 'expanded');
+  const term = document.querySelector('[data-console-panel="terminal"]');
+  if (term) term.classList.toggle('hidden', isCollapsed);
   updateConsoleButtons();
-  // After layout recalculates, restore the anchor message's position
-  if (anchorEl && chatContainer) {
-    requestAnimationFrame(() => {
-      const containerRect = chatContainer.getBoundingClientRect();
-      const newRect = anchorEl.getBoundingClientRect();
-      const drift = (newRect.top - containerRect.top) - anchorOffset;
-      chatContainer.scrollTop += drift;
-    });
-  }
+  updateRailButtonStates();
 }
 function updateConsoleButtons() {
   const s = consoleState;
-  // Button A (expand): goes to the larger of the two other states.
-  // Button B (toggle): goes to the smaller of the two other states.
   const expandSvg = '<path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
   const restoreSvg = '<path d="M10 4L4 10M4 10h5M4 10V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
   if (s === 'collapsed') {
-    consoleExpand.title = 'Expand console';
-    consoleExpand.classList.remove('hidden');
-    consoleExpand.querySelector('svg').innerHTML = expandSvg;
-    consoleExpand.onclick = () => setConsoleState('expanded');
-    consoleToggle.title = 'Open console';
-    consoleToggle.querySelector('svg').style.transform = 'rotate(180deg)';
-    consoleToggle.onclick = () => setConsoleState('open');
+    consoleExpand.classList.add('hidden');
+    consoleToggle.classList.add('hidden');
   } else if (s === 'open') {
-    consoleExpand.title = 'Expand console';
     consoleExpand.classList.remove('hidden');
+    consoleToggle.classList.remove('hidden');
+    consoleExpand.title = 'Expand terminal';
     consoleExpand.querySelector('svg').innerHTML = expandSvg;
     consoleExpand.onclick = () => setConsoleState('expanded');
-    consoleToggle.title = 'Collapse console';
+    consoleToggle.title = 'Close terminal';
     consoleToggle.querySelector('svg').style.transform = '';
     consoleToggle.onclick = () => setConsoleState('collapsed');
   } else {
-    // expanded: A -> open (restore), B -> collapsed
-    consoleExpand.title = 'Restore console';
     consoleExpand.classList.remove('hidden');
+    consoleToggle.classList.remove('hidden');
+    consoleExpand.title = 'Restore terminal';
     consoleExpand.querySelector('svg').innerHTML = restoreSvg;
     consoleExpand.onclick = () => setConsoleState('open');
-    consoleToggle.title = 'Collapse console';
+    consoleToggle.title = 'Close terminal';
     consoleToggle.querySelector('svg').style.transform = '';
     consoleToggle.onclick = () => setConsoleState('collapsed');
   }
 }
+function updateRailButtonStates() {
+  const tBtn = document.getElementById('console-terminal-toggle');
+  if (tBtn) tBtn.classList.toggle('active', consoleState !== 'collapsed');
+  const cBtn = document.getElementById('console-chat-toggle');
+  const overlay = document.getElementById('chat-overlay');
+  if (cBtn && overlay) cBtn.classList.toggle('active', overlay.classList.contains('open'));
+}
 updateConsoleButtons();
-document.getElementById('console-header')?.addEventListener('click', (e) => {
-  if (e.target.closest('.console-toggle') || e.target.closest('.console-tab')) return;
-  if (consoleState === 'collapsed') setConsoleState('open');
-  else setConsoleState('collapsed');
+updateRailButtonStates();
+
+// Terminal rail: toggle terminal open/closed.
+document.getElementById('console-terminal-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (consoleState === 'collapsed') {
+    setConsoleState('open');
+    document.getElementById('terminal-input')?.focus();
+  } else {
+    setConsoleState('collapsed');
+  }
+});
+// Chat rail: toggle chat overlay.
+document.getElementById('console-chat-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleChatOverlay();
 });
 
-// ----- Console Tab Switching -----
-const consoleActivityPanel = document.querySelector('[data-console-panel="activity"]');
 const consoleTerminalPanel = document.querySelector('[data-console-panel="terminal"]');
-const consoleTasksPanel = document.querySelector('[data-console-panel="tasks"]');
-let activeConsoleTab = 'activity';
 const channelTodos = new Map(); // channelId -> [{id, content, status}]
-// Ensure correct initial display state.
-consoleActivityPanel.classList.remove('hidden');
-consoleTerminalPanel.classList.add('hidden');
-consoleTasksPanel.classList.add('hidden');
 
-document.querySelectorAll('.console-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const target = tab.dataset.consoleTab;
-    if (target === activeConsoleTab) return;
-    activeConsoleTab = target;
-    document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === target));
-    consoleActivityPanel.classList.toggle('hidden', target !== 'activity');
-    consoleTasksPanel.classList.toggle('hidden', target !== 'tasks');
-    consoleTerminalPanel.classList.toggle('hidden', target !== 'terminal');
-    if (target === 'terminal') document.getElementById('terminal-input')?.focus();
-    if (target === 'tasks') renderTasksPanel(chatCurrentChannel);
-  });
+// ===== Sidebar accordion =====
+function setSidebarSectionOpen(name, open) {
+  const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
+  if (!section) return;
+  const body = section.querySelector('.sidebar-section-body');
+  const chevron = section.querySelector('.sidebar-section-chevron');
+  body?.classList.toggle('collapsed', !open);
+  chevron?.classList.toggle('collapsed', !open);
+  try { localStorage.setItem(`sidebar.section.${name}.collapsed`, open ? '0' : '1'); } catch (_) {}
+}
+function toggleSidebarSection(name) {
+  const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
+  if (!section) return;
+  const body = section.querySelector('.sidebar-section-body');
+  if (!body) return;
+  setSidebarSectionOpen(name, body.classList.contains('collapsed'));
+}
+function expandSidebarSection(name) { setSidebarSectionOpen(name, true); }
+document.querySelectorAll('.sidebar-section-header[data-sidebar-toggle]').forEach(h => {
+  h.addEventListener('click', () => toggleSidebarSection(h.dataset.sidebarToggle));
 });
+// Restore saved collapse state (tasks default open, activity default collapsed).
+try {
+  for (const name of ['tasks', 'activity']) {
+    const saved = localStorage.getItem(`sidebar.section.${name}.collapsed`);
+    if (saved === '1') setSidebarSectionOpen(name, false);
+    else if (saved === '0') setSidebarSectionOpen(name, true);
+  }
+} catch (_) {}
+
+// ===== UI toast (for stub/no-op buttons) =====
+let _uiToastTimer = null;
+function showToast(msg, ms) {
+  const el = document.getElementById('ui-toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_uiToastTimer);
+  _uiToastTimer = setTimeout(() => el.classList.remove('show'), ms || 2000);
+}
+
+// ===== Chat overlay =====
+// The chat-layout originally lives inside #tab-chat; move it into the overlay body on load.
+// Device-status overlays (skeleton + reconnect pill) are hoisted to the body so
+// they sit above the whole app, not just the chat pane — they reflect the
+// selected channel's device, not chat state.
+(function relocateChatLayout() {
+  const src = document.getElementById('tab-chat');
+  const dst = document.getElementById('chat-overlay-body');
+  if (!src || !dst) return;
+  const layout = src.querySelector('.chat-layout');
+  if (layout && !dst.contains(layout)) dst.appendChild(layout);
+  const waiting = document.getElementById('e2ee-waiting-overlay');
+  if (waiting && waiting.parentElement !== document.body) document.body.appendChild(waiting);
+  const reconnect = document.getElementById('reconnect-pill');
+  if (reconnect && reconnect.parentElement !== document.body) document.body.appendChild(reconnect);
+})();
+
+function isChatOverlayOpen() {
+  return !!document.getElementById('chat-overlay')?.classList.contains('open');
+}
+function openChatOverlay() {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  ov.classList.add('open');
+  ov.setAttribute('aria-hidden', 'false');
+  updateRailButtonStates();
+  // Focus chat input for quick typing
+  setTimeout(() => document.getElementById('chat-input')?.focus(), 80);
+}
+function closeChatOverlay() {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  ov.classList.remove('open');
+  ov.removeAttribute('data-mode');
+  ov.setAttribute('aria-hidden', 'true');
+  updateRailButtonStates();
+}
+function toggleChatOverlay() {
+  if (isChatOverlayOpen()) closeChatOverlay();
+  else openChatOverlay();
+}
+function setChatOverlayPinned(pinned) {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  ov.setAttribute('data-pinned', pinned ? 'true' : 'false');
+  document.getElementById('chat-overlay-pin')?.classList.toggle('active', !!pinned);
+}
+const CHAT_EXPAND_SVG = '<path d="M9 2h5v5M7 14H2V9"/><path d="M14 2l-5 5M2 14l5-5"/>';
+const CHAT_SHRINK_SVG = '<path d="M14 7h-5V2M2 9h5v5"/><path d="M14 2l-5 5M2 14l5-5"/>';
+function toggleChatOverlayExpanded() {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  const btn = document.getElementById('chat-overlay-expand');
+  const svg = btn?.querySelector('svg');
+  if (ov.getAttribute('data-mode') === 'expanded') {
+    ov.removeAttribute('data-mode');
+    btn?.classList.remove('active');
+    if (btn) btn.title = 'Expand';
+    if (svg) svg.innerHTML = CHAT_EXPAND_SVG;
+  } else {
+    ov.setAttribute('data-mode', 'expanded');
+    btn?.classList.add('active');
+    if (btn) btn.title = 'Shrink';
+    if (svg) svg.innerHTML = CHAT_SHRINK_SVG;
+  }
+}
+document.getElementById('chat-overlay-minimize')?.addEventListener('click', closeChatOverlay);
+document.getElementById('chat-overlay-expand')?.addEventListener('click', toggleChatOverlayExpanded);
+document.getElementById('chat-overlay-pin')?.addEventListener('click', () => {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov) return;
+  setChatOverlayPinned(ov.getAttribute('data-pinned') !== 'true');
+});
+// Click-outside closes overlay unless pinned or expanded.
+document.addEventListener('mousedown', (e) => {
+  const ov = document.getElementById('chat-overlay');
+  if (!ov || !ov.classList.contains('open')) return;
+  if (ov.getAttribute('data-pinned') === 'true') return;
+  if (ov.getAttribute('data-mode') === 'expanded') return;
+  if (ov.contains(e.target)) return;
+  if (e.target.closest('#console-chat-toggle')) return;
+  closeChatOverlay();
+});
+// Wire compact/clear proxy buttons (reuse cmd-tray behavior).
+document.getElementById('chat-overlay-compact')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('cmd-compact-btn')?.click();
+});
+document.getElementById('chat-overlay-clear')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('cmd-reset-btn')?.click();
+});
+function syncChatOverlayHeader() {
+  const nameEl = document.getElementById('chat-overlay-channel-name');
+  if (!nameEl) return;
+  const ch = (typeof chatChannels !== 'undefined' && chatCurrentChannel) ? chatChannels.get(chatCurrentChannel) : null;
+  nameEl.textContent = ch ? (ch.name || chatCurrentChannel.slice(0, 8)) : 'Select a channel';
+}
+
+// ===== Chat overlay: Model / Effort switcher =====
+const channelHarnessInfo = new Map(); // channelId -> {available_models:[{name,label}], effort_levels:[{value,label}], model, effort}
+function openCoMenu(menuEl) {
+  document.querySelectorAll('.chat-overlay-model-menu.open').forEach(m => { if (m !== menuEl) m.classList.remove('open'); });
+  menuEl.classList.add('open');
+}
+function closeCoMenus() {
+  document.querySelectorAll('.chat-overlay-model-menu.open').forEach(m => m.classList.remove('open'));
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.chat-overlay-model-pill')) closeCoMenus();
+});
+function renderCoMenu(menuEl, opts, active, onPick) {
+  menuEl.innerHTML = '';
+  for (const o of opts) {
+    const el = document.createElement('div');
+    el.className = 'co-opt' + (o.value === active ? ' active' : '');
+    el.textContent = o.label;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeCoMenus();
+      onPick(o.value);
+    });
+    menuEl.appendChild(el);
+  }
+}
+function applyChannelHarnessInfo(channelId) {
+  const modelName = document.getElementById('chat-overlay-model-name');
+  const effortName = document.getElementById('chat-overlay-effort-name');
+  const modelMenu = document.getElementById('chat-overlay-model-menu');
+  const effortMenu = document.getElementById('chat-overlay-effort-menu');
+  if (!modelName || !effortName) return;
+  const ch = (typeof chatChannels !== 'undefined' && channelId) ? chatChannels.get(channelId) : null;
+  if (!ch) {
+    modelName.textContent = '—';
+    effortName.textContent = '—';
+    if (modelMenu) modelMenu.innerHTML = '';
+    if (effortMenu) effortMenu.innerHTML = '';
+    return;
+  }
+  const deviceId = channelDeviceMap.get(channelId);
+  const harnesses = deviceId ? deviceHarnesses.get(deviceId) : null;
+  const harness = harnesses?.find(h => h.id === ch.harness);
+  const currentModel = ch.model || harness?.default_model || '';
+  const currentEffort = ch.effort || harness?.default_effort || '';
+  modelName.textContent = currentModel || '—';
+  effortName.textContent = currentEffort || '—';
+  if (modelMenu) {
+    const models = (harness?.models || []).map(m => ({ value: m.id, label: m.name || m.id }));
+    renderCoMenu(modelMenu, models, currentModel, (v) => {
+      modelName.textContent = v;
+      if (ch) ch.model = v;
+      const conn = getE2EE(channelId);
+      if (conn?.connected) {
+        conn.updateChannel(channelId, { model: v });
+        showToast(`Model set to ${v}`);
+      } else {
+        showToast('Device not connected');
+      }
+    });
+  }
+  if (effortMenu) {
+    const efforts = (harness?.effort_levels || []).map(l => ({ value: l, label: l }));
+    renderCoMenu(effortMenu, efforts, currentEffort, (v) => {
+      effortName.textContent = v;
+      if (ch) ch.effort = v;
+      const conn = getE2EE(channelId);
+      if (conn?.connected) {
+        conn.updateChannel(channelId, { effort: v });
+        showToast(`Effort set to ${v}`);
+      } else {
+        showToast('Device not connected');
+      }
+    });
+  }
+}
+document.getElementById('chat-overlay-model-pill')?.addEventListener('click', (e) => {
+  if (e.target.closest('.chat-overlay-model-menu')) return;
+  openCoMenu(document.getElementById('chat-overlay-model-menu'));
+});
+document.getElementById('chat-overlay-effort-pill')?.addEventListener('click', (e) => {
+  if (e.target.closest('.chat-overlay-model-menu')) return;
+  openCoMenu(document.getElementById('chat-overlay-effort-menu'));
+});
+
+// ===== Review-flow UI stubs =====
+document.getElementById('files-approve-all-btn')?.addEventListener('click', () => showToast('Review flow not wired up yet'));
+document.getElementById('files-view-pr-btn')?.addEventListener('click', () => showToast('View PR not wired up yet'));
 
 // ----- Tasks -----
 function renderTasksPanel(channelId) {
@@ -2689,16 +3334,17 @@ function renderTasksPanel(channelId) {
 
 function updateTasksBadge(channelId) {
   if (chatCurrentChannel !== channelId) return;
-  const tab = document.querySelector('[data-console-tab="tasks"]');
-  if (!tab) return;
+  const badge = document.getElementById('sidebar-tasks-badge');
+  if (!badge) return;
   const todos = channelTodos.get(channelId) || [];
   const incomplete = todos.filter(t => t.status !== 'completed').length;
-  let badge = tab.querySelector('.tasks-badge');
   if (incomplete > 0) {
-    if (!badge) { badge = document.createElement('span'); badge.className = 'tasks-badge'; tab.appendChild(badge); }
-    badge.textContent = incomplete;
-  } else if (badge) {
-    badge.remove();
+    badge.textContent = String(incomplete);
+    badge.classList.remove('hidden');
+    badge.classList.add('accent');
+  } else {
+    badge.classList.add('hidden');
+    badge.classList.remove('accent');
   }
 }
 
@@ -4101,6 +4747,8 @@ function bindE2EEEvents(instance, deviceId) {
         if (working_directory !== undefined) dc.working_directory = working_directory;
       }
     }
+    // If this is the active channel, refresh the chat overlay model/effort pills.
+    if (chatCurrentChannel === channel_id) applyChannelHarnessInfo(channel_id);
   });
 
   instance.addEventListener('channel_deleted', (evt) => {
@@ -4349,6 +4997,8 @@ function bindE2EEEvents(instance, deviceId) {
           }
         }
       }
+    } else if (event_type === 'agent.file_changes') {
+      onAgentFileChanges(channel_id, agentEvt?.paths || []);
     }
   });
 
@@ -4649,6 +5299,7 @@ function bindE2EEEvents(instance, deviceId) {
     const { channel_id, repos } = evt.detail;
     if (channel_id !== filesChannelId) return;
     filesChangesData.set(channel_id, repos || []);
+    updateFilesModifiedCount();
     if (filesTreeTab === 'changes') renderFileTree();
   });
 
@@ -4727,15 +5378,15 @@ function selectChannel(channelId) {
   // Hide browser panel and restore normal tab if it was showing
   document.getElementById('tab-browser')?.classList.remove('active');
   // Restore viewer chrome hidden by browser view
-  document.getElementById('viewer-tabs')?.classList.remove('hidden');
   document.querySelector('.viewer-body')?.classList.remove('hidden');
   document.querySelector('.comp-wrapper')?.classList.remove('hidden');
   document.getElementById('console-bottom')?.classList.remove('hidden');
-  if (currentTab) {
-    const panel = document.getElementById('tab-' + currentTab);
-    if (panel) panel.classList.add('active');
-    document.querySelectorAll('.viewer-tab[data-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === currentTab));
-  }
+  // Restore files view as the main panel.
+  const filesPanel = document.getElementById('tab-files');
+  if (filesPanel) filesPanel.classList.add('active');
+  // Sync the chat overlay header + model/effort pills for this channel.
+  syncChatOverlayHeader();
+  applyChannelHarnessInfo(channelId);
   // Close mobile channel panel if open
   document.getElementById('channel-panel')?.classList.remove('mobile-open');
   updateStopButton();
@@ -4792,12 +5443,7 @@ function selectChannel(channelId) {
   }
   // Sync plan mode toggle.
   updatePlanModeUI(channelPlanMode.get(channelId) || false);
-  // Reset console to activity tab and update terminal for new channel.
-  activeConsoleTab = 'activity';
-  document.querySelectorAll('.console-tab').forEach(t => t.classList.toggle('active', t.dataset.consoleTab === 'activity'));
-  consoleActivityPanel.classList.remove('hidden');
-  consoleTasksPanel.classList.add('hidden');
-  consoleTerminalPanel.classList.add('hidden');
+  // Update terminal and tasks for the new channel. (Activity/Tasks live in the sidebar accordion now.)
   renderTerminalForChannel(channelId);
   renderTasksPanel(channelId);
   updateTasksBadge(channelId);
@@ -5225,17 +5871,17 @@ function crossfadeStatus(statusEl, newState, newContent) {
   // Remove old state classes and set new one.
   statusEl.classList.remove('sending', 'delivered', 'read', 'failed');
   statusEl.classList.add(newState);
-  // Crossfade: exit old, enter new.
-  const oldSpan = statusEl.querySelector('.msg-status-state');
+  // Exit every existing state span so stacked states don't pile up.
+  const oldSpans = statusEl.querySelectorAll('.msg-status-state');
   const newSpan = document.createElement('span');
   newSpan.className = 'msg-status-state enter';
   newSpan.innerHTML = newContent;
   statusEl.appendChild(newSpan);
-  if (oldSpan) {
-    oldSpan.classList.remove('visible');
+  oldSpans.forEach(oldSpan => {
+    oldSpan.classList.remove('visible', 'enter');
     oldSpan.classList.add('exit');
     setTimeout(() => oldSpan.remove(), 300);
-  }
+  });
   // Trigger reflow then make new span visible.
   requestAnimationFrame(() => {
     newSpan.classList.remove('enter');
@@ -5394,8 +6040,8 @@ function appendConsoleReasoning(content, timestamp) {
     return;
   }
 
-  // Auto-expand console.
-  if (consoleState === 'collapsed') setConsoleState('open');
+  // Auto-expand the sidebar Activity section.
+  expandSidebarSection('activity');
 
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -5439,8 +6085,8 @@ function appendConsoleEntry(toolId, name, desc, input, timestamp) {
   const body = document.querySelector('[data-console-panel="activity"]');
   if (!body) return;
 
-  // Auto-expand console on first tool use.
-  if (consoleState === 'collapsed') setConsoleState('open');
+  // Auto-expand the sidebar Activity section on first tool use.
+  expandSidebarSection('activity');
 
   const ts = timestamp ? new Date(timestamp) : new Date();
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -5621,15 +6267,15 @@ function hideChatBubble() {
 }
 function showActivityBubble(el) {
   if (!firstUnseenActivityEl) firstUnseenActivityEl = el;
-  newActivityBubble.classList.add('visible');
+  newActivityBubble?.classList.add('visible');
   document.getElementById('activity-scroll-arrow')?.classList.remove('visible');
 }
 function hideActivityBubble() {
-  newActivityBubble.classList.remove('visible');
+  newActivityBubble?.classList.remove('visible');
   firstUnseenActivityEl = null;
 }
 
-newChatBubble.addEventListener('click', () => {
+newChatBubble?.addEventListener('click', () => {
   if (firstUnseenChatEl) {
     scrollToMessage(firstUnseenChatEl, 'smooth', 'top');
   } else {
@@ -5638,7 +6284,7 @@ newChatBubble.addEventListener('click', () => {
   hideChatBubble();
 });
 
-newActivityBubble.addEventListener('click', () => {
+newActivityBubble?.addEventListener('click', () => {
   if (firstUnseenActivityEl) {
     firstUnseenActivityEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
   } else {
@@ -5659,9 +6305,10 @@ function updateChatScrollArrow() {
   chatScrollArrow.classList.toggle('visible', !bubbleVisible);
 }
 function updateActivityScrollArrow() {
+  if (!activityScrollArrow) return;
   const nearBottom = isConsoleNearBottom();
   if (nearBottom) { hideActivityBubble(); activityScrollArrow.classList.remove('visible'); return; }
-  const bubbleVisible = newActivityBubble.classList.contains('visible');
+  const bubbleVisible = newActivityBubble?.classList.contains('visible') || false;
   activityScrollArrow.classList.toggle('visible', !bubbleVisible);
 }
 
@@ -5699,8 +6346,8 @@ document.addEventListener('click', (e) => {
 document.getElementById('chat-messages').addEventListener('scroll', updateChatScrollArrow);
 document.querySelector('[data-console-panel="activity"]')?.addEventListener('scroll', updateActivityScrollArrow);
 
-chatScrollArrow.addEventListener('click', () => { scrollChatToBottom(); chatScrollArrow.classList.remove('visible'); });
-activityScrollArrow.addEventListener('click', () => {
+chatScrollArrow?.addEventListener('click', () => { scrollChatToBottom(); chatScrollArrow.classList.remove('visible'); });
+activityScrollArrow?.addEventListener('click', () => {
   const body = document.querySelector('[data-console-panel="activity"]');
   if (body) body.scrollTop = body.scrollHeight;
   activityScrollArrow.classList.remove('visible');
@@ -6420,22 +7067,37 @@ let filesCurrentIsHtml = false;
 let filesLastContent = null;        // {path, content, size, truncated} cache for toggle
 let filesPendingRestore = null;     // path to restore after tree loads
 let filesPendingView = 'source';    // view to restore
-let filesTreeTab = 'files';        // 'files' or 'changes'
+let filesTreeTab = 'changes';      // 'files' or 'changes' (default: diff view)
 const filesChangesData = new Map(); // channelId -> [{path, remote, branch, entries}, ...]
 
-// Tree tab switching.
+function updateFilesModifiedCount() {
+  const el = document.getElementById('files-mode-modified-count');
+  if (!el) return;
+  const repos = filesChangesData.get(filesChannelId) || [];
+  let total = 0;
+  for (const repo of repos) total += (repo.entries || []).length;
+  el.textContent = String(total);
+  el.classList.toggle('hidden', total === 0);
+}
+
+function setFilesMode(mode) {
+  if (mode !== 'files' && mode !== 'changes') return;
+  if (mode === filesTreeTab) return;
+  filesTreeTab = mode;
+  // Sync both the new mode-switch and the legacy tree-tab buttons.
+  document.querySelectorAll('.files-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.filesMode === mode));
+  document.querySelectorAll('.tree-tab').forEach(b => b.classList.toggle('active', b.dataset.treeTab === mode));
+  const _ftConn = getE2EE(filesChannelId);
+  if (mode === 'changes' && filesChannelId && _ftConn && _ftConn.connected) {
+    _ftConn.filesChanges(filesChannelId);
+  }
+  renderFileTree();
+}
 document.querySelectorAll('.tree-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.treeTab === filesTreeTab) return;
-    document.querySelectorAll('.tree-tab').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    filesTreeTab = btn.dataset.treeTab;
-    const _ftConn = getE2EE(filesChannelId);
-    if (filesTreeTab === 'changes' && filesChannelId && _ftConn && _ftConn.connected) {
-      _ftConn.filesChanges(filesChannelId);
-    }
-    renderFileTree();
-  });
+  btn.addEventListener('click', () => setFilesMode(btn.dataset.treeTab));
+});
+document.querySelectorAll('.files-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => setFilesMode(btn.dataset.filesMode));
 });
 
 function filesLoadRoot() {
@@ -6875,6 +7537,40 @@ fileReloadBtn.addEventListener('click', (ev) => {
     conn.fileRead(filesChannelId, filesCurrentPath);
   }
 });
+
+// ---- Live file-change refresh (fed by AGENT_FILE_CHANGES) ----
+let _fileChangesRefreshTimer = null;
+function onAgentFileChanges(channelId, paths) {
+  // Only react if this channel is the one currently displayed in the files view.
+  if (filesChannelId && filesChannelId !== channelId) return;
+  // Debounce bursts: coalesce multiple events within 150ms.
+  clearTimeout(_fileChangesRefreshTimer);
+  _fileChangesRefreshTimer = setTimeout(() => {
+    const conn = getE2EE(filesChannelId || channelId);
+    if (!conn || !conn.connected) return;
+    // Always refresh the changes list so the Modified count stays live.
+    conn.filesChanges(filesChannelId || channelId);
+    // If the tree is showing, invalidate cached path entries so stale items are re-fetched.
+    if (filesTreeTab === 'files') {
+      const data = fileTreeData.get(filesChannelId);
+      if (data) {
+        for (const p of paths) {
+          const parent = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+          data.delete(parent);
+        }
+      }
+      conn.filesList(filesChannelId || channelId, '');
+    }
+    // If the currently open file was touched, re-fetch its content/diff.
+    if (filesCurrentPath && paths.some(p => p === filesCurrentPath || filesCurrentPath.endsWith('/' + p))) {
+      if (filesCurrentView === 'diff') {
+        conn.fileDiff(filesChannelId || channelId, filesCurrentPath, false);
+      } else {
+        conn.fileRead(filesChannelId || channelId, filesCurrentPath);
+      }
+    }
+  }, 150);
+}
 
 // ---- File Content Renderer ----
 

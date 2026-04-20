@@ -1,0 +1,47 @@
+site_name: Build
+theme: build
+debug: true
+domain: localhost
+
+db:
+  url: $DATABASE_URL
+  schema: build
+
+auth:
+  redirect_base_url: "http://localhost:8100"
+  providers:
+    dummy:
+      provider: dummy
+
+session:
+  cookie_name: session
+  max_age: 604800
+
+controllers:
+  - skrift.admin.controller:AdminController
+  - skrift.controllers.auth:AuthController
+  - skrift.controllers.web:WebController
+
+  - build_app.controllers:SignupConfirmController
+  - build_app.controllers:preview_frame
+  - build_app.campaign_signups_api:CampaignSignupsApiController
+  - build_app.campaign_signups_admin:CampaignSignupsAdminController
+  - build_app.dashboard:DashboardController
+  - build_app.devices:DeviceApiController
+  - build_app.app_auth:AppAuthController
+  - build_app.app_auth:AppAuthPageController
+  - build_app.download:download_page
+
+page_types:
+  - name: page
+    plural: pages
+    icon: file-text
+
+middleware:
+  - build_app.middleware:create_install_middleware
+
+security_headers:
+  enabled: false
+
+rate_limit:
+  enabled: false

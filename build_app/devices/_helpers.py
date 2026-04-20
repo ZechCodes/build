@@ -6,7 +6,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from skrift.lib.notifications import notify_user, NotificationMode

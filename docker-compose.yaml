@@ -1,0 +1,141 @@
+# Local development compose for Build — end-to-end stack.
+#
+# Services:
+#   postgres           — shared DB (schema `build`)
+#   redis              — relay stream + notification bus
+#   postgres-init      — one-shot, creates the `build` schema
+#   build-web-migrate  — one-shot, runs Skrift alembic migrations
+#   build-web          — dashboard (host 8100 → container 8080)
+#   build-relay        — device WebSocket relay (host 8181 → container 8081)
+#
+# Usage:
+#   cd build-web
+#   docker compose up --build
+#   open http://localhost:8100/dashboard/
+#   # sign in via the Skrift "dummy" provider
+#
+# Requires ../build-relay/ to live alongside ../build-web/ in the monorepo.
+# Start a local device via build-bridge and point it at BUILD_URL=http://localhost:8100
+# (and BUILD_RELAY_URL=http://localhost:8181).
+#
+# Host 8000 is frequently taken; we publish the UI on 8100.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: build
+      POSTGRES_PASSWORD: build
+      POSTGRES_DB: build
+    expose:
+      - "5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U build -d build"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+
+  postgres-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: build
+    entrypoint:
+      - sh
+      - -c
+      - |
+          psql -h postgres -U build -d build -c 'CREATE SCHEMA IF NOT EXISTS build'
+    restart: "no"
+
+  build-web-migrate:
+    build:
+      context: .
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+    environment:
+      SKRIFT_ENV: compose
+      DATABASE_URL: postgresql+asyncpg://build:build@postgres:5432/build
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./app.compose.yaml:/app/app.compose.yaml
+      - ./migrations:/app/migrations
+      - ./build_app:/app/build_app
+      - ./main.py:/app/main.py
+    command:
+      - skrift
+      - db
+      - upgrade
+      - heads
+    restart: "no"
+
+  build-web:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      build-web-migrate:
+        condition: service_completed_successfully
+    environment:
+      SKRIFT_ENV: compose
+      DEBUG: "true"
+      DATABASE_URL: postgresql+asyncpg://build:build@postgres:5432/build
+      REDIS_URL: redis://redis:6379/0
+      RELAY_INTERNAL_URL: http://build-relay:8081
+      SKRIFT_SECRET_KEY: dev-not-secret-please-override
+    ports:
+      - "8100:8080"
+    volumes:
+      - ./themes:/app/themes
+      - ./build_app:/app/build_app
+      - ./templates:/app/templates
+      - ./app.compose.yaml:/app/app.compose.yaml
+      - ./migrations:/app/migrations
+      - ./main.py:/app/main.py
+    command:
+      - skrift
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --reload
+
+  build-relay:
+    build:
+      context: ../build-relay
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      build-web-migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+asyncpg://build:build@postgres:5432/build
+      REDIS_URL: redis://redis:6379/0
+      WEB_APP_INTERNAL_URL: http://build-web:8080
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8081"
+    ports:
+      - "8181:8081"
+
+volumes:
+  redis-data:
+  postgres-data:

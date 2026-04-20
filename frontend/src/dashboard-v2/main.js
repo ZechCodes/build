@@ -8,6 +8,7 @@
 // template loads them via <link>. Don't import CSS here or esbuild will also
 // inline a copy next to the JS bundle.
 import { log } from './core/log.js';
+import { initStores } from './domain/index.js';
 
 const plog = log('bootstrap');
 
@@ -43,6 +44,7 @@ function boot() {
     plog.error('no #app root found');
     return;
   }
+  initStores();
   renderPlaceholder(root);
   plog.info('ready');
 }

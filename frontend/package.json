@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "NODE_ENV=production node esbuild.config.mjs --prod",
-    "dev": "node esbuild.config.mjs --watch"
+    "dev": "node esbuild.config.mjs --watch",
+    "test:v2": "node --test 'tests/v2/**/*.test.mjs'"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

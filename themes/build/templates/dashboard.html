@@ -2186,18 +2186,14 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   transform:translateX(-50%);
   width:min(1100px,92vw);height:auto;max-height:none;
 }
-/* Mobile overrides — placed AFTER the desktop rules so they win on tied specificity. */
+/* Mobile override — only the expanded mode goes fullscreen; the default
+   .open state keeps its borders / margins so it still reads as a card. */
 @media(max-width:768px),(max-height:500px){
-  #chat-overlay.open{
-    right:0;left:0;
-    width:100vw;max-width:100vw;
-    bottom:var(--rail-h, 36px);
-    border-left:none;border-right:none;border-radius:0;
-  }
   #chat-overlay[data-mode="expanded"]{
     top:0;right:0;bottom:0;left:0;
     transform:none;
-    width:100vw;height:100vh;height:100dvh;max-height:none;
+    width:100vw;max-width:100vw;
+    height:100vh;height:100dvh;max-height:none;
     border:none;border-radius:0;
   }
 }

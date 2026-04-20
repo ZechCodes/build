@@ -1803,9 +1803,10 @@ body{
   .channel-panel{display:none}
   .channel-panel.mobile-open{
     display:flex;
-    position:fixed;inset:0;
+    position:fixed;top:0;left:0;right:0;
+    bottom:var(--rail-h, 36px);   /* stop above the bottom rail */
     width:100%;min-width:0;
-    height:100vh;height:100dvh;max-height:none;
+    max-height:none;
     z-index:100;
     border:none;
     background:var(--bg, #fff);
@@ -2162,6 +2163,15 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
 .console-rail-btn:hover{color:#a1a1aa;background:rgba(255,255,255,.06)}
 .console-rail-btn.active{color:var(--accent);background:rgba(99,102,241,.14)}
 .console-rail-btn svg{width:12px;height:12px}
+.chat-rail-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:16px;height:16px;border-radius:8px;
+  font-size:10px;font-weight:700;
+  background:var(--accent);color:#fff;
+  margin-left:.3rem;padding:0 4px;
+  line-height:1;
+}
+.chat-rail-badge[hidden]{display:none}
 .console-rail-spacer{flex:1}
 .console-rail-group{display:flex;align-items:center;gap:.15rem}
 
@@ -2680,6 +2690,7 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
         <button class="console-rail-btn" id="console-chat-toggle" data-rail="chat" title="Toggle chat">
           <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3.5a1 1 0 011-1h10a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2.5V11.5a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
           <span>Chat</span>
+          <span class="chat-rail-badge" id="chat-rail-badge" hidden></span>
         </button>
       </div>
     </div>
@@ -2990,6 +3001,9 @@ function updateMobileChannelLabel() {
 
     trigger.classList.toggle('has-interaction', anyInteraction);
   }
+
+  // Keep the bottom-rail Chat badge in sync with the same unread roll-up.
+  if (typeof updateChatRailUnreadBadge === 'function') updateChatRailUnreadBadge();
 }
 
 async function connectToDevice(device) {
@@ -3140,6 +3154,25 @@ function updateRailButtonStates() {
   const cBtn = document.getElementById('console-chat-toggle');
   const overlay = document.getElementById('chat-overlay');
   if (cBtn && overlay) cBtn.classList.toggle('active', overlay.classList.contains('open'));
+}
+
+function updateChatRailUnreadBadge() {
+  const badge = document.getElementById('chat-rail-badge');
+  if (!badge) return;
+  let total = 0;
+  if (typeof unreadCounts !== 'undefined') {
+    for (const [chId, uc] of unreadCounts) {
+      if (chId === chatCurrentChannel) continue;
+      total += (uc && uc.messages) || 0;
+    }
+  }
+  if (total > 0) {
+    badge.textContent = total > 99 ? '99+' : String(total);
+    badge.hidden = false;
+  } else {
+    badge.textContent = '';
+    badge.hidden = true;
+  }
 }
 updateConsoleButtons();
 updateRailButtonStates();

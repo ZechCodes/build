@@ -252,3 +252,18 @@
   max-width: 100%;
   max-height: 70vh;
 }
+
+/* Review flow stubs (Approve all / View PR) */
+
+.v2-files-review { display: inline-flex; gap: 4px; margin-left: auto; }
+.v2-files-review-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+.v2-files-review-btn:hover { color: var(--fg); background: var(--bg-hover); }

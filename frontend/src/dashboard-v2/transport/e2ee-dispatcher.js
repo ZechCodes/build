@@ -250,6 +250,28 @@ export function bindE2EEDispatcher(instance, deviceId) {
     bus.emit('files.diff_result', { ...evt.detail });
   });
 
+  // ----- Uploads -----
+  instance.addEventListener('upload_progress', (evt) => {
+    const d = evt.detail;
+    bus.emit('upload.progress', {
+      deviceId,
+      fileId: d.file_id,
+      fileName: d.filename,
+      progress: d.progress,
+      totalChunks: d.total_chunks,
+      chunksDone: d.chunks_done,
+    });
+  });
+  instance.addEventListener('upload_done', (evt) => {
+    const d = evt.detail;
+    bus.emit('upload.done', {
+      deviceId,
+      fileId: d.file_id,
+      fileName: d.filename,
+      size: d.size,
+    });
+  });
+
   // ----- Complications -----
   instance.addEventListener('complication_update', (evt) => {
     const comp = evt.detail;

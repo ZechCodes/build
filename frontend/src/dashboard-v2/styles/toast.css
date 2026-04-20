@@ -1,0 +1,31 @@
+/* Toast notifications. Shell-level singleton at #v2-toast. */
+
+.v2-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.v2-toast-item {
+  pointer-events: auto;
+  padding: 8px 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.v2-toast-item.visible { opacity: 1; transform: translateY(0); }
+.v2-toast-info    { border-color: var(--border); }
+.v2-toast-error   { border-color: #d06262; color: #d06262; }
+.v2-toast-success { border-color: #4ea67a; color: #4ea67a; }

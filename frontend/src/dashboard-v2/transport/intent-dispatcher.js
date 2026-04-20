@@ -6,6 +6,7 @@
 import { bus } from '../core/bus.js';
 import { log } from '../core/log.js';
 import { e2eePool } from './e2ee-pool.js';
+import { channelsStore } from '../domain/channels-store.js';
 
 const plog = log('intent');
 
@@ -25,10 +26,20 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('connect_device failed', err); }
   });
 
-  bus.on('intent.send_message', async ({ channelId, text }) => {
+  bus.on('intent.send_message', async ({ channelId, text, attachments, planMode }) => {
     const conn = connFor(channelId);
-    if (!conn || !text) return;
-    try { await conn.sendMessage(channelId, text); }
+    if (!conn) return;
+    const content = text || '';
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    if (!content && !hasAttachments) return;
+    // Build payload directly — matches v1 chat/composer.js wire shape.
+    const payload = { action: 'message', channel_id: channelId, content };
+    if (hasAttachments) payload.attachments = attachments;
+    if (planMode) payload.plan_mode = true;
+    const ch = channelsStore.get(channelId);
+    if (ch?.model) payload.model = ch.model;
+    if (ch?.effort) payload.effort = ch.effort;
+    try { await conn.send(payload); }
     catch (err) { plog.error('send_message failed', err); }
   });
 

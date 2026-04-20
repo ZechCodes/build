@@ -54,6 +54,7 @@ export function buildLayout(root) {
       </footer>
       <div class="v2-chat-overlay" id="v2-chat-overlay" aria-hidden="true"></div>
       <div class="v2-dropdown-layer" id="v2-dropdown-layer"></div>
+      <div class="v2-toast" id="v2-toast" aria-live="polite"></div>
     </div>
   `;
 }

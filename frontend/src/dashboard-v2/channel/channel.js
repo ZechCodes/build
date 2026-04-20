@@ -20,6 +20,7 @@ function defaultViewState() {
     scrollAnchor: null,
     unreadHighlightLastSeen: null,
     consoleScrollNearBottom: true,
+    pendingFiles: [],   // File[] staged in composer, not yet uploaded
     // Files
     filesPath: null,
     filesView: 'source',           // 'source' | 'diff' | 'preview'

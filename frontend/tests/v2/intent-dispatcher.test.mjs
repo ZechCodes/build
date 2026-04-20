@@ -14,6 +14,7 @@ function makeStub() {
   return {
     calls,
     connected: true,
+    send:           rec('send'),
     sendMessage:    rec('sendMessage'),
     stopAgent:      rec('stopAgent'),
     restartAgent:   rec('restartAgent'),
@@ -61,8 +62,33 @@ async function emitAndAssert(type, payload, expectedMethod, expectedArgs) {
   }
 }
 
-test('intent.send_message → sendMessage(channelId, text)', async () => {
-  await emitAndAssert('intent.send_message', { channelId: 'ch1', text: 'hi' }, 'sendMessage', ['ch1', 'hi']);
+test('intent.send_message → send(payload)', async () => {
+  await emitAndAssert(
+    'intent.send_message',
+    { channelId: 'ch1', text: 'hi' },
+    'send',
+    [{ action: 'message', channel_id: 'ch1', content: 'hi' }],
+  );
+});
+
+test('intent.send_message with attachments + plan mode', async () => {
+  await emitAndAssert(
+    'intent.send_message',
+    {
+      channelId: 'ch1',
+      text: 'hi',
+      attachments: [{ file_id: 'f1', filename: 'a.txt', size: 5, mime_type: 'text/plain' }],
+      planMode: true,
+    },
+    'send',
+    [{
+      action: 'message',
+      channel_id: 'ch1',
+      content: 'hi',
+      attachments: [{ file_id: 'f1', filename: 'a.txt', size: 5, mime_type: 'text/plain' }],
+      plan_mode: true,
+    }],
+  );
 });
 
 test('intent.stop_agent → stopAgent(channelId)', async () => {

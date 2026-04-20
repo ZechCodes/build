@@ -7,10 +7,14 @@ import { messagesStore } from '../../domain/messages-store.js';
 import { presenceStore } from '../../domain/presence-store.js';
 import { channelsStore } from '../../domain/channels-store.js';
 import { unreadStore } from '../../domain/unread-store.js';
-import { escapeHtml } from '../../util/html.js';
+import { escapeHtml, formatBytes } from '../../util/html.js';
 import { shortTime } from '../../util/time.js';
 import { renderMarkdown } from '../../util/markdown.js';
 import { agentShortName } from '../../util/tools.js';
+import { uploadFile } from '../../transport/index.js';
+import { showToast } from '../../util/toast.js';
+
+const CONFIRM_TIMEOUT_MS = 3000;
 
 export class ChatView {
   constructor(channel) {
@@ -18,7 +22,10 @@ export class ChatView {
     this.root = null;
     this.messagesEl = null;
     this.composerInput = null;
+    this.fileInput = null;
+    this.stagingEl = null;
     this.unsubs = [];
+    this._confirm = null;   // { kind, btn, timeout }
   }
 
   activate() {
@@ -34,6 +41,16 @@ export class ChatView {
     }));
     this.unsubs.push(channelsStore.subscribe(e => {
       if (e.id === this.channel.id) this._renderHeader();
+    }));
+    this.unsubs.push(presenceStore.subscribe(e => {
+      if (e.kind === 'plan_mode' && e.channelId === this.channel.id) this._renderCmdTray();
+    }));
+    this.unsubs.push(bus.on('upload.progress', (p) => {
+      if (p.deviceId !== channelsStore.deviceFor(this.channel.id)) return;
+      const chip = this.stagingEl?.querySelector(`[data-staging-name="${CSS.escape(p.fileName)}"]`);
+      if (!chip) return;
+      const bar = chip.querySelector('.v2-staging-bar-fill');
+      if (bar) bar.style.width = `${Math.round((p.progress || 0) * 100)}%`;
     }));
   }
 
@@ -56,24 +73,36 @@ export class ChatView {
           <div class="v2-chat-messages" data-slot="messages"></div>
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
         </div>
+        <div class="v2-chat-staging" data-slot="staging"></div>
+        <div class="v2-cmd-tray" data-slot="tray"></div>
         <div class="v2-chat-composer" data-slot="composer">
           <button class="v2-chat-stop" type="button" hidden data-action="stop">Stop</button>
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>
           <button class="v2-chat-send" type="button" data-action="send">Send</button>
         </div>
+        <input type="file" class="v2-chat-file-input" multiple hidden>
       </div>
     `;
     this.messagesEl = this.root.querySelector('[data-slot="messages"]');
     this.composerInput = this.root.querySelector('.v2-chat-input');
+    this.stagingEl = this.root.querySelector('[data-slot="staging"]');
+    this.fileInput = this.root.querySelector('.v2-chat-file-input');
     this.composerInput.value = this.channel.viewState?.draftText || '';
     this._autosizeInput();
+    this._renderCmdTray();
+    this._renderStaging();
 
-    // Composer events (delegated on root for the two action buttons).
     this.root.addEventListener('click', this._onClick);
     this.composerInput.addEventListener('keydown', this._onKeydown);
     this.composerInput.addEventListener('input', this._autosizeInput);
     this.root.querySelector('.v2-chat-new-bubble').addEventListener('click', () => this._scrollToBottom(true));
     this.messagesEl.addEventListener('scroll', this._onScroll);
+    this.fileInput.addEventListener('change', this._onFileSelect);
+
+    // Drag-drop: files dropped on the message area get staged.
+    this.messagesEl.addEventListener('dragover', (e) => { e.preventDefault(); this.messagesEl.classList.add('dragover'); });
+    this.messagesEl.addEventListener('dragleave', () => this.messagesEl.classList.remove('dragover'));
+    this.messagesEl.addEventListener('drop', this._onDrop);
   }
 
   _renderHeader() {
@@ -299,6 +328,30 @@ export class ChatView {
       this._send();
       return;
     }
+    // Attach — open file picker
+    if (e.target.closest('[data-cmd="attach"]')) {
+      this.fileInput?.click();
+      return;
+    }
+    // Plan mode toggle — client-only; composer picks it up on send
+    if (e.target.closest('[data-cmd="plan"]')) {
+      const cur = presenceStore.get(this.channel.id).planMode;
+      presenceStore.setPlanMode(this.channel.id, !cur);
+      return;
+    }
+    // Compact / Reset — confirm pattern
+    const confirmBtn = e.target.closest('[data-cmd-confirm]');
+    if (confirmBtn) {
+      this._handleConfirm(confirmBtn);
+      return;
+    }
+    // Remove staged file
+    const remove = e.target.closest('[data-staging-remove]');
+    if (remove) {
+      const name = remove.getAttribute('data-staging-remove');
+      this._removePending(name);
+      return;
+    }
     // Suggestion click → send as user message
     const sugBtn = e.target.closest('.v2-suggestion');
     if (sugBtn && !sugBtn.classList.contains('selected') && !sugBtn.classList.contains('dismissed')) {
@@ -352,15 +405,57 @@ export class ChatView {
     }
   };
 
-  _send() {
+  async _send() {
     const text = (this.composerInput?.value || '').trim();
-    if (!text) return;
-    bus.emit('intent.send_message', { channelId: this.channel.id, text });
+    const pending = this.channel.viewState.pendingFiles || [];
+    if (!text && !pending.length) return;
+
+    // Disable composer while uploading.
+    const sendBtn = this.root.querySelector('.v2-chat-send');
+    if (sendBtn) sendBtn.disabled = true;
+    if (this.composerInput) this.composerInput.disabled = true;
+
+    let attachments = null;
+    if (pending.length) {
+      attachments = [];
+      for (const file of pending) {
+        try {
+          const result = await uploadFile(this.channel.id, file);
+          attachments.push({
+            file_id: result.file_id,
+            filename: result.filename,
+            size: result.size,
+            mime_type: result.mime_type,
+          });
+        } catch (err) {
+          console.error('[ChatView] upload failed', err);
+          showToast(`Upload failed: ${file.name}`);
+        }
+      }
+      if (!attachments.length) attachments = null;
+    }
+
+    const planMode = presenceStore.get(this.channel.id).planMode;
+    bus.emit('intent.send_message', {
+      channelId: this.channel.id,
+      text: text || (attachments ? `Sent ${attachments.length} file(s)` : ''),
+      attachments,
+      planMode,
+    });
+
+    // Reset composer.
     if (this.composerInput) {
       this.composerInput.value = '';
+      this.composerInput.disabled = false;
       this._autosizeInput();
-      if (this.channel.viewState) this.channel.viewState.draftText = '';
     }
+    if (sendBtn) sendBtn.disabled = false;
+    if (this.channel.viewState) {
+      this.channel.viewState.draftText = '';
+      this.channel.viewState.pendingFiles = [];
+    }
+    this._renderStaging();
+    this.composerInput?.focus();
   }
 
   _autosizeInput = () => {
@@ -387,5 +482,117 @@ export class ChatView {
       const bubble = this.root.querySelector('.v2-chat-new-bubble');
       if (bubble) bubble.hidden = false;
     }
+  }
+
+  // ----- Commands tray -----
+
+  _renderCmdTray() {
+    const tray = this.root?.querySelector('[data-slot="tray"]');
+    if (!tray) return;
+    const planOn = presenceStore.get(this.channel.id).planMode;
+    tray.innerHTML = `
+      <button class="v2-cmd-btn" type="button" data-cmd="attach" title="Attach files">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Attach</span>
+      </button>
+      <button class="v2-cmd-btn ${planOn ? 'active' : ''}" type="button" data-cmd="plan" title="Plan mode">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3h10v3H3zM3 8h10v5H3z" stroke="currentColor" stroke-width="1.3"/></svg>
+        <span>Plan</span>
+      </button>
+      <button class="v2-cmd-btn" type="button" data-cmd-confirm="compact" data-cmd="compact" title="Compact session">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3h10M3 8h10M3 13h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span class="v2-cmd-label">Compact</span>
+      </button>
+      <button class="v2-cmd-btn" type="button" data-cmd-confirm="reset" data-cmd="reset" title="Reset session">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8a5 5 0 10-1.8 3.8M13 4v4h-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="v2-cmd-label">Clear</span>
+      </button>
+    `;
+  }
+
+  _handleConfirm(btn) {
+    const kind = btn.getAttribute('data-cmd-confirm');
+    const label = btn.querySelector('.v2-cmd-label');
+    // Second click within timeout → fire the intent.
+    if (this._confirm?.btn === btn && btn.classList.contains('confirm')) {
+      clearTimeout(this._confirm.timeout);
+      btn.classList.remove('confirm');
+      if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+      this._confirm = null;
+      if (kind === 'compact') bus.emit('intent.compact_session', { channelId: this.channel.id });
+      else if (kind === 'reset') bus.emit('intent.reset_session', { channelId: this.channel.id });
+      return;
+    }
+    // First click → arm.
+    this._clearConfirm();
+    btn.classList.add('confirm');
+    if (label) label.textContent = 'Click to confirm';
+    this._confirm = {
+      kind, btn,
+      timeout: setTimeout(() => {
+        btn.classList.remove('confirm');
+        if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+        this._confirm = null;
+      }, CONFIRM_TIMEOUT_MS),
+    };
+  }
+
+  _clearConfirm() {
+    if (!this._confirm) return;
+    clearTimeout(this._confirm.timeout);
+    const { btn, kind } = this._confirm;
+    btn.classList.remove('confirm');
+    const label = btn.querySelector('.v2-cmd-label');
+    if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+    this._confirm = null;
+  }
+
+  // ----- File staging -----
+
+  _onFileSelect = (e) => {
+    const files = [...(e.target.files || [])];
+    if (!files.length) return;
+    e.target.value = '';   // allow re-picking same file
+    this._addPending(files);
+  };
+
+  _onDrop = (e) => {
+    e.preventDefault();
+    this.messagesEl?.classList.remove('dragover');
+    const files = [...(e.dataTransfer?.files || [])];
+    if (files.length) this._addPending(files);
+  };
+
+  _addPending(files) {
+    const existing = this.channel.viewState.pendingFiles || [];
+    // Dedup by name + size.
+    const keys = new Set(existing.map(f => `${f.name}:${f.size}`));
+    for (const f of files) {
+      const k = `${f.name}:${f.size}`;
+      if (!keys.has(k)) existing.push(f);
+    }
+    this.channel.viewState.pendingFiles = existing;
+    this._renderStaging();
+  }
+
+  _removePending(name) {
+    this.channel.viewState.pendingFiles =
+      (this.channel.viewState.pendingFiles || []).filter(f => f.name !== name);
+    this._renderStaging();
+  }
+
+  _renderStaging() {
+    if (!this.stagingEl) return;
+    const files = this.channel.viewState.pendingFiles || [];
+    if (!files.length) { this.stagingEl.innerHTML = ''; this.stagingEl.hidden = true; return; }
+    this.stagingEl.hidden = false;
+    this.stagingEl.innerHTML = files.map(f => `
+      <div class="v2-staging-chip" data-staging-name="${escapeHtml(f.name)}">
+        <span class="v2-staging-name">${escapeHtml(f.name)}</span>
+        <span class="v2-staging-size">${escapeHtml(formatBytes(f.size || 0))}</span>
+        <div class="v2-staging-bar"><div class="v2-staging-bar-fill"></div></div>
+        <button type="button" class="v2-staging-remove" data-staging-remove="${escapeHtml(f.name)}" aria-label="Remove">×</button>
+      </div>
+    `).join('');
   }
 }

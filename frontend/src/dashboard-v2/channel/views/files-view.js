@@ -8,6 +8,7 @@ import { escapeHtml, formatBytes } from '../../util/html.js';
 import { highlightLine } from '../../util/syntax.js';
 import { renderDiff } from '../../util/diff.js';
 import { renderMarkdown } from '../../util/markdown.js';
+import { showToast } from '../../util/toast.js';
 
 const MODE_LABELS = { source: 'Source', diff: 'Diff', preview: 'Preview' };
 
@@ -173,6 +174,10 @@ export class FilesView {
           wrap
         </label>
       </div>
+      <div class="v2-files-review">
+        <button class="v2-files-review-btn" type="button" data-review="approve-all">Approve all</button>
+        <button class="v2-files-review-btn" type="button" data-review="view-pr">View PR</button>
+      </div>
     `;
 
     if (!path) {
@@ -303,6 +308,13 @@ export class FilesView {
     if (wrapToggle) {
       this.channel.viewState.filesLineWrap = wrapToggle.checked;
       this._renderViewer();
+      return;
+    }
+    const reviewBtn = e.target.closest('[data-review]');
+    if (reviewBtn) {
+      // v1 parity: no backend for review flow yet; toast stub.
+      showToast('Review flow not wired up yet');
+      return;
     }
   };
 

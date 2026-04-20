@@ -5501,7 +5501,16 @@ function bindE2EEEvents(instance, deviceId) {
 
   instance.addEventListener('files_changes_result', (evt) => {
     const { channel_id, repos } = evt.detail;
-    if (channel_id !== filesChannelId) return;
+    console.debug('[files] files_changes_result', { channel_id, repos_count: repos?.length, filesChannelId, chatCurrentChannel });
+    // Accept if it matches filesChannelId, OR if filesChannelId is unset
+    // but this is the currently-active chat channel (self-heal race).
+    if (filesChannelId) {
+      if (channel_id !== filesChannelId) return;
+    } else if (channel_id !== chatCurrentChannel) {
+      return;
+    } else {
+      filesChannelId = channel_id;
+    }
     filesChangesData.set(channel_id, repos || []);
     updateFilesModifiedCount();
     if (filesTreeTab === 'changes') renderFileTree();
@@ -7750,8 +7759,14 @@ fileReloadBtn.addEventListener('click', (ev) => {
 // ---- Live file-change refresh (fed by AGENT_FILE_CHANGES) ----
 let _fileChangesRefreshTimer = null;
 function onAgentFileChanges(channelId, paths) {
+  console.debug('[files] agent.file_changes', { channelId, paths, filesChannelId, chatCurrentChannel });
   // Only react if this channel is the one currently displayed in the files view.
   if (filesChannelId && filesChannelId !== channelId) return;
+  // Adopt the channel so the files_changes_result handler doesn't drop the
+  // response if filesChannelId was still null at this point.
+  if (!filesChannelId && chatCurrentChannel === channelId) {
+    filesChannelId = channelId;
+  }
   // Debounce bursts: coalesce multiple events within 150ms.
   clearTimeout(_fileChangesRefreshTimer);
   _fileChangesRefreshTimer = setTimeout(() => {
@@ -7771,11 +7786,22 @@ function onAgentFileChanges(channelId, paths) {
       conn.filesList(filesChannelId || channelId, '');
     }
     // If the currently open file was touched, re-fetch its content/diff.
-    if (filesCurrentPath && paths.some(p => p === filesCurrentPath || filesCurrentPath.endsWith('/' + p))) {
-      if (filesCurrentView === 'diff') {
-        conn.fileDiff(filesChannelId || channelId, filesCurrentPath, false);
-      } else {
-        conn.fileRead(filesChannelId || channelId, filesCurrentPath);
+    if (filesCurrentPath) {
+      const cur = filesCurrentPath.replace(/\\/g, '/');
+      const touched = paths.some(p => {
+        const pp = (p || '').replace(/\\/g, '/');
+        if (!pp) return false;
+        return pp === cur
+          || cur.endsWith('/' + pp)
+          || pp.endsWith('/' + cur)
+          || pp.split('/').pop() === cur.split('/').pop();
+      });
+      if (touched) {
+        if (filesCurrentView === 'diff') {
+          conn.fileDiff(filesChannelId || channelId, filesCurrentPath, false);
+        } else {
+          conn.fileRead(filesChannelId || channelId, filesCurrentPath);
+        }
       }
     }
   }, 150);

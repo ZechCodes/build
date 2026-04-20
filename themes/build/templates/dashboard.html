@@ -7273,19 +7273,28 @@ function filesLoadRoot() {
 
 // ---- Tree Rendering ----
 
+let _filesSelfHealed = false;
 function renderFileTree() {
-  if (!filesChannelId) return;
   fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty, .changes-repo-group').forEach(n => n.remove());
 
+  // If the tab is open with a channel selected but filesChannelId wasn't
+  // set (E2EE timing race), try once to kick off the load so the view
+  // self-heals on re-render instead of showing the "Select a channel" stub.
+  if (!filesChannelId && chatCurrentChannel && typeof onFilesTabActivated === 'function' && !_filesSelfHealed) {
+    _filesSelfHealed = true;
+    onFilesTabActivated();
+  }
+
   if (filesTreeTab === 'changes') {
-    // Changes view has its own "No modified files" empty state from
-    // renderChangesView; hide the tree-specific placeholder.
+    // Changes view has its own "No modified files" / "Select a channel" empty
+    // states inside renderChangesView; hide the tree-specific placeholder.
     fileTreeEmpty.style.display = 'none';
-    renderChangesView(fileTreeInner, filesChangesData.get(filesChannelId));
+    renderChangesView(fileTreeInner, filesChannelId ? filesChangesData.get(filesChannelId) : null);
     return;
   }
 
-  // Files tree mode — requires a root listing in fileTreeData.
+  // Files tree mode — requires a channel + root listing in fileTreeData.
+  if (!filesChannelId) { fileTreeEmpty.style.display = ''; return; }
   const data = fileTreeData.get(filesChannelId);
   if (!data || !data.has('')) {
     fileTreeEmpty.style.display = '';

@@ -1839,20 +1839,6 @@ body{
   }
   .file-tree-panel.mobile-open{display:flex}
   .file-tree-panel.mobile-open ~ .file-content-panel{display:none}
-  /* Chat overlay on mobile: normal open is edge-to-edge; expanded is
-     true fullscreen with no borders, no padding on the edges. */
-  #chat-overlay.open{
-    right:0;left:0;
-    width:100vw;max-width:100vw;
-    bottom:var(--rail-h, 36px);
-    border-left:none;border-right:none;border-radius:0;
-  }
-  #chat-overlay[data-mode="expanded"]{
-    top:0;right:0;bottom:0;left:0;
-    transform:none;
-    width:100vw;height:100vh;height:100dvh;max-height:none;
-    border:none;border-radius:0;
-  }
 }
 .pad-2{padding:2rem}
 .pad-1-5{padding:1.5rem}
@@ -2199,6 +2185,21 @@ body.electron .channel-panel-footer{-webkit-app-region:no-drag}
   top:16px;bottom:calc(36px + 8px);left:50%;right:auto;
   transform:translateX(-50%);
   width:min(1100px,92vw);height:auto;max-height:none;
+}
+/* Mobile overrides — placed AFTER the desktop rules so they win on tied specificity. */
+@media(max-width:768px),(max-height:500px){
+  #chat-overlay.open{
+    right:0;left:0;
+    width:100vw;max-width:100vw;
+    bottom:var(--rail-h, 36px);
+    border-left:none;border-right:none;border-radius:0;
+  }
+  #chat-overlay[data-mode="expanded"]{
+    top:0;right:0;bottom:0;left:0;
+    transform:none;
+    width:100vw;height:100vh;height:100dvh;max-height:none;
+    border:none;border-radius:0;
+  }
 }
 .chat-overlay-header{
   display:flex;align-items:center;gap:.35rem;

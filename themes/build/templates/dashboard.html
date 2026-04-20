@@ -4762,6 +4762,12 @@ function bindE2EEEvents(instance, deviceId) {
       chatLoadingActivity.add(chatCurrentChannel);
       instance.getMessages(chatCurrentChannel);
       instance.getActivity(chatCurrentChannel);
+      // If the files tab is active, retry the tree/changes fetch — the initial
+      // selectChannel() may have run before this `connected` flag flipped.
+      if (currentTab === 'files') {
+        filesChannelId = null;
+        if (typeof onFilesTabActivated === 'function') onFilesTabActivated();
+      }
     }
   });
 
@@ -7269,22 +7275,25 @@ function filesLoadRoot() {
 
 function renderFileTree() {
   if (!filesChannelId) return;
+  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty, .changes-repo-group').forEach(n => n.remove());
+
+  if (filesTreeTab === 'changes') {
+    // Changes view has its own "No modified files" empty state from
+    // renderChangesView; hide the tree-specific placeholder.
+    fileTreeEmpty.style.display = 'none';
+    renderChangesView(fileTreeInner, filesChangesData.get(filesChannelId));
+    return;
+  }
+
+  // Files tree mode — requires a root listing in fileTreeData.
   const data = fileTreeData.get(filesChannelId);
   if (!data || !data.has('')) {
     fileTreeEmpty.style.display = '';
     return;
   }
   fileTreeEmpty.style.display = 'none';
-
-  // Remove all rendered nodes (tree items, children, and changes empty state).
-  fileTreeInner.querySelectorAll('.tree-item, .tree-children, .changes-empty, .changes-repo-group').forEach(n => n.remove());
   const rootEntries = data.get('');
-  if (filesTreeTab === 'changes') {
-    const changes = filesChangesData.get(filesChannelId);
-    renderChangesView(fileTreeInner, changes);
-  } else if (rootEntries) {
-    renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
-  }
+  if (rootEntries) renderTreeLevel(fileTreeInner, rootEntries.entries, 0, data);
 }
 
 function renderTreeLevel(container, entries, depth, data) {

@@ -9,6 +9,8 @@ import { TabBarView } from './tabs.js';
 import { SidebarSectionsView } from './sidebar.js';
 import { DropdownView } from './dropdown.js';
 import { TopBarView } from './top-bar.js';
+import { TasksView } from './tasks.js';
+import { ComplicationsView } from './complications.js';
 
 const plog = log('shell');
 
@@ -23,6 +25,8 @@ export function initShell(root) {
     new RailView(),
     new SidebarSectionsView(),
     new DropdownView(),
+    new TasksView(),
+    new ComplicationsView(),
   ];
   for (const v of views) v.activate();
 

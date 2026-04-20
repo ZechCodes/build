@@ -21,6 +21,7 @@ export function buildLayout(root) {
             <header class="v2-sidebar-section-header" data-sidebar-toggle="tasks">
               <svg class="v2-chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span>Tasks</span>
+              <span class="v2-tasks-badge-slot" id="v2-tasks-badge-slot"></span>
             </header>
             <div class="v2-sidebar-section-body" id="v2-tasks-body"></div>
           </section>
@@ -36,6 +37,7 @@ export function buildLayout(root) {
       </aside>
       <main class="v2-viewer" id="v2-viewer">
         <header class="v2-top-bar" id="v2-top-bar"></header>
+        <div class="v2-complications empty" id="v2-complications"></div>
         <nav class="v2-tab-bar" id="v2-tab-bar"></nav>
         <section class="v2-tab-panels" id="v2-tab-panels">
           <div class="v2-tab-panel" data-tab="files" id="v2-tab-files">

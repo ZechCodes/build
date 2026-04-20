@@ -1,0 +1,46 @@
+/* TasksView (sidebar section). */
+
+.v2-tasks-empty {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.v2-tasks-badge-slot { margin-left: auto; }
+
+.v2-tasks-badge {
+  background: var(--bg-active);
+  color: var(--fg);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.v2-task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  line-height: 1.4;
+}
+.v2-task-row[data-status="completed"] { color: var(--fg-dim); text-decoration: line-through; }
+
+.v2-task-dot {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.v2-task-dot.pending     { color: var(--fg-muted); background: transparent; border: 1px solid var(--fg-muted); }
+.v2-task-dot.in-progress { color: #0b0d10; background: var(--accent); }
+.v2-task-dot.completed   { color: #0b0d10; background: #4ea67a; }
+
+.v2-task-text { flex: 1; word-wrap: break-word; }

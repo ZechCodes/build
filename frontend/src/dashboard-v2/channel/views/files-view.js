@@ -29,7 +29,7 @@ export class FilesView {
     this.unsubs.push(filesStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       if (e.kind === 'tree' || e.kind === 'changes') this._renderTree();
-      if (e.kind === 'read_result') this._renderReadResult();
+      if (e.kind === 'read_result' || e.kind === 'read_result_progress') this._renderReadResult();
       if (e.kind === 'diff_result') this._renderDiffResult();
     }));
     this._renderTree();
@@ -193,6 +193,10 @@ export class FilesView {
       this.viewerEl.innerHTML = '<div class="v2-files-empty">Loading…</div>';
       return;
     }
+    if (d._progress) {
+      this.viewerEl.innerHTML = `<div class="v2-files-empty">Loading image… (${d.chunk_received}/${d.chunk_total})</div>`;
+      return;
+    }
     if (d.error) {
       this.viewerEl.innerHTML = `<div class="v2-files-empty">${escapeHtml(d.error)}</div>`;
       return;
@@ -201,11 +205,19 @@ export class FilesView {
       this.viewerEl.innerHTML = `<div class="v2-files-empty">Binary file (${escapeHtml(formatBytes(d.size || 0))})</div>`;
       return;
     }
-    if (d.is_image) {
-      this.viewerEl.innerHTML = '<div class="v2-files-empty">Image preview lands in Wave 6.</div>';
+    const ext = extOf(d.path || '');
+    if (d.is_image && d.content) {
+      this.viewerEl.innerHTML = `<div class="v2-files-image"><img src="${d.content}" alt="${escapeHtml(d.path || '')}"></div>`;
       return;
     }
-    const ext = extOf(d.path || '');
+    if (ext === 'svg' && d.content) {
+      const host = document.createElement('div');
+      host.className = 'v2-files-svg-host';
+      host.innerHTML = d.content;
+      this.viewerEl.innerHTML = '';
+      this.viewerEl.appendChild(host);
+      return;
+    }
     if (ext === 'md' || ext === 'markdown') {
       this.viewerEl.innerHTML = `<div class="v2-files-markdown">${renderMarkdown(d.content || '')}</div>`;
       return;

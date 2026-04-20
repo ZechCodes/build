@@ -222,3 +222,33 @@
 
 .diff-word-del { background: rgba(208, 98, 98, 0.30); border-radius: 2px; }
 .diff-word-add { background: rgba(78, 166, 122, 0.30); border-radius: 2px; }
+
+/* Image / SVG preview */
+
+.v2-files-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 100%;
+}
+.v2-files-image img {
+  max-width: 100%;
+  max-height: 70vh;
+  background: repeating-conic-gradient(#1a1f26 0% 25%, #222831 0% 50%) 50% / 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.v2-files-svg-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 100%;
+}
+.v2-files-svg-host > svg,
+.v2-files-svg-host > * {
+  max-width: 100%;
+  max-height: 70vh;
+}

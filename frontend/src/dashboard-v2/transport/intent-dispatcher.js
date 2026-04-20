@@ -172,4 +172,17 @@ export function bindIntentDispatcher() {
     try { await conn.getComplications(channelId); }
     catch (err) { plog.error('get_complications failed', err); }
   });
+
+  bus.on('intent.resolve_complication', async ({ channelId, complicationId, action }) => {
+    const conn = connFor(channelId);
+    if (!conn || !complicationId || !action) return;
+    try {
+      await conn.send({
+        action: 'complication:action',
+        channel_id: channelId,
+        complication_id: complicationId,
+        option_id: action,
+      });
+    } catch (err) { plog.error('resolve_complication failed', err); }
+  });
 }

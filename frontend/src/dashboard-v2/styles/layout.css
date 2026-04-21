@@ -10,12 +10,16 @@
   grid-template-areas:
     "sidebar viewer"
     "rail    rail";
-  height: 100vh;
-  height: 100dvh;     /* mobile Safari: account for dynamic URL bar */
-  min-height: 100vh;
-  min-height: 100dvh;
+  /* Fill the visible viewport only. `dvh` accounts for the mobile
+     URL bar so the rail sits flush with the bottom of the screen
+     instead of being pushed below a 100vh overflow. */
+  height: 100dvh;
   overflow: hidden;
   background: var(--bg);
+}
+/* Fallback for browsers without `dvh` (Safari < 16.4, Chrome < 108). */
+@supports not (height: 100dvh) {
+  .v2-app { height: 100vh; }
 }
 
 .v2-app[data-rail="open"]     { grid-template-rows: 1fr var(--rail-open-height); }

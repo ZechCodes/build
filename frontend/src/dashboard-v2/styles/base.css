@@ -9,9 +9,15 @@ html, body {
   font-size: 14px;
   line-height: 1.5;
   height: 100%;
+  /* The app is a fixed-height shell — no body-level scrolling. On
+     mobile Safari the URL bar makes `100vh` larger than the visible
+     viewport, which otherwise nudges the rail below the fold and
+     adds a rubber-band scroll on the body. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
-#app { width: 100%; min-height: 100vh; }
+#app { width: 100%; height: 100%; }
 
 code, pre { font-family: var(--font-mono); }
 

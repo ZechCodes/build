@@ -91,7 +91,48 @@ try {
   check('Waiting row label reads "Needs you"',          /needs you/i.test(waiting.statusLabel || ''), waiting.statusLabel);
   check('Waiting row shows unread count badge',         waiting.badge === '2', waiting.badge);
 
+  // ---- Recent-activity grace window: channel that just stopped
+  //      running (no unread, no interaction) should stay visible
+  //      with a "Xm" timestamp for up to an hour.
+  await page.evaluate(() => {
+    const d = window.__v2debug;
+    const chId = [...d.stores.channelsStore.list()][0].id;
+    d.stores.uiStore.setActiveChannel(chId);
+    d.stores.unreadStore.markRead(chId);
+    d.stores.presenceStore.setAgentActive(chId, true);
+    d.stores.presenceStore.setAgentActive(chId, false);  // stops + stamps lastActiveAt
+  });
+  await page.waitForTimeout(150);
+  const recent = await page.evaluate(() => {
+    const row = document.querySelector('.v2-attention-row');
+    return {
+      hasRecentClass: row?.className.includes('status-recent'),
+      statusLabel: row?.querySelector('.v2-attention-status')?.textContent?.trim(),
+    };
+  });
+  check('Recent-activity row uses status-recent',
+        recent.hasRecentClass === true, JSON.stringify(recent));
+  check('Recent row shows a relative timestamp',
+        /(just now|\d+m)/.test(recent.statusLabel || ''),
+        recent.statusLabel);
+
+  // Force the lastActiveAt > 1hr → row should disappear.
+  await page.evaluate(() => {
+    const d = window.__v2debug;
+    const chId = [...d.stores.channelsStore.list()][0].id;
+    // Reach into the store's slot to push its timestamp out of window.
+    const slot = d.stores.presenceStore.get(chId);
+    slot.lastActiveAt = Date.now() - (2 * 60 * 60 * 1000);  // 2h ago
+    // Trigger a re-render without changing active state.
+    d.stores.unreadStore.markRead(chId);
+  });
+  await page.waitForTimeout(150);
+  const aged = await page.evaluate(() => !!document.querySelector('.v2-attention-section'));
+  check('Attention section clears once the recent window lapses', aged === false);
+
   // ---- Rail chat badge: should be HIDDEN because no active channel.
+  await page.evaluate(() => window.__v2debug.stores.uiStore.setActiveChannel(null));
+  await page.waitForTimeout(80);
   const railHiddenNoActive = await page.evaluate(() => {
     const el = document.getElementById('v2-rail-unread');
     return el?.hidden === true;

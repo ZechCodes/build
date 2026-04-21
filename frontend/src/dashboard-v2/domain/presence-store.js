@@ -11,19 +11,26 @@ const harnessesByDevice = new Map(); // deviceId → harnesses[]
 function getSlot(channelId) {
   let s = byChannel.get(channelId);
   if (!s) {
-    s = { agentActive: false, planMode: false };
+    s = { agentActive: false, planMode: false, lastActiveAt: 0 };
     byChannel.set(channelId, s);
   }
   return s;
 }
 
 export const presenceStore = {
-  get(channelId) { return byChannel.get(channelId) ?? { agentActive: false, planMode: false }; },
+  get(channelId) {
+    return byChannel.get(channelId) ?? { agentActive: false, planMode: false, lastActiveAt: 0 };
+  },
 
   setAgentActive(channelId, active) {
     const s = getSlot(channelId);
     if (s.agentActive === active) return;
     s.agentActive = active;
+    // Stamp every transition so `lastActiveAt` reflects the most
+    // recent moment the channel was "doing something" — used by the
+    // sidebar Attention section to keep recently-active channels
+    // around for a grace window after they go idle.
+    s.lastActiveAt = Date.now();
     notify({ kind: 'agent_active', channelId, active });
   },
 

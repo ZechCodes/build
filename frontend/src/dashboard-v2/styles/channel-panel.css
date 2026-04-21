@@ -53,6 +53,8 @@
 .v2-attention-row[class*="status-interaction"] .v2-attention-status { color: var(--interaction); }
 .v2-attention-row[class*="status-running"]     .v2-attention-status { color: var(--tool-write); }
 .v2-attention-row[class*="status-unread"]      .v2-attention-status { color: var(--accent); }
+.v2-attention-row[class*="status-recent"]      .v2-attention-status { color: var(--fg-dim); font-size: 10.5px; text-transform: none; letter-spacing: 0; }
+.v2-attention-row[class*="status-recent"]      .v2-attention-indicator { background: var(--fg-dim); opacity: 0.6; }
 
 /* The Attention row reuses `.v2-channel-sidebar-item` for padding
    + hover, but we don't want the edit-pencil button to render here

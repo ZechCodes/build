@@ -25,6 +25,10 @@ export class ChannelPanelView {
     // Per-device transient state: which device group is showing its
     // inline "new session" form right now.
     this._newSessionForDevice = null;
+    // Re-render tick — keeps the Attention section's "recent" grace
+    // window accurate and lets relative timestamps (e.g., "3m")
+    // advance without a user interaction.
+    this._attentionTick = null;
   }
 
   activate() {
@@ -44,6 +48,9 @@ export class ChannelPanelView {
     this.root.addEventListener('click', this._onClick);
     this.root.addEventListener('keydown', this._onKeydown);
     this.root.addEventListener('submit', this._onSubmit);
+    // 60s is plenty — the grace window is an hour and the relative
+    // timestamps in the recent-attention rows advance in minutes.
+    this._attentionTick = setInterval(() => this.render(), 60 * 1000);
   }
 
   deactivate() {
@@ -54,6 +61,7 @@ export class ChannelPanelView {
       this.root.removeEventListener('keydown', this._onKeydown);
       this.root.removeEventListener('submit', this._onSubmit);
     }
+    if (this._attentionTick) { clearInterval(this._attentionTick); this._attentionTick = null; }
     this.root = null;
   }
 
@@ -183,13 +191,17 @@ function deviceStatus(device) {
   return 'online';
 }
 
+const ATTENTION_RECENT_WINDOW_MS = 60 * 60 * 1000;  // 1 hour
+
 /**
  * Walk every known channel, and return those that either:
  *   - have their agent actively processing (running), or
- *   - have unread messages / a pending interaction (waiting).
+ *   - have unread messages / a pending interaction (waiting), or
+ *   - finished running within the last hour (recent grace window).
  * Sorted so the loudest signal floats to the top.
  */
 function buildAttentionList() {
+  const now = Date.now();
   const items = [];
   for (const ch of channelsStore.list()) {
     const pres = presenceStore.get(ch.id);
@@ -197,33 +209,48 @@ function buildAttentionList() {
     const running = !!pres.agentActive;
     const waitingInteraction = !!unread.hasInteraction;
     const waitingUnread = (unread.count || 0) > 0;
-    if (!running && !waitingInteraction && !waitingUnread) continue;
-    items.push({ ch, running, waitingInteraction, waitingUnread, count: unread.count || 0 });
+    const recent = !running
+                && !waitingInteraction
+                && !waitingUnread
+                && pres.lastActiveAt > 0
+                && (now - pres.lastActiveAt) < ATTENTION_RECENT_WINDOW_MS;
+    if (!running && !waitingInteraction && !waitingUnread && !recent) continue;
+    items.push({
+      ch, running, waitingInteraction, waitingUnread, recent,
+      count: unread.count || 0,
+      lastActiveAt: pres.lastActiveAt || 0,
+    });
   }
   items.sort((a, b) => {
-    // Interaction > unread > running. Within the same category, fall
-    // back to channel name for stability.
+    // Interaction > unread > running > recent. Within the same
+    // category, fall back to channel name for stability.
     const score = (x) =>
-      (x.waitingInteraction ? 4 : 0) +
-      (x.waitingUnread      ? 2 : 0) +
-      (x.running            ? 1 : 0);
+      (x.waitingInteraction ? 8 : 0) +
+      (x.waitingUnread      ? 4 : 0) +
+      (x.running            ? 2 : 0) +
+      (x.recent             ? 1 : 0);
     const d = score(b) - score(a);
     if (d) return d;
+    // Within "recent" specifically, sort most-recent-first.
+    if (a.recent && b.recent) return b.lastActiveAt - a.lastActiveAt;
     return (a.ch.name || '').localeCompare(b.ch.name || '');
   });
   return items;
 }
 
 function renderAttentionRow(item, activeId) {
-  const { ch, running, waitingInteraction, waitingUnread, count } = item;
+  const { ch, running, waitingInteraction, waitingUnread, recent, count, lastActiveAt } = item;
   const isActive = ch.id === activeId;
   const name = ch.name || (ch.id || '').slice(0, 8);
   const status = waitingInteraction ? 'interaction'
                : waitingUnread      ? 'unread'
-               : 'running';
+               : running            ? 'running'
+               : 'recent';
   const statusLabel = waitingInteraction ? 'Needs you'
                     : waitingUnread      ? 'Unread'
-                    : 'Running';
+                    : running            ? 'Running'
+                    : recent             ? relativeMinutes(lastActiveAt)
+                    : '';
   const badge = count > 0
     ? `<span class="v2-ch-unread-badge">${count}</span>`
     : '';
@@ -243,6 +270,15 @@ function renderAttentionRow(item, activeId) {
       <span class="v2-attention-status">${statusLabel}</span>
     </div>
   `;
+}
+
+function relativeMinutes(stampMs) {
+  if (!stampMs) return '';
+  const diff = Math.max(0, Date.now() - stampMs);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m === 1) return '1m';
+  return `${m}m`;
 }
 
 function renderChannel(ch, activeId) {

@@ -118,8 +118,8 @@ export class FilesView {
   _buildShell() {
     // Populate the two pre-built panels in the layout.
     const treePanel = document.getElementById('v2-files-tree-panel');
-    const contentPanel = document.getElementById('v2-files-content-panel');
-    if (!treePanel || !contentPanel) return;
+    const contentInner = document.getElementById('v2-files-content-inner');
+    if (!treePanel || !contentInner) return;
     treePanel.innerHTML = `
       <header class="v2-files-tree-tabs">
         <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">
@@ -128,18 +128,14 @@ export class FilesView {
         <button class="v2-files-tree-tab" data-tree-tab="all" type="button">All</button>
       </header>
       <div class="v2-files-tree-body" data-slot="tree"></div>
-      <footer class="v2-files-review">
-        <button class="v2-files-review-btn" type="button" data-review="view-pr">View PR</button>
-        <button class="v2-files-review-btn primary" type="button" data-review="approve-all">Approve all</button>
-      </footer>
     `;
-    contentPanel.innerHTML = `
+    contentInner.innerHTML = `
       <header class="v2-files-mode-bar" data-slot="mode"></header>
       <div class="v2-files-viewer-body" data-slot="viewer"></div>
     `;
     this.treeEl = treePanel.querySelector('[data-slot="tree"]');
-    this.viewerEl = contentPanel.querySelector('[data-slot="viewer"]');
-    this.modeBarEl = contentPanel.querySelector('[data-slot="mode"]');
+    this.viewerEl = contentInner.querySelector('[data-slot="viewer"]');
+    this.modeBarEl = contentInner.querySelector('[data-slot="mode"]');
 
     this.root.addEventListener('click', this._onClick);
   }
@@ -166,6 +162,18 @@ export class FilesView {
       if (!nonEmpty.length) {
         this.treeEl.innerHTML = '<div class="v2-files-empty">No changes.</div>';
         return;
+      }
+      // Auto-select the first changed file when nothing is selected yet
+      // (e.g. the user just landed on a channel and the first change
+      // just arrived). Keeps their selection sticky on subsequent
+      // tree refreshes.
+      if (!this.channel.viewState.filesPath) {
+        const firstEntry = nonEmpty[0].entries.find(Boolean);
+        if (firstEntry?.path) {
+          // Defer so the tree finishes rendering before _selectFile's
+          // own re-render runs.
+          queueMicrotask(() => this._selectFile(firstEntry.path, true));
+        }
       }
       const repoParts = nonEmpty.map(repo => {
         const activePath = this.channel.viewState.filesPath;
@@ -274,16 +282,23 @@ export class FilesView {
       this.modeBarEl.hidden = true;
     } else {
       this.modeBarEl.hidden = false;
+      const wrapActive = this.channel.viewState.filesLineWrap;
       this.modeBarEl.innerHTML = `
         <div class="v2-files-mode-tabs">
           ${['source', 'diff', 'preview'].map(m => {
             const disabled = m === 'preview';
             return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''}>${MODE_LABELS[m]}</button>`;
           }).join('')}
-          <label class="v2-files-wrap">
-            <input type="checkbox" data-toggle="wrap" ${this.channel.viewState.filesLineWrap ? 'checked' : ''}>
-            wrap
-          </label>
+          <button class="v2-files-mode-tab v2-files-wrap-btn ${wrapActive ? 'active' : ''}"
+                  type="button"
+                  data-toggle="wrap"
+                  aria-pressed="${wrapActive ? 'true' : 'false'}"
+                  title="Toggle line wrapping">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/>
+            </svg>
+            Wrap
+          </button>
         </div>
       `;
     }
@@ -419,16 +434,11 @@ export class FilesView {
       this._renderViewer();
       return;
     }
-    const wrapToggle = e.target.closest('[data-toggle="wrap"]');
-    if (wrapToggle) {
-      this.channel.viewState.filesLineWrap = wrapToggle.checked;
+    const wrapBtn = e.target.closest('[data-toggle="wrap"]');
+    if (wrapBtn) {
+      const next = !this.channel.viewState.filesLineWrap;
+      this.channel.viewState.filesLineWrap = next;
       this._renderViewer();
-      return;
-    }
-    const reviewBtn = e.target.closest('[data-review]');
-    if (reviewBtn) {
-      // v1 parity: no backend for review flow yet; toast stub.
-      showToast('Review flow not wired up yet');
       return;
     }
   };

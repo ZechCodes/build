@@ -47,18 +47,20 @@ export function buildLayout(root) {
 
       <!-- ===== MAIN VIEWER (always Files) ===== -->
       <main class="v2-viewer" id="v2-viewer">
-        <header class="v2-path-bar" id="v2-path-bar">
-          <button class="v2-path-bar-btn v2-path-bar-menu" id="v2-path-bar-menu" type="button" title="Open menu" aria-label="Open menu">
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </button>
-          <button class="v2-path-bar-btn v2-path-bar-tree" id="v2-path-bar-tree" type="button" title="Toggle file tree" aria-label="Toggle file tree">
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3h5l2 2h5v8H2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-          </button>
-          <span class="v2-path-text empty" id="v2-path-text">No file selected</span>
-        </header>
         <div class="v2-files-main" id="v2-viewer-main">
           <aside class="v2-files-tree-panel" id="v2-files-tree-panel"></aside>
-          <section class="v2-files-content-panel" id="v2-files-content-panel"></section>
+          <section class="v2-files-content-panel" id="v2-files-content-panel">
+            <header class="v2-path-bar" id="v2-path-bar">
+              <button class="v2-path-bar-btn v2-path-bar-menu" id="v2-path-bar-menu" type="button" title="Open menu" aria-label="Open menu">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
+              <button class="v2-path-bar-btn v2-path-bar-tree" id="v2-path-bar-tree" type="button" title="Toggle file tree" aria-label="Toggle file tree">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3h5l2 2h5v8H2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+              </button>
+              <span class="v2-path-text empty" id="v2-path-text">No file selected</span>
+            </header>
+            <div class="v2-files-content-inner" id="v2-files-content-inner"></div>
+          </section>
         </div>
       </main>
 

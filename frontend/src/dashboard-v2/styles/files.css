@@ -107,35 +107,6 @@
 .v2-files-empty  { color: var(--fg-muted); font-size: 12px; padding: 12px; }
 .v2-files-trunc  { color: var(--fg-dim); font-size: 11px; padding: 3px 0; }
 
-/* Review footer (View PR + Approve all) at the bottom of the tree panel */
-
-.v2-files-review {
-  display: flex;
-  gap: 6px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-elev);
-}
-.v2-files-review-btn {
-  flex: 1;
-  padding: 5px 10px;
-  font-size: 11.5px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-family: inherit;
-}
-.v2-files-review-btn:hover { color: var(--fg); background: var(--bg-hover); }
-.v2-files-review-btn.primary {
-  background: #4ea67a;
-  color: #0b0d10;
-  border-color: #4ea67a;
-  font-weight: 600;
-}
-.v2-files-review-btn.primary:hover { background: #5db585; }
-
 /* Viewer */
 
 .v2-files-mode-bar {
@@ -173,13 +144,20 @@
 .v2-files-mode-tab.active { color: var(--fg); background: var(--bg-elev-2); border-color: var(--accent); }
 .v2-files-mode-tab[disabled] { cursor: default; opacity: 0.35; }
 
-.v2-files-wrap {
+/* Wrap toggle — styled as a mode-tab-sibling pill with an icon so
+   it reads as part of the same control row instead of a bare label
+   + checkbox. `margin-left: auto` pushes it to the right edge. */
+.v2-files-wrap-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--fg-muted);
-  user-select: none;
+  margin-left: auto;
+}
+.v2-files-wrap-btn svg { width: 12px; height: 12px; }
+.v2-files-wrap-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .v2-files-viewer-body {
@@ -500,17 +478,3 @@
   max-height: 70vh;
 }
 
-/* Review flow stubs (Approve all / View PR) */
-
-.v2-files-review { display: inline-flex; gap: 4px; margin-left: auto; }
-.v2-files-review-btn {
-  padding: 3px 10px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font-family: inherit;
-}
-.v2-files-review-btn:hover { color: var(--fg); background: var(--bg-hover); }

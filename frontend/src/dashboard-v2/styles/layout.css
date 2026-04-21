@@ -37,8 +37,21 @@
   font-size: 12px;
   color: var(--fg);
 }
-.v2-path-text { font-family: var(--font-mono); font-size: 12px; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.v2-path-text.empty { color: var(--fg-muted); font-family: var(--font); }
+.v2-path-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  /* Truncate on the LEFT: filename at the end of the path is the
+     meaningful bit. See the same pattern on .v2-embed-image-path. */
+  direction: rtl;
+  text-align: left;
+}
+.v2-path-text.empty { color: var(--fg-muted); font-family: var(--font); direction: ltr; }
 
 /* Path-bar buttons (hamburger + tree toggle) — mobile only. */
 .v2-path-bar-btn {

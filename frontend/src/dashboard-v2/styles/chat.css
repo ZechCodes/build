@@ -530,6 +530,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Truncate on the LEFT so the filename (at the end of the path)
+     stays visible when the container is narrow. The RTL direction
+     flips where `text-overflow: ellipsis` cuts; the path content is
+     LTR text (slashes + ASCII letters), so the characters render in
+     the correct visual order inside the RTL box. */
+  direction: rtl;
+  text-align: left;
 }
 /* Scrolling frame around the image. Tall screenshots get clipped at
    max-height (overflow-y hidden); wide ones scroll horizontally

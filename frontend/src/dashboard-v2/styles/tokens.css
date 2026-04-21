@@ -31,9 +31,11 @@
 
   --msg-user-bg: rgba(111, 163, 255, 0.08);
   --msg-agent-bg: transparent;
-  --tool-read: #4e9aaa;
-  --tool-edit: #ffb347;
-  --tool-write: #ff8c5a;
-  --tool-bash: #a97bff;
-  --tool-reasoning: var(--fg-dim);
+  /* Activity tag palette — terminal/ANSI-inspired. Tags render as
+     outline boxes (transparent bg, 1px border, text matches border). */
+  --tool-read: #8be9fd;       /* cyan   — inspection */
+  --tool-edit: #f1fa8c;       /* yellow — modify */
+  --tool-write: #50fa7b;      /* green  — create */
+  --tool-bash: #ff79c6;       /* pink   — execute */
+  --tool-reasoning: #bd93f9;  /* purple — think */
 }

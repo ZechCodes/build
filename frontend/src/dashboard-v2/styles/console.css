@@ -47,20 +47,29 @@
 
 .v2-ce-tag {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  font-size: 10.5px;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: 3px;
-  color: #0b0d10;
-  background: var(--fg-muted);
+  letter-spacing: 0.06em;
+  line-height: 16px;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--fg-dim);
 }
-.v2-ce-tag.read      { background: var(--tool-read); }
-.v2-ce-tag.edit      { background: var(--tool-edit); }
-.v2-ce-tag.write     { background: var(--tool-write); }
-.v2-ce-tag.bash      { background: var(--tool-bash); color: #fff; }
-.v2-ce-tag.reasoning { background: var(--tool-reasoning); color: #fff; text-transform: none; font-weight: 500; }
+.v2-ce-tag.read      { color: var(--tool-read);      border-color: var(--tool-read); }
+.v2-ce-tag.edit      { color: var(--tool-edit);      border-color: var(--tool-edit); }
+.v2-ce-tag.write     { color: var(--tool-write);     border-color: var(--tool-write); }
+.v2-ce-tag.bash      { color: var(--tool-bash);      border-color: var(--tool-bash); }
+.v2-ce-tag.reasoning {
+  color: var(--tool-reasoning);
+  border-color: var(--tool-reasoning);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
 
 .v2-ce-desc {
   flex: 1;

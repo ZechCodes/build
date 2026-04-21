@@ -236,8 +236,10 @@
   /* Path-bar tightens up on phones. */
   .v2-path-bar { padding: 6px 10px; gap: 4px; }
 
-  /* Files layout: single-column on mobile. Tree hidden by default and
-     slides in from the left when the user taps the tree chevron. */
+  /* Files layout: single-column on mobile. The tree panel is the
+     DEFAULT view so the user sees changes as the agent makes them;
+     tapping a file (or the path-bar chevron) slides the tree off to
+     reveal the content panel behind it. */
   .v2-files-main {
     display: block;
     position: relative;
@@ -247,15 +249,14 @@
     top: 0;
     left: 0;
     bottom: 0;
-    width: 82vw;
-    max-width: 320px;
-    transform: translateX(-100%);
+    width: 100%;
+    transform: translateX(0);
     transition: transform 160ms ease;
     z-index: 5;
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
   }
-  .v2-files-main.mobile-tree-open .v2-files-tree-panel {
-    transform: translateX(0);
+  .v2-files-main.mobile-tree-closed .v2-files-tree-panel {
+    transform: translateX(-100%);
   }
   .v2-files-content-panel { width: 100%; }
 

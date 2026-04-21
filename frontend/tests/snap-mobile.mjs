@@ -25,17 +25,19 @@ await p.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
 await p.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 const chId = await p.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
 
-// Activate a channel so the viewer has content.
-await p.tap('#v2-path-bar-menu');
-await p.waitForTimeout(200);
-await p.tap(`.v2-channel-sidebar-item[data-channel-id="${chId}"]`);
+// Activate a channel so the viewer has content. Open sidebar via
+// class toggle (no tree-tabs menu exists yet before FilesView mounts).
+await p.evaluate(() => document.querySelector('.v2-app')?.classList.add('sidebar-open'));
+await p.waitForTimeout(150);
+await p.locator(`.v2-channel-sidebar-item[data-channel-id="${chId}"]`).click({ force: true });
+await p.evaluate(() => document.querySelector('.v2-app')?.classList.remove('sidebar-open'));
 await p.waitForTimeout(400);
 
 await p.screenshot({ path: 'mobile-initial.png' });
 console.log('wrote mobile-initial.png');
 
 // Drawer open
-await p.tap('#v2-path-bar-menu');
+await p.tap('#v2-tree-tabs-menu');
 await p.waitForTimeout(300);
 await p.screenshot({ path: 'mobile-drawer-open.png' });
 console.log('wrote mobile-drawer-open.png');

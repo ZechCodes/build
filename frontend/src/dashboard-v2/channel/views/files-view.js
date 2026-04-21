@@ -122,6 +122,13 @@ export class FilesView {
     if (!treePanel || !contentInner) return;
     treePanel.innerHTML = `
       <header class="v2-files-tree-tabs">
+        <button class="v2-path-bar-btn v2-path-bar-menu v2-tree-tabs-menu"
+                id="v2-tree-tabs-menu"
+                type="button"
+                title="Open menu"
+                aria-label="Open menu">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
         <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">
           Modified <span class="v2-files-tree-tab-count"></span>
         </button>

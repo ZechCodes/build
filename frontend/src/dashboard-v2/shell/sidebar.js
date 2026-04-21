@@ -43,28 +43,28 @@ export class SidebarSectionsView {
   }
 
   _onClick(e) {
-    // Mobile drawer open/close.
-    if (e.target.closest('#v2-path-bar-menu')) { setDrawerOpen(true); return; }
+    // Mobile drawer open/close. Hamburger lives in two places: the
+    // path bar (content view) and the tree-tabs header (tree view),
+    // so the user can reach it in either mobile panel state.
+    if (e.target.closest('#v2-path-bar-menu')
+        || e.target.closest('#v2-tree-tabs-menu')) {
+      setDrawerOpen(true);
+      return;
+    }
     if (e.target.closest('#v2-sidebar-close') || e.target.closest('#v2-sidebar-backdrop')) {
       setDrawerOpen(false); return;
     }
-    // Mobile file-tree drawer toggle.
+    // Mobile file-tree drawer toggle. The tree is open by default on
+    // mobile (users should see changes as the agent works); the
+    // chevron slides it off to reveal the content panel behind.
     if (e.target.closest('#v2-path-bar-tree')) {
-      document.getElementById('v2-viewer-main')?.classList.toggle('mobile-tree-open');
+      document.getElementById('v2-viewer-main')?.classList.toggle('mobile-tree-closed');
       return;
     }
-    // Tapping the tree panel's backdrop area on mobile closes it — rely
-    // on the tap happening on .v2-files-content-panel while the tree is
-    // shown above it.
-    if (isMobile()
-        && document.getElementById('v2-viewer-main')?.classList.contains('mobile-tree-open')
-        && e.target.closest('.v2-files-content-panel')) {
-      document.getElementById('v2-viewer-main')?.classList.remove('mobile-tree-open');
-      return;
-    }
-    // Auto-collapse the tree drawer on file select.
+    // Tapping a file slides the tree off so the content panel takes
+    // over. User re-opens the tree via the chevron.
     if (isMobile() && e.target.closest('[data-file-path]')) {
-      document.getElementById('v2-viewer-main')?.classList.remove('mobile-tree-open');
+      document.getElementById('v2-viewer-main')?.classList.add('mobile-tree-closed');
     }
     // Channel selection while drawer is open on mobile → auto-close.
     // (Don't close on section-header clicks.)

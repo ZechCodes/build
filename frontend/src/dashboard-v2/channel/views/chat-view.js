@@ -3,6 +3,7 @@
 // See planning/dashboard-v2/05-views.md § ChatView.
 
 import { bus } from '../../core/bus.js';
+import { log } from '../../core/log.js';
 import { messagesStore } from '../../domain/messages-store.js';
 import { presenceStore } from '../../domain/presence-store.js';
 import { channelsStore } from '../../domain/channels-store.js';
@@ -13,6 +14,9 @@ import { renderMarkdown } from '../../util/markdown.js';
 import { agentShortName } from '../../util/tools.js';
 import { uploadFile } from '../../transport/index.js';
 import { showToast } from '../../util/toast.js';
+import { e2eePool } from '../../transport/e2ee-pool.js';
+
+const ilog = log('interaction');
 
 const CONFIRM_TIMEOUT_MS = 3000;
 
@@ -360,8 +364,27 @@ export class ChatView {
   // ----- Interaction helpers -----
 
   _sendInteraction(card, selectedOption, freeformResponse, selectedOptions) {
-    const interactionId = card.getAttribute('data-interaction-id');
-    if (!interactionId) return;
+    const interactionId = card?.getAttribute('data-interaction-id');
+    if (!interactionId) {
+      ilog.error('no interaction id on card', card);
+      showToast('Could not submit — interaction id missing');
+      return;
+    }
+    // Pre-flight: make sure there's a connected transport for this
+    // channel. If the device is offline, the bus.emit would silently
+    // no-op in the intent dispatcher and the optimistic UI would lie.
+    const conn = e2eePool.forChannel(this.channel.id);
+    if (!conn || !conn.connected) {
+      ilog.warn('transport not connected; aborting interaction send', {
+        interactionId, selectedOption, hasConn: !!conn,
+      });
+      showToast('Device disconnected — reconnect to respond');
+      return;
+    }
+    ilog.info('sending interaction response', {
+      interactionId, selectedOption, hasFreeform: !!freeformResponse,
+      selectedOptions: selectedOptions?.length || 0,
+    });
     bus.emit('intent.interaction_response', {
       channelId: this.channel.id,
       interactionId,
@@ -371,9 +394,6 @@ export class ChatView {
     });
     // Mirror the choice into the store so the next re-render shows
     // the chosen option as `.selected` + the card as `.resolved`.
-    // The store notify triggers chat-view's subscribe callback →
-    // full chat re-render. Server echo later overwrites these same
-    // fields idempotently.
     messagesStore.patchInteractionMeta(this.channel.id, interactionId, {
       resolved_at: new Date().toISOString(),
       selected_option: selectedOption || null,

@@ -65,10 +65,20 @@ export class ChatView {
       this.toolbarEl.removeEventListener('click', this._onClick);
       this.toolbarEl.innerHTML = '';
     }
+    if (this.overlayEl) {
+      this.overlayEl.removeEventListener('dragenter', this._onDragEnter);
+      this.overlayEl.removeEventListener('dragover', this._onDragOver);
+      this.overlayEl.removeEventListener('dragleave', this._onDragLeave);
+      this.overlayEl.removeEventListener('drop', this._onDrop);
+      this.overlayEl.classList.remove('v2-chat-drag-active');
+    }
+    if (this._dropzoneEl) { this._dropzoneEl.remove(); this._dropzoneEl = null; }
+    this._dragDepth = 0;
     this.root = null;
     this.messagesEl = null;
     this.composerInput = null;
     this.toolbarEl = null;
+    this.overlayEl = null;
   }
 
   _buildShell() {
@@ -92,23 +102,38 @@ export class ChatView {
     this.stagingEl = this.root.querySelector('[data-slot="staging"]');
     this.fileInput = this.root.querySelector('.v2-chat-file-input');
     this.toolbarEl = document.getElementById('v2-chat-overlay-toolbar');
+    this.overlayEl = document.getElementById('v2-chat-overlay');
 
     this.composerInput.value = this.channel.viewState?.draftText || '';
     this._autosizeInput();
     this._renderToolbar();
     this._renderStaging();
 
+    // Add a drop-zone overlay inside the overlay container.
+    if (this.overlayEl && !this.overlayEl.querySelector('.v2-chat-dropzone')) {
+      const dz = document.createElement('div');
+      dz.className = 'v2-chat-dropzone';
+      dz.innerHTML = '<span>Drop files to attach</span>';
+      this.overlayEl.appendChild(dz);
+      this._dropzoneEl = dz;
+    }
+
     this.root.addEventListener('click', this._onClick);
     if (this.toolbarEl) this.toolbarEl.addEventListener('click', this._onClick);
     this.composerInput.addEventListener('keydown', this._onKeydown);
     this.composerInput.addEventListener('input', this._autosizeInput);
+    this.composerInput.addEventListener('paste', this._onPaste);
     this.root.querySelector('.v2-chat-new-bubble').addEventListener('click', () => this._scrollToBottom(true));
     this.messagesEl.addEventListener('scroll', this._onScroll);
     this.fileInput.addEventListener('change', this._onFileSelect);
 
-    this.messagesEl.addEventListener('dragover', (e) => { e.preventDefault(); this.messagesEl.classList.add('dragover'); });
-    this.messagesEl.addEventListener('dragleave', () => this.messagesEl.classList.remove('dragover'));
-    this.messagesEl.addEventListener('drop', this._onDrop);
+    // Drag-and-drop covers the entire overlay so users can drop anywhere.
+    if (this.overlayEl) {
+      this.overlayEl.addEventListener('dragenter', this._onDragEnter);
+      this.overlayEl.addEventListener('dragover', this._onDragOver);
+      this.overlayEl.addEventListener('dragleave', this._onDragLeave);
+      this.overlayEl.addEventListener('drop', this._onDrop);
+    }
   }
 
   _renderHeader() {
@@ -567,11 +592,61 @@ export class ChatView {
     this._addPending(files);
   };
 
-  _onDrop = (e) => {
+  _onDragEnter = (e) => {
+    if (!e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
     e.preventDefault();
-    this.messagesEl?.classList.remove('dragover');
-    const files = [...(e.dataTransfer?.files || [])];
+    this._dragDepth = (this._dragDepth || 0) + 1;
+    this.overlayEl?.classList.add('v2-chat-drag-active');
+  };
+
+  _onDragOver = (e) => {
+    if (!e.dataTransfer || ![...(e.dataTransfer.types || [])].includes('Files')) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+
+  _onDragLeave = (e) => {
+    // dragenter/leave fire per child element; track depth so flicker is
+    // eliminated.
+    this._dragDepth = Math.max(0, (this._dragDepth || 0) - 1);
+    if (this._dragDepth === 0) this.overlayEl?.classList.remove('v2-chat-drag-active');
+  };
+
+  _onDrop = (e) => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    this._dragDepth = 0;
+    this.overlayEl?.classList.remove('v2-chat-drag-active');
+    const files = [...(e.dataTransfer.files || [])];
     if (files.length) this._addPending(files);
+  };
+
+  _onPaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const it of items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (!f) continue;
+        // Clipboard-pasted images usually have name === "image.png" or
+        // similar. Keep the given name; if missing, synthesize one.
+        if (!f.name) {
+          const ext = (f.type.split('/')[1] || 'bin');
+          try {
+            const renamed = new File([f], `pasted-${Date.now()}.${ext}`, { type: f.type });
+            files.push(renamed);
+            continue;
+          } catch (_) { /* fall through */ }
+        }
+        files.push(f);
+      }
+    }
+    if (!files.length) return;
+    // Only swallow the paste event if we actually grabbed file(s);
+    // otherwise let text paste proceed normally.
+    e.preventDefault();
+    this._addPending(files);
   };
 
   _addPending(files) {

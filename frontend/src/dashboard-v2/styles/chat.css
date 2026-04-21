@@ -458,6 +458,22 @@
 }
 .v2-staging-remove:hover { color: var(--fg); }
 
-/* Drag-drop feedback on the message list */
+/* Drag-drop drop zone — covers the entire chat overlay when a file is
+   dragged in. */
 
-.v2-chat-messages.dragover { outline: 2px dashed var(--accent); outline-offset: -8px; }
+.v2-chat-dropzone {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+.v2-chat-overlay.v2-chat-drag-active .v2-chat-dropzone { display: flex; }

@@ -55,6 +55,13 @@
 }
 .v2-path-text.empty { color: var(--fg-muted); font-family: var(--font); direction: ltr; }
 
+/* Hide the path bar on desktop when nothing is selected — the placeholder
+   in the viewer already signals the empty state. On mobile we keep the
+   bar so the hamburger + tree chevron stay reachable. */
+@media (min-width: 769px) {
+  #v2-path-bar:has(.v2-path-text.empty) { display: none; }
+}
+
 /* Path-bar buttons (hamburger + tree toggle) — mobile only. */
 .v2-path-bar-btn {
   display: none;

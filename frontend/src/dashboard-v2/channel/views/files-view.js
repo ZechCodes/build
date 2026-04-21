@@ -160,7 +160,16 @@ export class FilesView {
       const repos = filesStore.changesFor(this.channel.id);
       const nonEmpty = (repos || []).filter(r => (r.entries || []).length);
       if (!nonEmpty.length) {
-        this.treeEl.innerHTML = '<div class="v2-files-empty">No changes.</div>';
+        this.treeEl.innerHTML = `
+          <div class="v2-files-placeholder v2-files-placeholder-compact">
+            <svg class="v2-files-placeholder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 3v18M18 3v18"/>
+              <path d="M6 9h12M6 15h12"/>
+            </svg>
+            <div class="v2-files-placeholder-title">No changes yet</div>
+            <div class="v2-files-placeholder-body">Edits the agent makes will appear here.</div>
+          </div>
+        `;
         return;
       }
       // Auto-select the first changed file when nothing is selected yet
@@ -311,7 +320,17 @@ export class FilesView {
     }
 
     if (!path) {
-      this.viewerEl.innerHTML = '<div class="v2-files-empty">Select a file to view changes</div>';
+      this.viewerEl.innerHTML = `
+        <div class="v2-files-placeholder">
+          <svg class="v2-files-placeholder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3h8l4 4v14H6z"/>
+            <path d="M14 3v4h4"/>
+            <path d="M9 13h6M9 17h4"/>
+          </svg>
+          <div class="v2-files-placeholder-title">No file selected</div>
+          <div class="v2-files-placeholder-body">Pick a file from the tree on the left to view its source, diff, or preview.</div>
+        </div>
+      `;
       return;
     }
     if (mode === 'diff') {

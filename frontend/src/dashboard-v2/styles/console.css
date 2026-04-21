@@ -88,6 +88,11 @@
   flex-direction: column;
   gap: 6px;
 }
+/* Explicit override: `display: flex` above beats the user-agent
+   [hidden] { display: none } default, so we restate it at equal
+   specificity. Without this, collapsed entries still show their
+   detail panels — which is what the user reported. */
+.v2-ce-detail[hidden] { display: none; }
 
 .v2-ce-label {
   font-size: 10.5px;

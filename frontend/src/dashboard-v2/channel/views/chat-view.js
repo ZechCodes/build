@@ -92,6 +92,7 @@ export class ChatView {
     }
     if (this._dropzoneEl) { this._dropzoneEl.remove(); this._dropzoneEl = null; }
     if (this._initialScrollObs) { this._initialScrollObs.disconnect(); this._initialScrollObs = null; }
+    this._closeModelPicker();
     this._dragDepth = 0;
     this.root = null;
     this.messagesEl = null;
@@ -203,6 +204,20 @@ export class ChatView {
   }
 
   _appendMessage(msg, allMsgs) {
+    // Session dividers — client-side markers inserted by
+    // transport/session-markers.js on reset / compact.
+    if (msg.kind === 'session-divider') {
+      const div = document.createElement('div');
+      div.className = `v2-session-divider v2-session-divider-${escapeHtml(msg.divider_kind || 'event')}`;
+      div.dataset.msgId = msg.id || '';
+      div.innerHTML = `
+        <span class="v2-session-divider-line" aria-hidden="true"></span>
+        <span class="v2-session-divider-label">${escapeHtml(msg.content || '')}</span>
+        <span class="v2-session-divider-line" aria-hidden="true"></span>
+      `;
+      this.messagesEl.appendChild(div);
+      return;
+    }
     // Interaction cards use a dedicated renderer.
     if (msg.metadata) {
       let meta = null;
@@ -461,6 +476,11 @@ export class ChatView {
       presenceStore.setPlanMode(this.channel.id, !cur);
       return;
     }
+    // Model / effort picker toggle.
+    if (e.target.closest('[data-cmd="change-model"]')) {
+      this._toggleModelPicker();
+      return;
+    }
     // Compact / Reset — confirm pattern
     const confirmBtn = e.target.closest('[data-cmd-confirm]');
     if (confirmBtn) {
@@ -657,10 +677,10 @@ export class ChatView {
         <span class="v2-cmd-label" hidden>Clear</span>
       </button>
       <div class="v2-co-tool-spacer"></div>
-      <div class="v2-co-ctrl-pill" title="Model / effort">
+      <button class="v2-co-ctrl-pill" type="button" title="Change model or effort" data-cmd="change-model">
         <span class="v2-co-ctrl-part">${escapeHtml(model)}</span>
         ${effort ? `<span class="v2-co-ctrl-sep">·</span><span class="v2-co-ctrl-part">${escapeHtml(effort)}</span>` : ''}
-      </div>
+      </button>
       <button class="v2-co-stop" type="button" data-action="stop" title="Stop agent" ${agentActive ? '' : 'hidden'}>
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>
       </button>
@@ -668,6 +688,115 @@ export class ChatView {
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
       </button>
     `;
+  }
+
+  _toggleModelPicker() {
+    if (this._modelPicker) { this._closeModelPicker(); return; }
+    this._openModelPicker();
+  }
+
+  _openModelPicker() {
+    const ch = channelsStore.get(this.channel.id);
+    if (!ch) return;
+    const deviceId = channelsStore.deviceFor(this.channel.id);
+    const harnesses = presenceStore.getHarnesses(deviceId) || [];
+    const harness = harnesses.find(h => h.id === ch.harness) || harnesses[0] || null;
+    const models = harness?.models || [];
+    const effortLevels = harness?.effort_levels || ['low', 'medium', 'high'];
+    const curModel = ch.model || '';
+    const curEffort = ch.effort || '';
+
+    const picker = document.createElement('div');
+    picker.className = 'v2-model-picker';
+    const modelsHtml = models.length
+      ? models.map(m => `
+          <button class="v2-model-picker-row ${m.id === curModel ? 'active' : ''}"
+                  type="button" data-picker-model="${escapeHtml(m.id)}">
+            <span class="v2-model-picker-label">${escapeHtml(m.name || m.id)}</span>
+            ${m.provider ? `<span class="v2-model-picker-sub">${escapeHtml(m.provider)}</span>` : ''}
+          </button>
+        `).join('')
+      : '<div class="v2-model-picker-empty">No models available</div>';
+    const effortsHtml = effortLevels.length
+      ? effortLevels.map(e => `
+          <button class="v2-model-picker-row ${e === curEffort ? 'active' : ''}"
+                  type="button" data-picker-effort="${escapeHtml(e)}">
+            <span class="v2-model-picker-label">${escapeHtml(e)}</span>
+          </button>
+        `).join('')
+      : '';
+    picker.innerHTML = `
+      <div class="v2-model-picker-section">
+        <div class="v2-model-picker-header">Model</div>
+        ${modelsHtml}
+      </div>
+      ${effortsHtml ? `
+        <div class="v2-model-picker-section">
+          <div class="v2-model-picker-header">Effort</div>
+          ${effortsHtml}
+        </div>
+      ` : ''}
+    `;
+    document.body.appendChild(picker);
+    this._modelPicker = picker;
+
+    // Anchor above the chip.
+    const trigger = this.toolbarEl?.querySelector('[data-cmd="change-model"]');
+    if (trigger) {
+      const r = trigger.getBoundingClientRect();
+      const pickerRect = picker.getBoundingClientRect();
+      const top = Math.max(8, r.top - pickerRect.height - 6);
+      const right = Math.max(8, window.innerWidth - r.right);
+      picker.style.position = 'fixed';
+      picker.style.top = `${top}px`;
+      picker.style.right = `${right}px`;
+    }
+
+    picker.addEventListener('click', (e) => {
+      const mBtn = e.target.closest('[data-picker-model]');
+      if (mBtn) {
+        const modelId = mBtn.getAttribute('data-picker-model');
+        if (modelId && modelId !== curModel) {
+          bus.emit('intent.update_channel', {
+            channelId: this.channel.id,
+            patch: { model: modelId },
+          });
+        }
+        this._closeModelPicker();
+        return;
+      }
+      const eBtn = e.target.closest('[data-picker-effort]');
+      if (eBtn) {
+        const effort = eBtn.getAttribute('data-picker-effort');
+        if (effort && effort !== curEffort) {
+          bus.emit('intent.update_channel', {
+            channelId: this.channel.id,
+            patch: { effort },
+          });
+        }
+        this._closeModelPicker();
+      }
+    });
+
+    // Close on any click outside the picker or its trigger.
+    this._modelPickerOutside = (e) => {
+      if (e.target.closest('.v2-model-picker')) return;
+      if (e.target.closest('[data-cmd="change-model"]')) return;
+      this._closeModelPicker();
+    };
+    // Defer attach so the trigger's own click doesn't immediately close.
+    setTimeout(() => document.addEventListener('click', this._modelPickerOutside), 0);
+  }
+
+  _closeModelPicker() {
+    if (this._modelPicker) {
+      this._modelPicker.remove();
+      this._modelPicker = null;
+    }
+    if (this._modelPickerOutside) {
+      document.removeEventListener('click', this._modelPickerOutside);
+      this._modelPickerOutside = null;
+    }
   }
 
   _handleConfirm(btn) {

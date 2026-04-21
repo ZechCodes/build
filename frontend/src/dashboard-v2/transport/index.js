@@ -7,6 +7,7 @@ import { bindIntentDispatcher } from './intent-dispatcher.js';
 import { bindDeviceNotifications } from './device-notifications.js';
 import { bindAttentionHydrator } from './attention-hydrator.js';
 import { bindSelfHeal } from './self-heal.js';
+import { bindSessionMarkers } from './session-markers.js';
 import { fetchDevices } from './rest.js';
 import { e2eePool } from './e2ee-pool.js';
 
@@ -20,6 +21,7 @@ export async function initTransport() {
   bindDeviceNotifications();
   bindAttentionHydrator();
   bindSelfHeal();
+  bindSessionMarkers();
   bindIntentDispatcher();
   bindCoordinator();
   await fetchDevices();

@@ -121,11 +121,62 @@
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 999px;
-  cursor: default;
+  cursor: pointer;
   font-family: var(--font-mono);
 }
+.v2-co-ctrl-pill:hover { border-color: var(--fg-dim); color: var(--fg); }
 .v2-co-ctrl-part { color: var(--fg); }
 .v2-co-ctrl-sep { color: var(--fg-dim); }
+
+/* Model/effort picker popover — anchored above the ctrl pill via
+   inline top/right set by _openModelPicker. */
+.v2-model-picker {
+  position: fixed;
+  z-index: 60;
+  min-width: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.v2-model-picker-section { display: flex; flex-direction: column; gap: 2px; }
+.v2-model-picker-header {
+  padding: 4px 10px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  font-family: var(--font);
+}
+.v2-model-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.v2-model-picker-row:hover { background: var(--bg-hover); }
+.v2-model-picker-row.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.v2-model-picker-sub { color: var(--fg-dim); font-size: 11px; }
+.v2-model-picker-empty { padding: 8px 10px; color: var(--fg-muted); font-size: 11.5px; }
 
 .v2-co-stop, .v2-co-send {
   background: var(--accent);
@@ -235,6 +286,30 @@
 .v2-msg-status.failed    { color: #ef4444; }
 .v2-msg-status.failed::before  { content: '⚠ '; }
 
+/* Session divider — permanent marker left in history whenever the
+   user compacts or clears. Centered text flanked by horizontal
+   rules, same shape across both kinds. */
+.v2-session-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 4px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+.v2-session-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.v2-session-divider-label { padding: 0 6px; }
+/* Colour-code the two kinds gently. */
+.v2-session-divider-compact .v2-session-divider-label { color: var(--accent); }
+.v2-session-divider-reset   .v2-session-divider-label { color: var(--interaction); }
+
 .v2-msg-suggestions {
   margin-top: 6px;
   display: flex;
@@ -285,9 +360,9 @@
   color: var(--fg);
   cursor: pointer;
 }
-.v2-int-opt:hover { background: var(--bg-hover); }
+.v2-int-opt:not([disabled]):hover { background: var(--bg-hover); }
 .v2-int-opt.selected { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
-.v2-int-opt[disabled] { cursor: default; }
+.v2-int-opt[disabled] { cursor: default; pointer-events: none; }
 
 .v2-int-freeform { display: flex; gap: 6px; }
 .v2-int-freeform textarea {
@@ -345,11 +420,16 @@
   font-size: 13px;
   cursor: pointer;
 }
-.v2-plan-btn.approve:hover { background: rgba(78, 166, 122, 0.15); border-color: #4ea67a; }
-.v2-plan-btn.deny:hover    { background: rgba(230, 100, 100, 0.15); border-color: #d06262; }
+.v2-plan-btn.approve:not([disabled]):hover { background: rgba(78, 166, 122, 0.15); border-color: #4ea67a; }
+.v2-plan-btn.deny:not([disabled]):hover    { background: rgba(230, 100, 100, 0.15); border-color: #d06262; }
 .v2-plan-btn.approve.selected { background: #4ea67a; color: #0b0d10; border-color: #4ea67a; }
 .v2-plan-btn.deny.selected    { background: #d06262; color: #0b0d10; border-color: #d06262; }
-.v2-plan-btn[disabled] { cursor: default; }
+/* Resolved buttons: no pointer events so hover never fires; cursor
+   stays `default` in case someone forces hover styling elsewhere. */
+.v2-plan-btn[disabled] {
+  cursor: default;
+  pointer-events: none;
+}
 .v2-plan-note { color: var(--fg-dim); font-size: 12px; }
 
 /* New-messages bubble */

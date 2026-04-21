@@ -22,6 +22,11 @@ export class OverlayView {
     }));
     this.unsubs.push(channelsStore.subscribe(() => this._renderTitle()));
     this.root.addEventListener('click', this._onClick);
+    // Document-level outside-click handler: closes the overlay when
+    // it's open AND unpinned. Pinned stays modal-like. Attached once
+    // and guarded inside the handler so we don't have to flip
+    // listeners on every state change.
+    document.addEventListener('click', this._onDocClick);
     this._renderTitle();
   }
 
@@ -29,6 +34,7 @@ export class OverlayView {
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
     if (this.root) this.root.removeEventListener('click', this._onClick);
+    document.removeEventListener('click', this._onDocClick);
     this.root = null;
   }
 
@@ -64,5 +70,19 @@ export class OverlayView {
       uiStore.setOverlayOpen(false);
       return;
     }
+  };
+
+  _onDocClick = (e) => {
+    const ov = uiStore.getOverlay();
+    if (!ov.open || ov.pinned) return;
+    // Any click inside the overlay, on the rail toggle (which would
+    // re-open anyway), on the model picker popover, or on other
+    // transient popovers (complication menu, image lightbox) must
+    // NOT close.
+    if (e.target.closest(
+      '#v2-chat-overlay, #v2-rail-chat-toggle, .v2-model-picker, ' +
+      '.v2-comp-menu, .v2-lightbox'
+    )) return;
+    uiStore.setOverlayOpen(false);
   };
 }

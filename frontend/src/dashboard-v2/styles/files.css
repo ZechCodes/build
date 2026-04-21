@@ -5,8 +5,11 @@
 
 .v2-files-tree-tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 4px 8px;
+  min-height: 40px;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
 }
 .v2-files-tree-tab {

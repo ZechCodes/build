@@ -520,6 +520,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   cursor: zoom-in;
+  min-width: min(240px, 100%);
   max-width: 100%;
 }
 .v2-embed-image-path {
@@ -530,13 +531,23 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.v2-embed-image img {
-  max-width: 100%;
+/* Scrolling frame around the image. Tall screenshots get clipped at
+   max-height (overflow-y hidden); wide ones scroll horizontally
+   without pushing the chat bubble sideways. */
+.v2-embed-image-frame {
   max-height: 360px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   border-radius: var(--radius-sm);
-  object-fit: contain;
   background: repeating-conic-gradient(#1d2026 0 25%, #14181d 0 50%) 0 0 / 18px 18px;
+  scrollbar-width: thin;
+}
+.v2-embed-image-frame::-webkit-scrollbar { height: 6px; }
+.v2-embed-image-frame::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.v2-embed-image img {
   display: block;
+  border-radius: var(--radius-sm);
 }
 
 /* ========== Zoom lightbox ========== */

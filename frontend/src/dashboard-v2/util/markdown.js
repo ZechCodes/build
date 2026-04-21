@@ -144,10 +144,16 @@ import { highlightLine } from './syntax.js';
     // Strip only whitespace — the browser is tolerant of newlines in
     // data URIs but we keep the src compact anyway.
     var src = 'data:' + mime + ';base64,' + base64.replace(/\s+/g, '');
+    // The image sits inside a `.v2-embed-image-frame` wrapper so wide
+    // images scroll horizontally without pushing the chat itself
+    // sideways, and tall images get clipped at max-height rather than
+    // stretching the chat vertically.
     return (
       '<figure class="v2-embed-image" data-path="' + escapeHtml(path) + '" data-mime="' + escapeHtml(mime) + '">' +
         '<figcaption class="v2-embed-image-path">' + escapeHtml(path) + '</figcaption>' +
-        '<img alt="' + escapeHtml(path) + '" src="' + src + '">' +
+        '<div class="v2-embed-image-frame">' +
+          '<img alt="' + escapeHtml(path) + '" src="' + src + '">' +
+        '</div>' +
       '</figure>'
     );
   }

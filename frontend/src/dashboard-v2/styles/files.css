@@ -55,12 +55,30 @@
 
 .v2-files-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
-.v2-files-status-mod,
-.v2-files-status-m   { color: var(--interaction); font-weight: 700; width: 12px; text-align: center; }
-.v2-files-status-add,
-.v2-files-status-a   { color: #4ea67a; font-weight: 700; width: 12px; text-align: center; }
-.v2-files-status-del,
-.v2-files-status-d   { color: #d06262; font-weight: 700; width: 12px; text-align: center; }
+.v2-files-status {
+  font-weight: 700;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.v2-files-status-m { color: var(--interaction); }
+.v2-files-status-a { color: #4ea67a; }
+.v2-files-status-d { color: #d06262; }
+.v2-files-status-r { color: #6fa3ff; }
+.v2-files-status-untracked { color: var(--fg-muted); }
+
+.v2-files-stats {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.v2-files-add { color: #4ea67a; }
+.v2-files-del { color: #d06262; }
 
 .v2-files-empty  { color: var(--fg-muted); font-size: 12px; padding: 12px; }
 .v2-files-trunc  { color: var(--fg-dim); font-size: 11px; padding: 3px 0; }

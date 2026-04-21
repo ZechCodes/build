@@ -90,23 +90,36 @@ export class FilesView {
 
     if (tab === 'changes') {
       const repos = filesStore.changesFor(this.channel.id);
-      if (!repos?.length) {
+      const nonEmpty = (repos || []).filter(r => (r.entries || []).length);
+      if (!nonEmpty.length) {
         this.treeEl.innerHTML = '<div class="v2-files-empty">No changes.</div>';
         return;
       }
-      const parts = repos.map(repo => {
-        const rows = (repo.changes || []).map(c => `
-          <button class="v2-files-row ${this.channel.viewState.filesPath === c.path ? 'active' : ''}"
-                  type="button"
-                  data-file-path="${escapeHtml(c.path)}"
-                  data-has-diff="${c.has_diff ? '1' : '0'}">
-            <span class="v2-files-status-${escapeHtml(c.status || 'mod')}">${escapeHtml((c.status || 'm')[0].toUpperCase())}</span>
-            <span class="v2-files-name">${escapeHtml(c.path)}</span>
-          </button>
-        `).join('');
+      const parts = nonEmpty.map(repo => {
+        const rows = (repo.entries || []).map(c => {
+          const status = c.git_status || 'M';
+          const letter = status === '?' ? '?' : status[0].toUpperCase();
+          const cls = status === '?' ? 'untracked' : status.toLowerCase();
+          const ins = c.insertions || 0;
+          const del = c.deletions || 0;
+          return `
+            <button class="v2-files-row ${this.channel.viewState.filesPath === c.path ? 'active' : ''}"
+                    type="button"
+                    data-file-path="${escapeHtml(c.path)}"
+                    data-has-diff="1">
+              <span class="v2-files-status v2-files-status-${escapeHtml(cls)}">${escapeHtml(letter)}</span>
+              <span class="v2-files-name">${escapeHtml(c.path)}</span>
+              <span class="v2-files-stats">
+                ${ins ? `<span class="v2-files-add">+${ins}</span>` : ''}
+                ${del ? `<span class="v2-files-del">-${del}</span>` : ''}
+              </span>
+            </button>
+          `;
+        }).join('');
+        const label = repo.branch ? `${escapeHtml(repo.path || '.')} · ${escapeHtml(repo.branch)}` : escapeHtml(repo.path || '.');
         return `
           <div class="v2-files-repo">
-            <div class="v2-files-repo-path">${escapeHtml(repo.path || '.')}</div>
+            <div class="v2-files-repo-path">${label}</div>
             ${rows}
           </div>
         `;

@@ -82,6 +82,36 @@ test('messages/message/delivered/read translate correctly', () => {
   c.dispose();
 });
 
+test('agent_event state_update with read_message_ids fans out as message.read', () => {
+  const fake = new EventTarget();
+  bindE2EEDispatcher(fake, 'devR');
+  const c = capture(['agent.state_update', 'message.read']);
+
+  fire(fake, 'agent_event', {
+    channel_id: 'cr',
+    event_type: 'agent.state_update',
+    event: { read_message_ids: ['u1', 'u2'], plan_mode: false },
+  });
+
+  assert.equal(c.seen['agent.state_update'][0].channelId, 'cr');
+  assert.equal(c.seen['message.read'].length, 1);
+  assert.deepEqual(c.seen['message.read'][0].msgIds, ['u1', 'u2']);
+  c.dispose();
+});
+
+test('agent_event state_update without read_message_ids does not emit message.read', () => {
+  const fake = new EventTarget();
+  bindE2EEDispatcher(fake, 'devR2');
+  const c = capture(['message.read']);
+  fire(fake, 'agent_event', {
+    channel_id: 'cr2',
+    event_type: 'agent.state_update',
+    event: { plan_mode: true },
+  });
+  assert.equal(c.seen['message.read'].length, 0);
+  c.dispose();
+});
+
 test('agent_event chat.response fans to message.received + agent.active', () => {
   const fake = new EventTarget();
   bindE2EEDispatcher(fake, 'devD');

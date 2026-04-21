@@ -197,6 +197,14 @@ export function bindE2EEDispatcher(instance, deviceId) {
         if (event.plan_mode != null) {
           bus.emit('agent.plan_mode', { channelId: channel_id, planMode: event.plan_mode });
         }
+        // Read receipts from the agent ride along with state updates
+        // (read_unread MCP tool → BAP state_update with
+        // `read_message_ids`). Fan out as message.read so the sender
+        // UI's "Delivered" → "Read" flip happens in real time instead
+        // of only on reload.
+        if (Array.isArray(event.read_message_ids) && event.read_message_ids.length) {
+          bus.emit('message.read', { channelId: channel_id, msgIds: event.read_message_ids });
+        }
         break;
       case 'agent.file_changes':
         bus.emit('agent.file_changes', { channelId: channel_id, paths: event.paths ?? [] });

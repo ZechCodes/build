@@ -58,7 +58,9 @@ export class FilesView {
     if (!treePanel || !contentPanel) return;
     treePanel.innerHTML = `
       <header class="v2-files-tree-tabs">
-        <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">Modified</button>
+        <button class="v2-files-tree-tab" data-tree-tab="changes" type="button">
+          Modified <span class="v2-files-tree-tab-count"></span>
+        </button>
         <button class="v2-files-tree-tab" data-tree-tab="all" type="button">All</button>
       </header>
       <div class="v2-files-tree-body" data-slot="tree"></div>
@@ -87,6 +89,12 @@ export class FilesView {
     this.root.querySelectorAll('[data-tree-tab]').forEach(el => {
       el.classList.toggle('active', el.getAttribute('data-tree-tab') === tab);
     });
+
+    // Modified count badge on the tab.
+    const modCount = (filesStore.changesFor(this.channel.id) || [])
+      .reduce((n, r) => n + (r.entries?.length || 0), 0);
+    const modBadge = this.root.querySelector('[data-tree-tab="changes"] .v2-files-tree-tab-count');
+    if (modBadge) modBadge.textContent = modCount > 0 ? String(modCount) : '';
 
     if (tab === 'changes') {
       const repos = filesStore.changesFor(this.channel.id);
@@ -177,23 +185,27 @@ export class FilesView {
     const path = this.channel.viewState.filesPath;
     const mode = this.channel.viewState.filesView;
 
-    // Mode bar
-    const pathLabel = path ? escapeHtml(path) : '(no file selected)';
-    this.modeBarEl.innerHTML = `
-      <span class="v2-files-path">${pathLabel}</span>
-      <div class="v2-files-mode-tabs">
-        ${['source', 'diff', 'preview'].map(m => {
-          const disabled = m === 'preview';
-          return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''}>${MODE_LABELS[m]}</button>`;
-        }).join('')}
-        <label class="v2-files-wrap">
-          <input type="checkbox" data-toggle="wrap" ${this.channel.viewState.filesLineWrap ? 'checked' : ''}>
-          wrap
-        </label>
-      </div>
-    `;
+    // Mode bar only appears when a file is selected (v1 parity).
+    if (!path) {
+      this.modeBarEl.innerHTML = '';
+      this.modeBarEl.hidden = true;
+    } else {
+      this.modeBarEl.hidden = false;
+      this.modeBarEl.innerHTML = `
+        <div class="v2-files-mode-tabs">
+          ${['source', 'diff', 'preview'].map(m => {
+            const disabled = m === 'preview';
+            return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''}>${MODE_LABELS[m]}</button>`;
+          }).join('')}
+          <label class="v2-files-wrap">
+            <input type="checkbox" data-toggle="wrap" ${this.channel.viewState.filesLineWrap ? 'checked' : ''}>
+            wrap
+          </label>
+        </div>
+      `;
+    }
 
-    // Path bar at top of viewer (shared layout slot) also echoes the path.
+    // Path bar at top of viewer echoes the selected path.
     const pathText = document.getElementById('v2-path-text');
     if (pathText) {
       pathText.textContent = path || 'No file selected';

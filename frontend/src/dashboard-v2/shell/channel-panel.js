@@ -95,14 +95,20 @@ export class ChannelPanelView {
         .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       const status = deviceStatus(d);
       const showForm = this._newSessionForDevice === d.id;
+      // Disconnected devices render collapsed: chevron points right,
+      // channels + New-Session action are tucked away. A future click
+      // on the header can still reconnect the device.
+      const isOffline = status !== 'online';
+      const groupClasses = ['v2-device-group', isOffline ? 'collapsed' : ''].filter(Boolean).join(' ');
+      const headerClasses = ['v2-device-header', isOffline ? 'collapsed' : ''].filter(Boolean).join(' ');
       parts.push(`
-        <div class="v2-device-group" data-device-id="${escapeHtml(d.id)}">
-          <header class="v2-device-header" data-device-toggle="${escapeHtml(d.id)}" data-device-status="${status}">
+        <div class="${groupClasses}" data-device-id="${escapeHtml(d.id)}">
+          <header class="${headerClasses}" data-device-toggle="${escapeHtml(d.id)}" data-device-status="${status}">
             <svg class="v2-device-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span class="v2-device-group-status">${statusIcon(status)}</span>
             <span class="v2-device-name">${escapeHtml(d.name || d.id)}</span>
           </header>
-          ${status === 'offline' ? '' : `
+          ${isOffline ? '' : `
             <div class="v2-device-group-actions">
               <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New session">
                 <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -110,14 +116,14 @@ export class ChannelPanelView {
               </button>
             </div>
           `}
-          ${showForm ? `
+          ${showForm && !isOffline ? `
             <form class="v2-new-session-form" data-new-session-form="${escapeHtml(d.id)}">
               <input type="text" name="name" class="v2-new-session-input" placeholder="Session name…" autofocus autocomplete="off">
               <button type="submit" class="v2-new-session-go">Create</button>
               <button type="button" class="v2-new-session-cancel" data-new-session-cancel="${escapeHtml(d.id)}">Cancel</button>
             </form>
           ` : ''}
-          ${channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
+          ${!isOffline && channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
         </div>
       `);
     }

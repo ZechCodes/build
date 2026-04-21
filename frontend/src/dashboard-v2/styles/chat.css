@@ -28,7 +28,10 @@
 }
 .v2-chat-overlay.open { display: flex; }
 .v2-chat-overlay[data-mode="expanded"] {
-  width: calc(100vw - var(--sidebar-width) - 32px);
+  /* Cap the expanded width so long-form plan text is readable on
+     wide monitors. Still fills the available viewer width on
+     smaller desktops. */
+  width: min(calc(100vw - var(--sidebar-width) - 32px), 900px);
   right: 16px;
   height: calc(100vh - var(--rail-height) - 32px);
   bottom: calc(var(--rail-height) + 16px);

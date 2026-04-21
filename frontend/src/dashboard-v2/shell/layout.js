@@ -60,28 +60,20 @@ export function buildLayout(root) {
           <aside class="v2-files-tree-panel" id="v2-files-tree-panel"></aside>
           <section class="v2-files-content-panel" id="v2-files-content-panel"></section>
         </div>
-        <div class="v2-complications empty" id="v2-complications"></div>
       </main>
 
-      <!-- ===== BOTTOM RAIL (Terminal + Chat toggles, drag, body) ===== -->
+      <!-- ===== BOTTOM RAIL (Terminal + complications + Chat, drag, body) ===== -->
       <footer class="v2-rail" id="v2-rail">
         <div class="v2-rail-drag" id="v2-rail-drag" title="Drag to resize"></div>
         <div class="v2-rail-header" id="v2-rail-controls">
-          <div class="v2-rail-group v2-rail-group-left">
-            <button class="v2-rail-btn" id="v2-rail-terminal-toggle" data-rail-panel="terminal" type="button" title="Toggle terminal">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2 2-2 2M7.5 10.5H11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <span>Terminal</span>
-            </button>
-          </div>
-          <div class="v2-rail-group v2-rail-group-spacer"></div>
-          <div class="v2-rail-group v2-rail-group-right">
-            <span class="v2-rail-status" id="v2-rail-status">Connected</span>
-            <button class="v2-rail-btn" id="v2-rail-chat-toggle" type="button" title="Toggle chat">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3.5a1 1 0 011-1h10a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2.5V11.5a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-              <span>Chat</span>
-              <span class="v2-rail-unread" id="v2-rail-unread" hidden></span>
-            </button>
-          </div>
+          <button class="v2-rail-btn v2-rail-btn-icon" id="v2-rail-terminal-toggle" data-rail-panel="terminal" type="button" title="Toggle terminal" aria-label="Toggle terminal">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2 2-2 2M7.5 10.5H11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="v2-complications empty" id="v2-complications"></div>
+          <button class="v2-rail-btn v2-rail-btn-icon" id="v2-rail-chat-toggle" type="button" title="Toggle chat" aria-label="Toggle chat">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3.5a1 1 0 011-1h10a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 2.5V11.5a1 1 0 01-1-1v-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+            <span class="v2-rail-unread" id="v2-rail-unread" hidden></span>
+          </button>
         </div>
         <div class="v2-rail-body" id="v2-rail-body"></div>
       </footer>

@@ -20,18 +20,16 @@
 .v2-rail-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  gap: 6px;
+  padding: 0 6px;
   flex: 0 0 calc(var(--rail-height) - 3px);
   border-top: 1px solid var(--border-soft);
 }
 
-.v2-rail-group { display: inline-flex; align-items: center; gap: 6px; }
-.v2-rail-group-spacer { flex: 1; }
-
 .v2-rail-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 4px 10px;
   border: 1px solid transparent;
@@ -42,19 +40,26 @@
   font-size: 12px;
   cursor: pointer;
 }
-.v2-rail-btn svg { width: 12px; height: 12px; color: currentColor; }
+.v2-rail-btn svg { width: 14px; height: 14px; color: currentColor; }
 .v2-rail-btn:hover { color: var(--fg); background: var(--bg-hover); }
 .v2-rail-btn.active { color: var(--fg); background: var(--bg-active); border-color: var(--border); }
 
-.v2-rail-status {
-  color: var(--fg-dim);
-  font-size: 11px;
-  padding: 0 6px;
+/* Icon-only rail buttons (no text label, keeps the rail thin). */
+.v2-rail-btn-icon {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 4px;
+  width: 32px;
+  height: 28px;
 }
+.v2-rail-btn-icon svg { width: 16px; height: 16px; }
 
 .v2-rail-unread {
-  min-width: 16px;
-  padding: 0 5px;
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  padding: 0 4px;
   height: 14px;
   line-height: 14px;
   border-radius: 7px;
@@ -63,6 +68,7 @@
   font-size: 10px;
   font-weight: 700;
   text-align: center;
+  border: 1.5px solid var(--bg-elev);
 }
 .v2-rail-unread.has-interaction { background: var(--interaction); }
 

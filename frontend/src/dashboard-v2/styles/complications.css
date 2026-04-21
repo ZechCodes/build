@@ -1,23 +1,26 @@
 /* ComplicationsView (row above the tab bar). */
 
+/* Complication strip — lives inside the bottom rail, between the
+   terminal and chat buttons, scrolling horizontally on its own so
+   the buttons stay pinned at the edges. */
 .v2-complications {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  padding: 0 4px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  min-height: 34px;
-  scrollbar-width: thin;
+  scrollbar-width: none;  /* hide the scrollbar; the strip is very
+                             thin and a visible bar clutters it. */
 }
-.v2-complications::-webkit-scrollbar { height: 4px; }
-.v2-complications::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-.v2-complications.empty { display: none; }
+.v2-complications::-webkit-scrollbar { display: none; }
+/* Leave empty strip visible so it keeps acting as a spacer between
+   the two rail buttons. */
 
 @media (max-width: 768px) {
-  .v2-complications { padding: 8px 10px; gap: 8px; }
+  .v2-complications { gap: 6px; }
   .v2-comp { padding: 4px 10px; }
 }
 

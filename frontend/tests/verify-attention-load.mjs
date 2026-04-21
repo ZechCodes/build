@@ -78,7 +78,11 @@ try {
   await page.waitForTimeout(800);
   const INT_ID = 'load-int-' + Date.now();
   await page.evaluate(({ chId, intId }) => {
+    // The hasInteraction flag considers only the LATEST non-client
+    // message. For this test we want the pending plan_review to be
+    // that message, so it's placed AFTER older Agent messages.
     const bulk = [
+      { id: 'm-read', sender: 'Agent', content: 'old', read_at: '2026-01-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
       { id: 'm-a', sender: 'Agent', content: 'Hi', read_at: null, created_at: new Date().toISOString() },
       { id: 'm-b', sender: 'Agent', content: 'Still there?', read_at: null, created_at: new Date().toISOString() },
       {
@@ -89,7 +93,8 @@ try {
         read_at: null,
         created_at: new Date().toISOString(),
       },
-      { id: 'm-read', sender: 'Agent', content: 'old', read_at: '2026-01-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
+      // Client "typing" AFTER the interaction should NOT supersede
+      // it — the derive walks past client messages.
       { id: 'm-self', sender: 'client', content: 'hi back', read_at: null, created_at: new Date().toISOString() },
     ];
     window.__v2debug.bus.emit('message.bulk', { channelId: chId, msgs: bulk });

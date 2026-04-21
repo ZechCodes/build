@@ -65,6 +65,45 @@ test('derive tolerates malformed metadata without throwing', () => {
   assert.equal(out.hasInteraction, false);
 });
 
+test('old unresolved interaction followed by a plain message does NOT flag', () => {
+  const out = derive([
+    { sender: 'Agent', read_at: null, metadata: { interaction_id: 'old-1' } },
+    { sender: 'Agent', read_at: null, content: 'moved on with it' },
+  ]);
+  assert.equal(out.hasInteraction, false);
+});
+
+test('latest message is a resolved interaction → NOT flagged', () => {
+  const out = derive([
+    {
+      sender: 'Agent',
+      read_at: null,
+      metadata: { interaction_id: 'r-1', resolved_at: '2026-01-01T00:00:00Z' },
+    },
+  ]);
+  assert.equal(out.hasInteraction, false);
+});
+
+test('latest message is an unresolved interaction preceded by a resolved one → flagged', () => {
+  const out = derive([
+    {
+      sender: 'Agent',
+      read_at: null,
+      metadata: { interaction_id: 'r-1', resolved_at: '2026-01-01T00:00:00Z' },
+    },
+    { sender: 'Agent', read_at: null, metadata: { interaction_id: 'u-1' } },
+  ]);
+  assert.equal(out.hasInteraction, true);
+});
+
+test('client message after an unresolved interaction does NOT supersede it', () => {
+  const out = derive([
+    { sender: 'Agent',  read_at: null, metadata: { interaction_id: 'pending' } },
+    { sender: 'client', read_at: null, content: 'typing…' },
+  ]);
+  assert.equal(out.hasInteraction, true);
+});
+
 // ---- Wiring ----
 
 bindAttentionHydrator();

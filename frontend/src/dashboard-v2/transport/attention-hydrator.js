@@ -49,24 +49,42 @@ export function bindAttentionHydrator() {
 /**
  * Count unreads + detect a pending interaction from a bulk message
  * list. Rules:
- *   - Skip messages sent by the client (sender === 'client').
+ *   - Skip messages sent by the client (sender === 'client') on both
+ *     counts.
  *   - An unread is any server/agent message with no `read_at`.
- *   - A pending interaction is any message whose metadata has an
- *     `interaction_id` and no `resolved_at`. Metadata may arrive
- *     as a JSON string or as an object — accept either.
+ *   - `hasInteraction` flags the channel only when the LATEST
+ *     non-client message is an unresolved interaction — i.e. the
+ *     agent is currently waiting on the user. Older abandoned
+ *     interactions (metadata.interaction_id, no resolved_at) in
+ *     the history don't count because the conversation moved on.
+ *     Metadata may arrive as a JSON string or an object; accept
+ *     either.
  */
 export function derive(msgs) {
   let count = 0;
-  let hasInteraction = false;
   for (const m of msgs || []) {
     if (m?.sender === 'client') continue;
     if (!m?.read_at) count += 1;
-    if (m?.metadata) {
-      let meta;
-      try { meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata; }
-      catch (_) { meta = null; }
-      if (meta?.interaction_id && !meta?.resolved_at) hasInteraction = true;
-    }
   }
+
+  let hasInteraction = false;
+  for (let i = (msgs?.length || 0) - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.sender === 'client') continue;  // client messages don't supersede
+    const meta = parseMetadata(m.metadata);
+    if (meta?.interaction_id && !meta?.resolved_at) {
+      hasInteraction = true;
+    }
+    // First non-client message from the tail — whatever its kind
+    // — decides. Anything below is "older" and irrelevant.
+    break;
+  }
+
   return { count, hasInteraction };
+}
+
+function parseMetadata(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch (_) { return null; }
 }

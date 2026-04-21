@@ -17,6 +17,12 @@ export function bindE2EEDispatcher(instance, deviceId) {
   });
   instance.addEventListener('disconnected', () => {
     bus.emit('e2ee.disconnected', { deviceId });
+    // Also mark the device offline so the sidebar collapses its
+    // group right away — the Skrift `build:device:offline`
+    // notification may lag (or never fire if the relay itself
+    // missed the close). Defensive; idempotent with the
+    // Skrift-driven path.
+    if (deviceId) bus.emit('device.status_changed', { deviceId, status: 'offline' });
   });
 
   // ----- Channels -----

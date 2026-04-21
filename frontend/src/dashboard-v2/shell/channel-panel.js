@@ -95,12 +95,12 @@ export class ChannelPanelView {
         .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       const status = deviceStatus(d);
       const showForm = this._newSessionForDevice === d.id;
-      // Disconnected devices render collapsed: chevron points right,
-      // channels + New-Session action are tucked away. A future click
-      // on the header can still reconnect the device.
-      const isOffline = status !== 'online';
-      const groupClasses = ['v2-device-group', isOffline ? 'collapsed' : ''].filter(Boolean).join(' ');
-      const headerClasses = ['v2-device-header', isOffline ? 'collapsed' : ''].filter(Boolean).join(' ');
+      // Collapsed state: user override wins; otherwise default to
+      // collapsed if the device isn't online. Chevron + children are
+      // hidden so the group reads as one line.
+      const isCollapsed = isDeviceCollapsed(d.id, status);
+      const groupClasses = ['v2-device-group', isCollapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
+      const headerClasses = ['v2-device-header', isCollapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
       parts.push(`
         <div class="${groupClasses}" data-device-id="${escapeHtml(d.id)}">
           <header class="${headerClasses}" data-device-toggle="${escapeHtml(d.id)}" data-device-status="${status}">
@@ -108,7 +108,7 @@ export class ChannelPanelView {
             <span class="v2-device-group-status">${statusIcon(status)}</span>
             <span class="v2-device-name">${escapeHtml(d.name || d.id)}</span>
           </header>
-          ${isOffline ? '' : `
+          ${isCollapsed ? '' : `
             <div class="v2-device-group-actions">
               <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New session">
                 <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -116,14 +116,14 @@ export class ChannelPanelView {
               </button>
             </div>
           `}
-          ${showForm && !isOffline ? `
+          ${showForm && !isCollapsed ? `
             <form class="v2-new-session-form" data-new-session-form="${escapeHtml(d.id)}">
               <input type="text" name="name" class="v2-new-session-input" placeholder="Session name…" autofocus autocomplete="off">
               <button type="submit" class="v2-new-session-go">Create</button>
               <button type="button" class="v2-new-session-cancel" data-new-session-cancel="${escapeHtml(d.id)}">Cancel</button>
             </form>
           ` : ''}
-          ${!isOffline && channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
+          ${!isCollapsed && channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
         </div>
       `);
     }
@@ -155,12 +155,16 @@ export class ChannelPanelView {
       return;
     }
     const deviceToggle = e.target.closest('[data-device-toggle]');
-    if (deviceToggle && !e.target.closest('.v2-device-group-actions') && !e.target.closest('.v2-new-session-form')) {
+    if (deviceToggle
+        && !e.target.closest('.v2-device-group-actions')
+        && !e.target.closest('.v2-new-session-form')) {
       const deviceId = deviceToggle.getAttribute('data-device-toggle');
       const status = deviceToggle.getAttribute('data-device-status');
-      if (status === 'online' || status === 'offline') {
-        bus.emit('intent.connect_device', { deviceId });
-      }
+      // Persist the user's override so it survives reloads and wins
+      // over the status-based default on next render.
+      const nextCollapsed = !isDeviceCollapsed(deviceId, status);
+      localStorage.setItem(deviceCollapsedKey(deviceId), nextCollapsed ? '1' : '0');
+      this.render();
       return;
     }
     const channelRow = e.target.closest('[data-channel-id]');
@@ -195,6 +199,23 @@ function deviceStatus(device) {
   if (device.status !== 'online') return 'offline';
   if (!device.has_transport_key) return 'online';
   return 'online';
+}
+
+const DEVICE_COLLAPSED_KEY_PREFIX = 'v2.device.';
+function deviceCollapsedKey(deviceId) {
+  return `${DEVICE_COLLAPSED_KEY_PREFIX}${deviceId}.collapsed`;
+}
+
+/**
+ * Resolve a device's current collapsed state. Respects the user's
+ * persisted toggle if one exists; otherwise defaults by live status
+ * (offline → collapsed, online → expanded).
+ */
+function isDeviceCollapsed(deviceId, status) {
+  const raw = localStorage.getItem(deviceCollapsedKey(deviceId));
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  return status !== 'online';
 }
 
 const ATTENTION_RECENT_WINDOW_MS = 60 * 60 * 1000;  // 1 hour

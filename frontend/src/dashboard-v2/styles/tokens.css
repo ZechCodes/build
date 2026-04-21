@@ -33,9 +33,9 @@
   --msg-agent-bg: transparent;
   /* Activity tag palette — terminal/ANSI-inspired. Tags render as
      outline boxes (transparent bg, 1px border, text matches border). */
-  --tool-read: #8be9fd;       /* cyan   — inspection */
-  --tool-edit: #f1fa8c;       /* yellow — modify */
-  --tool-write: #50fa7b;      /* green  — create */
-  --tool-bash: #ff79c6;       /* pink   — execute */
-  --tool-reasoning: #bd93f9;  /* purple — think */
+  --tool-read: #22d3ee;       /* cyan   — inspection */
+  --tool-edit: #eab308;       /* yellow — modify */
+  --tool-write: #22c55e;      /* green  — create */
+  --tool-bash: #f43f5e;       /* rose   — execute */
+  --tool-reasoning: #a855f7;  /* purple — think */
 }

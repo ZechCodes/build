@@ -35,6 +35,17 @@ try {
     await page.click('#v2-rail-chat-toggle'); await page.waitForTimeout(300);
   }
 
+  // Case 0: initial render → overlay should already be scrolled to bottom
+  // (the channel has 13+ cached messages).
+  const initial = await page.evaluate(() => {
+    const c = document.querySelector('.v2-chat-messages');
+    if (!c) return null;
+    return { top: c.scrollTop, max: c.scrollHeight - c.clientHeight, h: c.clientHeight };
+  });
+  check('initial render scrolls to bottom',
+    initial && initial.max > 0 && Math.abs(initial.max - initial.top) < 10,
+    JSON.stringify(initial));
+
   // Case 1: append a SHORT message → expect scroll to bottom.
   await page.evaluate((id) => {
     window.__v2debug.stores.messagesStore.append(id, {

@@ -32,12 +32,23 @@ export class ChatView {
     this.root = document.getElementById('v2-chat-overlay-body');
     if (!this.root) return;
     this._buildShell();
-    this._render();
+    // On initial mount we always want the latest message in view.
+    this._render({ forceBottom: true });
+    // The overlay may only reach its final layout size after this tick
+    // (it was just display-set-to-flex, fonts may still be loading, etc.)
+    // Re-pin to bottom on the next frame and again after a short delay.
+    requestAnimationFrame(() => this._scrollToBottom(true));
+    setTimeout(() => this._scrollToBottom(true), 120);
     this.unsubs.push(messagesStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       // Single-message appends get special scroll handling so a long
       // message pins its TOP to the viewport top rather than its bottom.
-      this._render({ appendedOne: e.kind === 'append' });
+      // A bulk (history) load forces bottom so the latest message is
+      // visible on first paint.
+      this._render({
+        appendedOne: e.kind === 'append',
+        forceBottom: e.kind === 'bulk',
+      });
     }));
     this.unsubs.push(presenceStore.subscribe(e => {
       if (e.channelId === this.channel.id) this._renderStopButton();
@@ -76,6 +87,7 @@ export class ChatView {
       this.overlayEl.classList.remove('v2-chat-drag-active');
     }
     if (this._dropzoneEl) { this._dropzoneEl.remove(); this._dropzoneEl = null; }
+    if (this._initialScrollObs) { this._initialScrollObs.disconnect(); this._initialScrollObs = null; }
     this._dragDepth = 0;
     this.root = null;
     this.messagesEl = null;
@@ -106,6 +118,23 @@ export class ChatView {
     this.fileInput = this.root.querySelector('.v2-chat-file-input');
     this.toolbarEl = document.getElementById('v2-chat-overlay-toolbar');
     this.overlayEl = document.getElementById('v2-chat-overlay');
+
+    // Once on first paint: when the messages container becomes
+    // taller than 0 (overlay settling into its flex height), pin to
+    // bottom. Self-disconnects after the first non-zero dimension.
+    if (typeof ResizeObserver !== 'undefined' && this.messagesEl) {
+      this._initialScrollObs = new ResizeObserver((entries) => {
+        for (const e of entries) {
+          if (e.contentRect.height > 0) {
+            this._scrollToBottom(true);
+            this._initialScrollObs.disconnect();
+            this._initialScrollObs = null;
+            break;
+          }
+        }
+      });
+      this._initialScrollObs.observe(this.messagesEl);
+    }
 
     this.composerInput.value = this.channel.viewState?.draftText || '';
     this._autosizeInput();
@@ -144,7 +173,7 @@ export class ChatView {
     // here. Kept as a no-op for subscribe callbacks.
   }
 
-  _render({ appendedOne = false } = {}) {
+  _render({ appendedOne = false, forceBottom = false } = {}) {
     if (!this.messagesEl) return;
     this._renderHeader();
     this._renderStopButton();
@@ -160,6 +189,7 @@ export class ChatView {
     this._dismissStaleSuggestions(msgs);
 
     if (appendedOne) this._scrollNewIntoView();
+    else if (forceBottom) this._scrollToBottom(true);
     else this._scrollToBottom(false);
   }
 

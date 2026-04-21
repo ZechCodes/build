@@ -184,6 +184,18 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('get_complications failed', err); }
   });
 
+  bus.on('intent.create_channel', async ({ deviceId, name, harness, model, effort }) => {
+    if (!deviceId || !name) return;
+    const conn = e2eePool.forDevice(deviceId);
+    if (!conn || !conn.connected) {
+      plog.warn('create_channel: device not connected', deviceId);
+      return;
+    }
+    try {
+      await conn.createChannel(name, { harness, model, effort });
+    } catch (err) { plog.error('create_channel failed', err); }
+  });
+
   bus.on('intent.resolve_complication', async ({ channelId, complicationId, action }) => {
     const conn = connFor(channelId);
     if (!conn || !complicationId || !action) return;

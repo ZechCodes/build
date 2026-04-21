@@ -31,7 +31,7 @@ try {
 
   await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
-  await page.waitForSelector('.v2-channel-row', { timeout: 8000 });
+  await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 
   // Intercept every BuildE2EE.send() call so we can assert outgoing payloads.
   // Also stub uploadFile so the chat composer test doesn't depend on the real
@@ -53,8 +53,8 @@ try {
   });
 
   // Select first channel.
-  const firstId = await page.$eval('.v2-channel-row', el => el.getAttribute('data-channel-id'));
-  await page.click(`.v2-channel-row[data-channel-id="${firstId}"]`);
+  const firstId = await page.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
+  await page.click(`.v2-channel-sidebar-item[data-channel-id="${firstId}"]`);
   // Open chat tab.
   await page.click('.v2-tab-btn[data-tab="chat"]');
   await page.waitForTimeout(400);

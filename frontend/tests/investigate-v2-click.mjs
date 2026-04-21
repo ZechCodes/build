@@ -26,15 +26,15 @@ await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(3000);
 
 // Wait for a channel to appear in the sidebar.
-await page.waitForSelector('.v2-channel-row', { timeout: 8000 }).catch(() => null);
-const channels = await page.$$eval('.v2-channel-row', rows =>
+await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 }).catch(() => null);
+const channels = await page.$$eval('.v2-channel-sidebar-item', rows =>
   rows.map(r => ({ id: r.getAttribute('data-channel-id'), name: r.textContent.trim() }))
 );
 console.log('Channels:', channels);
 if (!channels.length) { console.log('NO CHANNELS — aborting'); await browser.close(); process.exit(1); }
 
 // Click the first channel.
-await page.click(`.v2-channel-row[data-channel-id="${channels[0].id}"]`);
+await page.click(`.v2-channel-sidebar-item[data-channel-id="${channels[0].id}"]`);
 await page.waitForTimeout(2000);
 
 async function snapshot(label) {

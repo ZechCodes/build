@@ -17,8 +17,8 @@ await Promise.all([
 ]);
 await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(3000);
-await page.waitForSelector('.v2-channel-row');
-await page.click('.v2-channel-row');
+await page.waitForSelector('.v2-channel-sidebar-item');
+await page.click('.v2-channel-sidebar-item');
 await page.waitForTimeout(1500);
 await page.click('#v2-rail-chat-toggle');    // open overlay
 await page.waitForTimeout(800);

@@ -48,9 +48,9 @@ try {
   check('overlay closed by default', !(await page.$eval('#v2-chat-overlay', el => el.classList.contains('open'))));
 
   // Select first channel
-  await page.waitForSelector('.v2-channel-row', { timeout: 8000 });
-  const firstId = await page.$eval('.v2-channel-row', el => el.getAttribute('data-channel-id'));
-  await page.click(`.v2-channel-row[data-channel-id="${firstId}"]`);
+  await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
+  const firstId = await page.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
+  await page.click(`.v2-channel-sidebar-item[data-channel-id="${firstId}"]`);
   await page.waitForTimeout(1500);
 
   // Path bar + files panels populate

@@ -10,17 +10,20 @@ import { uiStore } from '../domain/ui-store.js';
 import { router } from './router.js';
 import { escapeHtml } from '../util/html.js';
 
-const STATUS_DOT = {
-  connected: '<span class="v2-dot v2-dot-lock" aria-label="E2EE connected">🔒</span>',
-  connecting: '<span class="v2-dot v2-dot-connecting" aria-label="Connecting"></span>',
-  online: '<span class="v2-dot v2-dot-online" aria-label="Online"></span>',
-  offline: '<span class="v2-dot v2-dot-offline" aria-label="Offline"></span>',
-};
+function statusIcon(status) {
+  if (status === 'connected') return '<svg class="v2-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
+  if (status === 'connecting') return '<span class="v2-status-dot connecting" aria-label="Connecting"></span>';
+  if (status === 'offline')    return '<span class="v2-status-dot offline" aria-label="Offline"></span>';
+  return '<span class="v2-status-dot" aria-label="Online"></span>';
+}
 
 export class ChannelPanelView {
   constructor() {
     this.root = null;
     this.unsubs = [];
+    // Per-device transient state: which device group is showing its
+    // inline "new session" form right now.
+    this._newSessionForDevice = null;
   }
 
   activate() {
@@ -32,14 +35,19 @@ export class ChannelPanelView {
     this.unsubs.push(channelsStore.subscribe(resub));
     this.unsubs.push(unreadStore.subscribe(resub));
     this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
-    // Delegated clicks for all interactive rows.
     this.root.addEventListener('click', this._onClick);
+    this.root.addEventListener('keydown', this._onKeydown);
+    this.root.addEventListener('submit', this._onSubmit);
   }
 
   deactivate() {
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
-    if (this.root) this.root.removeEventListener('click', this._onClick);
+    if (this.root) {
+      this.root.removeEventListener('click', this._onClick);
+      this.root.removeEventListener('keydown', this._onKeydown);
+      this.root.removeEventListener('submit', this._onSubmit);
+    }
     this.root = null;
   }
 
@@ -53,27 +61,69 @@ export class ChannelPanelView {
     }
     const parts = [];
     for (const d of devices) {
-      const channels = channelsStore.listByDevice(d.id);
+      const channels = channelsStore.listByDevice(d.id)
+        .slice()
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       const status = deviceStatus(d);
+      const showForm = this._newSessionForDevice === d.id;
       parts.push(`
         <div class="v2-device-group" data-device-id="${escapeHtml(d.id)}">
           <header class="v2-device-header" data-device-toggle="${escapeHtml(d.id)}" data-device-status="${status}">
-            ${STATUS_DOT[status]}
+            <svg class="v2-device-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="v2-device-group-status">${statusIcon(status)}</span>
             <span class="v2-device-name">${escapeHtml(d.name || d.id)}</span>
           </header>
+          ${status === 'offline' ? '' : `
+            <div class="v2-device-group-actions">
+              <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New session">
+                <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                New Session
+              </button>
+            </div>
+          `}
+          ${showForm ? `
+            <form class="v2-new-session-form" data-new-session-form="${escapeHtml(d.id)}">
+              <input type="text" name="name" class="v2-new-session-input" placeholder="Session name…" autofocus autocomplete="off">
+              <button type="submit" class="v2-new-session-go">Create</button>
+              <button type="button" class="v2-new-session-cancel" data-new-session-cancel="${escapeHtml(d.id)}">Cancel</button>
+            </form>
+          ` : ''}
           ${channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
         </div>
       `);
     }
     this.root.innerHTML = parts.join('');
+    // Focus the new-session input if one is open.
+    if (this._newSessionForDevice) {
+      this.root.querySelector('.v2-new-session-input')?.focus();
+    }
   }
 
   _onClick = (e) => {
+    const newBtn = e.target.closest('[data-new-session]');
+    if (newBtn) {
+      const deviceId = newBtn.getAttribute('data-new-session');
+      this._newSessionForDevice = this._newSessionForDevice === deviceId ? null : deviceId;
+      this.render();
+      return;
+    }
+    const cancel = e.target.closest('[data-new-session-cancel]');
+    if (cancel) {
+      this._newSessionForDevice = null;
+      this.render();
+      return;
+    }
+    const edit = e.target.closest('[data-channel-edit]');
+    if (edit) {
+      e.stopPropagation();
+      // Edit dialog deferred; no-op for now.
+      return;
+    }
     const deviceToggle = e.target.closest('[data-device-toggle]');
-    if (deviceToggle) {
+    if (deviceToggle && !e.target.closest('.v2-device-group-actions') && !e.target.closest('.v2-new-session-form')) {
       const deviceId = deviceToggle.getAttribute('data-device-toggle');
       const status = deviceToggle.getAttribute('data-device-status');
-      if (status === 'online') {
+      if (status === 'online' || status === 'offline') {
         bus.emit('intent.connect_device', { deviceId });
       }
       return;
@@ -81,20 +131,34 @@ export class ChannelPanelView {
     const channelRow = e.target.closest('[data-channel-id]');
     if (channelRow) {
       const channelId = channelRow.getAttribute('data-channel-id');
-      router.navigate(uiStore.getTab() || 'chat', channelId);
+      router.navigate(uiStore.getTab() || 'files', channelId);
     }
+  };
+
+  _onKeydown = (e) => {
+    if (e.key === 'Escape' && e.target.closest('.v2-new-session-form')) {
+      this._newSessionForDevice = null;
+      this.render();
+    }
+  };
+
+  _onSubmit = (e) => {
+    const form = e.target.closest('[data-new-session-form]');
+    if (!form) return;
+    e.preventDefault();
+    const deviceId = form.getAttribute('data-new-session-form');
+    const input = form.querySelector('.v2-new-session-input');
+    const name = (input?.value || '').trim();
+    if (!name) return;
+    bus.emit('intent.create_channel', { deviceId, name });
+    this._newSessionForDevice = null;
+    this.render();
   };
 }
 
 function deviceStatus(device) {
-  // 'connected' means E2EE connected; distinguishing connecting vs online
-  // requires reading e2eePool. We keep the dot as 'online' when the device
-  // is reachable but not yet E2EE-connected. E2EE status updates arrive
-  // via the bus and channels-by-device list grows once connected.
   if (device.status !== 'online') return 'offline';
   if (!device.has_transport_key) return 'online';
-  // Heuristic: if channels exist for the device, we assume E2EE connected.
-  // This gets replaced by presence-tracked e2ee status in a later polish.
   return 'online';
 }
 
@@ -105,16 +169,19 @@ function renderChannel(ch, activeId) {
   const name = ch.name || (ch.id || '').slice(0, 8);
   const isActive = ch.id === activeId;
   const classes = [
-    'v2-channel-row',
+    'v2-channel-sidebar-item',
     isActive ? 'active' : '',
     hasInteraction ? 'has-interaction' : '',
   ].filter(Boolean).join(' ');
-  const badge = count > 0 ? `<span class="v2-unread-badge">${count}</span>` : '';
+  const badge = count > 0 ? `<span class="v2-ch-unread-badge">${count}</span>` : '';
   return `
-    <button class="${classes}" data-channel-id="${escapeHtml(ch.id)}" type="button">
+    <div class="${classes}" data-channel-id="${escapeHtml(ch.id)}">
       <span class="v2-ch-hash">#</span>
       <span class="v2-ch-name">${escapeHtml(name)}</span>
       ${badge}
-    </button>
+      <button class="v2-ch-edit" type="button" data-channel-edit="${escapeHtml(ch.id)}" title="Edit">
+        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
   `;
 }

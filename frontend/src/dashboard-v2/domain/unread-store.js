@@ -38,6 +38,19 @@ export const unreadStore = {
     notify({ kind: 'read', channelId });
   },
 
+  /**
+   * Directly set the unread state for a channel, bypassing the
+   * active-channel suppression that `increment` respects. Used by
+   * the attention-hydrator on load / reconnect to catch up from
+   * bulk message history (see transport/attention-hydrator.js).
+   */
+  hydrate(channelId, count, hasInteraction) {
+    const s = getSlot(channelId);
+    s.count = count | 0;
+    s.hasInteraction = !!hasInteraction;
+    notify({ kind: 'hydrate', channelId });
+  },
+
   aggregate() {
     let total = 0;
     let anyInteraction = false;

@@ -5,6 +5,7 @@ import { bindSse } from './sse.js';
 import { bindCoordinator } from './coordinator.js';
 import { bindIntentDispatcher } from './intent-dispatcher.js';
 import { bindDeviceNotifications } from './device-notifications.js';
+import { bindAttentionHydrator } from './attention-hydrator.js';
 import { fetchDevices } from './rest.js';
 import { e2eePool } from './e2ee-pool.js';
 
@@ -16,6 +17,7 @@ export async function initTransport() {
   plog.info('init');
   bindSse();
   bindDeviceNotifications();
+  bindAttentionHydrator();
   bindIntentDispatcher();
   bindCoordinator();
   await fetchDevices();

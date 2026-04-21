@@ -61,6 +61,27 @@ test('aggregate sums across channels', () => {
   unreadStore.markRead(b);
 });
 
+test('hydrate sets count + hasInteraction directly', () => {
+  const ch = 'u-hydrate';
+  const events = [];
+  const off = unreadStore.subscribe(e => events.push(e));
+  unreadStore.hydrate(ch, 5, true);
+  off();
+  assert.equal(unreadStore.get(ch).count, 5);
+  assert.equal(unreadStore.get(ch).hasInteraction, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'hydrate');
+  assert.equal(events[0].channelId, ch);
+});
+
+test('hydrate with 0 + false clears the slot', () => {
+  const ch = 'u-hydrate-zero';
+  unreadStore.hydrate(ch, 3, true);
+  unreadStore.hydrate(ch, 0, false);
+  assert.equal(unreadStore.get(ch).count, 0);
+  assert.equal(unreadStore.get(ch).hasInteraction, false);
+});
+
 test('notify fires on increment and markRead', () => {
   const ch = 'u-notify';
   const events = [];

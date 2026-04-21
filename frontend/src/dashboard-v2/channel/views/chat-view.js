@@ -369,8 +369,17 @@ export class ChatView {
       freeformResponse: freeformResponse || null,
       selectedOptions: selectedOptions || null,
     });
-    card.classList.add('resolved');
-    card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    // Mirror the choice into the store so the next re-render shows
+    // the chosen option as `.selected` + the card as `.resolved`.
+    // The store notify triggers chat-view's subscribe callback →
+    // full chat re-render. Server echo later overwrites these same
+    // fields idempotently.
+    messagesStore.patchInteractionMeta(this.channel.id, interactionId, {
+      resolved_at: new Date().toISOString(),
+      selected_option: selectedOption || null,
+      selected_options: selectedOptions || null,
+      freeform_response: freeformResponse || null,
+    });
     unreadStore.markRead(this.channel.id);
   }
 

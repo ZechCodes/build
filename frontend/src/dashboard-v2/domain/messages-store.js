@@ -93,6 +93,35 @@ export const messagesStore = {
     notify({ kind: 'delivery_failed', channelId, msgId });
   },
 
+  /**
+   * Merge `patch` into the target message's metadata. Metadata may
+   * arrive from the server as a JSON string or as an object; we
+   * respect whichever shape the message already uses so the next
+   * render (and any subsequent echo) sees the same format.
+   *
+   * Used by the chat view to optimistically mark an interaction as
+   * resolved on click — setting `resolved_at`, `selected_option`,
+   * etc. so `.selected` renders on the chosen button before the
+   * server's authoritative echo comes back.
+   */
+  patchInteractionMeta(channelId, msgId, patch) {
+    if (!msgId || !patch) return;
+    const arr = byChannel.get(channelId);
+    if (!arr) return;
+    const m = arr.find(x => x.id === msgId);
+    if (!m) return;
+    const isString = typeof m.metadata === 'string';
+    let meta;
+    try {
+      meta = isString ? JSON.parse(m.metadata || '{}') : (m.metadata || {});
+    } catch (_) {
+      meta = {};
+    }
+    Object.assign(meta, patch);
+    m.metadata = isString ? JSON.stringify(meta) : meta;
+    notify({ kind: 'interaction_patch', channelId, msgId });
+  },
+
   subscribe,
 };
 

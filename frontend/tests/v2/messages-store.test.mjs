@@ -112,6 +112,58 @@ test('replaceId is a no-op when oldId missing or ids match', () => {
   assert.equal(messagesStore.forChannel(ch)[0].id, 'keep');
 });
 
+test('patchInteractionMeta merges into object metadata', () => {
+  const ch = 'ms-patch-obj';
+  messagesStore.append(ch, {
+    id: 'int1',
+    metadata: { interaction_id: 'int1', kind: 'question', options: [] },
+  });
+  const events = [];
+  const off = messagesStore.subscribe(e => events.push(e));
+  messagesStore.patchInteractionMeta(ch, 'int1', {
+    resolved_at: '2026-04-21T00:00:00Z',
+    selected_option: 'yes',
+  });
+  off();
+  const m = messagesStore.forChannel(ch)[0];
+  assert.equal(typeof m.metadata, 'object');
+  assert.equal(m.metadata.interaction_id, 'int1');
+  assert.equal(m.metadata.resolved_at, '2026-04-21T00:00:00Z');
+  assert.equal(m.metadata.selected_option, 'yes');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'interaction_patch');
+});
+
+test('patchInteractionMeta merges into JSON-string metadata + stays stringified', () => {
+  const ch = 'ms-patch-json';
+  messagesStore.append(ch, {
+    id: 'int2',
+    metadata: JSON.stringify({ interaction_id: 'int2', kind: 'plan_review' }),
+  });
+  messagesStore.patchInteractionMeta(ch, 'int2', {
+    resolved_at: '2026-04-21T00:00:00Z',
+    selected_option: 'approve',
+  });
+  const m = messagesStore.forChannel(ch)[0];
+  assert.equal(typeof m.metadata, 'string');
+  const meta = JSON.parse(m.metadata);
+  assert.equal(meta.kind, 'plan_review');
+  assert.equal(meta.selected_option, 'approve');
+  assert.equal(meta.resolved_at, '2026-04-21T00:00:00Z');
+});
+
+test('patchInteractionMeta is a no-op for unknown msg ids', () => {
+  const ch = 'ms-patch-missing';
+  messagesStore.append(ch, { id: 'real', metadata: { kind: 'question' } });
+  let fired = 0;
+  const off = messagesStore.subscribe(() => fired++);
+  messagesStore.patchInteractionMeta(ch, 'nope', { selected_option: 'x' });
+  off();
+  assert.equal(fired, 0);
+  // Original message untouched.
+  assert.equal(messagesStore.forChannel(ch)[0].metadata.selected_option, undefined);
+});
+
 test('markFailed flags a message and notifies', () => {
   const ch = 'ms-failed';
   messagesStore.append(ch, { id: 'f1', content: 'x' });

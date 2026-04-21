@@ -123,6 +123,66 @@
 .v2-dropdown-layer { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 .v2-dropdown-layer > * { pointer-events: auto; }
 
+/* Skrift SSE status indicator. Skrift's own CSS isn't loaded in the
+   dashboard-v2 bundle — the notifications.js just injects
+   `<div class="sk-status-indicator sk-status-indicator-hidden">
+      <span class="sk-status-dot"></span>
+      <span class="sk-status-label"></span>
+    </div>` into <body>. We own the full styling here.
+
+   Behavior: centered horizontally, pinned above the bottom rail,
+   invisible when the SSE is healthy (Skrift adds `-hidden`), visible
+   with a coloured dot + label when reconnecting/disconnected. */
+.sk-status-indicator {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--rail-height) + 12px);
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+.sk-status-indicator-hidden {
+  opacity: 0;
+  transform: translate(-50%, 8px);
+}
+.sk-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-dim);
+  transition: background-color 150ms ease;
+}
+/* Skrift sets the dot's background-color inline based on state, but
+   also honors CSS vars when styling from a stylesheet. We override
+   the underlying vars so the palette lines up with the rest of v2. */
+:root {
+  --sk-color-success: #22c55e;
+  --sk-color-warning: #eab308;
+  --sk-color-error:   #ef4444;
+  --sk-color-muted:   var(--fg-dim);
+}
+
+/* When the rail is open (terminal showing), the rail is taller —
+   keep the pill clear of its top edge. */
+.v2-app[data-rail="open"]     .sk-status-indicator { bottom: calc(var(--rail-open-height) + 12px); }
+.v2-app[data-rail="expanded"] .sk-status-indicator { bottom: calc(50vh + 12px); }
+
 @media (max-width: 768px) {
   .v2-app {
     grid-template-columns: 1fr;

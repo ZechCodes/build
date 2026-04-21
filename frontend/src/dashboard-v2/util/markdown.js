@@ -138,6 +138,19 @@ import { highlightLine } from './syntax.js';
 
   var buildFileRe = /<build-file\s+path="([^"]*)"(?:\s+lang="([^"]*)")?(?:\s+lines="(\d+-\d+)")?>\n([\s\S]*?)\n<\/build-file>/g;
   var buildDiffRe = /<build-diff\s+path="([^"]*)">\n([\s\S]*?)\n<\/build-diff>/g;
+  var buildImageRe = /<build-image\s+path="([^"]*)"\s+mime="([^"]*)">\n([\s\S]*?)\n<\/build-image>/g;
+
+  function renderInlineImage(path, mime, base64) {
+    // Strip only whitespace — the browser is tolerant of newlines in
+    // data URIs but we keep the src compact anyway.
+    var src = 'data:' + mime + ';base64,' + base64.replace(/\s+/g, '');
+    return (
+      '<figure class="v2-embed-image" data-path="' + escapeHtml(path) + '" data-mime="' + escapeHtml(mime) + '">' +
+        '<figcaption class="v2-embed-image-path">' + escapeHtml(path) + '</figcaption>' +
+        '<img alt="' + escapeHtml(path) + '" src="' + src + '">' +
+      '</figure>'
+    );
+  }
 
   function renderInlineFile(content, path, lang, lineRange) {
     var lines = content.split('\n');
@@ -301,6 +314,11 @@ import { highlightLine } from './syntax.js';
     src = src.replace(buildDiffRe, function (match, path, content) {
       var idx = embeds.length;
       embeds.push(renderInlineDiff(content, path));
+      return '\x00BUILD_EMBED_' + idx + '\x00';
+    });
+    src = src.replace(buildImageRe, function (match, path, mime, base64) {
+      var idx = embeds.length;
+      embeds.push(renderInlineImage(path, mime, base64));
       return '\x00BUILD_EMBED_' + idx + '\x00';
     });
 

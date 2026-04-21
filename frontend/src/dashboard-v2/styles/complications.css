@@ -8,9 +8,18 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   min-height: 34px;
+  scrollbar-width: thin;
 }
+.v2-complications::-webkit-scrollbar { height: 4px; }
+.v2-complications::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .v2-complications.empty { display: none; }
+
+@media (max-width: 768px) {
+  .v2-complications { padding: 8px 10px; gap: 8px; }
+  .v2-comp { padding: 4px 10px; }
+}
 
 .v2-comp {
   position: relative;

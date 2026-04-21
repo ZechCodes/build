@@ -11,7 +11,9 @@
     "sidebar viewer"
     "rail    rail";
   height: 100vh;
+  height: 100dvh;     /* mobile Safari: account for dynamic URL bar */
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: var(--bg);
 }
@@ -35,8 +37,56 @@
   font-size: 12px;
   color: var(--fg);
 }
-.v2-path-text { font-family: var(--font-mono); font-size: 12px; color: var(--fg); }
+.v2-path-text { font-family: var(--font-mono); font-size: 12px; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .v2-path-text.empty { color: var(--fg-muted); font-family: var(--font); }
+
+/* Path-bar buttons (hamburger + tree toggle) — mobile only. */
+.v2-path-bar-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.v2-path-bar-btn:hover { background: var(--bg-hover); }
+.v2-path-bar-btn svg { width: 16px; height: 16px; }
+
+/* Sidebar close button — hidden on desktop. */
+.v2-sidebar-close {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  cursor: pointer;
+  border-radius: 50%;
+  z-index: 1;
+}
+.v2-sidebar-close:hover { background: var(--bg-hover); }
+.v2-sidebar-close svg { width: 14px; height: 14px; }
+
+/* Sidebar backdrop — hidden on desktop, shown on mobile when drawer is open. */
+.v2-sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 15;
+  opacity: 0;
+  transition: opacity 160ms ease;
+  pointer-events: none;
+}
 
 /* Main files layout: two columns (tree + content) */
 
@@ -86,5 +136,42 @@
     z-index: 20;
   }
   .v2-app.sidebar-open .v2-sidebar { transform: translateX(0); }
-  .v2-files-main { grid-template-columns: 1fr; }
+  .v2-app.sidebar-open .v2-sidebar-backdrop {
+    display: block;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .v2-sidebar-close { display: flex; align-items: center; justify-content: center; }
+  .v2-path-bar-btn  { display: inline-flex; }
+
+  /* Path-bar tightens up on phones. */
+  .v2-path-bar { padding: 6px 10px; gap: 4px; }
+
+  /* Files layout: single-column on mobile. Tree hidden by default and
+     slides in from the left when the user taps the tree chevron. */
+  .v2-files-main {
+    display: block;
+    position: relative;
+  }
+  .v2-files-tree-panel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 82vw;
+    max-width: 320px;
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+    z-index: 5;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
+  }
+  .v2-files-main.mobile-tree-open .v2-files-tree-panel {
+    transform: translateX(0);
+  }
+  .v2-files-content-panel { width: 100%; }
+
+  /* Rail expanded height caps at ~50vh on phones (no 50vh abs rule). */
+  .v2-app[data-rail="expanded"] { grid-template-rows: 1fr 50vh; }
+  .v2-app[data-rail="expanded"] { grid-template-rows: 1fr 50dvh; }
 }

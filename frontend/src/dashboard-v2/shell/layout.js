@@ -11,6 +11,9 @@ export function buildLayout(root) {
 
       <!-- ===== SIDEBAR ===== -->
       <aside class="v2-sidebar" id="v2-sidebar">
+        <button class="v2-sidebar-close" id="v2-sidebar-close" type="button" title="Close menu" aria-label="Close menu">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
         <div class="v2-sidebar-inner">
           <section class="v2-sidebar-section" data-section="devices">
             <header class="v2-sidebar-section-header" data-section-static>
@@ -40,9 +43,17 @@ export function buildLayout(root) {
         <footer class="v2-sidebar-footer" id="v2-account-slot"></footer>
       </aside>
 
+      <div class="v2-sidebar-backdrop" id="v2-sidebar-backdrop" aria-hidden="true"></div>
+
       <!-- ===== MAIN VIEWER (always Files) ===== -->
       <main class="v2-viewer" id="v2-viewer">
         <header class="v2-path-bar" id="v2-path-bar">
+          <button class="v2-path-bar-btn v2-path-bar-menu" id="v2-path-bar-menu" type="button" title="Open menu" aria-label="Open menu">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button class="v2-path-bar-btn v2-path-bar-tree" id="v2-path-bar-tree" type="button" title="Toggle file tree" aria-label="Toggle file tree">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 3h5l2 2h5v8H2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          </button>
           <span class="v2-path-text empty" id="v2-path-text">No file selected</span>
         </header>
         <div class="v2-files-main" id="v2-viewer-main">

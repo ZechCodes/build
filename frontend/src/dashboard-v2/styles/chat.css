@@ -477,3 +477,33 @@
   z-index: 5;
 }
 .v2-chat-overlay.v2-chat-drag-active .v2-chat-dropzone { display: flex; }
+
+/* ========== Mobile: chat overlay goes full-screen ========== */
+
+@media (max-width: 768px) {
+  .v2-chat-overlay {
+    right: 0;
+    left: 0;
+    top: 0;
+    bottom: var(--rail-height);
+    width: 100vw;
+    height: auto;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .v2-chat-overlay[data-mode="expanded"] {
+    width: 100vw;
+    right: 0;
+    height: auto;
+    top: 0;
+    bottom: var(--rail-height);
+  }
+  .v2-app[data-rail="open"] .v2-chat-overlay,
+  .v2-app[data-rail="expanded"] .v2-chat-overlay {
+    bottom: var(--rail-open-height);
+  }
+  /* Pin and expand buttons are meaningless on a full-bleed overlay. */
+  .v2-co-header #v2-co-pin,
+  .v2-co-header #v2-co-expand { display: none; }
+}

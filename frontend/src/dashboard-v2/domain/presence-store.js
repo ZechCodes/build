@@ -41,6 +41,24 @@ export const presenceStore = {
     notify({ kind: 'plan_mode', channelId, planMode });
   },
 
+  /**
+   * Stamp `lastActiveAt` from a historical source (e.g., the
+   * latest agent message's `created_at`) without touching
+   * `agentActive`. Used by the attention-hydrator to seed the
+   * "recent" grace window on load.
+   *
+   * Keeps the larger of the existing stamp and the new one — we
+   * don't want to accidentally rewind time if a live
+   * `setAgentActive` already ran.
+   */
+  hydrateLastActive(channelId, ms) {
+    if (!ms) return;
+    const s = getSlot(channelId);
+    if ((s.lastActiveAt || 0) >= ms) return;
+    s.lastActiveAt = ms;
+    notify({ kind: 'last_active', channelId, at: ms });
+  },
+
   setHarnesses(deviceId, harnesses) {
     harnessesByDevice.set(deviceId, harnesses);
     notify({ kind: 'harnesses', deviceId });

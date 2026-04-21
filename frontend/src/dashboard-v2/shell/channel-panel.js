@@ -40,9 +40,10 @@ export class ChannelPanelView {
     this.unsubs.push(channelsStore.subscribe(resub));
     this.unsubs.push(unreadStore.subscribe(resub));
     this.unsubs.push(presenceStore.subscribe(e => {
-      // Only re-render on agent_active flips — plan_mode alone
-      // doesn't belong in the Attention section.
-      if (e.kind === 'agent_active') this.render();
+      // Re-render on anything that changes Attention membership —
+      // agent_active flips the "Running" row; last_active seeds
+      // the "recent" grace window from history.
+      if (e.kind === 'agent_active' || e.kind === 'last_active') this.render();
     }));
     this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
     this.root.addEventListener('click', this._onClick);

@@ -17,7 +17,49 @@ test('derive counts unread server messages, skipping client', () => {
     { sender: 'Agent',  read_at: '2026-01-01T00:00:00Z' },     // read, skip
     { sender: 'Device', read_at: null },                       // +1
   ]);
-  assert.deepEqual(out, { count: 2, hasInteraction: false });
+  assert.equal(out.count, 2);
+  assert.equal(out.hasInteraction, false);
+});
+
+test('derive counts unread against channel.last_seen_at even if read_at is stamped', () => {
+  // User has visited up to T; then the agent sent a message at T+1h
+  // which has a stale `read_at` stamp (e.g. the backend stamped it
+  // during a prior mark_read call, but it postdates the user's
+  // actual last-seen mark).
+  const lastSeenAt = '2026-04-21T00:00:00Z';
+  const newerAt   = '2026-04-21T01:00:00Z';
+  const out = derive([
+    { sender: 'Agent', read_at: lastSeenAt, created_at: newerAt },
+  ], { last_seen_at: lastSeenAt });
+  assert.equal(out.count, 1);
+});
+
+test('derive does NOT count messages older than last_seen_at', () => {
+  const lastSeenAt = '2026-04-21T00:00:00Z';
+  const olderAt   = '2026-04-20T23:00:00Z';
+  const out = derive([
+    { sender: 'Agent', read_at: null, created_at: olderAt },
+  ], { last_seen_at: lastSeenAt });
+  assert.equal(out.count, 0);
+});
+
+test('derive returns latestActivityMs from newest non-client message', () => {
+  const out = derive([
+    { sender: 'Agent',  read_at: null, created_at: '2026-04-20T00:00:00Z' },
+    { sender: 'client', read_at: null, created_at: '2026-04-22T00:00:00Z' },
+    { sender: 'Agent',  read_at: null, created_at: '2026-04-21T12:00:00Z' },
+  ]);
+  assert.equal(out.latestActivityMs, Date.parse('2026-04-21T12:00:00Z'));
+});
+
+test('derive without a channel falls back to !read_at', () => {
+  // Ensure old callers (and the "channel not known yet" path) still
+  // work.
+  const out = derive([
+    { sender: 'Agent', read_at: null },
+    { sender: 'Agent', read_at: '2026-04-21T00:00:00Z' },
+  ]);
+  assert.equal(out.count, 1);
 });
 
 test('derive detects pending interaction from object metadata', () => {

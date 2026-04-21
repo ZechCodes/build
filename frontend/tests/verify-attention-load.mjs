@@ -123,6 +123,49 @@ try {
   check('Status label reads "Needs you"',             /needs you/i.test(sidebar.statusLabel || ''), sidebar.statusLabel);
   check('Unread badge shows the hydrated count',      sidebar.badge === '3', sidebar.badge);
 
+  // ---- 4. Unread via last_seen_at + recent via latestActivityMs.
+  // Seed a fresh channel with `last_seen_at = T` and an agent
+  // message at `T + 1h`. Expect the channel to flag unread + recent.
+  const UNREAD_CH = 'load-unread-' + Date.now();
+  await page.evaluate(({ deviceId, chId }) => {
+    const d = window.__v2debug;
+    const lastSeenAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();  // 2h ago
+    // Inject a channel with last_seen_at set.
+    d.stores.channelsStore.upsert({
+      deviceId,
+      channel: {
+        id: chId, name: 'Verify Unread',
+        last_seen_at: lastSeenAt,
+        created_at: lastSeenAt,
+      },
+    });
+  }, { deviceId: 'verify-device', chId: UNREAD_CH });
+
+  // Bulk that postdates last_seen_at — should count as unread even
+  // though read_at is stamped.
+  await page.evaluate(({ chId }) => {
+    const recentAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();  // 30m ago
+    window.__v2debug.bus.emit('message.bulk', {
+      channelId: chId,
+      msgs: [
+        { id: 'u-a', sender: 'Agent', content: 'while you were out', read_at: null, created_at: recentAt },
+        { id: 'u-b', sender: 'Agent', content: 'more',                  read_at: '2026-01-01Z', created_at: recentAt },
+      ],
+    });
+  }, { chId: UNREAD_CH });
+  await page.waitForTimeout(200);
+
+  const unreadState = await page.evaluate((chId) => {
+    const slot = window.__v2debug.stores.unreadStore.get(chId);
+    const pres = window.__v2debug.stores.presenceStore.get(chId);
+    return {
+      count: slot.count,
+      lastActiveRecent: pres.lastActiveAt > 0 && (Date.now() - pres.lastActiveAt) < 60 * 60 * 1000,
+    };
+  }, UNREAD_CH);
+  check('newer-than-last_seen message counted as unread',  unreadState.count === 2, JSON.stringify(unreadState));
+  check('lastActiveAt hydrated from latest message',       unreadState.lastActiveRecent === true);
+
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 } finally {

@@ -15,6 +15,8 @@
 
 import { bus } from '../core/bus.js';
 import { unreadStore } from '../domain/unread-store.js';
+import { presenceStore } from '../domain/presence-store.js';
+import { channelsStore } from '../domain/channels-store.js';
 import { log } from '../core/log.js';
 
 const plog = log('attention-hydrator');
@@ -40,31 +42,46 @@ export function bindAttentionHydrator() {
 
   bus.on('message.bulk', ({ channelId, msgs }) => {
     if (!channelId) return;
-    const { count, hasInteraction } = derive(msgs);
-    plog.debug('hydrate', channelId, { count, hasInteraction });
+    const channel = channelsStore.get(channelId);
+    const { count, hasInteraction, latestActivityMs } = derive(msgs, channel);
+    plog.debug('hydrate', channelId, { count, hasInteraction, latestActivityMs });
     unreadStore.hydrate(channelId, count, hasInteraction);
+    if (latestActivityMs > 0) {
+      presenceStore.hydrateLastActive(channelId, latestActivityMs);
+    }
   });
 }
 
 /**
- * Count unreads + detect a pending interaction from a bulk message
- * list. Rules:
- *   - Skip messages sent by the client (sender === 'client') on both
- *     counts.
- *   - An unread is any server/agent message with no `read_at`.
- *   - `hasInteraction` flags the channel only when the LATEST
- *     non-client message is an unresolved interaction — i.e. the
- *     agent is currently waiting on the user. Older abandoned
- *     interactions (metadata.interaction_id, no resolved_at) in
- *     the history don't count because the conversation moved on.
- *     Metadata may arrive as a JSON string or an object; accept
- *     either.
+ * Derive per-channel attention signals from a bulk message list.
+ * Returns `{ count, hasInteraction, latestActivityMs }`:
+ *   - `count`: unread messages — any non-client message that
+ *      postdates the channel's `last_seen_at` AND has no `read_at`.
+ *      If no channel / last_seen_at is available, falls back to
+ *      the `!read_at` test alone (old behavior).
+ *   - `hasInteraction`: only true when the LATEST non-client
+ *      message is an unresolved interaction (the agent is
+ *      currently waiting on the user).
+ *   - `latestActivityMs`: millisecond timestamp of the most recent
+ *      non-client message. The hydrator feeds this into
+ *      `presenceStore.hydrateLastActive` so the "recent"
+ *      grace-window in the Attention section populates on load.
  */
-export function derive(msgs) {
+export function derive(msgs, channel) {
+  const lastSeenMs = timeOf(channel?.last_seen_at);
   let count = 0;
+  let latestActivityMs = 0;
   for (const m of msgs || []) {
     if (m?.sender === 'client') continue;
-    if (!m?.read_at) count += 1;
+    const createdMs = timeOf(m.created_at);
+    if (createdMs > latestActivityMs) latestActivityMs = createdMs;
+    // If we know the user's last_seen_at, that's authoritative —
+    // messages after it are unread, messages before it are seen.
+    // Otherwise fall back to the per-message `read_at` flag.
+    const unread = lastSeenMs > 0
+      ? createdMs > lastSeenMs
+      : !m.read_at;
+    if (unread) count += 1;
   }
 
   let hasInteraction = false;
@@ -80,11 +97,27 @@ export function derive(msgs) {
     break;
   }
 
-  return { count, hasInteraction };
+  return { count, hasInteraction, latestActivityMs };
 }
 
 function parseMetadata(raw) {
   if (!raw) return null;
   if (typeof raw === 'object') return raw;
   try { return JSON.parse(raw); } catch (_) { return null; }
+}
+
+/**
+ * Convert a timestamp in any of the shapes the wire uses
+ * (ISO string, Date, numeric seconds, numeric milliseconds) into
+ * milliseconds since epoch. Returns 0 for falsy / unparseable.
+ */
+function timeOf(raw) {
+  if (!raw) return 0;
+  if (raw instanceof Date) return raw.getTime();
+  if (typeof raw === 'number') {
+    // Heuristic: values > 1e12 are already ms; smaller are seconds.
+    return raw > 1e12 ? raw : raw * 1000;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

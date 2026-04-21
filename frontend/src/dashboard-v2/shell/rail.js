@@ -14,14 +14,16 @@ export class RailView {
     this.root = document.getElementById('v2-rail-controls');
     if (!this.root) return;
     this._updateActiveStates();
-    this._updateAggregateUnread();
+    this._updateActiveUnread();
     this._applyRailState();
 
     this.unsubs.push(uiStore.subscribe(e => {
       if (e.kind === 'rail' || e.kind === 'rail_panel') this._applyRailState();
       if (e.kind === 'overlay') this._updateActiveStates();
+      // Switching channels changes which unread count the rail shows.
+      if (e.kind === 'active_channel') this._updateActiveUnread();
     }));
-    this.unsubs.push(unreadStore.subscribe(() => this._updateAggregateUnread()));
+    this.unsubs.push(unreadStore.subscribe(() => this._updateActiveUnread()));
 
     this.root.addEventListener('click', this._onClick);
   }
@@ -49,14 +51,20 @@ export class RailView {
     if (cBtn) cBtn.classList.toggle('active', overlay.open);
   }
 
-  _updateAggregateUnread() {
-    const agg = unreadStore.aggregate();
+  _updateActiveUnread() {
+    // The rail chat icon shows a badge only for the CURRENT channel —
+    // other channels are surfaced via the Attention section in the
+    // sidebar instead, so the rail stays quiet until there's something
+    // to do right here.
     const el = document.getElementById('v2-rail-unread');
     if (!el) return;
-    if (agg.total > 0) {
+    const channelId = uiStore.getActiveChannel();
+    const slot = channelId ? unreadStore.get(channelId) : null;
+    const count = slot?.count || 0;
+    if (count > 0) {
       el.hidden = false;
-      el.textContent = String(agg.total);
-      el.classList.toggle('has-interaction', agg.anyInteraction);
+      el.textContent = String(count);
+      el.classList.toggle('has-interaction', !!slot?.hasInteraction);
     } else {
       el.hidden = true;
     }

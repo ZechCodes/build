@@ -2,6 +2,63 @@
 
 .v2-channel-panel-list { display: flex; flex-direction: column; gap: 0; }
 
+/* Attention section — floats above the devices, lists channels that
+   need the user's eyes (running agent + waiting on interaction /
+   unread). */
+.v2-attention-section {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.v2-attention-header {
+  padding: 6px 10px 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.v2-attention-rows { display: flex; flex-direction: column; }
+
+.v2-attention-row .v2-attention-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+.v2-attention-row[class*="status-running"] .v2-attention-indicator {
+  background: var(--tool-write);
+  /* Pulse to convey "in flight". */
+  animation: v2-attention-pulse 1.4s ease-in-out infinite;
+}
+.v2-attention-row[class*="status-unread"] .v2-attention-indicator {
+  background: var(--accent);
+}
+.v2-attention-row[class*="status-interaction"] .v2-attention-indicator {
+  background: var(--interaction);
+}
+@keyframes v2-attention-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+.v2-attention-status {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.v2-attention-row[class*="status-interaction"] .v2-attention-status { color: var(--interaction); }
+.v2-attention-row[class*="status-running"]     .v2-attention-status { color: var(--tool-write); }
+.v2-attention-row[class*="status-unread"]      .v2-attention-status { color: var(--accent); }
+
+/* The Attention row reuses `.v2-channel-sidebar-item` for padding
+   + hover, but we don't want the edit-pencil button to render here
+   (it's not in the markup). */
+.v2-attention-row .v2-ch-edit { display: none; }
+
 .v2-device-group { display: flex; flex-direction: column; }
 
 .v2-device-header {

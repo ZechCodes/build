@@ -6,6 +6,7 @@ import { bus } from '../core/bus.js';
 import { devicesStore } from '../domain/devices-store.js';
 import { channelsStore } from '../domain/channels-store.js';
 import { unreadStore } from '../domain/unread-store.js';
+import { presenceStore } from '../domain/presence-store.js';
 import { uiStore } from '../domain/ui-store.js';
 import { router } from './router.js';
 import { escapeHtml } from '../util/html.js';
@@ -34,6 +35,11 @@ export class ChannelPanelView {
     this.unsubs.push(devicesStore.subscribe(resub));
     this.unsubs.push(channelsStore.subscribe(resub));
     this.unsubs.push(unreadStore.subscribe(resub));
+    this.unsubs.push(presenceStore.subscribe(e => {
+      // Only re-render on agent_active flips — plan_mode alone
+      // doesn't belong in the Attention section.
+      if (e.kind === 'agent_active') this.render();
+    }));
     this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
     this.root.addEventListener('click', this._onClick);
     this.root.addEventListener('keydown', this._onKeydown);
@@ -60,6 +66,21 @@ export class ChannelPanelView {
       return;
     }
     const parts = [];
+
+    // Attention section — lists every channel that's either running
+    // (agent is processing) or waiting (unread messages, or a pending
+    // interaction: plan review / tool approval / question).
+    const attention = buildAttentionList();
+    if (attention.length) {
+      parts.push(`
+        <section class="v2-attention-section">
+          <header class="v2-attention-header">Attention</header>
+          <div class="v2-attention-rows">
+            ${attention.map(a => renderAttentionRow(a, active)).join('')}
+          </div>
+        </section>
+      `);
+    }
     for (const d of devices) {
       const channels = channelsStore.listByDevice(d.id)
         .slice()
@@ -160,6 +181,68 @@ function deviceStatus(device) {
   if (device.status !== 'online') return 'offline';
   if (!device.has_transport_key) return 'online';
   return 'online';
+}
+
+/**
+ * Walk every known channel, and return those that either:
+ *   - have their agent actively processing (running), or
+ *   - have unread messages / a pending interaction (waiting).
+ * Sorted so the loudest signal floats to the top.
+ */
+function buildAttentionList() {
+  const items = [];
+  for (const ch of channelsStore.list()) {
+    const pres = presenceStore.get(ch.id);
+    const unread = unreadStore.get(ch.id);
+    const running = !!pres.agentActive;
+    const waitingInteraction = !!unread.hasInteraction;
+    const waitingUnread = (unread.count || 0) > 0;
+    if (!running && !waitingInteraction && !waitingUnread) continue;
+    items.push({ ch, running, waitingInteraction, waitingUnread, count: unread.count || 0 });
+  }
+  items.sort((a, b) => {
+    // Interaction > unread > running. Within the same category, fall
+    // back to channel name for stability.
+    const score = (x) =>
+      (x.waitingInteraction ? 4 : 0) +
+      (x.waitingUnread      ? 2 : 0) +
+      (x.running            ? 1 : 0);
+    const d = score(b) - score(a);
+    if (d) return d;
+    return (a.ch.name || '').localeCompare(b.ch.name || '');
+  });
+  return items;
+}
+
+function renderAttentionRow(item, activeId) {
+  const { ch, running, waitingInteraction, waitingUnread, count } = item;
+  const isActive = ch.id === activeId;
+  const name = ch.name || (ch.id || '').slice(0, 8);
+  const status = waitingInteraction ? 'interaction'
+               : waitingUnread      ? 'unread'
+               : 'running';
+  const statusLabel = waitingInteraction ? 'Needs you'
+                    : waitingUnread      ? 'Unread'
+                    : 'Running';
+  const badge = count > 0
+    ? `<span class="v2-ch-unread-badge">${count}</span>`
+    : '';
+  const classes = [
+    'v2-attention-row',
+    'v2-channel-sidebar-item',
+    isActive ? 'active' : '',
+    waitingInteraction ? 'has-interaction' : '',
+    `status-${status}`,
+  ].filter(Boolean).join(' ');
+  return `
+    <div class="${classes}" data-channel-id="${escapeHtml(ch.id)}">
+      <span class="v2-attention-indicator" data-indicator="${status}" aria-label="${statusLabel}"></span>
+      <span class="v2-ch-hash">#</span>
+      <span class="v2-ch-name">${escapeHtml(name)}</span>
+      ${badge}
+      <span class="v2-attention-status">${statusLabel}</span>
+    </div>
+  `;
 }
 
 function renderChannel(ch, activeId) {

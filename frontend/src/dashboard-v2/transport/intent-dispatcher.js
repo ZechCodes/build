@@ -7,6 +7,7 @@ import { bus } from '../core/bus.js';
 import { log } from '../core/log.js';
 import { e2eePool } from './e2ee-pool.js';
 import { channelsStore } from '../domain/channels-store.js';
+import { messagesStore } from '../domain/messages-store.js';
 
 const plog = log('intent');
 
@@ -32,15 +33,36 @@ export function bindIntentDispatcher() {
     const content = text || '';
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!content && !hasAttachments) return;
-    // Build payload directly — matches v1 chat/composer.js wire shape.
+    // Optimistic insert — shows "Sending" immediately. The id is a
+    // placeholder; we swap it for conn.send()'s return value so the
+    // subsequent `delivered`/`read` wire events (which reference the
+    // server-used id) can find the message.
+    const tempId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    messagesStore.append(channelId, {
+      id: tempId,
+      channel_id: channelId,
+      sender: 'client',
+      content,
+      created_at: new Date().toISOString(),
+      attachments: hasAttachments ? attachments : undefined,
+    });
+
+    // Build payload. Matches v1 chat/composer.js wire shape.
     const payload = { action: 'message', channel_id: channelId, content };
     if (hasAttachments) payload.attachments = attachments;
     if (planMode) payload.plan_mode = true;
     const ch = channelsStore.get(channelId);
     if (ch?.model) payload.model = ch.model;
     if (ch?.effort) payload.effort = ch.effort;
-    try { await conn.send(payload); }
-    catch (err) { plog.error('send_message failed', err); }
+    try {
+      const realId = await conn.send(payload);
+      if (realId) messagesStore.replaceId(channelId, tempId, realId);
+    } catch (err) {
+      plog.error('send_message failed', err);
+      messagesStore.markFailed(channelId, tempId);
+    }
   });
 
   bus.on('intent.stop_agent', async ({ channelId }) => {

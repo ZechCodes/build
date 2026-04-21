@@ -74,6 +74,56 @@ test('markRead stamps read_at and notifies once', () => {
   assert.equal(events[0].kind, 'read');
 });
 
+test('replaceId swaps temp id to real id and lets delivered match', () => {
+  const ch = 'ms-replace';
+  messagesStore.append(ch, { id: 'tmp-1', sender: 'client', content: 'hi' });
+  messagesStore.replaceId(ch, 'tmp-1', 'real-1');
+
+  const list = messagesStore.forChannel(ch);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'real-1');
+
+  messagesStore.markDelivered(ch, 'real-1');
+  assert.ok(messagesStore.forChannel(ch)[0].delivered_at, 'delivered_at stamped after replaceId');
+});
+
+test('replaceId merges when echo arrived before swap (race)', () => {
+  const ch = 'ms-replace-race';
+  messagesStore.append(ch, { id: 'tmp-2', sender: 'client', content: 'hi' });
+  // Simulate echo landing first: row with real id already present.
+  messagesStore.append(ch, { id: 'real-2', sender: 'client', content: 'hi', delivered_at: '2026-01-01T00:00:00Z' });
+  messagesStore.replaceId(ch, 'tmp-2', 'real-2');
+
+  const list = messagesStore.forChannel(ch);
+  assert.equal(list.length, 1, 'duplicate collapsed');
+  assert.equal(list[0].id, 'real-2');
+  assert.equal(list[0].delivered_at, '2026-01-01T00:00:00Z');
+});
+
+test('replaceId is a no-op when oldId missing or ids match', () => {
+  const ch = 'ms-replace-noop';
+  messagesStore.append(ch, { id: 'keep', content: 'x' });
+  let fired = 0;
+  const off = messagesStore.subscribe(() => fired++);
+  messagesStore.replaceId(ch, 'missing', 'also-missing');
+  messagesStore.replaceId(ch, 'keep', 'keep');
+  off();
+  assert.equal(fired, 0);
+  assert.equal(messagesStore.forChannel(ch)[0].id, 'keep');
+});
+
+test('markFailed flags a message and notifies', () => {
+  const ch = 'ms-failed';
+  messagesStore.append(ch, { id: 'f1', content: 'x' });
+  const events = [];
+  const off = messagesStore.subscribe(e => events.push(e));
+  messagesStore.markFailed(ch, 'f1');
+  off();
+  assert.equal(messagesStore.forChannel(ch)[0].delivery_failed, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'delivery_failed');
+});
+
 test('unsubscribe stops delivery (no leak)', () => {
   const ch = 'ms-unsub';
   let fired = 0;

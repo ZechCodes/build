@@ -56,6 +56,34 @@ export const messagesStore = {
     notify({ kind: 'delivered', channelId, msgId });
   },
 
+  /**
+   * Swap an optimistic client-generated id for the real id returned by
+   * BuildE2EE.send(). Needed so `delivered` / `read` events (which
+   * reference the real id) can find the optimistic row.
+   */
+  replaceId(channelId, oldId, newId) {
+    if (!oldId || !newId || oldId === newId) return;
+    const arr = byChannel.get(channelId);
+    if (!arr) return;
+    const oldIdx = arr.findIndex(x => x.id === oldId);
+    if (oldIdx === -1) return;
+    // Race: the server echo may have already inserted a row with newId
+    // (possible if HTTP POST is slow and the echo wire event arrives
+    // first). Merge delivered_at / read_at from whichever row has them
+    // and drop the duplicate.
+    const newIdx = arr.findIndex(x => x.id === newId);
+    if (newIdx !== -1 && newIdx !== oldIdx) {
+      const merged = arr[newIdx];
+      const optimistic = arr[oldIdx];
+      if (optimistic.delivered_at && !merged.delivered_at) merged.delivered_at = optimistic.delivered_at;
+      if (optimistic.read_at && !merged.read_at) merged.read_at = optimistic.read_at;
+      arr.splice(oldIdx, 1);
+    } else {
+      arr[oldIdx].id = newId;
+    }
+    notify({ kind: 'replace_id', channelId, oldId, newId });
+  },
+
   markFailed(channelId, msgId) {
     const arr = byChannel.get(channelId);
     if (!arr) return;

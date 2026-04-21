@@ -80,14 +80,67 @@
 .v2-co-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   padding: 6px 10px;
   border-top: 1px solid var(--border);
   background: var(--bg-elev-2);
   border-bottom-left-radius: var(--radius);
   border-bottom-right-radius: var(--radius);
-  min-height: 36px;
+  min-height: 40px;
 }
+
+.v2-co-tool {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 5px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+}
+.v2-co-tool svg { width: 14px; height: 14px; }
+.v2-co-tool:hover { color: var(--fg); background: var(--bg-hover); }
+.v2-co-tool.active { color: #0b0d10; background: var(--accent); border-color: var(--accent); }
+.v2-co-tool.confirm { color: var(--interaction); border-color: var(--interaction); }
+
+.v2-co-tool-spacer { flex: 1; }
+
+.v2-co-ctrl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: default;
+  font-family: var(--font-mono);
+}
+.v2-co-ctrl-part { color: var(--fg); }
+.v2-co-ctrl-sep { color: var(--fg-dim); }
+
+.v2-co-stop, .v2-co-send {
+  background: var(--accent);
+  color: #0b0d10;
+  border: none;
+  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+}
+.v2-co-stop { background: transparent; color: #d06262; border: 1px solid #d06262; }
+.v2-co-stop:hover { background: rgba(208, 98, 98, 0.15); }
+.v2-co-send svg, .v2-co-stop svg { width: 12px; height: 12px; }
+.v2-co-send:hover { background: #7cb0ff; }
 
 .v2-chat-messages-wrap {
   flex: 1;
@@ -307,19 +360,16 @@
   cursor: pointer;
 }
 
-/* Composer */
+/* Composer: just the textarea. Action buttons live in the overlay
+   toolbar below. */
 
 .v2-chat-composer {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px 10px;
   background: var(--bg);
 }
 
 .v2-chat-input {
-  flex: 1;
+  width: 100%;
   resize: none;
   min-height: 36px;
   max-height: 240px;
@@ -334,31 +384,8 @@
 }
 .v2-chat-input:focus { outline: 1px solid var(--accent); }
 
-.v2-chat-send {
-  padding: 8px 16px;
-  background: var(--accent);
-  color: #0b0d10;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  height: 36px;
-}
-
-.v2-chat-stop {
-  padding: 8px 14px;
-  background: transparent;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 13px;
-  height: 36px;
-}
-.v2-chat-stop:hover { background: var(--bg-hover); }
-
-/* Commands tray (Attach / Plan / Compact / Reset) */
+/* Commands tray (legacy — no longer rendered inside composer; toolbar
+   now lives in the overlay). Kept for staging chips reuse below. */
 
 .v2-cmd-tray {
   display: flex;

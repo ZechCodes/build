@@ -43,7 +43,8 @@ export class ChatView {
       if (e.id === this.channel.id) this._renderHeader();
     }));
     this.unsubs.push(presenceStore.subscribe(e => {
-      if (e.kind === 'plan_mode' && e.channelId === this.channel.id) this._renderCmdTray();
+      if (e.channelId !== this.channel.id) return;
+      if (e.kind === 'plan_mode' || e.kind === 'agent_active') this._renderToolbar();
     }));
     this.unsubs.push(bus.on('upload.progress', (p) => {
       if (p.deviceId !== channelsStore.deviceFor(this.channel.id)) return;
@@ -60,12 +61,19 @@ export class ChatView {
     if (this.composerInput && this.channel?.viewState) {
       this.channel.viewState.draftText = this.composerInput.value;
     }
+    if (this.toolbarEl) {
+      this.toolbarEl.removeEventListener('click', this._onClick);
+      this.toolbarEl.innerHTML = '';
+    }
     this.root = null;
     this.messagesEl = null;
     this.composerInput = null;
+    this.toolbarEl = null;
   }
 
   _buildShell() {
+    // Body: messages + staging + composer input only. No buttons here;
+    // action buttons live in the overlay toolbar (v1 parity).
     this.root.innerHTML = `
       <div class="v2-chat">
         <div class="v2-chat-messages-wrap">
@@ -73,11 +81,8 @@ export class ChatView {
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
-        <div class="v2-cmd-tray" data-slot="tray"></div>
         <div class="v2-chat-composer" data-slot="composer">
-          <button class="v2-chat-stop" type="button" hidden data-action="stop">Stop</button>
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>
-          <button class="v2-chat-send" type="button" data-action="send">Send</button>
         </div>
         <input type="file" class="v2-chat-file-input" multiple hidden>
       </div>
@@ -86,19 +91,21 @@ export class ChatView {
     this.composerInput = this.root.querySelector('.v2-chat-input');
     this.stagingEl = this.root.querySelector('[data-slot="staging"]');
     this.fileInput = this.root.querySelector('.v2-chat-file-input');
+    this.toolbarEl = document.getElementById('v2-chat-overlay-toolbar');
+
     this.composerInput.value = this.channel.viewState?.draftText || '';
     this._autosizeInput();
-    this._renderCmdTray();
+    this._renderToolbar();
     this._renderStaging();
 
     this.root.addEventListener('click', this._onClick);
+    if (this.toolbarEl) this.toolbarEl.addEventListener('click', this._onClick);
     this.composerInput.addEventListener('keydown', this._onKeydown);
     this.composerInput.addEventListener('input', this._autosizeInput);
     this.root.querySelector('.v2-chat-new-bubble').addEventListener('click', () => this._scrollToBottom(true));
     this.messagesEl.addEventListener('scroll', this._onScroll);
     this.fileInput.addEventListener('change', this._onFileSelect);
 
-    // Drag-drop: files dropped on the message area get staged.
     this.messagesEl.addEventListener('dragover', (e) => { e.preventDefault(); this.messagesEl.classList.add('dragover'); });
     this.messagesEl.addEventListener('dragleave', () => this.messagesEl.classList.remove('dragover'));
     this.messagesEl.addEventListener('drop', this._onDrop);
@@ -127,10 +134,8 @@ export class ChatView {
   }
 
   _renderStopButton() {
-    const btn = this.root?.querySelector('.v2-chat-stop');
-    if (!btn) return;
-    const active = presenceStore.get(this.channel.id).agentActive;
-    btn.hidden = !active;
+    // Stop lives in the overlay toolbar, rebuilt by _renderToolbar.
+    this._renderToolbar();
   }
 
   _appendMessage(msg, allMsgs) {
@@ -478,40 +483,53 @@ export class ChatView {
     }
   }
 
-  // ----- Commands tray -----
+  // ----- Overlay toolbar (v1 parity: Attach / Plan / Compact / Clear +
+  //        spacer + model·effort pill + Stop + Send) -----
 
-  _renderCmdTray() {
-    const tray = this.root?.querySelector('[data-slot="tray"]');
-    if (!tray) return;
-    const planOn = presenceStore.get(this.channel.id).planMode;
-    tray.innerHTML = `
-      <button class="v2-cmd-btn" type="button" data-cmd="attach" title="Attach files">
+  _renderToolbar() {
+    if (!this.toolbarEl) return;
+    const presence = presenceStore.get(this.channel.id);
+    const planOn = presence.planMode;
+    const agentActive = presence.agentActive;
+    const ch = channelsStore.get(this.channel.id);
+    const model = ch?.model || '—';
+    const effort = ch?.effort || '';
+    this.toolbarEl.innerHTML = `
+      <button class="v2-co-tool" type="button" data-cmd="attach" title="Attach file">
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M14 8.5l-5.5 5.5a3.5 3.5 0 01-5-5L9 3.5a2.5 2.5 0 013.5 3.5L7 12.5a1.5 1.5 0 01-2-2L10.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>Attach</span>
       </button>
-      <button class="v2-cmd-btn ${planOn ? 'active' : ''}" type="button" data-cmd="plan" title="Plan mode">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3h10v3H3zM3 8h10v5H3z" stroke="currentColor" stroke-width="1.3"/></svg>
-        <span>Plan</span>
+      <button class="v2-co-tool ${planOn ? 'active' : ''}" type="button" data-cmd="plan" title="Plan mode">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       </button>
-      <button class="v2-cmd-btn" type="button" data-cmd-confirm="compact" data-cmd="compact" title="Compact session">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3h10M3 8h10M3 13h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-        <span class="v2-cmd-label">Compact</span>
+      <button class="v2-co-tool" type="button" data-cmd-confirm="compact" data-cmd="compact" title="Compact conversation">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2v4l4-4M12 2v4L8 2M4 14v-4l4 4M12 14v-4l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="v2-cmd-label" hidden>Compact</span>
       </button>
-      <button class="v2-cmd-btn" type="button" data-cmd-confirm="reset" data-cmd="reset" title="Reset session">
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8a5 5 0 10-1.8 3.8M13 4v4h-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="v2-cmd-label">Clear</span>
+      <button class="v2-co-tool" type="button" data-cmd-confirm="reset" data-cmd="reset" title="Clear conversation">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span class="v2-cmd-label" hidden>Clear</span>
+      </button>
+      <div class="v2-co-tool-spacer"></div>
+      <div class="v2-co-ctrl-pill" title="Model / effort">
+        <span class="v2-co-ctrl-part">${escapeHtml(model)}</span>
+        ${effort ? `<span class="v2-co-ctrl-sep">·</span><span class="v2-co-ctrl-part">${escapeHtml(effort)}</span>` : ''}
+      </div>
+      <button class="v2-co-stop" type="button" data-action="stop" title="Stop agent" ${agentActive ? '' : 'hidden'}>
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg>
+      </button>
+      <button class="v2-co-send" type="button" data-action="send" title="Send">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8l12-5-5 12-2-5-5-2z" fill="currentColor"/></svg>
       </button>
     `;
   }
 
   _handleConfirm(btn) {
     const kind = btn.getAttribute('data-cmd-confirm');
-    const label = btn.querySelector('.v2-cmd-label');
     // Second click within timeout → fire the intent.
     if (this._confirm?.btn === btn && btn.classList.contains('confirm')) {
       clearTimeout(this._confirm.timeout);
       btn.classList.remove('confirm');
-      if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+      btn.title = kind === 'compact' ? 'Compact conversation' : 'Clear conversation';
       this._confirm = null;
       if (kind === 'compact') bus.emit('intent.compact_session', { channelId: this.channel.id });
       else if (kind === 'reset') bus.emit('intent.reset_session', { channelId: this.channel.id });
@@ -520,12 +538,12 @@ export class ChatView {
     // First click → arm.
     this._clearConfirm();
     btn.classList.add('confirm');
-    if (label) label.textContent = 'Click to confirm';
+    btn.title = 'Click again to confirm';
     this._confirm = {
       kind, btn,
       timeout: setTimeout(() => {
         btn.classList.remove('confirm');
-        if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+        btn.title = kind === 'compact' ? 'Compact conversation' : 'Clear conversation';
         this._confirm = null;
       }, CONFIRM_TIMEOUT_MS),
     };
@@ -536,8 +554,7 @@ export class ChatView {
     clearTimeout(this._confirm.timeout);
     const { btn, kind } = this._confirm;
     btn.classList.remove('confirm');
-    const label = btn.querySelector('.v2-cmd-label');
-    if (label) label.textContent = kind === 'compact' ? 'Compact' : 'Clear';
+    btn.title = kind === 'compact' ? 'Compact conversation' : 'Clear conversation';
     this._confirm = null;
   }
 

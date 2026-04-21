@@ -377,6 +377,32 @@ export class ChatView {
   // ----- Composer / interaction click routing -----
 
   _onClick = (e) => {
+    // Wrap toggle on build-embed / code block: flip .wrap-on, stop
+    // further handling (don't also collapse).
+    const wrapBtn = e.target.closest('.build-embed-wrap-toggle, .md-code-wrap-toggle');
+    if (wrapBtn) {
+      const block = wrapBtn.closest('.build-embed, .md-code-block');
+      if (block) block.classList.toggle('wrap-on');
+      e.stopPropagation();
+      return;
+    }
+    // Copy button on code block.
+    const copyBtn = e.target.closest('.md-code-copy');
+    if (copyBtn) {
+      const block = copyBtn.closest('.md-code-block');
+      const code = block?.querySelector('pre code')?.textContent || '';
+      if (code && navigator.clipboard) navigator.clipboard.writeText(code).catch(() => {});
+      e.stopPropagation();
+      return;
+    }
+    // Collapse-toggle when the user clicks a build-embed / code-block
+    // header (anywhere other than the inline buttons handled above).
+    const embedHeader = e.target.closest('.build-embed-header, .md-code-header');
+    if (embedHeader) {
+      const block = embedHeader.closest('.build-embed, .md-code-block');
+      if (block) block.classList.toggle('collapsed');
+      return;
+    }
     // Stop agent
     if (e.target.closest('[data-action="stop"]')) {
       bus.emit('intent.stop_agent', { channelId: this.channel.id });

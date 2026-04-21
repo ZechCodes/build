@@ -156,9 +156,10 @@ import { highlightLine } from './syntax.js';
       lineStart = parseInt(parts[0], 10) || 1;
     }
 
-    var collapsed = totalLines > 8;
+    var collapsed = totalLines > 10;
     var cls = 'build-embed' + (collapsed ? ' collapsed' : '');
     var toggleBtn = '<span class="build-embed-chevron">&#x25B6;</span>';
+    var moreLabel = collapsed ? '<span class="build-embed-more">+' + (totalLines - 10) + ' lines</span>' : '';
 
     var viewerHtml = '<div class="file-viewer">';
     for (var i = 0; i < lines.length; i++) {
@@ -172,6 +173,7 @@ import { highlightLine } from './syntax.js';
       '<div class="build-embed-header">' +
         toggleBtn +
         '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        moreLabel +
         embedWrapBtn +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
@@ -267,15 +269,17 @@ import { highlightLine } from './syntax.js';
     }
     viewerHtml += '</div>';
 
-    var collapsed = totalLines > 8;
+    var collapsed = totalLines > 10;
     var wrapCls = 'build-embed' + (collapsed ? ' collapsed' : '');
     var toggleBtn = '<span class="build-embed-chevron">&#x25B6;</span>';
+    var moreLabel = collapsed ? '<span class="build-embed-more">+' + (totalLines - 10) + ' lines</span>' : '';
 
     var diffWrapBtn = '<button class="build-embed-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
     return '<div class="' + wrapCls + '" data-embed-type="diff">' +
       '<div class="build-embed-header">' +
         toggleBtn +
         '<span class="build-embed-path">' + escapeHtml(path) + '</span>' +
+        moreLabel +
         diffWrapBtn +
       '</div>' +
       '<div class="build-embed-body">' + viewerHtml + '</div>' +
@@ -318,15 +322,19 @@ import { highlightLine } from './syntax.js';
           i++;
         }
         i++; // skip closing ```
+        var codeCollapsed = codeLines.length > 10;
+        var blockCls = 'md-code-block' + (codeCollapsed ? ' collapsed' : '');
         var langAttr = lang ? ' data-lang="' + escapeHtml(lang) + '"' : '';
+        var chev = '<span class="md-code-chevron">&#x25B6;</span>';
         var langLabel = lang ? '<span class="md-code-lang">' + escapeHtml(lang) + '</span>' : '';
+        var moreLbl = codeCollapsed ? '<span class="md-code-more">+' + (codeLines.length - 10) + ' lines</span>' : '';
         var wrapBtn = '<button class="md-code-wrap-toggle" title="Toggle line wrapping"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 8h7a2 2 0 010 4H8l1.5-1.5M3 12h3"/></svg>wrap</button>';
         var copyBtn = '<button class="md-code-copy" title="Copy code"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>copy</button>';
-        var header = '<div class="md-code-header">' + langLabel + wrapBtn + copyBtn + '</div>';
+        var header = '<div class="md-code-header">' + chev + langLabel + moreLbl + wrapBtn + copyBtn + '</div>';
         out.push(
-          '<div class="md-code-block"' + langAttr + '>' +
+          '<div class="' + blockCls + '"' + langAttr + '>' +
           header +
-          '<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre></div>'
+          '<pre class="md-code-body"><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre></div>'
         );
         continue;
       }

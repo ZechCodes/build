@@ -16,3 +16,19 @@ html, body {
 code, pre { font-family: var(--font-mono); }
 
 button { font-family: inherit; }
+
+/* iOS Safari auto-zooms when a focused input's computed font-size is
+   below 16px. Force 16px on all text-entry controls under 768px so
+   the zoom never fires. `.v2-app` prefix lifts specificity above the
+   component-scoped rules (chat.css, channel-panel.css, terminal.css)
+   that load after this stylesheet. */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select,
+  .v2-app .v2-chat-input,
+  .v2-app .v2-new-session-input,
+  .v2-app .v2-term-input {
+    font-size: 16px;
+  }
+}

@@ -14,20 +14,23 @@
   right: 16px;
   bottom: calc(var(--rail-height) + 16px);
   width: 420px;
-  max-height: calc(100vh - var(--rail-height) - 48px);
+  /* Concrete height: flex children (co-body flex:1) need something to
+     size against. Without it, messages push the composer out of view. */
+  height: min(72vh, calc(100vh - var(--rail-height) - 48px));
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
   display: none;
   flex-direction: column;
+  overflow: hidden;
   z-index: 40;
 }
 .v2-chat-overlay.open { display: flex; }
 .v2-chat-overlay[data-mode="expanded"] {
   width: calc(100vw - var(--sidebar-width) - 32px);
   right: 16px;
-  max-height: calc(100vh - var(--rail-height) - 32px);
+  height: calc(100vh - var(--rail-height) - 32px);
   bottom: calc(var(--rail-height) + 16px);
 }
 .v2-app[data-rail="open"] .v2-chat-overlay,
@@ -68,10 +71,11 @@
 .v2-co-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   overflow: hidden;
 }
-.v2-co-body > .v2-chat { flex: 1; min-height: 0; }
+.v2-co-body > .v2-chat { flex: 1; min-height: 0; min-width: 0; }
 
 .v2-co-toolbar {
   display: flex;
@@ -94,10 +98,12 @@
 .v2-chat-messages {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
 }
 
 .v2-chat-empty {
@@ -144,7 +150,13 @@
 .v2-msg-name { font-weight: 600; color: var(--fg); }
 .v2-msg-time { color: var(--fg-dim); font-size: 11px; }
 
-.v2-msg-text { color: var(--fg); word-wrap: break-word; }
+.v2-msg-text {
+  color: var(--fg);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;  /* break long URLs / paths inside words */
+  min-width: 0;
+}
+.v2-msg-body { min-width: 0; }
 .v2-msg-text p { margin: 0 0 8px; }
 .v2-msg-text p:last-child { margin-bottom: 0; }
 .v2-msg-text code { background: var(--bg-elev-2); border: 1px solid var(--border); padding: 0 4px; border-radius: 3px; font-size: 12px; }

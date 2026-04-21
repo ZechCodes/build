@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { Channel } from '../../src/dashboard-v2/channel/channel.js';
 import { bus } from '../../src/dashboard-v2/core/bus.js';
 import { messagesStore } from '../../src/dashboard-v2/domain/messages-store.js';
+import { channelsStore } from '../../src/dashboard-v2/domain/channels-store.js';
 
 function stubView() {
   return {
@@ -50,8 +51,11 @@ test('destroy unmounts and nulls viewState/views', () => {
   assert.equal(ch.views, null);
 });
 
-test('activate requests history when messagesStore is empty', () => {
+test('activate requests history once the channel is routable', () => {
   const v = stubView();
+  // Channel must be mapped to a device in channelsStore before we fetch
+  // (matches real behavior where transport populates channelsStore first).
+  channelsStore.upsert({ deviceId: 'dev-chD', channel: { id: 'chD', name: 'chD' } });
   const ch = new Channel('chD', { views: { v } });
   const events = [];
   const off = bus.on('intent.get_messages', (p) => events.push(p));
@@ -60,8 +64,23 @@ test('activate requests history when messagesStore is empty', () => {
   assert.ok(events.some(e => e.channelId === 'chD'));
 });
 
+test('activate defers history fetch until channel appears in channelsStore', () => {
+  const v = stubView();
+  const ch = new Channel('chD-defer', { views: { v } });
+  const events = [];
+  const off = bus.on('intent.get_messages', (p) => events.push(p));
+  ch.activate();
+  assert.equal(events.filter(e => e.channelId === 'chD-defer').length, 0);
+  // Now simulate the channel arriving from transport.
+  channelsStore.upsert({ deviceId: 'dev-chD-defer', channel: { id: 'chD-defer', name: 'late' } });
+  assert.ok(events.some(e => e.channelId === 'chD-defer'));
+  off();
+  ch.deactivate();
+});
+
 test('activate does not request messages when history already cached', () => {
   const v = stubView();
+  channelsStore.upsert({ deviceId: 'dev-chE', channel: { id: 'chE', name: 'chE' } });
   messagesStore.bulk('chE', [{ id: 'm1', content: 'cached' }]);
   const ch = new Channel('chE', { views: { v } });
   const events = [];

@@ -5,6 +5,7 @@
 import { bus } from '../core/bus.js';
 import { messagesStore } from '../domain/messages-store.js';
 import { unreadStore } from '../domain/unread-store.js';
+import { channelsStore } from '../domain/channels-store.js';
 import { ChatView } from './views/chat-view.js';
 import { ConsoleView } from './views/console-view.js';
 import { FilesView } from './views/files-view.js';
@@ -56,6 +57,8 @@ export class Channel {
       };
     }
     this._active = false;
+    this._unsubs = [];
+    this._fetchedOnce = false;
   }
 
   activate() {
@@ -66,12 +69,18 @@ export class Channel {
 
     for (const v of Object.values(this.views)) v.activate();
 
-    // Fetch history if empty.
-    if (messagesStore.forChannel(this.id).length === 0) {
-      bus.emit('intent.get_messages', { channelId: this.id });
-    }
-    bus.emit('intent.get_activity', { channelId: this.id });
-    bus.emit('intent.get_complications', { channelId: this.id });
+    // Initial fetch attempt — may no-op if transport isn't up yet.
+    this._tryFetchHistory();
+
+    // Re-fetch when the channel becomes routable after initial load:
+    //   - e2ee.connected for its device
+    //   - channel.list / channel.upserted lands with this channel id
+    this._unsubs.push(bus.on('e2ee.connected', () => this._tryFetchHistory()));
+    this._unsubs.push(channelsStore.subscribe(e => {
+      if (e.kind === 'replace_for_device' || e.id === this.id) {
+        this._tryFetchHistory();
+      }
+    }));
 
     // Mark unread messages read. We use the msg list we have;
     // the intent handler accepts ids it doesn't recognize as a no-op.
@@ -86,10 +95,27 @@ export class Channel {
     bus.emit('intent.mark_seen', { channelId: this.id });
   }
 
+  _tryFetchHistory() {
+    if (!this._active) return;
+    // Only fetch once the channel resolves to a device (meaning the
+    // transport has picked it up).
+    if (!channelsStore.deviceFor(this.id)) return;
+    if (this._fetchedOnce && messagesStore.forChannel(this.id).length > 0) return;
+    this._fetchedOnce = true;
+    if (messagesStore.forChannel(this.id).length === 0) {
+      bus.emit('intent.get_messages', { channelId: this.id });
+    }
+    bus.emit('intent.get_activity', { channelId: this.id });
+    bus.emit('intent.get_complications', { channelId: this.id });
+  }
+
   deactivate() {
     if (!this._active) return;
     this._active = false;
     plog.debug('deactivate', this.id);
+    this._unsubs.forEach(fn => fn());
+    this._unsubs = [];
+    this._fetchedOnce = false;
     for (const v of Object.values(this.views)) v.deactivate();
   }
 

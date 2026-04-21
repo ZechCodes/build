@@ -33,6 +33,11 @@ export class FilesView {
       if (e.kind === 'read_result' || e.kind === 'read_result_progress') this._renderReadResult();
       if (e.kind === 'diff_result') this._renderDiffResult();
     }));
+    // Live refresh when the agent reports file changes.
+    this.unsubs.push(bus.on('agent.file_changes', ({ channelId, paths }) => {
+      if (channelId !== this.channel.id) return;
+      this._scheduleRefresh(paths || []);
+    }));
     this._renderTree();
     this._renderViewer();
   }
@@ -40,10 +45,58 @@ export class FilesView {
   deactivate() {
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
+    if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = null; }
+    this._pendingPaths = null;
     this.root = null;
     this.treeEl = null;
     this.viewerEl = null;
     this.modeBarEl = null;
+  }
+
+  /** Debounce agent.file_changes bursts; refetch on trailing edge. */
+  _scheduleRefresh(paths) {
+    if (!this._pendingPaths) this._pendingPaths = new Set();
+    for (const p of paths) this._pendingPaths.add(p);
+    clearTimeout(this._refreshTimer);
+    this._refreshTimer = setTimeout(() => this._doRefresh(), 150);
+  }
+
+  _doRefresh() {
+    const paths = [...(this._pendingPaths || [])];
+    this._pendingPaths = null;
+    this._refreshTimer = null;
+    const channelId = this.channel?.id;
+    if (!channelId) return;
+
+    // 1) Refresh the Modified list.
+    bus.emit('intent.files_changes', { channelId });
+
+    // 2) If the tree is showing "All", re-fetch root so new / deleted
+    //    files in the tree reflect the change.
+    if (this.channel.viewState.filesTreeTab === 'all') {
+      bus.emit('intent.files_list', { channelId, path: '' });
+    }
+
+    // 3) If a file is currently being viewed and was touched, re-fetch.
+    const current = this.channel.viewState.filesPath;
+    if (!current) return;
+    const norm = (p) => (p || '').replace(/\\/g, '/');
+    const cur = norm(current);
+    const curBase = cur.split('/').pop();
+    const touched = paths.some(p => {
+      const pp = norm(p);
+      if (!pp) return false;
+      if (pp === cur) return true;
+      if (cur.endsWith('/' + pp)) return true;
+      if (pp.endsWith('/' + cur)) return true;
+      return pp.split('/').pop() === curBase;
+    });
+    if (!touched) return;
+    if (this.channel.viewState.filesView === 'diff') {
+      bus.emit('intent.file_diff', { channelId, path: current });
+    } else {
+      bus.emit('intent.file_read', { channelId, path: current });
+    }
   }
 
   _fetchInitial() {

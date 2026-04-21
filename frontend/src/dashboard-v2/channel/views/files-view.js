@@ -38,6 +38,17 @@ export class FilesView {
       if (channelId !== this.channel.id) return;
       this._scheduleRefresh(paths || []);
     }));
+    // Git-status complications fire on commits (and on index changes).
+    // Use them to clear/refresh the Modified list even when no files
+    // actually changed on disk.
+    this.unsubs.push(bus.on('complication.upserted', ({ channelId }) => {
+      if (channelId !== this.channel.id) return;
+      this._scheduleRefresh([]);
+    }));
+    this.unsubs.push(bus.on('complications.bulk', ({ channelId }) => {
+      if (channelId !== this.channel.id) return;
+      this._scheduleRefresh([]);
+    }));
     this._renderTree();
     this._renderViewer();
   }
@@ -156,36 +167,55 @@ export class FilesView {
         this.treeEl.innerHTML = '<div class="v2-files-empty">No changes.</div>';
         return;
       }
-      const parts = nonEmpty.map(repo => {
-        const rows = (repo.entries || []).map(c => {
-          const status = c.git_status || 'M';
-          const letter = status === '?' ? '?' : status[0].toUpperCase();
-          const cls = status === '?' ? 'untracked' : status.toLowerCase();
-          const ins = c.insertions || 0;
-          const del = c.deletions || 0;
-          return `
-            <button class="v2-files-row ${this.channel.viewState.filesPath === c.path ? 'active' : ''}"
-                    type="button"
-                    data-file-path="${escapeHtml(c.path)}"
-                    data-has-diff="1">
-              <span class="v2-files-status v2-files-status-${escapeHtml(cls)}">${escapeHtml(letter)}</span>
-              <span class="v2-files-name">${escapeHtml(c.path)}</span>
-              <span class="v2-files-stats">
-                ${ins ? `<span class="v2-files-add">+${ins}</span>` : ''}
-                ${del ? `<span class="v2-files-del">-${del}</span>` : ''}
-              </span>
-            </button>
-          `;
-        }).join('');
-        const label = repo.branch ? `${escapeHtml(repo.path || '.')} · ${escapeHtml(repo.branch)}` : escapeHtml(repo.path || '.');
+      const repoParts = nonEmpty.map(repo => {
+        const activePath = this.channel.viewState.filesPath;
+        // Group entries by parent directory.
+        const byDir = new Map();       // dir → entries[]
+        for (const c of repo.entries || []) {
+          const dir = c.path.includes('/') ? c.path.slice(0, c.path.lastIndexOf('/')) : '';
+          if (!byDir.has(dir)) byDir.set(dir, []);
+          byDir.get(dir).push(c);
+        }
+        const dirs = [...byDir.keys()].sort((a, b) => a.localeCompare(b));
+        const dirChunks = dirs.map(dir => {
+          const entries = byDir.get(dir).slice().sort((a, b) => a.path.localeCompare(b.path));
+          const rows = entries.map(c => {
+            const status = c.git_status || 'M';
+            const letter = status === '?' ? '?' : status[0].toUpperCase();
+            const cls = status === '?' ? 'untracked' : status.toLowerCase();
+            const ins = c.insertions || 0;
+            const del = c.deletions || 0;
+            const basename = c.path.split('/').pop();
+            return `
+              <button class="v2-files-row ${activePath === c.path ? 'active' : ''}"
+                      type="button"
+                      data-file-path="${escapeHtml(c.path)}"
+                      data-has-diff="1">
+                <span class="v2-files-status v2-files-status-${escapeHtml(cls)}">${escapeHtml(letter)}</span>
+                <span class="v2-files-name">${escapeHtml(basename)}</span>
+                <span class="v2-files-stats">
+                  ${ins ? `<span class="v2-files-add">+${ins}</span>` : ''}
+                  ${del ? `<span class="v2-files-del">-${del}</span>` : ''}
+                </span>
+              </button>
+            `;
+          }).join('');
+          const dirHeader = dir
+            ? `<div class="v2-files-dir-header">${escapeHtml(dir)}/</div>`
+            : '';
+          return `<div class="v2-files-dir-group">${dirHeader}${rows}</div>`;
+        });
+        const label = repo.branch
+          ? `${escapeHtml(repo.path || '.')} · ${escapeHtml(repo.branch)}`
+          : escapeHtml(repo.path || '.');
         return `
           <div class="v2-files-repo">
             <div class="v2-files-repo-path">${label}</div>
-            ${rows}
+            ${dirChunks.join('')}
           </div>
         `;
       });
-      this.treeEl.innerHTML = parts.join('');
+      this.treeEl.innerHTML = repoParts.join('');
       return;
     }
 
@@ -202,7 +232,7 @@ export class FilesView {
     const parts = [];
     for (const entry of slot.entries) {
       const fullPath = path ? `${path}/${entry.name}` : entry.name;
-      if (entry.type === 'directory') {
+      if (entry.type === 'dir' || entry.type === 'directory') {
         const expanded = tree.has(fullPath);
         parts.push(`
           <button class="v2-files-row v2-files-dir"

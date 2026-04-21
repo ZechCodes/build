@@ -266,6 +266,98 @@
 .diff-word-del { background: rgba(208, 98, 98, 0.30); border-radius: 2px; }
 .diff-word-add { background: rgba(78, 166, 122, 0.30); border-radius: 2px; }
 
+/* Inline build-embed (file-path + wrap-toggle preview block inside
+   rendered markdown — produced by util/markdown.js). */
+
+.build-embed {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 6px 0;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.build-embed-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.build-embed-chevron {
+  font-size: 8px;
+  color: var(--fg-dim);
+  transition: transform 150ms ease;
+  transform: rotate(90deg);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.build-embed.collapsed .build-embed-chevron { transform: rotate(0); }
+.build-embed-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+.build-embed-wrap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  cursor: pointer;
+  opacity: 0.7;
+  font-family: inherit;
+}
+.build-embed-wrap-toggle svg { width: 10px; height: 10px; }
+.build-embed-wrap-toggle:hover { opacity: 1; color: var(--fg); }
+.build-embed-body {
+  overflow-y: auto;
+  max-height: 320px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.build-embed.collapsed .build-embed-body {
+  max-height: 120px;
+  overflow: hidden;
+  position: relative;
+}
+.build-embed.collapsed .build-embed-body::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 30px;
+  background: linear-gradient(transparent, var(--bg-elev));
+  pointer-events: none;
+}
+.build-embed.wrap-on .file-line,
+.build-embed.wrap-on .diff-line { white-space: pre-wrap; word-break: break-all; }
+.build-embed .file-line,
+.build-embed .diff-line {
+  display: flex;
+  padding: 0 10px;
+  white-space: pre;
+}
+.build-embed .fl-num,
+.build-embed .dl-num {
+  flex: 0 0 32px;
+  color: var(--fg-dim);
+  text-align: right;
+  padding-right: 10px;
+}
+.build-embed .fl-content,
+.build-embed .dl-content { flex: 1; }
+
 /* Image / SVG preview */
 
 .v2-files-image {

@@ -213,7 +213,7 @@ export class FilesView {
     }
 
     if (!path) {
-      this.viewerEl.innerHTML = '<div class="v2-files-empty">Select a file from the tree.</div>';
+      this.viewerEl.innerHTML = '<div class="v2-files-empty">Select a file to view changes</div>';
       return;
     }
     if (mode === 'diff') {

@@ -34,7 +34,10 @@ export class ChatView {
     this._buildShell();
     this._render();
     this.unsubs.push(messagesStore.subscribe(e => {
-      if (e.channelId === this.channel.id) this._render();
+      if (e.channelId !== this.channel.id) return;
+      // Single-message appends get special scroll handling so a long
+      // message pins its TOP to the viewport top rather than its bottom.
+      this._render({ appendedOne: e.kind === 'append' });
     }));
     this.unsubs.push(presenceStore.subscribe(e => {
       if (e.channelId === this.channel.id) this._renderStopButton();
@@ -141,7 +144,7 @@ export class ChatView {
     // here. Kept as a no-op for subscribe callbacks.
   }
 
-  _render() {
+  _render({ appendedOne = false } = {}) {
     if (!this.messagesEl) return;
     this._renderHeader();
     this._renderStopButton();
@@ -155,7 +158,9 @@ export class ChatView {
     this.messagesEl.innerHTML = '';
     msgs.forEach(m => this._appendMessage(m, msgs));
     this._dismissStaleSuggestions(msgs);
-    this._scrollToBottom(false);
+
+    if (appendedOne) this._scrollNewIntoView();
+    else this._scrollToBottom(false);
   }
 
   _renderStopButton() {
@@ -506,6 +511,30 @@ export class ChatView {
       const bubble = this.root.querySelector('.v2-chat-new-bubble');
       if (bubble) bubble.hidden = false;
     }
+  }
+
+  /**
+   * Scroll handling for newly-appended messages.
+   *   - If the new message fits in the viewport: scroll to bottom so
+   *     the full message is visible.
+   *   - If it's taller than the viewport: pin its TOP to the viewport
+   *     top so the reader starts at the beginning.
+   */
+  _scrollNewIntoView() {
+    if (!this.messagesEl) return;
+    const last = this.messagesEl.lastElementChild;
+    if (!last || !last.classList?.contains('v2-msg')) return;
+    const viewportH = this.messagesEl.clientHeight;
+    const msgH = last.getBoundingClientRect().height;
+    if (msgH > viewportH) {
+      // offsetTop is relative to the messages container (positioning
+      // context). That puts the message's top at the container's top.
+      this.messagesEl.scrollTop = last.offsetTop;
+    } else {
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    }
+    const bubble = this.root.querySelector('.v2-chat-new-bubble');
+    if (bubble) bubble.hidden = true;
   }
 
   // ----- Overlay toolbar (v1 parity: Attach / Plan / Compact / Clear +

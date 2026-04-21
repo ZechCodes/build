@@ -27,16 +27,43 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('connect_device failed', err); }
   });
 
+  // Per-channel outbound queue. Populated when the user sends a
+  // message while the transport is offline; drained on the next
+  // e2ee.connected for that device.
+  const outboundQueues = new Map();  // channelId → [{ tempId, payload }]
+
+  async function _sendAndSwap(conn, channelId, tempId, payload) {
+    try {
+      const realId = await conn.send(payload);
+      // Clear any leftover "queued" flag when the send succeeds.
+      messagesStore.markQueued(channelId, tempId, false);
+      if (realId) messagesStore.replaceId(channelId, tempId, realId);
+    } catch (err) {
+      plog.error('send_message failed', err);
+      messagesStore.markFailed(channelId, tempId);
+    }
+  }
+
+  async function _drainQueue(channelId) {
+    const q = outboundQueues.get(channelId);
+    if (!q || !q.length) return;
+    const conn = e2eePool.forChannel(channelId);
+    if (!conn || !conn.connected) return;  // still offline
+    // Copy + empty so any re-entry from markFailed handlers
+    // doesn't double-drain.
+    const pending = q.slice();
+    outboundQueues.set(channelId, []);
+    for (const item of pending) {
+      await _sendAndSwap(conn, channelId, item.tempId, item.payload);
+    }
+    if (!outboundQueues.get(channelId)?.length) outboundQueues.delete(channelId);
+  }
+
   bus.on('intent.send_message', async ({ channelId, text, attachments, planMode }) => {
-    const conn = connFor(channelId);
-    if (!conn) return;
     const content = text || '';
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!content && !hasAttachments) return;
-    // Optimistic insert — shows "Sending" immediately. The id is a
-    // placeholder; we swap it for conn.send()'s return value so the
-    // subsequent `delivered`/`read` wire events (which reference the
-    // server-used id) can find the message.
+
     const tempId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
       : `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -56,12 +83,27 @@ export function bindIntentDispatcher() {
     const ch = channelsStore.get(channelId);
     if (ch?.model) payload.model = ch.model;
     if (ch?.effort) payload.effort = ch.effort;
-    try {
-      const realId = await conn.send(payload);
-      if (realId) messagesStore.replaceId(channelId, tempId, realId);
-    } catch (err) {
-      plog.error('send_message failed', err);
-      messagesStore.markFailed(channelId, tempId);
+
+    const conn = connFor(channelId);
+    if (!conn) {
+      // Queue until the transport comes back — flip the UI into
+      // "Queued" so the user knows we held onto it.
+      const q = outboundQueues.get(channelId) || [];
+      q.push({ tempId, payload });
+      outboundQueues.set(channelId, q);
+      messagesStore.markQueued(channelId, tempId, true);
+      return;
+    }
+    await _sendAndSwap(conn, channelId, tempId, payload);
+  });
+
+  // Drain queued messages as soon as the device comes back.
+  bus.on('e2ee.connected', ({ deviceId }) => {
+    for (const [channelId] of outboundQueues) {
+      if (channelsStore.deviceFor(channelId) !== deviceId) continue;
+      // Schedule a microtask drain so any other connected-side
+      // wiring (listChannels etc.) settles first.
+      queueMicrotask(() => _drainQueue(channelId));
     }
   });
 

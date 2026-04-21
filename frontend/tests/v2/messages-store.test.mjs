@@ -164,6 +164,22 @@ test('patchInteractionMeta is a no-op for unknown msg ids', () => {
   assert.equal(messagesStore.forChannel(ch)[0].metadata.selected_option, undefined);
 });
 
+test('markQueued sets + clears delivery_queued + fires notify', () => {
+  const ch = 'ms-queued';
+  messagesStore.append(ch, { id: 'q1', sender: 'client', content: 'hey' });
+  const events = [];
+  const off = messagesStore.subscribe(e => events.push(e));
+  messagesStore.markQueued(ch, 'q1', true);
+  messagesStore.markQueued(ch, 'q1', false);
+  off();
+  const m = messagesStore.forChannel(ch)[0];
+  assert.equal(m.delivery_queued, false);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].kind, 'queued');
+  assert.equal(events[0].queued, true);
+  assert.equal(events[1].queued, false);
+});
+
 test('markFailed flags a message and notifies', () => {
   const ch = 'ms-failed';
   messagesStore.append(ch, { id: 'f1', content: 'x' });

@@ -12,6 +12,28 @@ import { log } from '../core/log.js';
 
 const dlog = log('device-notif');
 
+const FETCH_RETRY_DELAYS_MS = [2000, 4000, 8000];
+
+/**
+ * Fire-and-retry `fetchDevices()`. On failure, retry 3× with 2/4/8s
+ * backoff. Logs + gives up silently if all retries fail — the next
+ * sk:notification (or a full SSE reconnect) will trigger another
+ * attempt anyway.
+ */
+async function fetchDevicesWithRetry(attempt = 0) {
+  try {
+    await fetchDevices();
+  } catch (err) {
+    if (attempt >= FETCH_RETRY_DELAYS_MS.length) {
+      dlog.error('fetchDevices gave up after', attempt, 'retries', err);
+      return;
+    }
+    const delay = FETCH_RETRY_DELAYS_MS[attempt];
+    dlog.debug(`fetchDevices failed (attempt ${attempt + 1}); retrying in ${delay}ms`);
+    setTimeout(() => fetchDevicesWithRetry(attempt + 1), delay);
+  }
+}
+
 let bound = false;
 
 export function bindDeviceNotifications() {
@@ -51,8 +73,10 @@ function _onNotification(e) {
     case 'renamed':
     case 'revoked':
       // Full record changes — re-fetch and let the bulk binding
-      // reconcile the whole list. Fire-and-forget is fine.
-      fetchDevices();
+      // reconcile the whole list. Retries with backoff so a
+      // transient network blip on this API call doesn't leave the
+      // sidebar stale.
+      fetchDevicesWithRetry();
       break;
     default:
       dlog.debug('unhandled', type);

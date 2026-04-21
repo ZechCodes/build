@@ -227,6 +227,10 @@
 }
 .v2-msg-status.delivered { color: var(--fg-muted); }
 .v2-msg-status.read      { color: var(--accent); }
+.v2-msg-status.queued    { color: var(--interaction); }
+.v2-msg-status.queued::before  { content: '⟲ '; }
+.v2-msg-status.failed    { color: #ef4444; }
+.v2-msg-status.failed::before  { content: '⚠ '; }
 
 .v2-msg-suggestions {
   margin-top: 6px;

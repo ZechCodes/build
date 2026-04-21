@@ -94,6 +94,21 @@ export const messagesStore = {
   },
 
   /**
+   * Flip the `delivery_queued` flag on a message. The chat view
+   * reads this to render "Queued" in place of "Sending" while the
+   * transport is down. Cleared (queued=false) by the intent
+   * dispatcher once the queued payload is actually drained.
+   */
+  markQueued(channelId, msgId, queued = true) {
+    const arr = byChannel.get(channelId);
+    if (!arr) return;
+    const m = arr.find(x => x.id === msgId);
+    if (!m) return;
+    m.delivery_queued = !!queued;
+    notify({ kind: 'queued', channelId, msgId, queued: !!queued });
+  },
+
+  /**
    * Merge `patch` into the target message's metadata. Metadata may
    * arrive from the server as a JSON string or as an object; we
    * respect whichever shape the message already uses so the next

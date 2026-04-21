@@ -209,6 +209,69 @@
 .v2-app[data-rail="open"]     .sk-status-indicator { bottom: calc(var(--rail-open-height) + 12px); }
 .v2-app[data-rail="expanded"] .sk-status-indicator { bottom: calc(50vh + 12px); }
 
+/* Per-device E2EE reconnect pill. Sits above the Skrift SSE pill
+   so if both ever showed we wouldn't clash — in practice the
+   reconnect-pill hides itself while the SSE pill is visible. */
+.v2-reconnect-pill {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--rail-height) + 52px);
+  transform: translate(-50%, 8px);
+  z-index: 50;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+.v2-reconnect-pill.open {
+  display: inline-flex;
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.v2-reconnect-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tool-edit);  /* yellow while retrying */
+  animation: v2-reconnect-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.v2-reconnect-pill.failed .v2-reconnect-pill-dot {
+  background: #ef4444;
+  animation: none;
+}
+.v2-reconnect-pill-retry {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.v2-reconnect-pill-retry:hover {
+  background: var(--bg-hover);
+}
+@keyframes v2-reconnect-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+.v2-app[data-rail="open"]     .v2-reconnect-pill { bottom: calc(var(--rail-open-height) + 52px); }
+.v2-app[data-rail="expanded"] .v2-reconnect-pill { bottom: calc(50vh + 52px); }
+
 @media (max-width: 768px) {
   .v2-app {
     grid-template-columns: 1fr;

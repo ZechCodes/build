@@ -219,8 +219,16 @@ export class ChatView {
     const timeStr = msg.created_at
       ? shortTime(typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at)
       : '';
-    const statusLabel = msg.read_at ? 'Read' : msg.delivered_at ? 'Delivered' : 'Sending';
-    const statusCls = msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sending';
+    const statusLabel = msg.delivery_failed ? 'Failed'
+                      : msg.delivery_queued ? 'Queued'
+                      : msg.read_at         ? 'Read'
+                      : msg.delivered_at    ? 'Delivered'
+                      : 'Sending';
+    const statusCls   = msg.delivery_failed ? 'failed'
+                      : msg.delivery_queued ? 'queued'
+                      : msg.read_at         ? 'read'
+                      : msg.delivered_at    ? 'delivered'
+                      : 'sending';
 
     const div = document.createElement('div');
     div.className = 'v2-msg' + (isUser ? ' user' : ' agent');

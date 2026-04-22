@@ -21,12 +21,29 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
-  display: none;
+  /* Keep the overlay display:flex always so its messages subtree
+     stays laid out while closed. With `display: none` the browser
+     throws away layout + paint and has to recompute the whole tree
+     on every reopen — that was the ~2s lag on mobile. */
+  display: flex;
   flex-direction: column;
   overflow: hidden;
   z-index: 40;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 140ms ease-out, transform 140ms ease-out,
+              visibility 0s linear 140ms;
 }
-.v2-chat-overlay.open { display: flex; }
+.v2-chat-overlay.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition: opacity 140ms ease-out, transform 140ms ease-out,
+              visibility 0s;
+}
 .v2-chat-overlay[data-mode="expanded"] {
   /* Cap the expanded width so long-form plan text is readable on
      wide monitors. Still fills the available viewer width on
@@ -627,7 +644,11 @@
     border: none;
     border-radius: 0;
     box-shadow: none;
+    /* Subtle bottom-sheet feel: slide a bit further so the motion
+       is visible on a full-bleed overlay. Same 140ms duration. */
+    transform: translateY(24px);
   }
+  .v2-chat-overlay.open { transform: none; }
   .v2-chat-overlay[data-mode="expanded"] {
     width: 100vw;
     right: 0;

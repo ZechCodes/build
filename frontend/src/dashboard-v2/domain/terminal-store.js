@@ -28,6 +28,23 @@ export const terminalStore = {
     notify({ kind: 'output', channelId });
   },
 
+  /** Command echo — the "$ cmd" line we want in the scrollback so
+   *  the user can scroll back through their history like a real
+   *  shell. Stored (not just DOM-painted) so it survives channel
+   *  switches and page reloads. `trail` is an optional suffix such
+   *  as "^C" when the user interrupted an idle prompt. */
+  appendEcho(channelId, { cmd, cwd, trail } = {}) {
+    const s = getSlot(channelId);
+    s.history.push({
+      type: 'echo',
+      cmd: cmd || '',
+      cwd: cwd || '',
+      trail: trail || '',
+      at: Date.now(),
+    });
+    notify({ kind: 'echo', channelId });
+  },
+
   markComplete(channelId, exitCode, cwd) {
     const s = byChannel.get(channelId);
     if (!s) return;

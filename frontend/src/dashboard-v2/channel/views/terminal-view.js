@@ -38,11 +38,9 @@ export class TerminalView {
     this._renderPromptRow();
     this.unsubs.push(terminalStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
-      if (e.kind === 'output') {
+      if (e.kind === 'output' || e.kind === 'echo') {
         this._renderHistory();
-        // appendOutput flips `running=true` in the store; mirror that
-        // onto viewState + the root class so ⌃C turns red immediately.
-        this._renderPromptRow();
+        if (e.kind === 'output') this._renderPromptRow();
       } else if (e.kind === 'complete') {
         this._renderHistory({ force: true });
         this._renderPromptRow();
@@ -159,13 +157,28 @@ export class TerminalView {
       div.dataset.idx = String(idx);
       div.innerHTML = html;
       this.outputEl.appendChild(div);
+    } else if (entry.type === 'echo') {
+      const div = document.createElement('div');
+      div.className = 'v2-term-echo';
+      div.dataset.idx = String(idx);
+      div.innerHTML =
+        `<span class="v2-term-cwd">${escapeHtml(shortCwd(entry.cwd || '~'))}</span>` +
+        `<span class="v2-term-sigil">$</span> ` +
+        `<span class="v2-term-echo-cmd">${escapeHtml(entry.cmd || '')}</span>` +
+        (entry.trail ? `<span class="v2-term-echo-trail">${escapeHtml(entry.trail)}</span>` : '');
+      this.outputEl.appendChild(div);
     } else if (entry.type === 'complete') {
       const code = typeof entry.exitCode === 'number' ? entry.exitCode : 0;
-      const div = document.createElement('div');
-      div.className = `v2-term-complete ${code !== 0 ? 'err' : ''}`;
-      div.dataset.idx = String(idx);
-      div.innerHTML = `<span class="v2-term-complete-chip">exit ${code}</span>`;
-      this.outputEl.appendChild(div);
+      if (code !== 0) {
+        // Only show a chip for non-zero exits. A real shell says
+        // nothing after a successful command — adding an "exit 0"
+        // line turns the scrollback into noise.
+        const div = document.createElement('div');
+        div.className = 'v2-term-complete err';
+        div.dataset.idx = String(idx);
+        div.innerHTML = `<span class="v2-term-complete-chip">exit ${code}</span>`;
+        this.outputEl.appendChild(div);
+      }
       // New command starts with a clean SGR slate.
       this._ansi = createAnsiState();
     }
@@ -224,19 +237,14 @@ export class TerminalView {
       bus.emit('intent.terminal_kill', { channelId: this.channel.id });
       return;
     }
-    // Idle: mirror bash's behaviour.
-    const current = this.inputEl?.value || '';
-    if (this.outputEl) {
-      const echo = document.createElement('div');
-      echo.className = 'v2-term-echo';
-      echo.innerHTML =
-        `<span class="v2-term-cwd">${escapeHtml(shortCwd(this.channel.viewState.terminalCwd || '~'))}</span>` +
-        `<span class="v2-term-sigil">$</span> ` +
-        `<span class="v2-term-echo-cmd">${escapeHtml(current)}</span>` +
-        `<span class="v2-term-echo-trail">^C</span>`;
-      this.outputEl.appendChild(echo);
-      this.outputEl.scrollTop = this.outputEl.scrollHeight;
-    }
+    // Idle: mirror bash's behaviour — stamp the current line into
+    // scrollback with a trailing ^C and clear the input. Go through
+    // the store so history persists across deactivate / reload.
+    terminalStore.appendEcho(this.channel.id, {
+      cmd: this.inputEl?.value || '',
+      cwd: this.channel.viewState.terminalCwd || '',
+      trail: '^C',
+    });
     if (this.inputEl) this.inputEl.value = '';
     this.channel.viewState.terminalCompletions = [];
     this.channel.viewState.terminalCompletionIndex = -1;
@@ -263,17 +271,13 @@ export class TerminalView {
     this.channel.viewState.terminalCompletions = [];
     this.channel.viewState.terminalCompletionIndex = -1;
 
-    // Echo command visibly into the scrollback.
-    if (this.outputEl) {
-      const echo = document.createElement('div');
-      echo.className = 'v2-term-echo';
-      echo.innerHTML =
-        `<span class="v2-term-cwd">${escapeHtml(shortCwd(this.channel.viewState.terminalCwd || '~'))}</span>` +
-        `<span class="v2-term-sigil">$</span> ` +
-        `<span class="v2-term-echo-cmd">${escapeHtml(cmd)}</span>`;
-      this.outputEl.appendChild(echo);
-      this.outputEl.scrollTop = this.outputEl.scrollHeight;
-    }
+    // Echo command into the scrollback *through the store* so it
+    // persists across channel switches / reloads alongside the
+    // output that follows it.
+    terminalStore.appendEcho(this.channel.id, {
+      cmd,
+      cwd: this.channel.viewState.terminalCwd || '',
+    });
     bus.emit('intent.terminal_exec', {
       channelId: this.channel.id,
       command: cmd,

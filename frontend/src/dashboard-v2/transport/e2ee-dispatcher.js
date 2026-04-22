@@ -225,7 +225,11 @@ export function bindE2EEDispatcher(instance, deviceId) {
     const { channel_id, data, done, exit_code, cwd } = evt.detail;
     if (!channel_id) return;
     if (data && !done) {
-      bus.emit('terminal.output', { channelId: channel_id, text: data });
+      // The bridge wraps every command to append a `__BUILD_CWD__<pwd>`
+      // sentinel line so it can extract the resulting cwd. That sentinel
+      // is internal plumbing — strip it from the user-visible scrollback.
+      const cleaned = data.replace(/^__BUILD_CWD__[^\n]*\n?/gm, '');
+      if (cleaned) bus.emit('terminal.output', { channelId: channel_id, text: cleaned });
     }
     if (done) {
       bus.emit('terminal.complete', { channelId: channel_id, exitCode: exit_code, cwd });

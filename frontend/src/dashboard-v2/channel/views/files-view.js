@@ -4,6 +4,7 @@
 
 import { bus } from '../../core/bus.js';
 import { filesStore } from '../../domain/files-store.js';
+import { channelsStore } from '../../domain/channels-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
 import { highlightLine } from '../../util/syntax.js';
 import { renderDiff } from '../../util/diff.js';
@@ -48,6 +49,15 @@ export class FilesView {
     this.unsubs.push(bus.on('complications.bulk', ({ channelId }) => {
       if (channelId !== this.channel.id) return;
       this._scheduleRefresh([]);
+    }));
+    // Self-heal the initial load: the channel view boots before the
+    // E2EE connection is up (channelRegistry.init runs before
+    // initTransport finishes), so `_fetchInitial` during activate
+    // silently drops when `connFor(...)` returns null. Kick the
+    // fetch again each time this channel's device comes online.
+    this.unsubs.push(bus.on('e2ee.connected', ({ deviceId }) => {
+      if (channelsStore.deviceFor(this.channel.id) !== deviceId) return;
+      this._fetchInitial();
     }));
     this._renderTree();
     this._renderViewer();

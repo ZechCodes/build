@@ -61,9 +61,27 @@ export class FilesView {
     }));
     this._renderTree();
     this._renderViewer();
+    this._restoreWorkspace();
+
+    // Persist scroll positions as the user scrolls (debounced) — gives
+    // page-reload unload a fresh value to save.
+    this._onTreeScroll = () => {
+      if (this.treeEl) this.channel.viewState.filesTreeScrollTop = this.treeEl.scrollTop;
+    };
+    this._onViewerScroll = () => {
+      if (this.viewerEl) this.channel.viewState.filesViewerScrollTop = this.viewerEl.scrollTop;
+    };
+    this.treeEl?.addEventListener('scroll', this._onTreeScroll, { passive: true });
+    this.viewerEl?.addEventListener('scroll', this._onViewerScroll, { passive: true });
   }
 
   deactivate() {
+    // Capture scroll positions one last time so the persist snapshot
+    // in Channel.deactivate() has the freshest values.
+    if (this.treeEl)   this.channel.viewState.filesTreeScrollTop   = this.treeEl.scrollTop;
+    if (this.viewerEl) this.channel.viewState.filesViewerScrollTop = this.viewerEl.scrollTop;
+    this.treeEl?.removeEventListener('scroll', this._onTreeScroll);
+    this.viewerEl?.removeEventListener('scroll', this._onViewerScroll);
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
     if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = null; }
@@ -72,6 +90,46 @@ export class FilesView {
     this.treeEl = null;
     this.viewerEl = null;
     this.modeBarEl = null;
+  }
+
+  /** After initial activate / render, restore the user's workspace:
+   *  re-fetch expanded dirs, re-fetch the selected file's content, and
+   *  snap the scroll positions back into place. */
+  _restoreWorkspace() {
+    const vs = this.channel.viewState;
+    const tree = filesStore.treeFor(this.channel.id);
+    // Ensure viewState.filesExpandedDirs is an array (may be a stale
+    // primitive if defaultViewState() migration ran).
+    if (!Array.isArray(vs.filesExpandedDirs)) vs.filesExpandedDirs = [];
+
+    // Kick fetches for any expanded dir we don't already have entries
+    // for (page reload case). The store update will re-run _renderTree.
+    for (const p of vs.filesExpandedDirs) {
+      if (!tree.has(p)) bus.emit('intent.files_list', { channelId: this.channel.id, path: p });
+    }
+
+    // Re-fetch the open file if its result isn't cached.
+    if (vs.filesPath) {
+      if (vs.filesView === 'diff') {
+        const dr = filesStore.diffResultFor(this.channel.id);
+        if (!dr || dr.path !== vs.filesPath) {
+          bus.emit('intent.file_diff', { channelId: this.channel.id, path: vs.filesPath });
+        }
+      } else {
+        const rr = filesStore.readResultFor(this.channel.id);
+        if (!rr || rr.path !== vs.filesPath) {
+          bus.emit('intent.file_read', { channelId: this.channel.id, path: vs.filesPath });
+        }
+      }
+    }
+
+    // Restore scroll positions after the browser has laid out the
+    // freshly-mounted panels. scroll assignments BEFORE layout are
+    // no-ops, so defer one frame.
+    requestAnimationFrame(() => {
+      if (this.treeEl)   this.treeEl.scrollTop   = vs.filesTreeScrollTop   || 0;
+      if (this.viewerEl) this.viewerEl.scrollTop = vs.filesViewerScrollTop || 0;
+    });
   }
 
   /** Debounce agent.file_changes bursts; refetch on trailing edge. */
@@ -267,11 +325,12 @@ export class FilesView {
     // `.v2-files-level` div that adds 16px padding-left + a faint
     // left-border guide line. Indent + hierarchy come from the DOM
     // structure, so dirs and files line up identically.
+    const expandedSet = this._expandedDirsSet();
     const parts = [];
     for (const entry of slot.entries) {
       const fullPath = path ? `${path}/${entry.name}` : entry.name;
       if (entry.type === 'dir' || entry.type === 'directory') {
-        const expanded = tree.has(fullPath);
+        const expanded = expandedSet.has(fullPath);
         parts.push(`
           <button class="v2-files-row v2-files-dir"
                   type="button"
@@ -447,13 +506,20 @@ export class FilesView {
     const dirBtn = e.target.closest('[data-dir-path]');
     if (dirBtn) {
       const path = dirBtn.getAttribute('data-dir-path');
-      const tree = filesStore.treeFor(this.channel.id);
-      if (tree.has(path)) {
-        // Collapse: remove from tree cache.
-        tree.delete(path);
+      const expanded = this._expandedDirsSet();
+      if (expanded.has(path)) {
+        expanded.delete(path);
+        this._commitExpandedDirs(expanded);
         this._renderTree();
       } else {
-        bus.emit('intent.files_list', { channelId: this.channel.id, path });
+        expanded.add(path);
+        this._commitExpandedDirs(expanded);
+        // Fetch fresh entries if we don't have them cached; the store
+        // update will trigger _renderTree. Render now too so the chevron
+        // flips to "open" immediately.
+        const tree = filesStore.treeFor(this.channel.id);
+        if (!tree.has(path)) bus.emit('intent.files_list', { channelId: this.channel.id, path });
+        this._renderTree();
       }
       return;
     }
@@ -480,6 +546,15 @@ export class FilesView {
       return;
     }
   };
+
+  _expandedDirsSet() {
+    const list = this.channel.viewState.filesExpandedDirs;
+    return new Set(Array.isArray(list) ? list : []);
+  }
+
+  _commitExpandedDirs(set) {
+    this.channel.viewState.filesExpandedDirs = [...set];
+  }
 
   _selectFile(path, hasDiff) {
     this.channel.viewState.filesPath = path;

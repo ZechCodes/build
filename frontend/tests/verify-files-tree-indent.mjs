@@ -55,8 +55,16 @@ try {
     ], truncated: false });
   }, chId);
 
-  // Flip to the All tab.
+  // Flip to the All tab and expand `api/` so its children render.
   await page.locator('[data-tree-tab="all"]').click();
+  await page.waitForTimeout(80);
+  await page.evaluate((id) => {
+    const ch = window.__v2debug.channelRegistry.pool.get(id);
+    if (ch) ch.viewState.filesExpandedDirs = ['api'];
+    // Trigger a re-render by nudging the store (no-op set of existing tree).
+    const s = window.__v2debug.stores.filesStore;
+    s.setTree(id, '', s.treeFor(id).get(''));
+  }, chId);
   await page.waitForTimeout(80);
 
   // Verify nesting structure: the expanded `api/` dir row has a

@@ -28,6 +28,14 @@ export class ChannelRegistry {
       if (e.kind === 'active_channel') this.activate(e.id);
     });
     this.unsubBus = bus.on('channel.removed', ({ channelId }) => this.evict(channelId));
+    // Flush the active channel's viewState on page unload so the
+    // user's tree / viewer / scroll state survives a reload. We also
+    // persist in deactivate(), which handles the channel-switch case.
+    this._onUnload = () => { this.active?.persistNow?.(); };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', this._onUnload);
+      window.addEventListener('beforeunload', this._onUnload);
+    }
     // Apply current state.
     const cur = uiStore.getActiveChannel();
     if (cur) this.activate(cur);
@@ -38,6 +46,13 @@ export class ChannelRegistry {
     this._bound = false;
     this.unsubUi?.(); this.unsubUi = null;
     this.unsubBus?.(); this.unsubBus = null;
+    if (this._onUnload) {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('pagehide', this._onUnload);
+        window.removeEventListener('beforeunload', this._onUnload);
+      }
+      this._onUnload = null;
+    }
     this.deactivateAll();
   }
 

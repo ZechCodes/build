@@ -27,6 +27,9 @@ function defaultViewState() {
     filesView: 'source',           // 'source' | 'diff' | 'preview'
     filesLineWrap: false,
     filesTreeTab: 'changes',       // 'changes' | 'all'
+    filesExpandedDirs: [],         // list of dir paths the user has expanded
+    filesTreeScrollTop: 0,
+    filesViewerScrollTop: 0,
     // Terminal
     terminalCwd: null,
     terminalCmdHistory: [],
@@ -41,10 +44,56 @@ function defaultViewState() {
   };
 }
 
+// ── viewState persistence ────────────────────────────────────────────
+// Small localStorage bucket per channel so "leave and come back"
+// (switching channels OR reloading the page) restores the user's
+// file-tree + viewer workspace — which tab, which file, expanded
+// dirs, scroll positions, line-wrap, etc.
+//
+// Chat / terminal / console state is not in the persisted subset
+// by design: draft text is view-private, terminal history is
+// session-y, and console is just an activity feed.
+
+const PERSIST_VERSION = 1;
+const PERSIST_KEY = (id) => `v2:channel:${id}:viewState`;
+const PERSIST_FIELDS = [
+  'filesPath', 'filesView', 'filesLineWrap', 'filesTreeTab',
+  'filesExpandedDirs', 'filesTreeScrollTop', 'filesViewerScrollTop',
+];
+
+function loadPersisted(id) {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY(id));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data?._v !== PERSIST_VERSION) return null;
+    return data;
+  } catch { return null; }
+}
+
+function savePersisted(id, viewState) {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const snap = { _v: PERSIST_VERSION };
+    for (const f of PERSIST_FIELDS) snap[f] = viewState[f];
+    localStorage.setItem(PERSIST_KEY(id), JSON.stringify(snap));
+  } catch { /* quota / private mode — ignore */ }
+}
+
 export class Channel {
   constructor(id, { views } = {}) {
     this.id = id;
     this.viewState = defaultViewState();
+    // Restore the persisted subset (files tab, expanded dirs, scroll,
+    // etc.) so the user's workspace comes back intact across channel
+    // switches and page reloads.
+    const persisted = loadPersisted(id);
+    if (persisted) {
+      for (const f of PERSIST_FIELDS) {
+        if (f in persisted) this.viewState[f] = persisted[f];
+      }
+    }
     // Test hook: views can be injected.
     if (views) {
       this.views = views;
@@ -117,6 +166,19 @@ export class Channel {
     this._unsubs = [];
     this._fetchedOnce = false;
     for (const v of Object.values(this.views)) v.deactivate();
+    // Snapshot the persist subset — captures whatever the views just
+    // wrote onto viewState during their own deactivate() paths (scroll
+    // positions in particular).
+    savePersisted(this.id, this.viewState);
+  }
+
+  /** Persist the current viewState subset immediately — used by the
+   *  beforeunload handler so page reloads don't lose state on the
+   *  active channel (which doesn't go through deactivate in that
+   *  path). */
+  persistNow() {
+    if (!this.viewState) return;
+    savePersisted(this.id, this.viewState);
   }
 
   destroy() {

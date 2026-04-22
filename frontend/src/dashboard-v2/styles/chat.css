@@ -500,60 +500,53 @@
 .v2-cmd-btn.active { color: #0b0d10; background: var(--accent); border-color: var(--accent); }
 .v2-cmd-btn.confirm { color: var(--interaction); border-color: var(--interaction); }
 
-/* Current tool-use strip — one-line live indicator just above the
-   composer so the user can see what the agent is doing without
-   opening the activity panel. Reuses the per-tool colour tokens
-   from console.css via the .v2-chat-tool-tag modifier classes. */
+/* Current tool-use strip — subtle one-liner above the composer.
+   Just a phrase ("Reading /path", "Running `ls`", "Thinking…") with
+   an animated ellipsis. Full history lives in the activity panel. */
 
 .v2-chat-tool {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  min-height: 22px;
+  align-items: baseline;
+  padding: 3px 12px;
+  min-height: 20px;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--fg-dim);
   background: var(--bg);
-  border-top: 1px dashed var(--border);
+  overflow: hidden;
+  white-space: nowrap;
 }
 .v2-chat-tool[hidden] { display: none; }
 
-.v2-chat-tool-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--fg-dim);
-  flex: 0 0 auto;
-  animation: v2-chat-tool-pulse 1s ease-in-out infinite;
-}
-@keyframes v2-chat-tool-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.9); }
-  50%      { opacity: 1;    transform: scale(1.1); }
-}
-
-.v2-chat-tool-tag {
-  flex: 0 0 auto;
-  padding: 0 5px;
-  border: 1px solid var(--fg-dim);
-  border-radius: 3px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-}
-.v2-chat-tool-tag.read  { color: var(--tool-read);  border-color: var(--tool-read); }
-.v2-chat-tool-tag.edit  { color: var(--tool-edit);  border-color: var(--tool-edit); }
-.v2-chat-tool-tag.write { color: var(--tool-write); border-color: var(--tool-write); }
-.v2-chat-tool-tag.bash  { color: var(--tool-bash);  border-color: var(--tool-bash); }
-
-.v2-chat-tool-desc {
-  flex: 1;
+.v2-chat-tool-text {
   min-width: 0;
-  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.v2-chat-tool-text.swap {
+  animation: v2-chat-tool-fade 180ms ease-out;
+}
+@keyframes v2-chat-tool-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.v2-chat-tool-ellipsis {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 2px;
+}
+.v2-chat-tool-ellipsis span {
+  animation: v2-chat-tool-dot 1.2s ease-in-out infinite;
+  opacity: 0.2;
+}
+.v2-chat-tool-ellipsis span:nth-child(2) { animation-delay: 0.2s; }
+.v2-chat-tool-ellipsis span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes v2-chat-tool-dot {
+  0%, 60%, 100% { opacity: 0.2; }
+  30%           { opacity: 1; }
 }
 
 /* Staging chips */

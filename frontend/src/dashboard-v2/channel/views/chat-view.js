@@ -11,7 +11,7 @@ import { unreadStore } from '../../domain/unread-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
 import { shortTime } from '../../util/time.js';
 import { renderMarkdown } from '../../util/markdown.js';
-import { agentShortName, describeToolUse, toolTag } from '../../util/tools.js';
+import { agentShortName, currentToolPhrase } from '../../util/tools.js';
 import { currentToolStore } from '../../domain/current-tool-store.js';
 import { uploadFile } from '../../transport/index.js';
 import { showToast } from '../../util/toast.js';
@@ -64,12 +64,16 @@ export class ChatView {
     this.unsubs.push(presenceStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       if (e.kind === 'plan_mode' || e.kind === 'agent_active') this._renderToolbar();
+      if (e.kind === 'agent_active') this._syncToolStrip();
     }));
+    this._toolShownEntry = null;   // entry | 'thinking' | null
+    this._toolShownAt    = 0;      // ms when the current entry started showing
+    this._toolIdleTimer  = null;   // deferred flip from tool → "Thinking"
     this.unsubs.push(currentToolStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
-      this._renderToolStrip();
+      this._onCurrentToolChange(e.entry);
     }));
-    this._renderToolStrip();
+    this._syncToolStrip();
     this.unsubs.push(bus.on('upload.progress', (p) => {
       if (p.deviceId !== channelsStore.deviceFor(this.channel.id)) return;
       const chip = this.stagingEl?.querySelector(`[data-staging-name="${CSS.escape(p.fileName)}"]`);
@@ -119,9 +123,7 @@ export class ChatView {
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
         <div class="v2-chat-tool" data-slot="tool" hidden>
-          <span class="v2-chat-tool-dot" aria-hidden="true"></span>
-          <span class="v2-chat-tool-tag"></span>
-          <span class="v2-chat-tool-desc"></span>
+          <span class="v2-chat-tool-text"></span><span class="v2-chat-tool-ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
         </div>
         <div class="v2-chat-composer" data-slot="composer">
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>
@@ -216,21 +218,94 @@ export class ChatView {
     this._renderToolbar();
   }
 
-  _renderToolStrip() {
+  // ── Current-tool strip presenter ─────────────────────────────────────
+  // Drives the strip above the composer. Rules:
+  //   - A new tool_use always shows immediately (no queuing — newest
+  //     wins). If the prior tool had been visible < 2s, we just let
+  //     it go; the new one takes over.
+  //   - When the current tool finishes (tool_result clears the store)
+  //     we DON'T immediately flip to "Thinking". If the tool has been
+  //     on screen < 2s, we wait out the remainder so the label doesn't
+  //     flash and vanish. After the 2s mark (or immediately if we're
+  //     already past it) we fall back to "Thinking" while the agent
+  //     is still active, or hide if it's idle.
+  //   - Agent goes idle → hide.
+
+  _onCurrentToolChange(entry) {
+    if (entry) {
+      // New tool: replace whatever's showing, right now.
+      this._clearIdleTimer();
+      this._toolShownEntry = entry;
+      this._toolShownAt    = Date.now();
+      this._paintTool(currentToolPhrase(entry.name, entry.input || {}));
+      return;
+    }
+    // Store cleared. If we were showing a tool that's been on screen
+    // < 2s, defer the fallback so the label doesn't flash.
+    if (this._toolShownEntry && this._toolShownEntry !== 'thinking') {
+      const elapsed = Date.now() - this._toolShownAt;
+      const remain  = Math.max(0, 2000 - elapsed);
+      if (remain > 0) {
+        this._clearIdleTimer();
+        this._toolIdleTimer = setTimeout(() => {
+          this._toolIdleTimer = null;
+          this._syncToolStrip();
+        }, remain);
+        return;
+      }
+    }
+    this._syncToolStrip();
+  }
+
+  _syncToolStrip() {
+    const presence = presenceStore.get(this.channel.id);
+    const rawEntry = currentToolStore.get(this.channel.id);
+
+    if (rawEntry) {
+      // A tool arrived while we had no strip mounted — paint it.
+      if (this._toolShownEntry !== rawEntry) {
+        this._clearIdleTimer();
+        this._toolShownEntry = rawEntry;
+        this._toolShownAt    = Date.now();
+        this._paintTool(currentToolPhrase(rawEntry.name, rawEntry.input || {}));
+      }
+      return;
+    }
+    if (presence.agentActive) {
+      if (this._toolShownEntry === 'thinking') return;
+      this._clearIdleTimer();
+      this._toolShownEntry = 'thinking';
+      this._toolShownAt    = Date.now();
+      this._paintTool('Thinking');
+      return;
+    }
+    this._clearIdleTimer();
+    this._toolShownEntry = null;
+    this._paintTool(null);
+  }
+
+  _paintTool(text) {
     const strip = this.toolStripEl;
     if (!strip) return;
-    const entry = currentToolStore.get(this.channel.id);
-    if (!entry) {
+    if (text == null) {
       strip.hidden = true;
       return;
     }
-    const tagEl  = strip.querySelector('.v2-chat-tool-tag');
-    const descEl = strip.querySelector('.v2-chat-tool-desc');
-    const tag = toolTag(entry.name);
-    tagEl.className = `v2-chat-tool-tag ${tag}`;
-    tagEl.textContent = entry.name;
-    descEl.textContent = describeToolUse(entry.name, entry.input || {});
+    const textEl = strip.querySelector('.v2-chat-tool-text');
+    if (textEl && textEl.textContent !== text) {
+      textEl.textContent = text;
+      textEl.classList.remove('swap');
+      void textEl.offsetWidth;   // reflow so the fade animation restarts
+      textEl.classList.add('swap');
+    }
     strip.hidden = false;
+  }
+
+  _clearIdleTimer() {
+    if (this._toolIdleTimer) {
+      clearTimeout(this._toolIdleTimer);
+      this._toolIdleTimer = null;
+    }
   }
 
   _appendMessage(msg, allMsgs) {

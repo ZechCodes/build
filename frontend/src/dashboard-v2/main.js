@@ -10,7 +10,7 @@ import {
   initStores,
   devicesStore, channelsStore, messagesStore, activityStore,
   presenceStore, unreadStore, filesStore, terminalStore,
-  tasksStore, complicationsStore, uiStore,
+  tasksStore, complicationsStore, uiStore, currentToolStore,
 } from './domain/index.js';
 import { initTransport, e2eePool } from './transport/index.js';
 import { initShell } from './shell/app.js';
@@ -27,7 +27,7 @@ function exposeDebug() {
     stores: {
       devicesStore, channelsStore, messagesStore, activityStore,
       presenceStore, unreadStore, filesStore, terminalStore,
-      tasksStore, complicationsStore, uiStore,
+      tasksStore, complicationsStore, uiStore, currentToolStore,
     },
     e2eePool,
   };

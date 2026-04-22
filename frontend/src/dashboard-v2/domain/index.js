@@ -16,6 +16,7 @@ export { terminalStore } from './terminal-store.js';
 export { tasksStore } from './tasks-store.js';
 export { complicationsStore } from './complications-store.js';
 export { uiStore } from './ui-store.js';
+export { currentToolStore } from './current-tool-store.js';
 
 export function initStores() {
   // reserved for Wave 2 wiring

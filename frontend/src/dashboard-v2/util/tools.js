@@ -72,3 +72,26 @@ export function toolTag(name) {
   const map = { Read: 'read', Edit: 'edit', Write: 'write', Bash: 'bash', Grep: 'read', Glob: 'read', Agent: 'bash', ToolSearch: 'read' };
   return map[name] || 'read';
 }
+
+/**
+ * One-line human phrase for the current-tool strip above the chat input.
+ * Subtle, natural language — "Reading /tmp/foo.py", "Running `ls`".
+ * Returns just a string; styling happens in chat-view.
+ */
+export function currentToolPhrase(name, input) {
+  const inp = input || {};
+  switch (name) {
+    case 'Read':       return `Reading ${inp.file_path || 'a file'}`;
+    case 'Write':      return `Writing ${inp.file_path || 'a file'}`;
+    case 'Edit':       return `Editing ${inp.file_path || 'a file'}`;
+    case 'Bash':       return `Running \`${(inp.command || '').slice(0, 80)}\``;
+    case 'Grep':       return `Searching /${inp.pattern || ''}/`;
+    case 'Glob':       return `Searching ${inp.pattern || ''}`;
+    case 'WebFetch':   return `Fetching ${inp.url || 'a page'}`;
+    case 'WebSearch':  return `Searching: ${inp.query || ''}`;
+    case 'ToolSearch': return `Looking up: ${inp.query || ''}`;
+    case 'TodoWrite':  return 'Updating todos';
+    case 'Agent':      return `Delegating: ${(inp.prompt || '').slice(0, 80)}`;
+    default:           return name || 'Working';
+  }
+}

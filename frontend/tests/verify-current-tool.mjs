@@ -1,9 +1,12 @@
 // Verify the current-tool strip above the chat composer:
-//   - hidden when no tool is in flight,
-//   - shows tag + summary on agent.tool_use,
-//   - replaces itself when a new tool starts,
-//   - hides on matching tool_result,
-//   - hides when the agent goes idle (presenceStore.setAgentActive(false)).
+//   - hidden when no tool in flight AND agent is idle,
+//   - shows "Thinking" when agent is active with no tool,
+//   - shows phrase-style text on agent.tool_use ("Reading /foo.py",
+//     "Running `ls`", "Searching /pattern/"),
+//   - a newer tool_use replaces the previous immediately (no queue),
+//   - when a tool finishes (tool_result) within 2s of appearing, the
+//     flip to "Thinking" is deferred until the 2s minimum elapses,
+//   - hides when presenceStore flips agent_active → false.
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8100';
@@ -25,9 +28,8 @@ async function readStrip(page) {
     if (!el) return null;
     return {
       hidden: el.hidden,
-      tag:  el.querySelector('.v2-chat-tool-tag')?.textContent?.trim(),
-      desc: el.querySelector('.v2-chat-tool-desc')?.textContent?.trim(),
-      tagClass: el.querySelector('.v2-chat-tool-tag')?.className,
+      text: el.querySelector('.v2-chat-tool-text')?.textContent ?? '',
+      hasEllipsis: !!el.querySelector('.v2-chat-tool-ellipsis'),
     };
   });
 }
@@ -51,95 +53,115 @@ try {
     await page.waitForTimeout(250);
   }
 
-  // 1. No tool in flight → strip hidden.
-  let strip = await readStrip(page);
-  check('strip element exists',        !!strip, JSON.stringify(strip));
-  check('strip hidden with no tool',   strip?.hidden === true);
+  // Force agent inactive so we start from a clean "idle" baseline.
+  await page.evaluate((id) => {
+    const d = window.__v2debug;
+    d.stores.presenceStore.setAgentActive(id, true);
+    d.stores.presenceStore.setAgentActive(id, false);
+    // Also clear any latched currentToolStore entry.
+    d.stores.currentToolStore?.clear?.(id);
+  }, chId);
+  await page.waitForTimeout(50);
 
-  // 2. Fire a Read tool_use → strip visible with READ tag + filename desc.
-  await page.evaluate((chId) => {
+  // 1. Idle → strip hidden.
+  let strip = await readStrip(page);
+  check('strip element exists',       !!strip, JSON.stringify(strip));
+  check('strip hidden when idle',     strip?.hidden === true);
+  check('strip has an ellipsis node', strip?.hasEllipsis === true);
+
+  // 2. Agent active, no tool → "Thinking".
+  await page.evaluate((id) => {
+    window.__v2debug.stores.presenceStore.setAgentActive(id, true);
+  }, chId);
+  await page.waitForTimeout(50);
+  strip = await readStrip(page);
+  check('strip visible when agent active',      strip?.hidden === false, JSON.stringify(strip));
+  check('strip shows "Thinking" with no tool',  strip?.text === 'Thinking', strip?.text);
+
+  // 3. Read tool → "Reading /tmp/demo.py".
+  await page.evaluate((id) => {
     window.__v2debug.bus.emit('agent.tool_use', {
-      channelId: chId,
+      channelId: id,
       toolUseId: 't1',
       name: 'Read',
       input: { file_path: '/tmp/demo.py' },
-      at: Date.now(),
     });
   }, chId);
-  await page.waitForTimeout(80);
+  await page.waitForTimeout(50);
   strip = await readStrip(page);
-  check('strip visible on tool_use',       strip?.hidden === false, JSON.stringify(strip));
-  check('strip tag shows Read',            strip?.tag === 'Read', JSON.stringify(strip));
-  check('strip tag has tool-colour class', /\bread\b/.test(strip?.tagClass || ''), strip?.tagClass);
-  check('strip desc shows filename',       strip?.desc === 'demo.py', strip?.desc);
+  check('Read phrase',     strip?.text === 'Reading /tmp/demo.py', strip?.text);
 
-  // 3. Fire a second tool_use (Bash). The strip should REPLACE its content,
-  //    not stack.
-  await page.evaluate((chId) => {
+  // 4. Immediately fire a second tool_use (Bash). New one REPLACES the
+  //    first — no queue. This happens well within the 2s window, so the
+  //    new-tool rule wins.
+  await page.evaluate((id) => {
     window.__v2debug.bus.emit('agent.tool_use', {
-      channelId: chId,
+      channelId: id,
       toolUseId: 't2',
       name: 'Bash',
       input: { command: 'ls -la /tmp' },
-      at: Date.now(),
     });
   }, chId);
-  await page.waitForTimeout(80);
+  await page.waitForTimeout(50);
   strip = await readStrip(page);
-  check('strip tag flips to Bash',     strip?.tag === 'Bash', JSON.stringify(strip));
-  check('strip desc shows command',     strip?.desc?.startsWith('ls -la'), strip?.desc);
-  const stripCount = await page.evaluate(() => document.querySelectorAll('[data-slot="tool"]').length);
-  check('only one strip rendered',      stripCount === 1, `count=${stripCount}`);
+  check('Bash phrase replaces Read immediately',
+    strip?.text === 'Running `ls -la /tmp`', strip?.text);
 
-  // 4. Matching tool_result for t2 → strip hides.
-  await page.evaluate((chId) => {
+  // 5. Fire tool_result for t2 quickly (< 2s since t2 appeared). The
+  //    flip to "Thinking" should be DEFERRED until the 2s minimum
+  //    elapses. Check mid-window.
+  await page.evaluate((id) => {
     window.__v2debug.bus.emit('agent.tool_result', {
-      channelId: chId,
+      channelId: id,
       toolUseId: 't2',
       isError: false,
       content: 'total 0',
-      at: Date.now(),
     });
   }, chId);
-  await page.waitForTimeout(80);
+  await page.waitForTimeout(250);
   strip = await readStrip(page);
-  check('strip hides on matching result', strip?.hidden === true, JSON.stringify(strip));
+  check('Bash phrase lingers during 2s minimum',
+    strip?.text === 'Running `ls -la /tmp`', strip?.text);
 
-  // 5. Fire another tool_use, then flip agentActive=false → strip hides
-  //    even without a tool_result.
-  await page.evaluate((chId) => {
+  // Now wait out the 2s (we've already waited ~0.35s combined). Give
+  // another 2000ms to be safe against scheduler jitter.
+  await page.waitForTimeout(2100);
+  strip = await readStrip(page);
+  check('flip to "Thinking" after 2s elapsed', strip?.text === 'Thinking', strip?.text);
+
+  // 6. Grep phrasing.
+  await page.evaluate((id) => {
     window.__v2debug.bus.emit('agent.tool_use', {
-      channelId: chId,
+      channelId: id,
       toolUseId: 't3',
       name: 'Grep',
       input: { pattern: 'TODO', path: '/tmp' },
-      at: Date.now(),
     });
   }, chId);
-  await page.waitForTimeout(80);
+  await page.waitForTimeout(50);
   strip = await readStrip(page);
-  check('strip visible for t3 pre-idle', strip?.hidden === false);
-  await page.evaluate((chId) => {
-    // Ensure it's currently true so the setter fires a real transition.
-    window.__v2debug.stores.presenceStore.setAgentActive(chId, true);
-    window.__v2debug.stores.presenceStore.setAgentActive(chId, false);
+  check('Grep phrase uses /pattern/ style',
+    strip?.text === 'Searching /TODO/', strip?.text);
+
+  // 7. Agent goes idle → strip hides (even without a tool_result).
+  await page.evaluate((id) => {
+    window.__v2debug.stores.presenceStore.setAgentActive(id, false);
   }, chId);
   await page.waitForTimeout(80);
   strip = await readStrip(page);
   check('strip hides when agent goes idle', strip?.hidden === true, JSON.stringify(strip));
 
-  // 6. Cross-channel isolation: a tool_use for a different channel must
-  //    NOT show in this channel's strip.
-  await page.evaluate((chId) => {
+  // 8. Cross-channel isolation: a tool_use for a different channel does
+  //    not leak into this channel's strip.
+  await page.evaluate((id) => {
     window.__v2debug.bus.emit('agent.tool_use', {
-      channelId: `${chId}-other`,
-      toolUseId: 'other-1',
+      channelId: `${id}-other`,
+      toolUseId: 'o1',
       name: 'Read',
       input: { file_path: '/etc/hosts' },
-      at: Date.now(),
     });
   }, chId);
-  await page.waitForTimeout(80);
+  await page.waitForTimeout(50);
   strip = await readStrip(page);
   check('strip ignores other-channel tool', strip?.hidden === true, JSON.stringify(strip));
 

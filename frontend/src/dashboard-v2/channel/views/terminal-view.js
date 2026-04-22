@@ -105,6 +105,10 @@ export class TerminalView {
 
     this.inputEl.addEventListener('keydown', this._onKeydown);
     this.controlsEl.addEventListener('click', this._onControlClick);
+    // Tapping anywhere in the terminal panel (except controls or
+    // during a text selection, so copy still works) focuses the
+    // prompt. Matches how native terminal emulators behave.
+    this.outputEl.addEventListener('click', this._onOutputClick);
   }
 
   _renderHistory({ force = false } = {}) {
@@ -230,6 +234,23 @@ export class TerminalView {
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       this._onCtrlC();
+    }
+  };
+
+  _onOutputClick = (e) => {
+    // Ignore clicks on controls / buttons — they have their own handler.
+    if (e.target.closest('button, [role="button"]')) return;
+    // Preserve text selection so the user can copy scrollback. If
+    // something's selected, don't steal focus.
+    const sel = window.getSelection?.();
+    if (sel && !sel.isCollapsed && String(sel).length > 0) return;
+    // Don't steal focus mid-click if the click IS on the input itself.
+    if (e.target === this.inputEl) return;
+    this.inputEl?.focus();
+    // Move caret to end so the user can just start typing.
+    if (this.inputEl) {
+      const end = this.inputEl.value.length;
+      this.inputEl.setSelectionRange(end, end);
     }
   };
 

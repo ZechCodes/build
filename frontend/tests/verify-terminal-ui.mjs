@@ -284,6 +284,41 @@ try {
     check('scrolling up reveals earliest commands',
       top.firstCmds.slice(0, 1).includes('echo 0'), JSON.stringify(top));
 
+    // 12. Tapping anywhere in the scrollback focuses the prompt,
+    //     matching native terminal emulator behaviour.
+    await page.evaluate(() => document.querySelector('.v2-term-input').blur());
+    const wasFocused1 = await page.evaluate(() => document.activeElement === document.querySelector('.v2-term-input'));
+    // Click an output line (NOT on the input itself).
+    await page.click('.v2-term-output .v2-term-out, .v2-term-output .v2-term-echo', { position: { x: 5, y: 5 } });
+    await page.waitForTimeout(50);
+    const afterOutputClick = await page.evaluate(() => document.activeElement === document.querySelector('.v2-term-input'));
+    check('clicking scrollback focuses input',
+      !wasFocused1 && afterOutputClick === true,
+      `was=${wasFocused1} after=${afterOutputClick}`);
+
+    // Selecting text in the scrollback must NOT steal focus, so the
+    // user can still copy.
+    await page.evaluate(() => {
+      const range = document.createRange();
+      const echo = document.querySelector('.v2-term-echo .v2-term-echo-cmd');
+      range.selectNodeContents(echo);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.querySelector('.v2-term-input').blur();
+    });
+    await page.waitForTimeout(40);
+    // Click back on the echo — selection is live, focus should NOT move.
+    await page.evaluate(() => {
+      // Simulate a click event on the echo; the handler checks getSelection.
+      const echo = document.querySelector('.v2-term-echo .v2-term-echo-cmd');
+      echo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    await page.waitForTimeout(40);
+    const afterSelectClick = await page.evaluate(() => document.activeElement === document.querySelector('.v2-term-input'));
+    check('clicking during a text selection keeps focus off the input (copy preserved)',
+      afterSelectClick === false, `focused=${afterSelectClick}`);
+
     await ctx.close();
   }
 

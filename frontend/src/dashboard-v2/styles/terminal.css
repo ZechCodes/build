@@ -1,4 +1,4 @@
-/* TerminalView. Output above, prompt row below. */
+/* TerminalView. Output above, inline prompt row with controls below. */
 
 .v2-term {
   display: flex;
@@ -6,7 +6,8 @@
   height: 100%;
   min-height: 0;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 1.45;
   color: var(--fg);
   background: var(--bg);
 }
@@ -21,13 +22,35 @@
 }
 
 .v2-term-out { white-space: pre-wrap; }
-.v2-term-echo { color: var(--fg-muted); margin-top: 6px; }
-.v2-term-echo .v2-term-cwd { color: var(--accent); margin-right: 6px; }
-.v2-term-echo .v2-term-sigil { color: var(--fg-dim); margin-right: 6px; }
-.v2-term-complete { color: var(--fg-dim); font-size: 11px; padding: 2px 0 8px; }
-.v2-term-complete.err { color: #d06262; }
+.v2-term-echo {
+  color: var(--fg-muted);
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.v2-term-echo .v2-term-cwd   { color: var(--accent);  margin-right: 6px; }
+.v2-term-echo .v2-term-sigil { color: var(--fg-dim);  margin-right: 6px; }
+.v2-term-echo-cmd            { color: var(--fg); }
+.v2-term-echo-trail          { color: #d06262; margin-left: 4px; }
+
+.v2-term-complete {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 0 8px;
+}
+.v2-term-complete-chip {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.v2-term-complete.err .v2-term-complete-chip { color: #d06262; border-color: #d06262; }
+
 .v2-term-compls { color: var(--fg-muted); padding: 4px 0; }
 
+/* Prompt row — cwd + $ + input + ⌃C / Tab / Esc controls, all
+   one flex row so it reads like a shell prompt. */
 .v2-term-prompt {
   display: flex;
   align-items: center;
@@ -37,27 +60,105 @@
   background: var(--bg-elev);
 }
 
-.v2-term-cwd { color: var(--accent); font-size: 12px; }
-.v2-term-sigil { color: var(--fg-dim); font-size: 12px; }
+.v2-term-cwd   { color: var(--accent); font-size: 12.5px; }
+.v2-term-sigil { color: var(--fg-dim); font-size: 12.5px; }
 
 .v2-term-input {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   outline: none;
   color: var(--fg);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
+  caret-color: var(--accent);
 }
 .v2-term-input:disabled { color: var(--fg-dim); }
 
-.v2-term-kill {
-  padding: 4px 10px;
+/* Controls — ⌃C always, ⇥ / ⎋ only on mobile. */
+.v2-term-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.v2-term-ctrl {
+  padding: 3px 8px;
   font-size: 11px;
+  font-family: var(--font-mono);
   background: transparent;
-  border: 1px solid #d06262;
-  color: #d06262;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
+  min-width: 34px;
+  line-height: 1.2;
 }
-.v2-term-kill:hover { background: rgba(208, 98, 98, 0.15); }
+.v2-term-ctrl:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+  background: var(--bg-hover);
+}
+.v2-term-ctrl:active { transform: translateY(1px); }
+
+/* While a command is running, ⌃C glows red so the user sees they
+   can interrupt it. */
+.v2-term.is-running .v2-term-ctrl[data-term-cmd="ctrl-c"] {
+  color: #d06262;
+  border-color: #d06262;
+}
+.v2-term.is-running .v2-term-ctrl[data-term-cmd="ctrl-c"]:hover {
+  background: rgba(208, 98, 98, 0.15);
+}
+
+/* ⇥ / ⎋ buttons are only meaningful on touch devices. */
+.v2-term-ctrl-mobile { display: none; }
+@media (max-width: 768px) {
+  .v2-term-ctrl-mobile { display: inline-flex; }
+}
+
+/* ── ANSI SGR palette ────────────────────────────────────────────── */
+/* 16 standard colours — tuned to read well on the v2 dark bg. Bright
+   variants (8–15) are the same hues bumped up. */
+.ansi-fg-0 { color: #4a4f57; }   /* black (nearly invisible on our bg otherwise) */
+.ansi-fg-1 { color: #e06c75; }   /* red */
+.ansi-fg-2 { color: #98c379; }   /* green */
+.ansi-fg-3 { color: #d19a66; }   /* yellow */
+.ansi-fg-4 { color: #61afef; }   /* blue */
+.ansi-fg-5 { color: #c678dd; }   /* magenta */
+.ansi-fg-6 { color: #56b6c2; }   /* cyan */
+.ansi-fg-7 { color: #c8ccd4; }   /* white/grey */
+
+.ansi-fg-8  { color: #5c6370; }  /* bright black */
+.ansi-fg-9  { color: #ff7b85; }  /* bright red */
+.ansi-fg-10 { color: #b5e089; }  /* bright green */
+.ansi-fg-11 { color: #e5b169; }  /* bright yellow */
+.ansi-fg-12 { color: #7eb9f3; }  /* bright blue */
+.ansi-fg-13 { color: #d48cea; }  /* bright magenta */
+.ansi-fg-14 { color: #6ec9d3; }  /* bright cyan */
+.ansi-fg-15 { color: #ffffff; }  /* bright white */
+
+.ansi-bg-0 { background-color: #4a4f57; }
+.ansi-bg-1 { background-color: #e06c75; }
+.ansi-bg-2 { background-color: #98c379; }
+.ansi-bg-3 { background-color: #d19a66; }
+.ansi-bg-4 { background-color: #61afef; }
+.ansi-bg-5 { background-color: #c678dd; }
+.ansi-bg-6 { background-color: #56b6c2; }
+.ansi-bg-7 { background-color: #c8ccd4; }
+.ansi-bg-8  { background-color: #5c6370; }
+.ansi-bg-9  { background-color: #ff7b85; }
+.ansi-bg-10 { background-color: #b5e089; }
+.ansi-bg-11 { background-color: #e5b169; }
+.ansi-bg-12 { background-color: #7eb9f3; }
+.ansi-bg-13 { background-color: #d48cea; }
+.ansi-bg-14 { background-color: #6ec9d3; }
+.ansi-bg-15 { background-color: #ffffff; }
+
+.ansi-bold      { font-weight: 600; }
+.ansi-dim       { opacity: 0.7; }
+.ansi-italic    { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+.ansi-strike    { text-decoration: line-through; }
+.ansi-reverse   { filter: invert(1); }

@@ -120,7 +120,8 @@ try {
     await page.click('[data-term-cmd="ctrl-c"]');
     await page.waitForTimeout(80);
     const echoed = await page.evaluate(() => {
-      const last = document.querySelector('.v2-term-output .v2-term-echo:last-child');
+      const echoes = document.querySelectorAll('.v2-term-output .v2-term-echo');
+      const last = echoes[echoes.length - 1];
       return last ? {
         cmd: last.querySelector('.v2-term-echo-cmd')?.textContent,
         trail: last.querySelector('.v2-term-echo-trail')?.textContent,
@@ -210,6 +211,78 @@ try {
       return out ? getComputedStyle(out).overflowY : null;
     });
     check('scrollback has overflow-y scroll', scrollable === 'auto' || scrollable === 'scroll', scrollable);
+
+    // 9. Promptline is part of the scrollback — direct child of the
+    //    output container, NOT a separate sibling below it. That's
+    //    what makes it feel like a real terminal: scrolling up
+    //    moves the prompt up along with the rest of the history.
+    const structure = await page.evaluate(() => {
+      const out = document.querySelector('.v2-term-output');
+      const prompt = document.querySelector('.v2-term-promptline');
+      return {
+        promptIsChild: prompt?.parentElement === out,
+        promptIsLast:  out?.lastElementChild === prompt,
+      };
+    });
+    check('promptline is a child of the scrollback', structure.promptIsChild === true, JSON.stringify(structure));
+    check('promptline is the last child (stays at end)', structure.promptIsLast === true);
+
+    // 10. Promptline doesn't get extra styling that separates it
+    //     from the scrollback: no distinct background, no top border,
+    //     no different padding.
+    const style = await page.evaluate(() => {
+      const out = document.querySelector('.v2-term-output');
+      const prompt = document.querySelector('.v2-term-promptline');
+      const outBg = getComputedStyle(out).backgroundColor;
+      const promptBg = getComputedStyle(prompt).backgroundColor;
+      return {
+        promptBg,
+        outBg,
+        promptBorderTop: getComputedStyle(prompt).borderTopWidth,
+        promptPadding:   getComputedStyle(prompt).padding,
+      };
+    });
+    // Both should resolve to "rgba(0, 0, 0, 0)" (transparent) — the
+    // output owns the actual bg. Same-background check is conclusive.
+    check('promptline has no background of its own',
+      style.promptBg === 'rgba(0, 0, 0, 0)', JSON.stringify(style));
+    check('promptline has no top border',
+      style.promptBorderTop === '0px', style.promptBorderTop);
+
+    // 11. Scrolling up can reveal past entries above the prompt.
+    //     Pump in enough output to force a scrollbar, then scroll
+    //     back to the top and confirm earlier echoes are visible.
+    await page.evaluate((id) => {
+      const s = window.__v2debug.stores.terminalStore;
+      s.clear(id);
+      for (let i = 0; i < 40; i++) {
+        s.appendEcho(id, { cmd: `echo ${i}`, cwd: '/tmp' });
+        s.appendOutput(id, `${i}\n`);
+        s.markComplete(id, 0, '/tmp');
+      }
+    }, chId);
+    await page.waitForTimeout(120);
+    const scrollShape = await page.evaluate(() => {
+      const out = document.querySelector('.v2-term-output');
+      return {
+        scrollHeight: out.scrollHeight,
+        clientHeight: out.clientHeight,
+        scrollableNow: out.scrollHeight > out.clientHeight + 1,
+        startScrollTop: out.scrollTop,
+      };
+    });
+    check('scrollback grows large enough to scroll', scrollShape.scrollableNow, JSON.stringify(scrollShape));
+    await page.evaluate(() => { document.querySelector('.v2-term-output').scrollTop = 0; });
+    await page.waitForTimeout(40);
+    const top = await page.evaluate(() => {
+      const out = document.querySelector('.v2-term-output');
+      // `echo 0` should be near the top after scrolling up.
+      const first = [...out.querySelectorAll('.v2-term-echo')].slice(0, 3)
+        .map(el => el.querySelector('.v2-term-echo-cmd')?.textContent);
+      return { firstCmds: first, scrollTop: out.scrollTop };
+    });
+    check('scrolling up reveals earliest commands',
+      top.firstCmds.slice(0, 1).includes('echo 0'), JSON.stringify(top));
 
     await ctx.close();
   }

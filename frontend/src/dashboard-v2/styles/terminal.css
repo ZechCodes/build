@@ -1,6 +1,8 @@
-/* TerminalView. Output above, inline prompt row with controls below. */
+/* TerminalView. Prompt is part of the scrollback — not a separate
+   pinned row — so it scrolls with past output like a real shell. */
 
 .v2-term {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -21,22 +23,24 @@
   word-break: break-word;
 }
 
-.v2-term-out { white-space: pre-wrap; }
+.v2-term-out  { white-space: pre-wrap; }
+
+/* Echo rows — no margin-top so prompts butt up against prior
+   output, matching a real terminal's line flow. */
 .v2-term-echo {
-  color: var(--fg-muted);
-  margin-top: 6px;
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--fg);
 }
-.v2-term-echo .v2-term-cwd   { color: var(--accent);  margin-right: 6px; }
-.v2-term-echo .v2-term-sigil { color: var(--fg-dim);  margin-right: 6px; }
+.v2-term-echo .v2-term-cwd   { color: var(--accent); margin-right: 6px; }
+.v2-term-echo .v2-term-sigil { color: var(--fg-dim); margin-right: 6px; }
 .v2-term-echo-cmd            { color: var(--fg); }
 .v2-term-echo-trail          { color: #d06262; margin-left: 4px; }
 
 .v2-term-complete {
   display: flex;
   justify-content: flex-end;
-  padding: 2px 0 8px;
+  padding: 2px 0;
 }
 .v2-term-complete-chip {
   font-size: 10.5px;
@@ -47,21 +51,21 @@
 }
 .v2-term-complete.err .v2-term-complete-chip { color: #d06262; border-color: #d06262; }
 
-.v2-term-compls { color: var(--fg-muted); padding: 4px 0; }
+.v2-term-compls { color: var(--fg-muted); padding: 2px 0; }
 
-/* Prompt row — cwd + $ + input + ⌃C / Tab / Esc controls, all
-   one flex row so it reads like a shell prompt. */
-.v2-term-prompt {
+/* Live promptline — just another line in the scrollback. No
+   separate background, no top-border, no extra padding. The
+   parent output's padding owns the horizontal rhythm; promptline
+   sits flush with every echoed command that came before it. */
+.v2-term-promptline {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-elev);
+  align-items: baseline;
+  gap: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-
-.v2-term-cwd   { color: var(--accent); font-size: 12.5px; }
-.v2-term-sigil { color: var(--fg-dim); font-size: 12.5px; }
+.v2-term-promptline .v2-term-cwd   { color: var(--accent); }
+.v2-term-promptline .v2-term-sigil { color: var(--fg-dim); }
 
 .v2-term-input {
   flex: 1;
@@ -69,42 +73,51 @@
   background: transparent;
   border: none;
   outline: none;
+  padding: 0;
+  margin: 0;
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: 13px;
+  line-height: 1.45;
   caret-color: var(--accent);
 }
 .v2-term-input:disabled { color: var(--fg-dim); }
 
-/* Controls — ⌃C always, ⇥ / ⎋ only on mobile. */
+/* Controls float in the top-right corner so they never visually
+   compete with the prompt or the scrollback flow. Subtle until
+   hover, except ⌃C which lights up while a command runs. */
 .v2-term-controls {
+  position: absolute;
+  top: 6px;
+  right: 8px;
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 0 0 auto;
+  z-index: 2;
 }
 .v2-term-ctrl {
-  padding: 3px 8px;
+  padding: 2px 7px;
   font-size: 11px;
   font-family: var(--font-mono);
-  background: transparent;
+  background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  min-width: 34px;
+  min-width: 30px;
   line-height: 1.2;
+  opacity: 0.75;
 }
 .v2-term-ctrl:hover {
+  opacity: 1;
   color: var(--fg);
   border-color: var(--fg-dim);
   background: var(--bg-hover);
 }
 .v2-term-ctrl:active { transform: translateY(1px); }
 
-/* While a command is running, ⌃C glows red so the user sees they
-   can interrupt it. */
 .v2-term.is-running .v2-term-ctrl[data-term-cmd="ctrl-c"] {
+  opacity: 1;
   color: #d06262;
   border-color: #d06262;
 }
@@ -112,7 +125,6 @@
   background: rgba(208, 98, 98, 0.15);
 }
 
-/* ⇥ / ⎋ buttons are only meaningful on touch devices. */
 .v2-term-ctrl-mobile { display: none; }
 @media (max-width: 768px) {
   .v2-term-ctrl-mobile { display: inline-flex; }

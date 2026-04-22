@@ -57,6 +57,7 @@ export class TerminalView {
     this.unsubs = [];
     this.root = null;
     this.outputEl = null;
+    this.promptlineEl = null;
     this.inputEl = null;
     this.promptCwdEl = null;
     this.controlsEl = null;
@@ -65,27 +66,39 @@ export class TerminalView {
   }
 
   _buildShell() {
+    // The promptline is part of the scrollback — it's always the
+    // LAST child of `.v2-term-output`. New entries get inserted
+    // BEFORE it so the scrollback reads like a real terminal:
+    //   $ cmd1
+    //   …output…
+    //   $ cmd2
+    //   …output…
+    //   $ ▍         ← live prompt, scrolls up with everything else
+    // Controls float in the top-right corner of the panel so they
+    // never visually compete with the prompt.
     this.root.innerHTML = `
       <div class="v2-term">
-        <div class="v2-term-output" data-slot="output"></div>
-        <div class="v2-term-prompt" data-slot="prompt">
-          <span class="v2-term-cwd" data-slot="cwd"></span>
-          <span class="v2-term-sigil">$</span>
-          <input class="v2-term-input" type="text"
-                 autocapitalize="off" autocorrect="off" spellcheck="false"
-                 autocomplete="off">
-          <div class="v2-term-controls" data-slot="controls">
-            <button class="v2-term-ctrl" data-term-cmd="ctrl-c" type="button"
-                    title="Interrupt (Ctrl+C)" aria-label="Interrupt (Ctrl+C)">^C</button>
-            <button class="v2-term-ctrl v2-term-ctrl-mobile" data-term-cmd="tab" type="button"
-                    title="Tab" aria-label="Tab">Tab</button>
-            <button class="v2-term-ctrl v2-term-ctrl-mobile" data-term-cmd="esc" type="button"
-                    title="Esc" aria-label="Esc">Esc</button>
+        <div class="v2-term-controls" data-slot="controls">
+          <button class="v2-term-ctrl" data-term-cmd="ctrl-c" type="button"
+                  title="Interrupt (Ctrl+C)" aria-label="Interrupt (Ctrl+C)">^C</button>
+          <button class="v2-term-ctrl v2-term-ctrl-mobile" data-term-cmd="tab" type="button"
+                  title="Tab" aria-label="Tab">Tab</button>
+          <button class="v2-term-ctrl v2-term-ctrl-mobile" data-term-cmd="esc" type="button"
+                  title="Esc" aria-label="Esc">Esc</button>
+        </div>
+        <div class="v2-term-output" data-slot="output">
+          <div class="v2-term-promptline" data-slot="promptline">
+            <span class="v2-term-cwd" data-slot="cwd"></span>
+            <span class="v2-term-sigil">$</span>
+            <input class="v2-term-input" type="text"
+                   autocapitalize="off" autocorrect="off" spellcheck="false"
+                   autocomplete="off">
           </div>
         </div>
       </div>
     `;
     this.outputEl = this.root.querySelector('[data-slot="output"]');
+    this.promptlineEl = this.root.querySelector('[data-slot="promptline"]');
     this.inputEl = this.root.querySelector('.v2-term-input');
     this.promptCwdEl = this.root.querySelector('[data-slot="cwd"]');
     this.controlsEl = this.root.querySelector('[data-slot="controls"]');
@@ -100,31 +113,31 @@ export class TerminalView {
     const wasNearBottom = this._isNearBottom();
 
     if (force) {
-      // Full rebuild — re-run ANSI state from scratch.
-      this.outputEl.innerHTML = '';
+      // Full rebuild — preserve the live promptline (it owns focus
+      // and any typed text), drop everything else, then re-append
+      // stored entries BEFORE the promptline.
+      for (const child of [...this.outputEl.children]) {
+        if (child !== this.promptlineEl) child.remove();
+      }
       this._ansi = createAnsiState();
       for (const entry of slot.history) this._appendEntry(entry);
     } else {
-      // Incremental: the last entry is either a new output chunk or
-      // a freshly-appended complete marker. Replace the last node
-      // from scratch for both cases — simplest correct behaviour and
-      // the DOM cost is bounded by how much the last entry emitted.
+      // Incremental: the last entry is either a new output chunk,
+      // a freshly-appended complete marker, or a new echo. The
+      // promptline is always the last child of outputEl, so we
+      // look for the last *non-promptline* child and replace it
+      // if it maps to this entry.
       const lastIdx = slot.history.length - 1;
-      if (lastIdx < 0) { this.outputEl.innerHTML = ''; return; }
+      if (lastIdx < 0) { return; }
       const last = slot.history[lastIdx];
-      // If the last child maps to this entry, rebuild in place;
-      // otherwise append a fresh node. The stamped dataset index
-      // keeps the 1:1 mapping trivial.
-      const lastNode = this.outputEl.lastElementChild;
-      const lastNodeIdx = lastNode ? Number(lastNode.dataset.idx) : -1;
-      if (lastNode && lastNodeIdx === lastIdx) {
-        lastNode.remove();
-        // Roll back the ANSI state to just before this entry, then
-        // replay. Since we don't cache prior states, the cheapest
-        // correct path is a full rebuild when a prior entry also
-        // updated. In practice `output` entries arrive with growing
-        // text (the store concats), so only the current entry's
-        // text is volatile.
+      const children = this.outputEl.children;
+      let lastEntryNode = null;
+      for (let i = children.length - 1; i >= 0; i--) {
+        if (children[i] !== this.promptlineEl) { lastEntryNode = children[i]; break; }
+      }
+      const lastNodeIdx = lastEntryNode ? Number(lastEntryNode.dataset.idx) : -1;
+      if (lastEntryNode && lastNodeIdx === lastIdx) {
+        lastEntryNode.remove();
         this._ansi = this._ansiBefore(slot.history, lastIdx);
         this._appendEntry(last);
       } else {
@@ -156,7 +169,7 @@ export class TerminalView {
       div.className = 'v2-term-out';
       div.dataset.idx = String(idx);
       div.innerHTML = html;
-      this.outputEl.appendChild(div);
+      this.outputEl.insertBefore(div, this.promptlineEl);
     } else if (entry.type === 'echo') {
       const div = document.createElement('div');
       div.className = 'v2-term-echo';
@@ -166,7 +179,7 @@ export class TerminalView {
         `<span class="v2-term-sigil">$</span> ` +
         `<span class="v2-term-echo-cmd">${escapeHtml(entry.cmd || '')}</span>` +
         (entry.trail ? `<span class="v2-term-echo-trail">${escapeHtml(entry.trail)}</span>` : '');
-      this.outputEl.appendChild(div);
+      this.outputEl.insertBefore(div, this.promptlineEl);
     } else if (entry.type === 'complete') {
       const code = typeof entry.exitCode === 'number' ? entry.exitCode : 0;
       if (code !== 0) {
@@ -177,7 +190,7 @@ export class TerminalView {
         div.className = 'v2-term-complete err';
         div.dataset.idx = String(idx);
         div.innerHTML = `<span class="v2-term-complete-chip">exit ${code}</span>`;
-        this.outputEl.appendChild(div);
+        this.outputEl.insertBefore(div, this.promptlineEl);
       }
       // New command starts with a clean SGR slate.
       this._ansi = createAnsiState();
@@ -342,7 +355,7 @@ export class TerminalView {
       const list = document.createElement('div');
       list.className = 'v2-term-compls';
       list.textContent = candidates.join('  ');
-      this.outputEl.appendChild(list);
+      this.outputEl.insertBefore(list, this.promptlineEl);
       this.outputEl.scrollTop = this.outputEl.scrollHeight;
     }
   }

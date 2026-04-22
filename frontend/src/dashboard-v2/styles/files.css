@@ -77,8 +77,21 @@
 .v2-files-row.active { background: var(--bg-active); }
 .v2-files-dir { font-weight: 500; }
 
-.v2-files-chev { display: inline-block; width: 12px; font-size: 9px; color: var(--fg-dim); transition: transform 120ms ease; }
+.v2-files-chev { display: inline-block; width: 12px; font-size: 9px; color: var(--fg-dim); transition: transform 120ms ease; flex: 0 0 12px; }
 .v2-files-chev.expanded { transform: rotate(90deg); }
+/* Spacer on file rows so their name lines up with sibling dir names
+   (dirs use a real chevron; files reserve the same 12px so both sit
+   at the same indent). */
+.v2-files-chev-spacer { visibility: hidden; }
+
+/* Nested level wrapper — one per indent step. Each level adds 16px
+   of indent and a faint guide line so the hierarchy reads at a
+   glance. */
+.v2-files-level {
+  padding-left: 14px;
+  border-left: 1px solid var(--border-soft);
+  margin-left: 10px;
+}
 
 .v2-files-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 

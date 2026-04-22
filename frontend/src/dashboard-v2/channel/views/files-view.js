@@ -261,8 +261,12 @@ export class FilesView {
     const tree = filesStore.treeFor(this.channel.id);
     const slot = tree.get(path);
     if (!slot) return '<div class="v2-files-empty">Loading…</div>';
-    if (!slot.entries?.length) return `<div class="v2-files-empty" style="padding-left:${depth * 10}px">(empty)</div>`;
+    if (!slot.entries?.length) return '<div class="v2-files-empty">(empty)</div>';
 
+    // Nested-wrapper approach: each sub-level sits inside a
+    // `.v2-files-level` div that adds 16px padding-left + a faint
+    // left-border guide line. Indent + hierarchy come from the DOM
+    // structure, so dirs and files line up identically.
     const parts = [];
     for (const entry of slot.entries) {
       const fullPath = path ? `${path}/${entry.name}` : entry.name;
@@ -271,27 +275,25 @@ export class FilesView {
         parts.push(`
           <button class="v2-files-row v2-files-dir"
                   type="button"
-                  data-dir-path="${escapeHtml(fullPath)}"
-                  style="padding-left:${depth * 12 + 8}px">
-            <span class="v2-files-chev ${expanded ? 'expanded' : ''}">▸</span>
+                  data-dir-path="${escapeHtml(fullPath)}">
+            <span class="v2-files-chev ${expanded ? 'expanded' : ''}" aria-hidden="true">▸</span>
             <span class="v2-files-name">${escapeHtml(entry.name)}/</span>
           </button>
+          ${expanded ? `<div class="v2-files-level">${this._renderTreeLevel(fullPath, depth + 1)}</div>` : ''}
         `);
-        if (expanded) parts.push(this._renderTreeLevel(fullPath, depth + 1));
       } else {
+        const selected = this.channel.viewState.filesPath === fullPath;
         parts.push(`
-          <button class="v2-files-row ${this.channel.viewState.filesPath === fullPath ? 'active' : ''}"
+          <button class="v2-files-row v2-files-file ${selected ? 'active' : ''}"
                   type="button"
-                  data-file-path="${escapeHtml(fullPath)}"
-                  style="padding-left:${depth * 12 + 22}px">
+                  data-file-path="${escapeHtml(fullPath)}">
+            <span class="v2-files-chev v2-files-chev-spacer" aria-hidden="true"></span>
             <span class="v2-files-name">${escapeHtml(entry.name)}</span>
           </button>
         `);
       }
     }
-    if (slot.truncated) {
-      parts.push(`<div class="v2-files-trunc" style="padding-left:${depth * 12 + 22}px">… truncated</div>`);
-    }
+    if (slot.truncated) parts.push('<div class="v2-files-trunc">… truncated</div>');
     return parts.join('');
   }
 

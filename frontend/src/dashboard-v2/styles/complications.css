@@ -55,19 +55,22 @@
 .v2-comp-ahead  { color: var(--tool-read); }
 .v2-comp-behind { color: var(--tool-edit); }
 
-/* Popover menu — the complications strip lives at the bottom of the
-   viewer, so anchor the menu ABOVE the chip. */
+/* Popover menu — portaled to <body> and positioned via JS from the
+   chip's bounding rect. The complications strip lives inside the rail
+   (overflow: hidden) and the strip itself is overflow-x: auto, so an
+   in-flow absolute popover would be clipped. */
 .v2-comp-menu {
-  position: absolute;
-  bottom: calc(100% + 4px);
+  position: fixed;
+  top: 0;
   left: 0;
   min-width: 240px;
+  max-width: min(360px, calc(100vw - 16px));
   padding: 8px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
-  z-index: 20;
+  z-index: 60;
   display: flex;
   flex-direction: column;
   gap: 8px;

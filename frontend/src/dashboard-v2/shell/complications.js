@@ -9,6 +9,7 @@ import { escapeHtml } from '../util/html.js';
 export class ComplicationsView {
   constructor() {
     this.root = null;
+    this.menuEl = null;
     this.unsubs = [];
   }
 
@@ -16,21 +17,27 @@ export class ComplicationsView {
     this.root = document.getElementById('v2-complications');
     if (!this.root) return;
     this.render();
+    this._syncMenu();
     this.unsubs.push(uiStore.subscribe(e => {
-      if (e.kind === 'active_channel') this.render();
-      // Re-render on dropdown open/close so the popover shows/hides.
-      else if (e.kind === 'dropdown') this.render();
+      if (e.kind === 'active_channel') { this.render(); this._syncMenu(); }
+      else if (e.kind === 'dropdown')    { this.render(); this._syncMenu(); }
     }));
     this.unsubs.push(complicationsStore.subscribe(e => {
-      if (e.channelId === uiStore.getActiveChannel()) this.render();
+      if (e.channelId === uiStore.getActiveChannel()) { this.render(); this._syncMenu(); }
     }));
     this.root.addEventListener('click', this._onClick);
+    // Reposition the portal on resize / scroll so it tracks the chip.
+    window.addEventListener('resize', this._reposition);
+    window.addEventListener('scroll', this._reposition, true);
   }
 
   deactivate() {
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
     if (this.root) this.root.removeEventListener('click', this._onClick);
+    window.removeEventListener('resize', this._reposition);
+    window.removeEventListener('scroll', this._reposition, true);
+    this._closeMenu();
     this.root = null;
   }
 
@@ -62,8 +69,6 @@ export class ComplicationsView {
     const stats = [];
     if (ins) stats.push(`<span class="v2-comp-stat v2-comp-add">+${ins}</span>`);
     if (del) stats.push(`<span class="v2-comp-stat v2-comp-del">-${del}</span>`);
-    // When an upstream is tracked, always show ahead/behind (even 0)
-    // so the user can tell at a glance whether the branch is in sync.
     if (d.upstream) {
       stats.push(`<span class="v2-comp-stat v2-comp-ahead">↑${d.ahead || 0}</span>`);
       stats.push(`<span class="v2-comp-stat v2-comp-behind">↓${d.behind || 0}</span>`);
@@ -72,7 +77,6 @@ export class ComplicationsView {
     const label = remote ? `${remote}/${branch}` : branch;
     const dropdownId = `comp:${comp.id}`;
     const isOpen = uiStore.getOpenDropdown() === dropdownId;
-    const menu = isOpen ? this._renderGitMenu(comp) : '';
     return `
       <div class="v2-comp v2-comp-git${isOpen ? ' open' : ''}"
            data-comp-id="${escapeHtml(comp.id)}"
@@ -82,7 +86,6 @@ export class ComplicationsView {
         </svg>
         <span class="v2-comp-label">${escapeHtml(label)}</span>
         <span class="v2-comp-stats">${stats.join('')}</span>
-        ${menu}
       </div>
     `;
   }
@@ -156,16 +159,17 @@ export class ComplicationsView {
         `).join('')}
       </div>
     ` : '';
+    // Returns the menu's inner content; the portal wrapper already
+    // carries `.v2-comp-menu` + `data-dropdown` so outside-click
+    // detection works.
     return `
-      <div class="v2-comp-menu" data-dropdown="comp:${escapeHtml(comp.id)}">
-        ${branchRow}
-        ${stagedRow}
-        ${unstagedRow}
-        ${untrackedRow}
-        ${remoteRow}
-        ${lastFetchRow}
-        ${actions}
-      </div>
+      ${branchRow}
+      ${stagedRow}
+      ${unstagedRow}
+      ${untrackedRow}
+      ${remoteRow}
+      ${lastFetchRow}
+      ${actions}
     `;
   }
 
@@ -178,7 +182,78 @@ export class ComplicationsView {
     btn.disabled = true;
     btn.textContent = `${btn.textContent}…`;
     bus.emit('intent.resolve_complication', { channelId, complicationId, action });
-    // The document-level dropdown listener will close the menu next
-    // because the click bubbles up from inside the trigger.
+    uiStore.setOpenDropdown(null);
   };
+
+  // ── Portal menu ──────────────────────────────────────────────────────
+  // The complications strip lives inside the rail (overflow: hidden) and
+  // scrolls horizontally on its own (overflow-x: auto), so a popover
+  // anchored to the chip via position:absolute gets clipped. We render
+  // the menu as a body-level fixed element and position it from the
+  // chip's bounding rect.
+
+  _syncMenu() {
+    const openId = uiStore.getOpenDropdown();
+    const compId = (openId && openId.startsWith('comp:')) ? openId.slice(5) : null;
+    if (!compId) { this._closeMenu(); return; }
+    const channelId = uiStore.getActiveChannel();
+    const comp = channelId
+      ? complicationsStore.forChannel(channelId).find(c => c.id === compId)
+      : null;
+    if (!comp) { this._closeMenu(); return; }
+    this._openMenu(comp);
+  }
+
+  _openMenu(comp) {
+    if (!this.menuEl) {
+      this.menuEl = document.createElement('div');
+      this.menuEl.className = 'v2-comp-menu v2-comp-menu-portal';
+      this.menuEl.setAttribute('data-dropdown', `comp:${comp.id}`);
+      this.menuEl.addEventListener('click', this._onClick);
+      document.body.appendChild(this.menuEl);
+    } else {
+      this.menuEl.setAttribute('data-dropdown', `comp:${comp.id}`);
+    }
+    this.menuEl.innerHTML = this._renderGitMenu(comp);
+    this._reposition();
+  }
+
+  _closeMenu() {
+    if (this.menuEl && this.menuEl.parentNode) {
+      this.menuEl.parentNode.removeChild(this.menuEl);
+    }
+    this.menuEl = null;
+  }
+
+  _reposition = () => {
+    if (!this.menuEl || !this.root) return;
+    const id = this.menuEl.getAttribute('data-dropdown') || '';
+    const compId = id.startsWith('comp:') ? id.slice(5) : null;
+    if (!compId) return;
+    const chip = this.root.querySelector(`.v2-comp[data-comp-id="${cssEscape(compId)}"]`);
+    if (!chip) return;
+    const chipRect = chip.getBoundingClientRect();
+    // First, measure the menu so we can place it correctly.
+    // Temporarily position it at the top-left so its natural width/height
+    // is unconstrained by the viewport edges.
+    this.menuEl.style.left = '0px';
+    this.menuEl.style.top  = '0px';
+    const menuRect = this.menuEl.getBoundingClientRect();
+    const margin = 8;
+    // Anchor ABOVE the chip (rail sits at bottom of viewport); clamp to
+    // the viewport so the menu never runs off-screen.
+    let left = chipRect.left;
+    if (left + menuRect.width > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - menuRect.width - margin);
+    }
+    left = Math.max(margin, left);
+    let top = chipRect.top - menuRect.height - 4;
+    if (top < margin) top = chipRect.bottom + 4;  // fall back below if no room above
+    this.menuEl.style.left = `${Math.round(left)}px`;
+    this.menuEl.style.top  = `${Math.round(top)}px`;
+  };
+}
+
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&');
 }

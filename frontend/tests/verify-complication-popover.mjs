@@ -102,6 +102,37 @@ try {
   check('menu shows Remote (ahead/behind)', menuState.hasRemote);
   check('menu has 2 action buttons',        menuState.actionCount === 2, String(menuState.actionCount));
 
+  // The menu is portaled to <body> and positioned via fixed coords
+  // computed from the chip's rect. It must NOT be clipped by the rail
+  // (overflow: hidden) nor the scrolling strip (overflow-x: auto). Assert
+  // the menu's rect sits fully within the viewport and its top is above
+  // the chip (we anchor above, falling back to below only when no room).
+  const geom = await page.evaluate(() => {
+    const menu = document.querySelector('.v2-comp-menu');
+    const chip = document.querySelector('.v2-comp-git[data-comp-id="git:/tmp/test-repo"]');
+    if (!menu || !chip) return null;
+    const m = menu.getBoundingClientRect();
+    const c = chip.getBoundingClientRect();
+    return {
+      menuTop: m.top, menuLeft: m.left, menuRight: m.right, menuBottom: m.bottom,
+      menuWidth: m.width, menuHeight: m.height,
+      chipTop: c.top, chipBottom: c.bottom,
+      viewW: window.innerWidth, viewH: window.innerHeight,
+      position: getComputedStyle(menu).position,
+      parentTag: menu.parentElement?.tagName,
+    };
+  });
+  check('menu is a body-level fixed element',
+    geom?.position === 'fixed' && geom?.parentTag === 'BODY', JSON.stringify(geom));
+  check('menu fits inside the viewport (not clipped)',
+    geom && geom.menuTop >= 0 && geom.menuLeft >= 0
+        && geom.menuRight  <= geom.viewW
+        && geom.menuBottom <= geom.viewH,
+    JSON.stringify(geom));
+  check('menu anchors above the chip (or below if no room above)',
+    geom && (geom.menuBottom <= geom.chipTop || geom.menuTop >= geom.chipBottom),
+    JSON.stringify(geom));
+
   // 3. Outside-click closes while menu is still open.
   // (Menu is currently open from the click at "2." above.)
   const viewport = page.viewportSize();
@@ -120,9 +151,9 @@ try {
   // coordinate-based dispatch and guarantees the click target is the
   // action button, not the surrounding chip.
   await page.evaluate(() => {
-    const btn = document.querySelector(
-      '.v2-comp-git[data-comp-id="git:/tmp/test-repo"] .v2-comp-menu [data-action="push"]'
-    );
+    // Menu is portaled to <body>, so query it directly, not as a
+    // descendant of the chip.
+    const btn = document.querySelector('.v2-comp-menu [data-action="push"]');
     btn?.click();
   });
   await page.waitForTimeout(150);

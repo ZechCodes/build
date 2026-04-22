@@ -11,7 +11,8 @@ import { unreadStore } from '../../domain/unread-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
 import { shortTime } from '../../util/time.js';
 import { renderMarkdown } from '../../util/markdown.js';
-import { agentShortName } from '../../util/tools.js';
+import { agentShortName, describeToolUse, toolTag } from '../../util/tools.js';
+import { currentToolStore } from '../../domain/current-tool-store.js';
 import { uploadFile } from '../../transport/index.js';
 import { showToast } from '../../util/toast.js';
 import { e2eePool } from '../../transport/e2ee-pool.js';
@@ -64,6 +65,11 @@ export class ChatView {
       if (e.channelId !== this.channel.id) return;
       if (e.kind === 'plan_mode' || e.kind === 'agent_active') this._renderToolbar();
     }));
+    this.unsubs.push(currentToolStore.subscribe(e => {
+      if (e.channelId !== this.channel.id) return;
+      this._renderToolStrip();
+    }));
+    this._renderToolStrip();
     this.unsubs.push(bus.on('upload.progress', (p) => {
       if (p.deviceId !== channelsStore.deviceFor(this.channel.id)) return;
       const chip = this.stagingEl?.querySelector(`[data-staging-name="${CSS.escape(p.fileName)}"]`);
@@ -99,6 +105,7 @@ export class ChatView {
     this.composerInput = null;
     this.toolbarEl = null;
     this.overlayEl = null;
+    this.toolStripEl = null;
   }
 
   _buildShell() {
@@ -111,6 +118,11 @@ export class ChatView {
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
+        <div class="v2-chat-tool" data-slot="tool" hidden>
+          <span class="v2-chat-tool-dot" aria-hidden="true"></span>
+          <span class="v2-chat-tool-tag"></span>
+          <span class="v2-chat-tool-desc"></span>
+        </div>
         <div class="v2-chat-composer" data-slot="composer">
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>
         </div>
@@ -120,6 +132,7 @@ export class ChatView {
     this.messagesEl = this.root.querySelector('[data-slot="messages"]');
     this.composerInput = this.root.querySelector('.v2-chat-input');
     this.stagingEl = this.root.querySelector('[data-slot="staging"]');
+    this.toolStripEl = this.root.querySelector('[data-slot="tool"]');
     this.fileInput = this.root.querySelector('.v2-chat-file-input');
     this.toolbarEl = document.getElementById('v2-chat-overlay-toolbar');
     this.overlayEl = document.getElementById('v2-chat-overlay');
@@ -201,6 +214,23 @@ export class ChatView {
   _renderStopButton() {
     // Stop lives in the overlay toolbar, rebuilt by _renderToolbar.
     this._renderToolbar();
+  }
+
+  _renderToolStrip() {
+    const strip = this.toolStripEl;
+    if (!strip) return;
+    const entry = currentToolStore.get(this.channel.id);
+    if (!entry) {
+      strip.hidden = true;
+      return;
+    }
+    const tagEl  = strip.querySelector('.v2-chat-tool-tag');
+    const descEl = strip.querySelector('.v2-chat-tool-desc');
+    const tag = toolTag(entry.name);
+    tagEl.className = `v2-chat-tool-tag ${tag}`;
+    tagEl.textContent = entry.name;
+    descEl.textContent = describeToolUse(entry.name, entry.input || {});
+    strip.hidden = false;
   }
 
   _appendMessage(msg, allMsgs) {

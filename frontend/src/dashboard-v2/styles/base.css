@@ -23,6 +23,34 @@ code, pre { font-family: var(--font-mono); }
 
 button { font-family: inherit; }
 
+/* Mobile Safari / Chromium wait ~300ms on every tap of a non-
+   text target to see if it's actually a double-tap-to-zoom. On a
+   chat button or a channel row that has no zoom semantics anyway
+   the wait is just perceived lag — the user taps, nothing visibly
+   happens for 300ms, they tap again and close the overlay they
+   just opened. `touch-action: manipulation` keeps pinch/scroll
+   but disables the double-tap-to-zoom wait, so taps fire on the
+   leading edge. */
+button,
+a[role="button"],
+[data-rail-panel],
+.v2-channel-sidebar-item,
+.v2-attention-row,
+.v2-device-header,
+.v2-rail-btn,
+.v2-co-btn,
+.v2-co-ctrl-pill,
+.v2-comp,
+.v2-tab,
+.v2-suggestion,
+.v2-plan-btn,
+.v2-int-opt,
+.v2-files-tab,
+.v2-path-bar-btn,
+.v2-sidebar-section-header {
+  touch-action: manipulation;
+}
+
 /* iOS Safari auto-zooms when a focused input's computed font-size is
    below 16px. Force 16px on all text-entry controls under 768px so
    the zoom never fires. `.v2-app` prefix lifts specificity above the

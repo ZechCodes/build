@@ -51,6 +51,8 @@ try {
         untracked: 0,
         conflicts: 0,
         remote_name: 'owner/repo',
+        // Bridge sends last_fetch as unix ms (st_mtime * 1000).
+        last_fetch: Date.now() - 180_000,  // 3 minutes ago
       },
       options: [
         { id: 'push',  label: 'Push',  enabled: true },
@@ -132,6 +134,18 @@ try {
   check('menu anchors above the chip (or below if no room above)',
     geom && (geom.menuBottom <= geom.chipTop || geom.menuTop >= geom.chipBottom),
     JSON.stringify(geom));
+
+  // Last fetch arithmetic: bridge sends ms, code must treat it as ms.
+  // 3 minutes ago → "3m ago" (never a negative number).
+  const lastFetchText = await page.evaluate(() => {
+    const menu = document.querySelector('.v2-comp-menu');
+    const sections = menu ? [...menu.querySelectorAll('.v2-comp-menu-section')] : [];
+    const section = sections.find(s => /Last fetch/i.test(s.textContent));
+    return section ? section.querySelector('.v2-comp-menu-row')?.textContent?.trim() : null;
+  });
+  check('last_fetch renders a positive "Nm ago" label',
+    lastFetchText && /^\d+m ago$/.test(lastFetchText),
+    `label=${lastFetchText}`);
 
   // 3. Outside-click closes while menu is still open.
   // (Menu is currently open from the click at "2." above.)

@@ -137,7 +137,7 @@ export class ComplicationsView {
     ` : '';
     let lastFetchRow = '';
     if (d.last_fetch) {
-      const ago = Math.round((Date.now() / 1000 - d.last_fetch));
+      const ago = Math.max(0, Math.round((Date.now() - d.last_fetch) / 1000));
       const agoStr = ago < 60 ? `${ago}s ago`
                    : ago < 3600 ? `${Math.round(ago / 60)}m ago`
                    : `${Math.round(ago / 3600)}h ago`;

@@ -13,6 +13,32 @@
  */
 
 const PROTOCOL_VERSION = 1;
+
+/**
+ * Compute a delay for the next retry of a rate-limited request.
+ * Respects the `Retry-After` response header (either a number of
+ * seconds or an HTTP date); falls back to exponential backoff with
+ * jitter (200/400/800/1600 ms ± 25%).
+ */
+export function _retryDelayMs(resp, attempt) {
+  const header = resp?.headers?.get?.('Retry-After');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      // Cap server-specified delays at 10s to stay responsive; the
+      // relay's rate limit resets quickly.
+      return Math.min(seconds, 10) * 1000;
+    }
+    const dateMs = Date.parse(header);
+    if (!Number.isNaN(dateMs)) {
+      const delta = dateMs - Date.now();
+      if (delta > 0) return Math.min(delta, 10_000);
+    }
+  }
+  const base = 200 * Math.pow(2, Math.max(0, attempt - 1));
+  const jitter = base * 0.25 * (Math.random() * 2 - 1);  // ±25%
+  return Math.max(50, Math.round(base + jitter));
+}
 const NONCE_BYTES = 24;
 const SESSION_KEY_BYTES = 32;
 
@@ -303,14 +329,28 @@ export class BuildE2EE extends EventTarget {
       payload,
     });
 
-    const resp = await fetch('/api/devices/e2ee/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: this._sessionId,
-        envelope,
-      }),
-    });
+    const body = JSON.stringify({ session_id: this._sessionId, envelope });
+
+    // The relay rate-limits POSTs on this endpoint; on boot the
+    // dashboard can easily burst past the cap when multiple channels
+    // race to fetch messages/activity/files all at once. Retry with
+    // backoff (respecting `Retry-After` when the relay sends it) so
+    // the client smooths out the burst instead of dropping requests
+    // on the floor.
+    const MAX_ATTEMPTS = 4;
+    let attempt = 0;
+    let resp;
+    while (true) {
+      attempt++;
+      resp = await fetch('/api/devices/e2ee/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (resp.status !== 429 || attempt >= MAX_ATTEMPTS) break;
+      const waitMs = _retryDelayMs(resp, attempt);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: 'send failed' }));

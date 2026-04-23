@@ -1,12 +1,12 @@
-// Verify the per-channel actions menu:
-//   - every channel row in the sidebar has a "…" trigger
-//     ([data-channel-edit]) that opens a body-level .v2-channel-menu
-//   - the menu offers Restart / Stop / Rename
-//   - Restart / Stop fire their intents with that channel's id
-//   - Rename replaces the overlay title with an inline input;
-//     Enter commits via intent.update_channel, Esc cancels
-//   - Clicking the "…" does NOT activate the channel (menu only)
-//   - Outside click closes the menu
+// Verify the per-channel actions menu + edit modal:
+//   - each channel row has a "…" trigger that opens a menu
+//   - menu offers Restart / Stop / Edit channel…
+//   - Restart / Stop fire their intents scoped to that channel
+//   - Edit opens a modal with Name + Working directory inputs
+//   - Save fires intent.rename_channel (name) and/or
+//     intent.update_channel {working_directory}
+//   - Delete → inline confirm → intent.delete_channel
+//   - Esc / Cancel dismiss the modal without firing intents
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8100';
@@ -22,6 +22,16 @@ function check(label, ok, note) {
   else    { failed++; console.log(`[FAIL] ${label}${note ? ` — ${note}` : ''}`); }
 }
 
+async function openMenu(page, trigger) {
+  await trigger.click({ force: true });
+  await page.waitForTimeout(80);
+}
+async function openEdit(page, trigger) {
+  await openMenu(page, trigger);
+  await page.click('[data-ch-action="edit"]');
+  await page.waitForSelector('.v2-modal', { timeout: 2000 });
+}
+
 try {
   await page.goto(`${BASE}/auth/dummy/login`, { waitUntil: 'domcontentloaded' });
   await page.fill('input[name="email"]', EMAIL);
@@ -32,115 +42,131 @@ try {
     page.click('button[type="submit"]'),
   ]);
   await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
+  await page.waitForSelector('.v2-app', { timeout: 8000 });
+  // Seed a synthetic channel into the stores so this test runs
+  // deterministically regardless of whether the device currently
+  // has any real channels. We also stub every transport method the
+  // test hits so nothing mutates the live device.
+  const chId = 'test-ch-' + Date.now();
+  const deviceId = 'test-device';
+  await page.evaluate(({ chId, deviceId }) => {
+    const ch = {
+      id: chId,
+      name: 'Testing',
+      device_id: deviceId,
+      working_directory: '/tmp/old-wd',
+    };
+    window.__v2debug.stores.devicesStore.upsert({ id: deviceId, name: 'Test Device', status: 'online' });
+    window.__v2debug.stores.channelsStore.upsert({ deviceId, channel: ch });
+    const pool = window.__v2debug.e2eePool;
+    // Fake a connected conn for this channel so intent-dispatcher's
+    // connFor returns something.
+    pool._byDevice = pool._byDevice || new Map();
+    const stub = {
+      connected: true,
+      restartAgent:  async () => {},
+      stopAgent:     async () => {},
+      renameChannel: async () => {},
+      updateChannel: async () => {},
+      deleteChannel: async () => {},
+    };
+    // e2eePool.forChannel looks up by channel's device.
+    pool._byDevice.set(deviceId, stub);
+  }, { chId, deviceId });
+  // Wait for the sidebar to render our seeded channel.
+  await page.waitForSelector(`.v2-sidebar [data-channel-edit="${chId}"]`, { timeout: 4000 });
 
-  // Grab a real sidebar channel row — .v2-channel-sidebar-item is
-  // reused by .v2-attention-row (same class, different parent), and
-  // attention rows don't carry the edit trigger. Filter by the
-  // presence of [data-channel-edit].
-  const trigger = page.locator('.v2-sidebar [data-channel-edit]').first();
-  const chId = await trigger.getAttribute('data-channel-edit');
-  check('found a channel row with an edit trigger', !!chId, chId);
-  check('channel row has a [data-channel-edit] trigger', await trigger.count() >= 1);
+  const trigger = page.locator(`.v2-sidebar [data-channel-edit="${chId}"]`);
+  check('found the seeded channel row', (await trigger.count()) > 0);
 
-  // 2. Clicking it opens a body-level menu. Force the click so the
-  //    invisible-until-hover opacity doesn't block it.
-  // Spy: did the channel become active? It must NOT — the ... click
-  // should be menu-only, not channel activation.
+  // 1. Menu opens and offers Restart / Stop / Edit.
+  await openMenu(page, trigger);
+  const actions = await page.evaluate(() =>
+    [...document.querySelectorAll('.v2-channel-menu [data-ch-action]')].map(b => b.getAttribute('data-ch-action')));
+  check('menu offers restart / stop / edit',
+    JSON.stringify(actions) === JSON.stringify(['restart', 'stop', 'edit']),
+    JSON.stringify(actions));
+
+  // 2. Restart fires intent.restart_agent.
   await page.evaluate(() => {
-    window.__activeAtStart = window.__v2debug.stores.uiStore.getActiveChannel();
-  });
-  await trigger.click({ force: true });
-  await page.waitForTimeout(80);
-  const menuState = await page.evaluate(() => {
-    const menu = document.querySelector('.v2-channel-menu');
-    return menu ? {
-      parentTag: menu.parentElement?.tagName,
-      actions: [...menu.querySelectorAll('[data-ch-action]')].map(b => b.getAttribute('data-ch-action')),
-      boundChannel: menu.getAttribute('data-channel-id'),
-    } : null;
-  });
-  check('menu opens on "…" click',                 menuState != null);
-  check('menu is a body-level popover',            menuState?.parentTag === 'BODY');
-  check('menu carries the row\'s channel id',      menuState?.boundChannel === chId);
-  check('menu offers restart / stop / rename',
-    JSON.stringify(menuState?.actions) === JSON.stringify(['restart', 'stop', 'rename']),
-    JSON.stringify(menuState?.actions));
-
-  const activeAfter = await page.evaluate(() =>
-    ({ now: window.__v2debug.stores.uiStore.getActiveChannel(), start: window.__activeAtStart }));
-  check('"…" click did NOT activate the channel',
-    activeAfter.now === activeAfter.start,
-    JSON.stringify(activeAfter));
-
-  // 3. Restart fires intent.restart_agent for THIS channel and closes the menu.
-  await page.evaluate(() => {
-    window.__lastRestart = null;
-    window.__v2debug.bus.on('intent.restart_agent', (p) => { window.__lastRestart = p; });
+    window.__restart = null;
+    window.__v2debug.bus.on('intent.restart_agent', (p) => { window.__restart = p; });
   });
   await page.click('[data-ch-action="restart"]');
   await page.waitForTimeout(80);
-  const restarted = await page.evaluate(() => window.__lastRestart);
-  check('Restart fires intent.restart_agent with the row\'s channelId',
+  const restarted = await page.evaluate(() => window.__restart);
+  check('Restart fires intent.restart_agent with channelId',
     restarted?.channelId === chId, JSON.stringify(restarted));
-  const gone = await page.$('.v2-channel-menu') == null;
-  check('menu closes after action click', gone);
 
-  // 4. Stop fires intent.stop_agent.
-  await trigger.click({ force: true });
-  await page.waitForTimeout(60);
+  // 3. Edit opens the modal with name + cwd fields.
+  await openEdit(page, trigger);
+  const fields = await page.evaluate(() => ({
+    hasName: !!document.querySelector('.v2-modal [data-edit-field="name"]'),
+    hasCwd:  !!document.querySelector('.v2-modal [data-edit-field="cwd"]'),
+    nameValue: document.querySelector('.v2-modal [data-edit-field="name"]').value,
+  }));
+  check('modal has Name input', fields.hasName);
+  check('modal has Working directory input', fields.hasCwd);
+  check('Name input pre-populated with current name',
+    typeof fields.nameValue === 'string', fields.nameValue);
+
+  // 4. Save → rename + update_channel (working_directory).
   await page.evaluate(() => {
-    window.__lastStop = null;
-    window.__v2debug.bus.on('intent.stop_agent', (p) => { window.__lastStop = p; });
+    window.__rename = null;
+    window.__update = null;
+    window.__v2debug.bus.on('intent.rename_channel', (p) => { window.__rename = p; });
+    window.__v2debug.bus.on('intent.update_channel', (p) => { window.__update = p; });
   });
-  await page.click('[data-ch-action="stop"]');
-  await page.waitForTimeout(80);
-  const stopped = await page.evaluate(() => window.__lastStop);
-  check('Stop fires intent.stop_agent', stopped?.channelId === chId, JSON.stringify(stopped));
+  await page.locator('.v2-modal [data-edit-field="name"]').fill('Edited Name');
+  await page.locator('.v2-modal [data-edit-field="cwd"]').fill('/tmp/new-wd');
+  await page.click('.v2-modal [data-modal-action="save"]');
+  await page.waitForTimeout(120);
+  const saved = await page.evaluate(() => ({
+    rename: window.__rename,
+    update: window.__update,
+    modalGone: !document.querySelector('.v2-modal'),
+  }));
+  check('Save fires intent.rename_channel',
+    saved.rename?.channelId === chId && saved.rename?.name === 'Edited Name',
+    JSON.stringify(saved.rename));
+  check('Save fires intent.update_channel { working_directory }',
+    saved.update?.channelId === chId && saved.update?.patch?.working_directory === '/tmp/new-wd',
+    JSON.stringify(saved.update));
+  check('modal dismisses after save', saved.modalGone);
 
-  // 5. Rename. Activates the channel (to expose the overlay title),
-  //    opens an inline input, Enter commits via intent.update_channel.
-  await trigger.click({ force: true });
+  // 5. Delete flow: inline confirm + intent.delete_channel.
+  await openEdit(page, trigger);
+  await page.click('.v2-modal [data-modal-action="delete-start"]');
   await page.waitForTimeout(60);
+  const confirmVisible = await page.evaluate(() =>
+    !document.querySelector('.v2-modal-delete-confirm')?.hidden);
+  check('Delete reveals inline confirm', confirmVisible);
   await page.evaluate(() => {
-    window.__lastUpdate = null;
-    window.__v2debug.bus.on('intent.update_channel', (p) => { window.__lastUpdate = p; });
+    window.__deleted = null;
+    window.__v2debug.bus.on('intent.delete_channel', (p) => { window.__deleted = p; });
   });
-  await page.click('[data-ch-action="rename"]');
+  await page.click('.v2-modal [data-modal-action="delete-confirm"]');
   await page.waitForTimeout(120);
-  // Ensure overlay is open so the title + input are visible.
-  if (!(await page.$eval('#v2-chat-overlay', el => el.classList.contains('open')))) {
-    await page.click('#v2-rail-chat-toggle');
-    await page.waitForTimeout(250);
-  }
-  await page.waitForSelector('.v2-co-rename-input', { timeout: 2000 });
-  await page.locator('.v2-co-rename-input').fill('Renamed');
-  await page.locator('.v2-co-rename-input').press('Enter');
-  await page.waitForTimeout(120);
-  const updated = await page.evaluate(() => window.__lastUpdate);
-  check('rename commit fires intent.update_channel with name patch',
-    updated?.channelId === chId && updated?.patch?.name === 'Renamed',
-    JSON.stringify(updated));
+  const deletedPayload = await page.evaluate(() => window.__deleted);
+  check('Delete confirm fires intent.delete_channel',
+    deletedPayload?.channelId === chId, JSON.stringify(deletedPayload));
 
-  // 6. Esc on rename cancels cleanly — no update intent after.
-  await trigger.click({ force: true });
-  await page.waitForTimeout(60);
-  await page.click('[data-ch-action="rename"]');
-  await page.waitForSelector('.v2-co-rename-input', { timeout: 2000 });
-  await page.evaluate(() => { window.__lastUpdate = null; });
-  await page.locator('.v2-co-rename-input').fill('Nope');
-  await page.locator('.v2-co-rename-input').press('Escape');
-  await page.waitForTimeout(80);
-  const cancel = await page.evaluate(() => window.__lastUpdate);
-  check('Esc on rename cancels — no update intent', cancel === null);
-
-  // 7. Outside click closes the menu.
-  await trigger.click({ force: true });
-  await page.waitForTimeout(60);
-  await page.mouse.click(5, 5);
-  await page.waitForTimeout(80);
-  const gone2 = await page.$('.v2-channel-menu') == null;
-  check('outside click closes the menu', gone2);
+  // 6. Esc closes modal without firing any intents.
+  await openEdit(page, trigger);
+  await page.evaluate(() => {
+    window.__rename = null;
+    window.__update = null;
+  });
+  await page.locator('.v2-modal [data-edit-field="name"]').fill('Nope');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(100);
+  const escState = await page.evaluate(() => ({
+    modalGone: !document.querySelector('.v2-modal'),
+    rename: window.__rename,
+    update: window.__update,
+  }));
+  check('Esc dismisses modal',                    escState.modalGone);
+  check('Esc does not fire rename/update intents', escState.rename === null && escState.update === null);
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;

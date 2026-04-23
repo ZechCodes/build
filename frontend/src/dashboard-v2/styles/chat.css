@@ -183,19 +183,154 @@
   margin: 3px 0;
 }
 
-/* Inline rename input — replaces the overlay title text until
-   the user commits (Enter/blur) or cancels (Esc). */
-.v2-co-rename-input {
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: inherit;
+/* ── Edit channel modal ─────────────────────────────────────────── */
+.v2-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: v2-modal-fade 140ms ease-out;
+}
+@keyframes v2-modal-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.v2-modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.7);
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  animation: v2-modal-pop 140ms ease-out;
+}
+@keyframes v2-modal-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+.v2-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.v2-modal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--accent);
+}
+.v2-modal-close {
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
   border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  min-width: 180px;
+}
+.v2-modal-close:hover { color: var(--fg); background: var(--bg-hover); }
+.v2-modal-close svg { width: 14px; height: 14px; }
+
+.v2-modal-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+.v2-modal-field { display: flex; flex-direction: column; gap: 4px; }
+.v2-modal-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.v2-modal-input {
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
   outline: none;
+}
+.v2-modal-input:focus { border-color: var(--accent); }
+.v2-modal-hint { font-size: 11px; color: var(--fg-dim); }
+
+.v2-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-wrap: wrap;
+}
+.v2-modal-primary-actions { display: flex; gap: 8px; margin-left: auto; }
+
+.v2-modal-btn {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.v2-modal-btn:hover { background: var(--bg-hover); border-color: var(--fg-dim); }
+.v2-modal-btn.primary {
+  background: var(--accent);
+  color: #0b0d10;
+  border-color: var(--accent);
+}
+.v2-modal-btn.primary:hover { filter: brightness(1.08); }
+.v2-modal-btn.secondary { color: var(--fg-muted); }
+.v2-modal-btn.danger {
+  background: #d06262;
+  color: #0b0d10;
+  border-color: #d06262;
+}
+.v2-modal-btn.danger:hover { filter: brightness(1.08); }
+
+.v2-modal-delete {
+  padding: 5px 12px;
+  font-size: 12px;
+  border: 1px solid #d06262;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: #d06262;
+  cursor: pointer;
+  font-family: inherit;
+}
+.v2-modal-delete:hover { background: rgba(208, 98, 98, 0.15); }
+
+.v2-modal-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.v2-modal-delete-confirm[hidden] { display: none; }
+.v2-modal-delete-confirm span { flex: 1; }
+
+@media (max-width: 768px) {
+  .v2-modal-backdrop { align-items: flex-end; }
+  .v2-modal {
+    width: 100vw;
+    max-height: 85vh;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
 }
 
 /* Model/effort picker popover — anchored above the ctrl pill via

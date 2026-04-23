@@ -1,19 +1,24 @@
-// Shared channel-actions popover — Restart / Stop / Rename. Opened
-// from the sidebar channel row (primary surface: the channel is
-// exactly where users look for "edit this channel"). Body-level
-// portal, same positioning pattern as the model picker / complication
-// menu.
+// Per-channel actions. Fired from the "…" trigger on each sidebar
+// channel row. Menu offers quick actions (Restart / Stop) + an
+// "Edit channel…" item that opens a modal with Name, Working
+// directory, and a Delete button.
+//
+// All popovers / the modal live at document.body so they can
+// outline any clipping ancestors.
 
 import { bus } from '../core/bus.js';
 import { uiStore } from '../domain/ui-store.js';
 import { channelsStore } from '../domain/channels-store.js';
 import { showToast } from '../util/toast.js';
+import { escapeHtml } from '../util/html.js';
 
-let activeMenu = null;    // { el, channelId, onDocClick }
+let activeMenu = null;    // { el, channelId, onDocClick, onClick }
+let activeModal = null;   // { el, channelId, onKey }
+
+// ── Popup menu ───────────────────────────────────────────────────────
 
 export function openChannelMenu(channelId, anchorEl) {
   if (!channelId || !anchorEl) return;
-  // Toggle off if the same anchor is clicked while open.
   if (activeMenu && activeMenu.channelId === channelId) {
     closeChannelMenu();
     return;
@@ -37,16 +42,16 @@ export function openChannelMenu(channelId, anchorEl) {
       Stop agent
     </button>
     <div class="v2-channel-menu-sep"></div>
-    <button type="button" data-ch-action="rename">
+    <button type="button" data-ch-action="edit">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M11.5 3.5l1 1M2 14l4-1 7-7-3-3-7 7z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      Rename channel
+      Edit channel…
     </button>
   `;
   document.body.appendChild(menu);
 
-  // Position: prefer bottom-left of the anchor, flip up if no room.
+  // Position: prefer below-left of the anchor, flip up / clamp to viewport.
   const r = anchorEl.getBoundingClientRect();
   const mr = menu.getBoundingClientRect();
   const margin = 8;
@@ -72,14 +77,12 @@ export function openChannelMenu(channelId, anchorEl) {
     } else if (action === 'stop') {
       bus.emit('intent.stop_agent', { channelId });
       showToast('Stopping agent…');
-    } else if (action === 'rename') {
-      _beginRename(channelId);
+    } else if (action === 'edit') {
+      openChannelEditModal(channelId);
     }
   };
   menu.addEventListener('click', onClick);
 
-  // Outside click — close. Register on next microtask so the click
-  // that opened the menu doesn't immediately close it.
   const onDocClick = (e) => {
     if (e.target.closest('.v2-channel-menu')) return;
     closeChannelMenu();
@@ -98,64 +101,133 @@ export function closeChannelMenu() {
   activeMenu = null;
 }
 
-// Rename flow: activate the channel, then replace the overlay title
-// with an inline input. Works regardless of whether the overlay was
-// already open — activating the channel is a sensible side effect.
-function _beginRename(channelId) {
-  uiStore.setActiveChannel(channelId);
-  // Defer one frame so the title element is up-to-date.
-  requestAnimationFrame(() => {
-    const titleEl = document.querySelector('#v2-co-header .v2-co-title');
-    if (!titleEl) {
-      // Overlay not mounted — fall back to a prompt().
-      const ch = channelsStore.get(channelId);
-      const next = window.prompt('Rename channel', ch?.name || '');
-      if (next && next.trim()) {
-        bus.emit('intent.update_channel', { channelId, patch: { name: next.trim() } });
-        showToast('Channel renamed');
-      }
+// ── Edit modal ───────────────────────────────────────────────────────
+
+export function openChannelEditModal(channelId) {
+  if (!channelId) return;
+  closeChannelEditModal();
+
+  const ch = channelsStore.get(channelId);
+  const name = ch?.name || '';
+  const cwd  = ch?.working_directory || '';
+
+  const root = document.createElement('div');
+  root.className = 'v2-modal-backdrop';
+  root.setAttribute('role', 'dialog');
+  root.setAttribute('aria-modal', 'true');
+  root.innerHTML = `
+    <div class="v2-modal" data-channel-id="${escapeHtml(channelId)}">
+      <header class="v2-modal-header">
+        <h2 class="v2-modal-title">Edit channel</h2>
+        <button class="v2-modal-close" type="button" data-modal-action="cancel"
+                aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+      <div class="v2-modal-body">
+        <label class="v2-modal-field">
+          <span class="v2-modal-label">Name</span>
+          <input class="v2-modal-input" data-edit-field="name"
+                 type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="v2-modal-field">
+          <span class="v2-modal-label">Working directory</span>
+          <input class="v2-modal-input" data-edit-field="cwd"
+                 type="text" autocomplete="off" spellcheck="false"
+                 placeholder="~/Projects/repo">
+          <span class="v2-modal-hint">Changing this restarts the agent with the new path.</span>
+        </label>
+      </div>
+      <footer class="v2-modal-footer">
+        <button type="button" class="v2-modal-delete" data-modal-action="delete-start">
+          Delete channel
+        </button>
+        <div class="v2-modal-delete-confirm" hidden>
+          <span>Delete this channel and stop its agent?</span>
+          <button type="button" class="v2-modal-btn secondary" data-modal-action="delete-cancel">Cancel</button>
+          <button type="button" class="v2-modal-btn danger"    data-modal-action="delete-confirm">Delete</button>
+        </div>
+        <div class="v2-modal-primary-actions">
+          <button type="button" class="v2-modal-btn secondary" data-modal-action="cancel">Cancel</button>
+          <button type="button" class="v2-modal-btn primary"   data-modal-action="save">Save</button>
+        </div>
+      </footer>
+    </div>
+  `;
+  document.body.appendChild(root);
+
+  const modal = root.querySelector('.v2-modal');
+  modal.querySelector('[data-edit-field="name"]').value = name;
+  modal.querySelector('[data-edit-field="cwd"]').value  = cwd;
+
+  // Focus the name input so Enter / typing starts working.
+  setTimeout(() => modal.querySelector('[data-edit-field="name"]').focus(), 0);
+
+  const commit = () => {
+    const nextName = modal.querySelector('[data-edit-field="name"]').value.trim();
+    const nextCwd  = modal.querySelector('[data-edit-field="cwd"]').value.trim();
+    let any = false;
+    if (nextName && nextName !== name) {
+      bus.emit('intent.rename_channel', { channelId, name: nextName });
+      any = true;
+    }
+    if (nextCwd !== cwd) {
+      bus.emit('intent.update_channel', { channelId, patch: { working_directory: nextCwd } });
+      any = true;
+    }
+    if (any) showToast('Channel updated');
+    closeChannelEditModal();
+  };
+
+  const remove = () => closeChannelEditModal();
+
+  const onClick = (e) => {
+    const action = e.target.closest('[data-modal-action]')?.getAttribute('data-modal-action');
+    if (!action) {
+      // Click on backdrop (outside the panel) closes. Inside the
+      // panel does nothing.
+      if (e.target === root) closeChannelEditModal();
       return;
     }
-    const ch = channelsStore.get(channelId);
-    const current = ch?.name || '';
-    const prevTitleHtml = titleEl.innerHTML;
+    if (action === 'cancel') return remove();
+    if (action === 'save')   return commit();
+    if (action === 'delete-start') {
+      modal.querySelector('.v2-modal-primary-actions').hidden = true;
+      modal.querySelector('.v2-modal-delete').hidden = true;
+      modal.querySelector('.v2-modal-delete-confirm').hidden = false;
+      return;
+    }
+    if (action === 'delete-cancel') {
+      modal.querySelector('.v2-modal-delete-confirm').hidden = true;
+      modal.querySelector('.v2-modal-delete').hidden = false;
+      modal.querySelector('.v2-modal-primary-actions').hidden = false;
+      return;
+    }
+    if (action === 'delete-confirm') {
+      bus.emit('intent.delete_channel', { channelId });
+      showToast('Channel deleted');
+      closeChannelEditModal();
+    }
+  };
+  root.addEventListener('click', onClick);
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'v2-co-rename-input';
-    input.value = current;
-    input.setAttribute('aria-label', 'Rename channel');
-    titleEl.innerHTML = '';
-    titleEl.appendChild(input);
-    input.focus();
-    input.select();
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); remove(); }
+    else if (e.key === 'Enter' && e.target.matches('[data-edit-field]')) {
+      e.preventDefault();
+      commit();
+    }
+  };
+  root.addEventListener('keydown', onKey);
 
-    let done = false;
-    const restore = () => {
-      if (done) return;
-      done = true;
-      input.removeEventListener('blur', onBlur);
-      titleEl.innerHTML = prevTitleHtml;
-      const nameEl = document.getElementById('v2-co-channel-name');
-      if (nameEl) {
-        const refreshed = channelsStore.get(channelId);
-        nameEl.textContent = refreshed?.name || (channelId ? channelId.slice(0, 8) : 'Select a channel');
-      }
-    };
-    const commit = () => {
-      if (done) return;
-      const next = input.value.trim();
-      if (next && next !== current) {
-        bus.emit('intent.update_channel', { channelId, patch: { name: next } });
-        showToast('Channel renamed');
-      }
-      restore();
-    };
-    const onBlur = () => commit();
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); commit(); }
-      else if (e.key === 'Escape') { e.preventDefault(); restore(); }
-    });
-    input.addEventListener('blur', onBlur);
-  });
+  activeModal = { el: root, channelId, onClick, onKey };
+}
+
+export function closeChannelEditModal() {
+  if (!activeModal) return;
+  const { el, onClick, onKey } = activeModal;
+  el.removeEventListener('click', onClick);
+  el.removeEventListener('keydown', onKey);
+  el.remove();
+  activeModal = null;
 }

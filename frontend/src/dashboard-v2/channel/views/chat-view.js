@@ -391,9 +391,16 @@ export class ChatView {
     const allowFreeform = meta.allow_freeform !== false;
     const multiselect = !!meta.multiselect;
     const plan = meta.plan || null;
+    const questions = Array.isArray(meta.questions) ? meta.questions : null;
     const timeStr = msg.created_at
       ? shortTime(typeof msg.created_at === 'number' ? new Date(msg.created_at * 1000).toISOString() : msg.created_at)
       : '';
+
+    // Multi-question paginated stepper. Hands off to a separate path
+    // so the single-question code stays simple.
+    if (!resolved && questions && questions.length > 1) {
+      return this._appendStepperCard(msg, meta, questions, timeStr);
+    }
 
     const div = document.createElement('div');
     div.dataset.msgId = msg.id || '';
@@ -473,6 +480,169 @@ export class ChatView {
       </div>
     `;
     this.messagesEl.appendChild(div);
+  }
+
+  // ── Paginated multi-question stepper ─────────────────────────────
+  // Rendered when the agent's AskUserQuestion sends >1 question. The
+  // user walks through questions one at a time (click an option to
+  // advance; Back to revisit). The last step's option click fires
+  // `intent.interaction_response` with a `stepAnswers` array. Step
+  // position + collected answers live on viewState keyed by
+  // interaction id so they survive chat-view re-renders.
+
+  _appendStepperCard(msg, meta, questions, timeStr) {
+    const interactionId = meta.interaction_id;
+    const senderName = agentShortName(msg.sender);
+
+    const vs = this.channel.viewState;
+    if (!vs.interactionSteps) vs.interactionSteps = {};
+    const state = vs.interactionSteps[interactionId] || { step: 0, answers: [] };
+    vs.interactionSteps[interactionId] = state;
+
+    const div = document.createElement('div');
+    div.dataset.msgId = msg.id || '';
+    div.className = 'v2-msg agent';
+    div.innerHTML = `
+      <div class="v2-msg-avatar agent">${escapeHtml((senderName || 'A')[0])}</div>
+      <div class="v2-msg-body">
+        <div class="v2-msg-head">
+          <span class="v2-msg-name">${escapeHtml(senderName)}</span>
+          <span class="v2-msg-time">${escapeHtml(timeStr)}</span>
+        </div>
+        <div class="v2-int-card v2-int-stepper"
+             data-interaction-id="${escapeHtml(interactionId)}"
+             data-step="${state.step}"
+             data-total="${questions.length}">
+          <div class="v2-int-progress"></div>
+          <div class="v2-int-step-body" data-slot="step-body"></div>
+          <div class="v2-int-stepper-nav">
+            <button class="v2-int-back" type="button" data-step-action="back">← Back</button>
+            <span class="v2-int-step-label"></span>
+          </div>
+        </div>
+      </div>
+    `;
+    this.messagesEl.appendChild(div);
+    this._paintStep(div.querySelector('.v2-int-card'), questions, state);
+  }
+
+  _paintStep(cardEl, questions, state) {
+    if (!cardEl) return;
+    const total = questions.length;
+    const step = Math.max(0, Math.min(state.step || 0, total - 1));
+    const q = questions[step];
+    const isLast = step === total - 1;
+
+    cardEl.dataset.step = String(step);
+
+    // Progress dots.
+    const progress = cardEl.querySelector('.v2-int-progress');
+    progress.innerHTML = questions.map((_, i) => {
+      const cls = i === step ? 'active' : (i < step || state.answers[i] ? 'done' : 'pending');
+      return `<span class="v2-int-dot ${cls}"></span>`;
+    }).join('');
+
+    // Step body: header + question text + options. Preserve the prior
+    // answer for this step (if any) as `.selected` so the user sees
+    // what they picked when they Back-navigate.
+    const priorAnswer = state.answers[step];
+    const bodyEl = cardEl.querySelector('[data-slot="step-body"]');
+    const headerLine = q.header
+      ? `<div class="v2-int-step-header">${escapeHtml(q.header)}</div>` : '';
+    const questionLine = q.question
+      ? `<div class="v2-int-question">${renderMarkdown(q.question)}</div>` : '';
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const optsHtml = opts.length ? `
+      <div class="v2-int-options">
+        ${opts.map(o => {
+          const sel = priorAnswer && priorAnswer.id === o.id;
+          return `<button class="v2-int-opt${sel ? ' selected' : ''}" type="button"
+                          data-step-opt-id="${escapeHtml(o.id)}"
+                          data-step-opt-label="${escapeHtml(o.label || o.id)}">
+                    ${escapeHtml(o.label || o.id)}
+                  </button>`;
+        }).join('')}
+      </div>` : '';
+    bodyEl.innerHTML = headerLine + questionLine + optsHtml;
+
+    // Nav: Back enabled off step 0; label shows step N of M +
+    // Submit hint on the last step.
+    const backBtn = cardEl.querySelector('[data-step-action="back"]');
+    backBtn.disabled = step === 0;
+    const label = cardEl.querySelector('.v2-int-step-label');
+    label.textContent = isLast
+      ? `Step ${step + 1} of ${total} — choosing submits`
+      : `Step ${step + 1} of ${total}`;
+  }
+
+  _onStepperOptionClick(cardEl, optId, optLabel) {
+    const interactionId = cardEl.getAttribute('data-interaction-id');
+    const questionsMeta = this._getStepperQuestions(interactionId);
+    if (!questionsMeta) return;
+    const vs = this.channel.viewState;
+    const state = vs.interactionSteps[interactionId];
+    if (!state) return;
+    const total = questionsMeta.length;
+    const step = Number(cardEl.dataset.step) || 0;
+    state.answers[step] = { id: optId, label: optLabel };
+
+    if (step === total - 1) {
+      // Last step — collect all answers and submit.
+      const stepAnswers = questionsMeta.map((q, i) => ({
+        header:   q.header || '',
+        question: q.question || '',
+        answer:   state.answers[i]?.label || '',
+        option_id: state.answers[i]?.id || '',
+      }));
+      bus.emit('intent.interaction_response', {
+        channelId: this.channel.id,
+        interactionId,
+        selectedOption: null,
+        freeformResponse: null,
+        stepAnswers,
+      });
+      // Mark the card resolved locally so the user sees the stepper
+      // replaced with a summary without waiting for a server echo.
+      this._markStepperResolved(cardEl, questionsMeta, state.answers);
+      // Clear per-interaction state — we're done.
+      delete vs.interactionSteps[interactionId];
+      return;
+    }
+    state.step = step + 1;
+    this._paintStep(cardEl, questionsMeta, state);
+  }
+
+  _onStepperBack(cardEl) {
+    const interactionId = cardEl.getAttribute('data-interaction-id');
+    const questionsMeta = this._getStepperQuestions(interactionId);
+    if (!questionsMeta) return;
+    const state = this.channel.viewState.interactionSteps?.[interactionId];
+    if (!state) return;
+    if (state.step > 0) state.step -= 1;
+    this._paintStep(cardEl, questionsMeta, state);
+  }
+
+  _getStepperQuestions(interactionId) {
+    const msgs = messagesStore.forChannel(this.channel.id);
+    const m = msgs.find(x => x.id === interactionId);
+    if (!m || !m.metadata) return null;
+    try {
+      const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata;
+      return Array.isArray(meta.questions) && meta.questions.length > 1 ? meta.questions : null;
+    } catch { return null; }
+  }
+
+  _markStepperResolved(cardEl, questions, answers) {
+    const rows = questions.map((q, i) => {
+      const a = answers[i]?.label || '—';
+      const h = q.header || q.question || `Q${i + 1}`;
+      return `<div class="v2-int-step-summary"><strong>${escapeHtml(h)}:</strong> ${escapeHtml(a)}</div>`;
+    }).join('');
+    cardEl.classList.add('resolved');
+    cardEl.innerHTML = `
+      <div class="v2-int-question">Your answers</div>
+      ${rows}
+    `;
   }
 
   _dismissStaleSuggestions(msgs) {
@@ -630,6 +800,27 @@ export class ChatView {
       const card = planBtn.closest('.v2-plan-card');
       this._sendInteraction(card, planBtn.getAttribute('data-opt-id'), null, null);
       return;
+    }
+    // Stepper Back button — before the option handler so Back isn't
+    // treated as an option click.
+    const stepBack = e.target.closest('[data-step-action="back"]');
+    if (stepBack && !stepBack.disabled) {
+      const card = stepBack.closest('.v2-int-stepper');
+      if (card) { this._onStepperBack(card); return; }
+    }
+    // Stepper option click — stored in step-opt-id so it doesn't
+    // collide with the single-question option path.
+    const stepOpt = e.target.closest('[data-step-opt-id]');
+    if (stepOpt) {
+      const card = stepOpt.closest('.v2-int-stepper');
+      if (card) {
+        this._onStepperOptionClick(
+          card,
+          stepOpt.getAttribute('data-step-opt-id'),
+          stepOpt.getAttribute('data-step-opt-label'),
+        );
+        return;
+      }
     }
     // Multi-select interaction toggle
     const intOpt = e.target.closest('.v2-int-opt');

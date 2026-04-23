@@ -170,11 +170,11 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('compact_session failed', err); }
   });
 
-  bus.on('intent.interaction_response', async ({ channelId, interactionId, selectedOption, freeformResponse, selectedOptions }) => {
+  bus.on('intent.interaction_response', async ({ channelId, interactionId, selectedOption, freeformResponse, selectedOptions, stepAnswers }) => {
     const conn = connFor(channelId);
     if (!conn) return;
     try {
-      await conn.sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse, selectedOptions);
+      await conn.sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse, selectedOptions, stepAnswers);
     } catch (err) { plog.error('interaction_response failed', err); }
   });
 

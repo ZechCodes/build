@@ -157,7 +157,13 @@ try {
     });
     check('dispatcher strips __BUILD_CWD__ sentinel', stripOk);
 
-    // 6. exit 0 doesn't render a chip; exit !=0 does.
+    // 6. exit 0 doesn't render a chip; exit !=0 does. Clear first so
+    //    the query isn't confused by any prior error chips from
+    //    earlier steps in this test.
+    await page.evaluate((id) => {
+      window.__v2debug.stores.terminalStore.clear(id);
+    }, chId);
+    await page.waitForTimeout(40);
     await page.evaluate((id) => {
       const s = window.__v2debug.stores.terminalStore;
       s.appendOutput(id, 'ok\n');
@@ -174,9 +180,12 @@ try {
       s.markComplete(id, 1, '/tmp');
     }, chId);
     await page.waitForTimeout(60);
-    const hasErrChip = await page.evaluate(() =>
-      document.querySelector('.v2-term-complete.err .v2-term-complete-chip')?.textContent);
-    check('exit N>0 shows an error chip', hasErrChip === 'exit 1', String(hasErrChip));
+    const hasErrChip = await page.evaluate(() => {
+      const chips = [...document.querySelectorAll('.v2-term-complete.err .v2-term-complete-chip')];
+      return chips.map(c => c.textContent).join('|');
+    });
+    check('exit N>0 shows an error chip',
+      hasErrChip.split('|').includes('exit 1'), hasErrChip);
 
     // 7. Echoes persist in the store → visible after deactivate + reactivate.
     await page.evaluate((id) => {

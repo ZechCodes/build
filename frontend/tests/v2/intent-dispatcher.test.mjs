@@ -132,7 +132,17 @@ test('intent.interaction_response → sendInteractionResponse', async () => {
     'intent.interaction_response',
     { channelId: 'ch1', interactionId: 'x', selectedOption: 'a', freeformResponse: null, selectedOptions: null },
     'sendInteractionResponse',
-    ['ch1', 'x', 'a', null, null],
+    ['ch1', 'x', 'a', null, null, undefined],
+  );
+});
+
+test('intent.interaction_response forwards stepAnswers for paginated questions', async () => {
+  const steps = [{ header: 'Q1', answer: 'yes' }, { header: 'Q2', answer: 'no' }];
+  await emitAndAssert(
+    'intent.interaction_response',
+    { channelId: 'ch1', interactionId: 'x', selectedOption: null, freeformResponse: null, selectedOptions: null, stepAnswers: steps },
+    'sendInteractionResponse',
+    ['ch1', 'x', null, null, null, steps],
   );
 });
 

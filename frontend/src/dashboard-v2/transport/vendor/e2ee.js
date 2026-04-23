@@ -630,7 +630,7 @@ export class BuildE2EE extends EventTarget {
     });
   }
 
-  async sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse, selectedOptions) {
+  async sendInteractionResponse(channelId, interactionId, selectedOption, freeformResponse, selectedOptions, stepAnswers) {
     const payload = {
       action: 'interaction_response',
       channel_id: channelId,
@@ -639,6 +639,7 @@ export class BuildE2EE extends EventTarget {
       freeform_response: freeformResponse || null,
     };
     if (selectedOptions) payload.selected_options = selectedOptions;
+    if (stepAnswers) payload.step_answers = stepAnswers;
     return this.send(payload);
   }
 

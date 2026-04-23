@@ -170,6 +170,7 @@ export function bindE2EEDispatcher(instance, deviceId) {
           allowFreeform: event.allow_freeform !== false,
           plan: event.plan || null,
           multiselect: !!event.multiselect,
+          questions: event.questions || null,
         });
         // Mirror as a message for chat display (v1 parity; views choose rendering).
         const msg = {
@@ -185,6 +186,7 @@ export function bindE2EEDispatcher(instance, deviceId) {
             allow_freeform: event.allow_freeform !== false,
             plan: event.plan || null,
             multiselect: !!event.multiselect,
+            questions: event.questions || null,
           }),
         };
         bus.emit('message.received', { channelId: channel_id, msg });

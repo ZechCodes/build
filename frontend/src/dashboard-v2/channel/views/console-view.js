@@ -45,6 +45,11 @@ export class ConsoleView {
     this.root.innerHTML = `
       <div class="v2-console">
         <div class="v2-console-list" data-slot="list"></div>
+        <div class="v2-console-skeleton" aria-hidden="true">
+          <div class="v2-skeleton v2-skeleton-row"></div>
+          <div class="v2-skeleton v2-skeleton-row"></div>
+          <div class="v2-skeleton v2-skeleton-row short"></div>
+        </div>
       </div>
     `;
     this.body = this.root.querySelector('[data-slot="list"]');

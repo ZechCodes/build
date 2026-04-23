@@ -211,12 +211,26 @@ export class FilesView {
         </button>
       </header>
       <div class="v2-files-tree-body" data-slot="tree"></div>
+      <div class="v2-files-tree-skeleton" aria-hidden="true">
+        <div class="v2-skeleton v2-skeleton-tree-row"></div>
+        <div class="v2-skeleton v2-skeleton-tree-row indent"></div>
+        <div class="v2-skeleton v2-skeleton-tree-row indent"></div>
+        <div class="v2-skeleton v2-skeleton-tree-row"></div>
+        <div class="v2-skeleton v2-skeleton-tree-row indent"></div>
+      </div>
       <div class="v2-files-upload-chips" data-slot="upload-chips" hidden></div>
       <input type="file" class="v2-files-file-input" multiple hidden>
     `;
     contentInner.innerHTML = `
       <header class="v2-files-mode-bar" data-slot="mode"></header>
       <div class="v2-files-viewer-body" data-slot="viewer"></div>
+      <div class="v2-files-viewer-skeleton" aria-hidden="true">
+        <div class="v2-skeleton v2-skeleton-line"></div>
+        <div class="v2-skeleton v2-skeleton-line"></div>
+        <div class="v2-skeleton v2-skeleton-line short"></div>
+        <div class="v2-skeleton v2-skeleton-line"></div>
+        <div class="v2-skeleton v2-skeleton-line short"></div>
+      </div>
     `;
     this.treeEl = treePanel.querySelector('[data-slot="tree"]');
     this.viewerEl = contentInner.querySelector('[data-slot="viewer"]');

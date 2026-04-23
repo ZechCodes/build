@@ -25,6 +25,22 @@ function seedReady(channelId, deviceId) {
   bus.emit('e2ee.connected', { deviceId });
 }
 
+/** Simulate the bridge replying to the initial-data intents so
+ *  Channel.load() can transition to `ready`. */
+function emitInitialResponses(channelId, { withMessages = true } = {}) {
+  if (withMessages) {
+    bus.emit('message.bulk', { channelId, msgs: [] });
+  }
+  bus.emit('files.list_result', { channelId, path: '', entries: [] });
+}
+
+function makeChannel(id, opts) {
+  const ch = new Channel(id, opts);
+  // Short timeout so tests don't wait 5s for the stranded-response safety net.
+  ch._loadTimeoutMs = 100;
+  return ch;
+}
+
 beforeEach(() => {
   resetSession();
   initSessionStore({ devicesStore, channelsStore, uiStore });
@@ -32,7 +48,7 @@ beforeEach(() => {
 
 test('mount activates views without fetching', () => {
   const chat = stubView();
-  const ch = new Channel('chA', { views: { chat } });
+  const ch = makeChannel('chA', { views: { chat } });
   const intents = [];
   const off = bus.on('intent.get_messages', (p) => intents.push(p));
   ch.mount();
@@ -44,7 +60,7 @@ test('mount activates views without fetching', () => {
 
 test('load fires initial-data intents once session is ready', async () => {
   const chat = stubView();
-  const ch = new Channel('chL', { views: { chat } });
+  const ch = makeChannel('chL', { views: { chat } });
   seedReady('chL', 'dev-chL');
 
   const intents = {
@@ -59,7 +75,11 @@ test('load fires initial-data intents once session is ready', async () => {
   ];
 
   ch.mount();
-  await ch.load();
+  const loadP = ch.load();
+  // After session-ready, intents fire; give the microtask a moment.
+  await new Promise(r => setTimeout(r, 5));
+  emitInitialResponses('chL');
+  await loadP;
   offs.forEach(fn => fn());
 
   assert.equal(ch.phase, 'ready');
@@ -70,16 +90,34 @@ test('load fires initial-data intents once session is ready', async () => {
   assert.equal(intents.filesChanges, 1);
 });
 
+test('load reaches ready on timeout even if responses never arrive', async () => {
+  const chat = stubView();
+  const ch = makeChannel('chTimeout', { views: { chat } });
+  seedReady('chTimeout', 'dev-chTimeout');
+
+  ch.mount();
+  const t0 = Date.now();
+  await ch.load();
+  const dt = Date.now() - t0;
+
+  assert.equal(ch.phase, 'ready');
+  assert.ok(dt >= 90, `expected to hit timeout (~100ms), took ${dt}ms`);
+});
+
 test('load skips get_messages when history is already cached', async () => {
   const chat = stubView();
   seedReady('chCached', 'dev-chCached');
   messagesStore.bulk('chCached', [{ id: 'm1', content: 'cached' }]);
 
-  const ch = new Channel('chCached', { views: { chat } });
+  const ch = makeChannel('chCached', { views: { chat } });
   let messagesCalls = 0;
   const off = bus.on('intent.get_messages', (p) => { if (p.channelId === 'chCached') messagesCalls++; });
   ch.mount();
-  await ch.load();
+  const loadP = ch.load();
+  await new Promise(r => setTimeout(r, 5));
+  // Only files.list_result needed now since get_messages wasn't fired.
+  emitInitialResponses('chCached', { withMessages: false });
+  await loadP;
   off();
 
   assert.equal(messagesCalls, 0);
@@ -89,20 +127,20 @@ test('load waits for the channel to resolve to a device', async () => {
   const chat = stubView();
   bus.emit('sse.connected', {});
   bus.emit('e2ee.connected', { deviceId: 'dev-late' });
-  // Note: channelsStore DOES NOT yet map chLate → dev-late.
 
-  const ch = new Channel('chLate', { views: { chat } });
+  const ch = makeChannel('chLate', { views: { chat } });
   let filesCalls = 0;
   const off = bus.on('intent.files_list', (p) => { if (p.channelId === 'chLate') filesCalls++; });
 
   ch.mount();
   const loadPromise = ch.load();
-  // Give the pending awaitChannelReady a tick. It should still be waiting.
   await new Promise(r => setTimeout(r, 5));
   assert.equal(filesCalls, 0, 'intents must wait for channel→device resolution');
   assert.equal(ch.phase, 'loading');
 
   channelsStore.upsert({ deviceId: 'dev-late', channel: { id: 'chLate', name: 'late' } });
+  await new Promise(r => setTimeout(r, 5));
+  emitInitialResponses('chLate');
   await loadPromise;
   off();
 
@@ -112,12 +150,10 @@ test('load waits for the channel to resolve to a device', async () => {
 
 test('unload aborts an in-flight load', async () => {
   const chat = stubView();
-  // Session is "up" for the device but channelsStore hasn't resolved yet,
-  // so load() will park inside awaitChannelReady.
   bus.emit('sse.connected', {});
   bus.emit('e2ee.connected', { deviceId: 'dev-abort' });
 
-  const ch = new Channel('chAbort', { views: { chat } });
+  const ch = makeChannel('chAbort', { views: { chat } });
   let filesCalls = 0;
   const off = bus.on('intent.files_list', (p) => { if (p.channelId === 'chAbort') filesCalls++; });
 
@@ -128,7 +164,6 @@ test('unload aborts an in-flight load', async () => {
   await ch.unload();
   off();
 
-  // load() should reject with AbortError; swallow it here.
   await loadP.catch(err => {
     assert.equal(err.name, 'AbortError');
   });
@@ -140,7 +175,7 @@ test('unload aborts an in-flight load', async () => {
 
 test('mount is idempotent', () => {
   const v = stubView();
-  const ch = new Channel('chB', { views: { v } });
+  const ch = makeChannel('chB', { views: { v } });
   ch.mount();
   ch.mount();
   assert.equal(v.activated, 1);
@@ -149,17 +184,19 @@ test('mount is idempotent', () => {
 test('load is idempotent while in-flight', async () => {
   const chat = stubView();
   seedReady('chIdem', 'dev-chIdem');
-  const ch = new Channel('chIdem', { views: { chat } });
+  const ch = makeChannel('chIdem', { views: { chat } });
   ch.mount();
   const p1 = ch.load();
   const p2 = ch.load();
   assert.equal(p1, p2, 'load() returns the same promise when called twice');
+  await new Promise(r => setTimeout(r, 5));
+  emitInitialResponses('chIdem');
   await p1;
 });
 
 test('destroy unloads and nulls viewState/views', async () => {
   const v = stubView();
-  const ch = new Channel('chC', { views: { v } });
+  const ch = makeChannel('chC', { views: { v } });
   ch.mount();
   await ch.destroy();
   assert.equal(v.deactivated, 1);
@@ -169,7 +206,7 @@ test('destroy unloads and nulls viewState/views', async () => {
 
 test('viewState lastActivatedAt grows across mounts', async () => {
   const v = stubView();
-  const ch = new Channel('chF', { views: { v } });
+  const ch = makeChannel('chF', { views: { v } });
   ch.mount();
   const first = ch.viewState.lastActivatedAt;
   await ch.unload();
@@ -181,13 +218,16 @@ test('viewState lastActivatedAt grows across mounts', async () => {
 test('phase subscribe fires once on subscribe and on every transition', async () => {
   const v = stubView();
   seedReady('chPhase', 'dev-chPhase');
-  const ch = new Channel('chPhase', { views: { v } });
+  const ch = makeChannel('chPhase', { views: { v } });
   const phases = [];
   ch.subscribe(e => phases.push(e.phase));
   assert.deepEqual(phases, ['unmounted']);
   ch.mount();
   assert.deepEqual(phases, ['unmounted', 'mounting', 'mounted']);
-  await ch.load();
+  const loadP = ch.load();
+  await new Promise(r => setTimeout(r, 5));
+  emitInitialResponses('chPhase');
+  await loadP;
   assert.deepEqual(phases, ['unmounted', 'mounting', 'mounted', 'loading', 'ready']);
   await ch.unload();
   assert.deepEqual(phases,

@@ -122,6 +122,10 @@ export class Channel {
     this._subs = new Set();
     this._loadAC = null;
     this._loadPromise = null;
+    // How long load() waits for the first responses to land before it
+    // declares `ready` anyway. Prevents a lost response from stranding
+    // the UI in `loading` indefinitely. Tunable for tests.
+    this._loadTimeoutMs = 5000;
   }
 
   get phase() { return this._phase; }
@@ -191,7 +195,22 @@ export class Channel {
       try {
         await sessionStore.awaitChannelReady(this.id, { signal: ac.signal });
         if (ac.signal.aborted) return;
+
+        // Arm the response-awaiting listeners BEFORE dispatching intents
+        // so we don't miss a race where a response arrives synchronously
+        // on the same tick. (Responses actually arrive asynchronously,
+        // but the guard is free.)
+        const firstResponse = _awaitFirstResponses(this.id, ac.signal, this._loadTimeoutMs);
+
         _fireLoadIntents(this.id);
+
+        try { await firstResponse; }
+        catch (err) {
+          if (err?.name !== 'AbortError') throw err;
+          return;
+        }
+
+        if (ac.signal.aborted) return;
         this._setPhase('ready');
       } catch (err) {
         if (err?.name !== 'AbortError') {
@@ -276,4 +295,46 @@ function _fireLoadIntents(channelId) {
   bus.emit('intent.get_complications', { channelId });
   bus.emit('intent.files_list', { channelId, path: '' });
   bus.emit('intent.files_changes', { channelId });
+}
+
+/**
+ * Resolve when the two user-visible initial responses — `message.bulk`
+ * (skipped if we didn't ask for it) and `files.list_result` — have
+ * arrived for this channel. Hard timeout at `timeoutMs` so a lost
+ * response never strands the UI.
+ *
+ * Rejects with AbortError if `signal` aborts first.
+ */
+function _awaitFirstResponses(channelId, signal, timeoutMs) {
+  const needMessages = messagesStore.forChannel(channelId).length === 0;
+  return new Promise((resolve, reject) => {
+    let gotMessages = !needMessages;
+    let gotFilesList = false;
+    const cleanup = () => {
+      offMessages();
+      offFilesList();
+      signal?.removeEventListener?.('abort', onAbort);
+      clearTimeout(timeout);
+    };
+    const done = () => { cleanup(); resolve(); };
+    const onAbort = () => {
+      cleanup();
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    const offMessages = bus.on('message.bulk', (e) => {
+      if (e?.channelId !== channelId) return;
+      gotMessages = true;
+      if (gotMessages && gotFilesList) done();
+    });
+    const offFilesList = bus.on('files.list_result', (e) => {
+      if (e?.channelId !== channelId) return;
+      gotFilesList = true;
+      if (gotMessages && gotFilesList) done();
+    });
+    const timeout = setTimeout(() => { cleanup(); resolve(); }, timeoutMs);
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener?.('abort', onAbort);
+  });
 }

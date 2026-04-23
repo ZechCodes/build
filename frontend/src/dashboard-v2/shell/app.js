@@ -13,6 +13,7 @@ import { OverlayView } from './overlay.js';
 import { ImageLightboxView } from './image-lightbox.js';
 import { ReconnectPillView } from './reconnect-pill.js';
 import { AccountView } from './account.js';
+import { ChannelPhaseView } from './channel-phase.js';
 
 const plog = log('shell');
 
@@ -31,6 +32,7 @@ export function initShell(root) {
     new ImageLightboxView(),
     new ReconnectPillView(),
     new AccountView(),
+    new ChannelPhaseView(),
   ];
   for (const v of views) v.activate();
 

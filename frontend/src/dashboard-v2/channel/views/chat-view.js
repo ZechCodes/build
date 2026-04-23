@@ -129,6 +129,11 @@ export class ChatView {
       <div class="v2-chat">
         <div class="v2-chat-messages-wrap">
           <div class="v2-chat-messages" data-slot="messages"></div>
+          <div class="v2-chat-skeleton" aria-hidden="true">
+            <div class="v2-skeleton v2-skeleton-bubble"></div>
+            <div class="v2-skeleton v2-skeleton-bubble short"></div>
+            <div class="v2-skeleton v2-skeleton-bubble"></div>
+          </div>
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>

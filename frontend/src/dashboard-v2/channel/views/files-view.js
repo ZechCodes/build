@@ -4,7 +4,6 @@
 
 import { bus } from '../../core/bus.js';
 import { filesStore } from '../../domain/files-store.js';
-import { channelsStore } from '../../domain/channels-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
 import { uploadFile } from '../../transport/index.js';
 import { highlightLine } from '../../util/syntax.js';
@@ -28,7 +27,10 @@ export class FilesView {
     this.root = document.getElementById('v2-viewer-main');
     if (!this.root) return;
     this._buildShell();
-    this._fetchInitial();
+    // Initial data fetch now lives in Channel.load(), which waits for
+    // sessionStore.awaitChannelReady before firing files_list /
+    // files_changes intents. The view just renders whatever lands in
+    // filesStore.
     this.unsubs.push(filesStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       if (e.kind === 'tree' || e.kind === 'changes') this._renderTree();
@@ -50,15 +52,6 @@ export class FilesView {
     this.unsubs.push(bus.on('complications.bulk', ({ channelId }) => {
       if (channelId !== this.channel.id) return;
       this._scheduleRefresh([]);
-    }));
-    // Self-heal the initial load: the channel view boots before the
-    // E2EE connection is up (channelRegistry.init runs before
-    // initTransport finishes), so `_fetchInitial` during activate
-    // silently drops when `connFor(...)` returns null. Kick the
-    // fetch again each time this channel's device comes online.
-    this.unsubs.push(bus.on('e2ee.connected', ({ deviceId }) => {
-      if (channelsStore.deviceFor(this.channel.id) !== deviceId) return;
-      this._fetchInitial();
     }));
     this._renderTree();
     this._renderViewer();
@@ -189,11 +182,6 @@ export class FilesView {
     } else {
       bus.emit('intent.file_read', { channelId, path: current });
     }
-  }
-
-  _fetchInitial() {
-    bus.emit('intent.files_list', { channelId: this.channel.id, path: '' });
-    bus.emit('intent.files_changes', { channelId: this.channel.id });
   }
 
   _buildShell() {

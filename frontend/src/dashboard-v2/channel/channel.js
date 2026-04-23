@@ -1,11 +1,28 @@
 // One instance per opened channel. Owns per-channel view state and the
 // subviews that render inside that channel's DOM slots.
-// See planning/dashboard-v2/03-channel-lifecycle.md.
+//
+// Lifecycle:
+//   unmounted → mounting → mounted → loading → ready
+//                                         ↘              ↙
+//                                           unloading → unmounted
+//
+// mount()  — synchronous. DOM + view subscriptions. Does not fetch.
+// load()   — async. Awaits sessionStore.awaitChannelReady(id, { signal })
+//            then emits the initial-data intents. Transitions to `ready`
+//            after intents are dispatched; individual store updates
+//            arrive as responses stream in.
+// unload() — async. Aborts any in-flight load, unmounts views,
+//            unsubscribes channel-level bus listeners, persists the
+//            localStorage subset of viewState.
+// destroy() — unload + release viewState / views. Terminal.
+//
+// The shell's registry drives this. Views keep their activate()/
+// deactivate() names for back-compat with shell-view conventions.
 
 import { bus } from '../core/bus.js';
 import { messagesStore } from '../domain/messages-store.js';
 import { unreadStore } from '../domain/unread-store.js';
-import { channelsStore } from '../domain/channels-store.js';
+import { sessionStore } from '../core/session-store.js';
 import { ChatView } from './views/chat-view.js';
 import { ConsoleView } from './views/console-view.js';
 import { FilesView } from './views/files-view.js';
@@ -85,16 +102,12 @@ export class Channel {
   constructor(id, { views } = {}) {
     this.id = id;
     this.viewState = defaultViewState();
-    // Restore the persisted subset (files tab, expanded dirs, scroll,
-    // etc.) so the user's workspace comes back intact across channel
-    // switches and page reloads.
     const persisted = loadPersisted(id);
     if (persisted) {
       for (const f of PERSIST_FIELDS) {
         if (f in persisted) this.viewState[f] = persisted[f];
       }
     }
-    // Test hook: views can be injected.
     if (views) {
       this.views = views;
     } else {
@@ -105,34 +118,48 @@ export class Channel {
         terminal: new TerminalView(this),
       };
     }
-    this._active = false;
-    this._unsubs = [];
-    this._fetchedOnce = false;
+    this._phase = 'unmounted';
+    this._subs = new Set();
+    this._loadAC = null;
+    this._loadPromise = null;
   }
 
-  activate() {
-    if (this._active) return;
-    this._active = true;
+  get phase() { return this._phase; }
+
+  // Back-compat accessor for older call sites that just need "is it
+  // mounted?"; anything new should read `phase` instead.
+  get active() { return this._phase !== 'unmounted' && this._phase !== 'unloading'; }
+
+  subscribe(fn) {
+    this._subs.add(fn);
+    try { fn({ phase: this._phase, prevPhase: this._phase }); }
+    catch (err) { plog.error('channel subscriber threw on subscribe', err); }
+    return () => this._subs.delete(fn);
+  }
+
+  _setPhase(next) {
+    if (this._phase === next) return;
+    const prev = this._phase;
+    this._phase = next;
+    plog.debug(this.id, 'phase', prev, '→', next);
+    for (const fn of this._subs) {
+      try { fn({ phase: next, prevPhase: prev }); }
+      catch (err) { plog.error('channel subscriber threw', err); }
+    }
+    bus.emit('channel.phase', { channelId: this.id, phase: next, prevPhase: prev });
+  }
+
+  /** Synchronous DOM + subscription binding. Idempotent. */
+  mount() {
+    if (this._phase !== 'unmounted') return;
+    this._setPhase('mounting');
     this.viewState.lastActivatedAt = Date.now();
-    plog.debug('activate', this.id);
-
     for (const v of Object.values(this.views)) v.activate();
+    this._setPhase('mounted');
 
-    // Initial fetch attempt — may no-op if transport isn't up yet.
-    this._tryFetchHistory();
-
-    // Re-fetch when the channel becomes routable after initial load:
-    //   - e2ee.connected for its device
-    //   - channel.list / channel.upserted lands with this channel id
-    this._unsubs.push(bus.on('e2ee.connected', () => this._tryFetchHistory()));
-    this._unsubs.push(channelsStore.subscribe(e => {
-      if (e.kind === 'replace_for_device' || e.id === this.id) {
-        this._tryFetchHistory();
-      }
-    }));
-
-    // Mark unread messages read. We use the msg list we have;
-    // the intent handler accepts ids it doesn't recognize as a no-op.
+    // Mark-read is a side-effect of mount, not of load — we want the
+    // unread count to clear as soon as the user views the channel,
+    // regardless of whether the historical fetch has rendered yet.
     const unread = unreadStore.get(this.id);
     if (unread.count > 0) {
       const ids = messagesStore.forChannel(this.id)
@@ -144,48 +171,109 @@ export class Channel {
     bus.emit('intent.mark_seen', { channelId: this.id });
   }
 
-  _tryFetchHistory() {
-    if (!this._active) return;
-    // Only fetch once the channel resolves to a device (meaning the
-    // transport has picked it up).
-    if (!channelsStore.deviceFor(this.id)) return;
-    if (this._fetchedOnce && messagesStore.forChannel(this.id).length > 0) return;
-    this._fetchedOnce = true;
-    if (messagesStore.forChannel(this.id).length === 0) {
-      bus.emit('intent.get_messages', { channelId: this.id });
+  /**
+   * Wait for the session to be ready for this channel's device, then
+   * fire the initial-data intents. Resolves when intents are dispatched.
+   * Cancellable — unload() aborts an in-flight load.
+   *
+   * Idempotent: concurrent callers share the same promise.
+   */
+  load() {
+    if (this._phase === 'unmounted') {
+      return Promise.reject(new Error('load() before mount()'));
     }
-    bus.emit('intent.get_activity', { channelId: this.id });
-    bus.emit('intent.get_complications', { channelId: this.id });
+    if (this._loadPromise) return this._loadPromise;
+
+    const ac = this._loadAC = new AbortController();
+    this._setPhase('loading');
+
+    const run = async () => {
+      try {
+        await sessionStore.awaitChannelReady(this.id, { signal: ac.signal });
+        if (ac.signal.aborted) return;
+        _fireLoadIntents(this.id);
+        this._setPhase('ready');
+      } catch (err) {
+        if (err?.name !== 'AbortError') {
+          plog.error('load failed', this.id, err);
+        }
+        // On abort, unload() owns the phase transition — don't step on it.
+        throw err;
+      } finally {
+        this._loadPromise = null;
+      }
+    };
+    this._loadPromise = run();
+    return this._loadPromise;
   }
 
-  deactivate() {
-    if (!this._active) return;
-    this._active = false;
-    plog.debug('deactivate', this.id);
-    this._unsubs.forEach(fn => fn());
-    this._unsubs = [];
-    this._fetchedOnce = false;
-    for (const v of Object.values(this.views)) v.deactivate();
-    // Snapshot the persist subset — captures whatever the views just
-    // wrote onto viewState during their own deactivate() paths (scroll
-    // positions in particular).
+  /**
+   * Abort in-flight load, unmount views, unsubscribe, persist.
+   * Idempotent.
+   */
+  async unload() {
+    if (this._phase === 'unmounted') return;
+    const inFlight = this._loadPromise;
+    this._loadAC?.abort();
+    this._setPhase('unloading');
+
+    // Wait for the aborted load to settle so we don't race its
+    // final bus emits with teardown.
+    if (inFlight) {
+      try { await inFlight; }
+      catch (_) { /* expected AbortError */ }
+    }
+
+    for (const v of Object.values(this.views)) {
+      try { v.deactivate(); }
+      catch (err) { plog.error('view deactivate threw', err); }
+    }
+
     savePersisted(this.id, this.viewState);
+
+    this._loadAC = null;
+    this._loadPromise = null;
+    this._setPhase('unmounted');
   }
 
-  /** Persist the current viewState subset immediately — used by the
-   *  beforeunload handler so page reloads don't lose state on the
-   *  active channel (which doesn't go through deactivate in that
-   *  path). */
+  /** For beforeunload — persist immediately without changing phase. */
   persistNow() {
     if (!this.viewState) return;
     savePersisted(this.id, this.viewState);
   }
 
-  destroy() {
-    this.deactivate();
+  async destroy() {
+    await this.unload();
     this.viewState = null;
     this.views = null;
+    this._subs.clear();
   }
 
-  get active() { return this._active; }
+  // ── back-compat shims ──────────────────────────────────────────────
+  // Older tests (and the shell before Phase 2 migrated) call
+  // activate() / deactivate() directly. These forward so existing code
+  // keeps working. Prefer mount() + load() / unload() in new call sites.
+  activate() {
+    this.mount();
+    // Fire-and-forget: the promise resolves asynchronously; old callers
+    // don't await it. Swallow abort.
+    this.load().catch(err => {
+      if (err?.name !== 'AbortError') plog.error('load failed', this.id, err);
+    });
+  }
+
+  deactivate() {
+    // Sync legacy API — fire-and-forget the async unload.
+    this.unload();
+  }
+}
+
+function _fireLoadIntents(channelId) {
+  if (messagesStore.forChannel(channelId).length === 0) {
+    bus.emit('intent.get_messages', { channelId });
+  }
+  bus.emit('intent.get_activity', { channelId });
+  bus.emit('intent.get_complications', { channelId });
+  bus.emit('intent.files_list', { channelId, path: '' });
+  bus.emit('intent.files_changes', { channelId });
 }

@@ -172,3 +172,30 @@ test('awaitDeviceReady rejects when its signal aborts', async () => {
   ac.abort();
   await assert.rejects(p, (err) => err.name === 'AbortError');
 });
+
+test('awaitChannelReady waits for channel→device resolution then e2ee', async () => {
+  bus.emit('sse.connected', {});
+  const p = sessionStore.awaitChannelReady('chX');
+  // Nothing has resolved yet.
+  setImmediate(() => {
+    channelsStore.setChannel('chX', 'dX');
+    bus.emit('e2ee.connected', { deviceId: 'dX' });
+  });
+  await p;
+  assert.equal(sessionStore.isDeviceReady('dX'), true);
+});
+
+test('awaitChannelReady resolves immediately when already ready', async () => {
+  bus.emit('sse.connected', {});
+  channelsStore.setChannel('chY', 'dY');
+  bus.emit('e2ee.connected', { deviceId: 'dY' });
+  await sessionStore.awaitChannelReady('chY');
+});
+
+test('awaitChannelReady rejects on signal abort while waiting for device', async () => {
+  bus.emit('sse.connected', {});
+  const ac = new AbortController();
+  const p = sessionStore.awaitChannelReady('chZ', { signal: ac.signal });
+  ac.abort();
+  await assert.rejects(p, (err) => err.name === 'AbortError');
+});

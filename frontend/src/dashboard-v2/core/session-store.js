@@ -284,6 +284,40 @@ export function awaitDeviceReady(deviceId, { signal } = {}) {
   });
 }
 
+/**
+ * Resolve once the channel's device has resolved via channelsStore AND
+ * that device is e2ee-connected. Rejects with an AbortError if `signal`
+ * is aborted first. Used by Channel.load() to gate initial data fetches
+ * so they never hit a null connection.
+ */
+export async function awaitChannelReady(channelId, { signal } = {}) {
+  const deviceId = await _waitForChannelDevice(channelId, signal);
+  return awaitDeviceReady(deviceId, { signal });
+}
+
+function _waitForChannelDevice(channelId, signal) {
+  const current = _channelsStore?.deviceFor?.(channelId);
+  if (current) return Promise.resolve(current);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    const unsub = subscribe(() => {
+      const resolved = _channelsStore?.deviceFor?.(channelId);
+      if (resolved) { cleanup(); resolve(resolved); }
+    });
+    const cleanup = () => {
+      unsub();
+      signal?.removeEventListener?.('abort', onAbort);
+    };
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener?.('abort', onAbort);
+  });
+}
+
 // ─── Test hooks ──────────────────────────────────────────────────────
 
 export function _resetForTests() {
@@ -299,5 +333,5 @@ export function _resetForTests() {
 
 export const sessionStore = {
   getPhase, getSnapshot, subscribe,
-  isDeviceReady, awaitDeviceReady,
+  isDeviceReady, awaitDeviceReady, awaitChannelReady,
 };

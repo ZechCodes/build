@@ -22,7 +22,7 @@
 import { bus } from '../core/bus.js';
 import { messagesStore } from '../domain/messages-store.js';
 import { unreadStore } from '../domain/unread-store.js';
-import { sessionStore } from '../core/session-store.js';
+import { loadChannel } from '../transport/channel-loader.js';
 import { ChatView } from './views/chat-view.js';
 import { ConsoleView } from './views/console-view.js';
 import { FilesView } from './views/files-view.js';
@@ -193,29 +193,14 @@ export class Channel {
 
     const run = async () => {
       try {
-        await sessionStore.awaitChannelReady(this.id, { signal: ac.signal });
-        if (ac.signal.aborted) return;
-
-        // Arm the response-awaiting listeners BEFORE dispatching intents
-        // so we don't miss a race where a response arrives synchronously
-        // on the same tick. (Responses actually arrive asynchronously,
-        // but the guard is free.)
-        const firstResponse = _awaitFirstResponses(this.id, ac.signal, this._loadTimeoutMs);
-
-        _fireLoadIntents(this.id);
-
-        try { await firstResponse; }
-        catch (err) {
-          if (err?.name !== 'AbortError') throw err;
-          return;
-        }
-
+        await loadChannel(this.id, {
+          signal: ac.signal,
+          timeoutMs: this._loadTimeoutMs,
+        });
         if (ac.signal.aborted) return;
         this._setPhase('ready');
       } catch (err) {
-        if (err?.name !== 'AbortError') {
-          plog.error('load failed', this.id, err);
-        }
+        if (err?.name !== 'AbortError') plog.error('load failed', this.id, err);
         // On abort, unload() owns the phase transition — don't step on it.
         throw err;
       } finally {
@@ -287,54 +272,3 @@ export class Channel {
   }
 }
 
-function _fireLoadIntents(channelId) {
-  if (messagesStore.forChannel(channelId).length === 0) {
-    bus.emit('intent.get_messages', { channelId });
-  }
-  bus.emit('intent.get_activity', { channelId });
-  bus.emit('intent.get_complications', { channelId });
-  bus.emit('intent.files_list', { channelId, path: '' });
-  bus.emit('intent.files_changes', { channelId });
-}
-
-/**
- * Resolve when the two user-visible initial responses — `message.bulk`
- * (skipped if we didn't ask for it) and `files.list_result` — have
- * arrived for this channel. Hard timeout at `timeoutMs` so a lost
- * response never strands the UI.
- *
- * Rejects with AbortError if `signal` aborts first.
- */
-function _awaitFirstResponses(channelId, signal, timeoutMs) {
-  const needMessages = messagesStore.forChannel(channelId).length === 0;
-  return new Promise((resolve, reject) => {
-    let gotMessages = !needMessages;
-    let gotFilesList = false;
-    const cleanup = () => {
-      offMessages();
-      offFilesList();
-      signal?.removeEventListener?.('abort', onAbort);
-      clearTimeout(timeout);
-    };
-    const done = () => { cleanup(); resolve(); };
-    const onAbort = () => {
-      cleanup();
-      const err = new Error('aborted');
-      err.name = 'AbortError';
-      reject(err);
-    };
-    const offMessages = bus.on('message.bulk', (e) => {
-      if (e?.channelId !== channelId) return;
-      gotMessages = true;
-      if (gotMessages && gotFilesList) done();
-    });
-    const offFilesList = bus.on('files.list_result', (e) => {
-      if (e?.channelId !== channelId) return;
-      gotFilesList = true;
-      if (gotMessages && gotFilesList) done();
-    });
-    const timeout = setTimeout(() => { cleanup(); resolve(); }, timeoutMs);
-    if (signal?.aborted) return onAbort();
-    signal?.addEventListener?.('abort', onAbort);
-  });
-}

@@ -22,8 +22,10 @@
 
 import { log } from '../core/log.js';
 import { sessionStore } from '../core/session-store.js';
+import { uiStore } from '../domain/ui-store.js';
 import { e2eePool } from './e2ee-pool.js';
 import { fetchDevices } from './rest.js';
+import { loadChannel } from './channel-loader.js';
 
 const plog = log('coordinator');
 let refreshing = false;
@@ -48,6 +50,18 @@ async function _softRefresh() {
       try { inst.listHarnesses(); } catch (err) { plog.debug('listHarnesses', err); }
     }
     await e2eePool.connectReady();
+
+    // Refresh the active channel's panel data too — listChannels only
+    // covers metadata. Reuses the same code path as initial load and
+    // channel-switch so behavior stays consistent across entry points.
+    const activeId = uiStore.getActiveChannel?.();
+    if (activeId) {
+      loadChannel(activeId, { forceFetchMessages: true }).catch(err => {
+        if (err?.name !== 'AbortError') {
+          plog.error('reload active channel failed', err);
+        }
+      });
+    }
   } catch (err) {
     plog.error('soft refresh failed', err);
   } finally {

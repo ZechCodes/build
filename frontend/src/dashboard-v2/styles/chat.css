@@ -145,6 +145,59 @@
 .v2-co-ctrl-part { color: var(--fg); }
 .v2-co-ctrl-sep { color: var(--fg-dim); }
 
+/* Channel menu popover — fired from the overlay header's "..."
+   button with Restart / Stop / Rename actions. Positioned in JS
+   via inline top/left computed from the trigger's bounding rect. */
+.v2-channel-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.v2-channel-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.v2-channel-menu button:hover { background: var(--bg-hover); }
+.v2-channel-menu button svg { width: 12px; height: 12px; color: var(--fg-muted); flex: 0 0 auto; }
+.v2-channel-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 3px 0;
+}
+
+/* Inline rename input — replaces the overlay title text until
+   the user commits (Enter/blur) or cancels (Esc). */
+.v2-co-rename-input {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  min-width: 180px;
+  outline: none;
+}
+
 /* Model/effort picker popover — anchored above the ctrl pill via
    inline top/right set by _openModelPicker. */
 .v2-model-picker {

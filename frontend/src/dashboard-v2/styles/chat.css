@@ -277,16 +277,6 @@
 .v2-modal-select:focus { border-color: var(--accent); }
 .v2-modal-field[hidden] { display: none; }
 
-.v2-modal-readonly {
-  padding: 7px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--fg-muted);
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
 .v2-modal-textarea {
   padding: 7px 10px;
   background: var(--bg);

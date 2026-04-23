@@ -112,9 +112,9 @@ export function openChannelEditModal(channelId) {
   const deviceId = channelsStore.deviceFor(channelId);
   const name    = ch?.name || '';
   const cwd     = ch?.working_directory || '';
-  const harnessId = ch?.harness || '';
-  const curModel  = ch?.model || '';
-  const curEffort = ch?.effort || '';
+  const curHarness = ch?.harness || '';
+  const curModel   = ch?.model || '';
+  const curEffort  = ch?.effort || '';
   const curAutoApprove = !!ch?.auto_approve_tools;
 
   let harnesses = deviceId ? (presenceStore.getHarnesses(deviceId) || []) : [];
@@ -143,12 +143,12 @@ export function openChannelEditModal(channelId) {
           <input class="v2-modal-input" data-edit-field="cwd"
                  type="text" autocomplete="off" spellcheck="false"
                  placeholder="~/Projects/repo">
-          <span class="v2-modal-hint">Changing this restarts the agent with the new path.</span>
         </label>
-        <div class="v2-modal-field">
+        <label class="v2-modal-field">
           <span class="v2-modal-label">Harness</span>
-          <span class="v2-modal-readonly" data-edit-field="harness-label"></span>
-        </div>
+          <select class="v2-modal-select" data-edit-field="harness"></select>
+          <span class="v2-modal-hint">Changing the harness restarts the agent.</span>
+        </label>
         <label class="v2-modal-field">
           <span class="v2-modal-label">Model</span>
           <select class="v2-modal-select" data-edit-field="model"></select>
@@ -185,35 +185,54 @@ export function openChannelEditModal(channelId) {
   modal.querySelector('[data-edit-field="cwd"]').value  = cwd;
   modal.querySelector('[data-edit-field="auto_approve_tools"]').checked = curAutoApprove;
 
-  const harnessLabel = modal.querySelector('[data-edit-field="harness-label"]');
-  const modelSel     = modal.querySelector('[data-edit-field="model"]');
-  const effortSel    = modal.querySelector('[data-edit-field="effort"]');
+  const harnessSel = modal.querySelector('[data-edit-field="harness"]');
+  const modelSel   = modal.querySelector('[data-edit-field="model"]');
+  const effortSel  = modal.querySelector('[data-edit-field="effort"]');
 
-  const refreshHarnessMeta = () => {
-    const h = harnesses.find(x => x.id === harnessId) || null;
-    harnessLabel.textContent = h?.name || harnessId || '(unknown)';
+  const refreshHarnessOptions = () => {
+    const selected = harnessSel.value || curHarness;
+    if (!harnesses.length) {
+      harnessSel.innerHTML = `<option value="${escapeHtml(curHarness)}" selected>${escapeHtml(curHarness || '(no harnesses available)')}</option>`;
+      return;
+    }
+    harnessSel.innerHTML = harnesses.map(h => {
+      const isSel = h.id === selected ? ' selected' : '';
+      return `<option value="${escapeHtml(h.id)}"${isSel}>${escapeHtml(h.name || h.id)}</option>`;
+    }).join('');
+  };
+
+  const refreshModelEffort = () => {
+    const h = harnesses.find(x => x.id === harnessSel.value) || null;
     const models  = h?.models || [];
     const efforts = h?.effort_levels || ['low', 'medium', 'high'];
-    const prevModel  = modelSel.value || curModel;
-    const prevEffort = effortSel.value || curEffort;
+    const harnessUnchanged = harnessSel.value === curHarness;
+    const preferredModel  = harnessUnchanged ? (modelSel.value || curModel) : (h?.default_model || '');
+    const preferredEffort = harnessUnchanged ? (effortSel.value || curEffort) : (h?.default_effort || '');
     modelSel.innerHTML = models.length
       ? models.map(m => {
-          const selected = m.id === prevModel ? ' selected' : '';
-          return `<option value="${escapeHtml(m.id)}"${selected}>${escapeHtml(m.name || m.id)}</option>`;
+          const isSel = m.id === preferredModel ? ' selected' : '';
+          return `<option value="${escapeHtml(m.id)}"${isSel}>${escapeHtml(m.name || m.id)}</option>`;
         }).join('')
       : `<option value="${escapeHtml(curModel)}" selected>${escapeHtml(curModel || '(no models available)')}</option>`;
     effortSel.innerHTML = efforts.map(e => {
-      const selected = e === prevEffort ? ' selected' : '';
-      return `<option value="${escapeHtml(e)}"${selected}>${escapeHtml(e)}</option>`;
+      const isSel = e === preferredEffort ? ' selected' : '';
+      return `<option value="${escapeHtml(e)}"${isSel}>${escapeHtml(e)}</option>`;
     }).join('');
   };
-  refreshHarnessMeta();
+
+  const rerender = () => {
+    refreshHarnessOptions();
+    refreshModelEffort();
+  };
+
+  harnessSel.addEventListener('change', refreshModelEffort);
+  rerender();
 
   // Harness list may arrive after the modal opens — keep the dropdowns fresh.
   const offHarnessList = bus.on('harness.list', (evt) => {
     if (!evt || !deviceId || evt.deviceId !== deviceId) return;
     harnesses = presenceStore.getHarnesses(deviceId) || [];
-    refreshHarnessMeta();
+    rerender();
   });
 
   // Focus the name input so Enter / typing starts working.
@@ -222,6 +241,7 @@ export function openChannelEditModal(channelId) {
   const commit = () => {
     const nextName    = modal.querySelector('[data-edit-field="name"]').value.trim();
     const nextCwd     = modal.querySelector('[data-edit-field="cwd"]').value.trim();
+    const nextHarness = harnessSel.value;
     const nextModel   = modelSel.value;
     const nextEffort  = effortSel.value;
     const nextAuto    = modal.querySelector('[data-edit-field="auto_approve_tools"]').checked;
@@ -232,6 +252,7 @@ export function openChannelEditModal(channelId) {
     }
     const patch = {};
     if (nextCwd !== cwd) patch.working_directory = nextCwd;
+    if (nextHarness && nextHarness !== curHarness) patch.harness = nextHarness;
     if (nextModel && nextModel !== curModel) patch.model = nextModel;
     if (nextEffort && nextEffort !== curEffort) patch.effort = nextEffort;
     if (nextAuto !== curAutoApprove) patch.auto_approve_tools = nextAuto;

@@ -138,7 +138,7 @@ export class ChatView {
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
         <div class="v2-chat-tool" data-slot="tool" hidden>
-          <span class="v2-chat-tool-text"></span><span class="v2-chat-tool-ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+          <span class="v2-chat-tool-spinner" aria-hidden="true"></span><span class="v2-chat-tool-text"></span>
         </div>
         <div class="v2-chat-composer" data-slot="composer">
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>

@@ -38,11 +38,13 @@ export function bindE2EEDispatcher(instance, deviceId) {
     bus.emit('channel.patched', { channelId: channel_id, patch: { name } });
   });
   instance.addEventListener('channel_updated', (evt) => {
-    const { channel_id, model, effort, working_directory } = evt.detail;
+    const { channel_id, harness, model, effort, working_directory, auto_approve_tools } = evt.detail;
     const patch = {};
-    if (model !== undefined) patch.model = model;
-    if (effort !== undefined) patch.effort = effort;
-    if (working_directory !== undefined) patch.working_directory = working_directory;
+    if (harness !== undefined && harness !== null) patch.harness = harness;
+    if (model !== undefined && model !== null) patch.model = model;
+    if (effort !== undefined && effort !== null) patch.effort = effort;
+    if (working_directory !== undefined && working_directory !== null) patch.working_directory = working_directory;
+    if (auto_approve_tools !== undefined && auto_approve_tools !== null) patch.auto_approve_tools = !!auto_approve_tools;
     bus.emit('channel.patched', { channelId: channel_id, patch });
   });
   instance.addEventListener('channel_deleted', (evt) => {

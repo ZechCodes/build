@@ -35,13 +35,19 @@ export async function initTransport() {
  * {file_id, filename, size, mime_type, path}. Progress updates are also
  * emitted on the bus as `upload.progress` events.
  *
+ * When `destDir` is supplied (relative to the channel's working
+ * directory), the file is written INSIDE the workspace at
+ * `<working_directory>/<destDir>/<filename>`. Without it, the file
+ * lands in the bridge's scratch uploads registry — the behaviour
+ * chat attachments use.
+ *
  * This is the only non-intent surface in transport that views call
  * directly — async file transfer needs a promise, which doesn't map
  * cleanly to fire-and-forget intents. Keeps the view from importing
  * e2eePool or BuildE2EE directly.
  */
-export async function uploadFile(channelId, file) {
+export async function uploadFile(channelId, file, destDir) {
   const conn = e2eePool.forChannel(channelId);
   if (!conn || !conn.connected) throw new Error('not connected');
-  return conn.uploadFile(channelId, file);
+  return conn.uploadFile(channelId, file, destDir);
 }

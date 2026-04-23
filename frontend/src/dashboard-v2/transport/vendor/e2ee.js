@@ -452,9 +452,13 @@ export class BuildE2EE extends EventTarget {
    *
    * @param {string} channelId - Channel to associate the upload with.
    * @param {File} file - The File object to upload.
-   * @returns {Promise<{file_id: string, filename: string, size: number, mime_type: string}>}
+   * @param {string} [destDir] - Optional destination dir relative
+   *   to the channel's working directory. If set, the file lands
+   *   in the workspace (e.g. `src/api`) instead of the scratch
+   *   uploads registry.
+   * @returns {Promise<{file_id: string, filename: string, size: number, mime_type: string, path: string}>}
    */
-  async uploadFile(channelId, file) {
+  async uploadFile(channelId, file, destDir) {
     if (!this._connected) throw new Error('not connected');
 
     const CHUNK_SIZE = 180 * 1024; // 180 KB raw per chunk
@@ -480,7 +484,7 @@ export class BuildE2EE extends EventTarget {
       const chunkData = fileBytes.slice(start, end);
       const chunkB64 = this._toB64(chunkData);
 
-      await this.send({
+      const chunk = {
         action: 'upload_chunk',
         file_id: fileId,
         channel_id: channelId,
@@ -490,7 +494,11 @@ export class BuildE2EE extends EventTarget {
         total_chunks: totalChunks,
         chunk_index: i,
         data: chunkB64,
-      });
+      };
+      // Only chunk 0 carries the destination hint; the bridge stores
+      // it in meta.json so subsequent chunks don't need to repeat.
+      if (i === 0 && destDir) chunk.dest_dir = destDir;
+      await this.send(chunk);
 
       // Wait for chunk_ack from device.
       await this._waitForChunkAck(fileId, i, 30000);

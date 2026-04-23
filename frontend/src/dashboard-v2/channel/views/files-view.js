@@ -6,6 +6,7 @@ import { bus } from '../../core/bus.js';
 import { filesStore } from '../../domain/files-store.js';
 import { channelsStore } from '../../domain/channels-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
+import { uploadFile } from '../../transport/index.js';
 import { highlightLine } from '../../util/syntax.js';
 import { renderDiff } from '../../util/diff.js';
 import { renderMarkdown } from '../../util/markdown.js';
@@ -82,6 +83,14 @@ export class FilesView {
     if (this.viewerEl) this.channel.viewState.filesViewerScrollTop = this.viewerEl.scrollTop;
     this.treeEl?.removeEventListener('scroll', this._onTreeScroll);
     this.viewerEl?.removeEventListener('scroll', this._onViewerScroll);
+    if (this.treePanelEl) {
+      this.treePanelEl.removeEventListener('dragenter', this._onTreeDragEnter);
+      this.treePanelEl.removeEventListener('dragover',  this._onTreeDragOver);
+      this.treePanelEl.removeEventListener('dragleave', this._onTreeDragLeave);
+      this.treePanelEl.removeEventListener('drop',      this._onTreeDrop);
+    }
+    this._uploadUnsub?.();      this._uploadUnsub = null;
+    this._uploadDoneUnsub?.();  this._uploadDoneUnsub = null;
     this.unsubs.forEach(fn => fn());
     this.unsubs = [];
     if (this._refreshTimer) { clearTimeout(this._refreshTimer); this._refreshTimer = null; }
@@ -90,6 +99,10 @@ export class FilesView {
     this.treeEl = null;
     this.viewerEl = null;
     this.modeBarEl = null;
+    this.treePanelEl = null;
+    this.fileInputEl = null;
+    this.uploadChipsEl = null;
+    this._activeUploads = null;
   }
 
   /** After initial activate / render, restore the user's workspace:
@@ -201,8 +214,17 @@ export class FilesView {
           Modified <span class="v2-files-tree-tab-count"></span>
         </button>
         <button class="v2-files-tree-tab" data-tree-tab="all" type="button">All</button>
+        <button class="v2-files-tree-upload" data-dir-upload="" type="button"
+                title="Upload file into workspace root" aria-label="Upload file">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 10V2M5 5l3-3 3 3M3 10v3a1 1 0 001 1h8a1 1 0 001-1v-3"
+                  stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </header>
       <div class="v2-files-tree-body" data-slot="tree"></div>
+      <div class="v2-files-upload-chips" data-slot="upload-chips" hidden></div>
+      <input type="file" class="v2-files-file-input" multiple hidden>
     `;
     contentInner.innerHTML = `
       <header class="v2-files-mode-bar" data-slot="mode"></header>
@@ -211,8 +233,28 @@ export class FilesView {
     this.treeEl = treePanel.querySelector('[data-slot="tree"]');
     this.viewerEl = contentInner.querySelector('[data-slot="viewer"]');
     this.modeBarEl = contentInner.querySelector('[data-slot="mode"]');
+    this.treePanelEl = treePanel;
+    this.fileInputEl = treePanel.querySelector('.v2-files-file-input');
+    this.uploadChipsEl = treePanel.querySelector('[data-slot="upload-chips"]');
+    this._activeUploads = new Map();  // fileId → chip element
 
     this.root.addEventListener('click', this._onClick);
+    // Hidden <input type="file"> for the per-dir upload button.
+    this.fileInputEl.addEventListener('change', this._onFileInputChange);
+
+    // Drag-and-drop uploads into the tree. Depth counter mirrors
+    // chat-view so flicker doesn't happen as the drag moves between
+    // nested rows.
+    this._treeDragDepth = 0;
+    this.treePanelEl.addEventListener('dragenter', this._onTreeDragEnter);
+    this.treePanelEl.addEventListener('dragover',  this._onTreeDragOver);
+    this.treePanelEl.addEventListener('dragleave', this._onTreeDragLeave);
+    this.treePanelEl.addEventListener('drop',      this._onTreeDrop);
+
+    // Upload-progress wiring: one chip per in-flight file, removed
+    // on `upload.done`. Channel-scoped via upload id lifecycle.
+    this._uploadUnsub = bus.on('upload.progress', this._onUploadProgress);
+    this._uploadDoneUnsub = bus.on('upload.done', this._onUploadDone);
   }
 
   // ----- Tree -----
@@ -337,6 +379,16 @@ export class FilesView {
                   data-dir-path="${escapeHtml(fullPath)}">
             <span class="v2-files-chev ${expanded ? 'expanded' : ''}" aria-hidden="true">▸</span>
             <span class="v2-files-name">${escapeHtml(entry.name)}/</span>
+            <span class="v2-files-dir-upload"
+                  role="button" tabindex="0"
+                  data-dir-upload="${escapeHtml(fullPath)}"
+                  title="Upload into ${escapeHtml(entry.name)}/"
+                  aria-label="Upload into ${escapeHtml(entry.name)}/">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 10V2M5 5l3-3 3 3M3 10v3a1 1 0 001 1h8a1 1 0 001-1v-3"
+                      stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
           </button>
           ${expanded ? `<div class="v2-files-level">${this._renderTreeLevel(fullPath, depth + 1)}</div>` : ''}
         `);
@@ -497,6 +549,16 @@ export class FilesView {
   // ----- Click routing -----
 
   _onClick = (e) => {
+    // Upload affordances first — checked before the dir-expand handler
+    // because the per-dir upload icon sits inside the dir button.
+    const uploadTrigger = e.target.closest('[data-dir-upload]');
+    if (uploadTrigger) {
+      e.stopPropagation();
+      e.preventDefault();
+      const destDir = uploadTrigger.getAttribute('data-dir-upload') || '';
+      this._openFilePicker(destDir);
+      return;
+    }
     const treeTab = e.target.closest('[data-tree-tab]');
     if (treeTab) {
       this.channel.viewState.filesTreeTab = treeTab.getAttribute('data-tree-tab');
@@ -545,6 +607,141 @@ export class FilesView {
       this._renderViewer();
       return;
     }
+  };
+
+  // ── Upload ─────────────────────────────────────────────────────────
+
+  /** Open the native file picker, stamping the destination dir onto
+   *  the hidden input so `_onFileInputChange` knows where the files
+   *  should land. */
+  _openFilePicker(destDir) {
+    if (!this.fileInputEl) return;
+    this.fileInputEl.dataset.destDir = destDir || '';
+    this.fileInputEl.value = '';   // allow picking the same file twice
+    this.fileInputEl.click();
+  }
+
+  _onFileInputChange = (e) => {
+    const destDir = this.fileInputEl?.dataset.destDir || '';
+    const files = [...(e.target.files || [])];
+    this.fileInputEl.value = '';
+    for (const f of files) this._dispatchUpload(f, destDir);
+  };
+
+  /** Actually start the upload. Overridable in tests via view hookup —
+   *  Playwright spies on this method to assert the (file, destDir)
+   *  arguments without having to plumb through the real bridge. */
+  async _dispatchUpload(file, destDir) {
+    const channelId = this.channel?.id;
+    if (!channelId || !file) return;
+    try {
+      await uploadFile(channelId, file, destDir || '');
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      if (/file exists/i.test(msg)) {
+        const prefix = destDir ? `${destDir}/` : '';
+        showToast(`${prefix}${file.name} already exists — rename and try again`);
+      } else if (msg) {
+        showToast(`upload failed: ${msg}`);
+      }
+    } finally {
+      // Whether the upload succeeded or failed, the tree + modified
+      // list are the fastest way for the user to see the current
+      // state of the workspace.
+      this._scheduleRefresh([]);
+    }
+  }
+
+  // Drag-and-drop
+  _onTreeDragEnter = (e) => {
+    if (!this._dragHasFiles(e)) return;
+    e.preventDefault();
+    this._treeDragDepth++;
+    this.treePanelEl?.classList.add('drag-active');
+    this._highlightDropTarget(e.target);
+  };
+
+  _onTreeDragOver = (e) => {
+    if (!this._dragHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    this._highlightDropTarget(e.target);
+  };
+
+  _onTreeDragLeave = (e) => {
+    if (!this._dragHasFiles(e)) return;
+    this._treeDragDepth = Math.max(0, this._treeDragDepth - 1);
+    if (this._treeDragDepth === 0) {
+      this.treePanelEl?.classList.remove('drag-active');
+      this._clearDropTargetHighlight();
+    }
+  };
+
+  _onTreeDrop = (e) => {
+    if (!this._dragHasFiles(e)) return;
+    e.preventDefault();
+    this._treeDragDepth = 0;
+    this.treePanelEl?.classList.remove('drag-active');
+    this._clearDropTargetHighlight();
+    const dirBtn = e.target.closest('[data-dir-path]');
+    const destDir = dirBtn ? dirBtn.getAttribute('data-dir-path') : '';
+    const files = [...(e.dataTransfer?.files || [])];
+    for (const f of files) this._dispatchUpload(f, destDir);
+  };
+
+  _dragHasFiles(e) {
+    // `dataTransfer.types` is the only reliable signal during dragover
+    // in modern browsers — `files` is empty until drop.
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes('Files');
+  }
+
+  _highlightDropTarget(target) {
+    const row = target?.closest?.('[data-dir-path]');
+    if (this._dropTarget === row) return;
+    this._clearDropTargetHighlight();
+    if (row) row.classList.add('drop-target');
+    this._dropTarget = row || null;
+  }
+
+  _clearDropTargetHighlight() {
+    if (this._dropTarget) this._dropTarget.classList.remove('drop-target');
+    this._dropTarget = null;
+  }
+
+  // Upload progress chips — one per in-flight file.
+  _onUploadProgress = ({ file_id, filename, progress }) => {
+    if (!this.uploadChipsEl) return;
+    let chip = this._activeUploads.get(file_id);
+    if (!chip) {
+      chip = document.createElement('div');
+      chip.className = 'v2-files-upload-chip';
+      chip.dataset.fileId = file_id;
+      chip.innerHTML = `
+        <span class="v2-files-upload-name"></span>
+        <span class="v2-files-upload-pct"></span>
+      `;
+      this.uploadChipsEl.appendChild(chip);
+      this._activeUploads.set(file_id, chip);
+      this.uploadChipsEl.hidden = false;
+    }
+    chip.querySelector('.v2-files-upload-name').textContent = filename || '…';
+    chip.querySelector('.v2-files-upload-pct').textContent =
+      `${Math.min(100, Math.round((progress || 0) * 100))}%`;
+  };
+
+  _onUploadDone = ({ file_id }) => {
+    const chip = this._activeUploads.get(file_id);
+    if (chip) {
+      chip.remove();
+      this._activeUploads.delete(file_id);
+    }
+    if (this.uploadChipsEl && this._activeUploads.size === 0) {
+      this.uploadChipsEl.hidden = true;
+    }
+    // New file just landed on the device — refresh so it appears.
+    this._scheduleRefresh([]);
   };
 
   _expandedDirsSet() {

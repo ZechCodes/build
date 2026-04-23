@@ -93,6 +93,88 @@
   margin-left: 10px;
 }
 
+/* ── Upload affordances ────────────────────────────────────────── */
+
+/* Upload button in the tree tabs header — uploads into the repo
+   root. Sits to the far right of the tab strip. */
+.v2-files-tree-upload {
+  margin-left: auto;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.v2-files-tree-upload:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+  background: var(--bg-hover);
+}
+.v2-files-tree-upload svg { width: 13px; height: 13px; }
+
+/* Per-dir upload icon inside the dir row. Hidden by default; fades
+   in on row hover so rows stay quiet visually unless the user is
+   actually looking at one. */
+.v2-files-dir-upload {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 2px;
+  color: var(--fg-muted);
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.v2-files-row:hover .v2-files-dir-upload,
+.v2-files-dir-upload:focus { opacity: 0.8; }
+.v2-files-dir-upload:hover { opacity: 1; color: var(--fg); }
+.v2-files-dir-upload svg { width: 12px; height: 12px; }
+
+/* Drop targets while a file is being dragged over the tree. */
+.v2-files-tree-panel.drag-active { outline: 1px dashed var(--accent); outline-offset: -4px; }
+.v2-files-row.drop-target        { background: rgba(88, 166, 255, 0.15); }
+
+/* Upload progress chips — bottom-right overlay of the tree panel. */
+.v2-files-upload-chips {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 2;
+  pointer-events: none;   /* never block the drop target below */
+}
+.v2-files-upload-chips[hidden] { display: none; }
+.v2-files-upload-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+.v2-files-upload-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v2-files-upload-pct { color: var(--fg-dim); }
+
+/* Tree panel needs position:relative for the chip overlay. */
+.v2-files-tree-panel { position: relative; }
+
 .v2-files-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
 .v2-files-status {

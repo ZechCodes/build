@@ -6,6 +6,7 @@
 
 import { log } from './core/log.js';
 import { bus } from './core/bus.js';
+import { sessionStore, initSessionStore } from './core/session-store.js';
 import {
   initStores,
   devicesStore, channelsStore, messagesStore, activityStore,
@@ -24,6 +25,7 @@ function exposeDebug() {
     bus,
     router,
     channelRegistry,
+    sessionStore,
     stores: {
       devicesStore, channelsStore, messagesStore, activityStore,
       presenceStore, unreadStore, filesStore, terminalStore,
@@ -40,6 +42,11 @@ async function boot() {
     return;
   }
   initStores();
+  // Session store must be initialized BEFORE transport binds its
+  // handlers, so it sees every sse/e2ee event from the very first
+  // tick. Shell views + channel registry come afterward and read
+  // the session phase off it.
+  initSessionStore({ devicesStore, channelsStore, uiStore });
   exposeDebug();
   initShell(root);
   channelRegistry.init();

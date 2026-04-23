@@ -12,6 +12,7 @@
 
 import { bus } from '../core/bus.js';
 import { log } from '../core/log.js';
+import { sessionStore } from '../core/session-store.js';
 import { e2eePool } from './e2ee-pool.js';
 
 const plog = log('self-heal');
@@ -20,7 +21,6 @@ const ATTEMPT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
 
 /** @type {Map<string, { attempt: number, timer: any, nextAt: number, phase: string }>} */
 const state = new Map();
-let sseConnected = true;
 let bound = false;
 
 function setPhase(deviceId, phase, extra = {}) {
@@ -68,9 +68,9 @@ function _scheduleRetry(deviceId) {
 }
 
 async function _attemptReconnect(deviceId) {
-  if (!sseConnected) {
-    // Don't fight the SSE-reconnect coordinator — it'll do a
-    // global reconnect once SSE comes back.
+  if (sessionStore.getPhase() === 'offline_sse') {
+    // Don't fight the SSE-reconnect coordinator — it'll soft-refresh
+    // once SSE comes back.
     return;
   }
   try {
@@ -106,9 +106,6 @@ export function bindSelfHeal() {
     if (!deviceId) return;
     _resetRetries(deviceId);
   });
-
-  bus.on('sse.disconnected', () => { sseConnected = false; });
-  bus.on('sse.connected',    () => { sseConnected = true; });
 }
 
 // Testing hook: lets tests swap out the delay table for tiny
@@ -120,6 +117,5 @@ export function _setAttemptDelaysForTests(delaysMs) {
 export function _resetStateForTests() {
   for (const [, s] of state) if (s.timer) clearTimeout(s.timer);
   state.clear();
-  sseConnected = true;
   bound = false;
 }

@@ -1,65 +1,92 @@
-// Verify SSE-reconnect coordinator runs teardown exactly once even when
-// sse.connected fires rapidly.
+// Verifies the session-aware transport coordinator.
+//
+// On transition OUT of `offline_sse`, the coordinator performs a
+// soft refresh: re-fetch devices, ask each connected E2EE instance
+// to re-list channels + harnesses, and kick connectReady for any
+// new devices. It does NOT tear down existing E2EE instances.
 
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { bus } from '../../src/dashboard-v2/core/bus.js';
 import { e2eePool } from '../../src/dashboard-v2/transport/e2ee-pool.js';
-import { bindCoordinator } from '../../src/dashboard-v2/transport/coordinator.js';
+import { initSessionStore, _resetForTests as resetSession }
+  from '../../src/dashboard-v2/core/session-store.js';
+import { bindCoordinator, _resetForTests as resetCoordinator }
+  from '../../src/dashboard-v2/transport/coordinator.js';
 
-// Stubs: track call counts. Make connectReady await a tick so the second
-// sse.connected emit races against it.
-let disconnectAllCount = 0;
+let listInstances = [];
 let connectReadyCount = 0;
+let fetchCallCount = 0;
 
-e2eePool.status = () => ({ count: 1, connected: 1, anyConnected: true });
-e2eePool.disconnectAll = () => { disconnectAllCount += 1; };
-e2eePool.connectReady = async () => {
-  connectReadyCount += 1;
-  await new Promise(r => setImmediate(r));
-  return [];
+// Stub the global fetch used by rest.fetchDevices.
+global.fetch = async (url) => {
+  if (String(url).includes('/api/devices')) {
+    fetchCallCount += 1;
+    return { ok: true, json: async () => [] };
+  }
+  return { ok: false };
 };
 
-bindCoordinator();
+e2eePool.list = () => listInstances;
+e2eePool.disconnectAll = () => { throw new Error('coordinator must not disconnectAll'); };
+e2eePool.connectReady = async () => { connectReadyCount += 1; return []; };
 
-test('back-to-back sse.connected triggers one teardown cycle', async () => {
-  disconnectAllCount = 0;
+function resetAll() {
+  listInstances = [];
   connectReadyCount = 0;
+  fetchCallCount = 0;
+  resetCoordinator();
+  resetSession();
+}
 
+beforeEach(resetAll);
+
+test('sse.disconnected does not tear anything down', async () => {
+  initSessionStore();
+  bindCoordinator();
   bus.emit('sse.connected', {});
-  bus.emit('sse.connected', {});
-
-  // Let the async handler resolve.
-  await new Promise(r => setTimeout(r, 20));
-
-  assert.equal(disconnectAllCount, 1, 'disconnectAll should run exactly once');
-  assert.equal(connectReadyCount, 1, 'connectReady should run exactly once');
-});
-
-test('sse.connected with empty pool is a no-op', async () => {
-  e2eePool.status = () => ({ count: 0, connected: 0, anyConnected: false });
-
-  disconnectAllCount = 0;
-  connectReadyCount = 0;
-  bus.emit('sse.connected', {});
-  await new Promise(r => setTimeout(r, 20));
-
-  assert.equal(disconnectAllCount, 0);
+  bus.emit('sse.disconnected', {});
+  await new Promise(r => setTimeout(r, 10));
   assert.equal(connectReadyCount, 0);
-
-  e2eePool.status = () => ({ count: 1, connected: 1, anyConnected: true });
+  assert.equal(fetchCallCount, 0);
 });
 
-test('after a cycle completes, another sse.connected can run again', async () => {
-  disconnectAllCount = 0;
-  connectReadyCount = 0;
+test('sse recovery triggers one soft refresh', async () => {
+  initSessionStore();
+  bindCoordinator();
+  let listChannelsCalls = 0;
+  let listHarnessesCalls = 0;
+  listInstances = [
+    { connected: true,  listChannels: () => { listChannelsCalls++; }, listHarnesses: () => { listHarnessesCalls++; } },
+    { connected: false, listChannels: () => { listChannelsCalls++; }, listHarnesses: () => { listHarnessesCalls++; } },
+  ];
 
+  // Initial connect — not transitioning out of offline_sse, so no refresh.
   bus.emit('sse.connected', {});
-  await new Promise(r => setTimeout(r, 20));
-  bus.emit('sse.connected', {});
-  await new Promise(r => setTimeout(r, 20));
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(fetchCallCount, 0, 'initial sse.connected is not a refresh');
 
-  assert.equal(disconnectAllCount, 2);
-  assert.equal(connectReadyCount, 2);
+  // Drop SSE then recover — THIS is a soft refresh.
+  bus.emit('sse.disconnected', {});
+  bus.emit('sse.connected', {});
+  await new Promise(r => setTimeout(r, 30));
+
+  assert.equal(fetchCallCount, 1, 'fetchDevices called once on recovery');
+  assert.equal(connectReadyCount, 1, 'connectReady called once on recovery');
+  assert.equal(listChannelsCalls, 1, 'only the connected instance gets listChannels');
+  assert.equal(listHarnessesCalls, 1, 'only the connected instance gets listHarnesses');
+});
+
+test('back-to-back sse.connected during a refresh does not double-fire', async () => {
+  initSessionStore();
+  bindCoordinator();
+  bus.emit('sse.connected', {});
+  await new Promise(r => setTimeout(r, 5));
+  bus.emit('sse.disconnected', {});
+  bus.emit('sse.connected', {});
+  bus.emit('sse.connected', {});
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(fetchCallCount, 1);
+  assert.equal(connectReadyCount, 1);
 });

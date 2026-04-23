@@ -9,9 +9,17 @@ import assert from 'node:assert/strict';
 
 import { bus } from '../../src/dashboard-v2/core/bus.js';
 import { e2eePool } from '../../src/dashboard-v2/transport/e2ee-pool.js';
+import { initSessionStore, _resetForTests as _resetSessionForTests }
+  from '../../src/dashboard-v2/core/session-store.js';
 
 const selfHeal = await import('../../src/dashboard-v2/transport/self-heal.js');
 const { bindSelfHeal, getState, retryNow, _setAttemptDelaysForTests, _resetStateForTests } = selfHeal;
+
+function ensureSessionUp() {
+  _resetSessionForTests();
+  initSessionStore();
+  bus.emit('sse.connected', {});
+}
 
 // Tiny delays so tests run in ms, not seconds.
 _setAttemptDelaysForTests([10, 10, 10]);
@@ -26,6 +34,7 @@ function captureReconnect() {
 
 test('e2ee.disconnected → scheduled retry → e2eePool.connect called', async () => {
   _resetStateForTests();
+  ensureSessionUp();
   bindSelfHeal();
   const calls = [];
   const origConnect = e2eePool.connect;
@@ -47,6 +56,7 @@ test('e2ee.disconnected → scheduled retry → e2eePool.connect called', async 
 
 test('successful reconnect resets the attempt counter', async () => {
   _resetStateForTests();
+  ensureSessionUp();
   bindSelfHeal();
   assert.equal(getState('d-reset').attempt, 0);
   // Simulate a disconnected → retrying → connected cycle.
@@ -61,6 +71,7 @@ test('successful reconnect resets the attempt counter', async () => {
 
 test('retryNow triggers an immediate connect attempt', async () => {
   _resetStateForTests();
+  ensureSessionUp();
   bindSelfHeal();
   const calls = [];
   const origConnect = e2eePool.connect;
@@ -76,6 +87,7 @@ test('retryNow triggers an immediate connect attempt', async () => {
 
 test('SSE disconnect suppresses retry attempts', async () => {
   _resetStateForTests();
+  ensureSessionUp();
   bindSelfHeal();
   bus.emit('sse.disconnected', {});
   const calls = [];

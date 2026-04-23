@@ -63,6 +63,8 @@ function disconnectAll() {
 
 function forDevice(deviceId) { return instances.get(deviceId); }
 
+function list() { return [...instances.values()]; }
+
 function forChannel(channelId) {
   const deviceId = channelsStore.deviceFor(channelId);
   return deviceId ? instances.get(deviceId) : undefined;
@@ -85,7 +87,7 @@ function status() {
 
 export const e2eePool = {
   connect, disconnect, disconnectAll,
-  forDevice, forChannel,
+  forDevice, forChannel, list,
   connectReady, status,
   // Test hook only. Do not use from production code paths.
   _instances: instances,

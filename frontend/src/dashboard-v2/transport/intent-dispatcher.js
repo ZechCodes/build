@@ -248,7 +248,10 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('get_complications failed', err); }
   });
 
-  bus.on('intent.create_channel', async ({ deviceId, name, harness, model, effort }) => {
+  bus.on('intent.create_channel', async ({
+    deviceId, name, harness, model, effort,
+    working_directory, system_prompt, auto_approve_tools,
+  }) => {
     if (!deviceId || !name) return;
     const conn = e2eePool.forDevice(deviceId);
     if (!conn || !conn.connected) {
@@ -256,7 +259,10 @@ export function bindIntentDispatcher() {
       return;
     }
     try {
-      await conn.createChannel(name, { harness, model, effort });
+      await conn.createChannel(name, {
+        harness, model, effort,
+        working_directory, system_prompt, auto_approve_tools,
+      });
     } catch (err) { plog.error('create_channel failed', err); }
   });
 

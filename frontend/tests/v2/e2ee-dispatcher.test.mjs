@@ -46,6 +46,24 @@ test('channel_list fans out to channel.list', () => {
   c.dispose();
 });
 
+test('channel_list is_running fans out to agent.active for each entry', () => {
+  const fake = new EventTarget();
+  bindE2EEDispatcher(fake, 'devR');
+  const c = capture(['agent.active']);
+  fire(fake, 'channel_list', {
+    channels: [
+      { id: 'chA', name: 'a', is_running: true },
+      { id: 'chB', name: 'b', is_running: false },
+      { id: 'chC', name: 'c' },  // no is_running field — no emit
+    ],
+  });
+  assert.deepEqual(c.seen['agent.active'], [
+    { channelId: 'chA', active: true },
+    { channelId: 'chB', active: false },
+  ]);
+  c.dispose();
+});
+
 test('channel_created/updated/deleted translate correctly', () => {
   const fake = new EventTarget();
   bindE2EEDispatcher(fake, 'devB');

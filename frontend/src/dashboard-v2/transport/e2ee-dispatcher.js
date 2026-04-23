@@ -29,6 +29,14 @@ export function bindE2EEDispatcher(instance, deviceId) {
   instance.addEventListener('channel_list', (evt) => {
     const { channels, agent_cwd } = evt.detail;
     bus.emit('channel.list', { deviceId, channels, agentCwd: agent_cwd });
+    // Reconcile each channel's running flag from the authoritative
+    // bridge snapshot. Belt-and-suspenders after an SSE blip / focus
+    // resync where streaming events may have been missed. Live events
+    // still drive updates between snapshots.
+    for (const ch of (channels || [])) {
+      if (typeof ch?.is_running !== 'boolean') continue;
+      bus.emit('agent.active', { channelId: ch.id, active: ch.is_running });
+    }
   });
   instance.addEventListener('channel_created', (evt) => {
     bus.emit('channel.upserted', { deviceId, channel: evt.detail });

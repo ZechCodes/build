@@ -8,6 +8,7 @@ import { bindDeviceNotifications } from './device-notifications.js';
 import { bindAttentionHydrator } from './attention-hydrator.js';
 import { bindSelfHeal } from './self-heal.js';
 import { bindSessionMarkers } from './session-markers.js';
+import { bindFocusSync } from './focus-sync.js';
 import { bindCurrentTool } from '../domain/current-tool-store.js';
 import { fetchDevices } from './rest.js';
 import { e2eePool } from './e2ee-pool.js';
@@ -26,6 +27,7 @@ export async function initTransport() {
   bindCurrentTool();
   bindIntentDispatcher();
   bindCoordinator();
+  bindFocusSync();
   await fetchDevices();
   await e2eePool.connectReady();
 }

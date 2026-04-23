@@ -89,6 +89,16 @@ export class ChatView {
     if (this.composerInput && this.channel?.viewState) {
       this.channel.viewState.draftText = this.composerInput.value;
     }
+    // Clean up every listener we attached in _buildShell. Without
+    // this, deactivate → activate (e.g. channel switching) leaks a
+    // stale ChatView's click handler onto #v2-chat-overlay-body.
+    // The leaked handler marks suggestion buttons as `.selected`
+    // using stale `this`, which makes the new ChatView's handler
+    // short-circuit on the "already selected" guard — so clicks
+    // silently no-op until a page reload clears the DOM.
+    if (this.root) {
+      this.root.removeEventListener('click', this._onClick);
+    }
     if (this.toolbarEl) {
       this.toolbarEl.removeEventListener('click', this._onClick);
       this.toolbarEl.innerHTML = '';
@@ -599,11 +609,15 @@ export class ChatView {
       this._removePending(name);
       return;
     }
-    // Suggestion click → send as user message
+    // Suggestion click → send as user message. Only `.selected` blocks
+    // re-click; `.dismissed` (added when the user picks a sibling or
+    // types a manual reply later) is visual-only — the user can still
+    // click a dimmed suggestion if they change their mind.
     const sugBtn = e.target.closest('.v2-suggestion');
-    if (sugBtn && !sugBtn.classList.contains('selected') && !sugBtn.classList.contains('dismissed')) {
+    if (sugBtn && !sugBtn.classList.contains('selected')) {
       const text = sugBtn.getAttribute('data-suggestion');
       sugBtn.parentElement.querySelectorAll('.v2-suggestion').forEach(b => {
+        b.classList.remove('dismissed');
         b.classList.add(b === sugBtn ? 'selected' : 'dismissed');
       });
       if (this.composerInput) this.composerInput.value = text;

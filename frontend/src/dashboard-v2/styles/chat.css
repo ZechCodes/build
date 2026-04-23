@@ -345,7 +345,8 @@
 }
 .v2-suggestion:hover { background: var(--bg-hover); }
 .v2-suggestion.selected { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
-.v2-suggestion.dismissed { opacity: 0.35; cursor: default; }
+.v2-suggestion.dismissed { opacity: 0.45; }
+.v2-suggestion.dismissed:hover { opacity: 0.85; }
 
 /* Interaction card */
 

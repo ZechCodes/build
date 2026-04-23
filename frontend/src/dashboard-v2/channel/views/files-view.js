@@ -637,12 +637,15 @@ export class FilesView {
     try {
       await uploadFile(channelId, file, destDir || '');
     } catch (err) {
+      // Always log the full error so devtools keeps a durable record
+      // even when the toast fades.
+      console.error('[files-view] upload failed', { file: file.name, destDir, err });
       const msg = String(err?.message || err || '');
+      const prefix = destDir ? `${destDir}/` : '';
       if (/file exists/i.test(msg)) {
-        const prefix = destDir ? `${destDir}/` : '';
-        showToast(`${prefix}${file.name} already exists — rename and try again`);
+        showToast(`${prefix}${file.name} already exists — rename and try again`, { kind: 'error' });
       } else if (msg) {
-        showToast(`upload failed: ${msg}`);
+        showToast(`Upload of ${prefix}${file.name} failed: ${msg}`, { kind: 'error' });
       }
     } finally {
       // Whether the upload succeeded or failed, the tree + modified

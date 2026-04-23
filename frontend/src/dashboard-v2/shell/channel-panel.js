@@ -10,6 +10,7 @@ import { presenceStore } from '../domain/presence-store.js';
 import { uiStore } from '../domain/ui-store.js';
 import { router } from './router.js';
 import { escapeHtml } from '../util/html.js';
+import { openChannelMenu } from './channel-menu.js';
 
 function statusIcon(status) {
   if (status === 'connected') return '<svg class="v2-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
@@ -152,7 +153,9 @@ export class ChannelPanelView {
     const edit = e.target.closest('[data-channel-edit]');
     if (edit) {
       e.stopPropagation();
-      // Edit dialog deferred; no-op for now.
+      e.preventDefault();
+      const cid = edit.getAttribute('data-channel-edit');
+      openChannelMenu(cid, edit);
       return;
     }
     const deviceToggle = e.target.closest('[data-device-toggle]');
@@ -326,8 +329,9 @@ function renderChannel(ch, activeId) {
       <span class="v2-ch-hash">#</span>
       <span class="v2-ch-name">${escapeHtml(name)}</span>
       ${badge}
-      <button class="v2-ch-edit" type="button" data-channel-edit="${escapeHtml(ch.id)}" title="Edit">
-        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M8.5 1.5l2 2M1 11l.7-2.8L9 1l2 2-7.2 7.2L1 11z" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <button class="v2-ch-edit" type="button" data-channel-edit="${escapeHtml(ch.id)}"
+              title="Channel actions" aria-label="Channel actions">
+        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><circle cx="2.5" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="9.5" cy="6" r="1" fill="currentColor"/></svg>
       </button>
     </div>
   `;

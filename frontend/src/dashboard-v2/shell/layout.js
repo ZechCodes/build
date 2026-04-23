@@ -88,9 +88,6 @@ export function buildLayout(root) {
             <span class="v2-co-channel-name" id="v2-co-channel-name">Select a channel</span>
           </span>
           <div class="v2-co-actions">
-            <button class="v2-co-btn" id="v2-co-menu" type="button" title="Channel menu" aria-label="Channel menu">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="3" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="13" cy="8" r="1.3" fill="currentColor"/></svg>
-            </button>
             <button class="v2-co-btn" id="v2-co-pin" type="button" title="Pin open">
               <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 2v4l3 2v2H3V8l3-2V2h4z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 10v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
             </button>

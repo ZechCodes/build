@@ -263,6 +263,20 @@
 .v2-modal-input:focus { border-color: var(--accent); }
 .v2-modal-hint { font-size: 11px; color: var(--fg-dim); }
 
+.v2-modal-select {
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+.v2-modal-select:focus { border-color: var(--accent); }
+.v2-modal-field[hidden] { display: none; }
+
 .v2-modal-footer {
   display: flex;
   align-items: center;

@@ -10,7 +10,7 @@ import { presenceStore } from '../domain/presence-store.js';
 import { uiStore } from '../domain/ui-store.js';
 import { router } from './router.js';
 import { escapeHtml } from '../util/html.js';
-import { openChannelMenu } from './channel-menu.js';
+import { openChannelMenu, openChannelNewModal } from './channel-menu.js';
 
 function statusIcon(status) {
   if (status === 'connected') return '<svg class="v2-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
@@ -23,9 +23,6 @@ export class ChannelPanelView {
   constructor() {
     this.root = null;
     this.unsubs = [];
-    // Per-device transient state: which device group is showing its
-    // inline "new session" form right now.
-    this._newSessionForDevice = null;
     // Re-render tick — keeps the Attention section's "recent" grace
     // window accurate and lets relative timestamps (e.g., "3m")
     // advance without a user interaction.
@@ -48,8 +45,6 @@ export class ChannelPanelView {
     }));
     this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
     this.root.addEventListener('click', this._onClick);
-    this.root.addEventListener('keydown', this._onKeydown);
-    this.root.addEventListener('submit', this._onSubmit);
     // 60s is plenty — the grace window is an hour and the relative
     // timestamps in the recent-attention rows advance in minutes.
     this._attentionTick = setInterval(() => this.render(), 60 * 1000);
@@ -60,8 +55,6 @@ export class ChannelPanelView {
     this.unsubs = [];
     if (this.root) {
       this.root.removeEventListener('click', this._onClick);
-      this.root.removeEventListener('keydown', this._onKeydown);
-      this.root.removeEventListener('submit', this._onSubmit);
     }
     if (this._attentionTick) { clearInterval(this._attentionTick); this._attentionTick = null; }
     this.root = null;
@@ -96,7 +89,6 @@ export class ChannelPanelView {
         .slice()
         .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       const status = deviceStatus(d);
-      const showForm = this._newSessionForDevice === d.id;
       // Collapsed state: user override wins; otherwise default to
       // collapsed if the device isn't online. Chevron + children are
       // hidden so the group reads as one line.
@@ -112,42 +104,26 @@ export class ChannelPanelView {
           </header>
           ${isCollapsed ? '' : `
             <div class="v2-device-group-actions">
-              <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New session">
+              <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New channel">
                 <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                New Session
+                New channel
               </button>
             </div>
           `}
-          ${showForm && !isCollapsed ? `
-            <form class="v2-new-session-form" data-new-session-form="${escapeHtml(d.id)}">
-              <input type="text" name="name" class="v2-new-session-input" placeholder="Session name…" autofocus autocomplete="off">
-              <button type="submit" class="v2-new-session-go">Create</button>
-              <button type="button" class="v2-new-session-cancel" data-new-session-cancel="${escapeHtml(d.id)}">Cancel</button>
-            </form>
-          ` : ''}
           ${!isCollapsed && channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
         </div>
       `);
     }
     this.root.innerHTML = parts.join('');
-    // Focus the new-session input if one is open.
-    if (this._newSessionForDevice) {
-      this.root.querySelector('.v2-new-session-input')?.focus();
-    }
   }
 
   _onClick = (e) => {
     const newBtn = e.target.closest('[data-new-session]');
     if (newBtn) {
+      e.stopPropagation();
+      e.preventDefault();
       const deviceId = newBtn.getAttribute('data-new-session');
-      this._newSessionForDevice = this._newSessionForDevice === deviceId ? null : deviceId;
-      this.render();
-      return;
-    }
-    const cancel = e.target.closest('[data-new-session-cancel]');
-    if (cancel) {
-      this._newSessionForDevice = null;
-      this.render();
+      openChannelNewModal(deviceId);
       return;
     }
     const edit = e.target.closest('[data-channel-edit]');
@@ -178,25 +154,6 @@ export class ChannelPanelView {
     }
   };
 
-  _onKeydown = (e) => {
-    if (e.key === 'Escape' && e.target.closest('.v2-new-session-form')) {
-      this._newSessionForDevice = null;
-      this.render();
-    }
-  };
-
-  _onSubmit = (e) => {
-    const form = e.target.closest('[data-new-session-form]');
-    if (!form) return;
-    e.preventDefault();
-    const deviceId = form.getAttribute('data-new-session-form');
-    const input = form.querySelector('.v2-new-session-input');
-    const name = (input?.value || '').trim();
-    if (!name) return;
-    bus.emit('intent.create_channel', { deviceId, name });
-    this._newSessionForDevice = null;
-    this.render();
-  };
 }
 
 function deviceStatus(device) {

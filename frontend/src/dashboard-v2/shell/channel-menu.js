@@ -9,6 +9,7 @@
 import { bus } from '../core/bus.js';
 import { uiStore } from '../domain/ui-store.js';
 import { channelsStore } from '../domain/channels-store.js';
+import { presenceStore } from '../domain/presence-store.js';
 import { showToast } from '../util/toast.js';
 import { escapeHtml } from '../util/html.js';
 
@@ -230,4 +231,136 @@ export function closeChannelEditModal() {
   el.removeEventListener('keydown', onKey);
   el.remove();
   activeModal = null;
+}
+
+// ── New-channel modal ────────────────────────────────────────────────
+
+export function openChannelNewModal(deviceId) {
+  if (!deviceId) return;
+  closeChannelEditModal();
+
+  const harnesses = presenceStore.getHarnesses(deviceId) || [];
+  const defaultHarness = harnesses[0] || null;
+
+  const root = document.createElement('div');
+  root.className = 'v2-modal-backdrop';
+  root.setAttribute('role', 'dialog');
+  root.setAttribute('aria-modal', 'true');
+  root.innerHTML = `
+    <div class="v2-modal" data-device-id="${escapeHtml(deviceId)}">
+      <header class="v2-modal-header">
+        <h2 class="v2-modal-title">New channel</h2>
+        <button class="v2-modal-close" type="button" data-modal-action="cancel" aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+      <div class="v2-modal-body">
+        <label class="v2-modal-field">
+          <span class="v2-modal-label">Name</span>
+          <input class="v2-modal-input" data-new-field="name"
+                 type="text" autocomplete="off" spellcheck="false"
+                 placeholder="e.g. Refactor auth">
+        </label>
+        <label class="v2-modal-field">
+          <span class="v2-modal-label">Working directory</span>
+          <input class="v2-modal-input" data-new-field="cwd"
+                 type="text" autocomplete="off" spellcheck="false"
+                 placeholder="~/Projects/repo">
+        </label>
+        ${_harnessSelect(harnesses, defaultHarness)}
+        <label class="v2-modal-field" data-new-slot="model">
+          <span class="v2-modal-label">Model</span>
+          <select class="v2-modal-select" data-new-field="model"></select>
+        </label>
+        <label class="v2-modal-field" data-new-slot="effort">
+          <span class="v2-modal-label">Effort</span>
+          <select class="v2-modal-select" data-new-field="effort"></select>
+        </label>
+      </div>
+      <footer class="v2-modal-footer">
+        <div class="v2-modal-primary-actions">
+          <button type="button" class="v2-modal-btn secondary" data-modal-action="cancel">Cancel</button>
+          <button type="button" class="v2-modal-btn primary"   data-modal-action="create">Create</button>
+        </div>
+      </footer>
+    </div>
+  `;
+  document.body.appendChild(root);
+
+  const modal = root.querySelector('.v2-modal');
+  const harnessSel = modal.querySelector('[data-new-field="harness"]');
+  const modelSel   = modal.querySelector('[data-new-field="model"]');
+  const effortSel  = modal.querySelector('[data-new-field="effort"]');
+
+  const refreshForHarness = () => {
+    const hId = harnessSel ? harnessSel.value : defaultHarness?.id;
+    const h = harnesses.find(x => x.id === hId) || defaultHarness;
+    const models = h?.models || [];
+    const efforts = h?.effort_levels || ['low', 'medium', 'high'];
+    modelSel.innerHTML = models.length
+      ? models.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name || m.id)}</option>`).join('')
+      : '<option value="">(harness has no models)</option>';
+    effortSel.innerHTML = efforts.map(e => `<option value="${escapeHtml(e)}">${escapeHtml(e)}</option>`).join('');
+    // Hide model / effort if there's only one option — nothing to choose.
+    modal.querySelector('[data-new-slot="model"]').hidden  = models.length <= 1;
+    modal.querySelector('[data-new-slot="effort"]').hidden = efforts.length <= 1;
+  };
+  if (harnessSel) harnessSel.addEventListener('change', refreshForHarness);
+  refreshForHarness();
+
+  setTimeout(() => modal.querySelector('[data-new-field="name"]').focus(), 0);
+
+  const create = () => {
+    const nameV   = modal.querySelector('[data-new-field="name"]').value.trim();
+    const cwdV    = modal.querySelector('[data-new-field="cwd"]').value.trim();
+    const harV    = harnessSel ? harnessSel.value : defaultHarness?.id || '';
+    const modelV  = modelSel.value;
+    const effortV = effortSel.value;
+    if (!nameV) { showToast('Name is required', { kind: 'error' }); return; }
+    bus.emit('intent.create_channel', {
+      deviceId,
+      name: nameV,
+      harness: harV || undefined,
+      model:   modelV || undefined,
+      effort:  effortV || undefined,
+      working_directory: cwdV || undefined,
+    });
+    showToast('Creating channel…');
+    closeChannelEditModal();
+  };
+
+  const onClick = (e) => {
+    const action = e.target.closest('[data-modal-action]')?.getAttribute('data-modal-action');
+    if (!action) {
+      if (e.target === root) closeChannelEditModal();
+      return;
+    }
+    if (action === 'cancel') return closeChannelEditModal();
+    if (action === 'create') return create();
+  };
+  root.addEventListener('click', onClick);
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeChannelEditModal(); }
+    else if (e.key === 'Enter' && e.target.matches('input[data-new-field]')) {
+      e.preventDefault();
+      create();
+    }
+  };
+  root.addEventListener('keydown', onKey);
+
+  activeModal = { el: root, channelId: null, onClick, onKey };
+}
+
+function _harnessSelect(harnesses, defaultHarness) {
+  if (harnesses.length <= 1) return '';
+  const options = harnesses.map(h =>
+    `<option value="${escapeHtml(h.id)}"${h.id === defaultHarness?.id ? ' selected' : ''}>${escapeHtml(h.name || h.id)}</option>`,
+  ).join('');
+  return `
+    <label class="v2-modal-field" data-new-slot="harness">
+      <span class="v2-modal-label">Harness</span>
+      <select class="v2-modal-select" data-new-field="harness">${options}</select>
+    </label>
+  `;
 }

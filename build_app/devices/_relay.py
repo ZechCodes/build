@@ -181,6 +181,15 @@ async def _process_event(fields: dict[str, str]) -> None:
             elapsed_s=float(elapsed_s),
         )
 
+    elif event_type == "heartbeat-resumed":
+        # Device was marked offline after a heartbeat-missed notification;
+        # its heartbeats are flowing again. Tell the dashboard it's
+        # online so the sidebar / reconnect pill un-sticks live without
+        # waiting for the next fetchDevices refresh.
+        owner_user_id = fields.get("owner_user_id", "")
+        device_name = fields.get("device_name", "")
+        await _notify_device_event(owner_user_id, "online", device_id, device_name)
+
     elif event_type == "status":
         owner_user_id = fields.get("owner_user_id", "")
         device_name = fields.get("device_name", "")

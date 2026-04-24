@@ -64,3 +64,13 @@ rate_limit:
   enabled: true
   requests_per_minute: 60
   auth_requests_per_minute: 10
+  paths:
+    # E2EE session init / send are hit multiple times per channel on
+    # dashboard boot, focus resync, and reconnect. The default 60/min
+    # cap throttles handshake roundtrips (browser send-init and the
+    # device's return `session_accept` post both count against the
+    # shared egress-IP bucket on home NATs), which manifests as
+    # "session_accept timed out" in the console. All /api/devices/*
+    # endpoints are admin-auth-gated so raising the cap here doesn't
+    # broaden the abuse surface.
+    "/api/devices/e2ee/": 300

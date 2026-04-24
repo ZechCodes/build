@@ -121,16 +121,27 @@ export class BuildE2EE extends EventTarget {
     // 4. Listen for SSE notifications before sending init.
     this._startListening();
 
-    // 5. Send session_init to relay.
-    const initResp = await fetch('/api/devices/e2ee/session-init', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        device_id: deviceId,
-        session_id: this._sessionId,
-        session_init: sessionInit,
-      }),
+    // 5. Send session_init to relay. Matches send()'s 429 retry loop
+    //    so dashboard boot / reconnect bursts don't kill the handshake.
+    const initBody = JSON.stringify({
+      device_id: deviceId,
+      session_id: this._sessionId,
+      session_init: sessionInit,
     });
+    const MAX_INIT_ATTEMPTS = 4;
+    let initAttempt = 0;
+    let initResp;
+    while (true) {
+      initAttempt++;
+      initResp = await fetch('/api/devices/e2ee/session-init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: initBody,
+      });
+      if (initResp.status !== 429 || initAttempt >= MAX_INIT_ATTEMPTS) break;
+      const waitMs = _retryDelayMs(initResp, initAttempt);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
 
     if (!initResp.ok) {
       const err = await initResp.json().catch(() => ({ error: 'session_init failed' }));

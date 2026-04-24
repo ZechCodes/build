@@ -118,6 +118,64 @@ class TestVerifyDeviceSignature:
 # Device model helpers
 # ---------------------------------------------------------------------------
 
+class TestEffectiveDeviceStatus:
+    """The list endpoint reports `status` computed from heartbeat freshness,
+    not the raw DB value. Keeps the browser's connect-filter honest when a
+    device has silently dropped without a graceful disconnect."""
+
+    def _effective(self, device: Device, now: datetime) -> str:
+        from build_app.devices.controller import _effective_device_status
+        return _effective_device_status(device, now)
+
+    def test_offline_stays_offline(self):
+        d = _make_device(status="offline")
+        now = datetime.now(timezone.utc)
+        assert self._effective(d, now) == "offline"
+
+    def test_online_with_fresh_heartbeat_stays_online(self):
+        now = datetime.now(timezone.utc)
+        d = _make_device(status="online", last_heartbeat_at=now)
+        assert self._effective(d, now) == "online"
+
+    def test_online_with_stale_heartbeat_downgrades_to_offline(self):
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        stale = now - timedelta(seconds=30 * 2.5 + 1)  # past the 2.5x factor
+        d = _make_device(status="online", last_heartbeat_at=stale)
+        assert self._effective(d, now) == "offline"
+
+    def test_online_within_window_is_still_online(self):
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        # 2x interval — within 2.5x threshold, still "online".
+        recent = now - timedelta(seconds=30 * 2)
+        d = _make_device(status="online", last_heartbeat_at=recent)
+        assert self._effective(d, now) == "online"
+
+    def test_online_with_no_heartbeat_trusts_db(self):
+        """Edge case: device just connected, heartbeat row not yet written.
+        Trust the relay's "online" until the first heartbeat lands."""
+        now = datetime.now(timezone.utc)
+        d = _make_device(status="online", last_heartbeat_at=None)
+        assert self._effective(d, now) == "online"
+
+    def test_custom_heartbeat_interval_respected(self):
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        # Device with a 60s interval — 120s old heartbeat is still within 2.5x.
+        recent = now - timedelta(seconds=120)
+        d = _make_device(
+            status="online", last_heartbeat_at=recent, heartbeat_interval_s=60,
+        )
+        assert self._effective(d, now) == "online"
+        # 151s old exceeds 60*2.5 = 150s, downgrade.
+        stale = now - timedelta(seconds=151)
+        d2 = _make_device(
+            status="online", last_heartbeat_at=stale, heartbeat_interval_s=60,
+        )
+        assert self._effective(d2, now) == "offline"
+
+
 class TestDeviceMissedWindows:
     def test_get_empty(self):
         device = _make_device()

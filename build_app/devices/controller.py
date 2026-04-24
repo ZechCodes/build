@@ -7,8 +7,32 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
+
+# Heartbeat freshness multiplier — matches the relay's monitor threshold.
+# A device is reported "offline" if its last heartbeat is older than
+# heartbeat_interval_s * _HEARTBEAT_TIMEOUT_FACTOR. Keeps the list
+# endpoint's truth aligned with the relay's internal watchdog so the
+# browser doesn't see "online" for a silently-disconnected device.
+_HEARTBEAT_TIMEOUT_FACTOR = 2.5
+
+
+def _effective_device_status(device: "Device", now: datetime) -> str:
+    """Return the device's effective status, downgrading to "offline"
+    when its heartbeat is stale."""
+    if device.status != "online":
+        return device.status
+    if device.last_heartbeat_at is None:
+        # Marked online with no heartbeat timestamp yet — could be the
+        # connect-window edge case. Trust the DB.
+        return device.status
+    interval = device.heartbeat_interval_s or 30
+    elapsed = (now - device.last_heartbeat_at).total_seconds()
+    if elapsed > interval * _HEARTBEAT_TIMEOUT_FACTOR:
+        return "offline"
+    return "online"
 
 from litestar import Controller, Request, get, patch, post, delete
 from litestar.exceptions import NotFoundException
@@ -293,11 +317,12 @@ class DeviceApiController(Controller):
             .order_by(Device.created_at.desc())
         )
         devices = result.scalars().all()
+        now = datetime.now(timezone.utc)
         return [
             {
                 "id": str(d.id),
                 "name": d.name,
-                "status": d.status,
+                "status": _effective_device_status(d, now),
                 "approved": d.approved,
                 "has_transport_key": d.transport_public_key is not None,
                 "last_heartbeat_at": d.last_heartbeat_at.isoformat() if d.last_heartbeat_at else None,

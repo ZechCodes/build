@@ -859,6 +859,14 @@
   margin-right: 6px;
   color: var(--fg-muted);
 }
+
+.v2-chat-tool-timer {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.v2-chat-tool-timer[hidden] { display: none; }
 .v2-chat-tool-spinner::before {
   content: '⠋';
   animation: v2-chat-tool-braille 0.8s steps(1, end) infinite;

@@ -69,6 +69,7 @@ export class ChatView {
     this._toolShownEntry = null;   // entry | 'thinking' | null
     this._toolShownAt    = 0;      // ms when the current entry started showing
     this._toolIdleTimer  = null;   // deferred flip from tool → "Thinking"
+    this._toolElapsedInterval = null;  // tick for the "30s+" count-up label
     this.unsubs.push(currentToolStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       this._onCurrentToolChange(e.entry);
@@ -112,6 +113,8 @@ export class ChatView {
     }
     if (this._dropzoneEl) { this._dropzoneEl.remove(); this._dropzoneEl = null; }
     if (this._initialScrollObs) { this._initialScrollObs.disconnect(); this._initialScrollObs = null; }
+    this._clearIdleTimer();
+    this._stopElapsedTicker();
     this._closeModelPicker();
     this._dragDepth = 0;
     this.root = null;
@@ -120,6 +123,7 @@ export class ChatView {
     this.toolbarEl = null;
     this.overlayEl = null;
     this.toolStripEl = null;
+    this.toolTimerEl = null;
   }
 
   _buildShell() {
@@ -138,7 +142,7 @@ export class ChatView {
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
         <div class="v2-chat-tool" data-slot="tool" hidden>
-          <span class="v2-chat-tool-spinner" aria-hidden="true"></span><span class="v2-chat-tool-text"></span>
+          <span class="v2-chat-tool-spinner" aria-hidden="true"></span><span class="v2-chat-tool-timer" data-slot="tool-timer" hidden></span><span class="v2-chat-tool-text"></span>
         </div>
         <div class="v2-chat-composer" data-slot="composer">
           <textarea class="v2-chat-input" rows="1" placeholder="Message…"></textarea>
@@ -150,6 +154,7 @@ export class ChatView {
     this.composerInput = this.root.querySelector('.v2-chat-input');
     this.stagingEl = this.root.querySelector('[data-slot="staging"]');
     this.toolStripEl = this.root.querySelector('[data-slot="tool"]');
+    this.toolTimerEl = this.root.querySelector('[data-slot="tool-timer"]');
     this.fileInput = this.root.querySelector('.v2-chat-file-input');
     this.toolbarEl = document.getElementById('v2-chat-overlay-toolbar');
     this.overlayEl = document.getElementById('v2-chat-overlay');
@@ -253,6 +258,7 @@ export class ChatView {
       this._toolShownEntry = entry;
       this._toolShownAt    = Date.now();
       this._paintTool(currentToolPhrase(entry.name, entry.input || {}));
+      this._startElapsedTicker();
       return;
     }
     // Store cleared. If we were showing a tool that's been on screen
@@ -283,6 +289,7 @@ export class ChatView {
         this._toolShownEntry = rawEntry;
         this._toolShownAt    = Date.now();
         this._paintTool(currentToolPhrase(rawEntry.name, rawEntry.input || {}));
+        this._startElapsedTicker();
       }
       return;
     }
@@ -292,11 +299,13 @@ export class ChatView {
       this._toolShownEntry = 'thinking';
       this._toolShownAt    = Date.now();
       this._paintTool('Thinking');
+      this._stopElapsedTicker();
       return;
     }
     this._clearIdleTimer();
     this._toolShownEntry = null;
     this._paintTool(null);
+    this._stopElapsedTicker();
   }
 
   _paintTool(text) {
@@ -321,6 +330,41 @@ export class ChatView {
       clearTimeout(this._toolIdleTimer);
       this._toolIdleTimer = null;
     }
+  }
+
+  // Count-up timer shown between the braille spinner and the tool
+  // label once the current tool has been running ≥ 30s. Ticks every
+  // second; hidden under 30s so brief tools don't flash a timer.
+  _startElapsedTicker() {
+    this._stopElapsedTicker();
+    this._renderElapsed();
+    this._toolElapsedInterval = setInterval(() => this._renderElapsed(), 1000);
+  }
+
+  _stopElapsedTicker() {
+    if (this._toolElapsedInterval) {
+      clearInterval(this._toolElapsedInterval);
+      this._toolElapsedInterval = null;
+    }
+    if (this.toolTimerEl) {
+      this.toolTimerEl.hidden = true;
+      this.toolTimerEl.textContent = '';
+    }
+  }
+
+  _renderElapsed() {
+    const el = this.toolTimerEl;
+    if (!el) return;
+    if (!this._toolShownAt || !this._toolShownEntry || this._toolShownEntry === 'thinking') {
+      el.hidden = true;
+      return;
+    }
+    const seconds = Math.floor((Date.now() - this._toolShownAt) / 1000);
+    if (seconds < 30) { el.hidden = true; return; }
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    el.textContent = m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+    el.hidden = false;
   }
 
   _appendMessage(msg, allMsgs) {

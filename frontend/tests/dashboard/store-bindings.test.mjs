@@ -120,14 +120,14 @@ test('unread increments on message for non-active channel', () => {
   assert.equal(unreadStore.get('sb-un').count, 1);
 });
 
-test('unread does NOT increment for active channel', () => {
+test('unread increments for active channel until viewport read gate clears it', () => {
   uiStore.setActiveChannel('sb-un-active');
   unreadStore.markRead('sb-un-active');
   bus.emit('message.received', {
     channelId: 'sb-un-active',
     msg: { id: 'um2', sender: 'Device', content: 'hey' },
   });
-  assert.equal(unreadStore.get('sb-un-active').count, 0);
+  assert.equal(unreadStore.get('sb-un-active').count, 1);
   uiStore.setActiveChannel(null);
 });
 
@@ -145,6 +145,23 @@ test('interaction.requested increments with hasInteraction', () => {
   uiStore.setActiveChannel(null);
   bus.emit('interaction.requested', { channelId: 'sb-ui' });
   assert.equal(unreadStore.get('sb-ui').hasInteraction, true);
+});
+
+test('mirrored interaction message does not double-count unread', () => {
+  uiStore.setActiveChannel(null);
+  unreadStore.markRead('sb-ui-mirror');
+  bus.emit('interaction.requested', { channelId: 'sb-ui-mirror' });
+  bus.emit('message.received', {
+    channelId: 'sb-ui-mirror',
+    msg: {
+      id: 'int1',
+      sender: 'Device',
+      metadata: JSON.stringify({ interaction_id: 'int1' }),
+    },
+  });
+  const slot = unreadStore.get('sb-ui-mirror');
+  assert.equal(slot.count, 1);
+  assert.equal(slot.hasInteraction, true);
 });
 
 test('files.list_result populates filesStore', () => {

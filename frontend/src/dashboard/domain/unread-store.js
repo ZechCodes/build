@@ -5,7 +5,7 @@
 
 import { makeSubscribable } from '../core/store.js';
 import { bus } from '../core/bus.js';
-import { uiStore } from './ui-store.js';
+import { isUnresolvedInteractionMessage } from './read-gate.js';
 
 const { subscribe, notify } = makeSubscribable('unread');
 const byChannel = new Map();       // channelId → {count, hasInteraction, lastSeen}
@@ -65,17 +65,16 @@ export const unreadStore = {
 };
 
 // ----- Bus bindings -----
-// Only the unreadStore reads from another store (uiStore) — documented
-// exception in 02-stores.md. The read is for the active-channel filter
-// and is safe because uiStore has no bus inputs (user-driven only).
 bus.on('message.received', ({ channelId, msg }) => {
   if (!channelId || !msg) return;
   if (msg.sender === 'client') return;
-  if (channelId === uiStore.getActiveChannel()) return;
+  // interaction.requested owns the unread increment for mirrored
+  // interaction cards so they count once while still latching the
+  // interaction state.
+  if (isUnresolvedInteractionMessage(msg)) return;
   unreadStore.increment(channelId);
 });
 bus.on('interaction.requested', ({ channelId }) => {
   if (!channelId) return;
-  if (channelId === uiStore.getActiveChannel()) return;
   unreadStore.increment(channelId, true);
 });

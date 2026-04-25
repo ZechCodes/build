@@ -20,8 +20,6 @@
 // deactivate() names for back-compat with shell-view conventions.
 
 import { bus } from '../core/bus.js';
-import { messagesStore } from '../domain/messages-store.js';
-import { unreadStore } from '../domain/unread-store.js';
 import { loadChannel } from '../transport/channel-loader.js';
 import { ChatView } from './views/chat-view.js';
 import { ConsoleView } from './views/console-view.js';
@@ -160,19 +158,6 @@ export class Channel {
     this.viewState.lastActivatedAt = Date.now();
     for (const v of Object.values(this.views)) v.activate();
     this._setPhase('mounted');
-
-    // Mark-read is a side-effect of mount, not of load — we want the
-    // unread count to clear as soon as the user views the channel,
-    // regardless of whether the historical fetch has rendered yet.
-    const unread = unreadStore.get(this.id);
-    if (unread.count > 0) {
-      const ids = messagesStore.forChannel(this.id)
-        .filter(m => m.sender !== 'client' && !m.read_at && m.id)
-        .map(m => m.id);
-      if (ids.length) bus.emit('intent.mark_read', { channelId: this.id, msgIds: ids });
-      unreadStore.markRead(this.id);
-    }
-    bus.emit('intent.mark_seen', { channelId: this.id });
   }
 
   /**
@@ -271,4 +256,3 @@ export class Channel {
     this.unload();
   }
 }
-

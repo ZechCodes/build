@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { Channel } from '../../src/dashboard/channel/channel.js';
 import { bus } from '../../src/dashboard/core/bus.js';
 import { messagesStore } from '../../src/dashboard/domain/messages-store.js';
+import { unreadStore } from '../../src/dashboard/domain/unread-store.js';
 import { channelsStore } from '../../src/dashboard/domain/channels-store.js';
 import { devicesStore } from '../../src/dashboard/domain/devices-store.js';
 import { uiStore } from '../../src/dashboard/domain/ui-store.js';
@@ -56,6 +57,28 @@ test('mount activates views without fetching', () => {
   assert.equal(chat.activated, 1);
   assert.equal(ch.phase, 'mounted');
   assert.equal(intents.length, 0);
+});
+
+test('mount does not mark unread messages read or seen', () => {
+  const chat = stubView();
+  const ch = makeChannel('chUnreadMount', { views: { chat } });
+  messagesStore.bulk('chUnreadMount', [
+    { id: 'm-unread', sender: 'Agent', read_at: null },
+  ]);
+  unreadStore.hydrate('chUnreadMount', 1, false);
+  const seen = { markRead: 0, markSeen: 0 };
+  const offs = [
+    bus.on('intent.mark_read', (p) => { if (p.channelId === 'chUnreadMount') seen.markRead++; }),
+    bus.on('intent.mark_seen', (p) => { if (p.channelId === 'chUnreadMount') seen.markSeen++; }),
+  ];
+
+  ch.mount();
+  offs.forEach(fn => fn());
+
+  assert.equal(seen.markRead, 0);
+  assert.equal(seen.markSeen, 0);
+  assert.equal(unreadStore.get('chUnreadMount').count, 1);
+  assert.equal(messagesStore.forChannel('chUnreadMount')[0].read_at, null);
 });
 
 test('load fires initial-data intents once session is ready', async () => {

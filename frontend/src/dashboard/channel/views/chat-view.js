@@ -16,6 +16,12 @@ import { currentToolStore } from '../../domain/current-tool-store.js';
 import { uploadFile } from '../../transport/index.js';
 import { showToast } from '../../util/toast.js';
 import { e2eePool } from '../../transport/e2ee-pool.js';
+import {
+  READ_INTERACTION_DELAY_MS,
+  canMarkMessageRead,
+  deriveUnreadFromMessages,
+  latestNonClientMessage,
+} from '../../domain/read-gate.js';
 
 const ilog = log('interaction');
 
@@ -31,6 +37,11 @@ export class ChatView {
     this.stagingEl = null;
     this.unsubs = [];
     this._confirm = null;   // { kind, btn, timeout }
+    this._messageAppearedAt = new Map(); // message id → performance.now()
+    this._markedReadIds = new Set();
+    this._lastReadInteractionAt = -Infinity;
+    this._lastSeenMarkedMsgId = null;
+    this._ignoreScrollInteractionUntil = 0;
   }
 
   activate() {
@@ -39,6 +50,7 @@ export class ChatView {
     this._buildShell();
     // On initial mount we always want the latest message in view.
     this._render({ forceBottom: true });
+    this._bindReadInteractionListeners();
     // The overlay may only reach its final layout size after this tick
     // (it was just display-set-to-flex, fonts may still be loading, etc.)
     // Re-pin to bottom on the next frame and again after a short delay.
@@ -130,6 +142,10 @@ export class ChatView {
     if (this.root) {
       this.root.removeEventListener('click', this._onClick);
     }
+    this._unbindReadInteractionListeners();
+    if (this.messagesEl) {
+      this.messagesEl.removeEventListener('scroll', this._onScroll);
+    }
     if (this.toolbarEl) {
       this.toolbarEl.removeEventListener('click', this._onClick);
       this.toolbarEl.innerHTML = '';
@@ -147,6 +163,10 @@ export class ChatView {
     this._stopElapsedTicker();
     this._closeModelPicker();
     this._dragDepth = 0;
+    this._messageAppearedAt.clear();
+    this._markedReadIds.clear();
+    this._lastReadInteractionAt = -Infinity;
+    this._lastSeenMarkedMsgId = null;
     this.root = null;
     this.messagesEl = null;
     this.composerInput = null;
@@ -259,6 +279,8 @@ export class ChatView {
     const msgs = messagesStore.forChannel(this.channel.id);
     if (msgs.length === 0) {
       this.messagesEl.innerHTML = '<div class="v2-chat-empty">No messages yet. Send one to get started.</div>';
+      this._messageAppearedAt.clear();
+      this._markedReadIds.clear();
       return;
     }
 
@@ -269,6 +291,8 @@ export class ChatView {
     if (appendedOne) this._scrollNewIntoView();
     else if (forceBottom) this._scrollToBottom(true);
     else this._scrollToBottom(false);
+    this._syncReadTracking();
+    this._scheduleReadCheck();
   }
 
   _renderStopButton() {
@@ -829,7 +853,7 @@ export class ChatView {
       selected_options: selectedOptions || null,
       freeform_response: freeformResponse || null,
     });
-    unreadStore.markRead(this.channel.id);
+    this._checkReadEligibility();
   }
 
   // ----- Composer / interaction click routing -----
@@ -1037,17 +1061,54 @@ export class ChatView {
     this.composerInput.style.height = Math.min(240, this.composerInput.scrollHeight) + 'px';
   };
 
+  _now() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  }
+
+  _bindReadInteractionListeners() {
+    if (this._readInteractionBound) return;
+    this._readInteractionBound = true;
+    this._readInteractionEvents = ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart'];
+    for (const type of this._readInteractionEvents) {
+      document.addEventListener(type, this._onReadInteraction, { passive: true, capture: true });
+    }
+  }
+
+  _unbindReadInteractionListeners() {
+    if (!this._readInteractionBound) return;
+    for (const type of this._readInteractionEvents || []) {
+      document.removeEventListener(type, this._onReadInteraction, { capture: true });
+    }
+    this._readInteractionEvents = null;
+    this._readInteractionBound = false;
+  }
+
+  _onReadInteraction = () => {
+    this._lastReadInteractionAt = this._now();
+    this._scheduleReadCheck();
+  };
+
+  _markProgrammaticScroll() {
+    this._ignoreScrollInteractionUntil = this._now() + 100;
+  }
+
   _onScroll = () => {
     if (!this.messagesEl) return;
+    const now = this._now();
+    if (now > this._ignoreScrollInteractionUntil) this._lastReadInteractionAt = now;
     const nearBottom = this.messagesEl.scrollHeight - (this.messagesEl.scrollTop + this.messagesEl.clientHeight) < 40;
     const bubble = this.root.querySelector('.v2-chat-new-bubble');
     if (bubble && nearBottom) bubble.hidden = true;
+    this._scheduleReadCheck();
   };
 
   _scrollToBottom(force) {
     if (!this.messagesEl) return;
     const nearBottom = this.messagesEl.scrollHeight - (this.messagesEl.scrollTop + this.messagesEl.clientHeight) < 80;
     if (force || nearBottom) {
+      this._markProgrammaticScroll();
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
       const bubble = this.root.querySelector('.v2-chat-new-bubble');
       if (bubble) bubble.hidden = true;
@@ -1073,12 +1134,97 @@ export class ChatView {
     if (msgH > viewportH) {
       // offsetTop is relative to the messages container (positioning
       // context). That puts the message's top at the container's top.
+      this._markProgrammaticScroll();
       this.messagesEl.scrollTop = last.offsetTop;
     } else {
+      this._markProgrammaticScroll();
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     }
     const bubble = this.root.querySelector('.v2-chat-new-bubble');
     if (bubble) bubble.hidden = true;
+  }
+
+  _syncReadTracking() {
+    const now = this._now();
+    const msgs = messagesStore.forChannel(this.channel.id);
+    const current = new Set();
+    for (const msg of msgs) {
+      if (!msg?.id || msg.sender === 'client') continue;
+      current.add(msg.id);
+      if (!this._messageAppearedAt.has(msg.id)) this._messageAppearedAt.set(msg.id, now);
+      if (msg.read_at) this._markedReadIds.add(msg.id);
+    }
+    for (const id of Array.from(this._messageAppearedAt.keys())) {
+      if (!current.has(id)) this._messageAppearedAt.delete(id);
+    }
+    for (const id of Array.from(this._markedReadIds.keys())) {
+      if (!current.has(id)) this._markedReadIds.delete(id);
+    }
+  }
+
+  _scheduleReadCheck() {
+    if (this._readCheckQueued) return;
+    this._readCheckQueued = true;
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 0);
+    schedule(() => {
+      this._readCheckQueued = false;
+      this._checkReadEligibility();
+    });
+  }
+
+  _checkReadEligibility() {
+    if (!this.messagesEl) return;
+    const msgs = messagesStore.forChannel(this.channel.id);
+    const byId = new Map(msgs.map(msg => [msg.id, msg]));
+    const viewportBottom = this.messagesEl.scrollTop + this.messagesEl.clientHeight;
+    const ids = [];
+    for (const el of this.messagesEl.querySelectorAll('[data-msg-id]')) {
+      const id = el.dataset.msgId;
+      if (!id || this._markedReadIds.has(id)) continue;
+      const msg = byId.get(id);
+      if (canMarkMessageRead({
+        msg,
+        appearedAt: this._messageAppearedAt.get(id),
+        lastInteractionAt: this._lastReadInteractionAt,
+        messageBottom: el.offsetTop + el.offsetHeight,
+        viewportBottom,
+      })) {
+        ids.push(id);
+      }
+    }
+    if (ids.length) this._markMessagesRead(ids);
+    this._maybeMarkSeen();
+  }
+
+  _markMessagesRead(ids) {
+    const unique = Array.from(new Set(ids)).filter(id => !this._markedReadIds.has(id));
+    if (!unique.length) return;
+    unique.forEach(id => this._markedReadIds.add(id));
+    bus.emit('message.read', { channelId: this.channel.id, msgIds: unique });
+    bus.emit('intent.mark_read', { channelId: this.channel.id, msgIds: unique });
+    const { count, hasInteraction } = deriveUnreadFromMessages(messagesStore.forChannel(this.channel.id));
+    unreadStore.hydrate(this.channel.id, count, hasInteraction);
+  }
+
+  _latestMessageIsEligible(latest) {
+    if (!latest?.id) return false;
+    const el = this.messagesEl?.querySelector(`[data-msg-id="${CSS.escape(latest.id)}"]`);
+    if (!el || !this.messagesEl) return false;
+    const appearedAt = this._messageAppearedAt.get(latest.id);
+    if (!Number.isFinite(appearedAt)) return false;
+    if (this._lastReadInteractionAt < appearedAt + READ_INTERACTION_DELAY_MS) return false;
+    return el.offsetTop + el.offsetHeight <= this.messagesEl.scrollTop + this.messagesEl.clientHeight + 1;
+  }
+
+  _maybeMarkSeen() {
+    const latest = latestNonClientMessage(messagesStore.forChannel(this.channel.id));
+    if (!latest?.id || latest.id === this._lastSeenMarkedMsgId) return;
+    if (!this._latestMessageIsEligible(latest)) return;
+    this._lastSeenMarkedMsgId = latest.id;
+    unreadStore.markRead(this.channel.id);
+    bus.emit('intent.mark_seen', { channelId: this.channel.id });
   }
 
   // ----- Overlay toolbar (v1 parity: Attach / Plan / Compact / Clear +

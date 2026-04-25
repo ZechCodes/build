@@ -25,7 +25,21 @@ try {
     page.click('button[type="submit"]'),
   ]);
   await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
+  try {
+    await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
+  } catch (_) {
+    await page.evaluate(() => {
+      const d = window.__v2debug;
+      d.bus.emit('device.bulk', {
+        devices: [{ id: 'dev-attention', name: 'Attention Device', status: 'online', has_transport_key: true }],
+      });
+      d.bus.emit('channel.list', {
+        deviceId: 'dev-attention',
+        channels: [{ id: 'ch-attention', name: 'attention', created_at: Date.now() }],
+      });
+    });
+    await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 5000 });
+  }
 
   const chId = await page.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
   await page.click(`.v2-channel-sidebar-item[data-channel-id="${chId}"]`);
@@ -43,13 +57,13 @@ try {
   const clean = await page.evaluate(() => !!document.querySelector('.v2-attention-section'));
   check('Attention section is hidden when nothing needs attention', clean === false);
 
-  // Running: flip agent active on the current channel. Since the
-  // active channel doesn't accumulate unread, this is pure running
-  // signal.
+  // Running + unread: running remains the primary visual status, and
+  // unread is represented by the count badge only.
   await page.evaluate(() => {
     const d = window.__v2debug;
     const chId = d.stores.uiStore.getActiveChannel();
     d.stores.presenceStore.setAgentActive(chId, true);
+    d.stores.unreadStore.increment(chId, false);
   });
   await page.waitForTimeout(120);
   const running = await page.evaluate(() => {
@@ -58,23 +72,42 @@ try {
       present: !!document.querySelector('.v2-attention-section'),
       statusLabel: row?.querySelector('.v2-attention-status')?.textContent?.trim(),
       hasRunningClass: row?.className.includes('status-running'),
+      hasUnreadClass: row?.className.includes('status-unread'),
+      badge: row?.querySelector('.v2-ch-unread-badge')?.textContent?.trim(),
       indicator: row?.querySelector('.v2-attention-indicator')?.getAttribute('data-indicator'),
     };
   });
   check('Attention section appears when agent is running',  running.present);
   check('Running row has status=running',                    running.hasRunningClass === true, JSON.stringify(running));
   check('Running row status label reads "Running"',          /running/i.test(running.statusLabel || ''));
+  check('Running row with unread keeps unread badge only',    running.badge === '1' && running.hasUnreadClass === false, JSON.stringify(running));
 
-  // Switch away + stop agent + simulate unread on another channel.
-  // Use `uiStore.setActiveChannel(null)` to leave no active channel
-  // so unread increments aren't suppressed.
+  // Stop running while unread remains: unread becomes the primary
+  // status.
   await page.evaluate(() => {
     const d = window.__v2debug;
     const chId = d.stores.uiStore.getActiveChannel();
     d.stores.presenceStore.setAgentActive(chId, false);
+  });
+  await page.waitForTimeout(120);
+  const stoppedUnread = await page.evaluate(() => {
+    const row = document.querySelector('.v2-attention-row');
+    return {
+      hasUnreadClass: row?.className.includes('status-unread'),
+      statusLabel: row?.querySelector('.v2-attention-status')?.textContent?.trim(),
+      badge: row?.querySelector('.v2-ch-unread-badge')?.textContent?.trim(),
+    };
+  });
+  check('Stopped unread row switches to status=unread',       stoppedUnread.hasUnreadClass === true, JSON.stringify(stoppedUnread));
+  check('Stopped unread row label reads "Unread"',            /unread/i.test(stoppedUnread.statusLabel || ''), stoppedUnread.statusLabel);
+  check('Stopped unread row keeps unread count badge',        stoppedUnread.badge === '1', stoppedUnread.badge);
+
+  // Switch away + simulate pending interaction on another channel.
+  await page.evaluate(() => {
+    const d = window.__v2debug;
+    const chId = d.stores.uiStore.getActiveChannel();
+    d.stores.unreadStore.markRead(chId);
     d.stores.uiStore.setActiveChannel(null);
-    // Increment unread on the only channel (we're no longer the
-    // active one, so the increment isn't suppressed).
     d.stores.unreadStore.increment(chId, true);  // hasInteraction=true
     d.stores.unreadStore.increment(chId, false);
   });

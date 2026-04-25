@@ -77,7 +77,7 @@ export class ChannelPanelView {
     if (attention.length) {
       parts.push(`
         <section class="v2-attention-section">
-          <header class="v2-attention-header">Attention</header>
+          <header class="v2-attention-header">Recent</header>
           <div class="v2-attention-rows">
             ${attention.map(a => renderAttentionRow(a, active)).join('')}
           </div>
@@ -236,13 +236,13 @@ function renderAttentionRow(item, activeId) {
   const { ch, running, waitingInteraction, waitingUnread, recent, count, lastActiveAt } = item;
   const isActive = ch.id === activeId;
   const name = ch.name || (ch.id || '').slice(0, 8);
-  const status = waitingInteraction ? 'interaction'
+  const status = running            ? 'running'
+               : waitingInteraction ? 'interaction'
                : waitingUnread      ? 'unread'
-               : running            ? 'running'
                : 'recent';
-  const statusLabel = waitingInteraction ? 'Needs you'
+  const statusLabel = running            ? 'Running'
+                    : waitingInteraction ? 'Needs you'
                     : waitingUnread      ? 'Unread'
-                    : running            ? 'Running'
                     : recent             ? relativeMinutes(lastActiveAt)
                     : '';
   const badge = count > 0
@@ -252,7 +252,7 @@ function renderAttentionRow(item, activeId) {
     'v2-attention-row',
     'v2-channel-sidebar-item',
     isActive ? 'active' : '',
-    waitingInteraction ? 'has-interaction' : '',
+    !running && waitingInteraction ? 'has-interaction' : '',
     `status-${status}`,
   ].filter(Boolean).join(' ');
   return `

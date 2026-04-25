@@ -180,17 +180,19 @@ function isDeviceCollapsed(deviceId, status) {
 }
 
 const ATTENTION_RECENT_WINDOW_MS = 60 * 60 * 1000;  // 1 hour
+const attentionOrder = [];
+const attentionOrderSet = new Set();
 
 /**
  * Walk every known channel, and return those that either:
  *   - have their agent actively processing (running), or
  *   - have unread messages / a pending interaction (waiting), or
  *   - finished running within the last hour (recent grace window).
- * Sorted so the loudest signal floats to the top.
+ * Existing rows keep their position; newly qualifying channels append.
  */
-function buildAttentionList() {
+export function buildAttentionList() {
   const now = Date.now();
-  const items = [];
+  const current = new Map();
   for (const ch of channelsStore.list()) {
     const pres = presenceStore.get(ch.id);
     const unread = unreadStore.get(ch.id);
@@ -202,28 +204,32 @@ function buildAttentionList() {
                 && !waitingUnread
                 && pres.lastActiveAt > 0
                 && (now - pres.lastActiveAt) < ATTENTION_RECENT_WINDOW_MS;
-    if (!running && !waitingInteraction && !waitingUnread && !recent) continue;
-    items.push({
+    const qualifies = running || waitingInteraction || waitingUnread || recent;
+    if (!qualifies) continue;
+    current.set(ch.id, {
       ch, running, waitingInteraction, waitingUnread, recent,
       count: unread.count || 0,
       lastActiveAt: pres.lastActiveAt || 0,
     });
+    if (!attentionOrderSet.has(ch.id)) {
+      attentionOrder.push(ch.id);
+      attentionOrderSet.add(ch.id);
+    }
   }
-  items.sort((a, b) => {
-    // Interaction > unread > running > recent. Within the same
-    // category, fall back to channel name for stability.
-    const score = (x) =>
-      (x.waitingInteraction ? 8 : 0) +
-      (x.waitingUnread      ? 4 : 0) +
-      (x.running            ? 2 : 0) +
-      (x.recent             ? 1 : 0);
-    const d = score(b) - score(a);
-    if (d) return d;
-    // Within "recent" specifically, sort most-recent-first.
-    if (a.recent && b.recent) return b.lastActiveAt - a.lastActiveAt;
-    return (a.ch.name || '').localeCompare(b.ch.name || '');
-  });
-  return items;
+
+  for (let i = attentionOrder.length - 1; i >= 0; i--) {
+    const id = attentionOrder[i];
+    if (current.has(id)) continue;
+    attentionOrder.splice(i, 1);
+    attentionOrderSet.delete(id);
+  }
+
+  return attentionOrder.map(id => current.get(id)).filter(Boolean);
+}
+
+export function resetAttentionOrderForTests() {
+  attentionOrder.length = 0;
+  attentionOrderSet.clear();
 }
 
 function renderAttentionRow(item, activeId) {

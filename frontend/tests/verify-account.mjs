@@ -2,9 +2,9 @@
 //   - renders user name + first-initial avatar,
 //   - account link points at /admin/,
 //   - theme-update button appears when /api/theme/version reports a
-//     version newer than the one stored in localStorage,
-//   - stays hidden when server == stored,
-//   - clicking "Update" triggers a reload.
+//     version newer than this page's in-memory baseline,
+//   - persists across reconnects,
+//   - clicking "Update" triggers a reload and clears the badge.
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8100';
@@ -50,7 +50,7 @@ try {
 
   await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#v2-account-slot .v2-account', { timeout: 8000 });
-  // Let the mount-time _checkThemeVersion seed localStorage.
+  // Let the mount-time _checkThemeVersion seed the page-lifetime baseline.
   await page.waitForTimeout(300);
 
   // 1. Account renders with user name + initial.
@@ -70,38 +70,29 @@ try {
     /^[A-Z?]$/.test(account?.initial || ''), account?.initial);
   check('title attr matches name',   account?.title === account?.name);
 
-  // 2. No badge initially — mount's own check just seeded localStorage.
+  // 2. No badge initially — mount's own check just seeded the baseline.
   check('no update button at mount', !(await badgePresent(page)));
 
-  // 3. Simulate a stale tab: set stored version to an older value,
-  //    then fire sse.connected → badge should appear.
-  await page.evaluate(() => localStorage.setItem('build_theme_version', '0.9.0'));
+  // 3. Simulate a stale tab: server starts reporting a newer version,
+  //    then sse.connected asks the account view to compare against its
+  //    original in-memory baseline.
+  SERVED_VERSION = '1.1.0';
   await forceRecheck(page);
-  check('update button appears when server > stored', await badgePresent(page));
+  check('update button appears when server > page baseline', await badgePresent(page));
 
-  // 4. Reconnecting again must keep the badge (stored wasn't bumped).
+  // 4. Reconnecting again must keep the badge.
   await forceRecheck(page);
   check('update button persists across reconnects', await badgePresent(page));
 
-  // 5. Server == stored → no badge (after a clean reload simulation).
-  await page.evaluate(() => localStorage.setItem('build_theme_version', '1.0.0'));
-  // Remove the existing badge so we can observe whether a fresh check
-  // re-adds it.
-  await page.evaluate(() => document.querySelector('.v2-theme-update')?.remove());
-  await forceRecheck(page);
-  check('no update button when server == stored', !(await badgePresent(page)));
-
-  // 6. Server bumps → badge reappears.
-  SERVED_VERSION = '1.1.0';
-  await forceRecheck(page);
-  check('update button appears when server bumps again', await badgePresent(page));
-
-  // 7. Clicking the update button triggers a full reload.
+  // 5. Clicking the update button triggers a full reload.
   const loadPromise = page.waitForEvent('load', { timeout: 3000 })
     .then(() => true).catch(() => false);
   await page.click('.v2-theme-update');
   const reloaded = await loadPromise;
   check('clicking update triggers a page reload', reloaded === true);
+  await page.waitForSelector('#v2-account-slot .v2-account', { timeout: 8000 });
+  await page.waitForTimeout(300);
+  check('no update button after reload baseline refreshes', !(await badgePresent(page)));
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;

@@ -4,16 +4,13 @@
 // with.
 //
 // Version check runs once at mount and on every SSE reconnect. The
-// first check on a fresh browser (no stored version) seeds
-// localStorage with the server's version. Subsequent checks compare
-// server to stored; if server is newer, we show the badge and leave
-// stored alone — the badge persists across reconnects until the
-// user clicks it (which reloads, re-seeding on the way in).
+// first successful check seeds an in-memory page-lifetime baseline.
+// Subsequent checks compare the server to that baseline; if server is
+// newer, we show the badge. Clicking it reloads, so the next page load
+// seeds from the newly served theme version.
 
 import { bus } from '../core/bus.js';
 import { escapeHtml } from '../util/html.js';
-
-const THEME_VERSION_KEY = 'build_theme_version';
 
 function compareVersions(a, b) {
   const pa = String(a).split('.').map(Number);
@@ -30,6 +27,7 @@ export class AccountView {
   constructor() {
     this.root = null;
     this._unsubs = [];
+    this._themeVersion = null;
   }
 
   activate() {
@@ -37,9 +35,8 @@ export class AccountView {
     if (!this.root) return;
     this._render();
     this._unsubs.push(bus.on('sse.connected', () => this._checkThemeVersion()));
-    // Probe once at mount so the first page load either seeds the
-    // stored version (fresh install) or surfaces a stale-tab badge
-    // right away. Subsequent reconnects re-check.
+    // Probe once at mount so this page has a baseline before SSE
+    // reconnects start checking for newer served assets.
     this._checkThemeVersion();
   }
 
@@ -66,12 +63,11 @@ export class AccountView {
     if (!this.root) return;
     const server = await this._fetchVersion();
     if (!server) return;
-    const stored = localStorage.getItem(THEME_VERSION_KEY);
-    if (!stored) {
-      localStorage.setItem(THEME_VERSION_KEY, server);
+    if (!this._themeVersion) {
+      this._themeVersion = server;
       return;
     }
-    if (compareVersions(server, stored) > 0) this._showUpdateBadge();
+    if (compareVersions(server, this._themeVersion) > 0) this._showUpdateBadge();
   }
 
   async _fetchVersion() {

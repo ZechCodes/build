@@ -18,7 +18,7 @@ await Promise.all([
 
 // Request the v2 HTML directly via fetch to see the raw server response.
 const body = await page.evaluate(async () => {
-  const r = await fetch('/dashboard-v2/', { credentials: 'include' });
+  const r = await fetch('/dashboard/', { credentials: 'include' });
   return await r.text();
 });
 

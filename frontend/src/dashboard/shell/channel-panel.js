@@ -1,0 +1,301 @@
+// Sidebar listing of devices and their channels. Pure view — reads
+// from stores, dispatches intents, never imports transport.
+// See planning/dashboard/05-views.md § ChannelPanelView.
+
+import { bus } from '../core/bus.js';
+import { devicesStore } from '../domain/devices-store.js';
+import { channelsStore } from '../domain/channels-store.js';
+import { unreadStore } from '../domain/unread-store.js';
+import { presenceStore } from '../domain/presence-store.js';
+import { uiStore } from '../domain/ui-store.js';
+import { router } from './router.js';
+import { escapeHtml } from '../util/html.js';
+import { openChannelMenu, openChannelNewModal } from './channel-menu.js';
+
+function statusIcon(status) {
+  if (status === 'connected') return '<svg class="v2-status-lock" viewBox="0 0 16 16" fill="none"><path d="M4 7V5a4 4 0 118 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>';
+  if (status === 'connecting') return '<span class="v2-status-dot connecting" aria-label="Connecting"></span>';
+  if (status === 'offline')    return '<span class="v2-status-dot offline" aria-label="Offline"></span>';
+  return '<span class="v2-status-dot" aria-label="Online"></span>';
+}
+
+export class ChannelPanelView {
+  constructor() {
+    this.root = null;
+    this.unsubs = [];
+    // Re-render tick — keeps the Attention section's "recent" grace
+    // window accurate and lets relative timestamps (e.g., "3m")
+    // advance without a user interaction.
+    this._attentionTick = null;
+  }
+
+  activate() {
+    this.root = document.getElementById('v2-channel-panel-list');
+    if (!this.root) return;
+    this.render();
+    const resub = () => this.render();
+    this.unsubs.push(devicesStore.subscribe(resub));
+    this.unsubs.push(channelsStore.subscribe(resub));
+    this.unsubs.push(unreadStore.subscribe(resub));
+    this.unsubs.push(presenceStore.subscribe(e => {
+      // Re-render on anything that changes Attention membership —
+      // agent_active flips the "Running" row; last_active seeds
+      // the "recent" grace window from history.
+      if (e.kind === 'agent_active' || e.kind === 'last_active') this.render();
+    }));
+    this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
+    this.root.addEventListener('click', this._onClick);
+    // 60s is plenty — the grace window is an hour and the relative
+    // timestamps in the recent-attention rows advance in minutes.
+    this._attentionTick = setInterval(() => this.render(), 60 * 1000);
+  }
+
+  deactivate() {
+    this.unsubs.forEach(fn => fn());
+    this.unsubs = [];
+    if (this.root) {
+      this.root.removeEventListener('click', this._onClick);
+    }
+    if (this._attentionTick) { clearInterval(this._attentionTick); this._attentionTick = null; }
+    this.root = null;
+  }
+
+  render() {
+    if (!this.root) return;
+    const devices = devicesStore.list().slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const active = uiStore.getActiveChannel();
+    if (devices.length === 0) {
+      this.root.innerHTML = '<div class="v2-empty">No devices.</div>';
+      return;
+    }
+    const parts = [];
+
+    // Attention section — lists every channel that's either running
+    // (agent is processing) or waiting (unread messages, or a pending
+    // interaction: plan review / tool approval / question).
+    const attention = buildAttentionList();
+    if (attention.length) {
+      parts.push(`
+        <section class="v2-attention-section">
+          <header class="v2-attention-header">Attention</header>
+          <div class="v2-attention-rows">
+            ${attention.map(a => renderAttentionRow(a, active)).join('')}
+          </div>
+        </section>
+      `);
+    }
+    for (const d of devices) {
+      const channels = channelsStore.listByDevice(d.id)
+        .slice()
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const status = deviceStatus(d);
+      // Collapsed state: user override wins; otherwise default to
+      // collapsed if the device isn't online. Chevron + children are
+      // hidden so the group reads as one line.
+      const isCollapsed = isDeviceCollapsed(d.id, status);
+      const groupClasses = ['v2-device-group', isCollapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
+      const headerClasses = ['v2-device-header', isCollapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
+      parts.push(`
+        <div class="${groupClasses}" data-device-id="${escapeHtml(d.id)}">
+          <header class="${headerClasses}" data-device-toggle="${escapeHtml(d.id)}" data-device-status="${status}">
+            <svg class="v2-device-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="v2-device-group-status">${statusIcon(status)}</span>
+            <span class="v2-device-name">${escapeHtml(d.name || d.id)}</span>
+          </header>
+          ${isCollapsed ? '' : `
+            <div class="v2-device-group-actions">
+              <button class="v2-sidebar-new-session" type="button" data-new-session="${escapeHtml(d.id)}" title="New channel">
+                <svg viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                New channel
+              </button>
+            </div>
+          `}
+          ${!isCollapsed && channels.length ? `<div class="v2-device-channels">${channels.map(ch => renderChannel(ch, active)).join('')}</div>` : ''}
+        </div>
+      `);
+    }
+    this.root.innerHTML = parts.join('');
+  }
+
+  _onClick = (e) => {
+    const newBtn = e.target.closest('[data-new-session]');
+    if (newBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      const deviceId = newBtn.getAttribute('data-new-session');
+      openChannelNewModal(deviceId);
+      return;
+    }
+    const edit = e.target.closest('[data-channel-edit]');
+    if (edit) {
+      e.stopPropagation();
+      e.preventDefault();
+      const cid = edit.getAttribute('data-channel-edit');
+      openChannelMenu(cid, edit);
+      return;
+    }
+    const deviceToggle = e.target.closest('[data-device-toggle]');
+    if (deviceToggle
+        && !e.target.closest('.v2-device-group-actions')
+        && !e.target.closest('.v2-new-session-form')) {
+      const deviceId = deviceToggle.getAttribute('data-device-toggle');
+      const status = deviceToggle.getAttribute('data-device-status');
+      // Persist the user's override so it survives reloads and wins
+      // over the status-based default on next render.
+      const nextCollapsed = !isDeviceCollapsed(deviceId, status);
+      localStorage.setItem(deviceCollapsedKey(deviceId), nextCollapsed ? '1' : '0');
+      this.render();
+      return;
+    }
+    const channelRow = e.target.closest('[data-channel-id]');
+    if (channelRow) {
+      const channelId = channelRow.getAttribute('data-channel-id');
+      router.navigate(uiStore.getTab() || 'files', channelId);
+    }
+  };
+
+}
+
+function deviceStatus(device) {
+  if (device.status !== 'online') return 'offline';
+  if (!device.has_transport_key) return 'online';
+  return 'online';
+}
+
+const DEVICE_COLLAPSED_KEY_PREFIX = 'v2.device.';
+function deviceCollapsedKey(deviceId) {
+  return `${DEVICE_COLLAPSED_KEY_PREFIX}${deviceId}.collapsed`;
+}
+
+/**
+ * Resolve a device's current collapsed state. Respects the user's
+ * persisted toggle if one exists; otherwise defaults by live status
+ * (offline → collapsed, online → expanded).
+ */
+function isDeviceCollapsed(deviceId, status) {
+  const raw = localStorage.getItem(deviceCollapsedKey(deviceId));
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  return status !== 'online';
+}
+
+const ATTENTION_RECENT_WINDOW_MS = 60 * 60 * 1000;  // 1 hour
+const attentionOrder = [];
+const attentionOrderSet = new Set();
+
+/**
+ * Walk every known channel, and return those that either:
+ *   - have their agent actively processing (running), or
+ *   - have unread messages / a pending interaction (waiting), or
+ *   - finished running within the last hour (recent grace window).
+ * Existing rows keep their position; newly qualifying channels append.
+ */
+export function buildAttentionList() {
+  const now = Date.now();
+  const current = new Map();
+  for (const ch of channelsStore.list()) {
+    const pres = presenceStore.get(ch.id);
+    const unread = unreadStore.get(ch.id);
+    const running = !!pres.agentActive;
+    const waitingInteraction = !!unread.hasInteraction;
+    const waitingUnread = (unread.count || 0) > 0;
+    const recent = !running
+                && !waitingInteraction
+                && !waitingUnread
+                && pres.lastActiveAt > 0
+                && (now - pres.lastActiveAt) < ATTENTION_RECENT_WINDOW_MS;
+    const qualifies = running || waitingInteraction || waitingUnread || recent;
+    if (!qualifies) continue;
+    current.set(ch.id, {
+      ch, running, waitingInteraction, waitingUnread, recent,
+      count: unread.count || 0,
+      lastActiveAt: pres.lastActiveAt || 0,
+    });
+    if (!attentionOrderSet.has(ch.id)) {
+      attentionOrder.push(ch.id);
+      attentionOrderSet.add(ch.id);
+    }
+  }
+
+  for (let i = attentionOrder.length - 1; i >= 0; i--) {
+    const id = attentionOrder[i];
+    if (current.has(id)) continue;
+    attentionOrder.splice(i, 1);
+    attentionOrderSet.delete(id);
+  }
+
+  return attentionOrder.map(id => current.get(id)).filter(Boolean);
+}
+
+export function resetAttentionOrderForTests() {
+  attentionOrder.length = 0;
+  attentionOrderSet.clear();
+}
+
+function renderAttentionRow(item, activeId) {
+  const { ch, running, waitingInteraction, waitingUnread, recent, count, lastActiveAt } = item;
+  const isActive = ch.id === activeId;
+  const name = ch.name || (ch.id || '').slice(0, 8);
+  const status = waitingInteraction ? 'interaction'
+               : waitingUnread      ? 'unread'
+               : running            ? 'running'
+               : 'recent';
+  const statusLabel = waitingInteraction ? 'Needs you'
+                    : waitingUnread      ? 'Unread'
+                    : running            ? 'Running'
+                    : recent             ? relativeMinutes(lastActiveAt)
+                    : '';
+  const badge = count > 0
+    ? `<span class="v2-ch-unread-badge">${count}</span>`
+    : '';
+  const classes = [
+    'v2-attention-row',
+    'v2-channel-sidebar-item',
+    isActive ? 'active' : '',
+    waitingInteraction ? 'has-interaction' : '',
+    `status-${status}`,
+  ].filter(Boolean).join(' ');
+  return `
+    <div class="${classes}" data-channel-id="${escapeHtml(ch.id)}">
+      <span class="v2-attention-indicator" data-indicator="${status}" aria-label="${statusLabel}"></span>
+      <span class="v2-ch-hash">#</span>
+      <span class="v2-ch-name">${escapeHtml(name)}</span>
+      ${badge}
+      <span class="v2-attention-status">${statusLabel}</span>
+    </div>
+  `;
+}
+
+function relativeMinutes(stampMs) {
+  if (!stampMs) return '';
+  const diff = Math.max(0, Date.now() - stampMs);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m === 1) return '1m';
+  return `${m}m`;
+}
+
+function renderChannel(ch, activeId) {
+  const unread = unreadStore.get(ch.id);
+  const count = unread?.count || 0;
+  const hasInteraction = !!unread?.hasInteraction;
+  const name = ch.name || (ch.id || '').slice(0, 8);
+  const isActive = ch.id === activeId;
+  const classes = [
+    'v2-channel-sidebar-item',
+    isActive ? 'active' : '',
+    hasInteraction ? 'has-interaction' : '',
+  ].filter(Boolean).join(' ');
+  const badge = count > 0 ? `<span class="v2-ch-unread-badge">${count}</span>` : '';
+  return `
+    <div class="${classes}" data-channel-id="${escapeHtml(ch.id)}">
+      <span class="v2-ch-hash">#</span>
+      <span class="v2-ch-name">${escapeHtml(name)}</span>
+      ${badge}
+      <button class="v2-ch-edit" type="button" data-channel-edit="${escapeHtml(ch.id)}"
+              title="Channel actions" aria-label="Channel actions">
+        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><circle cx="2.5" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="9.5" cy="6" r="1" fill="currentColor"/></svg>
+      </button>
+    </div>
+  `;
+}

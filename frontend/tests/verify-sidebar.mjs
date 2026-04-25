@@ -23,7 +23,7 @@ try {
     page.click('button[type="submit"]'),
   ]);
 
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
   await page.click('.v2-channel-sidebar-item');
   await page.waitForTimeout(2000);

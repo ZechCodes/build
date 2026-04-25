@@ -50,7 +50,7 @@ try {
     page.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
     page.click('button[type="submit"]'),
   ]);
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 
   // Find two channels so we can switch between them.

@@ -27,7 +27,6 @@ controllers:
   - build_app.campaign_signups_api:CampaignSignupsApiController
   - build_app.campaign_signups_admin:CampaignSignupsAdminController
   - build_app.dashboard:DashboardController
-  - build_app.dashboard_v2:DashboardV2Controller
   - build_app.devices:DeviceApiController
   - build_app.app_auth:AppAuthController
   - build_app.app_auth:AppAuthPageController

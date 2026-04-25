@@ -1,35 +1,176 @@
-/* Terminal panel */
-.console-terminal{
-  flex-direction:column;
-  font-family:var(--mono);font-size:12px;
-  color:#d4d4d8;
-  max-height:none;
-}
-.terminal-output{
-  flex:1;overflow-y:auto;overflow-x:hidden;
-  padding:.5rem .875rem;
-  white-space:pre-wrap;word-break:break-all;
-  line-height:1.5;
-}
-.terminal-output::-webkit-scrollbar{width:5px}
-.terminal-output::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
-.terminal-cmd-block{margin-bottom:.25rem}
-.terminal-cmd-line{color:var(--accent);font-weight:600}
-.terminal-cmd-output{color:#a1a1aa}
-.terminal-cmd-exit{color:#52525b;font-size:10px;margin-top:.1rem}
-.terminal-cmd-exit.error{color:#f87171}
-.terminal-completions{color:#a1a1aa;font-size:11px;padding:.2rem 0;white-space:pre-wrap;word-break:break-all}
-.terminal-loader{color:#a1a1aa}
-.terminal-kill-btn{position:absolute;bottom:.5rem;left:.5rem;font-size:11px;font-family:var(--mono);padding:.2rem .5rem;border-radius:var(--radius-sm);border:1px solid #f87171;background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;z-index:2}
-.terminal-kill-btn:hover{background:rgba(248,113,113,0.2)}
-.console-terminal{position:relative}
-.terminal-prompt-row{
-  display:flex;align-items:center;gap:.4rem;
-}
-.terminal-cwd{color:var(--accent);font-weight:600;flex-shrink:0;white-space:nowrap}
-.terminal-input{
-  flex:1;background:none;border:none;outline:none;
-  font-family:var(--mono);font-size:12px;
-  color:#d4d4d8;caret-color:var(--accent);
+/* TerminalView. Prompt is part of the scrollback — not a separate
+   pinned row — so it scrolls with past output like a real shell. */
+
+.v2-term {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg);
 }
 
+.v2-term-output {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.v2-term-out  { white-space: pre-wrap; }
+
+/* Echo rows — no margin-top so prompts butt up against prior
+   output, matching a real terminal's line flow. */
+.v2-term-echo {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+.v2-term-echo .v2-term-cwd   { color: var(--accent); margin-right: 6px; }
+.v2-term-echo .v2-term-sigil { color: var(--fg-dim); margin-right: 6px; }
+.v2-term-echo-cmd            { color: var(--fg); }
+.v2-term-echo-trail          { color: #d06262; margin-left: 4px; }
+
+.v2-term-complete {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 0;
+}
+.v2-term-complete-chip {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.v2-term-complete.err .v2-term-complete-chip { color: #d06262; border-color: #d06262; }
+
+.v2-term-compls { color: var(--fg-muted); padding: 2px 0; }
+
+/* Live promptline — just another line in the scrollback. No
+   separate background, no top-border, no extra padding. The
+   parent output's padding owns the horizontal rhythm; promptline
+   sits flush with every echoed command that came before it. */
+.v2-term-promptline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.v2-term-promptline .v2-term-cwd   { color: var(--accent); }
+.v2-term-promptline .v2-term-sigil { color: var(--fg-dim); }
+
+.v2-term-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  caret-color: var(--accent);
+}
+.v2-term-input:disabled { color: var(--fg-dim); }
+
+/* Controls float in the top-right corner so they never visually
+   compete with the prompt or the scrollback flow. Subtle until
+   hover, except ⌃C which lights up while a command runs. */
+.v2-term-controls {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+.v2-term-ctrl {
+  padding: 2px 7px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-width: 30px;
+  line-height: 1.2;
+  opacity: 0.75;
+}
+.v2-term-ctrl:hover {
+  opacity: 1;
+  color: var(--fg);
+  border-color: var(--fg-dim);
+  background: var(--bg-hover);
+}
+.v2-term-ctrl:active { transform: translateY(1px); }
+
+.v2-term.is-running .v2-term-ctrl[data-term-cmd="ctrl-c"] {
+  opacity: 1;
+  color: #d06262;
+  border-color: #d06262;
+}
+.v2-term.is-running .v2-term-ctrl[data-term-cmd="ctrl-c"]:hover {
+  background: rgba(208, 98, 98, 0.15);
+}
+
+.v2-term-ctrl-mobile { display: none; }
+@media (max-width: 768px) {
+  .v2-term-ctrl-mobile { display: inline-flex; }
+}
+
+/* ── ANSI SGR palette ────────────────────────────────────────────── */
+/* 16 standard colours — tuned to read well on the v2 dark bg. Bright
+   variants (8–15) are the same hues bumped up. */
+.ansi-fg-0 { color: #4a4f57; }   /* black (nearly invisible on our bg otherwise) */
+.ansi-fg-1 { color: #e06c75; }   /* red */
+.ansi-fg-2 { color: #98c379; }   /* green */
+.ansi-fg-3 { color: #d19a66; }   /* yellow */
+.ansi-fg-4 { color: #61afef; }   /* blue */
+.ansi-fg-5 { color: #c678dd; }   /* magenta */
+.ansi-fg-6 { color: #56b6c2; }   /* cyan */
+.ansi-fg-7 { color: #c8ccd4; }   /* white/grey */
+
+.ansi-fg-8  { color: #5c6370; }  /* bright black */
+.ansi-fg-9  { color: #ff7b85; }  /* bright red */
+.ansi-fg-10 { color: #b5e089; }  /* bright green */
+.ansi-fg-11 { color: #e5b169; }  /* bright yellow */
+.ansi-fg-12 { color: #7eb9f3; }  /* bright blue */
+.ansi-fg-13 { color: #d48cea; }  /* bright magenta */
+.ansi-fg-14 { color: #6ec9d3; }  /* bright cyan */
+.ansi-fg-15 { color: #ffffff; }  /* bright white */
+
+.ansi-bg-0 { background-color: #4a4f57; }
+.ansi-bg-1 { background-color: #e06c75; }
+.ansi-bg-2 { background-color: #98c379; }
+.ansi-bg-3 { background-color: #d19a66; }
+.ansi-bg-4 { background-color: #61afef; }
+.ansi-bg-5 { background-color: #c678dd; }
+.ansi-bg-6 { background-color: #56b6c2; }
+.ansi-bg-7 { background-color: #c8ccd4; }
+.ansi-bg-8  { background-color: #5c6370; }
+.ansi-bg-9  { background-color: #ff7b85; }
+.ansi-bg-10 { background-color: #b5e089; }
+.ansi-bg-11 { background-color: #e5b169; }
+.ansi-bg-12 { background-color: #7eb9f3; }
+.ansi-bg-13 { background-color: #d48cea; }
+.ansi-bg-14 { background-color: #6ec9d3; }
+.ansi-bg-15 { background-color: #ffffff; }
+
+.ansi-bold      { font-weight: 600; }
+.ansi-dim       { opacity: 0.7; }
+.ansi-italic    { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+.ansi-strike    { text-decoration: line-through; }
+.ansi-reverse   { filter: invert(1); }

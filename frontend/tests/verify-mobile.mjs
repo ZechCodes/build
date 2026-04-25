@@ -1,4 +1,4 @@
-// Verify Dashboard v2 on a phone-sized viewport (iPhone 13 @ 375×812):
+// Verify Dashboard on a phone-sized viewport (iPhone 13 @ 375×812):
 //   1. Hamburger is visible, sidebar is hidden on load.
 //   2. Tap hamburger → sidebar slides in + backdrop appears.
 //   3. Tap close X → sidebar closes.
@@ -37,7 +37,7 @@ try {
     page.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
     page.click('button[type="submit"]'),
   ]);
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
   // Activate a channel so FilesView renders its tree-tabs (including
   // the mobile hamburger that lives inside the tree tabs row). The

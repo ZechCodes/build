@@ -1,30 +1,130 @@
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;overflow:hidden}
-body{
-  background:var(--bg);
-  color:var(--text);
-  font-family:var(--font);
-  font-size:14px;
-  line-height:1.5;
-  display:flex;flex-direction:column;
-  -webkit-font-smoothing:antialiased;
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100%;
+  /* The app is a fixed-height shell — no body-level scrolling. On
+     mobile Safari the URL bar makes `100vh` larger than the visible
+     viewport, which otherwise nudges the rail below the fold and
+     adds a rubber-band scroll on the body. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
-/* Noise texture */
-.content-area{position:relative}
-.content-area::before{
-  content:'';
-  position:fixed;
-  inset:0;
-  opacity:0.03;
-  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  pointer-events:none;
-  z-index:0;
+#app { width: 100%; height: 100%; }
+
+code, pre { font-family: var(--font-mono); }
+
+button { font-family: inherit; }
+
+/* Mobile Safari / Chromium wait ~300ms on every tap of a non-
+   text target to see if it's actually a double-tap-to-zoom. On a
+   chat button or a channel row that has no zoom semantics anyway
+   the wait is just perceived lag — the user taps, nothing visibly
+   happens for 300ms, they tap again and close the overlay they
+   just opened. `touch-action: manipulation` keeps pinch/scroll
+   but disables the double-tap-to-zoom wait, so taps fire on the
+   leading edge. */
+button,
+a[role="button"],
+[data-rail-panel],
+.v2-channel-sidebar-item,
+.v2-attention-row,
+.v2-device-header,
+.v2-rail-btn,
+.v2-co-btn,
+.v2-co-ctrl-pill,
+.v2-comp,
+.v2-tab,
+.v2-suggestion,
+.v2-plan-btn,
+.v2-int-opt,
+.v2-files-tab,
+.v2-path-bar-btn,
+.v2-sidebar-section-header {
+  touch-action: manipulation;
 }
 
-/* Electron: push content below traffic lights + draggable title bar */
-body.electron .channel-panel-sections{padding-top:36px}
-body.electron .channel-panel{-webkit-app-region:drag}
-body.electron .channel-panel-sections > *{-webkit-app-region:no-drag}
-body.electron .channel-panel-footer{-webkit-app-region:no-drag}
+/* iOS Safari auto-zooms when a focused input's computed font-size is
+   below 16px. Force 16px on all text-entry controls under 768px so
+   the zoom never fires. `.v2-app` prefix lifts specificity above the
+   component-scoped rules (chat.css, channel-panel.css, terminal.css)
+   that load after this stylesheet. */
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select,
+  .v2-app .v2-chat-input,
+  .v2-app .v2-new-session-input,
+  .v2-app .v2-term-input {
+    font-size: 16px;
+  }
+}
 
+/* ── Loading skeletons ───────────────────────────────────────────────
+   Panels show shimmer placeholders while the active channel's lifecycle
+   is in `loading` state (driven by shell/channel-phase.js writing
+   data-channel-phase on .v2-app). See channel.js, channel-phase.js. */
+
+@keyframes v2-skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.v2-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elev-1) 25%,
+    var(--bg-elev-2) 50%,
+    var(--bg-elev-1) 75%
+  );
+  background-size: 200% 100%;
+  animation: v2-skeleton-shimmer 1.4s ease-in-out infinite;
+  border-radius: 4px;
+  opacity: 0.8;
+}
+
+.v2-skeleton-bubble       { height: 44px; max-width: 72%; }
+.v2-skeleton-bubble.short { height: 28px; max-width: 42%; }
+.v2-skeleton-row          { height: 28px; }
+.v2-skeleton-row.short    { max-width: 55%; }
+.v2-skeleton-tree-row        { height: 18px; }
+.v2-skeleton-tree-row.indent { margin-left: 16px; max-width: 70%; }
+.v2-skeleton-line        { height: 14px; }
+.v2-skeleton-line.short  { max-width: 45%; }
+
+/* Skeleton containers are hidden by default; revealed only while the
+   active channel is loading. */
+.v2-chat-skeleton,
+.v2-console-skeleton,
+.v2-files-tree-skeleton,
+.v2-files-viewer-skeleton { display: none; }
+
+.v2-app[data-channel-phase="loading"] .v2-chat-skeleton,
+.v2-app[data-channel-phase="loading"] .v2-console-skeleton,
+.v2-app[data-channel-phase="loading"] .v2-files-tree-skeleton,
+.v2-app[data-channel-phase="loading"] .v2-files-viewer-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Suppress empty-state placeholders while loading — otherwise they
+   render "No messages yet" while history is still in flight. */
+.v2-app[data-channel-phase="loading"] .v2-chat-empty,
+.v2-app[data-channel-phase="loading"] .v2-console-empty,
+.v2-app[data-channel-phase="loading"] .v2-files-empty { display: none; }
+
+/* While loading, real content is hidden so the skeleton doesn't stack
+   on top of an in-flight render. */
+.v2-app[data-channel-phase="loading"] .v2-chat-messages,
+.v2-app[data-channel-phase="loading"] .v2-console-list,
+.v2-app[data-channel-phase="loading"] .v2-files-tree-body,
+.v2-app[data-channel-phase="loading"] .v2-files-viewer-body { display: none; }

@@ -1,34 +1,41 @@
-:root{
-  --rail-bg:#18181b;
-  --bg:#fafafa;
-  --surface:rgba(255,255,255,0.7);
-  --surface-solid:#fff;
-  --surface-hover:rgba(255,255,255,0.85);
-  --text:#18181b;
-  --text-muted:#71717a;
-  --border:rgba(0,0,0,0.08);
-  --border-strong:rgba(0,0,0,0.12);
-  --accent:#6366f1;
-  --accent-light:rgba(99,102,241,0.08);
-  --accent-lighter:rgba(99,102,241,0.04);
-  --green:#047857;
-  --green-light:rgba(5,150,105,0.12);
-  --amber:#b45309;
-  --amber-light:rgba(217,119,6,0.12);
-  --red:#dc2626;
-  --red-light:rgba(220,38,38,0.08);
-  --console-bg:#27272a;
-  --console-text:#a1a1aa;
-  --console-surface:rgba(255,255,255,0.06);
-  --font:'Inter',system-ui,sans-serif;
-  --mono:'JetBrains Mono',monospace;
+:root {
+  --bg: #0b0d10;
+  --bg-elev: #14181d;
+  --bg-elev-2: #1a1f26;
+  --bg-hover: #1f252d;
+  --bg-active: #223048;
 
-  --console-h:200px;
-  --radius:10px;
-  --radius-sm:6px;
-  --radius-xs:4px;
-  --shadow-sm:0 1px 3px rgba(0,0,0,0.04);
-  --shadow-md:0 4px 12px rgba(0,0,0,0.06);
-  --shadow-lg:0 8px 24px rgba(0,0,0,0.08);
-  --blur:blur(12px);
+  --fg: #e6eaf0;
+  --fg-muted: #8a94a3;
+  --fg-dim: #59636f;
+
+  --accent: #6fa3ff;
+  --accent-soft: rgba(111, 163, 255, 0.15);
+  --unread: #6fa3ff;
+  --interaction: #ffb347;
+
+  --border: #20262e;
+  --border-soft: rgba(255, 255, 255, 0.05);
+
+  --radius: 8px;
+  --radius-sm: 5px;
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --sidebar-width: 260px;
+  --rail-height: 36px;
+  --rail-open-height: 200px;
+  --top-bar-height: 40px;
+  --tab-bar-height: 38px;
+
+  --msg-user-bg: rgba(111, 163, 255, 0.08);
+  --msg-agent-bg: transparent;
+  /* Activity tag palette — terminal/ANSI-inspired. Tags render as
+     outline boxes (transparent bg, 1px border, text matches border). */
+  --tool-read: #22d3ee;       /* cyan   — inspection */
+  --tool-edit: #eab308;       /* yellow — modify */
+  --tool-write: #22c55e;      /* green  — create */
+  --tool-bash: #f43f5e;       /* rose   — execute */
+  --tool-reasoning: #a855f7;  /* purple — think */
 }

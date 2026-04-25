@@ -1,42 +1,38 @@
-import { state } from '../state.js';
+// Single-active-dropdown manager. Future device menu / account menu hang
+// off [data-dropdown-trigger] / [data-dropdown-id]. For Wave 3 this just
+// installs the close-on-outside-click and tracks open state in uiStore.
 
-export function closeAllDropdowns() {
-  document.querySelectorAll('.top-dropdown-menu.open').forEach(m => m.classList.remove('open'));
-  document.querySelectorAll('.top-dropdown-trigger.open').forEach(t => t.classList.remove('open'));
-  state._openDropdown = null;
-}
+import { uiStore } from '../domain/ui-store.js';
 
-export function positionDropdownMenu(trigger, menu) {
-  const tr = trigger.getBoundingClientRect();
-  menu.style.top = (tr.bottom + 4) + 'px';
-  menu.style.left = tr.left + 'px';
-  requestAnimationFrame(() => {
-    const mr = menu.getBoundingClientRect();
-    if (mr.right > window.innerWidth - 8) {
-      menu.style.left = Math.max(8, window.innerWidth - mr.width - 8) + 'px';
+export class DropdownView {
+  constructor() {
+    this._onDocClick = this._onDocClick.bind(this);
+    this._bound = false;
+  }
+
+  activate() {
+    if (this._bound) return;
+    this._bound = true;
+    document.addEventListener('click', this._onDocClick);
+  }
+
+  deactivate() {
+    if (!this._bound) return;
+    this._bound = false;
+    document.removeEventListener('click', this._onDocClick);
+  }
+
+  _onDocClick(e) {
+    const trigger = e.target.closest('[data-dropdown-trigger]');
+    if (trigger) {
+      const id = trigger.getAttribute('data-dropdown-trigger');
+      const current = uiStore.getOpenDropdown();
+      uiStore.setOpenDropdown(current === id ? null : id);
+      return;
     }
-  });
-}
-
-export function toggleDropdown(dropdownId) {
-  const trigger = document.getElementById(dropdownId + '-trigger');
-  const menu = document.getElementById(dropdownId + '-menu');
-  if (!trigger || !menu) return;
-  const isOpen = menu.classList.contains('open');
-  closeAllDropdowns();
-  if (!isOpen) {
-    trigger.classList.add('open');
-    menu.classList.add('open');
-    positionDropdownMenu(trigger, menu);
-    state._openDropdown = dropdownId;
+    // Click outside any dropdown element closes it.
+    if (uiStore.getOpenDropdown() && !e.target.closest('[data-dropdown]')) {
+      uiStore.setOpenDropdown(null);
+    }
   }
 }
-
-// Close dropdowns on any click outside
-document.addEventListener('click', (e) => {
-  if (!state._openDropdown) return;
-  const dropdown = document.getElementById(state._openDropdown);
-  if (dropdown && !dropdown.contains(e.target)) {
-    closeAllDropdowns();
-  }
-}, true);

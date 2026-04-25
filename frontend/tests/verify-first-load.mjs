@@ -18,12 +18,12 @@ await Promise.all([
 ]);
 
 // Find the channel id first (by visiting v2 once).
-await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 const chId = await page.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
 
 // Now fresh-load directly to that channel's hash.
-await page.goto(`${BASE}/dashboard-v2/#files/${chId}`, { waitUntil: 'domcontentloaded' });
+await page.goto(`${BASE}/dashboard/#files/${chId}`, { waitUntil: 'domcontentloaded' });
 
 // Poll for messages to appear, up to 10s.
 let messagesCount = 0, treeCount = 0;

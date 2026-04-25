@@ -1,133 +1,84 @@
-import { state, CONSOLE_RECENT_COUNT } from '../state.js';
-import { fmtRelativeAgo, fmtClock24 } from '../util/time.js';
-import { toggleChatOverlay } from '../chat/overlay.js';
+// Bottom rail. Terminal + Chat toggles; rail state is driven by uiStore.
+// See planning/dashboard/06-shell.md.
 
-const consoleBtm = document.getElementById('console-bottom');
-const consoleToggle = document.getElementById('console-toggle');
-const consoleExpand = document.getElementById('console-expand');
+import { uiStore } from '../domain/ui-store.js';
+import { unreadStore } from '../domain/unread-store.js';
 
-export function setConsoleState(next) {
-  state.consoleState = next;
-  const isCollapsed = next === 'collapsed';
-  consoleBtm.classList.toggle('collapsed', isCollapsed);
-  consoleBtm.classList.toggle('rail-only', isCollapsed);
-  consoleBtm.classList.toggle('expanded', next === 'expanded');
-  const term = document.querySelector('[data-console-panel="terminal"]');
-  if (term) term.classList.toggle('hidden', isCollapsed);
-  updateConsoleButtons();
-  updateRailButtonStates();
-}
-
-export function updateConsoleButtons() {
-  const s = state.consoleState;
-  const expandSvg = '<path d="M4 10L10 4M10 4H5M10 4v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
-  const restoreSvg = '<path d="M10 4L4 10M4 10h5M4 10V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
-  if (s === 'collapsed') {
-    consoleExpand.classList.add('hidden');
-    consoleToggle.classList.add('hidden');
-  } else if (s === 'open') {
-    consoleExpand.classList.remove('hidden');
-    consoleToggle.classList.remove('hidden');
-    consoleExpand.title = 'Expand terminal';
-    consoleExpand.querySelector('svg').innerHTML = expandSvg;
-    consoleExpand.onclick = () => setConsoleState('expanded');
-    consoleToggle.title = 'Close terminal';
-    consoleToggle.querySelector('svg').style.transform = '';
-    consoleToggle.onclick = () => setConsoleState('collapsed');
-  } else {
-    consoleExpand.classList.remove('hidden');
-    consoleToggle.classList.remove('hidden');
-    consoleExpand.title = 'Restore terminal';
-    consoleExpand.querySelector('svg').innerHTML = restoreSvg;
-    consoleExpand.onclick = () => setConsoleState('open');
-    consoleToggle.title = 'Close terminal';
-    consoleToggle.querySelector('svg').style.transform = '';
-    consoleToggle.onclick = () => setConsoleState('collapsed');
+export class RailView {
+  constructor() {
+    this.root = null;
+    this.unsubs = [];
   }
-}
 
-export function updateRailButtonStates() {
-  const tBtn = document.getElementById('console-terminal-toggle');
-  if (tBtn) tBtn.classList.toggle('active', state.consoleState !== 'collapsed');
-  const cBtn = document.getElementById('console-chat-toggle');
-  const overlay = document.getElementById('chat-overlay');
-  if (cBtn && overlay) cBtn.classList.toggle('active', overlay.classList.contains('open'));
-}
+  activate() {
+    this.root = document.getElementById('v2-rail-controls');
+    if (!this.root) return;
+    this._updateActiveStates();
+    this._updateActiveUnread();
+    this._applyRailState();
 
-export function updateChatRailUnreadBadge() {
-  const badge = document.getElementById('chat-rail-badge');
-  if (!badge) return;
-  let total = 0;
-  if (typeof state.unreadCounts !== 'undefined') {
-    for (const [chId, uc] of state.unreadCounts) {
-      if (chId === state.chatCurrentChannel) continue;
-      total += (uc && uc.messages) || 0;
+    this.unsubs.push(uiStore.subscribe(e => {
+      if (e.kind === 'rail' || e.kind === 'rail_panel') this._applyRailState();
+      if (e.kind === 'overlay') this._updateActiveStates();
+      // Switching channels changes which unread count the rail shows.
+      if (e.kind === 'active_channel') this._updateActiveUnread();
+    }));
+    this.unsubs.push(unreadStore.subscribe(() => this._updateActiveUnread()));
+
+    this.root.addEventListener('click', this._onClick);
+  }
+
+  deactivate() {
+    this.unsubs.forEach(fn => fn());
+    this.unsubs = [];
+    if (this.root) this.root.removeEventListener('click', this._onClick);
+    this.root = null;
+  }
+
+  _applyRailState() {
+    const s = uiStore.getRailState();
+    const p = uiStore.getRailPanel();
+    document.querySelector('.v2-app')?.setAttribute('data-rail', s);
+    // Toggle active class on terminal button when its panel is showing.
+    const tBtn = document.getElementById('v2-rail-terminal-toggle');
+    if (tBtn) tBtn.classList.toggle('active', p === 'terminal');
+    this._updateActiveStates();
+  }
+
+  _updateActiveStates() {
+    const overlay = uiStore.getOverlay();
+    const cBtn = document.getElementById('v2-rail-chat-toggle');
+    if (cBtn) cBtn.classList.toggle('active', overlay.open);
+  }
+
+  _updateActiveUnread() {
+    // The rail chat icon shows a badge only for the CURRENT channel —
+    // other channels are surfaced via the Attention section in the
+    // sidebar instead, so the rail stays quiet until there's something
+    // to do right here.
+    const el = document.getElementById('v2-rail-unread');
+    if (!el) return;
+    const channelId = uiStore.getActiveChannel();
+    const slot = channelId ? unreadStore.get(channelId) : null;
+    const count = slot?.count || 0;
+    if (count > 0) {
+      el.hidden = false;
+      el.textContent = String(count);
+      el.classList.toggle('has-interaction', !!slot?.hasInteraction);
+    } else {
+      el.hidden = true;
     }
   }
-  if (total > 0) {
-    badge.textContent = total > 99 ? '99+' : String(total);
-    badge.hidden = false;
-  } else {
-    badge.textContent = '';
-    badge.hidden = true;
-  }
+
+  _onClick = (e) => {
+    const termBtn = e.target.closest('[data-rail-panel]');
+    if (termBtn) {
+      const panel = termBtn.getAttribute('data-rail-panel');
+      uiStore.setRailPanel(uiStore.getRailPanel() === panel ? null : panel);
+      return;
+    }
+    if (e.target.closest('#v2-rail-chat-toggle')) {
+      uiStore.toggleOverlay();
+    }
+  };
 }
-
-// Console-entry / tree expand toggles — DOM chrome shared with the bottom console.
-export function toggleConsoleEntry(row) {
-  const expandIcon = row.querySelector('.ce-expand');
-  const detail = row.nextElementSibling;
-  if (detail && detail.classList.contains('ce-detail')) {
-    if (expandIcon) expandIcon.classList.toggle('open');
-    detail.classList.toggle('open');
-  }
-}
-
-export function toggleTree(el) {
-  const children = el.nextElementSibling;
-  if (children && children.classList.contains('tree-children')) {
-    children.classList.toggle('collapsed');
-    const arrow = el.querySelector('.tree-arrow');
-    if (arrow) arrow.classList.toggle('open');
-  }
-}
-
-// ===== Activity timestamps =====
-// Last 30 entries show "Ns/Nm/Nh/Nd ago"; older entries show 24h "HH:MM".
-export function renderConsoleTimes() {
-  const body = document.querySelector('[data-console-panel="activity"]');
-  if (!body) return;
-  const entries = body.querySelectorAll('.console-entry');
-  const total = entries.length;
-  const recentFloor = Math.max(0, total - CONSOLE_RECENT_COUNT);
-  const now = Date.now();
-  entries.forEach((entry, idx) => {
-    const el = entry.querySelector('.ce-time');
-    if (!el) return;
-    const ts = parseInt(el.dataset.ts || '0', 10);
-    if (!ts) return;
-    const when = new Date(ts);
-    el.title = when.toLocaleString();
-    el.textContent = idx >= recentFloor ? fmtRelativeAgo(now - ts) : fmtClock24(when);
-  });
-}
-
-// Initial paint + interval tick
-updateConsoleButtons();
-updateRailButtonStates();
-setInterval(renderConsoleTimes, 1000);
-
-// Rail button wiring.
-document.getElementById('console-terminal-toggle')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (state.consoleState === 'collapsed') {
-    setConsoleState('open');
-    document.getElementById('terminal-input')?.focus();
-  } else {
-    setConsoleState('collapsed');
-  }
-});
-document.getElementById('console-chat-toggle')?.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleChatOverlay();
-});

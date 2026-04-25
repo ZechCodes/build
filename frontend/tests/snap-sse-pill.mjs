@@ -13,7 +13,7 @@ await Promise.all([
   p.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
   p.click('button[type="submit"]'),
 ]);
-await p.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+await p.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
 await p.waitForSelector('.sk-status-indicator', { timeout: 8000 });
 
 await p.evaluate(() => {

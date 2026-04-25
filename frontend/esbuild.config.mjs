@@ -15,8 +15,6 @@ const opts = {
   entryPoints: [
     { out: 'js/dashboard', in: path.resolve(__dirname, 'src/dashboard/main.js') },
     { out: 'css/dashboard', in: path.resolve(__dirname, 'src/dashboard/styles/index.css') },
-    { out: 'js/dashboard-v2', in: path.resolve(__dirname, 'src/dashboard-v2/main.js') },
-    { out: 'css/dashboard-v2', in: path.resolve(__dirname, 'src/dashboard-v2/styles/index.css') },
   ],
   bundle: true,
   format: 'iife',

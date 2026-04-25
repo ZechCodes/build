@@ -41,7 +41,7 @@ try {
     page.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
     page.click('button[type="submit"]'),
   ]);
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.v2-app', { timeout: 8000 });
   // Seed a synthetic channel into the stores so this test runs
   // deterministically regardless of whether the device currently

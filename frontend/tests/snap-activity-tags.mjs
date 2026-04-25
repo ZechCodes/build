@@ -13,7 +13,7 @@ await Promise.all([
   p.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(()=>null),
   p.click('button[type="submit"]'),
 ]);
-await p.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+await p.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
 await p.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 const chId = await p.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id'));
 await p.click(`.v2-channel-sidebar-item[data-channel-id="${chId}"]`);

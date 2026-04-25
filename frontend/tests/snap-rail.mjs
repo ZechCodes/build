@@ -19,7 +19,7 @@ async function snap({ width, height, isMobile, label }) {
     p.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
     p.click('button[type="submit"]'),
   ]);
-  await p.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await p.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await p.waitForSelector('.v2-channel-sidebar-item', { timeout: 8000 });
 
   if (isMobile) {

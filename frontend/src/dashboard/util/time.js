@@ -34,3 +34,24 @@ export function fmtRelativeAgo(ageMs) {
 export function fmtClock24(date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
+
+/**
+ * Activity-entry label format: no "ago" suffix.
+ *   < 5s    → "now"
+ *   < 60s   → "Ns"
+ *   < 60m   → "Nm"
+ *   >= 1h   → wall-clock hh:mm
+ */
+export function relativeOrClock(isoOrTs) {
+  if (!isoOrTs) return '';
+  const ts = typeof isoOrTs === 'number'
+    ? (isoOrTs < 1e12 ? isoOrTs * 1000 : isoOrTs)
+    : Date.parse(isoOrTs);
+  if (!ts || Number.isNaN(ts)) return '';
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 5) return 'now';
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return fmtClock24(new Date(ts));
+}

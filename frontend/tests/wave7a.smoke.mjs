@@ -30,7 +30,7 @@ try {
     page.click('button[type="submit"]'),
   ]);
 
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
 
   // Layout slots

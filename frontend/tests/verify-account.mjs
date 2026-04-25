@@ -48,7 +48,7 @@ try {
     page.click('button[type="submit"]'),
   ]);
 
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#v2-account-slot .v2-account', { timeout: 8000 });
   // Let the mount-time _checkThemeVersion seed localStorage.
   await page.waitForTimeout(300);

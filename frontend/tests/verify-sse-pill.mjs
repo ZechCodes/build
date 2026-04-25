@@ -25,7 +25,7 @@ try {
     page.waitForURL(u => !u.pathname.startsWith('/auth/'), { timeout: 10000 }).catch(() => null),
     page.click('button[type="submit"]'),
   ]);
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.sk-status-indicator', { timeout: 8000 });
 
   // Simulate the "disconnected" state so the indicator becomes visible.

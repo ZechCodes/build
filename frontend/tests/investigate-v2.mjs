@@ -1,4 +1,4 @@
-// Ad-hoc investigation: open /dashboard-v2/ as dev@local, capture what's
+// Ad-hoc investigation: open /dashboard/ as dev@local, capture what's
 // actually happening — console errors, stores, DOM, network.
 
 import { chromium } from 'playwright';
@@ -36,7 +36,7 @@ try {
   console.log('After login URL:', page.url());
 
   // Navigate to v2
-  await page.goto(`${BASE}/dashboard-v2/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/dashboard/`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(4000);   // give E2EE time
   console.log('v2 URL:', page.url());
 

@@ -248,6 +248,25 @@ async def _event_consumer_loop() -> None:
                     await _redis.xack(DEVICE_EVENTS_STREAM, WEB_CONSUMER_GROUP, msg_id)
         except asyncio.CancelledError:
             raise
+        except aioredis.ResponseError as e:
+            # Same self-heal as the relay's command consumer — the
+            # stream/group can disappear (FLUSHDB, XGROUP DESTROY) and
+            # init_relay only runs at startup, so without this we'd
+            # tight-loop on NOGROUP and never deliver another envelope.
+            if "NOGROUP" in str(e):
+                logger.warning("Consumer group missing, recreating: %s", e)
+                try:
+                    await _redis.xgroup_create(
+                        DEVICE_EVENTS_STREAM, WEB_CONSUMER_GROUP,
+                        id="$", mkstream=True,
+                    )
+                except aioredis.ResponseError as create_err:
+                    if "BUSYGROUP" not in str(create_err):
+                        logger.exception("Failed to recreate consumer group")
+                        await asyncio.sleep(2)
+                continue
+            logger.exception("Relay event consumer error, retrying in 2s")
+            await asyncio.sleep(2)
         except Exception:
             logger.exception("Relay event consumer error, retrying in 2s")
             await asyncio.sleep(2)

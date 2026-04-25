@@ -47,7 +47,8 @@ export class SidebarSectionsView {
     // path bar (content view) and the tree-tabs header (tree view),
     // so the user can reach it in either mobile panel state.
     if (e.target.closest('#v2-path-bar-menu')
-        || e.target.closest('#v2-tree-tabs-menu')) {
+        || e.target.closest('#v2-tree-tabs-menu')
+        || e.target.closest('#v2-co-menu')) {
       setDrawerOpen(true);
       return;
     }

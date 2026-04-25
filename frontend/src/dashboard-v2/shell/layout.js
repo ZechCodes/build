@@ -83,6 +83,9 @@ export function buildLayout(root) {
       <!-- ===== FLOATING CHAT OVERLAY ===== -->
       <div class="v2-chat-overlay" id="v2-chat-overlay" aria-hidden="true">
         <header class="v2-co-header" id="v2-co-header">
+          <button class="v2-co-btn v2-co-menu" id="v2-co-menu" type="button" title="Open menu" aria-label="Open menu">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
           <span class="v2-co-title">
             <span class="v2-co-hash">#</span>
             <span class="v2-co-channel-name" id="v2-co-channel-name">Select a channel</span>

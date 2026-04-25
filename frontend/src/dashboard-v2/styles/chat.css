@@ -87,6 +87,7 @@
 .v2-co-btn svg { width: 14px; height: 14px; }
 .v2-co-btn:hover { color: var(--fg); background: var(--bg-hover); }
 .v2-co-btn.active { color: var(--accent); }
+.v2-co-menu { display: none; }
 
 .v2-co-body {
   flex: 1;
@@ -1014,6 +1015,7 @@
     transform: translateY(24px);
   }
   .v2-chat-overlay.open { transform: none; }
+  .v2-co-menu { display: inline-flex; }
   .v2-chat-overlay[data-mode="expanded"] {
     width: 100vw;
     right: 0;

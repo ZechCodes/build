@@ -7,6 +7,7 @@
 //   6. Tap path-bar chevron → file tree drawer slides in.
 //   7. Tap a file in the tree → tree drawer auto-closes.
 //   8. Tap Chat rail toggle → overlay becomes fullscreen (width ≈ viewport).
+//   9. Tap chat-header hamburger → sidebar opens above chat.
 import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8100';
@@ -173,6 +174,28 @@ try {
   check('chat overlay is full viewport width',
     overlayInfo.width === 375 && overlayInfo.left === 0,
     JSON.stringify(overlayInfo));
+
+  // 9. Chat header hamburger remains reachable while the mobile chat
+  //    overlay is full-screen, and the drawer stacks above it.
+  await page.tap('#v2-co-menu');
+  await page.waitForTimeout(250);
+  const chatMenuOpen = await page.evaluate(() => {
+    const app = document.querySelector('.v2-app');
+    const sb = document.querySelector('.v2-sidebar');
+    const chat = document.getElementById('v2-chat-overlay');
+    const sbRect = sb?.getBoundingClientRect();
+    const sbZ = Number.parseInt(getComputedStyle(sb).zIndex || '0', 10);
+    const chatZ = Number.parseInt(getComputedStyle(chat).zIndex || '0', 10);
+    return {
+      appOpen: app?.classList.contains('sidebar-open'),
+      sidebarLeft: Math.round(sbRect?.left ?? -1),
+      sidebarAboveChat: sbZ > chatZ,
+    };
+  });
+  check('chat header hamburger opens the channel drawer', chatMenuOpen.appOpen === true,
+    JSON.stringify(chatMenuOpen));
+  check('channel drawer stacks above chat overlay', chatMenuOpen.sidebarAboveChat === true,
+    JSON.stringify(chatMenuOpen));
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;

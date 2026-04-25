@@ -82,7 +82,8 @@ export class OverlayView {
     // menu) must NOT close.
     if (e.target.closest(
       '#v2-chat-overlay, #v2-rail-chat-toggle, .v2-model-picker, ' +
-      '.v2-comp-menu, .v2-lightbox, .v2-channel-menu'
+      '.v2-comp-menu, .v2-lightbox, .v2-channel-menu, ' +
+      '#v2-sidebar, #v2-sidebar-backdrop'
     )) return;
     uiStore.setOverlayOpen(false);
     // Any residual channel menu goes with it.

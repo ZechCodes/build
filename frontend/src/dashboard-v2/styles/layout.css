@@ -290,11 +290,15 @@
     transition: transform 160ms ease;
     z-index: 20;
   }
-  .v2-app.sidebar-open .v2-sidebar { transform: translateX(0); }
+  .v2-app.sidebar-open .v2-sidebar {
+    transform: translateX(0);
+    z-index: 55;
+  }
   .v2-app.sidebar-open .v2-sidebar-backdrop {
     display: block;
     opacity: 1;
     pointer-events: auto;
+    z-index: 45;
   }
 
   .v2-sidebar-close { display: flex; align-items: center; justify-content: center; }

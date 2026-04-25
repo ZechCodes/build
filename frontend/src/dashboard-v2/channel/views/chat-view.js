@@ -82,6 +82,36 @@ export class ChatView {
       const bar = chip.querySelector('.v2-staging-bar-fill');
       if (bar) bar.style.width = `${Math.round((p.progress || 0) * 100)}%`;
     }));
+
+    // Surface fatal agent errors as a sticky banner above the composer
+    // so we don't have a silently-dead agent (the Codex auth-expired
+    // case is the canonical example: messages deliver, agent never
+    // responds, no other UI signal). Cleared when the agent makes
+    // progress again.
+    this._chatError = null;  // { code, message } | null
+    this.unsubs.push(bus.on('agent.error', (e) => {
+      if (e?.channelId !== this.channel.id) return;
+      this._chatError = { code: e.code || '', message: e.message || '' };
+      this._renderChatError();
+    }));
+    this.unsubs.push(presenceStore.subscribe(e => {
+      if (e.channelId !== this.channel.id) return;
+      // Agent is making progress again — clear the error banner.
+      if (e.kind === 'agent_active' && presenceStore.get(this.channel.id).agentActive) {
+        if (this._chatError) {
+          this._chatError = null;
+          this._renderChatError();
+        }
+      }
+    }));
+    this.unsubs.push(bus.on('agent.started', (e) => {
+      if (e?.channelId !== this.channel.id) return;
+      if (this._chatError) {
+        this._chatError = null;
+        this._renderChatError();
+      }
+    }));
+    this._renderChatError();
   }
 
   deactivate() {
@@ -124,6 +154,8 @@ export class ChatView {
     this.overlayEl = null;
     this.toolStripEl = null;
     this.toolTimerEl = null;
+    this.errorEl = null;
+    this.errorBodyEl = null;
   }
 
   _buildShell() {
@@ -141,6 +173,10 @@ export class ChatView {
           <button class="v2-chat-new-bubble" type="button" hidden>↓ New messages</button>
         </div>
         <div class="v2-chat-staging" data-slot="staging"></div>
+        <div class="v2-chat-error" data-slot="error" hidden role="alert">
+          <span class="v2-chat-error-icon" aria-hidden="true">!</span>
+          <span class="v2-chat-error-body" data-slot="error-body"></span>
+        </div>
         <div class="v2-chat-tool" data-slot="tool" hidden>
           <span class="v2-chat-tool-spinner" aria-hidden="true"></span><span class="v2-chat-tool-timer" data-slot="tool-timer" hidden></span><span class="v2-chat-tool-text"></span>
         </div>
@@ -151,6 +187,8 @@ export class ChatView {
       </div>
     `;
     this.messagesEl = this.root.querySelector('[data-slot="messages"]');
+    this.errorEl = this.root.querySelector('[data-slot="error"]');
+    this.errorBodyEl = this.root.querySelector('[data-slot="error-body"]');
     this.composerInput = this.root.querySelector('.v2-chat-input');
     this.stagingEl = this.root.querySelector('[data-slot="staging"]');
     this.toolStripEl = this.root.querySelector('[data-slot="tool"]');
@@ -364,6 +402,40 @@ export class ChatView {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     el.textContent = m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+    el.hidden = false;
+  }
+
+  // Render the sticky-error banner above the composer. Specialises the
+  // copy for the codex `auth_expired` case (most common, recognisable
+  // command); falls back to the bridge-supplied message otherwise.
+  _renderChatError() {
+    const el = this.errorEl;
+    const body = this.errorBodyEl;
+    if (!el || !body) return;
+    if (!this._chatError) {
+      el.hidden = true;
+      body.innerHTML = '';
+      return;
+    }
+    const { code, message } = this._chatError;
+    if (code === 'auth_expired') {
+      const harness = channelsStore.get(this.channel.id)?.harness || '';
+      const cmd = harness === 'codex'
+        ? 'codex logout && codex login'
+        : harness === 'claude-code'
+          ? 'claude /login'
+          : 'log in to your agent CLI';
+      body.innerHTML = `
+        <strong class="v2-chat-error-title">Agent needs to sign in.</strong>
+        <span class="v2-chat-error-text">${escapeHtml(message)}</span>
+        <code class="v2-chat-error-cmd">${escapeHtml(cmd)}</code>
+      `;
+    } else {
+      body.innerHTML = `
+        <strong class="v2-chat-error-title">Agent error</strong>
+        <span class="v2-chat-error-text">${escapeHtml(message)}</span>
+      `;
+    }
     el.hidden = false;
   }
 

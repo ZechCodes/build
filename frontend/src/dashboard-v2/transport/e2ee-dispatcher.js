@@ -205,6 +205,7 @@ export function bindE2EEDispatcher(instance, deviceId) {
       case 'agent.error':
         bus.emit('agent.error', {
           channelId: channel_id,
+          code: event.code || '',
           message: event.message || '',
           fatal: !!event.fatal,
         });

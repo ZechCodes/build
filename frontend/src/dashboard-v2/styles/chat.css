@@ -884,6 +884,53 @@
   90%  { content: '⠏'; }
 }
 
+/* Inline error banner — shown above the composer when a fatal
+   agent.error event arrives (e.g. codex auth_expired). Cleared when
+   the agent makes progress again or restarts. */
+.v2-chat-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 8px 12px 4px;
+  background: rgba(208, 98, 98, 0.10);
+  border: 1px solid rgba(208, 98, 98, 0.35);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: 13px;
+}
+.v2-chat-error[hidden] { display: none; }
+.v2-chat-error-icon {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: #d06262;
+  color: #0b0d10;
+  font-weight: 700;
+  font-size: 12px;
+  font-family: var(--font);
+}
+.v2-chat-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.v2-chat-error-title { font-weight: 600; }
+.v2-chat-error-text { color: var(--fg-muted); }
+.v2-chat-error-cmd {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  align-self: flex-start;
+  user-select: all;
+}
+
 /* Staging chips */
 
 .v2-chat-staging {

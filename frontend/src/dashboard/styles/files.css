@@ -348,6 +348,7 @@
 }
 .v2-src-text {
   flex: 1;
+  min-width: 0;
   white-space: pre;
   color: var(--fg);
 }
@@ -378,6 +379,7 @@
 .v2-diff-line.context { color: var(--fg); }
 .v2-diff-line.added   { background: rgba(78, 166, 122, 0.10); }
 .v2-diff-line.removed { background: rgba(208, 98, 98, 0.12); }
+.v2-diff.wrap .v2-diff-line { white-space: normal; }
 
 .v2-dl-num {
   flex: 0 0 auto;
@@ -386,7 +388,8 @@
   color: var(--fg-dim);
   user-select: none;
 }
-.v2-dl-content { flex: 1; white-space: pre; }
+.v2-dl-content { flex: 1; min-width: 0; white-space: pre; }
+.v2-diff.wrap .v2-dl-content { white-space: pre-wrap; word-break: break-word; }
 
 .diff-word-del { background: rgba(208, 98, 98, 0.30); border-radius: 2px; }
 .diff-word-add { background: rgba(78, 166, 122, 0.30); border-radius: 2px; }
@@ -615,4 +618,3 @@
   max-width: 100%;
   max-height: 70vh;
 }
-

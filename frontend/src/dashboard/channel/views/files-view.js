@@ -538,8 +538,11 @@ export class FilesView {
       return;
     }
     const ext = extOf(d.path || '');
+    const wrap = this.channel.viewState.filesLineWrap;
+    const diffEl = renderDiff(d.diff, ext);
+    diffEl.classList.toggle('wrap', !!wrap);
     this.viewerEl.innerHTML = '';
-    this.viewerEl.appendChild(renderDiff(d.diff, ext));
+    this.viewerEl.appendChild(diffEl);
     if (d.truncated) {
       const note = document.createElement('div');
       note.className = 'v2-files-trunc-note';

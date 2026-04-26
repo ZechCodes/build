@@ -541,6 +541,37 @@
 .v2-msg-text h1, .v2-msg-text h2, .v2-msg-text h3 { margin: 10px 0 6px; font-weight: 600; }
 .v2-msg-text blockquote { border-left: 3px solid var(--border); padding-left: 8px; color: var(--fg-muted); margin: 6px 0; }
 .v2-msg-text a { color: var(--accent); }
+.v2-msg-text .md-table-wrap {
+  max-width: 100%;
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.v2-msg-text .md-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 12.5px;
+}
+.v2-msg-text .md-table th,
+.v2-msg-text .md-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: top;
+}
+.v2-msg-text .md-table th {
+  background: var(--bg-elev-2);
+  font-weight: 600;
+}
+.v2-msg-text .md-table td { background: var(--bg-elev-1); }
+.v2-msg-text .md-align-left { text-align: left; }
+.v2-msg-text .md-align-center { text-align: center; }
+.v2-msg-text .md-align-right { text-align: right; }
 
 .v2-msg-status {
   margin-top: 4px;

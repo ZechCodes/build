@@ -318,6 +318,8 @@ export class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('files_list_result', { detail: payload }));
     } else if (action === 'files_changes_result') {
       this.dispatchEvent(new CustomEvent('files_changes_result', { detail: payload }));
+    } else if (action === 'files_commits_result') {
+      this.dispatchEvent(new CustomEvent('files_commits_result', { detail: payload }));
     } else if (action === 'file_read_result') {
       this.dispatchEvent(new CustomEvent('file_read_result', { detail: payload }));
     } else if (action === 'file_diff_result') {
@@ -665,6 +667,25 @@ export class BuildE2EE extends EventTarget {
     return this.send({ action: 'files_changes', channel_id: channelId });
   }
 
+  async filesChangesForRevision(channelId, repoPath, newerRef, olderRef) {
+    return this.send({
+      action: 'files_changes',
+      channel_id: channelId,
+      repo_path: repoPath || '.',
+      newer_ref: newerRef || 'worktree',
+      older_ref: olderRef || 'HEAD',
+    });
+  }
+
+  async filesCommits(channelId, repoPath, limit = 25) {
+    return this.send({
+      action: 'files_commits',
+      channel_id: channelId,
+      repo_path: repoPath || '.',
+      limit,
+    });
+  }
+
   async fileRead(channelId, path, offset, limit) {
     const payload = { action: 'file_read', channel_id: channelId, path };
     if (offset !== undefined) payload.offset = offset;
@@ -672,8 +693,12 @@ export class BuildE2EE extends EventTarget {
     return this.send(payload);
   }
 
-  async fileDiff(channelId, path, staged) {
-    return this.send({ action: 'file_diff', channel_id: channelId, path, staged: !!staged });
+  async fileDiff(channelId, path, staged, opts = {}) {
+    const payload = { action: 'file_diff', channel_id: channelId, path, staged: !!staged };
+    if (opts.repoPath !== undefined) payload.repo_path = opts.repoPath || '.';
+    if (opts.newerRef !== undefined) payload.newer_ref = opts.newerRef || 'worktree';
+    if (opts.olderRef !== undefined) payload.older_ref = opts.olderRef || 'HEAD';
+    return this.send(payload);
   }
 
   async urlFetch(url, requestId, tabId, method, body, contentType) {

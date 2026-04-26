@@ -21,6 +21,7 @@ export class FilesView {
     this.viewerEl = null;
     this.modeBarEl = null;
     this.unsubs = [];
+    this._requestedCommitRepos = new Set();
   }
 
   activate() {
@@ -33,7 +34,7 @@ export class FilesView {
     // filesStore.
     this.unsubs.push(filesStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
-      if (e.kind === 'tree' || e.kind === 'changes') this._renderTree();
+      if (e.kind === 'tree' || e.kind === 'changes' || e.kind === 'commits') this._renderTree();
       if (e.kind === 'read_result' || e.kind === 'read_result_progress') this._renderReadResult();
       if (e.kind === 'diff_result') this._renderDiffResult();
     }));
@@ -76,6 +77,7 @@ export class FilesView {
     if (this.viewerEl) this.channel.viewState.filesViewerScrollTop = this.viewerEl.scrollTop;
     this.treeEl?.removeEventListener('scroll', this._onTreeScroll);
     this.viewerEl?.removeEventListener('scroll', this._onViewerScroll);
+    this.root?.removeEventListener('change', this._onChange);
     if (this.treePanelEl) {
       this.treePanelEl.removeEventListener('dragenter', this._onTreeDragEnter);
       this.treePanelEl.removeEventListener('dragover',  this._onTreeDragOver);
@@ -119,7 +121,7 @@ export class FilesView {
       if (vs.filesView === 'diff') {
         const dr = filesStore.diffResultFor(this.channel.id);
         if (!dr || dr.path !== vs.filesPath) {
-          bus.emit('intent.file_diff', { channelId: this.channel.id, path: vs.filesPath });
+          this._emitFileDiff(vs.filesPath);
         }
       } else {
         const rr = filesStore.readResultFor(this.channel.id);
@@ -178,7 +180,7 @@ export class FilesView {
     });
     if (!touched) return;
     if (this.channel.viewState.filesView === 'diff') {
-      bus.emit('intent.file_diff', { channelId, path: current });
+      this._emitFileDiff(current);
     } else {
       bus.emit('intent.file_read', { channelId, path: current });
     }
@@ -241,6 +243,7 @@ export class FilesView {
     this._activeUploads = new Map();  // fileId → chip element
 
     this.root.addEventListener('click', this._onClick);
+    this.root.addEventListener('change', this._onChange);
     // Hidden <input type="file"> for the per-dir upload button.
     this.fileInputEl.addEventListener('change', this._onFileInputChange);
 
@@ -277,8 +280,8 @@ export class FilesView {
 
     if (tab === 'changes') {
       const repos = filesStore.changesFor(this.channel.id);
-      const nonEmpty = (repos || []).filter(r => (r.entries || []).length);
-      if (!nonEmpty.length) {
+      const visibleRepos = (repos || []).filter(Boolean);
+      if (!visibleRepos.length) {
         this.treeEl.innerHTML = `
           <div class="v2-files-placeholder v2-files-placeholder-compact">
             <svg class="v2-files-placeholder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -291,19 +294,26 @@ export class FilesView {
         `;
         return;
       }
+      for (const repo of visibleRepos) this._ensureRepoCommits(repo.path || '.');
       // Auto-select the first changed file when nothing is selected yet
       // (e.g. the user just landed on a channel and the first change
       // just arrived). Keeps their selection sticky on subsequent
       // tree refreshes.
       if (!this.channel.viewState.filesPath) {
-        const firstEntry = nonEmpty[0].entries.find(Boolean);
+        const firstRepo = visibleRepos.find(r => (r.entries || []).length);
+        const firstEntry = firstRepo?.entries.find(Boolean);
         if (firstEntry?.path) {
           // Defer so the tree finishes rendering before _selectFile's
           // own re-render runs.
-          queueMicrotask(() => this._selectFile(firstEntry.path, true));
+          queueMicrotask(() => this._selectFile(firstEntry.path, true, firstRepo.path || '.'));
         }
       }
-      const repoParts = nonEmpty.map(repo => {
+      const repoParts = visibleRepos.map(repo => {
+        const repoPath = repo.path || '.';
+        const collapsed = this._collapsedReposSet().has(repoPath);
+        const comparison = this._repoComparison(repoPath);
+        const commitsResult = filesStore.commitsFor(this.channel.id, repoPath);
+        const commits = commitsResult?.commits || [];
         const activePath = this.channel.viewState.filesPath;
         // Group entries by parent directory.
         const byDir = new Map();       // dir → entries[]
@@ -325,6 +335,7 @@ export class FilesView {
             return `
               <button class="v2-files-row ${activePath === c.path ? 'active' : ''}"
                       type="button"
+                      data-repo-path="${escapeHtml(repoPath)}"
                       data-file-path="${escapeHtml(c.path)}"
                       data-has-diff="1">
                 <span class="v2-files-status v2-files-status-${escapeHtml(cls)}">${escapeHtml(letter)}</span>
@@ -341,13 +352,24 @@ export class FilesView {
             : '';
           return `<div class="v2-files-dir-group">${dirHeader}${rows}</div>`;
         });
-        const label = repo.branch
-          ? `${escapeHtml(repo.path || '.')} · ${escapeHtml(repo.branch)}`
-          : escapeHtml(repo.path || '.');
+        const meta = [
+          repo.branch ? escapeHtml(repo.branch) : '',
+          repo.remote ? escapeHtml(repo.remote) : '',
+        ].filter(Boolean).join(' · ');
+        const count = repo.entries?.length || 0;
         return `
-          <div class="v2-files-repo">
-            <div class="v2-files-repo-path">${label}</div>
-            ${dirChunks.join('')}
+          <div class="v2-files-repo ${collapsed ? 'collapsed' : ''}" data-repo="${escapeHtml(repoPath)}">
+            <button class="v2-files-repo-header" type="button" data-repo-toggle="${escapeHtml(repoPath)}" aria-expanded="${collapsed ? 'false' : 'true'}">
+              <span class="v2-files-repo-chev ${collapsed ? '' : 'expanded'}" aria-hidden="true">▸</span>
+              <span class="v2-files-repo-title">${escapeHtml(repoPath)}</span>
+              <span class="v2-files-repo-meta">${meta}</span>
+              <span class="v2-files-repo-count">${count}</span>
+            </button>
+            ${collapsed ? '' : `
+              ${this._renderRepoRevisionControls(repoPath, comparison, commits, commitsResult?.error)}
+              ${repo.error ? `<div class="v2-files-repo-error">${escapeHtml(repo.error)}</div>` : ''}
+              ${dirChunks.length ? dirChunks.join('') : '<div class="v2-files-empty">No changes for this comparison.</div>'}
+            `}
           </div>
         `;
       });
@@ -357,6 +379,46 @@ export class FilesView {
 
     // All files → render tree rooted at ''
     this.treeEl.innerHTML = this._renderTreeLevel('', 0);
+  }
+
+  _renderRepoRevisionControls(repoPath, comparison, commits, error) {
+    const newerOptions = [
+      { value: 'worktree', label: 'Unstaged' },
+      { value: 'HEAD', label: 'HEAD' },
+      ...commits.map(c => ({ value: c.sha, label: `${c.short_sha || c.sha.slice(0, 7)} ${c.subject || ''}`.trim() })),
+    ];
+    const olderOptions = this._olderRefOptions(comparison.newerRef, commits);
+    const renderOptions = (options, selected) => options.map(o => `
+      <option value="${escapeHtml(o.value)}" ${o.value === selected ? 'selected' : ''}>${escapeHtml(o.label)}</option>
+    `).join('');
+    return `
+      <div class="v2-files-rev-controls" data-repo-revisions="${escapeHtml(repoPath)}">
+        <label class="v2-files-rev-field">
+          <span>From</span>
+          <select data-rev-menu="newer" data-repo-path="${escapeHtml(repoPath)}">
+            ${renderOptions(newerOptions, comparison.newerRef)}
+          </select>
+        </label>
+        <label class="v2-files-rev-field">
+          <span>To</span>
+          <select data-rev-menu="older" data-repo-path="${escapeHtml(repoPath)}">
+            ${renderOptions(olderOptions, comparison.olderRef)}
+          </select>
+        </label>
+        ${error ? `<div class="v2-files-rev-error">${escapeHtml(error)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  _olderRefOptions(newerRef, commits) {
+    const commitOptions = commits.map(c => ({
+      value: c.sha,
+      label: `${c.short_sha || c.sha.slice(0, 7)} ${c.subject || ''}`.trim(),
+    }));
+    if (newerRef === 'worktree') return [{ value: 'HEAD', label: 'HEAD' }, ...commitOptions];
+    if (newerRef === 'HEAD') return commitOptions.slice(1);
+    const newerIndex = commits.findIndex(c => c.sha === newerRef);
+    return newerIndex >= 0 ? commitOptions.slice(newerIndex + 1) : commitOptions;
   }
 
   _renderTreeLevel(path, depth) {
@@ -533,6 +595,15 @@ export class FilesView {
       this.viewerEl.innerHTML = '<div class="v2-files-empty">Loading diff…</div>';
       return;
     }
+    const repo = this._repoForPath(d.path);
+    if (repo?.path && this.channel.viewState.filesTreeTab === 'changes') {
+      const comparison = this._repoComparison(repo.path);
+      if ((d.newer_ref && d.newer_ref !== comparison.newerRef) ||
+          (d.older_ref && d.older_ref !== comparison.olderRef)) {
+        this.viewerEl.innerHTML = '<div class="v2-files-empty">Loading diff…</div>';
+        return;
+      }
+    }
     if (!d.diff) {
       this.viewerEl.innerHTML = '<div class="v2-files-empty">No changes.</div>';
       return;
@@ -593,14 +664,24 @@ export class FilesView {
     const fileBtn = e.target.closest('[data-file-path]');
     if (fileBtn) {
       const path = fileBtn.getAttribute('data-file-path');
-      this._selectFile(path, fileBtn.getAttribute('data-has-diff') === '1');
+      this._selectFile(path, fileBtn.getAttribute('data-has-diff') === '1', fileBtn.getAttribute('data-repo-path'));
+      return;
+    }
+    const repoToggle = e.target.closest('[data-repo-toggle]');
+    if (repoToggle) {
+      const repoPath = repoToggle.getAttribute('data-repo-toggle') || '.';
+      const collapsed = this._collapsedReposSet();
+      if (collapsed.has(repoPath)) collapsed.delete(repoPath);
+      else collapsed.add(repoPath);
+      this._commitCollapsedRepos(collapsed);
+      this._renderTree();
       return;
     }
     const modeBtn = e.target.closest('[data-mode]');
     if (modeBtn && !modeBtn.disabled) {
       this.channel.viewState.filesView = modeBtn.getAttribute('data-mode');
       if (this.channel.viewState.filesView === 'diff' && this.channel.viewState.filesPath) {
-        bus.emit('intent.file_diff', { channelId: this.channel.id, path: this.channel.viewState.filesPath });
+        this._emitFileDiff(this.channel.viewState.filesPath);
       }
       this._renderViewer();
       return;
@@ -612,6 +693,26 @@ export class FilesView {
       this._renderViewer();
       return;
     }
+  };
+
+  _onChange = (e) => {
+    const menu = e.target.closest?.('[data-rev-menu]');
+    if (!menu) return;
+    const repoPath = menu.getAttribute('data-repo-path') || '.';
+    const kind = menu.getAttribute('data-rev-menu');
+    const patch = kind === 'newer' ? { newerRef: menu.value } : { olderRef: menu.value };
+    const comparison = this._commitRepoComparison(repoPath, patch);
+    const commits = filesStore.commitsFor(this.channel.id, repoPath)?.commits || [];
+    const olderOptions = this._olderRefOptions(comparison.newerRef, commits);
+    if (!olderOptions.some(o => o.value === comparison.olderRef) && olderOptions[0]) {
+      comparison.olderRef = olderOptions[0].value;
+    }
+    this._emitRevisionChanges(repoPath);
+    const selectedRepo = this._repoForPath(this.channel.viewState.filesPath);
+    if (selectedRepo?.path === repoPath && this.channel.viewState.filesView === 'diff') {
+      this._emitFileDiff(this.channel.viewState.filesPath, repoPath);
+    }
+    this._renderTree();
   };
 
   // ── Upload ─────────────────────────────────────────────────────────
@@ -757,17 +858,85 @@ export class FilesView {
     return new Set(Array.isArray(list) ? list : []);
   }
 
+  _collapsedReposSet() {
+    const list = this.channel.viewState.filesCollapsedRepos;
+    return new Set(Array.isArray(list) ? list : []);
+  }
+
+  _commitCollapsedRepos(set) {
+    this.channel.viewState.filesCollapsedRepos = [...set];
+  }
+
   _commitExpandedDirs(set) {
     this.channel.viewState.filesExpandedDirs = [...set];
   }
 
-  _selectFile(path, hasDiff) {
+  _repoComparison(repoPath) {
+    if (!this.channel.viewState.filesRepoComparisons || typeof this.channel.viewState.filesRepoComparisons !== 'object') {
+      this.channel.viewState.filesRepoComparisons = {};
+    }
+    const key = repoPath || '.';
+    const existing = this.channel.viewState.filesRepoComparisons[key] || {};
+    const comparison = {
+      newerRef: existing.newerRef || 'worktree',
+      olderRef: existing.olderRef || 'HEAD',
+    };
+    this.channel.viewState.filesRepoComparisons[key] = comparison;
+    return comparison;
+  }
+
+  _commitRepoComparison(repoPath, patch) {
+    const key = repoPath || '.';
+    const current = this._repoComparison(key);
+    this.channel.viewState.filesRepoComparisons[key] = { ...current, ...patch };
+    return this.channel.viewState.filesRepoComparisons[key];
+  }
+
+  _ensureRepoCommits(repoPath) {
+    const key = repoPath || '.';
+    if (this._requestedCommitRepos.has(key)) return;
+    this._requestedCommitRepos.add(key);
+    bus.emit('intent.files_commits', { channelId: this.channel.id, repoPath: key, limit: 25 });
+  }
+
+  _repoForPath(path) {
+    const repos = filesStore.changesFor(this.channel.id) || [];
+    return repos.find(repo => (repo.entries || []).some(e => e.path === path)) || null;
+  }
+
+  _emitRevisionChanges(repoPath) {
+    const comparison = this._repoComparison(repoPath);
+    bus.emit('intent.files_revision_changes', {
+      channelId: this.channel.id,
+      repoPath,
+      newerRef: comparison.newerRef,
+      olderRef: comparison.olderRef,
+    });
+  }
+
+  _emitFileDiff(path, repoPath = null) {
+    const repo = repoPath ? { path: repoPath } : this._repoForPath(path);
+    if (repo?.path && this.channel.viewState.filesTreeTab === 'changes') {
+      const comparison = this._repoComparison(repo.path);
+      bus.emit('intent.file_diff', {
+        channelId: this.channel.id,
+        path,
+        repoPath: repo.path,
+        newerRef: comparison.newerRef,
+        olderRef: comparison.olderRef,
+      });
+      return;
+    }
+    bus.emit('intent.file_diff', { channelId: this.channel.id, path });
+  }
+
+  _selectFile(path, hasDiff, repoPath = null) {
     this.channel.viewState.filesPath = path;
     // Default to diff if there's a pending change, otherwise source.
     const nextMode = hasDiff && this.channel.viewState.filesTreeTab === 'changes' ? 'diff' : 'source';
     this.channel.viewState.filesView = nextMode;
     if (nextMode === 'diff') {
-      bus.emit('intent.file_diff', { channelId: this.channel.id, path });
+      this._emitFileDiff(path, repoPath);
     } else {
       bus.emit('intent.file_read', { channelId: this.channel.id, path });
     }

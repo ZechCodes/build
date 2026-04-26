@@ -65,9 +65,41 @@ try {
         { path: 'src/foo/a.js', git_status: 'M', insertions: 5, deletions: 2 },
         { path: 'src/foo/b.js', git_status: '?', insertions: 0, deletions: 0 },
       ],
+    }, {
+      branch: 'dev',
+      path: 'packages/api',
+      entries: [
+        { path: 'packages/api/server.js', git_status: 'M', insertions: 8, deletions: 2 },
+      ],
     }]);
+    window.__v2debug.stores.filesStore.setCommits(id, '.', {
+      commits: [
+        { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', short_sha: 'aaaaaaa', subject: 'latest' },
+        { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', short_sha: 'bbbbbbb', subject: 'older' },
+      ],
+    });
+    window.__v2debug.stores.filesStore.setCommits(id, 'packages/api', {
+      commits: [
+        { sha: 'cccccccccccccccccccccccccccccccccccccccc', short_sha: 'ccccccc', subject: 'api' },
+      ],
+    });
   }, await page.$eval('.v2-channel-sidebar-item', el => el.getAttribute('data-channel-id')));
   await page.waitForTimeout(200);
+
+  const repoPanels = await page.$$eval('.v2-files-repo', els => els.map(e => e.getAttribute('data-repo')));
+  check('Modified renders one boxed panel per repo',
+    repoPanels.includes('.') && repoPanels.includes('packages/api'),
+    repoPanels.join(' | '));
+
+  const selectorCount = await page.$$eval('.v2-files-rev-controls select', els => els.length);
+  check('repo revision selectors render below repo headers', selectorCount === 4, `count=${selectorCount}`);
+
+  await page.click('[data-repo-toggle="packages/api"]');
+  await page.waitForTimeout(100);
+  const collapsed = await page.$eval('[data-repo="packages/api"]', el => el.classList.contains('collapsed'));
+  check('repo header collapses its repo panel', collapsed);
+  await page.click('[data-repo-toggle="packages/api"]');
+  await page.waitForTimeout(100);
 
   const dirHeaders = await page.$$eval('.v2-files-dir-header', els => els.map(e => e.textContent.trim()));
   check('dir-group headers render in Modified', dirHeaders.includes('src/foo/'),
@@ -78,6 +110,13 @@ try {
   check('file rows show basename (not full path)',
     filenames.includes('a.js') && filenames.includes('README.md') && !filenames.includes('src/foo/a.js'),
     filenames.join(' | '));
+
+  await page.selectOption('[data-rev-menu="newer"][data-repo-path="."]', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  await page.waitForTimeout(100);
+  const revisionPayload = await page.evaluate(() => window.__sent.find(p => p.action === 'files_changes' && p.repo_path === '.'));
+  check('changing revision menu sends scoped files_changes',
+    revisionPayload?.newer_ref === 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && revisionPayload?.older_ref === 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    JSON.stringify(revisionPayload || null));
 
   // Commit-refresh: emit complications.bulk → expect files_changes intent.
   await page.evaluate(() => { window.__sent.length = 0; });

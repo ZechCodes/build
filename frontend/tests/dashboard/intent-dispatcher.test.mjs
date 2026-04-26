@@ -31,6 +31,8 @@ function makeStub() {
     terminalComplete: rec('terminalComplete'),
     filesList:        rec('filesList'),
     filesChanges:     rec('filesChanges'),
+    filesChangesForRevision: rec('filesChangesForRevision'),
+    filesCommits:     rec('filesCommits'),
     fileRead:         rec('fileRead'),
     fileDiff:         rec('fileDiff'),
     getMessages:      rec('getMessages'),
@@ -159,8 +161,30 @@ test('intent.files_list → filesList(channelId, path)', async () => {
   await emitAndAssert('intent.files_list', { channelId: 'ch1', path: 'src' }, 'filesList', ['ch1', 'src']);
 });
 
+test('intent.files_commits → filesCommits(channelId, repoPath, limit)', async () => {
+  await emitAndAssert('intent.files_commits', { channelId: 'ch1', repoPath: 'repo', limit: 25 }, 'filesCommits', ['ch1', 'repo', 25]);
+});
+
+test('intent.files_revision_changes → filesChangesForRevision(...)', async () => {
+  await emitAndAssert(
+    'intent.files_revision_changes',
+    { channelId: 'ch1', repoPath: 'repo', newerRef: 'worktree', olderRef: 'HEAD' },
+    'filesChangesForRevision',
+    ['ch1', 'repo', 'worktree', 'HEAD'],
+  );
+});
+
 test('intent.file_read → fileRead(channelId, path, offset, limit)', async () => {
   await emitAndAssert('intent.file_read', { channelId: 'ch1', path: 'a.js', offset: 0, limit: 100 }, 'fileRead', ['ch1', 'a.js', 0, 100]);
+});
+
+test('intent.file_diff forwards revision options', async () => {
+  await emitAndAssert(
+    'intent.file_diff',
+    { channelId: 'ch1', path: 'repo/a.js', staged: false, repoPath: 'repo', newerRef: 'abc', olderRef: 'def' },
+    'fileDiff',
+    ['ch1', 'repo/a.js', false, { repoPath: 'repo', newerRef: 'abc', olderRef: 'def' }],
+  );
 });
 
 test('intent.get_messages → getMessages(channelId, limit, before)', async () => {

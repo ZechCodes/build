@@ -43,6 +43,8 @@ function defaultViewState() {
     filesLineWrap: false,
     filesTreeTab: 'changes',       // 'changes' | 'all'
     filesExpandedDirs: [],         // list of dir paths the user has expanded
+    filesRepoComparisons: {},      // repo path -> {newerRef, olderRef}
+    filesCollapsedRepos: [],       // repo paths collapsed in Modified
     filesTreeScrollTop: 0,
     filesViewerScrollTop: 0,
     // Terminal
@@ -73,7 +75,8 @@ const PERSIST_VERSION = 1;
 const PERSIST_KEY = (id) => `v2:channel:${id}:viewState`;
 const PERSIST_FIELDS = [
   'filesPath', 'filesView', 'filesLineWrap', 'filesTreeTab',
-  'filesExpandedDirs', 'filesTreeScrollTop', 'filesViewerScrollTop',
+  'filesExpandedDirs', 'filesRepoComparisons', 'filesCollapsedRepos',
+  'filesTreeScrollTop', 'filesViewerScrollTop',
 ];
 
 function loadPersisted(id) {

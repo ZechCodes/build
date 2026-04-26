@@ -201,17 +201,19 @@ test('terminal_output streaming vs done translate correctly', () => {
   c.dispose();
 });
 
-test('files_list_result / files_changes_result translate', () => {
+test('files_list_result / files_changes_result / files_commits_result translate', () => {
   const fake = new EventTarget();
   bindE2EEDispatcher(fake, 'devH');
-  const c = capture(['files.list_result', 'files.changes_result']);
+  const c = capture(['files.list_result', 'files.changes_result', 'files.commits_result']);
 
   fire(fake, 'files_list_result', { channel_id: 'cf', path: 'src', entries: [{ name: 'a.js' }], truncated: false });
   fire(fake, 'files_changes_result', { channel_id: 'cf', repos: [{ path: '.', changes: [] }] });
+  fire(fake, 'files_commits_result', { channel_id: 'cf', repo_path: '.', commits: [{ sha: 'abc' }] });
 
   assert.equal(c.seen['files.list_result'][0].path, 'src');
   assert.equal(c.seen['files.list_result'][0].entries.length, 1);
   assert.equal(c.seen['files.changes_result'][0].repos.length, 1);
+  assert.equal(c.seen['files.commits_result'][0].commits[0].sha, 'abc');
   c.dispose();
 });
 

@@ -5,13 +5,13 @@ import { makeSubscribable } from '../core/store.js';
 import { bus } from '../core/bus.js';
 
 const { subscribe, notify } = makeSubscribable('files');
-const byChannel = new Map();       // channelId → {tree, changes, readResult, diffResult}
+const byChannel = new Map();       // channelId → {tree, changes, commits, readResult, diffResult}
 const imageChunks = new Map();     // channelId → Map(path → {chunks, total})
 
 function getSlot(channelId) {
   let s = byChannel.get(channelId);
   if (!s) {
-    s = { tree: new Map(), changes: [], readResult: null, diffResult: null };
+    s = { tree: new Map(), changes: [], commits: new Map(), readResult: null, diffResult: null };
     byChannel.set(channelId, s);
   }
   return s;
@@ -26,6 +26,7 @@ function chunkSlot(channelId) {
 export const filesStore = {
   treeFor(channelId) { return byChannel.get(channelId)?.tree ?? new Map(); },
   changesFor(channelId) { return byChannel.get(channelId)?.changes ?? []; },
+  commitsFor(channelId, repoPath) { return byChannel.get(channelId)?.commits.get(repoPath || '.') ?? null; },
   readResultFor(channelId) { return byChannel.get(channelId)?.readResult ?? null; },
   diffResultFor(channelId) { return byChannel.get(channelId)?.diffResult ?? null; },
 
@@ -37,6 +38,22 @@ export const filesStore = {
   setChanges(channelId, changes) {
     getSlot(channelId).changes = changes;
     notify({ kind: 'changes', channelId });
+  },
+
+  updateRepoChanges(channelId, repo) {
+    const slot = getSlot(channelId);
+    const repoPath = repo?.path || '.';
+    const next = slot.changes.slice();
+    const idx = next.findIndex(r => (r.path || '.') === repoPath);
+    if (idx >= 0) next[idx] = { ...next[idx], ...repo };
+    else next.push(repo);
+    slot.changes = next;
+    notify({ kind: 'changes', channelId, repoPath });
+  },
+
+  setCommits(channelId, repoPath, result) {
+    getSlot(channelId).commits.set(repoPath || '.', result || { commits: [] });
+    notify({ kind: 'commits', channelId, repoPath: repoPath || '.' });
   },
 
   setReadResult(channelId, result) {
@@ -64,7 +81,16 @@ bus.on('files.list_result', ({ channelId, path, entries, truncated }) => {
 });
 bus.on('files.changes_result', ({ channelId, repos }) => {
   if (!channelId) return;
-  filesStore.setChanges(channelId, repos || []);
+  const list = repos || [];
+  if (list.length === 1 && (list[0].newer_ref || list[0].older_ref)) {
+    filesStore.updateRepoChanges(channelId, list[0]);
+  } else {
+    filesStore.setChanges(channelId, list);
+  }
+});
+bus.on('files.commits_result', ({ channelId, repoPath, commits, error }) => {
+  if (!channelId) return;
+  filesStore.setCommits(channelId, repoPath, { commits: commits || [], error });
 });
 bus.on('files.read_result', (d) => {
   if (!d?.channel_id) return;

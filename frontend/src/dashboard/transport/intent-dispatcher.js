@@ -213,6 +213,20 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('files_changes failed', err); }
   });
 
+  bus.on('intent.files_revision_changes', async ({ channelId, repoPath, newerRef, olderRef }) => {
+    const conn = connFor(channelId);
+    if (!conn) return;
+    try { await conn.filesChangesForRevision(channelId, repoPath, newerRef, olderRef); }
+    catch (err) { plog.error('files_revision_changes failed', err); }
+  });
+
+  bus.on('intent.files_commits', async ({ channelId, repoPath, limit }) => {
+    const conn = connFor(channelId);
+    if (!conn) return;
+    try { await conn.filesCommits(channelId, repoPath, limit); }
+    catch (err) { plog.error('files_commits failed', err); }
+  });
+
   bus.on('intent.file_read', async ({ channelId, path, offset, limit }) => {
     const conn = connFor(channelId);
     if (!conn) return;
@@ -220,10 +234,10 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('file_read failed', err); }
   });
 
-  bus.on('intent.file_diff', async ({ channelId, path, staged }) => {
+  bus.on('intent.file_diff', async ({ channelId, path, staged, repoPath, newerRef, olderRef }) => {
     const conn = connFor(channelId);
     if (!conn) return;
-    try { await conn.fileDiff(channelId, path, staged); }
+    try { await conn.fileDiff(channelId, path, staged, { repoPath, newerRef, olderRef }); }
     catch (err) { plog.error('file_diff failed', err); }
   });
 

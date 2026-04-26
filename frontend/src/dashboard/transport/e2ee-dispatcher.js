@@ -274,6 +274,15 @@ export function bindE2EEDispatcher(instance, deviceId) {
       error: d.error,
     });
   });
+  instance.addEventListener('files_commits_result', (evt) => {
+    const d = evt.detail;
+    bus.emit('files.commits_result', {
+      channelId: d.channel_id,
+      repoPath: d.repo_path || '.',
+      commits: d.commits || [],
+      error: d.error,
+    });
+  });
   instance.addEventListener('file_read_result', (evt) => {
     bus.emit('files.read_result', { ...evt.detail });
   });

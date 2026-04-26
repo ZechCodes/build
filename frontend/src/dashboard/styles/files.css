@@ -47,8 +47,99 @@
   padding: 4px 0;
 }
 
-.v2-files-repo { padding: 2px 0 8px; }
-.v2-files-repo-path { color: var(--fg-dim); font-size: 11px; padding: 4px 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.v2-files-repo {
+  margin: 6px 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-1);
+  overflow: hidden;
+}
+.v2-files-repo-header {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.v2-files-repo.collapsed .v2-files-repo-header { border-bottom: none; }
+.v2-files-repo-header:hover { background: var(--bg-hover); }
+.v2-files-repo-chev {
+  color: var(--fg-dim);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+.v2-files-repo-chev.expanded { transform: rotate(90deg); }
+.v2-files-repo-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+}
+.v2-files-repo-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.v2-files-repo-count {
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 8px;
+  background: var(--bg-active);
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+.v2-files-rev-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+.v2-files-rev-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.v2-files-rev-field select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  text-transform: none;
+  padding: 4px 6px;
+}
+.v2-files-rev-error,
+.v2-files-repo-error {
+  grid-column: 1 / -1;
+  color: #d06262;
+  font-size: 11px;
+}
 
 .v2-files-dir-group { display: flex; flex-direction: column; }
 .v2-files-dir-header {

@@ -66,6 +66,11 @@ export const presenceStore = {
 
   getHarnesses(deviceId) { return harnessesByDevice.get(deviceId) ?? []; },
 
+  __resetForTests__() {
+    byChannel.clear();
+    harnessesByDevice.clear();
+  },
+
   subscribe,
 };
 
@@ -88,3 +93,21 @@ bus.on('agent.plan_mode', ({ channelId, planMode }) => {
 bus.on('harness.list', ({ deviceId, harnesses }) => {
   presenceStore.setHarnesses(deviceId, harnesses || []);
 });
+bus.on('message.received', ({ channelId, msg }) => {
+  // Any live message — user or agent — bumps the channel into the
+  // Recent sidebar's primary (4hr) window. We prefer the message's
+  // own `created_at` over `Date.now()` so the timestamp matches
+  // hydration on a later page load, but fall back to wall-clock
+  // when the wire payload is malformed.
+  if (!channelId) return;
+  const stamp = timeOf(msg?.created_at) || Date.now();
+  presenceStore.hydrateLastActive(channelId, stamp);
+});
+
+function timeOf(raw) {
+  if (!raw) return 0;
+  if (raw instanceof Date) return raw.getTime();
+  if (typeof raw === 'number') return raw > 1e12 ? raw : raw * 1000;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}

@@ -43,13 +43,16 @@ test('derive does NOT count messages older than last_seen_at', () => {
   assert.equal(out.count, 0);
 });
 
-test('derive returns latestActivityMs from newest non-client message', () => {
+test('derive returns latestActivityMs from newest message of any sender', () => {
+  // The Recent sidebar treats user-sent and agent-sent messages
+  // alike for "is this channel active right now" — so the latest
+  // timestamp across both senders wins.
   const out = derive([
     { sender: 'Agent',  read_at: null, created_at: '2026-04-20T00:00:00Z' },
     { sender: 'client', read_at: null, created_at: '2026-04-22T00:00:00Z' },
     { sender: 'Agent',  read_at: null, created_at: '2026-04-21T12:00:00Z' },
   ]);
-  assert.equal(out.latestActivityMs, Date.parse('2026-04-21T12:00:00Z'));
+  assert.equal(out.latestActivityMs, Date.parse('2026-04-22T00:00:00Z'));
 });
 
 test('derive without a channel falls back to !read_at', () => {

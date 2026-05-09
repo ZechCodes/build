@@ -61,6 +61,10 @@ export const unreadStore = {
     return { total, anyInteraction };
   },
 
+  __resetForTests__() {
+    byChannel.clear();
+  },
+
   subscribe,
 };
 

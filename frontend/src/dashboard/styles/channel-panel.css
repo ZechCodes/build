@@ -18,6 +18,12 @@
   color: var(--fg-muted);
 }
 .v2-attention-rows { display: flex; flex-direction: column; }
+.v2-attention-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--border);
+  opacity: 0.6;
+}
 
 .v2-attention-row .v2-attention-indicator {
   width: 8px;

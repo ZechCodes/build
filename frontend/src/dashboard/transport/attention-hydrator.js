@@ -63,18 +63,18 @@ export function bindAttentionHydrator() {
  *      message is an unresolved interaction (the agent is
  *      currently waiting on the user).
  *   - `latestActivityMs`: millisecond timestamp of the most recent
- *      non-client message. The hydrator feeds this into
- *      `presenceStore.hydrateLastActive` so the "recent"
- *      grace-window in the Attention section populates on load.
+ *      message of any sender (user or agent). Feeds the Recent
+ *      sidebar's time-windowed sort so a user sending a message
+ *      bumps the channel just like an agent message does.
  */
 export function derive(msgs, channel) {
   const lastSeenMs = timeOf(channel?.last_seen_at);
   let count = 0;
   let latestActivityMs = 0;
   for (const m of msgs || []) {
-    if (m?.sender === 'client') continue;
-    const createdMs = timeOf(m.created_at);
+    const createdMs = timeOf(m?.created_at);
     if (createdMs > latestActivityMs) latestActivityMs = createdMs;
+    if (m?.sender === 'client') continue;
     // If we know the user's last_seen_at, that's authoritative —
     // messages after it are unread, messages before it are seen.
     // Otherwise fall back to the per-message `read_at` flag.

@@ -56,6 +56,11 @@ export const channelsStore = {
     notify({ kind: 'replace_for_device', deviceId });
   },
 
+  __resetForTests__() {
+    byId.clear();
+    deviceOf.clear();
+  },
+
   subscribe,
 };
 

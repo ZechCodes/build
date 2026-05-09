@@ -23,9 +23,9 @@ export class ChannelPanelView {
   constructor() {
     this.root = null;
     this.unsubs = [];
-    // Re-render tick — keeps the Attention section's "recent" grace
-    // window accurate and lets relative timestamps (e.g., "3m")
-    // advance without a user interaction.
+    // Re-render tick — advances the Recent rows' relative
+    // timestamps and evicts entries as they cross the 4hr/72hr
+    // window boundaries without needing a user interaction.
     this._attentionTick = null;
   }
 
@@ -45,8 +45,9 @@ export class ChannelPanelView {
     }));
     this.unsubs.push(uiStore.subscribe(e => { if (e.kind === 'active_channel') this.render(); }));
     this.root.addEventListener('click', this._onClick);
-    // 60s is plenty — the grace window is an hour and the relative
-    // timestamps in the recent-attention rows advance in minutes.
+    // 60s is plenty — Recent rows show minute/hour/day resolution
+    // and the 4hr/72hr window boundaries are far apart enough that
+    // a one-minute drift on row eviction is invisible.
     this._attentionTick = setInterval(() => this.render(), 60 * 1000);
   }
 
@@ -70,16 +71,29 @@ export class ChannelPanelView {
     }
     const parts = [];
 
-    // Attention section — lists every channel that's either running
-    // (agent is processing) or waiting (unread messages, or a pending
-    // interaction: plan review / tool approval / question).
-    const attention = buildAttentionList();
-    if (attention.length) {
+    // Recent section — two stacked groups under one header:
+    //   • primary: channels active in the last 4hrs, oldest at top
+    //     (newly-bumped channels append to the bottom, matching the
+    //     pre-existing "stable while you work" ordering).
+    //   • fallback: channels active 4–72hrs ago, newest at top
+    //     (the entries you're most likely to want first when coming
+    //     back after time off; oldest fall off the bottom).
+    // The fallback only fills enough rows to bring the total to
+    // RECENT_TARGET_COUNT, so the section caps at 10.
+    const { primary, fallback } = buildAttentionList();
+    if (primary.length || fallback.length) {
+      const primaryRows = primary.map(a => renderAttentionRow(a, active)).join('');
+      const fallbackRows = fallback.map(a => renderAttentionRow(a, active)).join('');
+      const divider = primary.length && fallback.length
+        ? '<div class="v2-attention-divider" aria-hidden="true"></div>'
+        : '';
       parts.push(`
         <section class="v2-attention-section">
           <header class="v2-attention-header">Recent</header>
           <div class="v2-attention-rows">
-            ${attention.map(a => renderAttentionRow(a, active)).join('')}
+            ${primaryRows}
+            ${divider}
+            ${fallbackRows}
           </div>
         </section>
       `);
@@ -179,61 +193,58 @@ function isDeviceCollapsed(deviceId, status) {
   return status !== 'online';
 }
 
-const ATTENTION_RECENT_WINDOW_MS = 60 * 60 * 1000;  // 1 hour
-const attentionOrder = [];
-const attentionOrderSet = new Set();
+const RECENT_PRIMARY_MS = 4  * 60 * 60 * 1000;   // 4 hours
+const RECENT_FALLBACK_MS = 72 * 60 * 60 * 1000;  // 72 hours
+const RECENT_TARGET_COUNT = 10;
 
 /**
- * Walk every known channel, and return those that either:
- *   - have their agent actively processing (running), or
- *   - have unread messages / a pending interaction (waiting), or
- *   - finished running within the last hour (recent grace window).
- * Existing rows keep their position; newly qualifying channels append.
+ * Bucket every known channel into the two Recent groups by its
+ * `lastActiveAt` stamp:
+ *   - `primary`: activity within the last 4hrs, sorted oldest→newest
+ *     so the freshest entry sits at the bottom (a new burst of
+ *     activity always appends, keeping the list stable as you work).
+ *   - `fallback`: activity 4–72hrs old, sorted newest→oldest so the
+ *     most likely "where was I" candidates sit on top; truncated to
+ *     fill the remaining slots up to RECENT_TARGET_COUNT.
+ *
+ * Channels with no `lastActiveAt` are excluded from both groups —
+ * they appear only in the per-device list below.
  */
-export function buildAttentionList() {
-  const now = Date.now();
-  const current = new Map();
+export function buildAttentionList(now = Date.now()) {
+  const primary = [];
+  const fallback = [];
   for (const ch of channelsStore.list()) {
     const pres = presenceStore.get(ch.id);
+    const last = pres.lastActiveAt || 0;
+    if (!last) continue;
+    const age = now - last;
     const unread = unreadStore.get(ch.id);
-    const running = !!pres.agentActive;
-    const waitingInteraction = !!unread.hasInteraction;
-    const waitingUnread = (unread.count || 0) > 0;
-    const recent = !running
-                && !waitingInteraction
-                && !waitingUnread
-                && pres.lastActiveAt > 0
-                && (now - pres.lastActiveAt) < ATTENTION_RECENT_WINDOW_MS;
-    const qualifies = running || waitingInteraction || waitingUnread || recent;
-    if (!qualifies) continue;
-    current.set(ch.id, {
-      ch, running, waitingInteraction, waitingUnread, recent,
+    const item = {
+      ch,
+      running: !!pres.agentActive,
+      waitingInteraction: !!unread.hasInteraction,
+      waitingUnread: (unread.count || 0) > 0,
       count: unread.count || 0,
-      lastActiveAt: pres.lastActiveAt || 0,
-    });
-    if (!attentionOrderSet.has(ch.id)) {
-      attentionOrder.push(ch.id);
-      attentionOrderSet.add(ch.id);
-    }
+      lastActiveAt: last,
+    };
+    if (age < RECENT_PRIMARY_MS) primary.push(item);
+    else if (age < RECENT_FALLBACK_MS) fallback.push(item);
   }
-
-  for (let i = attentionOrder.length - 1; i >= 0; i--) {
-    const id = attentionOrder[i];
-    if (current.has(id)) continue;
-    attentionOrder.splice(i, 1);
-    attentionOrderSet.delete(id);
+  primary.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+  fallback.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  // Cap the section at RECENT_TARGET_COUNT total. When primary
+  // overflows we keep the freshest entries (drop from the *top*,
+  // since primary is oldest-first); when it doesn't, fallback fills
+  // the remaining slots.
+  if (primary.length > RECENT_TARGET_COUNT) {
+    primary.splice(0, primary.length - RECENT_TARGET_COUNT);
   }
-
-  return attentionOrder.map(id => current.get(id)).filter(Boolean);
-}
-
-export function resetAttentionOrderForTests() {
-  attentionOrder.length = 0;
-  attentionOrderSet.clear();
+  const slots = Math.max(0, RECENT_TARGET_COUNT - primary.length);
+  return { primary, fallback: fallback.slice(0, slots) };
 }
 
 function renderAttentionRow(item, activeId) {
-  const { ch, running, waitingInteraction, waitingUnread, recent, count, lastActiveAt } = item;
+  const { ch, running, waitingInteraction, waitingUnread, count, lastActiveAt } = item;
   const isActive = ch.id === activeId;
   const name = ch.name || (ch.id || '').slice(0, 8);
   const status = running            ? 'running'
@@ -243,8 +254,7 @@ function renderAttentionRow(item, activeId) {
   const statusLabel = running            ? 'Running'
                     : waitingInteraction ? 'Needs you'
                     : waitingUnread      ? 'Unread'
-                    : recent             ? relativeMinutes(lastActiveAt)
-                    : '';
+                    : relativeAge(lastActiveAt);
   const badge = count > 0
     ? `<span class="v2-ch-unread-badge">${count}</span>`
     : '';
@@ -266,13 +276,16 @@ function renderAttentionRow(item, activeId) {
   `;
 }
 
-function relativeMinutes(stampMs) {
+function relativeAge(stampMs) {
   if (!stampMs) return '';
   const diff = Math.max(0, Date.now() - stampMs);
   const m = Math.floor(diff / 60000);
   if (m < 1) return 'just now';
-  if (m === 1) return '1m';
-  return `${m}m`;
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
 }
 
 function renderChannel(ch, activeId) {

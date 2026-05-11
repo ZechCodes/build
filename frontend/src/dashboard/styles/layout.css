@@ -329,7 +329,11 @@
   .v2-files-main.mobile-tree-closed .v2-files-tree-panel {
     transform: translateX(-100%);
   }
-  .v2-files-content-panel { width: 100%; }
+  .v2-files-content-panel {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+  }
 
   /* Rail expanded height caps at ~50vh on phones (no 50vh abs rule). */
   .v2-app[data-rail="expanded"] { grid-template-rows: 1fr 50vh; }

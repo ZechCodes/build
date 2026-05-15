@@ -1,5 +1,4 @@
-// FilesView — tree + viewer (source / diff). Mounts into #v2-tab-files.
-// HTML preview + image preview ports arrive in Wave 6.
+// FilesView — tree + viewer (source / diff / preview). Mounts into #v2-tab-files.
 // See planning/dashboard/05-views.md § FilesView.
 
 import { bus } from '../../core/bus.js';
@@ -477,7 +476,12 @@ export class FilesView {
   _renderViewer() {
     if (!this.viewerEl || !this.modeBarEl) return;
     const path = this.channel.viewState.filesPath;
-    const mode = this.channel.viewState.filesView;
+    let mode = this.channel.viewState.filesView;
+    const previewable = isHtmlPreviewable(path);
+    if (mode === 'preview' && !previewable) {
+      mode = 'source';
+      this.channel.viewState.filesView = mode;
+    }
 
     // Mode bar only appears when a file is selected (v1 parity).
     if (!path) {
@@ -489,8 +493,9 @@ export class FilesView {
       this.modeBarEl.innerHTML = `
         <div class="v2-files-mode-tabs">
           ${['source', 'diff', 'preview'].map(m => {
-            const disabled = m === 'preview';
-            return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''}>${MODE_LABELS[m]}</button>`;
+            const disabled = m === 'preview' && !previewable;
+            const title = disabled ? 'HTML preview is available for .html and .htm files' : '';
+            return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''} ${title ? `title="${title}"` : ''}>${MODE_LABELS[m]}</button>`;
           }).join('')}
           <button class="v2-files-mode-tab v2-files-wrap-btn ${wrapActive ? 'active' : ''}"
                   type="button"
@@ -529,9 +534,57 @@ export class FilesView {
     }
     if (mode === 'diff') {
       this._renderDiffResult();
+    } else if (mode === 'preview') {
+      this._renderHtmlPreview();
     } else {
       this._renderReadResult();
     }
+  }
+
+  _renderHtmlPreview() {
+    if (!this.viewerEl) return;
+    const d = filesStore.readResultFor(this.channel.id);
+    if (!d || d.path !== this.channel.viewState.filesPath) {
+      this.viewerEl.innerHTML = '<div class="v2-files-empty">Loading preview…</div>';
+      return;
+    }
+    if (d.error) {
+      this.viewerEl.innerHTML = `<div class="v2-files-empty">${escapeHtml(d.error)}</div>`;
+      return;
+    }
+    if (d.is_binary) {
+      this.viewerEl.innerHTML = `<div class="v2-files-empty">Binary file (${escapeHtml(formatBytes(d.size || 0))})</div>`;
+      return;
+    }
+    if (!isHtmlPreviewable(d.path || '')) {
+      this.viewerEl.innerHTML = '<div class="v2-files-empty">Preview is available for HTML files.</div>';
+      return;
+    }
+
+    const host = document.createElement('div');
+    host.className = 'v2-files-html-preview';
+    if (d.truncated) {
+      const note = document.createElement('div');
+      note.className = 'v2-files-html-note';
+      note.textContent = `Previewing the first ${formatBytes((d.content || '').length)} of ${formatBytes(d.size || 0)}.`;
+      host.appendChild(note);
+    }
+    const iframe = document.createElement('iframe');
+    iframe.className = 'v2-files-html-frame';
+    iframe.title = `${d.path || 'HTML'} preview`;
+    iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    iframe.addEventListener('load', () => {
+      iframe.contentWindow?.postMessage({
+        type: '__build_preview',
+        html: d.content || '',
+      }, '*');
+    }, { once: true });
+    iframe.src = '/preview-frame';
+    host.appendChild(iframe);
+
+    this.viewerEl.innerHTML = '';
+    this.viewerEl.appendChild(host);
   }
 
   _renderReadResult() {
@@ -682,6 +735,11 @@ export class FilesView {
       this.channel.viewState.filesView = modeBtn.getAttribute('data-mode');
       if (this.channel.viewState.filesView === 'diff' && this.channel.viewState.filesPath) {
         this._emitFileDiff(this.channel.viewState.filesPath);
+      } else if (this.channel.viewState.filesView === 'preview' && this.channel.viewState.filesPath) {
+        const rr = filesStore.readResultFor(this.channel.id);
+        if (!rr || rr.path !== this.channel.viewState.filesPath) {
+          bus.emit('intent.file_read', { channelId: this.channel.id, path: this.channel.viewState.filesPath });
+        }
       }
       this._renderViewer();
       return;
@@ -948,4 +1006,9 @@ export class FilesView {
 function extOf(path) {
   const m = /\.([^./]+)$/.exec(path || '');
   return m ? m[1].toLowerCase() : '';
+}
+
+export function isHtmlPreviewable(path) {
+  const ext = extOf(path);
+  return ext === 'html' || ext === 'htm';
 }

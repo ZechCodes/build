@@ -251,47 +251,44 @@ function render() {
   if (!root) return;
   root.innerHTML = `
     <div class="dash-shell">
-      ${renderSidebar()}
-      <main class="dash-main">
-        ${renderTopbar()}
-        ${renderContent()}
-      </main>
+      ${renderTopChrome()}
+      ${renderContent()}
+      <div class="status-rail">
+        <span class="dot ${state.transport.phase}"></span>
+        <span>${escapeHtml(state.transport.label)}</span>
+      </div>
     </div>
   `;
 }
 
-function renderSidebar() {
+function renderTopChrome() {
   const plansNeedingYou = INBOX.filter(item => !state.dismissedInbox.has(item.id)).length;
+  const crumbs = breadcrumb().slice(1);
   return `
-    <aside class="side-nav">
+    <header class="top-chrome">
       <div class="brand-block">
-        <div class="brand-mark">B</div>
-        <div>
-          <div class="brand-name">Build</div>
-          <div class="brand-meta">${escapeHtml(userName())}</div>
-        </div>
+        <span class="brand-cube"></span>
+        <span class="brand-name">build</span>
       </div>
       <nav class="nav-stack" aria-label="Dashboard">
         ${navButton('Inbox', '#/inbox', state.route.screen === 'inbox', plansNeedingYou)}
         ${navButton('Projects', '#/projects', ['projects', 'project', 'plan', 'worktree'].includes(state.route.screen), PROJECTS.length)}
-      </nav>
-      <div class="side-section">
-        <div class="side-label">Active Work</div>
-        ${allWorktrees().slice(0, 4).map(item => `
-          <a class="side-worktree" href="#/worktree/${escapeAttr(item.id)}" data-route="#/worktree/${escapeAttr(item.id)}">
-            <span class="dot" style="--dot:${escapeAttr(item.project.color)}"></span>
-            <span class="truncate">${escapeHtml(item.summary)}</span>
+        ${crumbs.length ? `<span class="nav-slash">/</span>${crumbs.map(crumb => `
+          <a class="crumb-pill" href="${escapeAttr(crumb.route || '#')}" ${crumb.route ? `data-route="${escapeAttr(crumb.route)}"` : ''}>
+            <span class="dot"></span>${escapeHtml(shortCrumb(crumb.label))}
           </a>
-        `).join('')}
+        `).join('<span class="nav-slash">/</span>')}` : ''}
+      </nav>
+      <div class="top-tools">
+        <label class="search-box">
+          <span class="sr-only">Search</span>
+          <input data-search type="search" value="${escapeAttr(state.search)}" placeholder="Search projects, plans, files...">
+          <kbd>⌘K</kbd>
+        </label>
+        <button class="lock-pill ${state.transport.phase}" type="button" data-action="sync-v1">e2ee</button>
+        <span class="user-chip">${escapeHtml(userName()[0] || 'T')}</span>
       </div>
-      <div class="transport-card ${state.transport.phase}">
-        <div class="transport-row">
-          <span class="pulse"></span>
-          <span>${escapeHtml(state.transport.label)}</span>
-        </div>
-        <button class="icon-button" type="button" data-action="sync-v1" aria-label="Refresh v1 transport">R</button>
-      </div>
-    </aside>
+    </header>
   `;
 }
 
@@ -302,6 +299,10 @@ function navButton(label, route, active, count) {
       <span class="nav-count">${count}</span>
     </a>
   `;
+}
+
+function shortCrumb(label) {
+  return label.length > 28 ? `${label.slice(0, 25)}...` : label;
 }
 
 function renderTopbar() {
@@ -374,29 +375,39 @@ function renderInbox() {
     .filter(item => !state.dismissedInbox.has(item.id))
     .filter(item => state.inboxFilter === 'all' || item.kind === state.inboxFilter)
     .filter(matchesSearch);
+  const groups = [
+    ['Needs You Now', visible.filter(item => item.priority === 'high')],
+    ['Ready When You Are', visible.filter(item => item.priority === 'medium' || item.kind === 'question')],
+    ['Heads Up', visible.filter(item => item.priority === 'low' && item.kind !== 'question')],
+  ];
+  const urgentCount = INBOX.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
 
   return `
-    <section class="screen inbox-screen">
-      <div class="screen-head">
+    <section class="screen inbox-screen narrow-screen">
+      <div class="hero-copy">
+        <div class="eyebrow">Inbox . Friday, May 15</div>
         <div>
-          <h1>Inbox</h1>
-          <p>${visible.length} items need a decision</p>
-        </div>
-        <div class="metric-row">
-          ${metric('Needs you', INBOX.length - state.dismissedInbox.size)}
-          ${metric('Running', sum(PROJECTS, 'runningAgents'))}
-          ${metric('Queued', sum(PROJECTS, 'queued'))}
+          <h1>${urgentCount} things need <em>your eyes.</em></h1>
+          <p>${sum(PROJECTS, 'runningAgents')} agents working across ${PROJECTS.length - 2} projects. Most won't need you.</p>
         </div>
       </div>
-      <div class="segmented">
+      <div class="screen-toolbar">
+        <div class="segmented">
         ${filters.map(filter => `
           <button type="button" class="${state.inboxFilter === filter ? 'active' : ''}" data-action="inbox-filter" data-value="${escapeAttr(filter)}">
-            ${escapeHtml(labelFor(filter))}
+            ${escapeHtml(inboxFilterLabel(filter))}
           </button>
         `).join('')}
+        </div>
+        <button class="ghost-action" type="button">+ New plan</button>
       </div>
       <div class="inbox-list">
-        ${visible.map(renderInboxItem).join('') || renderEmpty('Inbox clear')}
+        ${groups.map(([label, items]) => items.length ? `
+          <section class="inbox-group">
+            <div class="group-title"><span class="dot"></span>${escapeHtml(label)} <span>${items.length}</span></div>
+            ${items.map(renderInboxItem).join('')}
+          </section>
+        ` : '').join('') || renderEmpty('Inbox clear')}
       </div>
     </section>
   `;
@@ -409,17 +420,15 @@ function renderInboxItem(item) {
     <article class="inbox-item priority-${escapeAttr(item.priority)}">
       <div class="inbox-kind">
         <span class="dot" style="--dot:${escapeAttr(project.color)}"></span>
-        <span>${escapeHtml(labelFor(item.kind))}</span>
+        <span>${escapeHtml(project.name)}</span>
+        <span class="kind-chip ${escapeAttr(item.kind)}">${escapeHtml(kindShortLabel(item.kind))}</span>
       </div>
       <div class="inbox-body">
         <a class="item-title" href="${escapeAttr(openRoute)}" data-route="${escapeAttr(openRoute)}">${escapeHtml(item.title)}</a>
         <p>${escapeHtml(item.detail)}</p>
-        <div class="item-meta">
-          <span>${escapeHtml(project.name)}</span>
-          <span>${escapeHtml(item.actor)}</span>
-          <span>${escapeHtml(item.time)}</span>
-        </div>
       </div>
+      ${agentBadge(agentKey(item.actor))}
+      <time>${escapeHtml(item.time)}</time>
       <div class="item-actions">
         ${item.actions.slice(0, 2).map(action => `
           <button class="${action === 'Approve' || action === 'Allow' ? 'primary' : 'secondary'} small" type="button" data-action="dismiss-inbox" data-id="${escapeAttr(item.id)}">${escapeHtml(action)}</button>
@@ -427,6 +436,27 @@ function renderInboxItem(item) {
       </div>
     </article>
   `;
+}
+
+function inboxFilterLabel(filter) {
+  if (filter === 'all') return `All ${INBOX.length}`;
+  const count = INBOX.filter(item => item.kind === filter).length;
+  const label = {
+    'plan-approval': 'Plans',
+    permission: 'Permissions',
+    review: 'Reviews',
+    question: 'Questions',
+  }[filter] || labelFor(filter);
+  return `${label} ${count}`;
+}
+
+function kindShortLabel(kind) {
+  return {
+    'plan-approval': 'plan',
+    permission: 'permission',
+    review: 'review',
+    question: 'question',
+  }[kind] || kind;
 }
 
 function renderProjects() {
@@ -441,54 +471,52 @@ function renderProjects() {
     .filter(matchesSearch);
 
   return `
-    <section class="screen projects-screen">
+    <section class="screen projects-screen narrow-screen">
       <div class="screen-head">
         <div>
-          <h1>Projects</h1>
-          <p>${projects.length} active repositories</p>
+          <div class="eyebrow">Projects</div>
+          <h1>Your <em>workshops.</em></h1>
         </div>
-        <div class="segmented inline">
-          ${filters.map(filter => `
-            <button type="button" class="${state.projectFilter === filter ? 'active' : ''}" data-action="project-filter" data-value="${escapeAttr(filter)}">
-              ${escapeHtml(labelFor(filter))}
-            </button>
-          `).join('')}
-        </div>
+        <button class="primary" type="button">+ New project</button>
       </div>
       <div class="project-grid">
         ${projects.map(project => `
           <article class="project-card" data-route="#/project/${escapeAttr(project.id)}">
             <a class="card-hit" href="#/project/${escapeAttr(project.id)}" data-route="#/project/${escapeAttr(project.id)}" aria-label="${escapeAttr(project.name)}"></a>
             <div class="project-top">
-              <span class="project-color" style="--project:${escapeAttr(project.color)}"></span>
               <div>
-                <h2>${escapeHtml(project.name)}</h2>
+                <h2><span class="project-color" style="--project:${escapeAttr(project.color)}"></span>${escapeHtml(project.name)}</h2>
                 <p>${escapeHtml(project.description)}</p>
               </div>
-            </div>
-            <div class="project-meta">
-              <span>${escapeHtml(project.repo)}</span>
-              <span>${escapeHtml(project.branch)}</span>
-              <span>${escapeHtml(project.lastActive)}</span>
+              ${project.needsYou ? `<span class="need-chip">${project.needsYou} need you</span>` : ''}
             </div>
             <div class="project-stats">
-              ${metric('Needs you', project.needsYou)}
-              ${metric('Running', project.runningAgents)}
-              ${metric('Queued', project.queued)}
+              ${compactMetric('Agents', project.runningAgents)}
+              ${compactMetric('Queued', project.queued)}
+              ${compactMetric('Plans', project.plans.length)}
             </div>
             <div class="mini-list">
-              ${project.worktrees.slice(0, 2).map(wt => `
+              ${project.worktrees.length ? project.worktrees.slice(0, 2).map(wt => `
                 <div>
                   ${agentBadge(wt.model)}
-                  <span class="truncate">${escapeHtml(wt.summary)}</span>
+                  <span class="truncate">${escapeHtml(wt.branch.replace('agents/', 'agents/'))}</span>
                   <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span>
                 </div>
-              `).join('')}
+              `).join('') : `<p class="muted-line">No agents running . last active ${escapeHtml(project.lastActive)}</p>`}
             </div>
           </article>
         `).join('') || renderEmpty('No projects')}
       </div>
     </section>
+  `;
+}
+
+function compactMetric(label, value) {
+  return `
+    <div class="compact-metric">
+      <span>${escapeHtml(String(value))}</span>
+      <span>${escapeHtml(label)}</span>
+    </div>
   `;
 }
 
@@ -500,40 +528,50 @@ function renderProject(project) {
   ];
   return `
     <section class="screen project-screen">
-      <div class="project-hero" style="--project:${escapeAttr(project.color)}">
+      <div class="project-hero plain-hero" style="--project:${escapeAttr(project.color)}">
         <div>
-          <div class="eyebrow">${escapeHtml(project.repo)} / ${escapeHtml(project.branch)}</div>
-          <h1>${escapeHtml(project.name)}</h1>
+          <h1><span class="project-color" style="--project:${escapeAttr(project.color)}"></span>${escapeHtml(project.name)}</h1>
           <p>${escapeHtml(project.description)}</p>
         </div>
-        <div class="metric-row">
-          ${metric('Needs you', project.needsYou)}
-          ${metric('Running', project.runningAgents)}
-          ${metric('Queued', project.queued)}
+        <div class="workspace-actions">
+          <button class="ghost-action" type="button" data-action="sync-v1">Sync</button>
+          <button class="primary" type="button">+ New plan</button>
         </div>
       </div>
       <div class="project-layout">
-        <section class="lane-board">
+        <section class="plan-board">
+          <div class="panel-title-row">
+            <div class="panel-title">Plan board</div>
+            <span class="muted-line">Drag a plan onto a worktree to assign . click to iterate</span>
+          </div>
           ${lanes.map(([status, label]) => `
-            <div class="lane">
-              <div class="lane-title">${escapeHtml(label)} <span>${project.plans.filter(plan => plan.status === status).length}</span></div>
-              ${project.plans.filter(plan => plan.status === status).map(plan => renderPlanCard(plan, project)).join('') || renderEmpty('None')}
+            <div class="plan-lane">
+              <div class="lane-title"><span class="dot"></span>${escapeHtml(label)} <span>${project.plans.filter(plan => plan.status === status).length}</span></div>
+              ${project.plans.filter(plan => plan.status === status).map(plan => renderPlanCard(plan, project)).join('') || ''}
             </div>
           `).join('')}
         </section>
         <aside class="project-aside">
-          <div class="panel">
-            <div class="panel-title">Worktrees</div>
+          <div class="panel worktree-panel">
+            <div class="panel-title-row">
+              <div class="panel-title">Worktrees . ${project.worktrees.length}</div>
+              <span class="muted-line">Drop a plan on one to queue work</span>
+            </div>
             ${project.worktrees.map(wt => `
-              <a class="worktree-row" href="#/worktree/${escapeAttr(wt.id)}" data-route="#/worktree/${escapeAttr(wt.id)}">
-                ${agentBadge(wt.model)}
+              <a class="worktree-card" href="#/worktree/${escapeAttr(wt.id)}" data-route="#/worktree/${escapeAttr(wt.id)}">
+                <div class="worktree-card-top">
+                  ${agentBadge(wt.model)}
+                  <code>${escapeHtml(wt.branch)}</code>
+                  <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span>
+                </div>
                 <span class="worktree-main">
                   <span>${escapeHtml(wt.summary)}</span>
-                  <span>${escapeHtml(wt.branch)}</span>
+                  <span>${escapeHtml(wt.device)} . +${wt.add} -${wt.del} . ${wt.files}f</span>
                 </span>
-                <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span>
+                <span class="progress"><span style="width:${wt.pct}%"></span></span>
               </a>
             `).join('')}
+            <button class="secondary full" type="button">+ Spawn new worktree</button>
           </div>
           <div class="panel">
             <div class="panel-title">Recent</div>
@@ -550,19 +588,15 @@ function renderProject(project) {
 function renderPlanCard(plan, project) {
   const pct = Math.round((plan.doneSteps / Math.max(plan.steps, 1)) * 100);
   return `
-    <article class="plan-card" data-route="#/plan/${escapeAttr(plan.id)}">
+    <article class="plan-card plan-row" data-route="#/plan/${escapeAttr(plan.id)}">
       <a class="card-hit" href="#/plan/${escapeAttr(plan.id)}" data-route="#/plan/${escapeAttr(plan.id)}" aria-label="${escapeAttr(plan.title)}"></a>
-      <div class="plan-card-top">
-        ${agentBadge(plan.model)}
-        <span>${escapeHtml(plan.updated)}</span>
-      </div>
+      <code>${escapeHtml(plan.id)}</code>
       <h3>${escapeHtml(plan.title)}</h3>
-      <div class="progress">
-        <span style="width:${pct}%"></span>
-      </div>
+      ${agentBadge(plan.model)}
+      <div class="progress"><span style="width:${pct}%"></span></div>
       <div class="plan-meta">
-        <span>${plan.doneSteps}/${plan.steps} steps</span>
-        <span>${escapeHtml(project.name)}</span>
+        <span>${plan.doneSteps ? `${plan.doneSteps}/${plan.steps}` : `${plan.steps} steps`}</span>
+        <span>${escapeHtml(plan.updated)}</span>
       </div>
     </article>
   `;
@@ -573,36 +607,39 @@ function renderPlan(planItem) {
   const doc = planItem.id === PLAN_DOC.id ? PLAN_DOC : { ...PLAN_DOC, id: planItem.id, title: planItem.title };
   const messages = [...doc.chat, ...state.localChat];
   return `
-    <section class="screen plan-screen">
-      <div class="workspace-head">
-        <div>
-          <div class="eyebrow">${escapeHtml(project.repo)} / ${escapeHtml(project.branch)}</div>
-          <h1>${escapeHtml(doc.title)}</h1>
-          <p>${escapeHtml(doc.status)} - ${escapeHtml(doc.updated)}</p>
-        </div>
+    <section class="plan-screen">
+      <div class="subbar">
+        <div><strong>Plan</strong> ${escapeHtml(doc.id)} <span class="dot"></span> updated 12s ago</div>
         <div class="workspace-actions">
-          <button class="secondary" type="button" data-route="#/project/${escapeAttr(project.id)}">Back</button>
-          <button class="primary" type="button">Approve</button>
+          <button class="ghost-action" type="button">Versions</button>
+          <button class="primary small" type="button">Assign</button>
         </div>
       </div>
       <div class="plan-layout">
         <article class="document-panel">
+          <h1>${escapeHtml(doc.title)}</h1>
+          <div class="goal-box">
+            <div class="eyebrow">Goal</div>
+            <p>Make every request through api-gateway carry a tenant context, and prevent any cross-tenant data leakage. Ship behind a flag.</p>
+          </div>
           ${doc.phases.map((phase, index) => `
             <section class="doc-section">
+              <button class="phase-caret" type="button">⌄</button>
               <div class="section-number">${index + 1}</div>
-              <div>
+              <div class="phase-body">
                 <h2>${escapeHtml(phase.title)}</h2>
-                <p>${escapeHtml(phase.body)}</p>
-                <ol>
-                  ${phase.steps.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
-                </ol>
+                <span class="phase-state ${index === 0 ? 'done' : index === 1 ? 'active' : 'approval'}">${index === 0 ? 'done' : index === 1 ? 'active' : 'needs approval'}</span>
+                ${index === 2 ? `<div class="approval-row"><span>Need approval - 6 tables affected</span><button class="secondary small" type="button">Approve phase</button><button class="ghost-action" type="button">Discuss</button></div>` : ''}
+                <ul class="check-list">
+                  ${phase.steps.map((step, stepIndex) => `<li class="${index === 0 || stepIndex === 0 ? 'checked' : ''}">${escapeHtml(step)}</li>`).join('')}
+                </ul>
               </div>
             </section>
           `).join('')}
         </article>
         <aside class="chat-panel ${state.chatOpen ? '' : 'collapsed'}">
           <div class="panel-title-row">
-            <div class="panel-title">Plan Chat</div>
+            <div class="panel-title">Conversation <span class="muted-line">iterating on plan</span></div>
             <button class="icon-button" type="button" data-action="toggle-chat" aria-label="Toggle chat">C</button>
           </div>
           ${state.chatOpen ? renderChat(messages, 'plan') : ''}
@@ -618,26 +655,33 @@ function renderWorktree(worktreeItem) {
   const messages = [...WORKTREE.chat, ...state.localChat];
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
-    <section class="screen worktree-screen">
-      <div class="workspace-head compact">
-        <div>
-          <div class="eyebrow">${escapeHtml(project.name)} / ${escapeHtml(wt.branch)}</div>
-          <h1>${escapeHtml(wt.title || wt.summary)}</h1>
-          <p>${escapeHtml(wt.status)} - ${escapeHtml(wt.device)}</p>
-        </div>
+    <section class="worktree-screen">
+      <div class="subbar worktree-subbar">
+        <div><strong>${escapeHtml(wt.branch)}</strong> <span>main</span> <span class="mini-status blocked">blocked</span> <span>4 ahead . 0 behind</span></div>
         <div class="workspace-actions">
-          <button class="secondary" type="button" data-route="#/project/${escapeAttr(project.id)}">Project</button>
-          <button class="primary" type="button">Review</button>
+          ${agentBadge(agentKey(wt.agent))}
+          <span>${escapeHtml(wt.agent)} . ${escapeHtml(wt.device)}</span>
+          <button class="ghost-action" type="button" data-action="sync-v1">Sync</button>
+          <button class="primary small" type="button">Approve all</button>
         </div>
       </div>
       <div class="worktree-grid">
-        <section class="workbench">
-          <div class="worktree-summary">
-            ${metric('Progress', `${wt.progress || worktreeItem.pct}%`)}
-            ${metric('Files', wt.files.length)}
-            ${metric('Add', `+${sum(wt.files, 'add')}`)}
-            ${metric('Del', `-${sum(wt.files, 'del')}`)}
+        <aside class="file-rail">
+          <div class="rail-tabs">
+            <button class="active" type="button">Changed <span>${wt.files.length}</span></button>
+            <button type="button">All</button>
           </div>
+          <div class="rail-summary"><span class="add">+172</span><span class="del">-17</span><span>1/7 reviewed</span></div>
+          ${wt.files.map(file => `
+            <button class="changed-file" type="button">
+              <span>${file.status[0].toUpperCase()}</span>
+              <span>${escapeHtml(file.path.replace('src/', 'services/api/'))}</span>
+              <span class="add">+${file.add}</span>
+              <span class="del">-${file.del}</span>
+            </button>
+          `).join('')}
+        </aside>
+        <section class="workbench">
           <div class="tabs">
             ${tabs.map(tab => `
               <button type="button" class="${state.worktreeTab === tab ? 'active' : ''}" data-action="worktree-tab" data-value="${escapeAttr(tab)}">
@@ -648,22 +692,22 @@ function renderWorktree(worktreeItem) {
           <div class="tab-panel">
             ${renderWorktreeTab(wt)}
           </div>
-          <section class="terminal-panel ${state.terminalOpen ? '' : 'collapsed'}">
-            <div class="panel-title-row">
-              <div class="panel-title">Terminal</div>
-              <button class="icon-button" type="button" data-action="toggle-terminal" aria-label="Toggle terminal">T</button>
-            </div>
-            ${state.terminalOpen ? renderTerminal() : ''}
-          </section>
         </section>
         <aside class="chat-panel worktree-chat ${state.chatOpen ? '' : 'collapsed'}">
           <div class="panel-title-row">
-            <div class="panel-title">Agent Chat</div>
+            <div class="panel-title">${escapeHtml(wt.agent)} <span class="mini-status blocked">blocked</span></div>
             <button class="icon-button" type="button" data-action="toggle-chat" aria-label="Toggle chat">C</button>
           </div>
           ${state.chatOpen ? renderChat(messages, 'worktree') : ''}
         </aside>
       </div>
+      <section class="terminal-panel docked-terminal ${state.terminalOpen ? '' : 'collapsed'}">
+        <div class="panel-title-row">
+          <div class="panel-title">Terminal <span class="muted-line">${escapeHtml(wt.device)} . ${escapeHtml(wt.branch)}</span></div>
+          <button class="icon-button" type="button" data-action="toggle-terminal" aria-label="Toggle terminal">x</button>
+        </div>
+        ${state.terminalOpen ? renderTerminal() : ''}
+      </section>
     </section>
   `;
 }
@@ -680,7 +724,18 @@ function renderDiff() {
     <div class="diff-view">
       ${SAMPLE_HUNKS.map(hunk => `
         <section class="diff-file">
-          <div class="diff-file-head">${escapeHtml(hunk.file)}</div>
+          <div class="diff-file-head">
+            <span class="kind-chip permission">edit</span>
+            <code>${escapeHtml(hunk.file.replace('src/routes/', 'services/api/'))}</code>
+            <span class="add">+42</span>
+            <span class="del">-17</span>
+            <button class="ghost-action" type="button">Open in editor</button>
+          </div>
+          <div class="hunk-head">
+            <span>hunk 1</span>
+            <span>@@ -118,7 +118,12 @@ route.get('/v2/users/:id')</span>
+            <button class="secondary small" type="button">approved</button>
+          </div>
           <pre>${hunk.lines.map(line => `<span class="${escapeAttr(line.type)}">${escapeHtml(prefixFor(line.type) + line.text)}</span>`).join('')}</pre>
         </section>
       `).join('')}
@@ -792,6 +847,11 @@ function agentBadge(model) {
       ${escapeHtml(agent.label)}
     </span>
   `;
+}
+
+function agentKey(name) {
+  const match = Object.entries(AGENTS).find(([, agent]) => agent.name === name);
+  return match?.[0] || 'cs';
 }
 
 function renderEmpty(label) {

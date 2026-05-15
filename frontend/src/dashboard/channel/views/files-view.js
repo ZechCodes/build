@@ -34,7 +34,7 @@ export class FilesView {
     this.unsubs.push(filesStore.subscribe(e => {
       if (e.channelId !== this.channel.id) return;
       if (e.kind === 'tree' || e.kind === 'changes' || e.kind === 'commits') this._renderTree();
-      if (e.kind === 'read_result' || e.kind === 'read_result_progress') this._renderReadResult();
+      if (e.kind === 'read_result' || e.kind === 'read_result_progress') this._renderViewer();
       if (e.kind === 'diff_result') this._renderDiffResult();
     }));
     // Live refresh when the agent reports file changes.
@@ -157,10 +157,10 @@ export class FilesView {
     // 1) Refresh the Modified list.
     bus.emit('intent.files_changes', { channelId });
 
-    // 2) If the tree is showing "All", re-fetch root so new / deleted
-    //    files in the tree reflect the change.
+    // 2) If the tree is showing "All", re-fetch visible directories so
+    //    new / deleted files under expanded folders reflect the change.
     if (this.channel.viewState.filesTreeTab === 'all') {
-      bus.emit('intent.files_list', { channelId, path: '' });
+      this._refreshAllTree(paths);
     }
 
     // 3) If a file is currently being viewed and was touched, re-fetch.
@@ -691,6 +691,7 @@ export class FilesView {
     const treeTab = e.target.closest('[data-tree-tab]');
     if (treeTab) {
       this.channel.viewState.filesTreeTab = treeTab.getAttribute('data-tree-tab');
+      if (this.channel.viewState.filesTreeTab === 'all') this._refreshAllTree([]);
       this._renderTree();
       return;
     }
@@ -929,6 +930,13 @@ export class FilesView {
     this.channel.viewState.filesExpandedDirs = [...set];
   }
 
+  _refreshAllTree(paths = []) {
+    const dirs = allTreeRefreshDirs(paths, this.channel.viewState.filesExpandedDirs);
+    for (const path of dirs) {
+      bus.emit('intent.files_list', { channelId: this.channel.id, path });
+    }
+  }
+
   _repoComparison(repoPath) {
     if (!this.channel.viewState.filesRepoComparisons || typeof this.channel.viewState.filesRepoComparisons !== 'object') {
       this.channel.viewState.filesRepoComparisons = {};
@@ -1011,4 +1019,23 @@ function extOf(path) {
 export function isHtmlPreviewable(path) {
   const ext = extOf(path);
   return ext === 'html' || ext === 'htm';
+}
+
+export function allTreeRefreshDirs(paths = [], expandedDirs = []) {
+  const dirs = new Set(['']);
+  for (const dir of expandedDirs || []) {
+    if (typeof dir === 'string') dirs.add(dir);
+  }
+  for (const raw of paths || []) {
+    const path = String(raw || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!path) continue;
+    const parts = path.split('/').filter(Boolean);
+    parts.pop();
+    let cur = '';
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      dirs.add(cur);
+    }
+  }
+  return [...dirs];
 }

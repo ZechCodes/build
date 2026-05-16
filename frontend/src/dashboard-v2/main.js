@@ -16,13 +16,16 @@ const state = {
   search: '',
   worktreeTab: 'diff',
   dismissedInbox: new Set(),
-  localChat: [],
+  localChatByKey: new Map(),
   terminalLines: [],
   terminalOpen: true,
   chatOpen: true,
   liveSnapshot: null,
   worktreeSnapshots: new Map(),
   worktreeLoads: new Set(),
+  messagesByChannel: new Map(),
+  messageLoads: new Set(),
+  spawnLoads: new Set(),
   transport: {
     phase: 'checking',
     label: 'Checking devices',
@@ -56,6 +59,8 @@ async function initTransport() {
   try {
     state.worktreeSnapshots.clear();
     state.worktreeLoads.clear();
+    state.messagesByChannel.clear();
+    state.messageLoads.clear();
     setTransport({ phase: 'checking', label: 'Checking devices', error: null });
     const devices = await fetchDevices();
     const readyDevice = devices.find(device => device.status === 'online' && device.has_transport_key);
@@ -99,6 +104,8 @@ async function initTransport() {
     state.liveSnapshot = null;
     state.worktreeSnapshots.clear();
     state.worktreeLoads.clear();
+    state.messagesByChannel.clear();
+    state.messageLoads.clear();
     setTransport({
       phase: 'mock',
       label: 'Mock data',
@@ -111,6 +118,7 @@ function loadRouteData() {
   if (state.route.screen === 'worktree') {
     loadWorktreeSnapshot(state.route.id);
   }
+  loadRouteMessages();
 }
 
 async function loadDashboardSnapshot(client) {
@@ -191,6 +199,25 @@ async function loadWorktreeSnapshot(worktreeId) {
   }
 }
 
+async function loadRouteMessages() {
+  const channelId = currentRouteChannelId();
+  if (!channelId || !state.transport.client?.connected) return;
+  if (state.messagesByChannel.has(channelId) || state.messageLoads.has(channelId)) return;
+  state.messageLoads.add(channelId);
+  try {
+    const response = await state.transport.client.listMessages(channelId, { limit: 50 });
+    const messages = Array.isArray(response.payload?.messages)
+      ? response.payload.messages.map(normalizeChatMessage).filter(Boolean)
+      : [];
+    state.messagesByChannel.set(channelId, messages);
+    render();
+  } catch (err) {
+    console.debug('message.list unavailable', err);
+  } finally {
+    state.messageLoads.delete(channelId);
+  }
+}
+
 function normalizeWorktreeSnapshot(payload) {
   if (!payload?.worktree?.id) return null;
   const git = payload.git || {};
@@ -219,6 +246,16 @@ function normalizeWorktreeSnapshot(payload) {
   };
 }
 
+function normalizeChatMessage(message) {
+  if (!message?.content) return null;
+  return {
+    id: message.id || '',
+    author: message.sender === 'client' ? 'You' : message.sender || 'agent',
+    text: message.content,
+    time: relativeMessageTime(message.created_at),
+  };
+}
+
 async function fetchDevices() {
   const response = await fetch('/api/devices/', { headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error(`devices fetch failed: ${response.status}`);
@@ -234,11 +271,16 @@ function bindClientEvents(client) {
   client.addEventListener('v1:message.created', event => {
     const message = event.detail?.payload?.message;
     if (!message?.content) return;
-    state.localChat.push({
-      author: message.sender || 'agent',
-      text: message.content,
-      time: 'now',
-    });
+    const channelId = message.channel_id || event.detail?.target?.channel_id;
+    if (channelId) {
+      appendLiveMessage(channelId, normalizeChatMessage(message));
+    } else {
+      appendLocalChat({
+        author: message.sender || 'agent',
+        text: message.content,
+        time: 'now',
+      }, chatKeyFromEvent(event.detail));
+    }
     render();
   });
   client.addEventListener('v1:terminal.exec.output', event => {
@@ -302,6 +344,8 @@ function handleClick(event) {
     render();
   } else if (action === 'sync-v1') {
     initTransport();
+  } else if (action === 'spawn-worktree') {
+    spawnWorktree(actionEl.dataset.projectId);
   }
 }
 
@@ -330,13 +374,14 @@ async function handleSubmit(event) {
   input.value = '';
 
   if (form.dataset.form === 'chat') {
-    state.localChat.push({ author: 'You', text: value, time: 'now' });
+    const key = chatKey();
+    appendLocalChat({ author: 'You', text: value, time: 'now' }, key);
     const liveChannel = firstLiveChannel();
     if (state.transport.client?.connected && liveChannel) {
       try {
         await state.transport.client.sendMessage(liveChannel.id, value);
       } catch (err) {
-        state.localChat.push({ author: 'Build', text: String(err?.message || err), time: 'now' });
+        appendLocalChat({ author: 'Build', text: String(err?.message || err), time: 'now' }, key);
       }
     }
     render();
@@ -362,6 +407,113 @@ async function handleSubmit(event) {
     }
     render();
   }
+}
+
+async function spawnWorktree(projectId) {
+  if (!projectId || state.spawnLoads.has(projectId)) return;
+  const client = state.transport.client;
+  if (!client?.connected) {
+    appendLocalChat({ author: 'Build', text: 'Connect an encrypted device before spawning a worktree.', time: 'now' }, 'global');
+    render();
+    return;
+  }
+
+  state.spawnLoads.add(projectId);
+  render();
+  try {
+    const project = findProjectItem(projectId);
+    const nextIndex = (project.worktrees?.length || 0) + 1;
+    const response = await client.createWorktree(projectId, {
+      name: `Worktree ${nextIndex}`,
+      create_git_worktree: !!project.root_path,
+      agent: defaultAgentOptions(project),
+    });
+    const payload = response.payload || {};
+    await refreshDashboardData();
+    if (payload.channel?.id && payload.agent_error) {
+      appendLocalChat({ author: 'Build', text: payload.agent_error, time: 'now' }, `channel:${payload.channel.id}`);
+    }
+    if (payload.worktree?.id) {
+      navigate(`#/worktree/${payload.worktree.id}`);
+      state.route = parseRoute();
+      loadRouteData();
+    }
+  } catch (err) {
+    appendLocalChat({ author: 'Build', text: String(err?.message || err), time: 'now' }, 'global');
+  } finally {
+    state.spawnLoads.delete(projectId);
+    render();
+  }
+}
+
+async function refreshDashboardData() {
+  const client = state.transport.client;
+  if (!client?.connected) return;
+  const [channelList, snapshot] = await Promise.all([
+    client.listChannels(),
+    loadDashboardSnapshot(client),
+  ]);
+  state.liveSnapshot = snapshot;
+  setTransport({
+    channels: channelList.payload?.channels || [],
+    error: null,
+  });
+}
+
+function defaultAgentOptions(project) {
+  const worktrees = project.worktrees || [];
+  const channelId = worktrees.find(worktree => worktree.channel_id)?.channel_id;
+  const channel = (
+    state.transport.channels.find(item => item.id === channelId)
+    || state.transport.channels.find(item => item.agent?.harness)
+  );
+  const agent = channel?.agent || {};
+  if (!agent.harness) return {};
+  return {
+    harness: agent.harness,
+    model: agent.model || '',
+    effort: agent.effort || '',
+    auto_approve_tools: !!agent.auto_approve_tools,
+  };
+}
+
+function appendLocalChat(message, key = chatKey()) {
+  const bucket = state.localChatByKey.get(key) || [];
+  bucket.push(message);
+  state.localChatByKey.set(key, bucket);
+}
+
+function appendLiveMessage(channelId, message) {
+  if (!message) return;
+  const bucket = state.messagesByChannel.get(channelId) || [];
+  if (message.id && bucket.some(item => item.id === message.id)) return;
+  bucket.push(message);
+  state.messagesByChannel.set(channelId, bucket);
+}
+
+function localChatFor(key = chatKey()) {
+  return state.localChatByKey.get(key) || [];
+}
+
+function messagesForCurrentRoute(fallback) {
+  const channelId = currentRouteChannelId();
+  const hasLive = channelId ? state.messagesByChannel.has(channelId) : false;
+  const base = hasLive ? state.messagesByChannel.get(channelId) || [] : fallback;
+  return [...base, ...localChatFor()];
+}
+
+function chatKey() {
+  const channelId = currentRouteChannelId();
+  if (channelId) return `channel:${channelId}`;
+  if (state.route.screen === 'plan' || state.route.screen === 'worktree') {
+    return `route:${state.route.screen}:${state.route.id || ''}`;
+  }
+  return 'global';
+}
+
+function chatKeyFromEvent(app) {
+  const channelId = app?.target?.channel_id;
+  return channelId ? `channel:${channelId}` : 'global';
 }
 
 function firstLiveChannel() {
@@ -693,6 +845,7 @@ function renderProject(project) {
     ['queued', 'Queued'],
     ['draft', 'Drafts'],
   ];
+  const spawning = state.spawnLoads.has(project.id);
   return `
     <section class="screen project-screen">
       <div class="project-hero plain-hero" style="--project:${escapeAttr(project.color)}">
@@ -738,7 +891,9 @@ function renderProject(project) {
                 <span class="progress"><span style="width:${wt.pct}%"></span></span>
               </a>
             `).join('')}
-            <button class="secondary full" type="button">+ Spawn new worktree</button>
+            <button class="secondary full" type="button" data-action="spawn-worktree" data-project-id="${escapeAttr(project.id)}" ${spawning ? 'disabled' : ''}>
+              ${spawning ? 'Spawning...' : '+ Spawn new worktree'}
+            </button>
           </div>
           <div class="panel">
             <div class="panel-title">Recent</div>
@@ -772,7 +927,7 @@ function renderPlanCard(plan, project) {
 function renderPlan(planItem) {
   const project = planItem.project;
   const doc = planItem.id === PLAN_DOC.id ? PLAN_DOC : { ...PLAN_DOC, id: planItem.id, title: planItem.title };
-  const messages = [...doc.chat, ...state.localChat];
+  const messages = messagesForCurrentRoute(doc.chat);
   return `
     <section class="plan-screen">
       <div class="subbar">
@@ -819,7 +974,7 @@ function renderPlan(planItem) {
 function renderWorktree(worktreeItem) {
   const project = worktreeItem.project;
   const wt = worktreeDetail(worktreeItem);
-  const messages = [...(wt.chat || WORKTREE.chat), ...state.localChat];
+  const messages = messagesForCurrentRoute(wt.chat || WORKTREE.chat);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
     <section class="worktree-screen">
@@ -1085,6 +1240,18 @@ function prefixFor(type) {
   if (type === 'add') return '+ ';
   if (type === 'del') return '- ';
   return '  ';
+}
+
+function relativeMessageTime(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'now';
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+  if (seconds < 60) return 'now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function userName() {

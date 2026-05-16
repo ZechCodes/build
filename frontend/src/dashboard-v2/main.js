@@ -25,7 +25,11 @@ const state = {
   worktreeLoads: new Set(),
   messagesByChannel: new Map(),
   messageLoads: new Set(),
+  activityByChannel: new Map(),
+  activityLoads: new Set(),
   spawnLoads: new Set(),
+  harnesses: [],
+  dialog: null,
   transport: {
     phase: 'checking',
     label: 'Checking devices',
@@ -45,6 +49,7 @@ function boot() {
   if (!root) return;
   root.addEventListener('click', handleClick);
   root.addEventListener('input', handleInput);
+  root.addEventListener('change', handleChange);
   root.addEventListener('submit', handleSubmit);
   window.addEventListener('hashchange', () => {
     state.route = parseRoute();
@@ -61,6 +66,8 @@ async function initTransport() {
     state.worktreeLoads.clear();
     state.messagesByChannel.clear();
     state.messageLoads.clear();
+    state.activityByChannel.clear();
+    state.activityLoads.clear();
     setTransport({ phase: 'checking', label: 'Checking devices', error: null });
     const devices = await fetchDevices();
     const readyDevice = devices.find(device => device.status === 'online' && device.has_transport_key);
@@ -89,9 +96,13 @@ async function initTransport() {
     await client.ready();
     await client.connect(readyDevice.id);
     const hello = await client.hello();
-    const channelList = await client.listChannels();
+    const [channelList, harnessList] = await Promise.all([
+      client.listChannels(),
+      client.listHarnesses().catch(() => ({ payload: { harnesses: [] } })),
+    ]);
     const snapshot = await loadDashboardSnapshot(client);
     state.liveSnapshot = snapshot;
+    state.harnesses = normalizeHarnesses(harnessList.payload?.harnesses);
     setTransport({
       phase: 'connected',
       label: `${readyDevice.name} - v${hello.payload?.version || 1}`,
@@ -106,6 +117,8 @@ async function initTransport() {
     state.worktreeLoads.clear();
     state.messagesByChannel.clear();
     state.messageLoads.clear();
+    state.activityByChannel.clear();
+    state.activityLoads.clear();
     setTransport({
       phase: 'mock',
       label: 'Mock data',
@@ -119,6 +132,7 @@ function loadRouteData() {
     loadWorktreeSnapshot(state.route.id);
   }
   loadRouteMessages();
+  loadRouteActivity();
 }
 
 async function loadDashboardSnapshot(client) {
@@ -218,6 +232,25 @@ async function loadRouteMessages() {
   }
 }
 
+async function loadRouteActivity() {
+  const channelId = currentRouteChannelId();
+  if (!channelId || !state.transport.client?.connected) return;
+  if (state.activityByChannel.has(channelId) || state.activityLoads.has(channelId)) return;
+  state.activityLoads.add(channelId);
+  try {
+    const response = await state.transport.client.listActivity(channelId);
+    const entries = Array.isArray(response.payload?.entries)
+      ? response.payload.entries.map(entry => normalizeActivityEntry(entry, channelId)).filter(Boolean)
+      : [];
+    state.activityByChannel.set(channelId, entries);
+    render();
+  } catch (err) {
+    console.debug('activity.list unavailable', err);
+  } finally {
+    state.activityLoads.delete(channelId);
+  }
+}
+
 function normalizeWorktreeSnapshot(payload) {
   if (!payload?.worktree?.id) return null;
   const git = payload.git || {};
@@ -253,7 +286,57 @@ function normalizeChatMessage(message) {
     author: message.sender === 'client' ? 'You' : message.sender || 'agent',
     text: message.content,
     time: relativeMessageTime(message.created_at),
+    createdAt: activityTimestamp(message.created_at),
   };
+}
+
+function normalizeActivityEntry(entry, channelId) {
+  const type = entry?.type || entry?.kind;
+  const data = entry?.data || entry?.payload || {};
+  if (!type) return null;
+  if (type === 'text' || type === 'thinking') {
+    return {
+      id: entry.id || `act-${channelId}-${entry.created_at || crypto.randomUUID()}`,
+      kind: 'thinking',
+      text: data.text || data.content || '',
+      time: relativeMessageTime(entry.created_at),
+      createdAt: activityTimestamp(entry.created_at),
+    };
+  }
+  if (type === 'tool_use') {
+    return {
+      id: data.id || entry.id || `tool-${channelId}-${entry.created_at || crypto.randomUUID()}`,
+      kind: 'tool_use',
+      name: data.name || 'tool',
+      input: data.input || {},
+      time: relativeMessageTime(entry.created_at),
+      createdAt: activityTimestamp(entry.created_at),
+    };
+  }
+  if (type === 'tool_result') {
+    return {
+      id: data.tool_use_id || entry.id || `result-${channelId}-${entry.created_at || crypto.randomUUID()}`,
+      kind: 'tool_result',
+      text: stringifyActivityContent(data.content),
+      isError: !!data.is_error,
+      time: relativeMessageTime(entry.created_at),
+      createdAt: activityTimestamp(entry.created_at),
+    };
+  }
+  if (type === 'end') {
+    return {
+      id: entry.id || `end-${channelId}-${entry.created_at || crypto.randomUUID()}`,
+      kind: 'activity_end',
+      reason: data.reason || 'complete',
+      time: relativeMessageTime(entry.created_at),
+      createdAt: activityTimestamp(entry.created_at),
+    };
+  }
+  return null;
+}
+
+function normalizeHarnesses(harnesses) {
+  return Array.isArray(harnesses) ? harnesses.filter(harness => harness?.id) : [];
 }
 
 async function fetchDevices() {
@@ -281,6 +364,60 @@ function bindClientEvents(client) {
         time: 'now',
       }, chatKeyFromEvent(event.detail));
     }
+    render();
+  });
+  client.addEventListener('v1:activity.delta', event => {
+    const channelId = event.detail?.target?.channel_id;
+    const delta = event.detail?.payload?.delta || {};
+    if (!channelId || !delta.text) return;
+    appendActivity(channelId, {
+      id: `live-thinking-${event.detail.id}`,
+      kind: 'thinking',
+      text: delta.text,
+      time: 'now',
+      createdAt: Date.now(),
+    });
+    render();
+  });
+  client.addEventListener('v1:tool.used', event => {
+    const channelId = event.detail?.target?.channel_id;
+    const payload = event.detail?.payload || {};
+    if (!channelId) return;
+    appendActivity(channelId, {
+      id: payload.tool_use_id || `tool-${event.detail.id}`,
+      kind: 'tool_use',
+      name: payload.name || 'tool',
+      input: payload.input || {},
+      time: 'now',
+      createdAt: Date.now(),
+    });
+    render();
+  });
+  client.addEventListener('v1:tool.completed', event => {
+    const channelId = event.detail?.target?.channel_id;
+    const payload = event.detail?.payload || {};
+    if (!channelId) return;
+    appendActivity(channelId, {
+      id: payload.tool_use_id || `result-${event.detail.id}`,
+      kind: 'tool_result',
+      text: stringifyActivityContent(payload.content),
+      isError: !!payload.is_error,
+      time: 'now',
+      createdAt: Date.now(),
+    });
+    render();
+  });
+  client.addEventListener('v1:activity.end', event => {
+    const channelId = event.detail?.target?.channel_id;
+    const payload = event.detail?.payload || {};
+    if (!channelId) return;
+    appendActivity(channelId, {
+      id: `end-${event.detail.id}`,
+      kind: 'activity_end',
+      reason: payload.reason || 'complete',
+      time: 'now',
+      createdAt: Date.now(),
+    });
     render();
   });
   client.addEventListener('v1:terminal.exec.output', event => {
@@ -344,8 +481,13 @@ function handleClick(event) {
     render();
   } else if (action === 'sync-v1') {
     initTransport();
-  } else if (action === 'spawn-worktree') {
-    spawnWorktree(actionEl.dataset.projectId);
+  } else if (action === 'open-project-create') {
+    openProjectDialog();
+  } else if (action === 'open-worktree-create') {
+    openWorktreeDialog(actionEl.dataset.projectId);
+  } else if (action === 'close-dialog') {
+    state.dialog = null;
+    render();
   }
 }
 
@@ -363,10 +505,34 @@ function handleInput(event) {
   }
 }
 
+function handleChange(event) {
+  const target = event.target;
+  if (!state.dialog || !target.matches('[data-dialog-field]')) return;
+  const field = target.dataset.dialogField;
+  if (field === 'harness' || field === 'permissions') {
+    state.dialog.values[field] = target.value;
+    if (field === 'harness') {
+      const harness = harnessFor(target.value);
+      state.dialog.values.model = harness?.default_model || harness?.models?.[0]?.id || '';
+      state.dialog.values.effort = harness?.default_effort || harness?.effort_levels?.[0] || '';
+    }
+    render();
+  }
+}
+
 async function handleSubmit(event) {
   const form = event.target.closest('form[data-form]');
   if (!form) return;
   event.preventDefault();
+
+  if (form.dataset.form === 'project-create') {
+    await createProjectFromForm(form);
+    return;
+  }
+  if (form.dataset.form === 'worktree-create') {
+    await spawnWorktreeFromForm(form);
+    return;
+  }
 
   const input = form.querySelector('input[name="message"], input[name="command"]');
   const value = input?.value?.trim();
@@ -409,41 +575,124 @@ async function handleSubmit(event) {
   }
 }
 
-async function spawnWorktree(projectId) {
-  if (!projectId || state.spawnLoads.has(projectId)) return;
+function openProjectDialog() {
+  state.dialog = {
+    type: 'project-create',
+    values: { name: '', root_path: '' },
+    error: null,
+    busy: false,
+  };
+  render();
+}
+
+function openWorktreeDialog(projectId) {
+  const project = findProjectItem(projectId);
+  const defaults = defaultAgentOptions(project);
+  const harness = harnessFor(defaults.harness) || state.harnesses.find(item => item.installed) || state.harnesses[0] || null;
+  state.dialog = {
+    type: 'worktree-create',
+    projectId,
+    values: {
+      name: `Worktree ${(project.worktrees?.length || 0) + 1}`,
+      branch: '',
+      harness: harness?.id || defaults.harness || '',
+      model: defaults.model || harness?.default_model || harness?.models?.[0]?.id || '',
+      effort: defaults.effort || harness?.default_effort || harness?.effort_levels?.[0] || '',
+      permissions: defaults.auto_approve_tools ? 'auto' : 'ask',
+    },
+    error: null,
+    busy: false,
+  };
+  render();
+}
+
+async function createProjectFromForm(form) {
   const client = state.transport.client;
   if (!client?.connected) {
-    appendLocalChat({ author: 'Build', text: 'Connect an encrypted device before spawning a worktree.', time: 'now' }, 'global');
-    render();
+    setDialogError('Connect an encrypted device before creating a project.');
+    return;
+  }
+  const name = form.elements.name?.value?.trim();
+  const rootPath = form.elements.root_path?.value?.trim();
+  if (!name || !rootPath) {
+    setDialogError('Project name and directory are required.');
     return;
   }
 
+  state.dialog.values = { name, root_path: rootPath };
+  setDialogBusy(true);
+  try {
+    const response = await client.createProject({ name, root_path: rootPath });
+    await refreshDashboardData();
+    state.dialog = null;
+    if (response.payload?.project?.id) navigate(`#/project/${response.payload.project.id}`);
+  } catch (err) {
+    setDialogError(String(err?.message || err));
+  } finally {
+    setDialogBusy(false);
+  }
+}
+
+async function spawnWorktreeFromForm(form) {
+  const projectId = form.elements.project_id?.value || state.dialog?.projectId;
+  if (!projectId || state.spawnLoads.has(projectId)) return;
+  const client = state.transport.client;
+  if (!client?.connected) {
+    setDialogError('Connect an encrypted device before spawning a worktree.');
+    return;
+  }
+
+  const project = findProjectItem(projectId);
+  const harness = form.elements.harness?.value || '';
+  const model = form.elements.model?.value || '';
+  const effort = form.elements.effort?.value || '';
+  const permissions = form.elements.permissions?.value || 'ask';
+  const name = form.elements.name?.value?.trim() || `Worktree ${(project.worktrees?.length || 0) + 1}`;
+  const branch = form.elements.branch?.value?.trim();
+
+  state.dialog.values = { name, branch, harness, model, effort, permissions };
   state.spawnLoads.add(projectId);
+  setDialogBusy(true);
   render();
   try {
-    const project = findProjectItem(projectId);
-    const nextIndex = (project.worktrees?.length || 0) + 1;
     const response = await client.createWorktree(projectId, {
-      name: `Worktree ${nextIndex}`,
+      name,
+      ...(branch ? { branch } : {}),
       create_git_worktree: !!project.root_path,
-      agent: defaultAgentOptions(project),
+      agent: {
+        harness,
+        model,
+        effort,
+        auto_approve_tools: permissions === 'auto',
+      },
     });
     const payload = response.payload || {};
     await refreshDashboardData();
     if (payload.channel?.id && payload.agent_error) {
       appendLocalChat({ author: 'Build', text: payload.agent_error, time: 'now' }, `channel:${payload.channel.id}`);
     }
+    state.dialog = null;
     if (payload.worktree?.id) {
       navigate(`#/worktree/${payload.worktree.id}`);
       state.route = parseRoute();
       loadRouteData();
     }
   } catch (err) {
-    appendLocalChat({ author: 'Build', text: String(err?.message || err), time: 'now' }, 'global');
+    setDialogError(String(err?.message || err));
   } finally {
     state.spawnLoads.delete(projectId);
+    setDialogBusy(false);
     render();
   }
+}
+
+function setDialogError(message) {
+  if (state.dialog) state.dialog.error = message;
+  render();
+}
+
+function setDialogBusy(busy) {
+  if (state.dialog) state.dialog.busy = busy;
 }
 
 async function refreshDashboardData() {
@@ -468,13 +717,26 @@ function defaultAgentOptions(project) {
     || state.transport.channels.find(item => item.agent?.harness)
   );
   const agent = channel?.agent || {};
-  if (!agent.harness) return {};
+  if (!agent.harness) {
+    const harness = state.harnesses.find(item => item.installed) || state.harnesses[0];
+    if (!harness) return {};
+    return {
+      harness: harness.id,
+      model: harness.default_model || harness.models?.[0]?.id || '',
+      effort: harness.default_effort || harness.effort_levels?.[0] || '',
+      auto_approve_tools: false,
+    };
+  }
   return {
     harness: agent.harness,
     model: agent.model || '',
     effort: agent.effort || '',
     auto_approve_tools: !!agent.auto_approve_tools,
   };
+}
+
+function harnessFor(harnessId) {
+  return state.harnesses.find(harness => harness.id === harnessId) || null;
 }
 
 function appendLocalChat(message, key = chatKey()) {
@@ -491,15 +753,30 @@ function appendLiveMessage(channelId, message) {
   state.messagesByChannel.set(channelId, bucket);
 }
 
+function appendActivity(channelId, entry) {
+  const bucket = state.activityByChannel.get(channelId) || [];
+  if (entry.id && bucket.some(item => item.id === entry.id)) return;
+  const prev = bucket[bucket.length - 1];
+  if (entry.kind === 'thinking' && prev?.kind === 'thinking' && prev.id.startsWith('live-thinking')) {
+    prev.text += entry.text;
+  } else {
+    bucket.push(entry);
+  }
+  state.activityByChannel.set(channelId, bucket);
+}
+
 function localChatFor(key = chatKey()) {
   return state.localChatByKey.get(key) || [];
 }
 
-function messagesForCurrentRoute(fallback) {
+function timelineForCurrentRoute(fallback) {
   const channelId = currentRouteChannelId();
   const hasLive = channelId ? state.messagesByChannel.has(channelId) : false;
-  const base = hasLive ? state.messagesByChannel.get(channelId) || [] : fallback;
-  return [...base, ...localChatFor()];
+  const messages = (hasLive ? state.messagesByChannel.get(channelId) || [] : fallback)
+    .map(message => ({ kind: 'message', createdAt: message.createdAt || 0, ...message }));
+  const activity = channelId ? state.activityByChannel.get(channelId) || [] : [];
+  return [...messages, ...activity, ...localChatFor().map(message => ({ kind: 'message', ...message }))]
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 }
 
 function chatKey() {
@@ -572,6 +849,7 @@ function render() {
     <div class="dash-shell">
       ${renderTopChrome()}
       ${renderContent()}
+      ${renderDialog()}
       <div class="status-rail">
         <span class="dot ${state.transport.phase}"></span>
         <span>${escapeHtml(state.transport.label)}</span>
@@ -796,7 +1074,7 @@ function renderProjects() {
           <div class="eyebrow">Projects</div>
           <h1>Your <em>workshops.</em></h1>
         </div>
-        <button class="primary" type="button">+ New project</button>
+        <button class="primary" type="button" data-action="open-project-create">+ New project</button>
       </div>
       <div class="project-grid">
         ${projects.map(project => `
@@ -891,7 +1169,7 @@ function renderProject(project) {
                 <span class="progress"><span style="width:${wt.pct}%"></span></span>
               </a>
             `).join('')}
-            <button class="secondary full" type="button" data-action="spawn-worktree" data-project-id="${escapeAttr(project.id)}" ${spawning ? 'disabled' : ''}>
+            <button class="secondary full" type="button" data-action="open-worktree-create" data-project-id="${escapeAttr(project.id)}" ${spawning ? 'disabled' : ''}>
               ${spawning ? 'Spawning...' : '+ Spawn new worktree'}
             </button>
           </div>
@@ -927,7 +1205,7 @@ function renderPlanCard(plan, project) {
 function renderPlan(planItem) {
   const project = planItem.project;
   const doc = planItem.id === PLAN_DOC.id ? PLAN_DOC : { ...PLAN_DOC, id: planItem.id, title: planItem.title };
-  const messages = messagesForCurrentRoute(doc.chat);
+  const messages = timelineForCurrentRoute(doc.chat);
   return `
     <section class="plan-screen">
       <div class="subbar">
@@ -974,7 +1252,7 @@ function renderPlan(planItem) {
 function renderWorktree(worktreeItem) {
   const project = worktreeItem.project;
   const wt = worktreeDetail(worktreeItem);
-  const messages = messagesForCurrentRoute(wt.chat || WORKTREE.chat);
+  const messages = timelineForCurrentRoute(wt.chat || WORKTREE.chat);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
     <section class="worktree-screen">
@@ -1140,23 +1418,148 @@ function renderTests(wt) {
   `;
 }
 
+function renderDialog() {
+  if (!state.dialog) return '';
+  if (state.dialog.type === 'project-create') return renderProjectDialog();
+  if (state.dialog.type === 'worktree-create') return renderWorktreeDialog();
+  return '';
+}
+
+function renderProjectDialog() {
+  const dialog = state.dialog;
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true">
+      <form class="modal-panel" data-form="project-create">
+        <header class="modal-head">
+          <h2>Create project</h2>
+          <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">x</button>
+        </header>
+        <label class="form-field">
+          <span>Name</span>
+          <input name="name" autocomplete="off" placeholder="Build web" value="${escapeAttr(dialog.values.name)}">
+        </label>
+        <label class="form-field">
+          <span>Directory</span>
+          <input name="root_path" autocomplete="off" spellcheck="false" placeholder="/Users/you/Projects/repo-or-workspace" value="${escapeAttr(dialog.values.root_path)}">
+        </label>
+        ${dialog.error ? `<div class="form-error">${escapeHtml(dialog.error)}</div>` : ''}
+        <footer class="modal-actions">
+          <button class="secondary" type="button" data-action="close-dialog">Cancel</button>
+          <button class="primary" type="submit" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Creating...' : 'Create project'}</button>
+        </footer>
+      </form>
+    </div>
+  `;
+}
+
+function renderWorktreeDialog() {
+  const dialog = state.dialog;
+  const project = findProjectItem(dialog.projectId);
+  const harness = harnessFor(dialog.values.harness) || state.harnesses[0] || {};
+  const models = harness.models || [];
+  const efforts = harness.effort_levels || ['low', 'medium', 'high', 'xhigh'];
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true">
+      <form class="modal-panel" data-form="worktree-create">
+        <input type="hidden" name="project_id" value="${escapeAttr(project.id)}">
+        <header class="modal-head">
+          <h2>Spawn worktree</h2>
+          <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">x</button>
+        </header>
+        <label class="form-field">
+          <span>Name</span>
+          <input name="name" autocomplete="off" value="${escapeAttr(dialog.values.name)}">
+        </label>
+        <label class="form-field">
+          <span>Branch</span>
+          <input name="branch" autocomplete="off" spellcheck="false" placeholder="agents/my-task" value="${escapeAttr(dialog.values.branch)}">
+        </label>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>Model provider</span>
+            <select name="harness" data-dialog-field="harness">
+              ${state.harnesses.map(item => `<option value="${escapeAttr(item.id)}" ${item.id === dialog.values.harness ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.installed ? '' : ' (missing)'}</option>`).join('') || '<option value="">No harnesses</option>'}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Model</span>
+            <select name="model">
+              ${models.map(model => `<option value="${escapeAttr(model.id)}" ${model.id === dialog.values.model ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('') || `<option value="${escapeAttr(dialog.values.model)}">${escapeHtml(dialog.values.model || 'Default')}</option>`}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Thinking</span>
+            <select name="effort">
+              ${efforts.map(effort => `<option value="${escapeAttr(effort)}" ${effort === dialog.values.effort ? 'selected' : ''}>${escapeHtml(effort)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Permissions</span>
+            <select name="permissions" data-dialog-field="permissions">
+              <option value="ask" ${dialog.values.permissions !== 'auto' ? 'selected' : ''}>Ask before tools</option>
+              <option value="auto" ${dialog.values.permissions === 'auto' ? 'selected' : ''}>Auto-approve tools</option>
+            </select>
+          </label>
+        </div>
+        <p class="form-hint">${escapeHtml(project.root_path || project.repo || project.name)}</p>
+        ${dialog.error ? `<div class="form-error">${escapeHtml(dialog.error)}</div>` : ''}
+        <footer class="modal-actions">
+          <button class="secondary" type="button" data-action="close-dialog">Cancel</button>
+          <button class="primary" type="submit" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Spawning...' : 'Spawn agent'}</button>
+        </footer>
+      </form>
+    </div>
+  `;
+}
+
 function renderChat(messages) {
   return `
     <div class="chat-list">
-      ${messages.map(msg => `
-        <div class="chat-message ${msg.author === 'You' ? 'mine' : ''}">
-          <div class="chat-meta">
-            <span>${escapeHtml(msg.author)}</span>
-            <span>${escapeHtml(msg.time)}</span>
-          </div>
-          <p>${escapeHtml(msg.text)}</p>
-        </div>
-      `).join('')}
+      ${messages.map(renderChatItem).join('')}
     </div>
     <form class="composer" data-form="chat">
       <input name="message" autocomplete="off" placeholder="Message agent">
       <button class="primary small" type="submit">Send</button>
     </form>
+  `;
+}
+
+function renderChatItem(msg) {
+  if (msg.kind === 'thinking') {
+    return `
+      <div class="chat-activity thinking">
+        <div class="chat-meta"><span>Thinking</span><span>${escapeHtml(msg.time)}</span></div>
+        <p>${escapeHtml(msg.text)}</p>
+      </div>
+    `;
+  }
+  if (msg.kind === 'tool_use') {
+    return `
+      <div class="chat-activity tool">
+        <div class="chat-meta"><span>Tool</span><span>${escapeHtml(msg.time)}</span></div>
+        <p><strong>${escapeHtml(msg.name)}</strong> ${escapeHtml(activityPreview(msg.input))}</p>
+      </div>
+    `;
+  }
+  if (msg.kind === 'tool_result') {
+    return `
+      <div class="chat-activity tool-result ${msg.isError ? 'error' : ''}">
+        <div class="chat-meta"><span>${msg.isError ? 'Tool error' : 'Tool result'}</span><span>${escapeHtml(msg.time)}</span></div>
+        <p>${escapeHtml(msg.text)}</p>
+      </div>
+    `;
+  }
+  if (msg.kind === 'activity_end') {
+    return `<div class="chat-activity end"><span>${escapeHtml(msg.reason)}</span><span>${escapeHtml(msg.time)}</span></div>`;
+  }
+  return `
+    <div class="chat-message ${msg.author === 'You' ? 'mine' : ''}">
+      <div class="chat-meta">
+        <span>${escapeHtml(msg.author)}</span>
+        <span>${escapeHtml(msg.time)}</span>
+      </div>
+      <p>${escapeHtml(msg.text)}</p>
+    </div>
   `;
 }
 
@@ -1243,7 +1646,7 @@ function prefixFor(type) {
 }
 
 function relativeMessageTime(value) {
-  const timestamp = Number(value);
+  const timestamp = activityTimestamp(value) / 1000;
   if (!Number.isFinite(timestamp) || timestamp <= 0) return 'now';
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
   if (seconds < 60) return 'now';
@@ -1252,6 +1655,32 @@ function relativeMessageTime(value) {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+function activityTimestamp(value) {
+  if (typeof value === 'number') return value > 1_000_000_000_000 ? value : value * 1000;
+  if (typeof value === 'string' && value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric > 1_000_000_000_000 ? numeric : numeric * 1000;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function stringifyActivityContent(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value ?? '', null, 2);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function activityPreview(value) {
+  const text = stringifyActivityContent(value).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > 140 ? `${text.slice(0, 137)}...` : text;
 }
 
 function userName() {

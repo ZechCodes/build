@@ -140,6 +140,10 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('project.list');
   }
 
+  createProject(payload) {
+    return this.request('project.create', { payload });
+  }
+
   listWorktrees(projectId = null) {
     return this.request('worktree.list', {
       payload: projectId ? { project_id: projectId } : {},

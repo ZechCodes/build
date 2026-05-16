@@ -1032,6 +1032,44 @@ h3 {
   line-height: 1.55;
 }
 
+.chat-activity {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--line-strong);
+  background: #fafafa;
+}
+
+.chat-activity.thinking {
+  border-left-color: #8b5cf6;
+}
+
+.chat-activity.tool {
+  border-left-color: #0891b2;
+}
+
+.chat-activity.tool-result {
+  border-left-color: #16a34a;
+}
+
+.chat-activity.tool-result.error {
+  border-left-color: #dc2626;
+}
+
+.chat-activity.end {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.chat-activity p {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1047,6 +1085,89 @@ h3 {
   border-radius: 8px;
   outline: 0;
   background: var(--surface);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.modal-panel {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+}
+
+.modal-head,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modal-head h2 {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.modal-actions {
+  justify-content: flex-end;
+}
+
+.form-field {
+  display: grid;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.form-field input,
+.form-field select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.form-hint {
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.form-error {
+  padding: 8px 10px;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: 7px;
+  background: rgba(220, 38, 38, 0.06);
+  color: #991b1b;
+  font-size: 12px;
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.58;
 }
 
 .worktree-screen {

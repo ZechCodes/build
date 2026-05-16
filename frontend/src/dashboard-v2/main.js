@@ -31,6 +31,9 @@ const state = {
   repoLoads: new Set(),
   repoErrors: new Map(),
   spawnLoads: new Set(),
+  worktreeActionLoads: new Set(),
+  worktreeErrors: new Map(),
+  snapshotRefreshTimers: new Map(),
   harnesses: [],
   dialog: null,
   transport: {
@@ -184,6 +187,12 @@ function normalizeLiveProject(project) {
       model: worktree.model || worktree.agent || 'device',
       agent: worktree.agent || worktree.model || 'device',
       status: worktree.status || 'idle',
+      harness: worktree.harness || worktree.agent_config?.harness || '',
+      effort: worktree.effort || worktree.agent_config?.effort || '',
+      auto_approve_tools: !!(worktree.auto_approve_tools ?? worktree.agent_config?.auto_approve_tools),
+      agent_running: !!worktree.agent_running,
+      agent_status: worktree.agent_status || worktree.agent_config?.status || '',
+      agent_config: worktree.agent_config || null,
       summary: worktree.summary || worktree.name || 'Agent workspace',
       device: worktree.device || 'local',
       workspace: worktree.workspace || '',
@@ -246,9 +255,9 @@ function normalizeProjectRepos(repos) {
   })).filter(repo => repo.path);
 }
 
-async function loadWorktreeSnapshot(worktreeId) {
+async function loadWorktreeSnapshot(worktreeId, { force = false } = {}) {
   if (!worktreeId || !state.transport.client?.connected) return;
-  if (state.worktreeSnapshots.has(worktreeId) || state.worktreeLoads.has(worktreeId)) return;
+  if (!force && (state.worktreeSnapshots.has(worktreeId) || state.worktreeLoads.has(worktreeId))) return;
   state.worktreeLoads.add(worktreeId);
   try {
     const response = await state.transport.client.worktreeSnapshot(worktreeId);
@@ -305,11 +314,19 @@ async function loadRouteActivity() {
 function normalizeWorktreeSnapshot(payload) {
   if (!payload?.worktree?.id) return null;
   const git = payload.git || {};
+  const agent = payload.agent || {};
   return {
     id: payload.worktree.id,
     branch: payload.worktree.branch || git.branch || 'workspace',
     status: payload.worktree.status || 'idle',
     workspace: payload.workspace || payload.worktree.path || '',
+    agent_config: agent,
+    harness: agent.harness || '',
+    model: agent.model || '',
+    effort: agent.effort || '',
+    auto_approve_tools: !!agent.auto_approve_tools,
+    agent_running: !!agent.is_running,
+    agent_status: agent.status || '',
     files: Array.isArray(payload.files) ? payload.files.map(file => ({
       path: file.path || '',
       status: file.status || 'M',
@@ -317,8 +334,12 @@ function normalizeWorktreeSnapshot(payload) {
       del: Number(file.del) || 0,
     })) : [],
     git: {
+      repo_path: git.repo_path || '',
+      branch: git.branch || '',
+      upstream: git.upstream || '',
       staged: Number(git.staged) || 0,
       unstaged: Number(git.unstaged) || 0,
+      error: git.error || null,
       commits: Array.isArray(git.commits) ? git.commits.map(commit => ({
         sha: commit.sha || '',
         message: commit.message || '',
@@ -408,6 +429,7 @@ function bindClientEvents(client) {
     const channelId = message.channel_id || event.detail?.target?.channel_id;
     if (channelId) {
       appendLiveMessage(channelId, normalizeChatMessage(message));
+      scheduleWorktreeRefresh(channelId, { dashboard: true, delay: 900 });
     } else {
       appendLocalChat({
         author: message.sender || 'agent',
@@ -428,6 +450,7 @@ function bindClientEvents(client) {
       time: 'now',
       createdAt: Date.now(),
     });
+    scheduleWorktreeRefresh(channelId, { delay: 1600 });
     render();
   });
   client.addEventListener('v1:tool.used', event => {
@@ -442,6 +465,7 @@ function bindClientEvents(client) {
       time: 'now',
       createdAt: Date.now(),
     });
+    scheduleWorktreeRefresh(channelId, { delay: 1200 });
     render();
   });
   client.addEventListener('v1:tool.completed', event => {
@@ -456,6 +480,7 @@ function bindClientEvents(client) {
       time: 'now',
       createdAt: Date.now(),
     });
+    scheduleWorktreeRefresh(channelId, { dashboard: true, delay: 650 });
     render();
   });
   client.addEventListener('v1:activity.end', event => {
@@ -469,6 +494,7 @@ function bindClientEvents(client) {
       time: 'now',
       createdAt: Date.now(),
     });
+    scheduleWorktreeRefresh(channelId, { dashboard: true, delay: 350 });
     render();
   });
   client.addEventListener('v1:terminal.exec.output', event => {
@@ -536,6 +562,14 @@ function handleClick(event) {
     openProjectDialog();
   } else if (action === 'open-worktree-create') {
     openWorktreeDialog(actionEl.dataset.projectId);
+  } else if (action === 'open-worktree-settings') {
+    openWorktreeSettingsDialog(actionEl.dataset.worktreeId);
+  } else if (action === 'stop-worktree-agent') {
+    runWorktreeLifecycleAction(actionEl.dataset.worktreeId, 'stop');
+  } else if (action === 'restart-worktree-agent') {
+    runWorktreeLifecycleAction(actionEl.dataset.worktreeId, 'restart');
+  } else if (action === 'refresh-worktree') {
+    refreshWorktreeView(actionEl.dataset.worktreeId);
   } else if (action === 'refresh-project-repos') {
     loadProjectRepos(actionEl.dataset.projectId, { force: true });
   } else if (action === 'close-dialog') {
@@ -584,6 +618,10 @@ async function handleSubmit(event) {
   }
   if (form.dataset.form === 'worktree-create') {
     await spawnWorktreeFromForm(form);
+    return;
+  }
+  if (form.dataset.form === 'worktree-settings') {
+    await updateWorktreeSettingsFromForm(form);
     return;
   }
 
@@ -661,6 +699,26 @@ function openWorktreeDialog(projectId) {
   };
   render();
   loadProjectRepos(projectId);
+}
+
+function openWorktreeSettingsDialog(worktreeId) {
+  const worktree = findWorktreeItem(worktreeId);
+  if (!worktree?.id) return;
+  const config = worktreeAgentConfig(worktree);
+  const harness = harnessFor(config.harness) || state.harnesses.find(item => item.installed) || state.harnesses[0] || null;
+  state.dialog = {
+    type: 'worktree-settings',
+    worktreeId,
+    values: {
+      harness: harness?.id || config.harness || '',
+      model: config.model || harness?.default_model || harness?.models?.[0]?.id || '',
+      effort: config.effort || harness?.default_effort || harness?.effort_levels?.[0] || '',
+      permissions: config.auto_approve_tools ? 'auto' : 'ask',
+    },
+    error: null,
+    busy: false,
+  };
+  render();
 }
 
 async function createProjectFromForm(form) {
@@ -751,6 +809,95 @@ async function spawnWorktreeFromForm(form) {
   }
 }
 
+async function updateWorktreeSettingsFromForm(form) {
+  const worktreeId = form.elements.worktree_id?.value || state.dialog?.worktreeId;
+  const worktree = findWorktreeItem(worktreeId);
+  const channelId = worktree?.channel_id;
+  const client = state.transport.client;
+  if (!channelId || !client?.connected) {
+    setDialogError('Connect an encrypted device before updating this worktree.');
+    return;
+  }
+
+  const current = worktreeAgentConfig(worktree);
+  const harness = form.elements.harness?.value || '';
+  const model = form.elements.model?.value || '';
+  const effort = form.elements.effort?.value || '';
+  const permissions = form.elements.permissions?.value || 'ask';
+  const autoApprove = permissions === 'auto';
+  state.dialog.values = { harness, model, effort, permissions };
+  setDialogBusy(true);
+  try {
+    await client.updateChannel(channelId, {
+      agent: {
+        harness,
+        model,
+        effort,
+        auto_approve_tools: autoApprove,
+      },
+    });
+    const backendRestarts = harness !== current.harness || autoApprove !== current.auto_approve_tools;
+    if (!backendRestarts && (model !== current.model || effort !== current.effort)) {
+      await client.restartAgent(channelId);
+    }
+    state.dialog = null;
+    await refreshWorktreeAfterAction(worktree.id, channelId);
+  } catch (err) {
+    setDialogError(String(err?.message || err));
+  } finally {
+    setDialogBusy(false);
+    render();
+  }
+}
+
+async function runWorktreeLifecycleAction(worktreeId, action) {
+  const worktree = findWorktreeItem(worktreeId);
+  const channelId = worktree?.channel_id;
+  const client = state.transport.client;
+  if (!worktree?.id || !channelId || !client?.connected) return;
+
+  const key = `${worktree.id}:${action}`;
+  if (state.worktreeActionLoads.has(key)) return;
+  state.worktreeActionLoads.add(key);
+  state.worktreeErrors.delete(worktree.id);
+  render();
+  try {
+    if (action === 'stop') {
+      await client.stopAgent(channelId);
+    } else if (action === 'restart') {
+      await client.restartAgent(channelId);
+    }
+    await refreshWorktreeAfterAction(worktree.id, channelId);
+  } catch (err) {
+    state.worktreeErrors.set(worktree.id, String(err?.message || err));
+  } finally {
+    state.worktreeActionLoads.delete(key);
+    render();
+  }
+}
+
+async function refreshWorktreeAfterAction(worktreeId, channelId) {
+  state.worktreeSnapshots.delete(worktreeId);
+  state.activityByChannel.delete(channelId);
+  state.messagesByChannel.delete(channelId);
+  await Promise.all([
+    loadWorktreeSnapshot(worktreeId, { force: true }),
+    refreshDashboardData(),
+  ]);
+  loadRouteMessages();
+  loadRouteActivity();
+}
+
+async function refreshWorktreeView(worktreeId) {
+  const worktree = findWorktreeItem(worktreeId);
+  if (!worktree?.id) return;
+  state.worktreeSnapshots.delete(worktree.id);
+  await Promise.all([
+    loadWorktreeSnapshot(worktree.id, { force: true }),
+    refreshDashboardData(),
+  ]);
+}
+
 function setDialogError(message) {
   if (state.dialog) state.dialog.error = message;
   render();
@@ -800,13 +947,35 @@ function defaultAgentOptions(project) {
   };
 }
 
+function worktreeAgentConfig(worktree) {
+  const snapshot = state.worktreeSnapshots.get(worktree.id) || {};
+  const snapshotAgent = snapshot.agent_config || {};
+  const itemAgent = worktree.agent_config || {};
+  const channel = state.transport.channels.find(item => item.id === worktree.channel_id);
+  const channelAgent = channel?.agent || {};
+  return {
+    harness: snapshotAgent.harness || itemAgent.harness || worktree.harness || channelAgent.harness || '',
+    model: snapshotAgent.model || itemAgent.model || worktree.model || channelAgent.model || '',
+    effort: snapshotAgent.effort || itemAgent.effort || worktree.effort || channelAgent.effort || '',
+    auto_approve_tools: !!(
+      snapshotAgent.auto_approve_tools
+      ?? itemAgent.auto_approve_tools
+      ?? worktree.auto_approve_tools
+      ?? channelAgent.auto_approve_tools
+    ),
+    working_directory: snapshotAgent.working_directory || itemAgent.working_directory || worktree.workspace || channelAgent.working_directory || '',
+    status: snapshotAgent.status || itemAgent.status || worktree.agent_status || channelAgent.status || worktree.status || '',
+    is_running: !!(snapshotAgent.is_running ?? itemAgent.is_running ?? worktree.agent_running),
+  };
+}
+
 function harnessFor(harnessId) {
   return state.harnesses.find(harness => harness.id === harnessId) || null;
 }
 
 function appendLocalChat(message, key = chatKey()) {
   const bucket = state.localChatByKey.get(key) || [];
-  bucket.push(message);
+  bucket.push({ createdAt: Date.now(), ...message });
   state.localChatByKey.set(key, bucket);
 }
 
@@ -872,6 +1041,30 @@ function currentRouteChannelId() {
   if (state.route.screen === 'worktree') return findWorktreeItem(state.route.id)?.channel_id || null;
   if (state.route.screen === 'plan') return findPlanItem(state.route.id)?.channel_id || null;
   return null;
+}
+
+function worktreeIdsForChannel(channelId) {
+  if (!channelId) return [];
+  return allWorktreesFor(projectsForRender())
+    .filter(worktree => worktree.channel_id === channelId)
+    .map(worktree => worktree.id)
+    .filter(Boolean);
+}
+
+function scheduleWorktreeRefresh(channelId, { dashboard = false, delay = 900 } = {}) {
+  const worktreeIds = worktreeIdsForChannel(channelId);
+  for (const worktreeId of worktreeIds) {
+    const key = `${channelId}:${worktreeId}`;
+    const previous = state.snapshotRefreshTimers.get(key);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(async () => {
+      state.snapshotRefreshTimers.delete(key);
+      state.worktreeSnapshots.delete(worktreeId);
+      await loadWorktreeSnapshot(worktreeId, { force: true });
+      if (dashboard) await refreshDashboardData();
+    }, delay);
+    state.snapshotRefreshTimers.set(key, timer);
+  }
 }
 
 function projectsForRender() {
@@ -1351,19 +1544,36 @@ function renderPlan(planItem) {
 function renderWorktree(worktreeItem) {
   const project = worktreeItem.project;
   const wt = worktreeDetail(worktreeItem);
+  const config = wt.agent_config || worktreeAgentConfig(wt);
+  const channelId = wt.channel_id;
+  const stopping = state.worktreeActionLoads.has(`${wt.id}:stop`);
+  const restarting = state.worktreeActionLoads.has(`${wt.id}:restart`);
+  const worktreeError = state.worktreeErrors.get(wt.id);
   const messages = timelineForCurrentRoute(wt.chat || WORKTREE.chat);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
     <section class="worktree-screen">
       <div class="subbar worktree-subbar">
-        <div><strong>${escapeHtml(wt.branch)}</strong> <span>${escapeHtml(project.branch || 'main')}</span> <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span> <span>${escapeHtml(wt.updated || project.lastActive || 'now')}</span></div>
+        <div><strong>${escapeHtml(wt.branch)}</strong> <span>${escapeHtml(wt.git?.branch || project.branch || 'main')}</span> <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span> <span>${escapeHtml(wt.updated || project.lastActive || 'now')}</span></div>
         <div class="workspace-actions">
           ${agentBadge(wt.model || wt.agent)}
-          <span>${escapeHtml(wt.agent)} . ${escapeHtml(wt.device)}</span>
-          <button class="ghost-action" type="button" data-action="sync-v1">Sync</button>
-          <button class="primary small" type="button">Approve all</button>
+          <span>${escapeHtml(config.model || wt.agent)} . ${escapeHtml(config.status || wt.status)}</span>
+          <button class="ghost-action" type="button" data-action="refresh-worktree" data-worktree-id="${escapeAttr(wt.id)}">Refresh</button>
+          <button class="secondary small" type="button" data-action="open-worktree-settings" data-worktree-id="${escapeAttr(wt.id)}" ${!channelId ? 'disabled' : ''}>Settings</button>
+          <button class="secondary small" type="button" data-action="stop-worktree-agent" data-worktree-id="${escapeAttr(wt.id)}" ${!channelId || stopping ? 'disabled' : ''}>${stopping ? 'Stopping...' : 'Stop'}</button>
+          <button class="primary small" type="button" data-action="restart-worktree-agent" data-worktree-id="${escapeAttr(wt.id)}" ${!channelId || restarting ? 'disabled' : ''}>${restarting ? 'Restarting...' : 'Restart'}</button>
         </div>
       </div>
+      <div class="worktree-meta-strip">
+        ${metaPill('Repo', wt.git?.repo_path || project.repo || project.name)}
+        ${metaPill('Path', wt.workspace || config.working_directory || '')}
+        ${metaPill('Model', config.model || wt.model || 'default')}
+        ${metaPill('Thinking', config.effort || 'default')}
+        ${metaPill('Permissions', config.auto_approve_tools ? 'auto' : 'ask')}
+        ${metaPill('Agent', config.is_running ? 'running' : config.status || wt.status)}
+      </div>
+      ${worktreeError ? `<div class="worktree-error">${escapeHtml(worktreeError)}</div>` : ''}
+      ${wt.git?.error ? `<div class="worktree-error">${escapeHtml(wt.git.error)}</div>` : ''}
       <div class="worktree-grid">
         <aside class="file-rail">
           <div class="rail-tabs">
@@ -1414,6 +1624,14 @@ function renderWorktree(worktreeItem) {
 function worktreeDetail(worktreeItem) {
   const snapshot = state.worktreeSnapshots.get(worktreeItem.id) || {};
   const detail = worktreeItem.id === WORKTREE.id ? { ...WORKTREE, ...snapshot } : { ...WORKTREE, ...worktreeItem, ...snapshot };
+  const agentConfig = worktreeAgentConfig({ ...worktreeItem, ...snapshot });
+  detail.agent_config = agentConfig;
+  detail.harness = agentConfig.harness;
+  detail.effort = agentConfig.effort;
+  detail.auto_approve_tools = agentConfig.auto_approve_tools;
+  detail.agent_running = agentConfig.is_running;
+  detail.agent_status = agentConfig.status;
+  if (agentConfig.model) detail.model = agentConfig.model;
   if (!Array.isArray(detail.files)) detail.files = WORKTREE.files;
   if (!detail.git) detail.git = WORKTREE.git;
   if (!Array.isArray(detail.tests)) detail.tests = WORKTREE.tests;
@@ -1521,6 +1739,7 @@ function renderDialog() {
   if (!state.dialog) return '';
   if (state.dialog.type === 'project-create') return renderProjectDialog();
   if (state.dialog.type === 'worktree-create') return renderWorktreeDialog();
+  if (state.dialog.type === 'worktree-settings') return renderWorktreeSettingsDialog();
   return '';
 }
 
@@ -1625,6 +1844,58 @@ function renderWorktreeDialog() {
   `;
 }
 
+function renderWorktreeSettingsDialog() {
+  const dialog = state.dialog;
+  const worktree = findWorktreeItem(dialog.worktreeId);
+  const harness = harnessFor(dialog.values.harness) || state.harnesses[0] || {};
+  const models = harness.models || [];
+  const efforts = harness.effort_levels || ['low', 'medium', 'high', 'xhigh'];
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true">
+      <form class="modal-panel" data-form="worktree-settings">
+        <input type="hidden" name="worktree_id" value="${escapeAttr(worktree.id)}">
+        <header class="modal-head">
+          <h2>Agent settings</h2>
+          <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">x</button>
+        </header>
+        <div class="form-grid">
+          <label class="form-field">
+            <span>Model provider</span>
+            <select name="harness" data-dialog-field="harness">
+              ${state.harnesses.map(item => `<option value="${escapeAttr(item.id)}" ${item.id === dialog.values.harness ? 'selected' : ''}>${escapeHtml(item.name || item.id)}${item.installed ? '' : ' (missing)'}</option>`).join('') || '<option value="">No harnesses</option>'}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Model</span>
+            <select name="model">
+              ${models.map(model => `<option value="${escapeAttr(model.id)}" ${model.id === dialog.values.model ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('') || `<option value="${escapeAttr(dialog.values.model)}">${escapeHtml(dialog.values.model || 'Default')}</option>`}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Thinking</span>
+            <select name="effort">
+              ${efforts.map(effort => `<option value="${escapeAttr(effort)}" ${effort === dialog.values.effort ? 'selected' : ''}>${escapeHtml(effort)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="form-field">
+            <span>Permissions</span>
+            <select name="permissions" data-dialog-field="permissions">
+              <option value="ask" ${dialog.values.permissions !== 'auto' ? 'selected' : ''}>Ask before tools</option>
+              <option value="auto" ${dialog.values.permissions === 'auto' ? 'selected' : ''}>Auto-approve tools</option>
+            </select>
+          </label>
+        </div>
+        <p class="form-hint">${escapeHtml(worktree.workspace || worktree.path || worktree.summary || '')}</p>
+        ${dialog.error ? `<div class="form-error">${escapeHtml(dialog.error)}</div>` : ''}
+        <footer class="modal-actions">
+          <button class="secondary" type="button" data-action="close-dialog">Cancel</button>
+          <button class="primary" type="submit" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Saving...' : 'Save settings'}</button>
+        </footer>
+      </form>
+    </div>
+  `;
+}
+
 function renderChat(messages) {
   return `
     <div class="chat-list">
@@ -1692,6 +1963,15 @@ function metric(label, value) {
     <div class="metric">
       <span>${escapeHtml(String(value))}</span>
       <span>${escapeHtml(label)}</span>
+    </div>
+  `;
+}
+
+function metaPill(label, value) {
+  return `
+    <div class="meta-pill">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value || '-'))}</strong>
     </div>
   `;
 }

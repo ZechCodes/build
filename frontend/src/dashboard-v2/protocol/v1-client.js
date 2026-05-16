@@ -146,6 +146,12 @@ export class BuildE2EEV1 extends BuildE2EE {
     });
   }
 
+  worktreeSnapshot(worktreeId) {
+    return this.request('worktree.snapshot', {
+      payload: { worktree_id: worktreeId },
+    });
+  }
+
   listPlans(options = {}) {
     return this.request('plan.list', {
       payload: {

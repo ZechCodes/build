@@ -21,6 +21,8 @@ const state = {
   terminalOpen: true,
   chatOpen: true,
   liveSnapshot: null,
+  worktreeSnapshots: new Map(),
+  worktreeLoads: new Set(),
   transport: {
     phase: 'checking',
     label: 'Checking devices',
@@ -44,6 +46,7 @@ function boot() {
   window.addEventListener('hashchange', () => {
     state.route = parseRoute();
     render();
+    loadRouteData();
   });
   render();
   initTransport();
@@ -51,6 +54,8 @@ function boot() {
 
 async function initTransport() {
   try {
+    state.worktreeSnapshots.clear();
+    state.worktreeLoads.clear();
     setTransport({ phase: 'checking', label: 'Checking devices', error: null });
     const devices = await fetchDevices();
     const readyDevice = devices.find(device => device.status === 'online' && device.has_transport_key);
@@ -89,13 +94,22 @@ async function initTransport() {
       channels: channelList.payload?.channels || [],
       error: null,
     });
+    loadRouteData();
   } catch (err) {
     state.liveSnapshot = null;
+    state.worktreeSnapshots.clear();
+    state.worktreeLoads.clear();
     setTransport({
       phase: 'mock',
       label: 'Mock data',
       error: String(err?.message || err),
     });
+  }
+}
+
+function loadRouteData() {
+  if (state.route.screen === 'worktree') {
+    loadWorktreeSnapshot(state.route.id);
   }
 }
 
@@ -156,6 +170,52 @@ function normalizeLiveProject(project) {
       updated: plan.updated || project.lastActive || 'now',
     })),
     activity: Array.isArray(project.activity) ? project.activity : [],
+  };
+}
+
+async function loadWorktreeSnapshot(worktreeId) {
+  if (!worktreeId || !state.transport.client?.connected) return;
+  if (state.worktreeSnapshots.has(worktreeId) || state.worktreeLoads.has(worktreeId)) return;
+  state.worktreeLoads.add(worktreeId);
+  try {
+    const response = await state.transport.client.worktreeSnapshot(worktreeId);
+    const snapshot = normalizeWorktreeSnapshot(response.payload);
+    if (snapshot) {
+      state.worktreeSnapshots.set(worktreeId, snapshot);
+      render();
+    }
+  } catch (err) {
+    console.debug('worktree.snapshot unavailable', err);
+  } finally {
+    state.worktreeLoads.delete(worktreeId);
+  }
+}
+
+function normalizeWorktreeSnapshot(payload) {
+  if (!payload?.worktree?.id) return null;
+  const git = payload.git || {};
+  return {
+    id: payload.worktree.id,
+    branch: payload.worktree.branch || git.branch || 'workspace',
+    status: payload.worktree.status || 'idle',
+    workspace: payload.workspace || payload.worktree.path || '',
+    files: Array.isArray(payload.files) ? payload.files.map(file => ({
+      path: file.path || '',
+      status: file.status || 'M',
+      add: Number(file.add) || 0,
+      del: Number(file.del) || 0,
+    })) : [],
+    git: {
+      staged: Number(git.staged) || 0,
+      unstaged: Number(git.unstaged) || 0,
+      commits: Array.isArray(git.commits) ? git.commits.map(commit => ({
+        sha: commit.sha || '',
+        message: commit.message || '',
+        time: commit.time || '',
+      })) : [],
+    },
+    diffHunks: Array.isArray(payload.diffs) ? payload.diffs.filter(diff => Array.isArray(diff.lines)) : [],
+    tests: Array.isArray(payload.tests) ? payload.tests : [],
   };
 }
 
@@ -778,10 +838,10 @@ function renderWorktree(worktreeItem) {
             <button class="active" type="button">Changed <span>${wt.files.length}</span></button>
             <button type="button">All</button>
           </div>
-          <div class="rail-summary"><span class="add">+172</span><span class="del">-17</span><span>1/7 reviewed</span></div>
+          <div class="rail-summary"><span class="add">+${sum(wt.files, 'add')}</span><span class="del">-${sum(wt.files, 'del')}</span><span>${wt.files.length} changed</span></div>
           ${wt.files.map(file => `
             <button class="changed-file" type="button">
-              <span>${file.status[0].toUpperCase()}</span>
+              <span>${escapeHtml((file.status || 'M')[0].toUpperCase())}</span>
               <span>${escapeHtml(file.path.replace('src/', 'services/api/'))}</span>
               <span class="add">+${file.add}</span>
               <span class="del">-${file.del}</span>
@@ -820,7 +880,8 @@ function renderWorktree(worktreeItem) {
 }
 
 function worktreeDetail(worktreeItem) {
-  const detail = worktreeItem.id === WORKTREE.id ? { ...WORKTREE } : { ...WORKTREE, ...worktreeItem };
+  const snapshot = state.worktreeSnapshots.get(worktreeItem.id) || {};
+  const detail = worktreeItem.id === WORKTREE.id ? { ...WORKTREE, ...snapshot } : { ...WORKTREE, ...worktreeItem, ...snapshot };
   if (!Array.isArray(detail.files)) detail.files = WORKTREE.files;
   if (!detail.git) detail.git = WORKTREE.git;
   if (!Array.isArray(detail.tests)) detail.tests = WORKTREE.tests;
@@ -835,19 +896,20 @@ function renderWorktreeTab(wt) {
   if (state.worktreeTab === 'files') return renderFiles(wt);
   if (state.worktreeTab === 'git') return renderGit(wt);
   if (state.worktreeTab === 'tests') return renderTests(wt);
-  return renderDiff();
+  return renderDiff(wt);
 }
 
-function renderDiff() {
+function renderDiff(wt) {
+  const hunks = Array.isArray(wt.diffHunks) && wt.diffHunks.length ? wt.diffHunks : SAMPLE_HUNKS;
   return `
     <div class="diff-view">
-      ${SAMPLE_HUNKS.map(hunk => `
+      ${hunks.map(hunk => `
         <section class="diff-file">
           <div class="diff-file-head">
             <span class="kind-chip permission">edit</span>
             <code>${escapeHtml(hunk.file.replace('src/routes/', 'services/api/'))}</code>
-            <span class="add">+42</span>
-            <span class="del">-17</span>
+            <span class="add">+${hunk.add ?? countLines(hunk, 'add')}</span>
+            <span class="del">-${hunk.del ?? countLines(hunk, 'del')}</span>
             <button class="ghost-action" type="button">Open in editor</button>
           </div>
           <div class="hunk-head">
@@ -860,6 +922,10 @@ function renderDiff() {
       `).join('')}
     </div>
   `;
+}
+
+function countLines(hunk, type) {
+  return Array.isArray(hunk.lines) ? hunk.lines.filter(line => line.type === type).length : 0;
 }
 
 function renderFiles(wt) {

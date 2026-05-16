@@ -146,6 +146,15 @@ export class BuildE2EEV1 extends BuildE2EE {
     });
   }
 
+  listPlans(options = {}) {
+    return this.request('plan.list', {
+      payload: {
+        ...(options.projectId ? { project_id: options.projectId } : {}),
+        ...(options.worktreeId ? { worktree_id: options.worktreeId } : {}),
+      },
+    });
+  }
+
   createChannel(name, agent = {}) {
     return this.request('channel.create', {
       payload: { name, agent },

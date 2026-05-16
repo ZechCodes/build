@@ -132,6 +132,10 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('channel.list');
   }
 
+  dashboardSnapshot() {
+    return this.request('dashboard.snapshot');
+  }
+
   createChannel(name, agent = {}) {
     return this.request('channel.create', {
       payload: { name, agent },

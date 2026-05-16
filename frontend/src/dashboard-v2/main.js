@@ -6,11 +6,6 @@ import {
   PROJECTS,
   SAMPLE_HUNKS,
   WORKTREE,
-  allPlans,
-  allWorktrees,
-  findPlan,
-  findProject,
-  findWorktree,
 } from './data/mock.js';
 import { BuildE2EEV1 } from './protocol/v1-client.js';
 
@@ -25,6 +20,7 @@ const state = {
   terminalLines: [],
   terminalOpen: true,
   chatOpen: true,
+  liveSnapshot: null,
   transport: {
     phase: 'checking',
     label: 'Checking devices',
@@ -59,11 +55,13 @@ async function initTransport() {
     const devices = await fetchDevices();
     const readyDevice = devices.find(device => device.status === 'online' && device.has_transport_key);
     if (!readyDevice) {
+      state.liveSnapshot = null;
       setTransport({
         phase: 'mock',
         label: devices.length ? 'No online encrypted device' : 'Mock data',
         devices,
         readyDevice: null,
+        channels: [],
       });
       return;
     }
@@ -82,6 +80,8 @@ async function initTransport() {
     await client.connect(readyDevice.id);
     const hello = await client.hello();
     const channelList = await client.listChannels();
+    const snapshot = await loadDashboardSnapshot(client);
+    state.liveSnapshot = snapshot;
     setTransport({
       phase: 'connected',
       label: `${readyDevice.name} - v${hello.payload?.version || 1}`,
@@ -90,12 +90,73 @@ async function initTransport() {
       error: null,
     });
   } catch (err) {
+    state.liveSnapshot = null;
     setTransport({
       phase: 'mock',
       label: 'Mock data',
       error: String(err?.message || err),
     });
   }
+}
+
+async function loadDashboardSnapshot(client) {
+  try {
+    const response = await client.dashboardSnapshot();
+    const projects = response.payload?.projects;
+    if (!Array.isArray(projects)) return null;
+    return {
+      ...response.payload,
+      projects: projects.map(normalizeLiveProject).filter(Boolean),
+    };
+  } catch (err) {
+    console.debug('dashboard.snapshot unavailable', err);
+    return null;
+  }
+}
+
+function normalizeLiveProject(project) {
+  if (!project?.id || !project?.name) return null;
+  const worktrees = Array.isArray(project.worktrees) ? project.worktrees : [];
+  const plans = Array.isArray(project.plans) ? project.plans : [];
+  return {
+    description: 'Workspace',
+    repo: project.name,
+    branch: 'main',
+    color: colorFor(project.id),
+    needsYou: 0,
+    runningAgents: 0,
+    queued: 0,
+    lastActive: 'now',
+    ...project,
+    worktrees: worktrees.map((worktree, index) => ({
+      id: worktree.id || worktree.channel_id || `worktree-${index}`,
+      channel_id: worktree.channel_id || worktree.id || '',
+      branch: worktree.branch || project.branch || 'workspace',
+      plan: worktree.plan || '',
+      model: worktree.model || worktree.agent || 'device',
+      agent: worktree.agent || worktree.model || 'device',
+      status: worktree.status || 'idle',
+      summary: worktree.summary || worktree.name || 'Agent workspace',
+      device: worktree.device || 'local',
+      workspace: worktree.workspace || '',
+      pct: Number(worktree.pct) || 0,
+      files: Number(worktree.files) || 0,
+      add: Number(worktree.add) || 0,
+      del: Number(worktree.del) || 0,
+      updated: worktree.updated || project.lastActive || 'now',
+    })),
+    plans: plans.map((plan, index) => ({
+      id: plan.id || `plan-${index}`,
+      channel_id: plan.channel_id || '',
+      title: plan.title || 'Untitled plan',
+      status: plan.status || 'draft',
+      steps: Number(plan.steps) || 1,
+      doneSteps: Number(plan.doneSteps) || 0,
+      model: plan.model || 'device',
+      updated: plan.updated || project.lastActive || 'now',
+    })),
+    activity: Array.isArray(project.activity) ? project.activity : [],
+  };
 }
 
 async function fetchDevices() {
@@ -244,7 +305,51 @@ async function handleSubmit(event) {
 }
 
 function firstLiveChannel() {
+  const channelId = currentRouteChannelId();
+  if (channelId) {
+    return state.transport.channels.find(channel => channel.id === channelId) || { id: channelId };
+  }
   return state.transport.channels[0] || null;
+}
+
+function currentRouteChannelId() {
+  if (state.route.screen === 'worktree') return findWorktreeItem(state.route.id)?.channel_id || null;
+  if (state.route.screen === 'plan') return findPlanItem(state.route.id)?.channel_id || null;
+  return null;
+}
+
+function projectsForRender() {
+  const projects = state.liveSnapshot?.projects;
+  return Array.isArray(projects) && projects.length ? projects : PROJECTS;
+}
+
+function allPlansFor(projects) {
+  return projects.flatMap(project => (project.plans || []).map(plan => ({ ...plan, project })));
+}
+
+function allWorktreesFor(projects) {
+  return projects.flatMap(project => (project.worktrees || []).map(worktree => ({ ...worktree, project })));
+}
+
+function findProjectItem(id) {
+  return (
+    projectsForRender().find(project => project.id === id)
+    || PROJECTS.find(project => project.id === id)
+    || projectsForRender()[0]
+    || PROJECTS[0]
+  );
+}
+
+function findPlanItem(id) {
+  const livePlan = allPlansFor(projectsForRender()).find(item => item.id === id);
+  const fixturePlan = allPlansFor(PROJECTS).find(item => item.id === id);
+  return livePlan || fixturePlan || allPlansFor(projectsForRender())[0] || allPlansFor(PROJECTS)[0];
+}
+
+function findWorktreeItem(id) {
+  const liveWorktree = allWorktreesFor(projectsForRender()).find(item => item.id === id);
+  const fixtureWorktree = allWorktreesFor(PROJECTS).find(item => item.id === id);
+  return liveWorktree || fixtureWorktree || allWorktreesFor(projectsForRender())[0] || allWorktreesFor(PROJECTS)[0];
 }
 
 function render() {
@@ -329,11 +434,11 @@ function renderTopbar() {
 
 function breadcrumb() {
   if (state.route.screen === 'project') {
-    const project = findProject(state.route.id);
+    const project = findProjectItem(state.route.id);
     return [{ label: 'Projects', route: '#/projects' }, { label: project.name }];
   }
   if (state.route.screen === 'plan') {
-    const plan = findPlan(state.route.id);
+    const plan = findPlanItem(state.route.id);
     return [
       { label: 'Projects', route: '#/projects' },
       { label: plan.project.name, route: `#/project/${plan.project.id}` },
@@ -341,7 +446,7 @@ function breadcrumb() {
     ];
   }
   if (state.route.screen === 'worktree') {
-    const worktree = findWorktree(state.route.id);
+    const worktree = findWorktreeItem(state.route.id);
     return [
       { label: 'Projects', route: '#/projects' },
       { label: worktree.project.name, route: `#/project/${worktree.project.id}` },
@@ -363,9 +468,9 @@ function statusText() {
 
 function renderContent() {
   if (state.route.screen === 'projects') return renderProjects();
-  if (state.route.screen === 'project') return renderProject(findProject(state.route.id));
-  if (state.route.screen === 'plan') return renderPlan(findPlan(state.route.id));
-  if (state.route.screen === 'worktree') return renderWorktree(findWorktree(state.route.id));
+  if (state.route.screen === 'project') return renderProject(findProjectItem(state.route.id));
+  if (state.route.screen === 'plan') return renderPlan(findPlanItem(state.route.id));
+  if (state.route.screen === 'worktree') return renderWorktree(findWorktreeItem(state.route.id));
   return renderInbox();
 }
 
@@ -388,7 +493,7 @@ function renderInbox() {
         <div class="eyebrow">Inbox . Friday, May 15</div>
         <div>
           <h1>${urgentCount} things need <em>your eyes.</em></h1>
-          <p>${sum(PROJECTS, 'runningAgents')} agents working across ${PROJECTS.length - 2} projects. Most won't need you.</p>
+          <p>${sum(projectsForRender(), 'runningAgents')} agents working across ${projectsForRender().length} projects. Most won't need you.</p>
         </div>
       </div>
       <div class="screen-toolbar">
@@ -414,7 +519,7 @@ function renderInbox() {
 }
 
 function renderInboxItem(item) {
-  const project = findProject(item.projectId);
+  const project = findProjectItem(item.projectId);
   const openRoute = item.worktreeId ? `#/worktree/${item.worktreeId}` : `#/plan/${item.planId}`;
   return `
     <article class="inbox-item priority-${escapeAttr(item.priority)}">
@@ -461,7 +566,7 @@ function kindShortLabel(kind) {
 
 function renderProjects() {
   const filters = ['all', 'needs-you', 'running', 'queued'];
-  const projects = PROJECTS
+  const projects = projectsForRender()
     .filter(project => {
       if (state.projectFilter === 'needs-you') return project.needsYou > 0;
       if (state.projectFilter === 'running') return project.runningAgents > 0;
@@ -651,15 +756,15 @@ function renderPlan(planItem) {
 
 function renderWorktree(worktreeItem) {
   const project = worktreeItem.project;
-  const wt = worktreeItem.id === WORKTREE.id ? WORKTREE : { ...WORKTREE, ...worktreeItem };
-  const messages = [...WORKTREE.chat, ...state.localChat];
+  const wt = worktreeDetail(worktreeItem);
+  const messages = [...(wt.chat || WORKTREE.chat), ...state.localChat];
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
     <section class="worktree-screen">
       <div class="subbar worktree-subbar">
-        <div><strong>${escapeHtml(wt.branch)}</strong> <span>main</span> <span class="mini-status blocked">blocked</span> <span>4 ahead . 0 behind</span></div>
+        <div><strong>${escapeHtml(wt.branch)}</strong> <span>${escapeHtml(project.branch || 'main')}</span> <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span> <span>${escapeHtml(wt.updated || project.lastActive || 'now')}</span></div>
         <div class="workspace-actions">
-          ${agentBadge(agentKey(wt.agent))}
+          ${agentBadge(wt.model || wt.agent)}
           <span>${escapeHtml(wt.agent)} . ${escapeHtml(wt.device)}</span>
           <button class="ghost-action" type="button" data-action="sync-v1">Sync</button>
           <button class="primary small" type="button">Approve all</button>
@@ -695,7 +800,7 @@ function renderWorktree(worktreeItem) {
         </section>
         <aside class="chat-panel worktree-chat ${state.chatOpen ? '' : 'collapsed'}">
           <div class="panel-title-row">
-            <div class="panel-title">${escapeHtml(wt.agent)} <span class="mini-status blocked">blocked</span></div>
+            <div class="panel-title">${escapeHtml(wt.agent)} <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span></div>
             <button class="icon-button" type="button" data-action="toggle-chat" aria-label="Toggle chat">C</button>
           </div>
           ${state.chatOpen ? renderChat(messages, 'worktree') : ''}
@@ -710,6 +815,18 @@ function renderWorktree(worktreeItem) {
       </section>
     </section>
   `;
+}
+
+function worktreeDetail(worktreeItem) {
+  const detail = worktreeItem.id === WORKTREE.id ? { ...WORKTREE } : { ...WORKTREE, ...worktreeItem };
+  if (!Array.isArray(detail.files)) detail.files = WORKTREE.files;
+  if (!detail.git) detail.git = WORKTREE.git;
+  if (!Array.isArray(detail.tests)) detail.tests = WORKTREE.tests;
+  if (!Array.isArray(detail.chat)) detail.chat = WORKTREE.chat;
+  if (!Array.isArray(detail.terminal)) detail.terminal = WORKTREE.terminal;
+  if (!detail.agent) detail.agent = detail.model || 'device';
+  if (!detail.device) detail.device = 'local';
+  return detail;
 }
 
 function renderWorktreeTab(wt) {
@@ -841,7 +958,11 @@ function metric(label, value) {
 }
 
 function agentBadge(model) {
-  const agent = AGENTS[model] || AGENTS.cs;
+  const agent = AGENTS[model] || Object.values(AGENTS).find(item => item.name === model) || {
+    label: agentLabel(model),
+    name: model || 'device',
+    color: colorFor(model || 'device'),
+  };
   return `
     <span class="agent-badge" style="--agent:${escapeAttr(agent.color)}" title="${escapeAttr(agent.name)}">
       ${escapeHtml(agent.label)}
@@ -852,6 +973,23 @@ function agentBadge(model) {
 function agentKey(name) {
   const match = Object.entries(AGENTS).find(([, agent]) => agent.name === name);
   return match?.[0] || 'cs';
+}
+
+function agentLabel(model) {
+  const value = String(model || 'device').replace(/^claude-|^gpt-/i, '');
+  const parts = value.split(/[^a-z0-9]+/i).filter(Boolean);
+  if (!parts.length) return 'DV';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return parts.slice(0, 2).map(part => part[0]).join('').toUpperCase();
+}
+
+function colorFor(value) {
+  const colors = ['#6366f1', '#0891b2', '#9333ea', '#0f766e', '#e11d48', '#d97706'];
+  let hash = 0;
+  for (const char of String(value || 'workspace')) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return colors[Math.abs(hash) % colors.length];
 }
 
 function renderEmpty(label) {

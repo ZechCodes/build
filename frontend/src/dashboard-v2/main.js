@@ -27,6 +27,9 @@ const state = {
   messageLoads: new Set(),
   activityByChannel: new Map(),
   activityLoads: new Set(),
+  reposByProject: new Map(),
+  repoLoads: new Set(),
+  repoErrors: new Map(),
   spawnLoads: new Set(),
   harnesses: [],
   dialog: null,
@@ -68,6 +71,9 @@ async function initTransport() {
     state.messageLoads.clear();
     state.activityByChannel.clear();
     state.activityLoads.clear();
+    state.reposByProject.clear();
+    state.repoLoads.clear();
+    state.repoErrors.clear();
     setTransport({ phase: 'checking', label: 'Checking devices', error: null });
     const devices = await fetchDevices();
     const readyDevice = devices.find(device => device.status === 'online' && device.has_transport_key);
@@ -119,6 +125,9 @@ async function initTransport() {
     state.messageLoads.clear();
     state.activityByChannel.clear();
     state.activityLoads.clear();
+    state.reposByProject.clear();
+    state.repoLoads.clear();
+    state.repoErrors.clear();
     setTransport({
       phase: 'mock',
       label: 'Mock data',
@@ -128,6 +137,9 @@ async function initTransport() {
 }
 
 function loadRouteData() {
+  if (state.route.screen === 'project') {
+    loadProjectRepos(state.route.id);
+  }
   if (state.route.screen === 'worktree') {
     loadWorktreeSnapshot(state.route.id);
   }
@@ -193,6 +205,45 @@ function normalizeLiveProject(project) {
     })),
     activity: Array.isArray(project.activity) ? project.activity : [],
   };
+}
+
+async function loadProjectRepos(projectId, { force = false } = {}) {
+  if (!projectId || !state.transport.client?.connected) return;
+  if (!force && (state.reposByProject.has(projectId) || state.repoLoads.has(projectId))) return;
+  state.repoLoads.add(projectId);
+  state.repoErrors.delete(projectId);
+  try {
+    const response = await state.transport.client.listProjectRepos(projectId);
+    const repos = normalizeProjectRepos(response.payload?.repos);
+    state.reposByProject.set(projectId, repos);
+    if (state.dialog?.type === 'worktree-create' && state.dialog.projectId === projectId && !state.dialog.values.repo_path) {
+      state.dialog.values.repo_path = repos[0]?.path || '';
+    }
+    render();
+  } catch (err) {
+    state.repoErrors.set(projectId, String(err?.message || err));
+    if (state.dialog?.type === 'worktree-create' && state.dialog.projectId === projectId) {
+      state.dialog.error = String(err?.message || err);
+    }
+    render();
+  } finally {
+    state.repoLoads.delete(projectId);
+    render();
+  }
+}
+
+function normalizeProjectRepos(repos) {
+  if (!Array.isArray(repos)) return [];
+  return repos.map(repo => ({
+    id: repo.id || repo.path || repo.relative_path || repo.name,
+    name: repo.name || repo.remote || repo.relative_path || repo.path || 'repository',
+    path: repo.path || '',
+    relative_path: repo.relative_path || repo.path || '',
+    branch: repo.branch || 'main',
+    upstream: repo.upstream || '',
+    remote: repo.remote || '',
+    is_root: !!repo.is_root,
+  })).filter(repo => repo.path);
 }
 
 async function loadWorktreeSnapshot(worktreeId) {
@@ -485,6 +536,8 @@ function handleClick(event) {
     openProjectDialog();
   } else if (action === 'open-worktree-create') {
     openWorktreeDialog(actionEl.dataset.projectId);
+  } else if (action === 'refresh-project-repos') {
+    loadProjectRepos(actionEl.dataset.projectId, { force: true });
   } else if (action === 'close-dialog') {
     state.dialog = null;
     render();
@@ -509,7 +562,7 @@ function handleChange(event) {
   const target = event.target;
   if (!state.dialog || !target.matches('[data-dialog-field]')) return;
   const field = target.dataset.dialogField;
-  if (field === 'harness' || field === 'permissions') {
+  if (field === 'harness' || field === 'permissions' || field === 'repo_path') {
     state.dialog.values[field] = target.value;
     if (field === 'harness') {
       const harness = harnessFor(target.value);
@@ -587,6 +640,8 @@ function openProjectDialog() {
 
 function openWorktreeDialog(projectId) {
   const project = findProjectItem(projectId);
+  const repos = reposForProject(projectId);
+  const defaultRepo = repos[0];
   const defaults = defaultAgentOptions(project);
   const harness = harnessFor(defaults.harness) || state.harnesses.find(item => item.installed) || state.harnesses[0] || null;
   state.dialog = {
@@ -594,6 +649,7 @@ function openWorktreeDialog(projectId) {
     projectId,
     values: {
       name: `Worktree ${(project.worktrees?.length || 0) + 1}`,
+      repo_path: defaultRepo?.path || '',
       branch: '',
       harness: harness?.id || defaults.harness || '',
       model: defaults.model || harness?.default_model || harness?.models?.[0]?.id || '',
@@ -604,6 +660,7 @@ function openWorktreeDialog(projectId) {
     busy: false,
   };
   render();
+  loadProjectRepos(projectId);
 }
 
 async function createProjectFromForm(form) {
@@ -625,7 +682,10 @@ async function createProjectFromForm(form) {
     const response = await client.createProject({ name, root_path: rootPath });
     await refreshDashboardData();
     state.dialog = null;
-    if (response.payload?.project?.id) navigate(`#/project/${response.payload.project.id}`);
+    if (response.payload?.project?.id) {
+      navigate(`#/project/${response.payload.project.id}`);
+      loadProjectRepos(response.payload.project.id, { force: true });
+    }
   } catch (err) {
     setDialogError(String(err?.message || err));
   } finally {
@@ -648,17 +708,19 @@ async function spawnWorktreeFromForm(form) {
   const effort = form.elements.effort?.value || '';
   const permissions = form.elements.permissions?.value || 'ask';
   const name = form.elements.name?.value?.trim() || `Worktree ${(project.worktrees?.length || 0) + 1}`;
+  const repoPath = form.elements.repo_path?.value || '';
   const branch = form.elements.branch?.value?.trim();
 
-  state.dialog.values = { name, branch, harness, model, effort, permissions };
+  state.dialog.values = { name, repo_path: repoPath, branch, harness, model, effort, permissions };
   state.spawnLoads.add(projectId);
   setDialogBusy(true);
   render();
   try {
     const response = await client.createWorktree(projectId, {
       name,
+      ...(repoPath ? { repo_path: repoPath } : {}),
       ...(branch ? { branch } : {}),
-      create_git_worktree: !!project.root_path,
+      create_git_worktree: !!repoPath,
       agent: {
         harness,
         model,
@@ -670,6 +732,9 @@ async function spawnWorktreeFromForm(form) {
     await refreshDashboardData();
     if (payload.channel?.id && payload.agent_error) {
       appendLocalChat({ author: 'Build', text: payload.agent_error, time: 'now' }, `channel:${payload.channel.id}`);
+    }
+    if (payload.channel?.id && payload.git?.error) {
+      appendLocalChat({ author: 'Build', text: payload.git.error, time: 'now' }, `channel:${payload.channel.id}`);
     }
     state.dialog = null;
     if (payload.worktree?.id) {
@@ -812,6 +877,10 @@ function currentRouteChannelId() {
 function projectsForRender() {
   const projects = state.liveSnapshot?.projects;
   return Array.isArray(projects) && projects.length ? projects : PROJECTS;
+}
+
+function reposForProject(projectId) {
+  return state.reposByProject.get(projectId) || [];
 }
 
 function allPlansFor(projects) {
@@ -1150,6 +1219,7 @@ function renderProject(project) {
           `).join('')}
         </section>
         <aside class="project-aside">
+          ${renderProjectRepos(project)}
           <div class="panel worktree-panel">
             <div class="panel-title-row">
               <div class="panel-title">Worktrees . ${project.worktrees.length}</div>
@@ -1182,6 +1252,35 @@ function renderProject(project) {
         </aside>
       </div>
     </section>
+  `;
+}
+
+function renderProjectRepos(project) {
+  const repos = reposForProject(project.id);
+  const loading = state.repoLoads.has(project.id);
+  const error = state.repoErrors.get(project.id);
+  return `
+    <div class="panel repo-panel">
+      <div class="panel-title-row">
+        <div class="panel-title">Repositories . ${repos.length}</div>
+        <button class="text-button" type="button" data-action="refresh-project-repos" data-project-id="${escapeAttr(project.id)}" ${loading ? 'disabled' : ''}>
+          ${loading ? 'Scanning' : 'Refresh'}
+        </button>
+      </div>
+      <p class="repo-root">${escapeHtml(project.root_path || project.repo || project.name)}</p>
+      ${error ? `<div class="form-error">${escapeHtml(error)}</div>` : ''}
+      <div class="repo-list">
+        ${repos.map(repo => `
+          <div class="repo-row">
+            <div>
+              <strong>${escapeHtml(repo.name)}</strong>
+              <span>${escapeHtml(repo.relative_path || repo.path)}</span>
+            </div>
+            <code>${escapeHtml(repo.branch)}</code>
+          </div>
+        `).join('') || `<div class="repo-empty">${loading ? 'Scanning project directory...' : 'No git repositories discovered'}</div>`}
+      </div>
+    </div>
   `;
 }
 
@@ -1455,6 +1554,9 @@ function renderProjectDialog() {
 function renderWorktreeDialog() {
   const dialog = state.dialog;
   const project = findProjectItem(dialog.projectId);
+  const repos = reposForProject(project.id);
+  const reposLoading = state.repoLoads.has(project.id);
+  const repoError = state.repoErrors.get(project.id);
   const harness = harnessFor(dialog.values.harness) || state.harnesses[0] || {};
   const models = harness.models || [];
   const efforts = harness.effort_levels || ['low', 'medium', 'high', 'xhigh'];
@@ -1469,6 +1571,16 @@ function renderWorktreeDialog() {
         <label class="form-field">
           <span>Name</span>
           <input name="name" autocomplete="off" value="${escapeAttr(dialog.values.name)}">
+        </label>
+        <label class="form-field">
+          <span>Repository</span>
+          <select name="repo_path" data-dialog-field="repo_path" ${reposLoading || !repos.length ? 'disabled' : ''}>
+            ${repos.map(repo => `
+              <option value="${escapeAttr(repo.path)}" ${repo.path === dialog.values.repo_path ? 'selected' : ''}>
+                ${escapeHtml(repo.relative_path || repo.name)} . ${escapeHtml(repo.branch)}
+              </option>
+            `).join('') || `<option value="">${reposLoading ? 'Scanning repositories...' : 'No git repositories found'}</option>`}
+          </select>
         </label>
         <label class="form-field">
           <span>Branch</span>
@@ -1502,10 +1614,11 @@ function renderWorktreeDialog() {
           </label>
         </div>
         <p class="form-hint">${escapeHtml(project.root_path || project.repo || project.name)}</p>
+        ${repoError ? `<div class="form-error">${escapeHtml(repoError)}</div>` : ''}
         ${dialog.error ? `<div class="form-error">${escapeHtml(dialog.error)}</div>` : ''}
         <footer class="modal-actions">
           <button class="secondary" type="button" data-action="close-dialog">Cancel</button>
-          <button class="primary" type="submit" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Spawning...' : 'Spawn agent'}</button>
+          <button class="primary" type="submit" ${dialog.busy || reposLoading || !repos.length ? 'disabled' : ''}>${dialog.busy ? 'Spawning...' : 'Spawn agent'}</button>
         </footer>
       </form>
     </div>

@@ -366,6 +366,16 @@ h3 {
   color: var(--ink-2);
 }
 
+.text-button {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .ghost-action {
   min-height: 30px;
   padding: 5px 10px;
@@ -837,6 +847,55 @@ h3 {
 .activity-list > div {
   padding: 7px 0;
   border-top: 1px solid var(--line);
+}
+
+.repo-panel {
+  gap: 12px;
+}
+
+.repo-root,
+.repo-empty {
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.repo-list {
+  display: grid;
+  gap: 8px;
+}
+
+.repo-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.repo-row div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.repo-row strong,
+.repo-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.repo-row span,
+.repo-row code {
+  color: var(--ink-3);
+  font-size: 11px;
 }
 
 .subbar {

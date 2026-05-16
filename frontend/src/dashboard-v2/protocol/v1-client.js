@@ -144,6 +144,12 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('project.create', { payload });
   }
 
+  listProjectRepos(projectId) {
+    return this.request('project.repo.list', {
+      payload: { project_id: projectId },
+    });
+  }
+
   listWorktrees(projectId = null) {
     return this.request('worktree.list', {
       payload: projectId ? { project_id: projectId } : {},

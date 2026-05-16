@@ -306,9 +306,11 @@ async function handleSubmit(event) {
 
 function firstLiveChannel() {
   const channelId = currentRouteChannelId();
+  const routeScoped = state.route.screen === 'worktree' || state.route.screen === 'plan';
   if (channelId) {
     return state.transport.channels.find(channel => channel.id === channelId) || { id: channelId };
   }
+  if (routeScoped) return null;
   return state.transport.channels[0] || null;
 }
 

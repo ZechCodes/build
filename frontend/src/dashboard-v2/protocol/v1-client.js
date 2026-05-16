@@ -136,6 +136,16 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('dashboard.snapshot');
   }
 
+  listProjects() {
+    return this.request('project.list');
+  }
+
+  listWorktrees(projectId = null) {
+    return this.request('worktree.list', {
+      payload: projectId ? { project_id: projectId } : {},
+    });
+  }
+
   createChannel(name, agent = {}) {
     return this.request('channel.create', {
       payload: { name, agent },

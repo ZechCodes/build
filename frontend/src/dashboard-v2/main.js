@@ -262,7 +262,7 @@ function render() {
 }
 
 function renderTopChrome() {
-  const plansNeedingYou = INBOX.filter(item => !state.dismissedInbox.has(item.id)).length;
+  const plansNeedingYou = INBOX.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
   const crumbs = breadcrumb().slice(1);
   return `
     <header class="top-chrome">
@@ -272,7 +272,7 @@ function renderTopChrome() {
       </div>
       <nav class="nav-stack" aria-label="Dashboard">
         ${navButton('Inbox', '#/inbox', state.route.screen === 'inbox', plansNeedingYou)}
-        ${navButton('Projects', '#/projects', ['projects', 'project', 'plan', 'worktree'].includes(state.route.screen), PROJECTS.length)}
+        ${navButton('Projects', '#/projects', ['projects', 'project', 'plan', 'worktree'].includes(state.route.screen), null)}
         ${crumbs.length ? `<span class="nav-slash">/</span>${crumbs.map(crumb => `
           <a class="crumb-pill" href="${escapeAttr(crumb.route || '#')}" ${crumb.route ? `data-route="${escapeAttr(crumb.route)}"` : ''}>
             <span class="dot"></span>${escapeHtml(shortCrumb(crumb.label))}
@@ -296,7 +296,7 @@ function navButton(label, route, active, count) {
   return `
     <a class="nav-button ${active ? 'active' : ''}" href="${escapeAttr(route)}" data-route="${escapeAttr(route)}">
       <span>${escapeHtml(label)}</span>
-      <span class="nav-count">${count}</span>
+      ${count ? `<span class="nav-count">${count}</span>` : ''}
     </a>
   `;
 }
@@ -481,7 +481,7 @@ function renderProjects() {
       </div>
       <div class="project-grid">
         ${projects.map(project => `
-          <article class="project-card" data-route="#/project/${escapeAttr(project.id)}">
+          <article class="project-card" style="--project:${escapeAttr(project.color)}" data-route="#/project/${escapeAttr(project.id)}">
             <a class="card-hit" href="#/project/${escapeAttr(project.id)}" data-route="#/project/${escapeAttr(project.id)}" aria-label="${escapeAttr(project.name)}"></a>
             <div class="project-top">
               <div>

@@ -183,7 +183,7 @@ kbd {
 }
 
 .search-box {
-  width: 240px;
+  width: 306px;
   height: 30px;
   gap: 8px;
   padding: 0 8px;
@@ -199,6 +199,7 @@ kbd {
 }
 
 .search-box input {
+  flex: 1 1 auto;
   min-width: 0;
   border: 0;
   outline: 0;
@@ -216,6 +217,7 @@ kbd {
 
 .lock-pill,
 .user-chip {
+  position: relative;
   height: 26px;
   border: 0;
   border-radius: 6px;
@@ -225,11 +227,13 @@ kbd {
 }
 
 .lock-pill::before {
-  content: "lock";
-  margin-right: 4px;
-  color: var(--ok);
-  font-family: var(--mono);
-  font-size: 10px;
+  content: "";
+  display: none;
+}
+
+.lock-pill::after {
+  content: "";
+  display: none;
 }
 
 .user-chip {
@@ -684,11 +688,17 @@ h3 {
 
 .plan-board {
   display: grid;
-  gap: 12px;
+  align-content: start;
+  gap: 8px;
+}
+
+.plan-board > .panel-title-row {
+  margin-bottom: 4px;
 }
 
 .plan-lane {
   display: grid;
+  align-content: start;
   gap: 6px;
 }
 

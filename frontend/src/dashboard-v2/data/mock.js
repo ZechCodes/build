@@ -154,11 +154,11 @@ export const PROJECTS = [
     worktrees: [
       {
         id: 'wt-access',
-        branch: 'agents/accessibility',
+        branch: 'agents/landing-rewrite',
         plan: 'plan-4699',
         model: 'ds',
         status: 'working',
-        summary: 'Settings accessibility sweep',
+        summary: 'Landing page rewrite',
         device: 'studio-mac',
         pct: 64,
         files: 9,
@@ -258,8 +258,8 @@ export const INBOX = [
   {
     id: 'inbox-approval',
     kind: 'plan-approval',
-    title: 'Approve tenant middleware migration',
-    detail: 'Plan has 14 steps and will touch auth, routing, and request context.',
+    title: 'Approve plan: migrate api-gateway to multi-tenant',
+    detail: 'I reviewed 3 dependent services and found 17 routes that leak cross-tenant data. Plan is in 4 phases.',
     projectId: 'api-gateway',
     planId: 'plan-4729',
     priority: 'high',
@@ -270,8 +270,8 @@ export const INBOX = [
   {
     id: 'inbox-permission',
     kind: 'permission',
-    title: 'Allow migration test command',
-    detail: 'npm run test:integration -- tenantContext middleware',
+    title: 'Allow agent to run database migrations',
+    detail: 'Needs to run `pnpm db:migrate --tenant` against staging - first time this command has been used.',
     projectId: 'api-gateway',
     worktreeId: 'wt-tenant',
     priority: 'high',
@@ -282,8 +282,8 @@ export const INBOX = [
   {
     id: 'inbox-review',
     kind: 'review',
-    title: 'Proration branch ready for review',
-    detail: '5 files changed, 211 additions, 64 deletions.',
+    title: 'Review changes to proration logic',
+    detail: '5 files, +211 / -64. Ready to merge once you approve the rounding strategy in `proration.ts:142`.',
     projectId: 'billing',
     worktreeId: 'wt-pln',
     priority: 'medium',
@@ -294,8 +294,8 @@ export const INBOX = [
   {
     id: 'inbox-question',
     kind: 'question',
-    title: 'Choose audit log retention',
-    detail: 'Agent needs a retention window before drafting schema changes.',
+    title: 'Question: pick default tenant for legacy rows',
+    detail: 'For the schema migration, 6 tables have rows without a tenant_id. What should I backfill them with?',
     projectId: 'api-gateway',
     planId: 'plan-4733',
     priority: 'low',
@@ -399,13 +399,28 @@ export const WORKTREE = {
   chat: [
     {
       author: 'claude-sonnet',
-      text: 'I need to run the integration test suite before finishing the router change.',
-      time: '5m',
+      text: 'Started work on the tenant middleware. Mapped 5 affected routes - see plan section 2.',
+      time: '4:31',
+    },
+    {
+      author: 'claude-sonnet',
+      text: 'read services/api/gateway.ts (480 lines)',
+      time: '4:32',
+    },
+    {
+      author: 'claude-sonnet',
+      text: 'rg "tenant_id" services/ -> 5 hits',
+      time: '4:32',
+    },
+    {
+      author: 'claude-sonnet',
+      text: 'Wrote `withTenant()` and updated 4 hunks in gateway.ts. Tests for the happy path pass.',
+      time: '4:34',
     },
     {
       author: 'You',
-      text: 'Show the tenant context diff first.',
-      time: '3m',
+      text: 'For legacy tables missing tenant_id, should we backfill from created_by or mark tenant_id = legacy?',
+      time: '4:36',
     },
   ],
   terminal: [

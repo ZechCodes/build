@@ -1344,7 +1344,7 @@ button:disabled {
 }
 
 .changed-file:hover,
-.changed-file:first-of-type {
+.changed-file.active {
   background: var(--accent-soft);
 }
 
@@ -1376,6 +1376,44 @@ button:disabled {
 .diff-view {
   display: grid;
   gap: 14px;
+}
+
+.review-toolbar,
+.file-read-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.review-toolbar > div:first-child,
+.file-read-head {
+  min-width: 0;
+}
+
+.review-toolbar strong,
+.file-read-head strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-toolbar span {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .diff-file {
@@ -1442,6 +1480,12 @@ button:disabled {
   background: rgba(220, 38, 38, 0.09);
 }
 
+.diff-file pre .hunk,
+.diff-file pre .meta {
+  background: #f8fafc;
+  color: var(--ink-4);
+}
+
 .add {
   color: var(--ok);
 }
@@ -1457,8 +1501,13 @@ button:disabled {
   gap: 10px;
 }
 
+.file-layout {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
 .tree-panel,
 .file-list-panel,
+.file-read-panel,
 .git-panel,
 .tests-panel {
   padding: 12px;
@@ -1488,6 +1537,34 @@ button:disabled {
 .tree-row {
   grid-template-columns: 36px minmax(0, 1fr);
   padding-left: calc(var(--depth) * 14px);
+}
+
+.file-read-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.file-read-output {
+  max-height: 560px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  background: #fbfbfc;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.file-read-foot {
+  color: var(--ink-4);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .worktree-chat {
@@ -1566,6 +1643,7 @@ button:disabled {
 
   .project-layout,
   .plan-layout,
+  .file-layout,
   .worktree-grid {
     grid-template-columns: 1fr;
   }

@@ -23,6 +23,11 @@ const state = {
   liveSnapshot: null,
   worktreeSnapshots: new Map(),
   worktreeLoads: new Set(),
+  selectedFileByWorktree: new Map(),
+  fileReads: new Map(),
+  fileDiffs: new Map(),
+  fileLoads: new Set(),
+  fileErrors: new Map(),
   messagesByChannel: new Map(),
   messageLoads: new Set(),
   activityByChannel: new Map(),
@@ -70,6 +75,11 @@ async function initTransport() {
   try {
     state.worktreeSnapshots.clear();
     state.worktreeLoads.clear();
+    state.selectedFileByWorktree.clear();
+    state.fileReads.clear();
+    state.fileDiffs.clear();
+    state.fileLoads.clear();
+    state.fileErrors.clear();
     state.messagesByChannel.clear();
     state.messageLoads.clear();
     state.activityByChannel.clear();
@@ -124,6 +134,11 @@ async function initTransport() {
     state.liveSnapshot = null;
     state.worktreeSnapshots.clear();
     state.worktreeLoads.clear();
+    state.selectedFileByWorktree.clear();
+    state.fileReads.clear();
+    state.fileDiffs.clear();
+    state.fileLoads.clear();
+    state.fileErrors.clear();
     state.messagesByChannel.clear();
     state.messageLoads.clear();
     state.activityByChannel.clear();
@@ -145,6 +160,9 @@ function loadRouteData() {
   }
   if (state.route.screen === 'worktree') {
     loadWorktreeSnapshot(state.route.id);
+    const worktree = findWorktreeItem(state.route.id);
+    const selected = selectedFileFor(worktree);
+    if (selected) loadWorktreeFile(worktree.id, selected.path);
   }
   loadRouteMessages();
   loadRouteActivity();
@@ -264,6 +282,9 @@ async function loadWorktreeSnapshot(worktreeId, { force = false } = {}) {
     const snapshot = normalizeWorktreeSnapshot(response.payload);
     if (snapshot) {
       state.worktreeSnapshots.set(worktreeId, snapshot);
+      ensureSelectedFile(worktreeId, snapshot.files);
+      const selectedPath = state.selectedFileByWorktree.get(worktreeId);
+      if (selectedPath) loadWorktreeFile(worktreeId, selectedPath);
       render();
     }
   } catch (err) {
@@ -349,6 +370,98 @@ function normalizeWorktreeSnapshot(payload) {
     diffHunks: Array.isArray(payload.diffs) ? payload.diffs.filter(diff => Array.isArray(diff.lines)) : [],
     tests: Array.isArray(payload.tests) ? payload.tests : [],
   };
+}
+
+function ensureSelectedFile(worktreeId, files) {
+  if (!worktreeId || state.selectedFileByWorktree.has(worktreeId)) return;
+  const firstPath = Array.isArray(files) ? files.find(file => file?.path)?.path : '';
+  if (firstPath) state.selectedFileByWorktree.set(worktreeId, firstPath);
+}
+
+function fileDataKey(worktreeId, path) {
+  return `${worktreeId}:${path}`;
+}
+
+function selectedFileFor(wt) {
+  const snapshot = state.worktreeSnapshots.get(wt.id) || {};
+  const files = Array.isArray(wt.files)
+    ? wt.files
+    : (Array.isArray(snapshot.files) ? snapshot.files : (wt.id === WORKTREE.id ? WORKTREE.files : []));
+  ensureSelectedFile(wt.id, files);
+  const selectedPath = state.selectedFileByWorktree.get(wt.id);
+  return files.find(file => file.path === selectedPath) || files[0] || null;
+}
+
+async function loadWorktreeFile(worktreeId, path, { force = false } = {}) {
+  const worktree = findWorktreeItem(worktreeId);
+  const channelId = worktree?.channel_id;
+  const client = state.transport.client;
+  if (!worktree?.id || !path || !channelId || !client?.connected) return;
+
+  const key = fileDataKey(worktree.id, path);
+  if (!force && (state.fileLoads.has(key) || (state.fileReads.has(key) && state.fileDiffs.has(key)))) return;
+  state.fileLoads.add(key);
+  state.fileErrors.delete(key);
+  render();
+
+  const snapshot = state.worktreeSnapshots.get(worktree.id) || {};
+  const repoPath = snapshot.git?.repo_path || worktree.git?.repo_path || '';
+  let streamedContent = '';
+  try {
+    const [diffResponse, readResponse] = await Promise.all([
+      client.fileDiff(channelId, path, repoPath ? { repoPath } : {}),
+      client.fileRead(channelId, path, {
+        limit: 100000,
+        onStream(frame) {
+          streamedContent += frame.payload?.data || '';
+        },
+      }),
+    ]);
+    state.fileDiffs.set(key, normalizeFileDiff(diffResponse.payload));
+    state.fileReads.set(key, normalizeFileRead(readResponse.payload, streamedContent));
+  } catch (err) {
+    state.fileErrors.set(key, String(err?.message || err));
+  } finally {
+    state.fileLoads.delete(key);
+    render();
+  }
+}
+
+function normalizeFileDiff(payload) {
+  const diff = payload?.diff || '';
+  return {
+    path: payload?.path || '',
+    repo_path: payload?.repo_path || '',
+    diff,
+    truncated: !!payload?.truncated,
+    lines: parseUnifiedDiff(diff),
+  };
+}
+
+function normalizeFileRead(payload, streamedContent = '') {
+  return {
+    path: payload?.path || '',
+    content: payload?.content ?? streamedContent,
+    size: Number(payload?.size) || 0,
+    encoding: payload?.encoding || '',
+    isBinary: !!payload?.is_binary,
+    isImage: !!payload?.is_image,
+    truncated: !!payload?.truncated,
+  };
+}
+
+function parseUnifiedDiff(diff) {
+  if (!diff) return [];
+  return diff.split('\n').map(line => {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff --git') || line.startsWith('index ')) {
+      return { type: 'meta', text: line };
+    }
+    if (line.startsWith('@@')) return { type: 'hunk', text: line };
+    if (line.startsWith('+')) return { type: 'add', text: line.slice(1) };
+    if (line.startsWith('-')) return { type: 'del', text: line.slice(1) };
+    if (line.startsWith(' ')) return { type: 'ctx', text: line.slice(1) };
+    return { type: 'meta', text: line };
+  });
 }
 
 function normalizeChatMessage(message) {
@@ -550,6 +663,18 @@ function handleClick(event) {
   } else if (action === 'worktree-tab') {
     state.worktreeTab = actionEl.dataset.value || 'diff';
     render();
+  } else if (action === 'select-worktree-file') {
+    const worktreeId = actionEl.dataset.worktreeId;
+    const path = actionEl.dataset.path;
+    if (worktreeId && path) {
+      state.selectedFileByWorktree.set(worktreeId, path);
+      loadWorktreeFile(worktreeId, path);
+      render();
+    }
+  } else if (action === 'refresh-worktree-file') {
+    const worktreeId = actionEl.dataset.worktreeId;
+    const path = actionEl.dataset.path;
+    if (worktreeId && path) loadWorktreeFile(worktreeId, path, { force: true });
   } else if (action === 'toggle-terminal') {
     state.terminalOpen = !state.terminalOpen;
     render();
@@ -1549,6 +1674,7 @@ function renderWorktree(worktreeItem) {
   const stopping = state.worktreeActionLoads.has(`${wt.id}:stop`);
   const restarting = state.worktreeActionLoads.has(`${wt.id}:restart`);
   const worktreeError = state.worktreeErrors.get(wt.id);
+  const selectedFile = selectedFileFor(wt);
   const messages = timelineForCurrentRoute(wt.chat || WORKTREE.chat);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
@@ -1582,13 +1708,13 @@ function renderWorktree(worktreeItem) {
           </div>
           <div class="rail-summary"><span class="add">+${sum(wt.files, 'add')}</span><span class="del">-${sum(wt.files, 'del')}</span><span>${wt.files.length} changed</span></div>
           ${wt.files.map(file => `
-            <button class="changed-file" type="button">
+            <button class="changed-file ${selectedFile?.path === file.path ? 'active' : ''}" type="button" data-action="select-worktree-file" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(file.path)}">
               <span>${escapeHtml((file.status || 'M')[0].toUpperCase())}</span>
-              <span>${escapeHtml(file.path.replace('src/', 'services/api/'))}</span>
+              <span>${escapeHtml(file.path)}</span>
               <span class="add">+${file.add}</span>
               <span class="del">-${file.del}</span>
             </button>
-          `).join('')}
+          `).join('') || '<div class="repo-empty">No changed files</div>'}
         </aside>
         <section class="workbench">
           <div class="tabs">
@@ -1650,26 +1776,48 @@ function renderWorktreeTab(wt) {
 }
 
 function renderDiff(wt) {
-  const hunks = Array.isArray(wt.diffHunks) && wt.diffHunks.length ? wt.diffHunks : SAMPLE_HUNKS;
+  const selected = selectedFileFor(wt);
+  if (!selected) return '<div class="empty-state">No changed file selected</div>';
+  const key = fileDataKey(wt.id, selected.path);
+  const live = state.fileDiffs.get(key);
+  const loading = state.fileLoads.has(key);
+  const error = state.fileErrors.get(key);
+  const snapshotHunk = Array.isArray(wt.diffHunks)
+    ? wt.diffHunks.find(hunk => hunk.file === selected.path)
+    : null;
+  const fallbackHunks = snapshotHunk ? [snapshotHunk] : (wt.id === WORKTREE.id ? SAMPLE_HUNKS : []);
+  const hunks = live?.lines?.length
+    ? [{ file: live.path || selected.path, add: selected.add, del: selected.del, lines: live.lines, truncated: live.truncated }]
+    : fallbackHunks;
   return `
     <div class="diff-view">
+      <div class="review-toolbar">
+        <div>
+          <strong>${escapeHtml(selected.path)}</strong>
+          <span>${escapeHtml(selected.status || 'M')} . +${selected.add} -${selected.del}</span>
+        </div>
+        <div class="review-actions">
+          <button class="ghost-action small" type="button" data-action="refresh-worktree-file" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(selected.path)}" ${loading ? 'disabled' : ''}>${loading ? 'Loading...' : 'Refresh file'}</button>
+          <button class="secondary small" type="button" disabled title="Approve/revert is not exposed in v1 yet">Approve</button>
+          <button class="secondary small" type="button" disabled title="Approve/revert is not exposed in v1 yet">Revert</button>
+        </div>
+      </div>
+      ${error ? `<div class="worktree-error">${escapeHtml(error)}</div>` : ''}
       ${hunks.map(hunk => `
         <section class="diff-file">
           <div class="diff-file-head">
-            <span class="kind-chip permission">edit</span>
-            <code>${escapeHtml(hunk.file.replace('src/routes/', 'services/api/'))}</code>
+            <span class="kind-chip permission">${live ? 'live' : 'snapshot'}</span>
+            <code>${escapeHtml(hunk.file)}</code>
             <span class="add">+${hunk.add ?? countLines(hunk, 'add')}</span>
             <span class="del">-${hunk.del ?? countLines(hunk, 'del')}</span>
-            <button class="ghost-action" type="button">Open in editor</button>
           </div>
           <div class="hunk-head">
-            <span>hunk 1</span>
-            <span>@@ -118,7 +118,12 @@ route.get('/v2/users/:id')</span>
-            <button class="secondary small" type="button">approved</button>
+            <span>${live ? 'live diff' : 'snapshot diff'}</span>
+            <span>${live?.truncated || hunk.truncated ? 'truncated' : 'worktree changes'}</span>
           </div>
           <pre>${hunk.lines.map(line => `<span class="${escapeAttr(line.type)}">${escapeHtml(prefixFor(line.type) + line.text)}</span>`).join('')}</pre>
         </section>
-      `).join('')}
+      `).join('') || `<div class="empty-state">${loading ? 'Loading live diff...' : 'No diff available for this file'}</div>`}
     </div>
   `;
 }
@@ -1679,10 +1827,15 @@ function countLines(hunk, type) {
 }
 
 function renderFiles(wt) {
+  const selected = selectedFileFor(wt);
+  const key = selected ? fileDataKey(wt.id, selected.path) : '';
+  const read = key ? state.fileReads.get(key) : null;
+  const loading = key ? state.fileLoads.has(key) : false;
+  const error = key ? state.fileErrors.get(key) : '';
   return `
     <div class="file-layout">
       <div class="tree-panel">
-        ${FILE_TREE.map(node => `
+        ${(wt.id === WORKTREE.id ? FILE_TREE : wt.files.map(file => ({ type: 'file', path: file.path, depth: 0, changed: true }))).map(node => `
           <div class="tree-row ${node.changed ? 'changed' : ''}" style="--depth:${node.depth}">
             <span>${node.type === 'dir' ? 'dir' : 'file'}</span>
             <span>${escapeHtml(node.path.split('/').pop())}</span>
@@ -1699,7 +1852,25 @@ function renderFiles(wt) {
           </div>
         `).join('')}
       </div>
+      <div class="file-read-panel">
+        <div class="file-read-head">
+          <strong>${escapeHtml(selected?.path || 'No file selected')}</strong>
+          ${selected ? `<button class="ghost-action small" type="button" data-action="refresh-worktree-file" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(selected.path)}" ${loading ? 'disabled' : ''}>${loading ? 'Loading...' : 'Refresh'}</button>` : ''}
+        </div>
+        ${error ? `<div class="worktree-error">${escapeHtml(error)}</div>` : ''}
+        ${renderFileReadBody(read, loading)}
+      </div>
     </div>
+  `;
+}
+
+function renderFileReadBody(read, loading) {
+  if (loading && !read) return '<div class="empty-state">Loading file...</div>';
+  if (!read) return '<div class="empty-state">Select a changed file to read it</div>';
+  if (read.isBinary) return `<div class="empty-state">${read.isImage ? 'Image preview is not wired here yet' : 'Binary file'} . ${read.size} bytes</div>`;
+  return `
+    <pre class="file-read-output">${escapeHtml(read.content || '')}</pre>
+    <div class="file-read-foot">${read.truncated ? 'Truncated at 100 KB' : `${read.size} bytes`}</div>
   `;
 }
 
@@ -2035,6 +2206,7 @@ function sum(items, key) {
 function prefixFor(type) {
   if (type === 'add') return '+ ';
   if (type === 'del') return '- ';
+  if (type === 'hunk' || type === 'meta') return '';
   return '  ';
 }
 

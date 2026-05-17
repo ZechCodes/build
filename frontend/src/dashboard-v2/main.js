@@ -9,6 +9,10 @@ import {
 } from './data/mock.js';
 import { BuildE2EEV1 } from './protocol/v1-client.js';
 
+const REVIEW_DENIAL_BEGIN = '<build-review-denied>';
+const REVIEW_DENIAL_END = '</build-review-denied>';
+const REVIEW_DIFF_PREVIEW_LIMIT = 8000;
+
 const state = {
   route: parseRoute(),
   inboxFilter: 'all',
@@ -450,6 +454,37 @@ function normalizeFileRead(payload, streamedContent = '') {
   };
 }
 
+function reviewDiffFor(wt, path) {
+  const key = fileDataKey(wt.id, path);
+  const live = state.fileDiffs.get(key);
+  if (live?.diff) return { diff: live.diff, source: 'live' };
+  const hunk = Array.isArray(wt.diffHunks)
+    ? wt.diffHunks.find(item => item.file === path)
+    : null;
+  const fallback = hunk || (wt.id === WORKTREE.id ? SAMPLE_HUNKS.find(item => item.file === path) : null);
+  if (!fallback?.lines?.length) return { diff: '', source: 'none' };
+  const lines = [
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@',
+    ...fallback.lines.map(reviewDiffLine),
+  ];
+  return { diff: lines.join('\n'), source: 'snapshot' };
+}
+
+function reviewDiffLine(line) {
+  if (line.type === 'add') return `+${line.text}`;
+  if (line.type === 'del') return `-${line.text}`;
+  if (line.type === 'ctx') return ` ${line.text}`;
+  return line.text || '';
+}
+
+function reviewDiffPreview(diff) {
+  const text = String(diff || '');
+  if (text.length <= REVIEW_DIFF_PREVIEW_LIMIT) return text;
+  return `${text.slice(0, REVIEW_DIFF_PREVIEW_LIMIT).trimEnd()}\n...[truncated]`;
+}
+
 function parseUnifiedDiff(diff) {
   if (!diff) return [];
   return diff.split('\n').map(line => {
@@ -466,13 +501,42 @@ function parseUnifiedDiff(diff) {
 
 function normalizeChatMessage(message) {
   if (!message?.content) return null;
-  return {
+  const review = parseReviewDenial(message.content);
+  const base = {
     id: message.id || '',
     author: message.sender === 'client' ? 'You' : message.sender || 'agent',
-    text: message.content,
     time: relativeMessageTime(message.created_at),
     createdAt: activityTimestamp(message.created_at),
   };
+  if (review) {
+    return {
+      ...base,
+      kind: 'review_denied',
+      file: review.file,
+      repoPath: review.repo_path || '',
+      reason: review.reason,
+      diff: review.diff || '',
+    };
+  }
+  return {
+    ...base,
+    text: message.content,
+  };
+}
+
+function parseReviewDenial(content) {
+  const text = String(content || '');
+  const start = text.indexOf(REVIEW_DENIAL_BEGIN);
+  const end = text.indexOf(REVIEW_DENIAL_END);
+  if (start < 0 || end <= start) return null;
+  const jsonText = text.slice(start + REVIEW_DENIAL_BEGIN.length, end);
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (parsed?.kind !== 'review_denied') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeActivityEntry(entry, channelId) {
@@ -675,6 +739,8 @@ function handleClick(event) {
     const worktreeId = actionEl.dataset.worktreeId;
     const path = actionEl.dataset.path;
     if (worktreeId && path) loadWorktreeFile(worktreeId, path, { force: true });
+  } else if (action === 'open-review-deny') {
+    openReviewDenyDialog(actionEl.dataset.worktreeId, actionEl.dataset.path);
   } else if (action === 'toggle-terminal') {
     state.terminalOpen = !state.terminalOpen;
     render();
@@ -714,6 +780,8 @@ function handleInput(event) {
       next.focus();
       next.setSelectionRange(cursor, cursor);
     }
+  } else if (state.dialog && target.matches('[data-dialog-field]')) {
+    state.dialog.values[target.dataset.dialogField] = target.value;
   }
 }
 
@@ -747,6 +815,10 @@ async function handleSubmit(event) {
   }
   if (form.dataset.form === 'worktree-settings') {
     await updateWorktreeSettingsFromForm(form);
+    return;
+  }
+  if (form.dataset.form === 'review-deny') {
+    await denyReviewFromForm(form);
     return;
   }
 
@@ -844,6 +916,24 @@ function openWorktreeSettingsDialog(worktreeId) {
     busy: false,
   };
   render();
+}
+
+function openReviewDenyDialog(worktreeId, path) {
+  const worktree = findWorktreeItem(worktreeId);
+  if (!worktree?.id || !path) return;
+  state.dialog = {
+    type: 'review-deny',
+    worktreeId,
+    path,
+    values: { reason: '' },
+    error: null,
+    busy: false,
+  };
+  render();
+  const key = fileDataKey(worktree.id, path);
+  if (!state.fileDiffs.has(key) && !state.fileLoads.has(key)) {
+    loadWorktreeFile(worktree.id, path);
+  }
 }
 
 async function createProjectFromForm(form) {
@@ -967,6 +1057,57 @@ async function updateWorktreeSettingsFromForm(form) {
     }
     state.dialog = null;
     await refreshWorktreeAfterAction(worktree.id, channelId);
+  } catch (err) {
+    setDialogError(String(err?.message || err));
+  } finally {
+    setDialogBusy(false);
+    render();
+  }
+}
+
+async function denyReviewFromForm(form) {
+  const worktreeId = form.elements.worktree_id?.value || state.dialog?.worktreeId;
+  const path = form.elements.path?.value || state.dialog?.path;
+  const worktreeItem = findWorktreeItem(worktreeId);
+  const worktree = worktreeItem ? worktreeDetail(worktreeItem) : null;
+  const channelId = worktree?.channel_id;
+  const client = state.transport.client;
+  if (!worktree?.id || !path || !channelId || !client?.connected) {
+    setDialogError('Connect an encrypted device before denying this review.');
+    return;
+  }
+
+  const reason = form.elements.reason?.value?.trim() || '';
+  if (!reason) {
+    setDialogError('Add a denial reason so the agent knows what to change.');
+    return;
+  }
+
+  const reviewDiff = reviewDiffFor(worktree, path);
+  const messageId = `review_${crypto.randomUUID().replaceAll('-', '')}`;
+  state.dialog.values = { reason };
+  setDialogBusy(true);
+  try {
+    await client.denyReview(channelId, {
+      message_id: messageId,
+      file: path,
+      reason,
+      diff: reviewDiff.diff,
+      repo_path: worktree.git?.repo_path || '',
+    }, { id: messageId });
+    appendLiveMessage(channelId, {
+      id: messageId,
+      kind: 'review_denied',
+      author: 'You',
+      file: path,
+      repoPath: worktree.git?.repo_path || '',
+      reason,
+      diff: reviewDiff.diff,
+      time: 'now',
+      createdAt: Date.now(),
+    });
+    state.dialog = null;
+    loadRouteMessages();
   } catch (err) {
     setDialogError(String(err?.message || err));
   } finally {
@@ -1798,8 +1939,8 @@ function renderDiff(wt) {
         </div>
         <div class="review-actions">
           <button class="ghost-action small" type="button" data-action="refresh-worktree-file" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(selected.path)}" ${loading ? 'disabled' : ''}>${loading ? 'Loading...' : 'Refresh file'}</button>
-          <button class="secondary small" type="button" disabled title="Approve/revert is not exposed in v1 yet">Approve</button>
-          <button class="secondary small" type="button" disabled title="Approve/revert is not exposed in v1 yet">Revert</button>
+          <button class="secondary small" type="button" disabled title="Approve is not exposed in v1 yet">Approve</button>
+          <button class="secondary small danger-action" type="button" data-action="open-review-deny" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(selected.path)}" ${wt.channel_id ? '' : 'disabled'}>Deny</button>
         </div>
       </div>
       ${error ? `<div class="worktree-error">${escapeHtml(error)}</div>` : ''}
@@ -1911,6 +2052,7 @@ function renderDialog() {
   if (state.dialog.type === 'project-create') return renderProjectDialog();
   if (state.dialog.type === 'worktree-create') return renderWorktreeDialog();
   if (state.dialog.type === 'worktree-settings') return renderWorktreeSettingsDialog();
+  if (state.dialog.type === 'review-deny') return renderReviewDenyDialog();
   return '';
 }
 
@@ -2067,6 +2209,43 @@ function renderWorktreeSettingsDialog() {
   `;
 }
 
+function renderReviewDenyDialog() {
+  const dialog = state.dialog;
+  const worktreeItem = findWorktreeItem(dialog.worktreeId);
+  const worktree = worktreeItem ? worktreeDetail(worktreeItem) : null;
+  const reviewDiff = worktree ? reviewDiffFor(worktree, dialog.path) : { diff: '', source: 'none' };
+  const loading = state.fileLoads.has(fileDataKey(dialog.worktreeId, dialog.path));
+  return `
+    <div class="modal-backdrop" role="dialog" aria-modal="true">
+      <form class="modal-panel review-modal" data-form="review-deny">
+        <input type="hidden" name="worktree_id" value="${escapeAttr(dialog.worktreeId)}">
+        <input type="hidden" name="path" value="${escapeAttr(dialog.path)}">
+        <header class="modal-head">
+          <h2>Deny review</h2>
+          <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">x</button>
+        </header>
+        <div class="review-target">
+          <code>${escapeHtml(dialog.path)}</code>
+          <span>${escapeHtml(loading ? 'loading live diff' : `${reviewDiff.source} diff`)}</span>
+        </div>
+        <label class="form-field">
+          <span>Reason</span>
+          <textarea name="reason" rows="5" data-dialog-field="reason" placeholder="Tell the agent what should change">${escapeHtml(dialog.values.reason)}</textarea>
+        </label>
+        <div class="review-preview">
+          <div class="panel-title">Diff sent to agent</div>
+          <pre>${escapeHtml(reviewDiffPreview(reviewDiff.diff) || 'No diff available; the reason will still be sent.')}</pre>
+        </div>
+        ${dialog.error ? `<div class="form-error">${escapeHtml(dialog.error)}</div>` : ''}
+        <footer class="modal-actions">
+          <button class="secondary" type="button" data-action="close-dialog">Cancel</button>
+          <button class="primary danger-primary" type="submit" ${dialog.busy ? 'disabled' : ''}>${dialog.busy ? 'Sending...' : 'Deny and send'}</button>
+        </footer>
+      </form>
+    </div>
+  `;
+}
+
 function renderChat(messages) {
   return `
     <div class="chat-list">
@@ -2106,6 +2285,19 @@ function renderChatItem(msg) {
   }
   if (msg.kind === 'activity_end') {
     return `<div class="chat-activity end"><span>${escapeHtml(msg.reason)}</span><span>${escapeHtml(msg.time)}</span></div>`;
+  }
+  if (msg.kind === 'review_denied') {
+    return `
+      <div class="chat-review denied">
+        <div class="chat-meta"><span>Review denied</span><span>${escapeHtml(msg.time)}</span></div>
+        <div class="review-card-head">
+          <code>${escapeHtml(msg.file || 'file')}</code>
+          ${msg.repoPath ? `<span>${escapeHtml(msg.repoPath)}</span>` : ''}
+        </div>
+        <p>${escapeHtml(msg.reason || '')}</p>
+        ${msg.diff ? `<pre>${escapeHtml(reviewDiffPreview(msg.diff))}</pre>` : ''}
+      </div>
+    `;
   }
   return `
     <div class="chat-message ${msg.author === 'You' ? 'mine' : ''}">

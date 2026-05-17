@@ -222,6 +222,14 @@ export class BuildE2EEV1 extends BuildE2EE {
     });
   }
 
+  denyReview(channelId, payload, options = {}) {
+    return this.request('review.denied', {
+      id: options.id,
+      target: { channel_id: channelId },
+      payload,
+    });
+  }
+
   markRead(channelId, messageIds) {
     return this.request('message.mark_read', {
       target: { channel_id: channelId },

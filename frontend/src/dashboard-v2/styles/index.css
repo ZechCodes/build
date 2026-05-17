@@ -1712,6 +1712,15 @@ button:disabled {
   color: var(--ink-4);
 }
 
+.missing-entity {
+  gap: 10px;
+  text-align: center;
+}
+
+.missing-entity strong {
+  color: var(--ink);
+}
+
 .truncate {
   min-width: 0;
   overflow: hidden;

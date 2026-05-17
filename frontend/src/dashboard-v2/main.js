@@ -160,13 +160,15 @@ async function initTransport() {
 
 function loadRouteData() {
   if (state.route.screen === 'project') {
-    loadProjectRepos(state.route.id);
+    if (findProjectItem(state.route.id)) loadProjectRepos(state.route.id);
   }
   if (state.route.screen === 'worktree') {
     loadWorktreeSnapshot(state.route.id);
     const worktree = findWorktreeItem(state.route.id);
-    const selected = selectedFileFor(worktree);
-    if (selected) loadWorktreeFile(worktree.id, selected.path);
+    if (worktree?.id) {
+      const selected = selectedFileFor(worktree);
+      if (selected) loadWorktreeFile(worktree.id, selected.path);
+    }
   }
   loadRouteMessages();
   loadRouteActivity();
@@ -191,49 +193,56 @@ function normalizeLiveProject(project) {
   if (!project?.id || !project?.name) return null;
   const worktrees = Array.isArray(project.worktrees) ? project.worktrees : [];
   const plans = Array.isArray(project.plans) ? project.plans : [];
+  const normalizedWorktrees = worktrees.map((worktree, index) => ({
+    id: worktree.id || worktree.channel_id || `worktree-${index}`,
+    channel_id: worktree.channel_id || worktree.id || '',
+    branch: worktree.branch || project.branch || 'workspace',
+    plan: worktree.plan || '',
+    model: worktree.model || worktree.agent || 'device',
+    agent: worktree.agent || worktree.model || 'device',
+    status: worktree.status || 'idle',
+    harness: worktree.harness || worktree.agent_config?.harness || '',
+    effort: worktree.effort || worktree.agent_config?.effort || '',
+    auto_approve_tools: !!(worktree.auto_approve_tools ?? worktree.agent_config?.auto_approve_tools),
+    agent_running: !!worktree.agent_running,
+    agent_status: worktree.agent_status || worktree.agent_config?.status || '',
+    agent_config: worktree.agent_config || null,
+    summary: worktree.summary || worktree.name || 'Agent workspace',
+    device: worktree.device || 'local',
+    workspace: worktree.workspace || '',
+    pct: Number(worktree.pct) || 0,
+    files: Number(worktree.files) || 0,
+    add: Number(worktree.add) || 0,
+    del: Number(worktree.del) || 0,
+    updated: worktree.updated || project.lastActive || 'now',
+  }));
+  const normalizedPlans = plans.map((plan, index) => ({
+    id: plan.id || `plan-${index}`,
+    channel_id: plan.channel_id || '',
+    title: plan.title || 'Untitled plan',
+    status: plan.status || 'draft',
+    steps: Number(plan.steps) || Number(plan.step_count) || 1,
+    doneSteps: Number(plan.doneSteps) || Number(plan.done_step_count) || 0,
+    model: plan.model || 'device',
+    updated: plan.updated || project.lastActive || 'now',
+  }));
+  const runningAgents = normalizedWorktrees.filter(worktree => (
+    worktree.agent_running
+    || ['active', 'running', 'working', 'in-progress'].includes(String(worktree.agent_status || worktree.status).toLowerCase())
+  )).length;
+  const queued = normalizedPlans.filter(plan => plan.status === 'queued').length;
   return {
-    description: 'Workspace',
+    description: project.root_path || project.repo || 'Project workspace',
     repo: project.name,
     branch: 'main',
     color: colorFor(project.id),
     needsYou: 0,
-    runningAgents: 0,
-    queued: 0,
     lastActive: 'now',
     ...project,
-    worktrees: worktrees.map((worktree, index) => ({
-      id: worktree.id || worktree.channel_id || `worktree-${index}`,
-      channel_id: worktree.channel_id || worktree.id || '',
-      branch: worktree.branch || project.branch || 'workspace',
-      plan: worktree.plan || '',
-      model: worktree.model || worktree.agent || 'device',
-      agent: worktree.agent || worktree.model || 'device',
-      status: worktree.status || 'idle',
-      harness: worktree.harness || worktree.agent_config?.harness || '',
-      effort: worktree.effort || worktree.agent_config?.effort || '',
-      auto_approve_tools: !!(worktree.auto_approve_tools ?? worktree.agent_config?.auto_approve_tools),
-      agent_running: !!worktree.agent_running,
-      agent_status: worktree.agent_status || worktree.agent_config?.status || '',
-      agent_config: worktree.agent_config || null,
-      summary: worktree.summary || worktree.name || 'Agent workspace',
-      device: worktree.device || 'local',
-      workspace: worktree.workspace || '',
-      pct: Number(worktree.pct) || 0,
-      files: Number(worktree.files) || 0,
-      add: Number(worktree.add) || 0,
-      del: Number(worktree.del) || 0,
-      updated: worktree.updated || project.lastActive || 'now',
-    })),
-    plans: plans.map((plan, index) => ({
-      id: plan.id || `plan-${index}`,
-      channel_id: plan.channel_id || '',
-      title: plan.title || 'Untitled plan',
-      status: plan.status || 'draft',
-      steps: Number(plan.steps) || 1,
-      doneSteps: Number(plan.doneSteps) || 0,
-      model: plan.model || 'device',
-      updated: plan.updated || project.lastActive || 'now',
-    })),
+    runningAgents: Number(project.runningAgents ?? project.running_agents ?? runningAgents) || runningAgents,
+    queued: Number(project.queued ?? queued) || queued,
+    worktrees: normalizedWorktrees,
+    plans: normalizedPlans,
     activity: Array.isArray(project.activity) ? project.activity : [],
   };
 }
@@ -387,10 +396,11 @@ function fileDataKey(worktreeId, path) {
 }
 
 function selectedFileFor(wt) {
+  if (!wt?.id) return null;
   const snapshot = state.worktreeSnapshots.get(wt.id) || {};
   const files = Array.isArray(wt.files)
     ? wt.files
-    : (Array.isArray(snapshot.files) ? snapshot.files : (wt.id === WORKTREE.id ? WORKTREE.files : []));
+    : (Array.isArray(snapshot.files) ? snapshot.files : (canUseFixtures() && wt.id === WORKTREE.id ? WORKTREE.files : []));
   ensureSelectedFile(wt.id, files);
   const selectedPath = state.selectedFileByWorktree.get(wt.id);
   return files.find(file => file.path === selectedPath) || files[0] || null;
@@ -461,7 +471,7 @@ function reviewDiffFor(wt, path) {
   const hunk = Array.isArray(wt.diffHunks)
     ? wt.diffHunks.find(item => item.file === path)
     : null;
-  const fallback = hunk || (wt.id === WORKTREE.id ? SAMPLE_HUNKS.find(item => item.file === path) : null);
+  const fallback = hunk || (canUseFixtures() && wt.id === WORKTREE.id ? SAMPLE_HUNKS.find(item => item.file === path) : null);
   if (!fallback?.lines?.length) return { diff: '', source: 'none' };
   const lines = [
     `--- a/${path}`,
@@ -1272,7 +1282,8 @@ function localChatFor(key = chatKey()) {
 function timelineForCurrentRoute(fallback) {
   const channelId = currentRouteChannelId();
   const hasLive = channelId ? state.messagesByChannel.has(channelId) : false;
-  const messages = (hasLive ? state.messagesByChannel.get(channelId) || [] : fallback)
+  const fallbackMessages = canUseFixtures() ? fallback : [];
+  const messages = (hasLive ? state.messagesByChannel.get(channelId) || [] : fallbackMessages)
     .map(message => ({ kind: 'message', createdAt: message.createdAt || 0, ...message }));
   const activity = channelId ? state.activityByChannel.get(channelId) || [] : [];
   return [...messages, ...activity, ...localChatFor().map(message => ({ kind: 'message', ...message }))]
@@ -1333,9 +1344,18 @@ function scheduleWorktreeRefresh(channelId, { dashboard = false, delay = 900 } =
   }
 }
 
+function canUseFixtures() {
+  return state.transport.phase !== 'connected';
+}
+
+function inboxForRender() {
+  return canUseFixtures() ? INBOX : [];
+}
+
 function projectsForRender() {
   const projects = state.liveSnapshot?.projects;
-  return Array.isArray(projects) && projects.length ? projects : PROJECTS;
+  if (state.transport.phase === 'connected') return Array.isArray(projects) ? projects : [];
+  return PROJECTS;
 }
 
 function reposForProject(projectId) {
@@ -1351,24 +1371,25 @@ function allWorktreesFor(projects) {
 }
 
 function findProjectItem(id) {
+  const projects = projectsForRender();
   return (
-    projectsForRender().find(project => project.id === id)
-    || PROJECTS.find(project => project.id === id)
-    || projectsForRender()[0]
-    || PROJECTS[0]
+    projects.find(project => project.id === id)
+    || (canUseFixtures() ? PROJECTS.find(project => project.id === id) : null)
+    || projects[0]
+    || (canUseFixtures() ? PROJECTS[0] : null)
   );
 }
 
 function findPlanItem(id) {
-  const livePlan = allPlansFor(projectsForRender()).find(item => item.id === id);
-  const fixturePlan = allPlansFor(PROJECTS).find(item => item.id === id);
-  return livePlan || fixturePlan || allPlansFor(projectsForRender())[0] || allPlansFor(PROJECTS)[0];
+  const plans = allPlansFor(projectsForRender());
+  const fixturePlans = canUseFixtures() ? allPlansFor(PROJECTS) : [];
+  return plans.find(item => item.id === id) || fixturePlans.find(item => item.id === id) || plans[0] || fixturePlans[0] || null;
 }
 
 function findWorktreeItem(id) {
-  const liveWorktree = allWorktreesFor(projectsForRender()).find(item => item.id === id);
-  const fixtureWorktree = allWorktreesFor(PROJECTS).find(item => item.id === id);
-  return liveWorktree || fixtureWorktree || allWorktreesFor(projectsForRender())[0] || allWorktreesFor(PROJECTS)[0];
+  const worktrees = allWorktreesFor(projectsForRender());
+  const fixtureWorktrees = canUseFixtures() ? allWorktreesFor(PROJECTS) : [];
+  return worktrees.find(item => item.id === id) || fixtureWorktrees.find(item => item.id === id) || worktrees[0] || fixtureWorktrees[0] || null;
 }
 
 function render() {
@@ -1387,7 +1408,8 @@ function render() {
 }
 
 function renderTopChrome() {
-  const plansNeedingYou = INBOX.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
+  const inbox = inboxForRender();
+  const plansNeedingYou = inbox.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
   const crumbs = breadcrumb().slice(1);
   return `
     <header class="top-chrome">
@@ -1455,22 +1477,22 @@ function renderTopbar() {
 function breadcrumb() {
   if (state.route.screen === 'project') {
     const project = findProjectItem(state.route.id);
-    return [{ label: 'Projects', route: '#/projects' }, { label: project.name }];
+    return [{ label: 'Projects', route: '#/projects' }, { label: project?.name || 'Missing project' }];
   }
   if (state.route.screen === 'plan') {
     const plan = findPlanItem(state.route.id);
     return [
       { label: 'Projects', route: '#/projects' },
-      { label: plan.project.name, route: `#/project/${plan.project.id}` },
-      { label: plan.title },
+      { label: plan?.project?.name || 'Missing project', route: plan?.project?.id ? `#/project/${plan.project.id}` : '#/projects' },
+      { label: plan?.title || 'Missing plan' },
     ];
   }
   if (state.route.screen === 'worktree') {
     const worktree = findWorktreeItem(state.route.id);
     return [
       { label: 'Projects', route: '#/projects' },
-      { label: worktree.project.name, route: `#/project/${worktree.project.id}` },
-      { label: worktree.summary },
+      { label: worktree?.project?.name || 'Missing project', route: worktree?.project?.id ? `#/project/${worktree.project.id}` : '#/projects' },
+      { label: worktree?.summary || 'Missing worktree' },
     ];
   }
   if (state.route.screen === 'projects') return [{ label: 'Projects' }];
@@ -1488,15 +1510,25 @@ function statusText() {
 
 function renderContent() {
   if (state.route.screen === 'projects') return renderProjects();
-  if (state.route.screen === 'project') return renderProject(findProjectItem(state.route.id));
-  if (state.route.screen === 'plan') return renderPlan(findPlanItem(state.route.id));
-  if (state.route.screen === 'worktree') return renderWorktree(findWorktreeItem(state.route.id));
+  if (state.route.screen === 'project') {
+    const project = findProjectItem(state.route.id);
+    return project ? renderProject(project) : renderMissingEntity('Project not found', 'The live project list does not contain this project.');
+  }
+  if (state.route.screen === 'plan') {
+    const plan = findPlanItem(state.route.id);
+    return plan ? renderPlan(plan) : renderMissingEntity('Plan not found', 'The live project data does not contain this plan.');
+  }
+  if (state.route.screen === 'worktree') {
+    const worktree = findWorktreeItem(state.route.id);
+    return worktree ? renderWorktree(worktree) : renderMissingEntity('Worktree not found', 'The live project data does not contain this worktree.');
+  }
   return renderInbox();
 }
 
 function renderInbox() {
   const filters = ['all', 'plan-approval', 'permission', 'review', 'question'];
-  const visible = INBOX
+  const inbox = inboxForRender();
+  const visible = inbox
     .filter(item => !state.dismissedInbox.has(item.id))
     .filter(item => state.inboxFilter === 'all' || item.kind === state.inboxFilter)
     .filter(matchesSearch);
@@ -1505,15 +1537,15 @@ function renderInbox() {
     ['Ready When You Are', visible.filter(item => item.priority === 'medium' || item.kind === 'question')],
     ['Heads Up', visible.filter(item => item.priority === 'low' && item.kind !== 'question')],
   ];
-  const urgentCount = INBOX.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
+  const urgentCount = inbox.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
 
   return `
     <section class="screen inbox-screen narrow-screen">
       <div class="hero-copy">
-        <div class="eyebrow">Inbox . Friday, May 15</div>
+        <div class="eyebrow">Inbox</div>
         <div>
           <h1>${urgentCount} things need <em>your eyes.</em></h1>
-          <p>${sum(projectsForRender(), 'runningAgents')} agents working across ${projectsForRender().length} projects. Most won't need you.</p>
+          <p>${liveInboxSummary()}</p>
         </div>
       </div>
       <div class="screen-toolbar">
@@ -1524,7 +1556,7 @@ function renderInbox() {
           </button>
         `).join('')}
         </div>
-        <button class="ghost-action" type="button">+ New plan</button>
+        <button class="ghost-action" type="button" disabled title="Plan creation is not wired in v2 yet">+ New plan</button>
       </div>
       <div class="inbox-list">
         ${groups.map(([label, items]) => items.length ? `
@@ -1532,7 +1564,7 @@ function renderInbox() {
             <div class="group-title"><span class="dot"></span>${escapeHtml(label)} <span>${items.length}</span></div>
             ${items.map(renderInboxItem).join('')}
           </section>
-        ` : '').join('') || renderEmpty('Inbox clear')}
+        ` : '').join('') || renderEmpty(canUseFixtures() ? 'Inbox clear' : 'No live inbox items')}
       </div>
     </section>
   `;
@@ -1564,8 +1596,9 @@ function renderInboxItem(item) {
 }
 
 function inboxFilterLabel(filter) {
-  if (filter === 'all') return `All ${INBOX.length}`;
-  const count = INBOX.filter(item => item.kind === filter).length;
+  const inbox = inboxForRender();
+  if (filter === 'all') return `All ${inbox.length}`;
+  const count = inbox.filter(item => item.kind === filter).length;
   const label = {
     'plan-approval': 'Plans',
     permission: 'Permissions',
@@ -1573,6 +1606,13 @@ function inboxFilterLabel(filter) {
     question: 'Questions',
   }[filter] || labelFor(filter);
   return `${label} ${count}`;
+}
+
+function liveInboxSummary() {
+  const projects = projectsForRender();
+  const agents = sum(projects, 'runningAgents');
+  if (canUseFixtures()) return `${agents} agents working across ${projects.length} projects. Most won't need you.`;
+  return `${agents} live agents across ${projects.length} projects. Inbox primitives are not emitting live items yet.`;
 }
 
 function kindShortLabel(kind) {
@@ -1630,7 +1670,7 @@ function renderProjects() {
               `).join('') : `<p class="muted-line">No agents running . last active ${escapeHtml(project.lastActive)}</p>`}
             </div>
           </article>
-        `).join('') || renderEmpty('No projects')}
+        `).join('') || renderEmpty(canUseFixtures() ? 'No projects' : 'No live projects yet. Create a project to start.')}
       </div>
     </section>
   `;
@@ -1661,14 +1701,14 @@ function renderProject(project) {
         </div>
         <div class="workspace-actions">
           <button class="ghost-action" type="button" data-action="sync-v1">Sync</button>
-          <button class="primary" type="button">+ New plan</button>
+          <button class="primary" type="button" disabled title="Plan creation is not wired in v2 yet">+ New plan</button>
         </div>
       </div>
       <div class="project-layout">
         <section class="plan-board">
           <div class="panel-title-row">
             <div class="panel-title">Plan board</div>
-            <span class="muted-line">Drag a plan onto a worktree to assign . click to iterate</span>
+            <span class="muted-line">${canUseFixtures() ? 'Drag a plan onto a worktree to assign . click to iterate' : 'Live plans from project primitives'}</span>
           </div>
           ${lanes.map(([status, label]) => `
             <div class="plan-lane">
@@ -1682,7 +1722,7 @@ function renderProject(project) {
           <div class="panel worktree-panel">
             <div class="panel-title-row">
               <div class="panel-title">Worktrees . ${project.worktrees.length}</div>
-              <span class="muted-line">Drop a plan on one to queue work</span>
+              <span class="muted-line">${canUseFixtures() ? 'Drop a plan on one to queue work' : 'Spawn agents against discovered repos'}</span>
             </div>
             ${project.worktrees.map(wt => `
               <a class="worktree-card" href="#/worktree/${escapeAttr(wt.id)}" data-route="#/worktree/${escapeAttr(wt.id)}">
@@ -1697,17 +1737,17 @@ function renderProject(project) {
                 </span>
                 <span class="progress"><span style="width:${wt.pct}%"></span></span>
               </a>
-            `).join('')}
+            `).join('') || '<div class="repo-empty">No live worktrees</div>'}
             <button class="secondary full" type="button" data-action="open-worktree-create" data-project-id="${escapeAttr(project.id)}" ${spawning ? 'disabled' : ''}>
               ${spawning ? 'Spawning...' : '+ Spawn new worktree'}
             </button>
           </div>
-          <div class="panel">
+          ${canUseFixtures() || project.activity.length ? `<div class="panel">
             <div class="panel-title">Recent</div>
             <div class="activity-list">
               ${project.activity.map(item => `<div>${escapeHtml(item)}</div>`).join('')}
             </div>
-          </div>
+          </div>` : ''}
         </aside>
       </div>
     </section>
@@ -1762,48 +1802,77 @@ function renderPlanCard(plan, project) {
 
 function renderPlan(planItem) {
   const project = planItem.project;
-  const doc = planItem.id === PLAN_DOC.id ? PLAN_DOC : { ...PLAN_DOC, id: planItem.id, title: planItem.title };
-  const messages = timelineForCurrentRoute(doc.chat);
+  const useFixturePlan = canUseFixtures() && planItem.id === PLAN_DOC.id;
+  const doc = useFixturePlan ? PLAN_DOC : { id: planItem.id, title: planItem.title, chat: [] };
+  const messages = timelineForCurrentRoute(doc.chat || []);
   return `
     <section class="plan-screen">
       <div class="subbar">
-        <div><strong>Plan</strong> ${escapeHtml(doc.id)} <span class="dot"></span> updated 12s ago</div>
+        <div><strong>Plan</strong> ${escapeHtml(doc.id)} <span class="dot"></span> ${escapeHtml(planItem.status || 'draft')} ${planItem.updated ? `. updated ${escapeHtml(planItem.updated)}` : ''}</div>
         <div class="workspace-actions">
-          <button class="ghost-action" type="button">Versions</button>
-          <button class="primary small" type="button">Assign</button>
+          <button class="ghost-action" type="button" disabled title="Plan versions are not wired in v2 yet">Versions</button>
+          <button class="primary small" type="button" disabled title="Plan assignment is not wired in v2 yet">Assign</button>
         </div>
       </div>
       <div class="plan-layout">
-        <article class="document-panel">
-          <h1>${escapeHtml(doc.title)}</h1>
-          <div class="goal-box">
-            <div class="eyebrow">Goal</div>
-            <p>Make every request through api-gateway carry a tenant context, and prevent any cross-tenant data leakage. Ship behind a flag.</p>
-          </div>
-          ${doc.phases.map((phase, index) => `
-            <section class="doc-section">
-              <button class="phase-caret" type="button">⌄</button>
-              <div class="section-number">${index + 1}</div>
-              <div class="phase-body">
-                <h2>${escapeHtml(phase.title)}</h2>
-                <span class="phase-state ${index === 0 ? 'done' : index === 1 ? 'active' : 'approval'}">${index === 0 ? 'done' : index === 1 ? 'active' : 'needs approval'}</span>
-                ${index === 2 ? `<div class="approval-row"><span>Need approval - 6 tables affected</span><button class="secondary small" type="button">Approve phase</button><button class="ghost-action" type="button">Discuss</button></div>` : ''}
-                <ul class="check-list">
-                  ${phase.steps.map((step, stepIndex) => `<li class="${index === 0 || stepIndex === 0 ? 'checked' : ''}">${escapeHtml(step)}</li>`).join('')}
-                </ul>
-              </div>
-            </section>
-          `).join('')}
-        </article>
+        ${useFixturePlan ? renderFixturePlanDocument(doc) : renderLivePlanDocument(planItem)}
         <aside class="chat-panel ${state.chatOpen ? '' : 'collapsed'}">
           <div class="panel-title-row">
-            <div class="panel-title">Conversation <span class="muted-line">iterating on plan</span></div>
+            <div class="panel-title">Conversation <span class="muted-line">${planItem.channel_id ? 'live channel' : 'no channel'}</span></div>
             <button class="icon-button" type="button" data-action="toggle-chat" aria-label="Toggle chat">C</button>
           </div>
           ${state.chatOpen ? renderChat(messages, 'plan') : ''}
         </aside>
       </div>
     </section>
+  `;
+}
+
+function renderFixturePlanDocument(doc) {
+  return `
+    <article class="document-panel">
+      <h1>${escapeHtml(doc.title)}</h1>
+      <div class="goal-box">
+        <div class="eyebrow">Goal</div>
+        <p>Make every request through api-gateway carry a tenant context, and prevent any cross-tenant data leakage. Ship behind a flag.</p>
+      </div>
+      ${doc.phases.map((phase, index) => `
+        <section class="doc-section">
+          <button class="phase-caret" type="button">⌄</button>
+          <div class="section-number">${index + 1}</div>
+          <div class="phase-body">
+            <h2>${escapeHtml(phase.title)}</h2>
+            <span class="phase-state ${index === 0 ? 'done' : index === 1 ? 'active' : 'approval'}">${index === 0 ? 'done' : index === 1 ? 'active' : 'needs approval'}</span>
+            ${index === 2 ? `<div class="approval-row"><span>Need approval - 6 tables affected</span><button class="secondary small" type="button">Approve phase</button><button class="ghost-action" type="button">Discuss</button></div>` : ''}
+            <ul class="check-list">
+              ${phase.steps.map((step, stepIndex) => `<li class="${index === 0 || stepIndex === 0 ? 'checked' : ''}">${escapeHtml(step)}</li>`).join('')}
+            </ul>
+          </div>
+        </section>
+      `).join('')}
+    </article>
+  `;
+}
+
+function renderLivePlanDocument(plan) {
+  const pct = Math.round((Number(plan.doneSteps) / Math.max(Number(plan.steps) || 1, 1)) * 100);
+  return `
+    <article class="document-panel">
+      <h1>${escapeHtml(plan.title)}</h1>
+      <div class="goal-box">
+        <div class="eyebrow">Live plan primitive</div>
+        <p>${escapeHtml(plan.status || 'draft')} . ${escapeHtml(String(plan.doneSteps || 0))}/${escapeHtml(String(plan.steps || 1))} steps . ${escapeHtml(plan.model || 'default')}</p>
+      </div>
+      <section class="doc-section">
+        <div class="section-number">1</div>
+        <div class="phase-body">
+          <h2>Current status</h2>
+          <span class="phase-state active">${escapeHtml(plan.status || 'draft')}</span>
+          <div class="progress"><span style="width:${pct}%"></span></div>
+          <p class="muted-line">Detailed plan body editing is not wired in v2 yet.</p>
+        </div>
+      </section>
+    </article>
   `;
 }
 
@@ -1816,7 +1885,8 @@ function renderWorktree(worktreeItem) {
   const restarting = state.worktreeActionLoads.has(`${wt.id}:restart`);
   const worktreeError = state.worktreeErrors.get(wt.id);
   const selectedFile = selectedFileFor(wt);
-  const messages = timelineForCurrentRoute(wt.chat || WORKTREE.chat);
+  const messages = timelineForCurrentRoute(wt.chat || (canUseFixtures() ? WORKTREE.chat : []));
+  const loadingSnapshot = state.worktreeLoads.has(wt.id);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
     <section class="worktree-screen">
@@ -1855,7 +1925,7 @@ function renderWorktree(worktreeItem) {
               <span class="add">+${file.add}</span>
               <span class="del">-${file.del}</span>
             </button>
-          `).join('') || '<div class="repo-empty">No changed files</div>'}
+          `).join('') || `<div class="repo-empty">${loadingSnapshot ? 'Loading live changes...' : 'No changed files'}</div>`}
         </aside>
         <section class="workbench">
           <div class="tabs">
@@ -1890,7 +1960,8 @@ function renderWorktree(worktreeItem) {
 
 function worktreeDetail(worktreeItem) {
   const snapshot = state.worktreeSnapshots.get(worktreeItem.id) || {};
-  const detail = worktreeItem.id === WORKTREE.id ? { ...WORKTREE, ...snapshot } : { ...WORKTREE, ...worktreeItem, ...snapshot };
+  const useFixtureWorktree = canUseFixtures() && worktreeItem.id === WORKTREE.id;
+  const detail = useFixtureWorktree ? { ...WORKTREE, ...snapshot } : { ...worktreeItem, ...snapshot };
   const agentConfig = worktreeAgentConfig({ ...worktreeItem, ...snapshot });
   detail.agent_config = agentConfig;
   detail.harness = agentConfig.harness;
@@ -1899,14 +1970,25 @@ function worktreeDetail(worktreeItem) {
   detail.agent_running = agentConfig.is_running;
   detail.agent_status = agentConfig.status;
   if (agentConfig.model) detail.model = agentConfig.model;
-  if (!Array.isArray(detail.files)) detail.files = WORKTREE.files;
-  if (!detail.git) detail.git = WORKTREE.git;
-  if (!Array.isArray(detail.tests)) detail.tests = WORKTREE.tests;
-  if (!Array.isArray(detail.chat)) detail.chat = WORKTREE.chat;
-  if (!Array.isArray(detail.terminal)) detail.terminal = WORKTREE.terminal;
+  if (!Array.isArray(detail.files)) detail.files = useFixtureWorktree ? WORKTREE.files : [];
+  if (!detail.git) detail.git = useFixtureWorktree ? WORKTREE.git : emptyGit(detail);
+  if (!Array.isArray(detail.tests)) detail.tests = useFixtureWorktree ? WORKTREE.tests : [];
+  if (!Array.isArray(detail.chat)) detail.chat = useFixtureWorktree ? WORKTREE.chat : [];
+  if (!Array.isArray(detail.terminal)) detail.terminal = useFixtureWorktree ? WORKTREE.terminal : [];
   if (!detail.agent) detail.agent = detail.model || 'device';
   if (!detail.device) detail.device = 'local';
   return detail;
+}
+
+function emptyGit(worktree) {
+  return {
+    repo_path: '',
+    branch: worktree.branch || 'workspace',
+    staged: 0,
+    unstaged: 0,
+    commits: [],
+    error: null,
+  };
 }
 
 function renderWorktreeTab(wt) {
@@ -1926,7 +2008,7 @@ function renderDiff(wt) {
   const snapshotHunk = Array.isArray(wt.diffHunks)
     ? wt.diffHunks.find(hunk => hunk.file === selected.path)
     : null;
-  const fallbackHunks = snapshotHunk ? [snapshotHunk] : (wt.id === WORKTREE.id ? SAMPLE_HUNKS : []);
+  const fallbackHunks = snapshotHunk ? [snapshotHunk] : (canUseFixtures() && wt.id === WORKTREE.id ? SAMPLE_HUNKS : []);
   const hunks = live?.lines?.length
     ? [{ file: live.path || selected.path, add: selected.add, del: selected.del, lines: live.lines, truncated: live.truncated }]
     : fallbackHunks;
@@ -1976,12 +2058,12 @@ function renderFiles(wt) {
   return `
     <div class="file-layout">
       <div class="tree-panel">
-        ${(wt.id === WORKTREE.id ? FILE_TREE : wt.files.map(file => ({ type: 'file', path: file.path, depth: 0, changed: true }))).map(node => `
+        ${(canUseFixtures() && wt.id === WORKTREE.id ? FILE_TREE : wt.files.map(file => ({ type: 'file', path: file.path, depth: 0, changed: true }))).map(node => `
           <div class="tree-row ${node.changed ? 'changed' : ''}" style="--depth:${node.depth}">
             <span>${node.type === 'dir' ? 'dir' : 'file'}</span>
             <span>${escapeHtml(node.path.split('/').pop())}</span>
           </div>
-        `).join('')}
+        `).join('') || '<div class="empty-state">No live file tree yet</div>'}
       </div>
       <div class="file-list-panel">
         ${wt.files.map(file => `
@@ -1991,7 +2073,7 @@ function renderFiles(wt) {
             <span class="add">+${file.add}</span>
             <span class="del">-${file.del}</span>
           </div>
-        `).join('')}
+        `).join('') || '<div class="empty-state">No changed files</div>'}
       </div>
       <div class="file-read-panel">
         <div class="file-read-head">
@@ -2016,19 +2098,20 @@ function renderFileReadBody(read, loading) {
 }
 
 function renderGit(wt) {
+  const commits = Array.isArray(wt.git?.commits) ? wt.git.commits : [];
   return `
     <div class="git-panel">
       <div class="git-summary">
-        ${metric('Staged', wt.git.staged)}
-        ${metric('Unstaged', wt.git.unstaged)}
+        ${metric('Staged', wt.git?.staged || 0)}
+        ${metric('Unstaged', wt.git?.unstaged || 0)}
       </div>
-      ${wt.git.commits.map(commit => `
+      ${commits.map(commit => `
         <div class="commit-row">
           <code>${escapeHtml(commit.sha)}</code>
           <span>${escapeHtml(commit.message)}</span>
           <span>${escapeHtml(commit.time)}</span>
         </div>
-      `).join('')}
+      `).join('') || '<div class="empty-state">No live commits loaded</div>'}
     </div>
   `;
 }
@@ -2042,7 +2125,7 @@ function renderTests(wt) {
           <span>${escapeHtml(test.status)}</span>
           <span>${escapeHtml(test.duration)}</span>
         </div>
-      `).join('')}
+      `).join('') || '<div class="empty-state">No live test results</div>'}
     </div>
   `;
 }
@@ -2247,13 +2330,15 @@ function renderReviewDenyDialog() {
 }
 
 function renderChat(messages) {
+  const routeScoped = state.route.screen === 'worktree' || state.route.screen === 'plan';
+  const canSend = !state.transport.client?.connected || !routeScoped || !!currentRouteChannelId();
   return `
     <div class="chat-list">
-      ${messages.map(renderChatItem).join('')}
+      ${messages.map(renderChatItem).join('') || `<div class="empty-state">${canUseFixtures() ? 'No chat messages' : 'No live chat messages'}</div>`}
     </div>
     <form class="composer" data-form="chat">
-      <input name="message" autocomplete="off" placeholder="Message agent">
-      <button class="primary small" type="submit">Send</button>
+      <input name="message" autocomplete="off" placeholder="${canSend ? 'Message agent' : 'No agent channel'}" ${canSend ? '' : 'disabled'}>
+      <button class="primary small" type="submit" ${canSend ? '' : 'disabled'}>Send</button>
     </form>
   `;
 }
@@ -2311,12 +2396,13 @@ function renderChatItem(msg) {
 }
 
 function renderTerminal() {
-  const lines = [...WORKTREE.terminal, ...state.terminalLines];
+  const lines = canUseFixtures() ? [...WORKTREE.terminal, ...state.terminalLines] : state.terminalLines;
+  const canRun = !state.transport.client?.connected || !!firstLiveChannel();
   return `
-    <pre class="terminal-output">${lines.map(line => escapeHtml(line)).join('\n')}</pre>
+    <pre class="terminal-output">${lines.length ? lines.map(line => escapeHtml(line)).join('\n') : 'No live terminal output'}</pre>
     <form class="terminal-input" data-form="terminal">
-      <input name="command" autocomplete="off" placeholder="Command">
-      <button class="primary small" type="submit">Run</button>
+      <input name="command" autocomplete="off" placeholder="${canRun ? 'Command' : 'No agent channel'}" ${canRun ? '' : 'disabled'}>
+      <button class="primary small" type="submit" ${canRun ? '' : 'disabled'}>Run</button>
     </form>
   `;
 }
@@ -2376,6 +2462,18 @@ function colorFor(value) {
 
 function renderEmpty(label) {
   return `<div class="empty-state">${escapeHtml(label)}</div>`;
+}
+
+function renderMissingEntity(title, detail) {
+  return `
+    <section class="screen narrow-screen">
+      <div class="empty-state missing-entity">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(detail)}</span>
+        <a class="secondary small" href="#/projects" data-route="#/projects">Back to projects</a>
+      </div>
+    </section>
+  `;
 }
 
 function matchesSearch(item) {

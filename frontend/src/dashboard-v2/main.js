@@ -176,12 +176,20 @@ function loadRouteData() {
 
 async function loadDashboardSnapshot(client) {
   try {
-    const response = await client.dashboardSnapshot();
+    const [response, inboxResponse] = await Promise.all([
+      client.dashboardSnapshot(),
+      client.inboxList().catch(err => {
+        console.debug('inbox.list unavailable', err);
+        return { payload: { items: [] } };
+      }),
+    ]);
     const projects = response.payload?.projects;
     if (!Array.isArray(projects)) return null;
+    const normalizedProjects = projects.map(normalizeLiveProject).filter(Boolean);
     return {
       ...response.payload,
-      projects: projects.map(normalizeLiveProject).filter(Boolean),
+      projects: normalizedProjects,
+      inbox: normalizeLiveInbox(inboxResponse.payload?.items, normalizedProjects),
     };
   } catch (err) {
     console.debug('dashboard.snapshot unavailable', err);
@@ -244,6 +252,41 @@ function normalizeLiveProject(project) {
     worktrees: normalizedWorktrees,
     plans: normalizedPlans,
     activity: Array.isArray(project.activity) ? project.activity : [],
+  };
+}
+
+function normalizeLiveInbox(items, projects = []) {
+  if (!Array.isArray(items)) return [];
+  const projectById = new Map(projects.map(project => [project.id, project]));
+  return items.map(item => normalizeLiveInboxItem(item, projectById)).filter(Boolean);
+}
+
+function normalizeLiveInboxItem(item, projectById) {
+  if (!item?.id || !item?.title) return null;
+  const projectId = item.projectId || item.project_id || '';
+  const worktreeId = item.worktreeId || item.worktree_id || '';
+  const planId = item.planId || item.plan_id || '';
+  const channelId = item.channelId || item.channel_id || '';
+  const interactionId = item.interactionId || item.interaction_id || '';
+  const project = projectById.get(projectId);
+  const kind = item.kind || 'review';
+  const priority = item.priority || (kind === 'permission' ? 'high' : 'medium');
+  return {
+    id: item.id,
+    kind,
+    priority,
+    projectId: projectId || project?.id || '',
+    projectName: item.projectName || project?.name || 'Project',
+    projectColor: item.projectColor || project?.color || colorFor(projectId || item.id),
+    worktreeId,
+    planId,
+    channelId,
+    interactionId,
+    title: item.title,
+    detail: item.detail || '',
+    actor: item.actor || 'device',
+    time: item.time || 'now',
+    actions: Array.isArray(item.actions) && item.actions.length ? item.actions : ['Open'],
   };
 }
 
@@ -1349,7 +1392,7 @@ function canUseFixtures() {
 }
 
 function inboxForRender() {
-  return canUseFixtures() ? INBOX : [];
+  return canUseFixtures() ? INBOX : (Array.isArray(state.liveSnapshot?.inbox) ? state.liveSnapshot.inbox : []);
 }
 
 function projectsForRender() {
@@ -1571,8 +1614,13 @@ function renderInbox() {
 }
 
 function renderInboxItem(item) {
-  const project = findProjectItem(item.projectId);
-  const openRoute = item.worktreeId ? `#/worktree/${item.worktreeId}` : `#/plan/${item.planId}`;
+  const project = projectsForRender().find(projectItem => projectItem.id === item.projectId) || {
+    id: item.projectId || '',
+    name: item.projectName || 'Project',
+    color: item.projectColor || colorFor(item.projectId || item.id),
+  };
+  const openRoute = inboxItemRoute(item);
+  const liveActions = !canUseFixtures();
   return `
     <article class="inbox-item priority-${escapeAttr(item.priority)}">
       <div class="inbox-kind">
@@ -1588,11 +1636,22 @@ function renderInboxItem(item) {
       <time>${escapeHtml(item.time)}</time>
       <div class="item-actions">
         ${item.actions.slice(0, 2).map(action => `
-          <button class="${action === 'Approve' || action === 'Allow' ? 'primary' : 'secondary'} small" type="button" data-action="dismiss-inbox" data-id="${escapeAttr(item.id)}">${escapeHtml(action)}</button>
+          ${liveActions ? `
+            <a class="secondary small" href="${escapeAttr(openRoute)}" data-route="${escapeAttr(openRoute)}">${escapeHtml(action)}</a>
+          ` : `
+            <button class="${action === 'Approve' || action === 'Allow' ? 'primary' : 'secondary'} small" type="button" data-action="dismiss-inbox" data-id="${escapeAttr(item.id)}">${escapeHtml(action)}</button>
+          `}
         `).join('')}
       </div>
     </article>
   `;
+}
+
+function inboxItemRoute(item) {
+  if (item.worktreeId) return `#/worktree/${item.worktreeId}`;
+  if (item.planId) return `#/plan/${item.planId}`;
+  if (item.projectId) return `#/project/${item.projectId}`;
+  return '#/projects';
 }
 
 function inboxFilterLabel(filter) {
@@ -1612,7 +1671,9 @@ function liveInboxSummary() {
   const projects = projectsForRender();
   const agents = sum(projects, 'runningAgents');
   if (canUseFixtures()) return `${agents} agents working across ${projects.length} projects. Most won't need you.`;
-  return `${agents} live agents across ${projects.length} projects. Inbox primitives are not emitting live items yet.`;
+  const inbox = inboxForRender();
+  if (inbox.length) return `${inbox.length} live item${inbox.length === 1 ? '' : 's'} need review across ${projects.length} projects.`;
+  return `${agents} live agents across ${projects.length} projects. No pending inbox items.`;
 }
 
 function kindShortLabel(kind) {

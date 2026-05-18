@@ -136,6 +136,10 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('dashboard.snapshot');
   }
 
+  inboxList() {
+    return this.request('inbox.list');
+  }
+
   listProjects() {
     return this.request('project.list');
   }

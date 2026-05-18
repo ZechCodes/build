@@ -148,6 +148,10 @@ export class BuildE2EEV1 extends BuildE2EE {
     return this.request('project.create', { payload });
   }
 
+  clearProjects() {
+    return this.request('project.clear', { payload: { confirm: true } });
+  }
+
   listProjectRepos(projectId) {
     return this.request('project.repo.list', {
       payload: { project_id: projectId },

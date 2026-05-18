@@ -41,6 +41,7 @@ const state = {
   reposByProject: new Map(),
   repoLoads: new Set(),
   repoErrors: new Map(),
+  projectActionLoad: '',
   spawnLoads: new Set(),
   worktreeActionLoads: new Set(),
   worktreeErrors: new Map(),
@@ -102,7 +103,7 @@ async function initTransport() {
       state.liveSnapshot = null;
       setTransport({
         phase: 'mock',
-        label: devices.length ? 'No online encrypted device' : 'Mock data',
+        label: devices.length ? 'No online encrypted device' : 'No devices',
         devices,
         readyDevice: null,
         channels: [],
@@ -158,7 +159,7 @@ async function initTransport() {
     state.repoErrors.clear();
     setTransport({
       phase: 'mock',
-      label: 'Mock data',
+      label: 'Offline',
       error: String(err?.message || err),
     });
   }
@@ -881,6 +882,8 @@ function handleClick(event) {
     initTransport();
   } else if (action === 'open-project-create') {
     openProjectDialog();
+  } else if (action === 'clear-projects') {
+    clearProjects();
   } else if (action === 'open-worktree-create') {
     openWorktreeDialog(actionEl.dataset.projectId);
   } else if (action === 'open-worktree-settings') {
@@ -1097,6 +1100,28 @@ async function createProjectFromForm(form) {
     setDialogError(String(err?.message || err));
   } finally {
     setDialogBusy(false);
+  }
+}
+
+async function clearProjects() {
+  const client = state.transport.client;
+  if (!client?.connected || state.projectActionLoad === 'clear') return;
+  if (!window.confirm('Clear all dashboard projects and worktrees from this device? Channels and chat history stay intact.')) return;
+  state.projectActionLoad = 'clear';
+  render();
+  try {
+    await client.clearProjects();
+    state.liveSnapshot = { schema: 'dashboard.snapshot.v1', projects: [], inbox: [] };
+    state.reposByProject.clear();
+    state.worktreeSnapshots.clear();
+    state.messagesByChannel.clear();
+    state.activityByChannel.clear();
+    await refreshDashboardData();
+  } catch (err) {
+    setTransport({ error: String(err?.message || err), label: `Project clear failed: ${err?.message || err}` });
+  } finally {
+    state.projectActionLoad = '';
+    render();
   }
 }
 
@@ -1548,7 +1573,11 @@ function scheduleWorktreeRefresh(channelId, { dashboard = false, delay = 900 } =
 }
 
 function canUseFixtures() {
-  return state.transport.phase !== 'connected';
+  return state.transport.phase === 'mock' && new URLSearchParams(window.location.search).get('demo') === '1';
+}
+
+function isLiveLoading() {
+  return state.transport.phase === 'checking' || state.transport.phase === 'connecting';
 }
 
 function inboxForRender() {
@@ -1558,7 +1587,7 @@ function inboxForRender() {
 function projectsForRender() {
   const projects = state.liveSnapshot?.projects;
   if (state.transport.phase === 'connected') return Array.isArray(projects) ? projects : [];
-  return PROJECTS;
+  return canUseFixtures() ? PROJECTS : [];
 }
 
 function reposForProject(projectId) {
@@ -1605,9 +1634,11 @@ function render() {
       <div class="status-rail">
         <span class="dot ${state.transport.phase}"></span>
         <span>${escapeHtml(state.transport.label)}</span>
+        ${renderStatusToggles()}
       </div>
     </div>
   `;
+  syncScrollablePanels();
 }
 
 function renderTopChrome() {
@@ -1708,7 +1739,22 @@ function statusText() {
   }
   if (state.transport.phase === 'connecting') return 'Connecting';
   if (state.transport.phase === 'checking') return 'Checking';
-  return 'Mock data';
+  return state.transport.label || 'Offline';
+}
+
+function renderStatusToggles() {
+  if (state.route.screen !== 'worktree' && state.route.screen !== 'plan') return '';
+  return `
+    <button class="${state.chatOpen ? 'active' : ''}" type="button" data-action="toggle-chat">${state.chatOpen ? 'Hide chat' : 'Show chat'}</button>
+    ${state.route.screen === 'worktree' ? `<button class="${state.terminalOpen ? 'active' : ''}" type="button" data-action="toggle-terminal">${state.terminalOpen ? 'Hide terminal' : 'Show terminal'}</button>` : ''}
+  `;
+}
+
+function syncScrollablePanels() {
+  const chatList = root.querySelector('.chat-list');
+  if (chatList) chatList.scrollTop = chatList.scrollHeight;
+  const terminal = root.querySelector('.terminal-output');
+  if (terminal) terminal.scrollTop = terminal.scrollHeight;
 }
 
 function renderContent() {
@@ -1741,6 +1787,9 @@ function renderInbox() {
     ['Heads Up', visible.filter(item => item.priority === 'low' && item.kind !== 'question')],
   ];
   const urgentCount = inbox.filter(item => item.priority === 'high' && !state.dismissedInbox.has(item.id)).length;
+  const emptyLabel = isLiveLoading()
+    ? 'Loading live inbox...'
+    : (canUseFixtures() ? 'Inbox clear' : 'No live inbox items');
 
   return `
     <section class="screen inbox-screen narrow-screen">
@@ -1767,7 +1816,7 @@ function renderInbox() {
             <div class="group-title"><span class="dot"></span>${escapeHtml(label)} <span>${items.length}</span></div>
             ${items.map(renderInboxItem).join('')}
           </section>
-        ` : '').join('') || renderEmpty(canUseFixtures() ? 'Inbox clear' : 'No live inbox items')}
+        ` : '').join('') || renderEmpty(emptyLabel)}
       </div>
     </section>
   `;
@@ -1918,6 +1967,10 @@ function renderProjects() {
     })
     .filter(matchesSearch);
 
+  const clearing = state.projectActionLoad === 'clear';
+  const emptyLabel = isLiveLoading()
+    ? 'Loading live projects...'
+    : (canUseFixtures() ? 'No mock projects' : 'No live projects yet. Create a project to start.');
   return `
     <section class="screen projects-screen narrow-screen">
       <div class="screen-head">
@@ -1925,7 +1978,12 @@ function renderProjects() {
           <div class="eyebrow">Projects</div>
           <h1>Your <em>workshops.</em></h1>
         </div>
-        <button class="primary" type="button" data-action="open-project-create">+ New project</button>
+        <div class="screen-actions">
+          ${state.transport.phase === 'connected' && projects.length ? `
+            <button class="secondary" type="button" data-action="clear-projects" ${clearing ? 'disabled' : ''}>${clearing ? 'Clearing...' : 'Clear projects'}</button>
+          ` : ''}
+          <button class="primary" type="button" data-action="open-project-create">+ New project</button>
+        </div>
       </div>
       <div class="project-grid">
         ${projects.map(project => `
@@ -1953,7 +2011,7 @@ function renderProjects() {
               `).join('') : `<p class="muted-line">No agents running . last active ${escapeHtml(project.lastActive)}</p>`}
             </div>
           </article>
-        `).join('') || renderEmpty(canUseFixtures() ? 'No projects' : 'No live projects yet. Create a project to start.')}
+        `).join('') || renderEmpty(emptyLabel)}
       </div>
     </section>
   `;
@@ -2172,7 +2230,7 @@ function renderWorktree(worktreeItem) {
   const loadingSnapshot = state.worktreeLoads.has(wt.id);
   const tabs = ['diff', 'files', 'git', 'tests'];
   return `
-    <section class="worktree-screen">
+    <section class="worktree-screen ${state.terminalOpen ? '' : 'terminal-collapsed'}">
       <div class="subbar worktree-subbar">
         <div><strong>${escapeHtml(wt.branch)}</strong> <span>${escapeHtml(wt.git?.branch || project.branch || 'main')}</span> <span class="mini-status ${escapeAttr(wt.status)}">${escapeHtml(wt.status)}</span> <span>${escapeHtml(wt.updated || project.lastActive || 'now')}</span></div>
         <div class="workspace-actions">
@@ -2194,7 +2252,7 @@ function renderWorktree(worktreeItem) {
       </div>
       ${worktreeError ? `<div class="worktree-error">${escapeHtml(worktreeError)}</div>` : ''}
       ${wt.git?.error ? `<div class="worktree-error">${escapeHtml(wt.git.error)}</div>` : ''}
-      <div class="worktree-grid">
+      <div class="worktree-grid ${state.chatOpen ? '' : 'chat-collapsed'}">
         <aside class="file-rail">
           <div class="rail-tabs">
             <button class="active" type="button">Changed <span>${wt.files.length}</span></button>
@@ -2637,18 +2695,18 @@ function renderChatItem(msg) {
   }
   if (msg.kind === 'tool_use') {
     return `
-      <div class="chat-activity tool">
-        <div class="chat-meta"><span>Tool</span><span>${escapeHtml(msg.time)}</span></div>
-        <p><strong>${escapeHtml(msg.name)}</strong> ${escapeHtml(activityPreview(msg.input))}</p>
-      </div>
+      <details class="chat-activity tool">
+        <summary><span>${escapeHtml(msg.name || 'tool')}</span><span>${escapeHtml(msg.time)}</span></summary>
+        <pre>${escapeHtml(activityPreview(msg.input))}</pre>
+      </details>
     `;
   }
   if (msg.kind === 'tool_result') {
     return `
-      <div class="chat-activity tool-result ${msg.isError ? 'error' : ''}">
-        <div class="chat-meta"><span>${msg.isError ? 'Tool error' : 'Tool result'}</span><span>${escapeHtml(msg.time)}</span></div>
-        <p>${escapeHtml(msg.text)}</p>
-      </div>
+      <details class="chat-activity tool-result ${msg.isError ? 'error' : ''}">
+        <summary><span>${msg.isError ? 'Tool error' : 'Tool result'}</span><span>${escapeHtml(msg.time)}</span></summary>
+        <pre>${escapeHtml(msg.text)}</pre>
+      </details>
     `;
   }
   if (msg.kind === 'activity_end') {

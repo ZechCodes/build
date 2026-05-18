@@ -353,17 +353,52 @@ export const PLAN_DOC = {
         'Run gateway smoke tests',
       ],
     },
+    {
+      title: 'Flagged rollout',
+      body: 'Ship behind a feature flag, watch audit logs, and roll back quickly if tenant attribution looks wrong.',
+      steps: [
+        'Enable flag for internal tenants',
+        'Watch audit log anomalies',
+        'Ramp production traffic',
+      ],
+      collapsed: true,
+    },
   ],
   chat: [
     {
+      author: 'You',
+      text: 'I want to migrate api-gateway to be multi-tenant. Look at the existing services and propose a plan.',
+      time: '04:30',
+    },
+    {
       author: 'claude-sonnet',
-      text: 'The risky part is jobs that build service clients outside HTTP request scope. I marked those as explicit checks in phase one.',
-      time: '2m',
+      text: 'Reading services/api/* - back in a sec.',
+      time: '04:31',
+    },
+    {
+      author: 'claude-sonnet',
+      text: "Done. I see 17 routes that don't carry tenant context, 3 services depend on it (billing, analytics, webhooks). Drafting plan now.",
+      time: '04:33',
+    },
+    {
+      author: 'claude-sonnet',
+      text: 'PLAN CREATED 4 phases - see right ->',
+      time: '04:34',
     },
     {
       author: 'You',
-      text: 'Keep the first pass constrained to middleware and tests.',
-      time: '1m',
+      text: "Phase 3 worries me. Walk me through the backfill - what's the default tenant for legacy rows?",
+      time: '04:36',
+    },
+    {
+      author: 'claude-sonnet',
+      text: "Good catch. Three options:\n\n1. Assign to the org's first tenant (works if you have a clear primary).\n2. Backfill from the row's `created_by` user -> user's tenant.\n3. Mark as `tenant_id = legacy` and require manual triage.",
+      time: '04:37',
+    },
+    {
+      author: 'claude-sonnet',
+      text: 'The risky part is jobs that build service clients outside HTTP request scope. I marked those as explicit checks in phase one.',
+      time: '04:38',
     },
   ],
 };
@@ -404,11 +439,17 @@ export const WORKTREE = {
     },
     {
       author: 'claude-sonnet',
+      kind: 'tool_use',
+      name: 'read services/api/gateway.ts',
+      input: { path: 'services/api/gateway.ts', lines: 480 },
       text: 'read services/api/gateway.ts (480 lines)',
       time: '4:32',
     },
     {
       author: 'claude-sonnet',
+      kind: 'tool_use',
+      name: 'rg "tenant_id" services/',
+      input: { query: 'tenant_id', path: 'services/', hits: 5 },
       text: 'rg "tenant_id" services/ -> 5 hits',
       time: '4:32',
     },

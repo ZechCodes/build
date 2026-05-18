@@ -2057,9 +2057,9 @@ function renderProject(project) {
               ${project.plans.filter(plan => plan.status === status).map(plan => renderPlanCard(plan, project)).join('') || ''}
             </div>
           `).join('')}
+          ${renderRecentActivity(project)}
         </section>
         <aside class="project-aside">
-          ${renderProjectRepos(project)}
           <div class="panel worktree-panel">
             <div class="panel-title-row">
               <div class="panel-title">Worktrees . ${project.worktrees.length}</div>
@@ -2083,12 +2083,7 @@ function renderProject(project) {
               ${spawning ? 'Spawning...' : '+ Spawn new worktree'}
             </button>
           </div>
-          ${canUseFixtures() || project.activity.length ? `<div class="panel">
-            <div class="panel-title">Recent</div>
-            <div class="activity-list">
-              ${project.activity.map(item => `<div>${escapeHtml(item)}</div>`).join('')}
-            </div>
-          </div>` : ''}
+          ${renderProjectRepos(project)}
         </aside>
       </div>
     </section>
@@ -2096,6 +2091,15 @@ function renderProject(project) {
 }
 
 function renderProjectRepos(project) {
+  if (canUseFixtures()) {
+    return `
+      <div class="panel repo-panel compact-repo">
+        <div class="panel-title">Repo</div>
+        <div class="repo-branch">main</div>
+        <p class="repo-root">${escapeHtml(project.repo || project.name)}</p>
+      </div>
+    `;
+  }
   const repos = reposForProject(project.id);
   const loading = state.repoLoads.has(project.id);
   const error = state.repoErrors.get(project.id);
@@ -2121,6 +2125,35 @@ function renderProjectRepos(project) {
         `).join('') || `<div class="repo-empty">${loading ? 'Scanning project directory...' : 'No git repositories discovered'}</div>`}
       </div>
     </div>
+  `;
+}
+
+function renderRecentActivity(project) {
+  const items = canUseFixtures()
+    ? [
+      ['commit', 'feat(api): tenant middleware skeleton', 'a3f8d12', '04:36'],
+      ['plan', 'Updated plan-4729 - added phase 4 (rollout)', '', '04:34'],
+      ['ask', 'Asked about backfill strategy for legacy rows', '', '04:37'],
+      ['test', '4 tests passed in services/api/gateway.test.ts', '', '04:37'],
+      ['queued', 'plan-4733 added to queue (audit log)', '', '04:20'],
+    ]
+    : project.activity.map((item, index) => ['activity', item, '', index ? '' : project.lastActive]);
+  if (!items.length) return '';
+  return `
+    <section class="recent-activity">
+      <div class="panel-title">Recent activity</div>
+      <div class="activity-table">
+        ${items.map(([kind, text, detail, time]) => `
+          <div class="activity-row">
+            <span>${escapeHtml(kind)}</span>
+            ${agentBadge('cs')}
+            <strong>${escapeHtml(text)}</strong>
+            <code>${escapeHtml(detail)}</code>
+            <time>${escapeHtml(time)}</time>
+          </div>
+        `).join('')}
+      </div>
+    </section>
   `;
 }
 
@@ -2178,21 +2211,37 @@ function renderFixturePlanDocument(doc) {
         <p>Make every request through api-gateway carry a tenant context, and prevent any cross-tenant data leakage. Ship behind a flag.</p>
       </div>
       ${doc.phases.map((phase, index) => `
-        <section class="doc-section">
+        <section class="doc-section ${phase.collapsed ? 'collapsed-phase' : ''}">
           <button class="phase-caret" type="button">⌄</button>
           <div class="section-number">${index + 1}</div>
           <div class="phase-body">
             <h2>${escapeHtml(phase.title)}</h2>
-            <span class="phase-state ${index === 0 ? 'done' : index === 1 ? 'active' : 'approval'}">${index === 0 ? 'done' : index === 1 ? 'active' : 'needs approval'}</span>
+            <span class="phase-state ${phaseStateClass(index, phase)}">${escapeHtml(phaseStateLabel(index, phase))}</span>
             ${index === 2 ? `<div class="approval-row"><span>Need approval - 6 tables affected</span><button class="secondary small" type="button">Approve phase</button><button class="ghost-action" type="button">Discuss</button></div>` : ''}
-            <ul class="check-list">
-              ${phase.steps.map((step, stepIndex) => `<li class="${index === 0 || stepIndex === 0 ? 'checked' : ''}">${escapeHtml(step)}</li>`).join('')}
-            </ul>
+            ${phase.collapsed ? '' : `
+              <ul class="check-list">
+                ${phase.steps.map((step, stepIndex) => `<li class="${index === 0 || stepIndex === 0 ? 'checked' : ''}">${escapeHtml(step)}</li>`).join('')}
+              </ul>
+            `}
           </div>
         </section>
       `).join('')}
     </article>
   `;
+}
+
+function phaseStateClass(index, phase) {
+  if (phase.collapsed) return 'pending';
+  if (index === 0) return 'done';
+  if (index === 1) return 'active';
+  return 'approval';
+}
+
+function phaseStateLabel(index, phase) {
+  if (phase.collapsed) return 'pending';
+  if (index === 0) return 'done';
+  if (index === 1) return 'active';
+  return 'needs approval';
 }
 
 function renderLivePlanDocument(plan) {
@@ -2241,14 +2290,6 @@ function renderWorktree(worktreeItem) {
           <button class="secondary small" type="button" data-action="stop-worktree-agent" data-worktree-id="${escapeAttr(wt.id)}" ${!channelId || stopping ? 'disabled' : ''}>${stopping ? 'Stopping...' : 'Stop'}</button>
           <button class="primary small" type="button" data-action="restart-worktree-agent" data-worktree-id="${escapeAttr(wt.id)}" ${!channelId || restarting ? 'disabled' : ''}>${restarting ? 'Restarting...' : 'Restart'}</button>
         </div>
-      </div>
-      <div class="worktree-meta-strip">
-        ${metaPill('Repo', wt.git?.repo_path || project.repo || project.name)}
-        ${metaPill('Path', wt.workspace || config.working_directory || '')}
-        ${metaPill('Model', config.model || wt.model || 'default')}
-        ${metaPill('Thinking', config.effort || 'default')}
-        ${metaPill('Permissions', config.auto_approve_tools ? 'auto' : 'ask')}
-        ${metaPill('Agent', config.is_running ? 'running' : config.status || wt.status)}
       </div>
       ${worktreeError ? `<div class="worktree-error">${escapeHtml(worktreeError)}</div>` : ''}
       ${wt.git?.error ? `<div class="worktree-error">${escapeHtml(wt.git.error)}</div>` : ''}
@@ -2367,17 +2408,16 @@ function renderDiff(wt) {
         </div>
       </div>
       ${error ? `<div class="worktree-error">${escapeHtml(error)}</div>` : ''}
-      ${hunks.map(hunk => `
-        <section class="diff-file">
-          <div class="diff-file-head">
-            <span class="kind-chip permission">${live ? 'live' : 'snapshot'}</span>
-            <code>${escapeHtml(hunk.file)}</code>
-            <span class="add">+${hunk.add ?? countLines(hunk, 'add')}</span>
-            <span class="del">-${hunk.del ?? countLines(hunk, 'del')}</span>
-          </div>
+      ${hunks.map((hunk, index) => `
+        <section class="diff-file hunk-card">
           <div class="hunk-head">
-            <span>${live ? 'live diff' : 'snapshot diff'}</span>
-            <span>${live?.truncated || hunk.truncated ? 'truncated' : 'worktree changes'}</span>
+            <span>${live ? 'live diff' : `hunk ${index + 1}`}</span>
+            <span>${live?.truncated || hunk.truncated ? 'truncated' : hunk.file}</span>
+            <div class="hunk-actions">
+              <button class="secondary small" type="button" disabled title="Approve is not exposed in v1 yet">approve</button>
+              <button class="secondary small danger-action" type="button" data-action="open-review-deny" data-worktree-id="${escapeAttr(wt.id)}" data-path="${escapeAttr(selected.path)}" ${wt.channel_id ? '' : 'disabled'}>reject</button>
+              <button class="ghost-action small" type="button" disabled>comment</button>
+            </div>
           </div>
           <pre>${hunk.lines.map(line => `<span class="${escapeAttr(line.type)}">${escapeHtml(prefixFor(line.type) + line.text)}</span>`).join('')}</pre>
         </section>

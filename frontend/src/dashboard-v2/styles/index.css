@@ -250,8 +250,12 @@ kbd {
 }
 
 .narrow-screen {
-  max-width: 1096px;
+  max-width: 1040px;
   margin: 0 auto;
+}
+
+.projects-screen {
+  max-width: 1100px;
 }
 
 .hero-copy {
@@ -699,7 +703,7 @@ h3 {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin: 26px 0 28px;
+  margin: 0 0 28px;
 }
 
 .plain-hero h1 {
@@ -872,8 +876,82 @@ h3 {
   border-top: 1px solid var(--line);
 }
 
+.recent-activity {
+  margin-top: 18px;
+}
+
+.activity-table {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 66px auto minmax(0, 1fr) 88px 48px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-top: 1px solid var(--line);
+}
+
+.activity-row:first-child {
+  border-top: 0;
+}
+
+.activity-row > span:first-child,
+.activity-row code,
+.activity-row time {
+  color: var(--ink-4);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.activity-row > span:first-child {
+  text-transform: uppercase;
+}
+
+.activity-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .repo-panel {
   gap: 12px;
+}
+
+.compact-repo {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.repo-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.repo-branch::before {
+  content: "⌘";
+  color: var(--ink-4);
 }
 
 .repo-root,
@@ -954,13 +1032,13 @@ h3 {
 
 .plan-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 344px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   min-height: calc(100vh - 92px);
 }
 
 .document-panel {
   width: min(664px, calc(100% - 64px));
-  margin: 28px auto 80px;
+  margin: 24px auto 80px;
   padding: 28px 32px;
   background: var(--surface);
 }
@@ -1033,6 +1111,28 @@ h3 {
   color: var(--accent);
 }
 
+.phase-state.pending {
+  background: #f1f5f9;
+  color: var(--ink-4);
+}
+
+.doc-section.collapsed-phase {
+  align-items: center;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.doc-section.collapsed-phase .phase-caret {
+  transform: rotate(-90deg);
+}
+
+.doc-section.collapsed-phase .phase-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .approval-row {
   display: flex;
   align-items: center;
@@ -1086,7 +1186,7 @@ h3 {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   min-width: 0;
-  max-height: calc(100vh - 154px);
+  max-height: calc(100vh - 92px);
   overflow: hidden;
   padding: 16px;
   border-left: 1px solid var(--line);
@@ -1504,7 +1604,7 @@ button:disabled {
 .worktree-grid {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr) 328px;
-  min-height: calc(100vh - 256px);
+  min-height: calc(100vh - 126px);
 }
 
 .worktree-grid.chat-collapsed {
@@ -1657,7 +1757,8 @@ button:disabled {
 
 .hunk-head {
   gap: 8px;
-  padding: 8px 12px;
+  min-height: 34px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--line);
   color: var(--ink-4);
   font-family: var(--mono);
@@ -1671,6 +1772,20 @@ button:disabled {
 
 .hunk-head button {
   margin-left: auto;
+}
+
+.hunk-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.hunk-actions button {
+  margin-left: 0;
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 11px;
 }
 
 .diff-file pre,
@@ -1799,8 +1914,8 @@ button:disabled {
 .docked-terminal {
   position: fixed;
   left: 232px;
-  right: 0;
-  bottom: 18px;
+  right: 328px;
+  bottom: 28px;
   z-index: 25;
   display: grid;
   gap: 8px;

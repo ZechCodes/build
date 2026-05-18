@@ -75,7 +75,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: zech-sh-secrets
-                  key: redis-url
+                  key: build-relay-redis-url
           resources:
             requests:
               memory: "256Mi"

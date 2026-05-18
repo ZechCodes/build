@@ -1150,6 +1150,16 @@ h3 {
   background: var(--danger-soft);
 }
 
+.chat-interaction {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(8, 145, 178, 0.22);
+  border-left: 3px solid #0891b2;
+  border-radius: 7px;
+  background: #f3fbfd;
+}
+
 .review-card-head {
   display: flex;
   flex-wrap: wrap;
@@ -1163,7 +1173,8 @@ h3 {
   color: var(--ink);
 }
 
-.chat-review p {
+.chat-review p,
+.chat-interaction p {
   margin: 0;
   color: var(--ink-2);
   line-height: 1.45;
@@ -1171,6 +1182,7 @@ h3 {
 }
 
 .chat-review pre,
+.interaction-plan,
 .review-preview pre {
   max-height: 220px;
   overflow: auto;
@@ -1183,6 +1195,47 @@ h3 {
   font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.interaction-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.interaction-controls.compact {
+  min-width: min(360px, 100%);
+}
+
+.interaction-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.interaction-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.interaction-inline input {
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.interaction-resolution,
+.interaction-error {
+  color: var(--ink-4);
+  font-size: 12px;
+}
+
+.interaction-error {
+  color: var(--danger);
 }
 
 .composer {

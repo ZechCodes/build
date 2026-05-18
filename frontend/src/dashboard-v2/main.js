@@ -36,6 +36,8 @@ const state = {
   messageLoads: new Set(),
   activityByChannel: new Map(),
   activityLoads: new Set(),
+  interactionLoads: new Set(),
+  interactionErrors: new Map(),
   reposByProject: new Map(),
   repoLoads: new Set(),
   repoErrors: new Map(),
@@ -88,6 +90,8 @@ async function initTransport() {
     state.messageLoads.clear();
     state.activityByChannel.clear();
     state.activityLoads.clear();
+    state.interactionLoads.clear();
+    state.interactionErrors.clear();
     state.reposByProject.clear();
     state.repoLoads.clear();
     state.repoErrors.clear();
@@ -147,6 +151,8 @@ async function initTransport() {
     state.messageLoads.clear();
     state.activityByChannel.clear();
     state.activityLoads.clear();
+    state.interactionLoads.clear();
+    state.interactionErrors.clear();
     state.reposByProject.clear();
     state.repoLoads.clear();
     state.repoErrors.clear();
@@ -287,6 +293,7 @@ function normalizeLiveInboxItem(item, projectById) {
     actor: item.actor || 'device',
     time: item.time || 'now',
     actions: Array.isArray(item.actions) && item.actions.length ? item.actions : ['Open'],
+    interaction: normalizeInteractionData(item.interaction, interactionId),
   };
 }
 
@@ -555,6 +562,7 @@ function parseUnifiedDiff(diff) {
 function normalizeChatMessage(message) {
   if (!message?.content) return null;
   const review = parseReviewDenial(message.content);
+  const interaction = normalizeInteractionData(parseMessageMetadata(message.metadata), message.id);
   const base = {
     id: message.id || '',
     author: message.sender === 'client' ? 'You' : message.sender || 'agent',
@@ -571,10 +579,62 @@ function normalizeChatMessage(message) {
       diff: review.diff || '',
     };
   }
+  if (interaction) {
+    return {
+      ...base,
+      kind: 'interaction_request',
+      text: message.content,
+      interaction,
+    };
+  }
   return {
     ...base,
     text: message.content,
   };
+}
+
+function parseMessageMetadata(metadata) {
+  if (metadata && typeof metadata === 'object') return metadata;
+  if (typeof metadata !== 'string' || !metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeInteractionData(data, fallbackId = '') {
+  if (!data || typeof data !== 'object') return null;
+  const id = data.interaction_id || data.interactionId || data.id || fallbackId;
+  if (!id) return null;
+  const selectedOptions = Array.isArray(data.selected_options || data.selectedOptions)
+    ? (data.selected_options || data.selectedOptions).map(String)
+    : [];
+  return {
+    id,
+    kind: data.kind || 'question',
+    options: normalizeInteractionOptions(data.options),
+    allowFreeform: !!(data.allowFreeform ?? data.allow_freeform),
+    multiselect: !!data.multiselect,
+    plan: data.plan || '',
+    resolvedAt: data.resolvedAt || data.resolved_at || '',
+    selectedOption: data.selectedOption || data.selected_option || '',
+    selectedOptions,
+    freeformResponse: data.freeformResponse || data.freeform_response || '',
+  };
+}
+
+function normalizeInteractionOptions(options) {
+  if (!Array.isArray(options)) return [];
+  return options.map((option, index) => {
+    if (option && typeof option === 'object') {
+      const id = String(option.id || option.value || option.label || index);
+      return { id, label: String(option.label || option.title || id) };
+    }
+    const id = String(option);
+    return { id, label: id };
+  }).filter(option => option.id).slice(0, 8);
 }
 
 function parseReviewDenial(content) {
@@ -667,6 +727,21 @@ function bindClientEvents(client) {
         time: 'now',
       }, chatKeyFromEvent(event.detail));
     }
+    render();
+  });
+  client.addEventListener('v1:interaction.requested', event => {
+    const payload = event.detail?.payload || {};
+    const channelId = event.detail?.target?.channel_id;
+    if (!channelId || !payload.interaction_id) return;
+    appendLiveMessage(channelId, normalizeChatMessage({
+      id: payload.interaction_id,
+      channel_id: channelId,
+      sender: 'agent',
+      content: payload.question || 'Agent needs input',
+      created_at: Date.now() / 1000,
+      metadata: JSON.stringify(payload),
+    }));
+    scheduleWorktreeRefresh(channelId, { dashboard: true, delay: 350 });
     render();
   });
   client.addEventListener('v1:activity.delta', event => {
@@ -777,6 +852,8 @@ function handleClick(event) {
   } else if (action === 'dismiss-inbox') {
     state.dismissedInbox.add(actionEl.dataset.id);
     render();
+  } else if (action === 'respond-interaction-option') {
+    respondToInteractionFromButton(actionEl);
   } else if (action === 'worktree-tab') {
     state.worktreeTab = actionEl.dataset.value || 'diff';
     render();
@@ -872,6 +949,10 @@ async function handleSubmit(event) {
   }
   if (form.dataset.form === 'review-deny') {
     await denyReviewFromForm(form);
+    return;
+  }
+  if (form.dataset.form === 'interaction-response') {
+    await respondToInteractionFromForm(form);
     return;
   }
 
@@ -1167,6 +1248,85 @@ async function denyReviewFromForm(form) {
     setDialogBusy(false);
     render();
   }
+}
+
+async function respondToInteractionFromButton(button) {
+  const channelId = button.dataset.channelId;
+  const interactionId = button.dataset.interactionId;
+  const optionId = button.dataset.optionId;
+  const optionLabel = button.dataset.optionLabel || optionId;
+  await sendInteractionResponse({
+    channelId,
+    interactionId,
+    itemId: button.dataset.itemId,
+    response: { selected_option: optionId },
+    responseText: optionLabel,
+  });
+}
+
+async function respondToInteractionFromForm(form) {
+  const channelId = form.elements.channel_id?.value;
+  const interactionId = form.elements.interaction_id?.value;
+  const freeform = form.elements.freeform?.value?.trim() || '';
+  if (!freeform) return;
+  form.elements.freeform.value = '';
+  await sendInteractionResponse({
+    channelId,
+    interactionId,
+    itemId: form.elements.item_id?.value,
+    response: { freeform },
+    responseText: freeform,
+  });
+}
+
+async function sendInteractionResponse({ channelId, interactionId, itemId = '', response, responseText }) {
+  const client = state.transport.client;
+  if (!client?.connected || !channelId || !interactionId) return;
+  if (state.interactionLoads.has(interactionId)) return;
+  state.interactionLoads.add(interactionId);
+  state.interactionErrors.delete(interactionId);
+  render();
+  try {
+    await client.respondToInteraction(channelId, interactionId, response);
+    state.dismissedInbox.add(itemId || `interaction-${interactionId}`);
+    markInteractionResolved(channelId, interactionId, response);
+    appendLiveMessage(channelId, {
+      id: `${interactionId}_resp`,
+      author: 'You',
+      text: responseText || interactionResponseText(response),
+      time: 'now',
+      createdAt: Date.now(),
+    });
+    await refreshDashboardData();
+    scheduleWorktreeRefresh(channelId, { dashboard: true, delay: 350 });
+  } catch (err) {
+    state.interactionErrors.set(interactionId, String(err?.message || err));
+  } finally {
+    state.interactionLoads.delete(interactionId);
+    render();
+  }
+}
+
+function markInteractionResolved(channelId, interactionId, response) {
+  const bucket = state.messagesByChannel.get(channelId);
+  if (!bucket) return;
+  for (const message of bucket) {
+    if (message.kind !== 'interaction_request' || message.interaction?.id !== interactionId) continue;
+    message.interaction = {
+      ...message.interaction,
+      resolvedAt: 'now',
+      selectedOption: response.selected_option || '',
+      selectedOptions: response.selected_options || [],
+      freeformResponse: response.freeform || '',
+    };
+  }
+}
+
+function interactionResponseText(response) {
+  if (response.freeform) return response.freeform;
+  if (response.selected_option) return response.selected_option;
+  if (Array.isArray(response.selected_options)) return response.selected_options.join(', ');
+  return 'Responded';
 }
 
 async function runWorktreeLifecycleAction(worktreeId, action) {
@@ -1635,7 +1795,11 @@ function renderInboxItem(item) {
       ${agentBadge(agentKey(item.actor))}
       <time>${escapeHtml(item.time)}</time>
       <div class="item-actions">
-        ${item.actions.slice(0, 2).map(action => `
+        ${item.interaction?.id ? renderInteractionControls(item.interaction, {
+          channelId: item.channelId,
+          itemId: item.id,
+          compact: true,
+        }) : item.actions.slice(0, 2).map(action => `
           ${liveActions ? `
             <a class="secondary small" href="${escapeAttr(openRoute)}" data-route="${escapeAttr(openRoute)}">${escapeHtml(action)}</a>
           ` : `
@@ -1652,6 +1816,64 @@ function inboxItemRoute(item) {
   if (item.planId) return `#/plan/${item.planId}`;
   if (item.projectId) return `#/project/${item.projectId}`;
   return '#/projects';
+}
+
+function renderInteractionControls(interaction, { channelId, itemId = '', compact = false } = {}) {
+  if (!interaction?.id) return '';
+  const loading = state.interactionLoads.has(interaction.id);
+  const error = state.interactionErrors.get(interaction.id);
+  if (interaction.resolvedAt) {
+    return `<div class="interaction-resolution">Responded: ${escapeHtml(interactionResolvedLabel(interaction))}</div>`;
+  }
+  if (!state.transport.client?.connected || !channelId) {
+    return '<div class="interaction-resolution">Open the worktree to respond</div>';
+  }
+  const buttons = interaction.options.map(option => `
+    <button class="${interactionOptionIsPositive(option) ? 'primary' : 'secondary'} small" type="button"
+      data-action="respond-interaction-option"
+      data-channel-id="${escapeAttr(channelId)}"
+      data-interaction-id="${escapeAttr(interaction.id)}"
+      data-item-id="${escapeAttr(itemId)}"
+      data-option-id="${escapeAttr(option.id)}"
+      data-option-label="${escapeAttr(option.label)}"
+      ${loading ? 'disabled' : ''}>
+      ${escapeHtml(option.label)}
+    </button>
+  `).join('');
+  const freeform = interaction.allowFreeform ? `
+    <form class="interaction-inline ${compact ? 'compact' : ''}" data-form="interaction-response">
+      <input type="hidden" name="channel_id" value="${escapeAttr(channelId)}">
+      <input type="hidden" name="interaction_id" value="${escapeAttr(interaction.id)}">
+      <input type="hidden" name="item_id" value="${escapeAttr(itemId)}">
+      <input name="freeform" autocomplete="off" placeholder="Reply to agent" ${loading ? 'disabled' : ''}>
+      <button class="secondary small" type="submit" ${loading ? 'disabled' : ''}>Send</button>
+    </form>
+  ` : '';
+  return `
+    <div class="interaction-controls ${compact ? 'compact' : ''}">
+      ${buttons ? `<div class="interaction-options">${buttons}</div>` : ''}
+      ${freeform}
+      ${error ? `<div class="interaction-error">${escapeHtml(error)}</div>` : ''}
+    </div>
+  `;
+}
+
+function interactionOptionIsPositive(option) {
+  const value = `${option.id} ${option.label}`.toLowerCase();
+  return value.includes('approve') || value.includes('accept') || value.includes('allow');
+}
+
+function interactionResolvedLabel(interaction) {
+  if (interaction.freeformResponse) return interaction.freeformResponse;
+  if (interaction.selectedOptions?.length) {
+    return interaction.selectedOptions.map(id => interactionOptionLabel(interaction, id)).join(', ');
+  }
+  if (interaction.selectedOption) return interactionOptionLabel(interaction, interaction.selectedOption);
+  return 'done';
+}
+
+function interactionOptionLabel(interaction, optionId) {
+  return interaction.options.find(option => option.id === optionId)?.label || optionId;
 }
 
 function inboxFilterLabel(filter) {
@@ -2445,6 +2667,17 @@ function renderChatItem(msg) {
       </div>
     `;
   }
+  if (msg.kind === 'interaction_request') {
+    const channelId = currentRouteChannelId() || msg.channel_id || '';
+    return `
+      <div class="chat-interaction">
+        <div class="chat-meta"><span>${escapeHtml(interactionTitle(msg.interaction))}</span><span>${escapeHtml(msg.time)}</span></div>
+        <p>${escapeHtml(msg.text)}</p>
+        ${msg.interaction?.plan ? `<pre class="interaction-plan">${escapeHtml(reviewDiffPreview(msg.interaction.plan))}</pre>` : ''}
+        ${renderInteractionControls(msg.interaction, { channelId })}
+      </div>
+    `;
+  }
   return `
     <div class="chat-message ${msg.author === 'You' ? 'mine' : ''}">
       <div class="chat-meta">
@@ -2454,6 +2687,14 @@ function renderChatItem(msg) {
       <p>${escapeHtml(msg.text)}</p>
     </div>
   `;
+}
+
+function interactionTitle(interaction) {
+  const kind = interaction?.kind || 'question';
+  if (kind.includes('approval')) return 'Approval requested';
+  if (kind.includes('plan')) return 'Plan review';
+  if (kind.includes('review')) return 'Review requested';
+  return 'Agent question';
 }
 
 function renderTerminal() {

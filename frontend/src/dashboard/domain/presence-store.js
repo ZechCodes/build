@@ -8,10 +8,18 @@ const { subscribe, notify } = makeSubscribable('presence');
 const byChannel = new Map();       // channelId → {agentActive, planMode}
 const harnessesByDevice = new Map(); // deviceId → harnesses[]
 
+// A run of activity is considered a "session"; anything quieter than this
+// between adjacent messages opens a new session. Used by the sidebar's
+// Recent group to anchor each channel's sort position to the start of
+// its current session instead of its most recent message — that anchor
+// only moves when a fresh gap opens, so a channel's position stays put
+// as new messages stream in.
+export const SESSION_GAP_MS = 4 * 60 * 60 * 1000;
+
 function getSlot(channelId) {
   let s = byChannel.get(channelId);
   if (!s) {
-    s = { agentActive: false, planMode: false, lastActiveAt: 0 };
+    s = { agentActive: false, planMode: false, lastActiveAt: 0, sessionStartAt: 0 };
     byChannel.set(channelId, s);
   }
   return s;
@@ -19,7 +27,8 @@ function getSlot(channelId) {
 
 export const presenceStore = {
   get(channelId) {
-    return byChannel.get(channelId) ?? { agentActive: false, planMode: false, lastActiveAt: 0 };
+    return byChannel.get(channelId)
+      ?? { agentActive: false, planMode: false, lastActiveAt: 0, sessionStartAt: 0 };
   },
 
   setAgentActive(channelId, active) {
@@ -57,6 +66,19 @@ export const presenceStore = {
     if ((s.lastActiveAt || 0) >= ms) return;
     s.lastActiveAt = ms;
     notify({ kind: 'last_active', channelId, at: ms });
+  },
+
+  /**
+   * Set the session-start anchor for a channel — computed from full
+   * message history by the attention-hydrator, so this replaces rather
+   * than accumulates. Ignored when `ms` is falsy.
+   */
+  hydrateSessionStart(channelId, ms) {
+    if (!ms) return;
+    const s = getSlot(channelId);
+    if (s.sessionStartAt === ms) return;
+    s.sessionStartAt = ms;
+    notify({ kind: 'session_start', channelId, at: ms });
   },
 
   setHarnesses(deviceId, harnesses) {
@@ -101,6 +123,16 @@ bus.on('message.received', ({ channelId, msg }) => {
   // when the wire payload is malformed.
   if (!channelId) return;
   const stamp = timeOf(msg?.created_at) || Date.now();
+  // Detect a session boundary BEFORE we overwrite lastActiveAt: a
+  // quiet stretch longer than SESSION_GAP_MS (or a channel with no
+  // session anchor yet) means this message starts a fresh session
+  // and becomes the new sort anchor.
+  const slot = byChannel.get(channelId);
+  const prevLast = slot?.lastActiveAt || 0;
+  const prevSessionStart = slot?.sessionStartAt || 0;
+  if (!prevSessionStart || (prevLast && stamp - prevLast >= SESSION_GAP_MS)) {
+    presenceStore.hydrateSessionStart(channelId, stamp);
+  }
   presenceStore.hydrateLastActive(channelId, stamp);
 });
 

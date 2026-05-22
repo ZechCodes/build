@@ -15,7 +15,7 @@
 
 import { bus } from '../core/bus.js';
 import { unreadStore } from '../domain/unread-store.js';
-import { presenceStore } from '../domain/presence-store.js';
+import { presenceStore, SESSION_GAP_MS } from '../domain/presence-store.js';
 import { channelsStore } from '../domain/channels-store.js';
 import { log } from '../core/log.js';
 
@@ -43,18 +43,21 @@ export function bindAttentionHydrator() {
   bus.on('message.bulk', ({ channelId, msgs }) => {
     if (!channelId) return;
     const channel = channelsStore.get(channelId);
-    const { count, hasInteraction, latestActivityMs } = derive(msgs, channel);
-    plog.debug('hydrate', channelId, { count, hasInteraction, latestActivityMs });
+    const { count, hasInteraction, latestActivityMs, sessionStartMs } = derive(msgs, channel);
+    plog.debug('hydrate', channelId, { count, hasInteraction, latestActivityMs, sessionStartMs });
     unreadStore.hydrate(channelId, count, hasInteraction);
     if (latestActivityMs > 0) {
       presenceStore.hydrateLastActive(channelId, latestActivityMs);
+    }
+    if (sessionStartMs > 0) {
+      presenceStore.hydrateSessionStart(channelId, sessionStartMs);
     }
   });
 }
 
 /**
  * Derive per-channel attention signals from a bulk message list.
- * Returns `{ count, hasInteraction, latestActivityMs }`:
+ * Returns `{ count, hasInteraction, latestActivityMs, sessionStartMs }`:
  *   - `count`: unread messages — any non-client message that
  *      postdates the channel's `last_seen_at` AND has no `read_at`.
  *      If no channel / last_seen_at is available, falls back to
@@ -66,6 +69,11 @@ export function bindAttentionHydrator() {
  *      message of any sender (user or agent). Feeds the Recent
  *      sidebar's time-windowed sort so a user sending a message
  *      bumps the channel just like an agent message does.
+ *   - `sessionStartMs`: timestamp of the first message after the
+ *      most recent ≥`SESSION_GAP_MS` activity gap (or the loaded
+ *      history's earliest message, when no such gap exists in the
+ *      window). Anchors the Recent sidebar's primary sort so a
+ *      channel's position holds steady across a working session.
  */
 export function derive(msgs, channel) {
   const lastSeenMs = timeOf(channel?.last_seen_at);
@@ -97,7 +105,25 @@ export function derive(msgs, channel) {
     break;
   }
 
-  return { count, hasInteraction, latestActivityMs };
+  // Walk messages chronologically (the wire order is ascending; we
+  // sort defensively in case a future caller passes them otherwise)
+  // and find the most recent SESSION_GAP_MS-or-longer quiet stretch.
+  // The first message AFTER that gap is the session anchor; with no
+  // gap in the loaded history, the earliest message is.
+  const stamps = [];
+  for (const m of msgs || []) {
+    const t = timeOf(m?.created_at);
+    if (t > 0) stamps.push(t);
+  }
+  stamps.sort((a, b) => a - b);
+  let sessionStartMs = 0;
+  for (let i = 0; i < stamps.length; i++) {
+    if (i === 0 || stamps[i] - stamps[i - 1] >= SESSION_GAP_MS) {
+      sessionStartMs = stamps[i];
+    }
+  }
+
+  return { count, hasInteraction, latestActivityMs, sessionStartMs };
 }
 
 function parseMetadata(raw) {

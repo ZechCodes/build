@@ -109,6 +109,63 @@ test('channels with no activity stamp are excluded from both groups', () => {
   assert.deepEqual(ids(fallback), []);
 });
 
+test('primary sort: sessionStartAt is the anchor; lastActiveAt does NOT shuffle order within a session', () => {
+  // Channel `older-session`: session began 3hrs ago, just received
+  // a fresh message 5min ago.
+  // Channel `newer-session`: session began 1hr ago, last message
+  // was 30min ago.
+  // The legacy "sort by lastActiveAt" would put `newer-session` at
+  // top (since its lastActiveAt is older). The new behavior anchors
+  // on sessionStartAt → `older-session` at top because its session
+  // began earlier. A new message in either channel must not flip the
+  // order.
+  bus.emit('channel.upserted', { deviceId: 'dev', channel: { id: 'older-session', name: 'older' } });
+  presenceStore.hydrateLastActive('older-session', NOW - 5 * 60 * 1000);
+  presenceStore.hydrateSessionStart('older-session', NOW - 3 * HOUR);
+
+  bus.emit('channel.upserted', { deviceId: 'dev', channel: { id: 'newer-session', name: 'newer' } });
+  presenceStore.hydrateLastActive('newer-session', NOW - 30 * 60 * 1000);
+  presenceStore.hydrateSessionStart('newer-session', NOW - 1 * HOUR);
+
+  let { primary } = buildAttentionList(NOW);
+  assert.deepEqual(ids(primary), ['older-session', 'newer-session']);
+
+  // Bump `newer-session` with a fresh in-session message — its
+  // lastActiveAt advances but sessionStartAt holds. The order must
+  // not change.
+  bus.emit('message.received', {
+    channelId: 'newer-session',
+    msg: { sender: 'Agent', created_at: new Date(NOW - 30 * 1000).toISOString() },
+  });
+  ({ primary } = buildAttentionList(NOW));
+  assert.deepEqual(ids(primary), ['older-session', 'newer-session']);
+});
+
+test('primary sort: a ≥4hr gap followed by a fresh message moves the channel to the bottom of its bucket', () => {
+  // A channel that was idle for >4hrs and then woke up just now must
+  // have its sessionStartAt set to the new message — landing it at
+  // the BOTTOM of the primary group (newest session).
+  bus.emit('channel.upserted', { deviceId: 'dev', channel: { id: 'idle-then-wake', name: 'wake' } });
+  presenceStore.hydrateLastActive('idle-then-wake', NOW - 5 * HOUR);
+  presenceStore.hydrateSessionStart('idle-then-wake', NOW - 5 * HOUR);
+
+  bus.emit('channel.upserted', { deviceId: 'dev', channel: { id: 'in-flow', name: 'flow' } });
+  presenceStore.hydrateLastActive('in-flow', NOW - 30 * 60 * 1000);
+  presenceStore.hydrateSessionStart('in-flow', NOW - 2 * HOUR);
+
+  // Live message in idle-then-wake right now — the 5hr gap from the
+  // prior lastActiveAt opens a fresh session.
+  bus.emit('message.received', {
+    channelId: 'idle-then-wake',
+    msg: { sender: 'client', created_at: new Date(NOW - 1 * 60 * 1000).toISOString() },
+  });
+
+  const { primary } = buildAttentionList(NOW);
+  // in-flow's session (2hr ago) is still older than idle-then-wake's
+  // new session (1min ago), so in-flow sits on top.
+  assert.deepEqual(ids(primary), ['in-flow', 'idle-then-wake']);
+});
+
 test('row metadata carries unread / interaction / running flags', () => {
   seedChannel('ch', 0.5);
   unreadStore.hydrate('ch', 3, true);

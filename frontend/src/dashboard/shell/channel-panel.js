@@ -198,11 +198,14 @@ const RECENT_FALLBACK_MS = 72 * 60 * 60 * 1000;  // 72 hours
 const RECENT_TARGET_COUNT = 10;
 
 /**
- * Bucket every known channel into the two Recent groups by its
- * `lastActiveAt` stamp:
- *   - `primary`: activity within the last 4hrs, sorted oldest→newest
- *     so the freshest entry sits at the bottom (a new burst of
- *     activity always appends, keeping the list stable as you work).
+ * Bucket every known channel into the two Recent groups:
+ *   - `primary`: `lastActiveAt` within the last 4hrs. Sorted by
+ *     `sessionStartAt` (the timestamp of the first message after the
+ *     most recent ≥4hr gap) ascending, so the channel whose current
+ *     working session began earliest sits at the top. That anchor
+ *     only moves on a fresh gap, so positions hold steady across the
+ *     normal flow of messages. Channels seeded without history fall
+ *     back to `lastActiveAt` as the sort key.
  *   - `fallback`: activity 4–72hrs old, sorted newest→oldest so the
  *     most likely "where was I" candidates sit on top; truncated to
  *     fill the remaining slots up to RECENT_TARGET_COUNT.
@@ -226,11 +229,13 @@ export function buildAttentionList(now = Date.now()) {
       waitingUnread: (unread.count || 0) > 0,
       count: unread.count || 0,
       lastActiveAt: last,
+      sessionStartAt: pres.sessionStartAt || 0,
     };
     if (age < RECENT_PRIMARY_MS) primary.push(item);
     else if (age < RECENT_FALLBACK_MS) fallback.push(item);
   }
-  primary.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+  const sortKey = (item) => item.sessionStartAt || item.lastActiveAt;
+  primary.sort((a, b) => sortKey(a) - sortKey(b));
   fallback.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
   // Cap the section at RECENT_TARGET_COUNT total. When primary
   // overflows we keep the freshest entries (drop from the *top*,

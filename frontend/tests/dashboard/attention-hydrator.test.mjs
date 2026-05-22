@@ -149,6 +149,50 @@ test('client message after an unresolved interaction does NOT supersede it', () 
   assert.equal(out.hasInteraction, true);
 });
 
+test('derive returns sessionStartMs equal to the oldest message when no gap exists', () => {
+  // Three messages 30 minutes apart — all part of one continuous
+  // session, so the anchor is the oldest of them.
+  const t0 = Date.parse('2026-04-22T08:00:00Z');
+  const t1 = t0 + 30 * 60 * 1000;
+  const t2 = t1 + 30 * 60 * 1000;
+  const out = derive([
+    { sender: 'Agent',  created_at: new Date(t0).toISOString() },
+    { sender: 'client', created_at: new Date(t1).toISOString() },
+    { sender: 'Agent',  created_at: new Date(t2).toISOString() },
+  ]);
+  assert.equal(out.sessionStartMs, t0);
+});
+
+test('derive returns sessionStartMs at the first message AFTER a ≥4hr gap', () => {
+  // Two messages from an old session, then a ≥4hr quiet stretch, then
+  // a fresh burst. The anchor is the first message of the fresh burst.
+  const oldStart = Date.parse('2026-04-22T00:00:00Z');
+  const oldEnd   = oldStart + 30 * 60 * 1000;
+  const newStart = oldEnd + 5 * 60 * 60 * 1000;  // 5hr gap > 4hr threshold
+  const newEnd   = newStart + 20 * 60 * 1000;
+  const out = derive([
+    { sender: 'Agent',  created_at: new Date(oldStart).toISOString() },
+    { sender: 'Agent',  created_at: new Date(oldEnd).toISOString()   },
+    { sender: 'client', created_at: new Date(newStart).toISOString() },
+    { sender: 'Agent',  created_at: new Date(newEnd).toISOString()   },
+  ]);
+  assert.equal(out.sessionStartMs, newStart);
+});
+
+test('derive only uses the MOST RECENT gap when multiple sessions are in history', () => {
+  // Three sessions separated by two ≥4hr gaps. Anchor must come from
+  // the latest gap, not the earlier one.
+  const s1 = Date.parse('2026-04-20T00:00:00Z');
+  const s2 = s1 + 6 * 60 * 60 * 1000;   // gap #1
+  const s3 = s2 + 5 * 60 * 60 * 1000;   // gap #2 (more recent)
+  const out = derive([
+    { sender: 'Agent', created_at: new Date(s1).toISOString() },
+    { sender: 'Agent', created_at: new Date(s2).toISOString() },
+    { sender: 'Agent', created_at: new Date(s3).toISOString() },
+  ]);
+  assert.equal(out.sessionStartMs, s3);
+});
+
 // ---- Wiring ----
 
 bindAttentionHydrator();

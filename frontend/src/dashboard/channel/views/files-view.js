@@ -477,7 +477,7 @@ export class FilesView {
     if (!this.viewerEl || !this.modeBarEl) return;
     const path = this.channel.viewState.filesPath;
     let mode = this.channel.viewState.filesView;
-    const previewable = isHtmlPreviewable(path);
+    const previewable = isPreviewable(path);
     if (mode === 'preview' && !previewable) {
       mode = 'source';
       this.channel.viewState.filesView = mode;
@@ -494,7 +494,7 @@ export class FilesView {
         <div class="v2-files-mode-tabs">
           ${['source', 'diff', 'preview'].map(m => {
             const disabled = m === 'preview' && !previewable;
-            const title = disabled ? 'HTML preview is available for .html and .htm files' : '';
+            const title = disabled ? 'Preview is available for HTML, Markdown, SVG, and image files' : '';
             return `<button class="v2-files-mode-tab ${m === mode ? 'active' : ''}" type="button" data-mode="${m}" ${disabled ? 'disabled' : ''} ${title ? `title="${title}"` : ''}>${MODE_LABELS[m]}</button>`;
           }).join('')}
           <button class="v2-files-mode-tab v2-files-wrap-btn ${wrapActive ? 'active' : ''}"
@@ -535,13 +535,13 @@ export class FilesView {
     if (mode === 'diff') {
       this._renderDiffResult();
     } else if (mode === 'preview') {
-      this._renderHtmlPreview();
+      this._renderPreview();
     } else {
       this._renderReadResult();
     }
   }
 
-  _renderHtmlPreview() {
+  _renderPreview() {
     if (!this.viewerEl) return;
     const d = filesStore.readResultFor(this.channel.id);
     if (!d || d.path !== this.channel.viewState.filesPath) {
@@ -552,39 +552,59 @@ export class FilesView {
       this.viewerEl.innerHTML = `<div class="v2-files-empty">${escapeHtml(d.error)}</div>`;
       return;
     }
-    if (d.is_binary) {
-      this.viewerEl.innerHTML = `<div class="v2-files-empty">Binary file (${escapeHtml(formatBytes(d.size || 0))})</div>`;
-      return;
-    }
-    if (!isHtmlPreviewable(d.path || '')) {
-      this.viewerEl.innerHTML = '<div class="v2-files-empty">Preview is available for HTML files.</div>';
+    const ext = extOf(d.path || '');
+
+    if (ext === 'html' || ext === 'htm') {
+      if (d.is_binary) {
+        this.viewerEl.innerHTML = `<div class="v2-files-empty">Binary file (${escapeHtml(formatBytes(d.size || 0))})</div>`;
+        return;
+      }
+      const host = document.createElement('div');
+      host.className = 'v2-files-html-preview';
+      if (d.truncated) {
+        const note = document.createElement('div');
+        note.className = 'v2-files-html-note';
+        note.textContent = `Previewing the first ${formatBytes((d.content || '').length)} of ${formatBytes(d.size || 0)}.`;
+        host.appendChild(note);
+      }
+      const iframe = document.createElement('iframe');
+      iframe.className = 'v2-files-html-frame';
+      iframe.title = `${d.path || 'HTML'} preview`;
+      iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.addEventListener('load', () => {
+        iframe.contentWindow?.postMessage({
+          type: '__build_preview',
+          html: d.content || '',
+        }, '*');
+      }, { once: true });
+      iframe.src = '/preview-frame';
+      host.appendChild(iframe);
+      this.viewerEl.innerHTML = '';
+      this.viewerEl.appendChild(host);
       return;
     }
 
-    const host = document.createElement('div');
-    host.className = 'v2-files-html-preview';
-    if (d.truncated) {
-      const note = document.createElement('div');
-      note.className = 'v2-files-html-note';
-      note.textContent = `Previewing the first ${formatBytes((d.content || '').length)} of ${formatBytes(d.size || 0)}.`;
-      host.appendChild(note);
+    if (ext === 'md' || ext === 'markdown') {
+      this.viewerEl.innerHTML = `<div class="v2-files-markdown">${renderMarkdown(d.content || '')}</div>`;
+      return;
     }
-    const iframe = document.createElement('iframe');
-    iframe.className = 'v2-files-html-frame';
-    iframe.title = `${d.path || 'HTML'} preview`;
-    iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
-    iframe.setAttribute('referrerpolicy', 'no-referrer');
-    iframe.addEventListener('load', () => {
-      iframe.contentWindow?.postMessage({
-        type: '__build_preview',
-        html: d.content || '',
-      }, '*');
-    }, { once: true });
-    iframe.src = '/preview-frame';
-    host.appendChild(iframe);
 
-    this.viewerEl.innerHTML = '';
-    this.viewerEl.appendChild(host);
+    if (ext === 'svg' && d.content) {
+      const host = document.createElement('div');
+      host.className = 'v2-files-svg-host';
+      host.innerHTML = d.content;
+      this.viewerEl.innerHTML = '';
+      this.viewerEl.appendChild(host);
+      return;
+    }
+
+    if (IMAGE_PREVIEW_EXTS.has(ext) && d.content) {
+      this.viewerEl.innerHTML = `<div class="v2-files-image"><img src="${d.content}" alt="${escapeHtml(d.path || '')}"></div>`;
+      return;
+    }
+
+    this.viewerEl.innerHTML = '<div class="v2-files-empty">Preview not available for this file.</div>';
   }
 
   _renderReadResult() {
@@ -734,12 +754,18 @@ export class FilesView {
     const modeBtn = e.target.closest('[data-mode]');
     if (modeBtn && !modeBtn.disabled) {
       this.channel.viewState.filesView = modeBtn.getAttribute('data-mode');
-      if (this.channel.viewState.filesView === 'diff' && this.channel.viewState.filesPath) {
-        this._emitFileDiff(this.channel.viewState.filesPath);
-      } else if (this.channel.viewState.filesView === 'preview' && this.channel.viewState.filesPath) {
+      const path = this.channel.viewState.filesPath;
+      if (this.channel.viewState.filesView === 'diff' && path) {
+        this._emitFileDiff(path);
+      } else if ((this.channel.viewState.filesView === 'source'
+                  || this.channel.viewState.filesView === 'preview') && path) {
+        // The Modified-tab default mode is 'diff', which only fires
+        // intent.file_diff — so switching to Source or Preview is the
+        // first time we need the file contents. Skip the request if
+        // the read store already holds this path.
         const rr = filesStore.readResultFor(this.channel.id);
-        if (!rr || rr.path !== this.channel.viewState.filesPath) {
-          bus.emit('intent.file_read', { channelId: this.channel.id, path: this.channel.viewState.filesPath });
+        if (!rr || rr.path !== path) {
+          bus.emit('intent.file_read', { channelId: this.channel.id, path });
         }
       }
       this._renderViewer();
@@ -1016,9 +1042,19 @@ function extOf(path) {
   return m ? m[1].toLowerCase() : '';
 }
 
-export function isHtmlPreviewable(path) {
-  const ext = extOf(path);
-  return ext === 'html' || ext === 'htm';
+const PREVIEW_EXTS = new Set([
+  'html', 'htm',
+  'md', 'markdown',
+  'svg',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
+]);
+
+const IMAGE_PREVIEW_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif',
+]);
+
+export function isPreviewable(path) {
+  return PREVIEW_EXTS.has(extOf(path));
 }
 
 export function allTreeRefreshDirs(paths = [], expandedDirs = []) {

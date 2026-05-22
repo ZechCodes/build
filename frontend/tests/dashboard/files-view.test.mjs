@@ -3,15 +3,21 @@ import assert from 'node:assert/strict';
 
 import {
   allTreeRefreshDirs,
-  isHtmlPreviewable,
+  isPreviewable,
 } from '../../src/dashboard/channel/views/files-view.js';
 
-test('HTML preview is only enabled for html files', () => {
-  assert.equal(isHtmlPreviewable('index.html'), true);
-  assert.equal(isHtmlPreviewable('pages/settings.HTM'), true);
-  assert.equal(isHtmlPreviewable('styles/app.css'), false);
-  assert.equal(isHtmlPreviewable('README.md'), false);
-  assert.equal(isHtmlPreviewable('html'), false);
+test('Preview is enabled for HTML, Markdown, SVG, and image files', () => {
+  assert.equal(isPreviewable('index.html'), true);
+  assert.equal(isPreviewable('pages/settings.HTM'), true);
+  assert.equal(isPreviewable('README.md'), true);
+  assert.equal(isPreviewable('notes.markdown'), true);
+  assert.equal(isPreviewable('logo.SVG'), true);
+  assert.equal(isPreviewable('screenshot.png'), true);
+  assert.equal(isPreviewable('photo.JPG'), true);
+  assert.equal(isPreviewable('avatar.webp'), true);
+  assert.equal(isPreviewable('styles/app.css'), false);
+  assert.equal(isPreviewable('main.py'), false);
+  assert.equal(isPreviewable('html'), false);
 });
 
 test('All tree refresh includes root, expanded dirs, and changed file ancestors', () => {

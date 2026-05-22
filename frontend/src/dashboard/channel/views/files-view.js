@@ -622,28 +622,18 @@ export class FilesView {
       this.viewerEl.innerHTML = `<div class="v2-files-empty">${escapeHtml(d.error)}</div>`;
       return;
     }
+    const ext = extOf(d.path || '');
+    if (d.is_image || (d.is_binary && IMAGE_PREVIEW_EXTS.has(ext))) {
+      this.viewerEl.innerHTML = '<div class="v2-files-empty">Binary image — switch to Preview to view.</div>';
+      return;
+    }
     if (d.is_binary) {
       this.viewerEl.innerHTML = `<div class="v2-files-empty">Binary file (${escapeHtml(formatBytes(d.size || 0))})</div>`;
       return;
     }
-    const ext = extOf(d.path || '');
-    if (d.is_image && d.content) {
-      this.viewerEl.innerHTML = `<div class="v2-files-image"><img src="${d.content}" alt="${escapeHtml(d.path || '')}"></div>`;
-      return;
-    }
-    if (ext === 'svg' && d.content) {
-      const host = document.createElement('div');
-      host.className = 'v2-files-svg-host';
-      host.innerHTML = d.content;
-      this.viewerEl.innerHTML = '';
-      this.viewerEl.appendChild(host);
-      return;
-    }
-    if (ext === 'md' || ext === 'markdown') {
-      this.viewerEl.innerHTML = `<div class="v2-files-markdown">${renderMarkdown(d.content || '')}</div>`;
-      return;
-    }
-    // Source view
+    // Source view — raw text with line numbers. Renderable formats
+    // (md, svg, html) intentionally fall through so the user can see
+    // their source; Preview is the rendered view.
     const wrap = this.channel.viewState.filesLineWrap;
     const lines = (d.content || '').split('\n');
     const rows = lines.map((line, i) => `

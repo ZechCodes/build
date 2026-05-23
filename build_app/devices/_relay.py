@@ -83,7 +83,7 @@ async def send_to_device(device_id: UUID, message: dict[str, Any]) -> None:
         "type": "send",
         "device_id": str(device_id),
         "message": json.dumps(message),
-    }, maxlen=10000)
+    }, maxlen=1000)
 
 
 async def disconnect_device(device_id: UUID) -> None:
@@ -93,7 +93,7 @@ async def disconnect_device(device_id: UUID) -> None:
     await _redis.xadd(DEVICE_COMMANDS_STREAM, {
         "type": "disconnect",
         "device_id": str(device_id),
-    }, maxlen=10000)
+    }, maxlen=1000)
 
 
 async def is_device_connected(device_id: UUID) -> bool:

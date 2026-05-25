@@ -241,3 +241,51 @@ test('harness_list translates', () => {
   assert.equal(c.seen['harness.list'][0].harnesses.length, 1);
   c.dispose();
 });
+
+test('chat_image_result assembles chunks into a single chat_image.received event', () => {
+  const fake = new EventTarget();
+  bindE2EEDispatcher(fake, 'devImg');
+  const c = capture(['chat_image.received']);
+  // First chunk: nothing yet emitted.
+  fire(fake, 'chat_image_result', {
+    channel_id: 'ch1',
+    path: 'shot.png',
+    content: 'data:image/png;base64,AAAA',
+    chunk_index: 0,
+    chunk_total: 2,
+  });
+  assert.equal(c.seen['chat_image.received'].length, 0);
+  // Second chunk completes the set.
+  fire(fake, 'chat_image_result', {
+    channel_id: 'ch1',
+    path: 'shot.png',
+    content: 'BBBB',
+    chunk_index: 1,
+    chunk_total: 2,
+  });
+  assert.equal(c.seen['chat_image.received'].length, 1);
+  assert.deepEqual(c.seen['chat_image.received'][0], {
+    channelId: 'ch1',
+    path: 'shot.png',
+    dataUri: 'data:image/png;base64,AAAABBBB',
+  });
+  c.dispose();
+});
+
+test('chat_image_result with error emits immediately and clears chunk state', () => {
+  const fake = new EventTarget();
+  bindE2EEDispatcher(fake, 'devErr');
+  const c = capture(['chat_image.received']);
+  fire(fake, 'chat_image_result', {
+    channel_id: 'ch1',
+    path: 'gone.png',
+    error: 'Image too large',
+  });
+  assert.equal(c.seen['chat_image.received'].length, 1);
+  assert.deepEqual(c.seen['chat_image.received'][0], {
+    channelId: 'ch1',
+    path: 'gone.png',
+    error: 'Image too large',
+  });
+  c.dispose();
+});

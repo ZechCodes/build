@@ -324,6 +324,8 @@ export class BuildE2EE extends EventTarget {
       this.dispatchEvent(new CustomEvent('file_read_result', { detail: payload }));
     } else if (action === 'file_diff_result') {
       this.dispatchEvent(new CustomEvent('file_diff_result', { detail: payload }));
+    } else if (action === 'chat_image_result') {
+      this.dispatchEvent(new CustomEvent('chat_image_result', { detail: payload }));
     } else if (action === 'url_fetch_result') {
       this.dispatchEvent(new CustomEvent('url_fetch_result', { detail: payload }));
     } else if (action === 'error') {
@@ -691,6 +693,10 @@ export class BuildE2EE extends EventTarget {
     if (offset !== undefined) payload.offset = offset;
     if (limit !== undefined) payload.limit = limit;
     return this.send(payload);
+  }
+
+  async chatImageFetch(channelId, path) {
+    return this.send({ action: 'chat_image_fetch', channel_id: channelId, path });
   }
 
   async fileDiff(channelId, path, staged, opts = {}) {

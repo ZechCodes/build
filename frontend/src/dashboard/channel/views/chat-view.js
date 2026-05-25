@@ -8,6 +8,7 @@ import { messagesStore } from '../../domain/messages-store.js';
 import { presenceStore } from '../../domain/presence-store.js';
 import { channelsStore } from '../../domain/channels-store.js';
 import { unreadStore } from '../../domain/unread-store.js';
+import { chatImagesStore } from '../../domain/chat-images-store.js';
 import { escapeHtml, formatBytes } from '../../util/html.js';
 import { shortTime } from '../../util/time.js';
 import { renderMarkdown } from '../../util/markdown.js';
@@ -66,6 +67,9 @@ export class ChatView {
         appendedOne: e.kind === 'append',
         forceBottom: e.kind === 'bulk',
       });
+    }));
+    this.unsubs.push(chatImagesStore.subscribe(e => {
+      if (e.kind === 'ready') this._onChatImageReady(e.channelId, e.path);
     }));
     this.unsubs.push(presenceStore.subscribe(e => {
       if (e.channelId === this.channel.id) this._renderStopButton();
@@ -287,12 +291,50 @@ export class ChatView {
     this.messagesEl.innerHTML = '';
     msgs.forEach(m => this._appendMessage(m, msgs));
     this._dismissStaleSuggestions(msgs);
+    this._hydrateLazyImages();
 
     if (appendedOne) this._scrollNewIntoView();
     else if (forceBottom) this._scrollToBottom(true);
     else this._scrollToBottom(false);
     this._syncReadTracking();
     this._scheduleReadCheck();
+  }
+
+  // ── Lazy <build-image> hookup ────────────────────────────────────────
+  // Markdown renders body-less `<build-image>` tags as placeholder <img>
+  // elements with no `src` and a `data-build-image-path` attribute. We
+  // ask the store for each path; the store de-dupes in-flight requests
+  // and dispatches intent.chat_image_fetch when needed. When a record
+  // becomes ready (via the store subscription wired in `activate()`) we
+  // patch the DOM directly — no re-render of the whole message list.
+  _hydrateLazyImages() {
+    if (!this.messagesEl) return;
+    const placeholders = this.messagesEl.querySelectorAll('img.v2-embed-image-lazy');
+    placeholders.forEach((img) => {
+      const path = img.getAttribute('data-build-image-path');
+      if (!path) return;
+      const cached = chatImagesStore.get(this.channel.id, path);
+      if (cached?.status === 'ready' && cached.dataUri) {
+        this._applyImageDataUri(img, cached.dataUri);
+        return;
+      }
+      chatImagesStore.request(this.channel.id, path);
+    });
+  }
+
+  _applyImageDataUri(img, dataUri) {
+    img.src = dataUri;
+    img.classList.remove('v2-embed-image-lazy');
+  }
+
+  _onChatImageReady(channelId, path) {
+    if (!this.messagesEl || channelId !== this.channel.id) return;
+    const record = chatImagesStore.get(channelId, path);
+    if (!record || record.status !== 'ready' || !record.dataUri) return;
+    const selector = `img.v2-embed-image-lazy[data-build-image-path="${CSS.escape(path)}"]`;
+    this.messagesEl.querySelectorAll(selector).forEach((img) => {
+      this._applyImageDataUri(img, record.dataUri);
+    });
   }
 
   _renderStopButton() {

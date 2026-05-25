@@ -138,21 +138,40 @@ import { highlightLine } from './syntax.js';
 
   var buildFileRe = /<build-file\s+path="([^"]*)"(?:\s+lang="([^"]*)")?(?:\s+lines="(\d+-\d+)")?>\n([\s\S]*?)\n<\/build-file>/g;
   var buildDiffRe = /<build-diff\s+path="([^"]*)">\n([\s\S]*?)\n<\/build-diff>/g;
-  var buildImageRe = /<build-image\s+path="([^"]*)"\s+mime="([^"]*)">\n([\s\S]*?)\n<\/build-image>/g;
+  // Tolerant of legacy body-bearing tags (with surrounding newlines) AND
+  // the new body-less form the bridge emits. The body capture is greedy
+  // for whitespace and base64 chars across lines.
+  var buildImageRe = /<build-image\s+path="([^"]*)"\s+mime="([^"]*)">([\s\S]*?)<\/build-image>/g;
+  var legacyBase64Re = /^[A-Za-z0-9+/=\s]+$/;
 
-  function renderInlineImage(path, mime, base64) {
-    // Strip only whitespace — the browser is tolerant of newlines in
-    // data URIs but we keep the src compact anyway.
-    var src = 'data:' + mime + ';base64,' + base64.replace(/\s+/g, '');
-    // The image sits inside a `.v2-embed-image-frame` wrapper so wide
-    // images scroll horizontally without pushing the chat itself
-    // sideways, and tall images get clipped at max-height rather than
-    // stretching the chat vertically.
+  function renderInlineImage(path, mime, body) {
+    var trimmed = (body || '').trim();
+    var hasLegacyBytes = trimmed.length > 0 && legacyBase64Re.test(trimmed);
+    var pathAttr = escapeHtml(path);
+    var mimeAttr = escapeHtml(mime);
+    // Legacy rows have the base64 baked in; render the data URI directly
+    // so historical messages still show their images without a refetch.
+    if (hasLegacyBytes) {
+      var src = 'data:' + mime + ';base64,' + trimmed.replace(/\s+/g, '');
+      return (
+        '<figure class="v2-embed-image" data-path="' + pathAttr + '" data-mime="' + mimeAttr + '">' +
+          '<figcaption class="v2-embed-image-path">' + pathAttr + '</figcaption>' +
+          '<div class="v2-embed-image-frame">' +
+            '<img alt="' + pathAttr + '" src="' + src + '">' +
+          '</div>' +
+        '</figure>'
+      );
+    }
+    // New (body-less) form, or a body the legacy check can't trust: ship
+    // a lazy placeholder. chat-view scans for `.v2-embed-image-lazy` after
+    // rendering and dispatches intent.chat_image_fetch for each path.
     return (
-      '<figure class="v2-embed-image" data-path="' + escapeHtml(path) + '" data-mime="' + escapeHtml(mime) + '">' +
-        '<figcaption class="v2-embed-image-path">' + escapeHtml(path) + '</figcaption>' +
+      '<figure class="v2-embed-image" data-path="' + pathAttr + '" data-mime="' + mimeAttr + '">' +
+        '<figcaption class="v2-embed-image-path">' + pathAttr + '</figcaption>' +
         '<div class="v2-embed-image-frame">' +
-          '<img alt="' + escapeHtml(path) + '" src="' + src + '">' +
+          '<img class="v2-embed-image-lazy" alt="' + pathAttr + '"' +
+            ' data-build-image-path="' + pathAttr + '"' +
+            ' data-build-image-mime="' + mimeAttr + '">' +
         '</div>' +
       '</figure>'
     );

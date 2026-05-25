@@ -241,6 +241,13 @@ export function bindIntentDispatcher() {
     catch (err) { plog.error('file_diff failed', err); }
   });
 
+  bus.on('intent.chat_image_fetch', async ({ channelId, path }) => {
+    const conn = connFor(channelId);
+    if (!conn) return;
+    try { await conn.chatImageFetch(channelId, path); }
+    catch (err) { plog.error('chat_image_fetch failed', err); }
+  });
+
   bus.on('intent.get_messages', async ({ channelId, limit, before }) => {
     const conn = connFor(channelId);
     if (!conn) return;

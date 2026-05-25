@@ -290,6 +290,41 @@ export function bindE2EEDispatcher(instance, deviceId) {
     bus.emit('files.diff_result', { ...evt.detail });
   });
 
+  // ----- Chat image lazy fetch -----
+  // The bridge ships data URIs in 500 KB chunks (see relay_handlers/files.py
+  // handle_chat_image_fetch). Accumulate them here so consumers only see a
+  // single chat_image.received event with the full payload.
+  const chatImageChunks = new Map();  // `${channelId}|${path}` → { chunks, total }
+  instance.addEventListener('chat_image_result', (evt) => {
+    const d = evt.detail || {};
+    const channelId = d.channel_id;
+    const path = d.path;
+    if (!channelId || !path) return;
+    if (d.error) {
+      chatImageChunks.delete(`${channelId}|${path}`);
+      bus.emit('chat_image.received', { channelId, path, error: d.error });
+      return;
+    }
+    const key = `${channelId}|${path}`;
+    const total = d.chunk_total || 1;
+    let rec = chatImageChunks.get(key);
+    if (!rec || rec.total !== total) {
+      rec = { chunks: new Array(total), total };
+      chatImageChunks.set(key, rec);
+    }
+    if (typeof d.chunk_index === 'number' && d.content) {
+      rec.chunks[d.chunk_index] = d.content;
+    }
+    const received = rec.chunks.filter(c => c !== undefined).length;
+    if (received < rec.total) return;
+    chatImageChunks.delete(key);
+    bus.emit('chat_image.received', {
+      channelId,
+      path,
+      dataUri: rec.chunks.join(''),
+    });
+  });
+
   // ----- Uploads -----
   instance.addEventListener('upload_progress', (evt) => {
     const d = evt.detail;

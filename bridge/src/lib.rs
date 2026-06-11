@@ -12,3 +12,4 @@
 //! did legible (the git diff) and lets the human decide at the review gates.
 
 pub mod task;
+pub mod worktree;

@@ -13,6 +13,8 @@
 
 pub mod diff;
 pub mod mcp;
+pub mod orchestrator;
 pub mod pty;
 pub mod task;
+pub mod templates;
 pub mod worktree;

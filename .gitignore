@@ -203,3 +203,5 @@ vendor/
 *.njsproj
 *.sln
 *.sw?
+# Rust (bridge)
+/bridge/target/

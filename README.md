@@ -1,185 +1,48 @@
-# Build Platform
+# Build
 
-A distributed platform providing isolated development environments through Firecracker VMs, accessible via web-based terminals.
+**tmux for coding agents — in your browser, end-to-end encrypted, with git-native review.**
 
-## Architecture Overview
+You set a goal from any device. An agent on *your* hardware writes a plan. You review the plan,
+leave notes, approve. An agent builds. You review the diff, comment, approve. Build merges.
+At any point you can drop into the agent's terminal — but you never have to.
 
-The Build platform is a microservices-based system that provides:
-- Isolated development environments using Firecracker VMs
-- Web-based terminal access with real-time collaboration
-- Git repository management with soft-serve integration
-- Snapshot and session management
-- Authentication and authorization
-- Comprehensive monitoring and observability
+Build does not run agents, host code, or see code. Agents run on the user's own machine via the
+bridge; the relay moves ciphertext and nothing else. Build's job is **orchestration**: starting
+work, watching it through git, and gating the transitions where human judgment matters.
 
-## Quick Start
+See [`planning/v2/`](planning/v2/) for the full scope and UI design brief.
 
-### Prerequisites
-
-- Python 3.11+
-- Node.js 18+
-- Podman (for containerization)
-- Git with SSH keys configured
-
-### Development Setup
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd Build
-   ```
-
-2. **Start development services**:
-   ```bash
-   ./scripts/dev-setup.sh
-   ```
-
-3. **Access the application**:
-   - Frontend: http://localhost:3000
-   - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-   - MinIO Console: http://localhost:9001
-
-## Project Structure
+## Architecture
 
 ```
-Build/
-├── api/                    # FastAPI backend service
-├── frontend/               # React frontend application
-├── vm-manager/             # Firecracker VM management
-├── session-manager/        # Terminal session management
-├── snapshot-manager/       # VM snapshot handling
-├── git-manager/           # Git repository management
-├── websocket-gateway/     # WebSocket connection handling
-├── auth-service/          # Authentication service
-├── monitoring/            # Observability setup
-├── infrastructure/        # Infrastructure as Code
-├── scripts/               # Utility scripts
-├── docs/                  # Documentation
-├── tests/                 # Integration tests
-├── planning/              # Project planning docs
-└── .github/               # CI/CD workflows
+┌─────────────┐   E2EE relay    ┌──────────────┐   spawns    ┌──────────────┐
+│  Web client │◄───ciphertext──►│    bridge    │────PTY─────►│ agent harness │
+│  (browser)  │                 │ (user's box) │◄────MCP─────│  (worktree)   │
+└─────────────┘                 └──────┬───────┘             └──────────────┘
+                                       │ watches
+                                       ▼
+                                  git worktree
 ```
 
-## Services
+The system spans four repos:
 
-### Core Services
-- **API**: Central REST API built with FastAPI
-- **Frontend**: React-based web interface
-- **WebSocket Gateway**: Real-time terminal communication
-- **Auth Service**: JWT-based authentication
+| Component | Repo | Status |
+|---|---|---|
+| E2EE crypto (Python + JS) | `build-secure-transport` | built |
+| Ciphertext-only relay | `build-relay` | built |
+| Device daemon (v2, Rust) | **this repo → `bridge/`** | in progress |
+| Web client (React) | **this repo → `frontend/`** | v2 rebuild pending |
 
-### Management Services
-- **VM Manager**: Firecracker VM lifecycle management
-- **Session Manager**: Terminal session handling
-- **Snapshot Manager**: VM state snapshots
-- **Git Manager**: Repository operations
+## bridge/ (Rust device daemon)
 
-### Infrastructure Services
-- **PostgreSQL**: Primary database
-- **Redis**: Caching and pub/sub messaging
-- **MinIO**: S3-compatible object storage
-- **Soft-serve**: Git server
-
-## Development
-
-### Local Development with Podman
-
-The platform uses Podman for local development instead of Docker for enhanced security:
+Owns worktrees, spawns harnesses in full PTYs, serves the single-tool (`done`) MCP server,
+watches git, runs git operations, and talks to the relay. Built TDD-first.
 
 ```bash
-# Start all services
-podman-compose up -d
-
-# View logs
-podman-compose logs -f
-
-# Stop services
-podman-compose down
+cd bridge
+cargo test
 ```
-
-### Running Tests
-
-```bash
-# Unit tests
-cd api && python -m pytest
-cd frontend && npm test
-
-# Integration tests
-pytest tests/integration/
-
-# E2E tests
-pytest tests/e2e/
-```
-
-### Code Quality
-
-```bash
-# Python formatting
-black api/ vm-manager/ session-manager/
-
-# TypeScript formatting
-cd frontend && npm run format
-
-# Type checking
-cd api && mypy .
-cd frontend && npm run type-check
-
-# Linting
-cd api && ruff check .
-cd frontend && npm run lint
-```
-
-## Security
-
-The platform implements defense-in-depth security:
-- Rootless container execution with Podman
-- VM isolation with Firecracker
-- JWT-based authentication
-- Network segmentation
-- Comprehensive audit logging
-- Regular security scanning
-
-See [Security Documentation](docs/security/README.md) for details.
-
-## Deployment
-
-### Development
-- Local development with podman-compose
-- All services on single machine
-- Self-signed certificates
-
-### Production
-- Kubernetes orchestration
-- Multi-zone deployment
-- Proper secret management
-- SSL certificates from CA
-- Comprehensive monitoring
-
-See [Deployment Guide](docs/deployment/README.md) for details.
-
-## Contributing
-
-1. Read the [Development Guide](docs/development/setup.md)
-2. Review the [Architecture Documentation](docs/architecture/overview.md)
-3. Check the [API Documentation](docs/api/README.md)
-4. Follow the [Security Guidelines](docs/security/guidelines.md)
-
-## Monitoring & Observability
-
-- **Logs**: Structured logging with correlation IDs
-- **Metrics**: Performance and business metrics
-- **Tracing**: Distributed request tracing
-- **Health Checks**: Service health monitoring
-- **Alerts**: Automated alerting for issues
 
 ## License
 
-This project is proprietary software. All rights reserved.
-
-## Support
-
-For development issues:
-- Check the [Troubleshooting Guide](docs/troubleshooting.md)
-- Review [Common Issues](docs/common-issues.md)
-- Create an issue in the project repository
+MIT (bridge / web client). The E2EE transport is published separately for auditability.

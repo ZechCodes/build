@@ -1,1 +1,0 @@
-"""Configuration package for VM Manager service."""

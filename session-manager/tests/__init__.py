@@ -1,3 +1,0 @@
-"""
-Session manager test suite
-"""

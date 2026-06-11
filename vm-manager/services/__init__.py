@@ -1,1 +1,0 @@
-"""VM Manager service implementations."""

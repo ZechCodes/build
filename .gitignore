@@ -161,7 +161,7 @@ user-data/
 
 # Rust (if any Rust components added)
 target/
-Cargo.lock
+# Cargo.lock is committed for the bridge — it ships as a binary/daemon, not a library
 
 # Go (if any Go components added)
 vendor/

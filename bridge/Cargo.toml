@@ -1,0 +1,21 @@
+[package]
+name = "build-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Build device daemon: worktrees, full-PTY harnesses, single `done` MCP tool, git-diff watcher, task lifecycle."
+license = "MIT"
+
+[[bin]]
+name = "build-bridge"
+path = "src/main.rs"
+
+[lib]
+name = "build_bridge"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]

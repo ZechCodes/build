@@ -1,0 +1,338 @@
+//! Git is the integration layer. The bridge never asks a harness what it did —
+//! the worktree knows.
+//!
+//! This module renders `git diff` of a task's worktree against its base branch in
+//! two shapes: a cheap **summary** (files changed, +/- lines) for the quiet
+//! progress state while building, and the **full patch** for the review gate. It
+//! also answers the plan-phase enforcement question — *did anything change
+//! outside `.build/`?* — so the UI can flag a planning agent that wrote code.
+
+use std::path::Path;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+
+/// Where plan-phase work is supposed to stay confined.
+pub const PLAN_SCOPE_PREFIX: &str = ".build/";
+
+/// Roll-up counts for the quiet progress state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+/// How a single path changed relative to base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Other,
+}
+
+/// One changed path in the worktree's delta from base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: ChangeStatus,
+}
+
+/// The worktree's complete delta from its base branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeDiff {
+    stat: DiffStat,
+    files: Vec<ChangedFile>,
+    patch: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DiffError {
+    #[error("git error: {0}")]
+    Git(#[from] git2::Error),
+}
+
+impl WorktreeDiff {
+    /// The roll-up counts (the building-state progress fact).
+    pub fn stat(&self) -> DiffStat {
+        self.stat
+    }
+
+    /// The changed files, in diff order.
+    pub fn files(&self) -> &[ChangedFile] {
+        &self.files
+    }
+
+    /// The full unified patch (the review-gate surface).
+    pub fn patch(&self) -> &str {
+        &self.patch
+    }
+
+    /// Changed paths that fall outside `prefix`. Used for plan-phase enforcement
+    /// by observation: a planning agent should only touch `.build/`.
+    pub fn paths_outside<'a>(&'a self, prefix: &str) -> Vec<&'a str> {
+        self.files
+            .iter()
+            .map(|f| f.path.as_str())
+            .filter(|p| !p.starts_with(prefix))
+            .collect()
+    }
+
+    /// Whether the planning agent strayed outside `.build/`.
+    pub fn touched_outside_plan_scope(&self) -> bool {
+        !self.paths_outside(PLAN_SCOPE_PREFIX).is_empty()
+    }
+}
+
+/// Compute the worktree's diff against `base_branch`.
+///
+/// Compares the base branch's tree to the worktree's working directory *and*
+/// index, so it captures committed, staged, and unstaged changes alike — the
+/// total delta a reviewer should see, regardless of how the agent committed.
+pub fn diff_against_base(
+    worktree_path: &Path,
+    base_branch: &str,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let base_tree = repo.revparse_single(base_branch)?.peel_to_tree()?;
+
+    let mut opts = git2::DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+
+    let files = diff
+        .deltas()
+        .map(|delta| {
+            let path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ChangedFile {
+                path,
+                status: map_status(delta.status()),
+            }
+        })
+        .collect();
+
+    let stats = diff.stats()?;
+    let stat = DiffStat {
+        files_changed: stats.files_changed(),
+        insertions: stats.insertions(),
+        deletions: stats.deletions(),
+    };
+
+    let mut patch = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        if matches!(line.origin(), '+' | '-' | ' ') {
+            patch.push(line.origin());
+        }
+        patch.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })?;
+
+    Ok(WorktreeDiff { stat, files, patch })
+}
+
+fn map_status(status: git2::Delta) -> ChangeStatus {
+    match status {
+        git2::Delta::Added | git2::Delta::Untracked | git2::Delta::Copied => ChangeStatus::Added,
+        git2::Delta::Modified | git2::Delta::Typechange => ChangeStatus::Modified,
+        git2::Delta::Deleted => ChangeStatus::Deleted,
+        git2::Delta::Renamed => ChangeStatus::Renamed,
+        _ => ChangeStatus::Other,
+    }
+}
+
+/// A live, debounced stream of recomputed diffs for a worktree. Holds the fs
+/// watcher and the worker thread alive; dropping it stops watching.
+pub struct DiffWatcher {
+    _watcher: notify::RecommendedWatcher,
+}
+
+/// Begin watching `worktree_path`; every burst of filesystem changes is debounced
+/// by `debounce`, then a freshly recomputed [`WorktreeDiff`] is sent on the
+/// returned channel. The first diff is sent immediately so subscribers start with
+/// current state.
+pub fn watch(
+    worktree_path: &Path,
+    base_branch: &str,
+    debounce: Duration,
+) -> Result<(DiffWatcher, mpsc::UnboundedReceiver<WorktreeDiff>), DiffError> {
+    use notify::Watcher;
+
+    let (raw_tx, raw_rx) = std::sync::mpsc::channel::<()>();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = raw_tx.send(());
+        }
+    })
+    .map_err(notify_to_git)?;
+    watcher
+        .watch(worktree_path, notify::RecursiveMode::Recursive)
+        .map_err(notify_to_git)?;
+
+    let (diff_tx, diff_rx) = mpsc::unbounded_channel();
+
+    // Send the current diff straight away so a subscriber starts from truth.
+    if let Ok(initial) = diff_against_base(worktree_path, base_branch) {
+        let _ = diff_tx.send(initial);
+    }
+
+    let worktree_path = worktree_path.to_path_buf();
+    let base_branch = base_branch.to_string();
+    std::thread::spawn(move || {
+        // Block for the first event of a burst, then drain until quiet for
+        // `debounce`, recompute once, and emit.
+        while raw_rx.recv().is_ok() {
+            while raw_rx.recv_timeout(debounce).is_ok() {}
+            match diff_against_base(&worktree_path, &base_branch) {
+                Ok(diff) => {
+                    if diff_tx.send(diff).is_err() {
+                        break; // receiver dropped
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    });
+
+    Ok((DiffWatcher { _watcher: watcher }, diff_rx))
+}
+
+/// notify and git2 errors don't share a type; carry the message through git2's.
+fn notify_to_git(err: notify::Error) -> DiffError {
+    DiffError::Git(git2::Error::from_str(&err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// A repo on `main` with one commit; returns (tempdir, repo_path).
+    fn init_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@build.ing"]);
+        git(&["config", "user.name", "T"]);
+        std::fs::write(repo.join("README.md"), "# project\nline\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+        (dir, repo)
+    }
+
+    #[test]
+    fn no_changes_is_an_empty_diff() {
+        let (_dir, repo) = init_repo();
+        let diff = diff_against_base(&repo, "main").unwrap();
+        assert_eq!(diff.stat(), DiffStat::default());
+        assert!(diff.files().is_empty());
+        assert!(diff.patch().is_empty());
+    }
+
+    #[test]
+    fn untracked_and_modified_files_are_summarized() {
+        let (_dir, repo) = init_repo();
+        // Modify a tracked file and add a new untracked one.
+        std::fs::write(repo.join("README.md"), "# project\nline\nadded\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "hello\nworld\n").unwrap();
+
+        let diff = diff_against_base(&repo, "main").unwrap();
+        let stat = diff.stat();
+        assert_eq!(stat.files_changed, 2);
+        assert!(stat.insertions >= 3, "got {stat:?}");
+
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"));
+        assert!(paths.contains(&"new.txt"));
+        // The patch is the full review surface.
+        assert!(diff.patch().contains("new.txt"));
+        assert!(diff.patch().contains("+hello"));
+    }
+
+    #[test]
+    fn committed_changes_on_the_branch_are_included() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["checkout", "-b", "build/x"]);
+        std::fs::write(repo.join("feature.rs"), "fn main() {}\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feature"]);
+
+        // Even though it's committed, the delta from base must show it.
+        let diff = diff_against_base(&repo, "main").unwrap();
+        assert_eq!(diff.stat().files_changed, 1);
+        assert_eq!(diff.files()[0].path, "feature.rs");
+        assert_eq!(diff.files()[0].status, ChangeStatus::Added);
+    }
+
+    #[test]
+    fn plan_scope_enforcement_flags_out_of_scope_writes() {
+        let (_dir, repo) = init_repo();
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/plan.md"), "# plan\n").unwrap();
+
+        // Only `.build/` touched → nothing out of scope.
+        let in_scope = diff_against_base(&repo, "main").unwrap();
+        assert!(!in_scope.touched_outside_plan_scope());
+        assert!(in_scope.paths_outside(PLAN_SCOPE_PREFIX).is_empty());
+
+        // Now the planning agent writes code it shouldn't have.
+        std::fs::write(repo.join("src.rs"), "code\n").unwrap();
+        let strayed = diff_against_base(&repo, "main").unwrap();
+        assert!(strayed.touched_outside_plan_scope());
+        assert_eq!(strayed.paths_outside(PLAN_SCOPE_PREFIX), vec!["src.rs"]);
+    }
+
+    #[tokio::test]
+    async fn watcher_pushes_a_recomputed_diff_on_change() {
+        let (dir, repo) = init_repo();
+        // Keep the tempdir alive for the whole test.
+        let _keep = &dir;
+
+        let (_watcher, mut rx) = watch(&repo, "main", Duration::from_millis(50)).unwrap();
+
+        // First message is the immediate baseline (empty).
+        let initial = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("baseline diff arrives")
+            .unwrap();
+        assert_eq!(initial.stat(), DiffStat::default());
+
+        // Touch a file; expect a debounced, recomputed diff that sees it.
+        std::fs::write(repo.join("changed.txt"), "x\n").unwrap();
+        let updated = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("change diff arrives")
+            .unwrap();
+        assert!(
+            updated.files().iter().any(|f| f.path == "changed.txt"),
+            "watcher should report the new file, got {:?}",
+            updated.files()
+        );
+    }
+}

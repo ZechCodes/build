@@ -11,6 +11,7 @@
 //! Enforcement is by observation, not permission: the bridge makes what an agent
 //! did legible (the git diff) and lets the human decide at the review gates.
 
+pub mod mcp;
 pub mod pty;
 pub mod task;
 pub mod worktree;

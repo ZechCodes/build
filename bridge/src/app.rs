@@ -551,7 +551,8 @@ impl AppState {
         let entries: Vec<Value> = dirs
             .into_iter()
             .map(|(name, p, is_git)| {
-                json!({ "name": name, "path": p.display().to_string(), "is_git": is_git })
+                let is_hidden = name.starts_with('.');
+                json!({ "name": name, "path": p.display().to_string(), "is_git": is_git, "is_hidden": is_hidden })
             })
             .collect();
         Ok(json!({
@@ -597,7 +598,21 @@ impl AppState {
             .map_err(|e| format!("cannot create projects folder: {e}"))?;
         let dest = self.projects_dir.join(&name);
         if dest.exists() {
-            return Err(format!("'{name}' already exists in the projects folder"));
+            // Already in the projects folder — register the existing checkout instead
+            // of cloning again, as long as it's the same repo (matching remote).
+            if !dest.join(".git").exists() {
+                return Err(format!(
+                    "'{name}' already exists in the projects folder and is not a git repo"
+                ));
+            }
+            if let Some(origin) = git_remote_origin(&dest) {
+                if !remotes_match(&origin, &url) {
+                    return Err(format!(
+                        "'{name}' already exists with a different remote ({origin})"
+                    ));
+                }
+            }
+            return self.register_clone(params, dest);
         }
         let out = std::process::Command::new("git")
             .arg("clone")
@@ -611,6 +626,16 @@ impl AppState {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+        self.register_clone(params, dest)
+    }
+
+    /// Register a freshly cloned (or already-present) checkout as a project,
+    /// defaulting the base branch to its checked-out branch.
+    fn register_clone(
+        &mut self,
+        params: &Value,
+        dest: std::path::PathBuf,
+    ) -> Result<Value, String> {
         let base = params
             .get("base_branch")
             .and_then(Value::as_str)
@@ -891,6 +916,33 @@ fn repo_name_from_url(url: &str) -> String {
     let trimmed = url.trim_end_matches('/');
     let last = trimmed.rsplit(['/', ':']).next().unwrap_or("repo");
     last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// The `origin` remote URL of a repo, if it has one.
+fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
+/// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
+/// `.git`. A loose check — enough to catch "already cloned" without surprises.
+fn remotes_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_string()
+    };
+    norm(a) == norm(b)
 }
 
 /// The checked-out branch name of a freshly cloned repo (its default branch).
@@ -1332,10 +1384,11 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         );
-        // A browse root with a plain folder and a git repo.
+        // A browse root with a plain folder, a git repo, and a hidden folder.
         let root = dir_a.path().join("browse");
         std::fs::create_dir(&root).unwrap();
         std::fs::create_dir(root.join("plain")).unwrap();
+        std::fs::create_dir(root.join(".hidden")).unwrap();
         let repo_dir = root.join("myrepo");
         std::fs::create_dir(&repo_dir).unwrap();
         std::fs::create_dir(repo_dir.join(".git")).unwrap();
@@ -1350,6 +1403,13 @@ mod tests {
         );
         assert_eq!(
             entries.iter().find(|e| e["name"] == "plain").unwrap()["is_git"],
+            false
+        );
+        // Hidden dirs are still returned, flagged so the client can toggle them.
+        let hidden = entries.iter().find(|e| e["name"] == ".hidden").unwrap();
+        assert_eq!(hidden["is_hidden"], true);
+        assert_eq!(
+            entries.iter().find(|e| e["name"] == "plain").unwrap()["is_hidden"],
             false
         );
     }
@@ -1385,8 +1445,24 @@ mod tests {
             json!({ "url": repo_src.to_str().unwrap() }),
         ));
         assert_eq!(cloned["ok"], true, "{cloned:?}");
-        let clone_path = cloned["result"]["path"].as_str().unwrap();
-        assert!(std::path::Path::new(clone_path).join("README.md").exists());
+        let clone_path = cloned["result"]["path"].as_str().unwrap().to_string();
+        assert!(std::path::Path::new(&clone_path).join("README.md").exists());
+        assert_eq!(
+            state.handle(req("project.list", json!({})))["result"]["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Cloning the same repo again registers the existing checkout — no error, no
+        // duplicate, same path (not a second clone).
+        let again = state.handle(req(
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap() }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(again["result"]["path"].as_str().unwrap(), clone_path);
         assert_eq!(
             state.handle(req("project.list", json!({})))["result"]["projects"]
                 .as_array()

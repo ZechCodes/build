@@ -126,12 +126,19 @@
       .projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
       .projfolder code { font-family:var(--mono); font-size:11.5px; background:var(--line2); padding:2px 6px; border-radius:5px; }
       .manualadd { margin-top:12px; } .manualadd summary { font-size:12px; color:var(--dim); cursor:pointer; }
-      .browse-path { font-family:var(--mono); font-size:11.5px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:10px 0; overflow:auto; white-space:nowrap; }
+      .browse-path { font-family:var(--mono); font-size:11.5px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:10px 0 6px; overflow:auto; white-space:nowrap; }
+      .browse-toggle { margin:0 0 10px; font-size:12px; color:var(--ink2); }
       .browse-list { max-height:44vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
-      .browse-row { display:flex; align-items:center; gap:10px; padding:7px 11px; border-top:1px solid var(--line2); font-size:13px; }
+      .browse-row { display:flex; align-items:center; gap:10px; padding:8px 11px; border-top:1px solid var(--line2); font-size:13px; }
       .browse-row:first-child { border-top:0; }
-      .browse-row .bname { flex:1; cursor:default; }
+      .browse-row.nav { cursor:pointer; }
+      .browse-row.nav:hover { background:var(--accent-soft); }
+      .browse-row .bname { flex:1; }
       .browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+      /* text inputs in modals/sheets */
+      .sheet input:not([type=checkbox]) { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+      .field input { width:100%; }
+      .sheet input:not([type=checkbox]):focus, .sheet select:focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
       .projrow { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; align-items:baseline; }
       .projrow:first-child { border-top:0; }
       .projrow .pname { font-weight:600; min-width:120px; }
@@ -421,33 +428,42 @@
       // gitOnly → only git repos are "Choose"-able and the footer adds the current
       // repo; otherwise every folder is selectable (used to pick the projects dir).
       async function openBrowser(opts) {
-        const nav = async (path) => {
-          let data;
-          try { data = await App.call("fs.list", path ? { path } : {}); }
-          catch (e) { const el = $("#berr"); if (el) el.textContent = e.message; return; }
-          const rows = data.entries.map((e) => `
-            <div class="browse-row">
+        let data = null, showHidden = false;
+        // Re-render the current folder applying the hidden filter — no re-fetch on toggle.
+        const paint = () => {
+          const visible = data.entries.filter((e) => showHidden || !e.is_hidden);
+          const hiddenCount = data.entries.length - visible.length;
+          // Every folder row opens on click; a "Use" button selects it (git repos in
+          // repo mode, any folder in folder mode).
+          const rows = visible.map((e) => `
+            <div class="browse-row nav" data-path="${esc(e.path)}">
               <span class="bname">${e.is_git ? "📦" : "📁"} ${esc(e.name)}</span>
               ${e.is_git ? '<span class="bgit">git</span>' : ""}
-              ${e.is_git && opts.gitOnly
-                ? `<button class="btn primary mini choose" data-path="${esc(e.path)}">Choose</button>`
-                : `<button class="btn mini open" data-path="${esc(e.path)}">Open</button>`}
+              ${!opts.gitOnly || e.is_git
+                ? `<button class="btn primary mini use" data-path="${esc(e.path)}">Use</button>` : ""}
             </div>`).join("");
           const footer = (!opts.gitOnly || data.is_git)
-            ? `<button class="btn primary" id="choosecur" data-path="${esc(data.path)}">${opts.gitOnly ? "Add this repo" : "Use this folder"}</button>` : "";
+            ? `<button class="btn primary" id="choosecur" data-path="${esc(data.path)}">${opts.gitOnly ? "Use this repo" : "Use this folder"}</button>` : "";
           $("#sheet").innerHTML = `
             <h3>${esc(opts.title)}</h3>
             <div class="browse-path">${esc(data.path)}</div>
+            <label class="toggle browse-toggle"><input type="checkbox" id="showhidden" ${showHidden ? "checked" : ""}> Show hidden${hiddenCount && !showHidden ? ` (${hiddenCount})` : ""}</label>
             <div class="browse-list">
-              ${data.parent ? `<div class="browse-row"><button class="btn mini open" data-path="${esc(data.parent)}">⬆ up</button><span class="bname dim">parent folder</span></div>` : ""}
+              ${data.parent ? `<div class="browse-row nav" data-path="${esc(data.parent)}"><span class="bname dim">⬆ up — parent folder</span></div>` : ""}
               ${rows || '<div class="dim" style="font-size:13px;padding:10px">No subfolders here.</div>'}
             </div>
             <div class="row">${footer}<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button></div>
             <div class="adderr" id="berr"></div>`;
+          $("#showhidden").onchange = (e) => { showHidden = e.target.checked; paint(); };
           $("#bcancel").onclick = () => $("#scrim").classList.remove("show");
           const cc = $("#choosecur"); if (cc) cc.onclick = () => opts.onChoose(cc.dataset.path);
-          $("#sheet").querySelectorAll(".open").forEach((b) => (b.onclick = () => nav(b.dataset.path)));
-          $("#sheet").querySelectorAll(".choose").forEach((b) => (b.onclick = () => opts.onChoose(b.dataset.path)));
+          $("#sheet").querySelectorAll(".browse-row.nav").forEach((row) => (row.onclick = () => nav(row.dataset.path)));
+          $("#sheet").querySelectorAll(".use").forEach((btn) => (btn.onclick = (ev) => { ev.stopPropagation(); opts.onChoose(btn.dataset.path); }));
+        };
+        const nav = async (path) => {
+          try { data = await App.call("fs.list", path ? { path } : {}); }
+          catch (e) { const el = $("#berr"); if (el) el.textContent = e.message; return; }
+          paint();
         };
         $("#scrim").classList.add("show");
         $("#sheet").innerHTML = `<h3>${esc(opts.title)}</h3><div class="dim" style="padding:14px">loading…</div>`;

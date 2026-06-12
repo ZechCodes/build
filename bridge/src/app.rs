@@ -15,13 +15,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
+use portable_pty::PtySize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
 
 use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::orchestrator::{ActiveTask, Orchestrator, OrchestratorError};
-use crate::pty::HarnessSpec;
-use crate::relay::FrameHandler;
+use crate::pty::{HarnessSpec, PtySession};
+use crate::relay::{FrameHandler, SessionSender};
 use crate::task::{TaskId, TaskKind, TaskState};
 use crate::templates::{Templates, DEFAULT_PLAN_PATH};
 use crate::transport::Frame;
@@ -43,12 +46,64 @@ struct StreamState {
     complete: bool,
 }
 
+/// A live terminal session: a real PTY, an authoritative server-side screen model
+/// (`vt100`), and the clients currently attached for live output. The screen model
+/// is what makes reconnect a *snapshot* (current screen) rather than a byte replay.
+struct TermSession {
+    session: PtySession,
+    parser: vt100::Parser,
+    attached: Vec<SessionSender>,
+    /// Total output bytes processed — the live-tail cursor.
+    total: u64,
+    cols: u16,
+    rows: u16,
+}
+
+impl TermSession {
+    /// Spawn an interactive shell in a PTY, returning the session and a receiver
+    /// for its output (subscribed immediately so no early bytes are missed).
+    fn spawn(cols: u16, rows: u16) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
+        let spec = HarnessSpec::new("bash")
+            .arg("--norc")
+            .arg("-i")
+            .env("TERM", "xterm-256color")
+            .env("PS1", "build$ ");
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let session = PtySession::spawn(&spec, None, size).map_err(|e| e.to_string())?;
+        let rx = session.subscribe();
+        let parser = vt100::Parser::new(rows, cols, 2000);
+        Ok((
+            TermSession {
+                session,
+                parser,
+                attached: Vec::new(),
+                total: 0,
+                cols,
+                rows,
+            },
+            rx,
+        ))
+    }
+
+    /// The current screen serialized as escape sequences — write it to a fresh
+    /// terminal and the screen is reproduced.
+    fn snapshot(&self) -> String {
+        b64encode(&self.parser.screen().contents_formatted())
+    }
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     orch: Orchestrator,
     base_branch: String,
     tasks: HashMap<String, ActiveTask>,
     streams: HashMap<String, StreamState>,
+    term: Option<TermSession>,
     next_id: u64,
     next_stream: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
@@ -70,18 +125,19 @@ impl AppState {
             base_branch: base_branch.into(),
             tasks: HashMap::new(),
             streams: HashMap::new(),
+            term: None,
             next_id: 1,
             next_stream: 1,
             qa_agent,
         }
     }
 
-    /// Wrap this state in the relay's frame handler. `stream.start` needs the
-    /// shared handle (it spawns a background producer), so the handler dispatches
-    /// through [`dispatch_frame`].
+    /// Wrap this state in the relay's frame handler. `stream.start`/`term.attach`
+    /// need the shared handle (they spawn background producers/pumps), so the
+    /// handler dispatches through [`dispatch_frame`].
     pub fn into_handler(self) -> FrameHandler {
         let state = Arc::new(Mutex::new(self));
-        Arc::new(move |_session_id, frame| dispatch_frame(&state, frame))
+        Arc::new(move |sender, frame| dispatch_frame(&state, sender, frame))
     }
 
     /// Synchronous dispatch used by the unit tests (no background producer). The
@@ -120,8 +176,37 @@ impl AppState {
             "task.abandon" => self.task_abandon(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
+            "term.input" => self.term_input(params),
+            "term.resize" => self.term_resize(params),
             other => Err(format!("unknown method: {other}")),
         }
+    }
+
+    /// Write client keystrokes (base64) to the terminal's PTY.
+    fn term_input(&mut self, params: &Value) -> Result<Value, String> {
+        let data = b64decode(&require_str(params, "data")?)?;
+        let term = self.term.as_ref().ok_or("no terminal session")?;
+        term.session.write_input(&data).map_err(|e| e.to_string())?;
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Resize the terminal's PTY and screen model.
+    fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
+        let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+        let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+        let term = self.term.as_mut().ok_or("no terminal session")?;
+        term.session
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
+        term.parser.set_size(rows, cols);
+        term.cols = cols;
+        term.rows = rows;
+        Ok(json!({ "ok": true }))
     }
 
     /// Return a bounded batch of events with `seq > since` for resume. The batch
@@ -369,10 +454,11 @@ fn err(e: OrchestratorError) -> String {
     e.to_string()
 }
 
-/// Dispatch one decrypted request frame. `stream.start` is handled here because
-/// it needs the shared `Arc` to hand to its background producer; everything else
-/// runs under a short-held lock.
-fn dispatch_frame(state: &Arc<Mutex<AppState>>, frame: Frame) -> Value {
+/// Dispatch one decrypted request frame. `stream.start` and `term.attach` are
+/// handled here because they need the shared `Arc` (background producer/pump) and
+/// the `SessionSender` (to push live output to this client); everything else runs
+/// under a short-held lock.
+fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Frame) -> Value {
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
     let method = frame
         .payload
@@ -386,15 +472,86 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, frame: Frame) -> Value {
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let result = if method == "stream.start" {
-        stream_start(state, &params)
-    } else {
-        state.lock().unwrap().dispatch(&method, &params)
+    let result = match method.as_str() {
+        "stream.start" => stream_start(state, &params),
+        "term.attach" => term_attach(state, &sender, &params),
+        _ => state.lock().unwrap().dispatch(&method, &params),
     };
     match result {
         Ok(result) => json!({ "id": id, "ok": true, "result": result }),
         Err(message) => json!({ "id": id, "ok": false, "error": message }),
     }
+}
+
+/// Attach this client to the terminal: create the session on first attach (and
+/// start the output pump), register the caller's [`SessionSender`] for live
+/// output, and return the current **screen snapshot** + cursor. Reconnect is just
+/// another attach — a new session re-registers and gets a fresh snapshot.
+fn term_attach(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    params: &Value,
+) -> Result<Value, String> {
+    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+
+    let mut s = state.lock().unwrap();
+    let mut new_output_rx = None;
+    if s.term.is_none() {
+        let (term, rx) = TermSession::spawn(cols, rows)?;
+        s.term = Some(term);
+        new_output_rx = Some(rx);
+    }
+
+    // Snapshot the screen and register this client atomically under the lock, so
+    // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
+    // dupe across a reconnect.
+    let term = s.term.as_mut().expect("term created above");
+    // Drop any prior sender for this same session id (a reconnect on the same id).
+    term.attached
+        .retain(|snd| snd.session_id() != sender.session_id());
+    term.attached.push(sender.clone());
+    let response = json!({
+        "snapshot": term.snapshot(),
+        "cursor": term.total,
+        "cols": term.cols,
+        "rows": term.rows,
+    });
+    drop(s);
+
+    // First attach starts the pump that feeds the screen model and fans output out
+    // to every attached client.
+    if let Some(rx) = new_output_rx {
+        spawn_term_pump(Arc::clone(state), rx);
+    }
+    Ok(response)
+}
+
+/// Pump PTY output → screen model + every attached client. Senders whose push
+/// fails (client gone) are dropped.
+fn spawn_term_pump(state: Arc<Mutex<AppState>>, mut rx: broadcast::Receiver<Vec<u8>>) {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(chunk) => {
+                    let mut s = state.lock().unwrap();
+                    let Some(term) = s.term.as_mut() else {
+                        return;
+                    };
+                    term.parser.process(&chunk);
+                    term.total += chunk.len() as u64;
+                    let payload = json!({
+                        "type": "term.output",
+                        "data": b64encode(&chunk),
+                        "cursor": term.total,
+                    });
+                    term.attached.retain(|snd| snd.push(payload.clone()));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return, // PTY closed
+            }
+        }
+    });
 }
 
 /// Start a deterministic agent output stream: register it, then spawn a background
@@ -480,6 +637,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+fn b64encode(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn b64decode(s: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| format!("invalid base64: {e}"))
 }
 
 /// Render a task state as a stable snake_case string for the wire.
@@ -584,7 +751,9 @@ mod tests {
     async fn stream_resume_reconstructs_full_output() {
         let (dir, repo) = init_repo();
         let handler = AppState::new(repo, dir.path().join("wt"), "main", true).into_handler();
-        let call = |method: &str, params: Value| handler("s".to_string(), req(method, params));
+        let call = |method: &str, params: Value| {
+            handler(SessionSender::detached("s"), req(method, params))
+        };
 
         let started = call("stream.start", json!({ "count": 50, "interval_ms": 0 }));
         let stream_id = started["result"]["stream_id"].as_str().unwrap().to_string();
@@ -634,5 +803,36 @@ mod tests {
             st["result"]["checksum"].as_str().unwrap(),
             sha256_hex(reconstructed.as_bytes())
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_reflects_input_across_reattach() {
+        let (dir, repo) = init_repo();
+        let handler = AppState::new(repo, dir.path().join("wt"), "main", true).into_handler();
+        let call = |sid: &str, method: &str, params: Value| {
+            handler(SessionSender::detached(sid), req(method, params))
+        };
+
+        // First attach: spawns the shell + the output pump.
+        let a = call("s1", "term.attach", json!({ "cols": 80, "rows": 24 }));
+        assert_eq!(a["ok"], true);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Send a command (the PTY echoes it and runs it).
+        let input = b64encode(b"echo build-terminal-ok\n");
+        call("s1", "term.input", json!({ "data": input }));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+
+        // Reconnect = a fresh attach. The screen snapshot (vt100 model) must reflect
+        // the prior output — that's snapshot-based resync, not byte replay.
+        let b = call("s2", "term.attach", json!({ "cols": 80, "rows": 24 }));
+        let snap =
+            String::from_utf8_lossy(&b64decode(b["result"]["snapshot"].as_str().unwrap()).unwrap())
+                .into_owned();
+        assert!(
+            snap.contains("build-terminal-ok"),
+            "reattach snapshot should reflect prior output; got: {snap:?}"
+        );
+        assert!(b["result"]["cursor"].as_u64().unwrap() > 0);
     }
 }

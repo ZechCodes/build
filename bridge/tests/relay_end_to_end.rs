@@ -95,7 +95,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
 
     // Run the real bridge relay-client; its handler echoes the request payload.
     let handler: relay::FrameHandler =
-        Arc::new(|_session_id, frame| json!({ "echo": frame.payload, "ok": true }));
+        Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
     let bridge = {
         let identity = identity.clone();
         tokio::spawn(async move { relay::run(&url, &identity, handler).await })

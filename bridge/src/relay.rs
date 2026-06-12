@@ -58,9 +58,68 @@ pub struct DeviceIdentity {
     pub transport: KeyPairB64,
 }
 
-/// Handles a decrypted request frame from a client, returning the response
-/// payload to encrypt back. Kept sync and simple; the orchestrator plugs in here.
-pub type FrameHandler = Arc<dyn Fn(String, Frame) -> Value + Send + Sync>;
+/// A handle the app uses to push encrypted frames to a specific client session —
+/// the channel for server-initiated output (live terminal bytes, updates), not
+/// just request replies. Cheap to clone; store one per attached client.
+#[derive(Clone)]
+pub struct SessionSender {
+    session_id: String,
+    session_key: String,
+    out: mpsc::UnboundedSender<Message>,
+}
+
+impl SessionSender {
+    /// The session this sender targets.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// A sender not bound to a live connection — for tests and request/response
+    /// callers that never push. `push` succeeds-into-the-void.
+    pub fn detached(session_id: impl Into<String>) -> Self {
+        let (out, _rx) = mpsc::unbounded_channel();
+        SessionSender {
+            session_id: session_id.into(),
+            session_key: String::new(),
+            out,
+        }
+    }
+
+    /// Encrypt `payload` as an inner frame and send it to the client as an
+    /// `e2ee_envelope`. Returns false once the connection is gone (so the app can
+    /// drop the stale sender).
+    pub fn push(&self, payload: Value) -> bool {
+        let envelope = match transport::encrypt_frame(
+            &self.session_key,
+            &OuterFields {
+                session_id: self.session_id.clone(),
+                route_to: format!("session:{}", self.session_id),
+            },
+            &transport::FrameFields {
+                frame_type: "data".into(),
+                sender: "device".into(),
+                payload,
+                message_id: None,
+                created_at: None,
+            },
+            None,
+        ) {
+            Ok(env) => env,
+            Err(_) => return false,
+        };
+        self.out
+            .send(Message::Text(
+                json!({ "type": "e2ee_envelope", "session_id": self.session_id, "envelope": envelope })
+                    .to_string(),
+            ))
+            .is_ok()
+    }
+}
+
+/// Handles a decrypted request frame. Receives a [`SessionSender`] (so it can
+/// register the session for server-initiated pushes) and returns the response
+/// payload to send back.
+pub type FrameHandler = Arc<dyn Fn(SessionSender, Frame) -> Value + Send + Sync>;
 
 /// Build the authenticated WebSocket upgrade request: the relay verifies an
 /// Ed25519 signature over `{timestamp}.GET./ws/device`.
@@ -105,8 +164,9 @@ pub async fn run(
     let (stream, _resp) = tokio_tungstenite::connect_async(request).await?;
     let (mut sink, mut source) = stream.split();
 
-    // One writer owns the sink; everything else queues messages to it.
-    let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
+    // One writer owns the sink; everything else queues messages to it. Unbounded
+    // so pushes (terminal output bursts) never block the app under a lock.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
     let writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
             if sink.send(msg).await.is_err() {
@@ -144,17 +204,16 @@ pub async fn run(
                         "type": "transport_key",
                         "transport_public_key": identity.transport.public_key_b64,
                     }),
-                )
-                .await;
+                );
                 heartbeat = Some(spawn_heartbeat(out_tx.clone(), interval));
             }
             "session_init" => {
-                if let Err(e) = handle_session_init(&out_tx, identity, &mut sessions, &msg).await {
+                if let Err(e) = handle_session_init(&out_tx, identity, &mut sessions, &msg) {
                     tracing_protocol_error(&e);
                 }
             }
             "e2ee_envelope" => {
-                if let Err(e) = handle_envelope(&out_tx, &sessions, &msg, &handler).await {
+                if let Err(e) = handle_envelope(&out_tx, &sessions, &msg, &handler) {
                     tracing_protocol_error(&e);
                 }
             }
@@ -173,8 +232,8 @@ pub async fn run(
 
 /// A client opened a session: unwrap its session key and prove receipt with an
 /// encrypted `session_accept`.
-async fn handle_session_init(
-    out_tx: &mpsc::Sender<Message>,
+fn handle_session_init(
+    out_tx: &mpsc::UnboundedSender<Message>,
     identity: &DeviceIdentity,
     sessions: &mut HashMap<String, String>,
     msg: &Value,
@@ -203,15 +262,14 @@ async fn handle_session_init(
             "session_id": session_id,
             "envelope": accept,
         }),
-    )
-    .await;
+    );
     Ok(())
 }
 
 /// A client sent an encrypted frame: decrypt it, hand the inner request to the
-/// application, and encrypt the response back.
-async fn handle_envelope(
-    out_tx: &mpsc::Sender<Message>,
+/// application along with a [`SessionSender`], and send the response back.
+fn handle_envelope(
+    out_tx: &mpsc::UnboundedSender<Message>,
     sessions: &HashMap<String, String>,
     msg: &Value,
     handler: &FrameHandler,
@@ -233,42 +291,28 @@ async fn handle_envelope(
         return Ok(());
     }
 
-    let response_payload = handler(session_id.clone(), frame);
-    let response = transport::encrypt_frame(
-        session_key,
-        &OuterFields {
-            session_id: session_id.clone(),
-            route_to: format!("session:{session_id}"),
-        },
-        &transport::FrameFields {
-            frame_type: "data".into(),
-            sender: "device".into(),
-            payload: response_payload,
-            message_id: None,
-            created_at: None,
-        },
-        None,
-    )?;
-    send(
-        out_tx,
-        json!({
-            "type": "e2ee_envelope",
-            "session_id": session_id,
-            "envelope": response,
-        }),
-    )
-    .await;
+    let sender = SessionSender {
+        session_id: session_id.clone(),
+        session_key: session_key.clone(),
+        out: out_tx.clone(),
+    };
+    // The response rides the same push channel; the app may also have pushed
+    // server-initiated frames during the call (e.g. an initial terminal flush).
+    let response_payload = handler(sender.clone(), frame);
+    sender.push(response_payload);
     Ok(())
 }
 
-fn spawn_heartbeat(out_tx: mpsc::Sender<Message>, interval_s: u64) -> tokio::task::JoinHandle<()> {
+fn spawn_heartbeat(
+    out_tx: mpsc::UnboundedSender<Message>,
+    interval_s: u64,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_s.max(1)));
         loop {
             ticker.tick().await;
             if out_tx
                 .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
-                .await
                 .is_err()
             {
                 break;
@@ -277,8 +321,8 @@ fn spawn_heartbeat(out_tx: mpsc::Sender<Message>, interval_s: u64) -> tokio::tas
     })
 }
 
-async fn send(out_tx: &mpsc::Sender<Message>, value: Value) {
-    let _ = out_tx.send(Message::Text(value.to_string())).await;
+fn send(out_tx: &mpsc::UnboundedSender<Message>, value: Value) {
+    let _ = out_tx.send(Message::Text(value.to_string()));
 }
 
 fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {

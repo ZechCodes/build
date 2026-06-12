@@ -393,7 +393,9 @@ impl AppState {
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.project_list()),
             "project.add" => self.project_add(params),
+            "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
+            "project.set_remote" => self.project_set_remote(params),
             "task.dispatch" => self.task_dispatch(params),
             "task.list" => Ok(self.task_list()),
             "task.get" => self.task_get(params),
@@ -652,6 +654,87 @@ impl AppState {
         Ok(project_json(project))
     }
 
+    /// Create a brand-new git repo in the projects folder (with an initial commit
+    /// so its base branch resolves and tasks can dispatch) and register it.
+    fn project_create(&mut self, params: &Value) -> Result<Value, String> {
+        let name = require_str(params, "name")?;
+        let name = name.trim();
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return Err(format!("invalid project name: {name:?}"));
+        }
+        let base_branch = params
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main")
+            .to_string();
+        std::fs::create_dir_all(&self.projects_dir)
+            .map_err(|e| format!("cannot create projects folder: {e}"))?;
+        let dest = self.projects_dir.join(name);
+        if dest.exists() {
+            return Err(format!("'{name}' already exists in the projects folder"));
+        }
+        std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {name}: {e}"))?;
+        git_in(&dest, &["init", "-b", &base_branch])?;
+        std::fs::write(dest.join("README.md"), format!("# {name}\n"))
+            .map_err(|e| format!("cannot write README: {e}"))?;
+        git_in(&dest, &["add", "."])?;
+        // Commit with an explicit identity so it never depends on host git config.
+        git_in(
+            &dest,
+            &[
+                "-c",
+                "user.email=build@build.ing",
+                "-c",
+                "user.name=Build",
+                "commit",
+                "-m",
+                "Initial commit",
+            ],
+        )?;
+        let id = self.add_project(dest, base_branch);
+        self.persist();
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .expect("just added");
+        Ok(project_json(project))
+    }
+
+    /// Set (or clear, with an empty url) a project's `origin` remote.
+    fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let url = require_str(params, "url")?;
+        let url = url.trim();
+        let repo_path = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.repo_path.clone())
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        if url.is_empty() {
+            // Clearing: removing a missing origin is not an error.
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["remote", "remove", "origin"])
+                .output();
+        } else if git_remote_origin(&repo_path).is_some() {
+            git_in(&repo_path, &["remote", "set-url", "origin", url])?;
+        } else {
+            git_in(&repo_path, &["remote", "add", "origin", url])?;
+        }
+        self.persist();
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .expect("exists");
+        Ok(project_json(project))
+    }
+
     fn task_dispatch(&mut self, params: &Value) -> Result<Value, String> {
         let goal = require_str(params, "goal")?;
         let kind = match params.get("kind").and_then(Value::as_str) {
@@ -886,7 +969,26 @@ fn project_json(p: &Project) -> Value {
         "name": p.name,
         "path": p.repo_path.display().to_string(),
         "base_branch": p.base_branch,
+        "remote": git_remote_origin(&p.repo_path),
     })
+}
+
+/// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 /// Expand a leading `~` / `~/` to the user's home directory; otherwise return the
@@ -1470,6 +1572,57 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn project_create_inits_a_repo_and_set_remote_sets_origin() {
+        let (dir_a, repo_a) = init_repo();
+        let mut state = AppState::new(
+            repo_a,
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let projects_dir = dir_a.path().join("projects");
+        state.handle(req(
+            "settings.set",
+            json!({ "projects_dir": projects_dir.to_str().unwrap() }),
+        ));
+
+        // Create a brand-new repo: it has an initial commit (base branch resolves)
+        // and is registered with no remote yet.
+        let created = state.handle(req("project.create", json!({ "name": "fresh" })));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let project_id = created["result"]["project_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(created["result"]["remote"].is_null());
+        let repo = projects_dir.join("fresh");
+        assert!(repo.join(".git").exists(), "git repo created");
+        // The base branch resolves (there is a commit), so tasks can dispatch.
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.revparse_single("main").is_ok(),
+            "base branch has a commit"
+        );
+
+        // Set the origin remote, then read it back from project.list.
+        let set = state.handle(req(
+            "project.set_remote",
+            json!({ "project_id": project_id, "url": "git@github.com:me/fresh.git" }),
+        ));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["remote"], "git@github.com:me/fresh.git");
+        let listed = state.handle(req("project.list", json!({})))["result"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["project_id"] == project_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(listed["remote"], "git@github.com:me/fresh.git");
     }
 
     #[test]

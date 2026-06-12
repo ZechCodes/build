@@ -143,6 +143,8 @@
       .projrow:first-child { border-top:0; }
       .projrow .pname { font-weight:600; min-width:120px; }
       .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
+      .projrow .premote { font-family:var(--mono); font-size:11px; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:230px; }
+      .projrow .setremote { margin-left:auto; flex:none; }
       .sheet .row { display:flex; align-items:center; gap:10px; margin-top:13px; }
       .sheet .yolo { color:var(--dim); font-size:11.5px; margin-top:12px; line-height:1.4; }
       .toggle { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink2); cursor:pointer; }
@@ -361,7 +363,8 @@
             <h3>📁 Projects</h3>
             <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
             <div class="addproj">
-              <button class="btn primary" id="browseadd">Browse for a repo…</button>
+              <button class="btn primary" id="newrepo">New repo…</button>
+              <button class="btn" id="browseadd">Browse for a repo…</button>
               <button class="btn" id="cloneadd">Clone from URL…</button>
             </div>
             <div class="projfolder">Projects folder: <code id="pdir">…</code>
@@ -388,13 +391,20 @@
             const { projects } = await App.call("project.list");
             $("#projlist").innerHTML = projects.map((p) => `
               <div class="projrow"><span class="pname">${esc(p.name)}</span>
-                <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span></div>`).join("")
+                <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span>
+                <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
+                <button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button></div>`).join("")
               || '<div class="dim" style="font-size:13px">No projects yet.</div>';
             const { projects_dir } = await App.call("settings.get");
             $("#pdir").textContent = projects_dir;
+            $("#projlist").querySelectorAll(".setremote").forEach((btn) => (btn.onclick = () => {
+              const proj = projects.find((p) => p.project_id === btn.dataset.id);
+              openSetRemote(proj, refresh);
+            }));
           } catch (e) { $("#projlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`; }
         };
         await refresh();
+        $("#newrepo").onclick = () => openNewRepo(refresh);
 
         // Browse the host filesystem and add the chosen git repo — no typing.
         $("#browseadd").onclick = () => openBrowser({
@@ -468,6 +478,46 @@
         $("#scrim").classList.add("show");
         $("#sheet").innerHTML = `<h3>${esc(opts.title)}</h3><div class="dim" style="padding:14px">loading…</div>`;
         await nav(null);
+      }
+
+      // Create a brand-new git repo in the projects folder, then refresh.
+      function openNewRepo(onDone) {
+        $("#sheet").innerHTML = `
+          <h3>New repository</h3>
+          <div class="sub">Build creates a git repo in your projects folder and registers it.</div>
+          <div class="field"><label>Name</label><input id="nrname" placeholder="my-new-project" style="width:100%" /></div>
+          <div class="field"><label>Base branch</label><input id="nrbranch" placeholder="main" style="width:100%" /></div>
+          <div class="row"><button class="btn" id="nrcancel" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo">Create</button></div>
+          <div class="adderr" id="nrerr"></div>`;
+        $("#scrim").classList.add("show");
+        $("#nrname").focus();
+        $("#nrcancel").onclick = () => $("#scrim").classList.remove("show");
+        $("#nrdo").onclick = async () => {
+          const name = $("#nrname").value.trim(); if (!name) return;
+          const base_branch = $("#nrbranch").value.trim() || undefined;
+          $("#nrdo").disabled = true; $("#nrdo").textContent = "creating…"; $("#nrerr").textContent = "";
+          try { await App.call("project.create", { name, base_branch }); $("#scrim").classList.remove("show"); onDone && onDone(); }
+          catch (e) { $("#nrerr").textContent = e.message; $("#nrdo").disabled = false; $("#nrdo").textContent = "Create"; }
+        };
+      }
+
+      // Set (or clear) a project's origin remote, then refresh.
+      function openSetRemote(project, onDone) {
+        $("#sheet").innerHTML = `
+          <h3>Set remote</h3>
+          <div class="sub">Origin remote for <strong>${esc(project.name)}</strong>. Leave empty to clear.</div>
+          <div class="field"><label>Remote URL</label><input id="srurl" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>
+          <div class="row"><button class="btn" id="srcancel" style="margin-left:auto">Cancel</button><button class="btn primary" id="srdo">Save</button></div>
+          <div class="adderr" id="srerr"></div>`;
+        $("#scrim").classList.add("show");
+        $("#srurl").focus();
+        $("#srcancel").onclick = () => $("#scrim").classList.remove("show");
+        $("#srdo").onclick = async () => {
+          const url = $("#srurl").value.trim();
+          $("#srdo").disabled = true; $("#srdo").textContent = "saving…"; $("#srerr").textContent = "";
+          try { await App.call("project.set_remote", { project_id: project.project_id, url }); $("#scrim").classList.remove("show"); onDone && onDone(); }
+          catch (e) { $("#srerr").textContent = e.message; $("#srdo").disabled = false; $("#srdo").textContent = "Save"; }
+        };
       }
 
       // Clone a remote into the projects folder, then refresh.

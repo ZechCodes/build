@@ -8,6 +8,56 @@
 // verify the device's session_accept → send an encrypted request → read the
 // encrypted response. The relay only ever sees opaque envelopes.
 
+// Open an E2EE session and return an RPC `call(method, params)` over it. This is
+// the real client API the UI uses: bootstrap once, then make many encrypted calls
+// to the bridge's application RPC (task.dispatch, task.diff, task.approve_merge…).
+export async function openSession({ send, recv, transport, deviceId = "bridge" }) {
+  if (transport.ready) await transport.ready();
+
+  const hello = await recv();
+  if (hello.type !== "device_key") {
+    throw new Error(`expected device_key, got ${hello.type}`);
+  }
+  const deviceTransportPublicKeyB64 = hello.transport_public_key;
+
+  const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
+  const { sessionKeyB64, sessionInit } = await transport.createSessionInit({
+    sessionId,
+    deviceId,
+    deviceTransportPublicKeyB64,
+  });
+  send({ type: "session_init", session_id: sessionId, session_init: sessionInit });
+
+  const accept = await recv();
+  if (accept.type !== "session_accept") {
+    throw new Error(`expected session_accept, got ${accept.type}`);
+  }
+  await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
+
+  let reqId = 0;
+  async function call(method, params = {}) {
+    const id = "r" + ++reqId;
+    const envelope = await transport.encryptFrame({
+      sessionKeyB64,
+      outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
+      frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
+    });
+    send({ type: "e2ee_envelope", session_id: sessionId, envelope });
+
+    const resp = await recv();
+    if (resp.type !== "e2ee_envelope") {
+      throw new Error(`expected e2ee_envelope, got ${resp.type}`);
+    }
+    const frame = await transport.decryptEnvelope({ sessionKeyB64, envelope: resp.envelope });
+    if (!frame.payload.ok) {
+      throw new Error(`RPC ${method} failed: ${frame.payload.error}`);
+    }
+    return frame.payload.result;
+  }
+
+  return { sessionId, call };
+}
+
 export async function runClientSession({
   send,
   recv,

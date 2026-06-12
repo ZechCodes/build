@@ -3,74 +3,147 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Build — plan & ship</title>
+    <title>Build — review is the product</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
     <style>
-      :root { --bg:#16161e; --panel:#1a1b26; --line:#2a2a3a; --fg:#c0caf5; --dim:#7a82a8; --accent:#7aa2f7; --green:#9ece6a; --red:#f7768e; }
-      * { box-sizing: border-box; }
-      body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; }
-      header { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); }
-      header h1 { font-size:15px; margin:0; font-weight:700; }
-      header .who { margin-left:auto; color:var(--dim); font-size:12px; }
-      header a { color:var(--dim); }
-      main { display:grid; grid-template-columns: 1fr 1fr; gap:0; height:calc(100vh - 49px); }
-      .col { padding:16px 18px; overflow:auto; }
-      .col.left { border-right:1px solid var(--line); }
-      h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 8px; }
-      textarea { width:100%; min-height:72px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; resize:vertical; }
-      button { font:inherit; font-weight:600; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--accent); color:#0b0e1a; cursor:pointer; }
-      button.ghost { background:transparent; color:var(--fg); }
-      button:disabled { opacity:.4; cursor:default; }
-      .row { display:flex; gap:8px; align-items:center; margin-top:10px; }
-      .status { margin-left:auto; font-size:12px; color:var(--dim); }
-      .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:#23243a; color:var(--accent); }
-      pre, .plan { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-word; font:12.5px/1.5 ui-monospace,Menlo,monospace; }
-      .files { margin:8px 0; }
-      .files .f { display:flex; gap:8px; font:12.5px ui-monospace,monospace; padding:2px 0; }
-      .files .Added { color:var(--green); } .files .Deleted { color:var(--red); } .files .Modified { color:var(--accent); }
-      .diff .add { color:var(--green); } .diff .del { color:var(--red); } .diff .hunk { color:var(--accent); } .diff .meta { color:var(--dim); }
-      .muted { color:var(--dim); }
-      .stat { font:12px ui-monospace,monospace; color:var(--dim); margin-bottom:6px; }
+      :root {
+        --bg:#fafafa; --panel:#fff; --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa; --line:#e4e4e7;
+        --line2:#f1f1f4; --accent:#5b62e8; --accent-soft:#eef0fe; --green:#16a34a; --green-bg:#f0fdf4;
+        --red:#dc2626; --red-bg:#fef2f2; --amber:#b45309; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+      }
+      * { box-sizing:border-box; }
+      body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+      a { color:inherit; }
+      .mono { font-family:var(--mono); }
+      .dim { color:var(--dim); } .ink2 { color:var(--ink2); }
+      /* top nav */
+      nav { display:flex; align-items:center; gap:4px; padding:10px 22px; border-bottom:1px solid var(--line); background:var(--panel); }
+      nav .logo { font-weight:800; font-size:15px; margin-right:14px; letter-spacing:-.02em; }
+      nav .tab { padding:5px 11px; border-radius:8px; font-size:13px; color:var(--ink2); cursor:pointer; display:flex; gap:6px; align-items:center; }
+      nav .tab.active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+      nav .badge { background:var(--accent); color:#fff; border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
+      nav .right { margin-left:auto; display:flex; align-items:center; gap:14px; font-size:12px; color:var(--ink2); }
+      nav .dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
+      nav .e2ee { border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-size:11px; }
+      nav .av { width:24px; height:24px; border-radius:999px; background:var(--accent); color:#fff; display:grid; place-items:center; font-size:11px; font-weight:700; }
+      main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
+      /* board */
+      .board-head { display:flex; align-items:flex-start; margin-bottom:22px; }
+      .board-head h1 { font-size:24px; margin:0 0 2px; letter-spacing:-.02em; }
+      .board-head p { margin:0; color:var(--ink2); font-size:14px; }
+      .btn { font:inherit; font-weight:600; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; cursor:pointer; }
+      .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+      .btn.primary:hover { filter:brightness(1.06); }
+      .btn:disabled { opacity:.5; cursor:default; }
+      .bucket { margin:26px 0 8px; }
+      .bucket h2 { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:8px; align-items:center; }
+      .bucket h2 .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 7px; font-size:10px; }
+      .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+      .card:hover { border-color:#d4d4d8; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+      .card.quiet { background:#fcfcfd; }
+      .card .top { display:flex; align-items:center; gap:10px; }
+      .card .title { font-weight:650; font-size:15px; letter-spacing:-.01em; }
+      .card .meta { margin-top:3px; font-family:var(--mono); font-size:11.5px; color:var(--dim); display:flex; gap:7px; flex-wrap:wrap; }
+      .card .payload { margin-top:9px; color:var(--ink2); font-size:13px; }
+      .chip { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; border-radius:999px; padding:3px 9px; white-space:nowrap; }
+      .chip.attn { background:var(--accent-soft); color:var(--accent); }
+      .chip.work { background:#f4f4f5; color:var(--ink2); }
+      .chip.done { background:var(--green-bg); color:var(--green); }
+      .chip.warn { background:var(--red-bg); color:var(--red); }
+      .tis { font-size:11px; color:var(--dim); margin-top:5px; }
+      .empty { color:var(--dim); font-size:13px; padding:6px 0; }
+      /* task view */
+      .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
+      .thead { display:flex; align-items:center; gap:12px; }
+      .thead h1 { font-size:21px; margin:0; letter-spacing:-.02em; }
+      .thead .right { margin-left:auto; display:flex; gap:10px; align-items:center; color:var(--dim); font-size:12px; }
+      .kbd { font-family:var(--mono); border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; padding:0 5px; font-size:11px; color:var(--ink2); }
+      .tmeta { font-family:var(--mono); font-size:12px; color:var(--dim); margin:5px 0 16px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .tabs { display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:18px; }
+      .tabs .t { padding:9px 14px; font-size:13px; color:var(--ink2); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; display:flex; gap:7px; align-items:center; }
+      .tabs .t.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+      .tabs .t .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; }
+      /* plan */
+      .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }
+      .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
+      .plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:#27272a; }
+      .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
+      .plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
+      .plan pre { background:#f4f4f5; padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
+      .plan-loading { color:var(--dim); padding:30px; text-align:center; }
+      /* diff */
+      .diffbar { display:flex; align-items:center; gap:14px; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
+      .file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:hidden; }
+      .file .fhead { display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); font-family:var(--mono); font-size:12.5px; }
+      .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
+      .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
+      .file .fhead .pm { margin-left:auto; font-size:11px; } .pm .a { color:var(--green); } .pm .d { color:var(--red); }
+      .file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+      .file td { padding:0 8px; white-space:pre; vertical-align:top; }
+      .file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:#fcfcfd; border-right:1px solid var(--line2); }
+      tr.add td { background:var(--green-bg); } tr.add td.code { color:#14532d; }
+      tr.del td { background:var(--red-bg); } tr.del td.code { color:#7f1d1d; }
+      tr.hunk td { background:#f6f6fb; color:var(--accent); }
+      .actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent); padding:14px 0 4px; display:flex; align-items:center; gap:12px; margin-top:6px; }
+      .actionbar .hint { color:var(--dim); font-size:12.5px; }
+      .actionbar .right { margin-left:auto; display:flex; gap:10px; }
+      /* new task sheet */
+      .scrim { position:fixed; inset:0; background:rgba(24,24,27,.32); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
+      .scrim.show { display:flex; }
+      .sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px rgba(0,0,0,.18); padding:22px 24px; }
+      .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
+      textarea { width:100%; min-height:96px; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
+      .sheet .row { display:flex; align-items:center; gap:10px; margin-top:13px; }
+      .sheet .yolo { color:var(--dim); font-size:11.5px; margin-top:12px; line-height:1.4; }
+      .toggle { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink2); cursor:pointer; }
+      /* terminal drawer */
+      #drawer { position:fixed; left:0; right:0; bottom:0; height:46vh; background:#15161e; border-top:1px solid #2a2a3a; transform:translateY(100%); transition:transform .18s ease; z-index:40; display:flex; flex-direction:column; }
+      #drawer.show { transform:translateY(0); }
+      #drawer .dh { display:flex; align-items:center; gap:10px; padding:7px 14px; border-bottom:1px solid #2a2a3a; color:#a9b1d6; font-family:var(--mono); font-size:12px; }
+      #drawer .dh .x { margin-left:auto; cursor:pointer; color:#7a82a8; }
+      #term { flex:1; overflow:hidden; padding:6px 10px; }
     </style>
     <script type="importmap">
       { "imports": {
         "libsodium-wrappers": "https://esm.sh/libsodium-wrappers@0.7.15",
-        "@build/secure-transport": "https://esm.sh/gh/ZechCodes/build-secure-transport/js/src/index.js"
+        "@build/secure-transport": "https://esm.sh/gh/ZechCodes/build-secure-transport/js/src/index.js",
+        "ghostty-web": "https://esm.sh/ghostty-web"
       } }
     </script>
   </head>
   <body>
-    <header>
-      <h1>Build</h1>
-      <span id="conn" class="chip">connecting…</span>
-      <span class="who">{{USER}} · <a href="/auth/logout">log out</a></span>
-    </header>
-    <main>
-      <div class="col left">
-        <h2>Goal</h2>
-        <textarea id="goal" placeholder="Describe what you want built…">Add a hello() function in a new file greeting.py that returns "Hello, World!", with a pytest test.</textarea>
-        <div class="row">
-          <button id="plan">Create plan</button>
-          <button id="approve" class="ghost" disabled>Approve plan &amp; build</button>
-          <span id="phase" class="status"></span>
-        </div>
-        <h2 style="margin-top:18px">Plan</h2>
-        <div id="planView" class="plan muted">No plan yet — write a goal and create one.</div>
-      </div>
-      <div class="col right">
-        <h2>Diff <span id="diffStat" class="stat"></span></h2>
-        <div id="files" class="files"></div>
-        <pre id="diff" class="diff muted">Diffs appear here as the coding agent edits, creates, and deletes files.</pre>
-      </div>
-    </main>
+    <nav>
+      <span class="logo">build</span>
+      <span class="tab active">◧ Board</span>
+      <span class="tab">Notifications <span class="badge" id="notif" style="display:none">0</span></span>
+      <span class="tab">Settings</span>
+      <span class="right">
+        <span id="conn"><span class="dot"></span>connecting…</span>
+        <span class="e2ee">e2ee</span>
+        <span class="av">{{USER0}}</span>
+      </span>
+    </nav>
+    <main id="root"></main>
+
+    <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+    <div id="drawer">
+      <div class="dh"><span id="dtitle">terminal</span><span class="dim">· pty · live · scrollback is the log</span><span class="x" id="dx">` dismiss</span></div>
+      <div id="term"></div>
+    </div>
 
     <script type="module">
       import * as transport from "@build/secure-transport";
 
       const GATEWAY = "ws://localhost:18090";
-      const $ = (id) => document.getElementById(id);
+      const USER = "{{USER}}";
+      const $ = (s, r = document) => r.querySelector(s);
+      const el = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
+      const esc = (s) => (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-      // --- minimal E2EE session (openSession + call) ---
+      // ---- E2EE session ----
       async function openSession() {
         await transport.ready?.();
         const ws = new WebSocket(`${GATEWAY}/ws/client`);
@@ -80,97 +153,213 @@
         const send = (o) => ws.send(JSON.stringify(o));
         await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
         const hello = await recv();
-        const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
-        const { sessionKeyB64, sessionInit } = await transport.createSessionInit({ sessionId, deviceId: "bridge", deviceTransportPublicKeyB64: hello.transport_public_key });
-        send({ type: "session_init", session_id: sessionId, session_init: sessionInit });
-        const accept = await recv();
-        await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
+        const sid = "sess-" + Math.random().toString(36).slice(2, 10);
+        const { sessionKeyB64, sessionInit } = await transport.createSessionInit({ sessionId: sid, deviceId: "bridge", deviceTransportPublicKeyB64: hello.transport_public_key });
+        send({ type: "session_init", session_id: sid, session_init: sessionInit });
+        await transport.openSessionAccept({ sessionKeyB64, envelope: (await recv()).envelope });
         let id = 0;
         async function call(method, params = {}) {
           const rid = "r" + ++id;
-          const env = await transport.encryptFrame({ sessionKeyB64, outerFields: { session_id: sessionId, route_to: "device:bridge" }, frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } } });
-          send({ type: "e2ee_envelope", session_id: sessionId, envelope: env });
-          for (;;) {
-            const resp = await recv();
-            if (resp.type !== "e2ee_envelope") continue;
-            const frame = await transport.decryptEnvelope({ sessionKeyB64, envelope: resp.envelope });
-            const p = frame.payload;
-            if (p && p.id === rid) { if (!p.ok) throw new Error(p.error); return p.result; }
-          }
+          const env = await transport.encryptFrame({ sessionKeyB64, outerFields: { session_id: sid, route_to: "device:bridge" }, frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } } });
+          send({ type: "e2ee_envelope", session_id: sid, envelope: env });
+          for (;;) { const r = await recv(); if (r.type !== "e2ee_envelope") continue; const f = await transport.decryptEnvelope({ sessionKeyB64, envelope: r.envelope }); if (f.payload?.id === rid) { if (!f.payload.ok) throw new Error(f.payload.error); return f.payload.result; } }
         }
-        return { call, ws };
+        return { call };
       }
 
-      function renderDiff(diff) {
-        $("diffStat").textContent = diff.stat.files_changed ? `${diff.stat.files_changed} files · +${diff.stat.insertions}/-${diff.stat.deletions}` : "";
-        $("files").innerHTML = diff.files.map((f) => `<div class="f"><span class="${f.status}">${f.status}</span><span>${f.path}</span></div>`).join("");
-        const html = diff.patch.split("\n").map((l) => {
-          const e = l.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-          if (l.startsWith("+")) return `<span class="add">${e}</span>`;
-          if (l.startsWith("-")) return `<span class="del">${e}</span>`;
-          if (l.startsWith("@@")) return `<span class="hunk">${e}</span>`;
-          if (l.startsWith("diff ") || l.startsWith("index ") || l.startsWith("---") || l.startsWith("+++")) return `<span class="meta">${e}</span>`;
-          return e;
-        }).join("\n");
-        $("diff").classList.remove("muted");
-        $("diff").innerHTML = html || "(no changes yet)";
+      const App = { call: null, route: { name: "board" }, poll: null };
+
+      // ---------- helpers ----------
+      const STATE_LABEL = { plan_review: "READY TO REVIEW", review: "READY TO REVIEW", planning: "PLANNING", building: "BUILDING", created: "CREATED", merged: "MERGED", abandoned: "ABANDONED", blocked: "BLOCKED", failed: "FAILED" };
+      function chipClass(s) { if (s === "blocked" || s === "failed") return "warn"; if (s === "merged") return "done"; if (s === "plan_review" || s === "review") return "attn"; return "work"; }
+      function payloadFor(t) {
+        if (t.summary) return t.summary;
+        if (t.state === "planning") return "drafting plan…";
+        if (t.state === "building") return "coding agent working…";
+        return "";
+      }
+      function renderMarkdown(md) {
+        const lines = (md || "").split("\n"); let html = "", inCode = false, inList = false;
+        const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        for (const ln of lines) {
+          if (ln.startsWith("```")) { inCode = !inCode; html += inCode ? "<pre><code>" : "</code></pre>"; continue; }
+          if (inCode) { html += esc(ln) + "\n"; continue; }
+          const li = ln.match(/^\s*[-*]\s+(.*)/) || ln.match(/^\s*\d+\.\s+(.*)/);
+          if (li) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(li[1])}</li>`; continue; }
+          if (inList) { html += "</ul>"; inList = false; }
+          if (ln.startsWith("### ")) html += `<h3>${inline(ln.slice(4))}</h3>`;
+          else if (ln.startsWith("## ")) html += `<h2>${inline(ln.slice(3))}</h2>`;
+          else if (ln.startsWith("# ")) html += `<h1>${inline(ln.slice(2))}</h1>`;
+          else if (ln.trim()) html += `<p>${inline(ln)}</p>`;
+        }
+        if (inList) html += "</ul>"; if (inCode) html += "</code></pre>";
+        return html;
+      }
+      function parseDiff(patch) {
+        const files = []; let cur = null, o = 0, n = 0;
+        for (const ln of (patch || "").split("\n")) {
+          if (ln.startsWith("diff --git")) { const m = ln.match(/ b\/(.+)$/); cur = { path: m ? m[1] : "?", status: "EDIT", add: 0, del: 0, rows: [] }; files.push(cur); }
+          else if (!cur) continue;
+          else if (ln.startsWith("new file")) cur.status = "ADD";
+          else if (ln.startsWith("deleted file")) cur.status = "DEL";
+          else if (ln.startsWith("index ") || ln.startsWith("--- ") || ln.startsWith("+++ ")) continue;
+          else if (ln.startsWith("@@")) { const m = ln.match(/@@ -(\d+).* \+(\d+)/); o = m ? +m[1] : 0; n = m ? +m[2] : 0; cur.rows.push({ t: "hunk", text: ln }); }
+          else if (ln.startsWith("+")) { cur.add++; cur.rows.push({ t: "add", n: n++, text: ln.slice(1) }); }
+          else if (ln.startsWith("-")) { cur.del++; cur.rows.push({ t: "del", o: o++, text: ln.slice(1) }); }
+          else { cur.rows.push({ t: "ctx", o: o++, n: n++, text: ln.slice(1) }); }
+        }
+        return files;
       }
 
+      // ---------- views ----------
+      function go(route) { App.route = route; render(); }
+
+      function render() {
+        if (App.poll) { clearInterval(App.poll); App.poll = null; }
+        if (App.route.name === "board") renderBoard();
+        else renderTask();
+      }
+
+      async function renderBoard() {
+        const root = $("#root");
+        const draw = (tasks) => {
+          const byBucket = { attn: [], work: [], done: [] };
+          for (const t of tasks) {
+            if (t.state === "merged" || t.state === "abandoned") byBucket.done.push(t);
+            else if (t.needs_attention) byBucket.attn.push(t);
+            else byBucket.work.push(t);
+          }
+          const card = (t, quiet) => `
+            <div class="card ${quiet ? "quiet" : ""}" data-id="${t.task_id}">
+              <div class="top"><span class="title">${esc(t.goal)}</span>
+                <span class="chip ${chipClass(t.state)}">${STATE_LABEL[t.state] || t.state}</span></div>
+              <div class="meta"><span>${esc(t.project)}</span><span>·</span><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
+              ${payloadFor(t) ? `<div class="payload">${esc(payloadFor(t))}</div>` : ""}
+            </div>`;
+          const bucket = (label, items, quiet) => items.length ? `
+            <div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((t) => card(t, quiet)).join("")}</div>` : "";
+          root.innerHTML = `
+            <div class="board-head"><div><h1>Board</h1><p>What needs you — and what doesn't.</p></div>
+              <button class="btn primary" id="newtask" style="margin-left:auto">+ New task</button></div>
+            ${byBucket.attn.length || byBucket.work.length || byBucket.done.length ? "" : '<div class="empty">No tasks yet — start one with “New task”.</div>'}
+            ${bucket("NEEDS YOU", byBucket.attn, false)}
+            ${bucket("WORKING", byBucket.work, true)}
+            ${bucket("DONE", byBucket.done, true)}`;
+          $("#newtask").onclick = openNewTask;
+          root.querySelectorAll(".card").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
+          $("#notif").style.display = byBucket.attn.length ? "inline-block" : "none";
+          $("#notif").textContent = byBucket.attn.length;
+        };
+        const load = async () => { try { draw((await App.call("task.list")).tasks); } catch (e) {} };
+        await load();
+        App.poll = setInterval(load, 2500);
+      }
+
+      async function renderTask() {
+        const root = $("#root");
+        const id = App.route.id; let tab = App.route.tab || "plan";
+        const shell = (t) => {
+          const m = t || {};
+          root.innerHTML = `
+            <div class="back" id="back">← Board</div>
+            <div class="thead"><h1>${esc(m.goal || "")}</h1>
+              <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span>
+                <span>terminal <span class="kbd">\`</span></span></div></div>
+            <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span></div>
+            <div class="tabs"><div class="t ${tab === "plan" ? "active" : ""}" data-tab="plan">Plan</div>
+              <div class="t ${tab === "diff" ? "active" : ""}" data-tab="diff">Diff</div></div>
+            <div id="tabbody"></div>`;
+          $("#back").onclick = () => go({ name: "board" });
+          root.querySelectorAll(".tabs .t").forEach((e) => (e.onclick = () => { tab = e.dataset.tab; App.route.tab = tab; root.querySelectorAll(".tabs .t").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab)); paint(); }));
+        };
+        let last = null;
+        const paint = async () => {
+          let t; try { t = await App.call("task.get", { task_id: id }); } catch (e) { return; }
+          if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
+          last = t;
+          const body = $("#tabbody");
+          if (tab === "plan") {
+            if (t.state === "planning" || t.state === "created") { body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>'; return; }
+            let plan = ""; try { plan = (await App.call("task.plan", { task_id: id })).contents; } catch (e) {}
+            body.innerHTML = `<div class="plan">${renderMarkdown(plan)}</div>
+              <div class="actionbar"><span class="hint">Review the plan. Approve to start the build in a fresh session.</span>
+                <div class="right">${t.state === "plan_review" ? '<button class="btn primary" id="approvePlan">Approve plan &amp; start build</button>' : ""}</div></div>`;
+            const ap = $("#approvePlan"); if (ap) ap.onclick = async () => { ap.disabled = true; ap.textContent = "starting build…"; await App.call("task.approve_plan", { task_id: id }); App.route.tab = "diff"; tab = "diff"; };
+          } else {
+            let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
+            try { diff = await App.call("task.diff", { task_id: id }); } catch (e) {}
+            const files = parseDiff(diff.patch).filter((f) => !f.path.startsWith(".build/") && !f.path.includes("__pycache__") && f.path !== "uv.lock");
+            const fIns = files.reduce((a, f) => a + f.add, 0), fDel = files.reduce((a, f) => a + f.del, 0);
+            const fileHtml = files.map((f) => `
+              <div class="file"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
+                <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span></div>
+                <table>${f.rows.map((r) => r.t === "hunk"
+                  ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${esc(r.text)}</td></tr>`
+                  : `<tr class="${r.t}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${esc(r.text)}</td></tr>`).join("")}</table></div>`).join("");
+            const working = t.state === "building";
+            body.innerHTML = `
+              <div class="diffbar"><span>${diff.stat.files_changed} files <span style="color:var(--green)">+${diff.stat.insertions}</span> <span style="color:var(--red)">−${diff.stat.deletions}</span></span>
+                ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
+              ${files.length ? fileHtml : '<div class="empty">No file changes yet.</div>'}
+              <div class="actionbar"><span class="hint">Comment on lines to request changes — or approve.</span>
+                <div class="right">${t.state === "review" ? '<button class="btn" id="reqChanges">Request changes</button><button class="btn primary" id="approveMerge">Approve &amp; merge</button>' : ""}</div></div>`;
+            const am = $("#approveMerge"); if (am) am.onclick = async () => { am.disabled = true; am.textContent = "merging…"; try { await App.call("task.approve_merge", { task_id: id }); go({ name: "board" }); } catch (e) { am.textContent = "merge failed"; } };
+          }
+        };
+        shell(null); await paint();
+        App.poll = setInterval(paint, 1600);
+      }
+
+      // ---------- new task sheet ----------
+      function openNewTask() {
+        $("#sheet").innerHTML = `
+          <h3>New task</h3><div class="sub">Describe a goal. Build plans it, you review, an agent ships it.</div>
+          <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
+          <label class="toggle" style="margin-top:12px"><input type="checkbox" id="quick"> Quick task — skip planning (small, unambiguous changes)</label>
+          <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
+          <div class="row"><span class="dim mono" style="font-size:11px">${esc("Claude Code")}</span>
+            <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
+            <button class="btn primary" id="dispatch">Create</button></div>`;
+        $("#scrim").classList.add("show");
+        $("#goal").focus();
+        $("#cancel").onclick = () => $("#scrim").classList.remove("show");
+        $("#dispatch").onclick = async () => {
+          const goal = $("#goal").value.trim(); if (!goal) return;
+          const kind = $("#quick").checked ? "quick" : "standard";
+          $("#dispatch").disabled = true; $("#dispatch").textContent = "dispatching…";
+          try { const t = await App.call("task.dispatch", { goal, kind }); $("#scrim").classList.remove("show"); go({ name: "task", id: t.task_id, tab: kind === "quick" ? "diff" : "plan" }); }
+          catch (e) { $("#dispatch").textContent = "error: " + e.message.slice(0, 40); $("#dispatch").disabled = false; }
+        };
+      }
+      $("#scrim").onclick = (e) => { if (e.target === $("#scrim")) $("#scrim").classList.remove("show"); };
+
+      // ---------- terminal drawer (lazy) ----------
+      let termMod = null, termSession = null;
+      async function toggleTerminal() {
+        const d = $("#drawer");
+        if (d.classList.contains("show")) { d.classList.remove("show"); return; }
+        d.classList.add("show");
+        if (!termSession) {
+          termMod = termMod || await import("./terminal.js");
+          const { init, Terminal } = await import("ghostty-web"); await init();
+          $("#term").innerHTML = "";
+          const term = new Terminal({ cols: 140, rows: 16, fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
+          term.open($("#term"));
+          termSession = new termMod.TerminalSession({ url: GATEWAY, transport, WebSocketImpl: WebSocket, deviceId: "bridge" });
+          termSession.onSnapshot((b) => { term.reset(); term.write(b); });
+          termSession.onOutput((b) => term.write(b));
+          term.onData((data) => termSession.input(data).catch(() => {}));
+          await termSession.start(140, 16);
+        }
+      }
+      $("#dx").onclick = () => $("#drawer").classList.remove("show");
+      window.addEventListener("keydown", (e) => { if (e.key === "`" && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); toggleTerminal(); } });
+
+      // ---------- boot ----------
       (async () => {
-        let call;
-        try { ({ call } = await openSession()); $("conn").textContent = "connected"; $("conn").style.background = "#1f3a28"; $("conn").style.color = "#9ece6a"; }
-        catch (e) { $("conn").textContent = "no bridge"; $("conn").style.color = "#f7768e"; return; }
-
-        let taskId = null;
-
-        $("plan").addEventListener("click", async () => {
-          const goal = $("goal").value.trim();
-          if (!goal) return;
-          $("plan").disabled = true; $("approve").disabled = true;
-          $("planView").textContent = ""; $("planView").classList.add("muted"); $("planView").textContent = "planning agent working…";
-          $("phase").innerHTML = '<span class="chip">planning</span>';
-          try {
-            const t = await call("task.dispatch", { goal });
-            taskId = t.task_id;
-            // poll until plan ready
-            for (;;) {
-              const s = await call("task.get", { task_id: taskId });
-              $("phase").innerHTML = `<span class="chip">${s.state}</span>`;
-              if (s.state === "plan_review") break;
-              if (s.state === "blocked" || s.state === "failed") throw new Error(s.summary || s.state);
-              await sleep(2500);
-            }
-            const plan = await call("task.plan", { task_id: taskId });
-            $("planView").classList.remove("muted");
-            $("planView").textContent = plan.contents.trim();
-            $("approve").disabled = false;
-          } catch (e) { $("planView").textContent = "error: " + e.message; }
-          finally { $("plan").disabled = false; }
-        });
-
-        $("approve").addEventListener("click", async () => {
-          if (!taskId) return;
-          $("approve").disabled = true;
-          $("phase").innerHTML = '<span class="chip">building</span>';
-          try {
-            await call("task.approve_plan", { task_id: taskId });
-            // poll diffs live until review
-            for (;;) {
-              const [s, diff] = await Promise.all([
-                call("task.get", { task_id: taskId }),
-                call("task.diff", { task_id: taskId }).catch(() => null),
-              ]);
-              $("phase").innerHTML = `<span class="chip">${s.state}</span>`;
-              if (diff) renderDiff(diff);
-              if (s.state === "review") break;
-              if (s.state === "blocked" || s.state === "failed") throw new Error(s.summary || s.state);
-              await sleep(1500);
-            }
-            const finalDiff = await call("task.diff", { task_id: taskId });
-            renderDiff(finalDiff);
-            $("phase").innerHTML = '<span class="chip">ready for review</span>';
-          } catch (e) { $("diff").classList.remove("muted"); $("diff").textContent = "error: " + e.message; }
-        });
+        try { App.call = (await openSession()).call; $("#conn").innerHTML = '<span class="dot"></span>connected'; }
+        catch (e) { $("#conn").innerHTML = '<span class="dot" style="background:var(--red)"></span>no bridge'; }
+        render();
       })();
     </script>
   </body>

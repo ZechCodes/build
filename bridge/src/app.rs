@@ -114,6 +114,8 @@ impl TermSession {
 pub struct AppState {
     orch: Orchestrator,
     base_branch: String,
+    project: String,
+    harness: String,
     tasks: HashMap<String, ActiveTask>,
     streams: HashMap<String, StreamState>,
     term: Option<TermSession>,
@@ -150,10 +152,19 @@ impl AppState {
                     .env("BRIDGE_MCP_SOCKET", &socket)
             }))
         };
+        let repo_path = repo_path.into();
+        let project = repo_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
         let orch = Orchestrator::new(repo_path, worktrees_root, agent, Templates::default());
         AppState {
             orch,
             base_branch: base_branch.into(),
+            project,
+            harness,
             tasks: HashMap::new(),
             streams: HashMap::new(),
             term: None,
@@ -457,14 +468,7 @@ impl AppState {
         let tasks: Vec<Value> = self
             .tasks
             .iter()
-            .map(|(id, active)| {
-                json!({
-                    "task_id": id,
-                    "goal": active.task.goal,
-                    "state": state_str(&active.task.state),
-                    "needs_attention": active.task.state.needs_attention(),
-                })
-            })
+            .map(|(id, active)| self.task_view(id, active))
             .collect();
         json!({ "tasks": tasks })
     }
@@ -518,6 +522,8 @@ impl AppState {
             "needs_attention": active.task.state.needs_attention(),
             "branch": active.worktree.branch,
             "summary": active.last_summary,
+            "project": self.project,
+            "harness": self.harness,
         })
     }
 

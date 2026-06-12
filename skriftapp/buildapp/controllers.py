@@ -1,4 +1,4 @@
-"""Build app controller — serves the plan/diff SPA behind Skrift auth."""
+"""Build app controller — serves the plan/diff/board SPA behind Skrift auth."""
 
 from pathlib import Path
 from uuid import UUID
@@ -27,5 +27,11 @@ class BuildController(Controller):
         user = result.scalar_one_or_none()
         email = getattr(user, "email", None) or "user"
 
-        html = (HERE / "build.html").read_text().replace("{{USER}}", email)
+        html = (HERE / "build.html").read_text()
+        html = html.replace("{{USER0}}", email[0:1].upper()).replace("{{USER}}", email)
         return Response(html, media_type="text/html")
+
+    @get("/terminal.js", sync_to_thread=False)
+    async def terminal_js(self) -> Response:
+        # Same-origin so the strict CSP allows it (the SPA imports ./terminal.js).
+        return Response((HERE / "terminal.js").read_text(), media_type="text/javascript")

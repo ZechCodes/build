@@ -64,11 +64,50 @@
         if (s === "connecting") document.getElementById("overlay-detail").textContent = "reconnecting…";
       }
 
+      const FONT_SIZE = 14;
+
+      // Measure the monospace cell so the grid we pick matches what ghostty renders,
+      // and compute cols/rows that fit the terminal container.
+      function fitDims() {
+        const probe = document.createElement("span");
+        probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+        probe.style.font = `${FONT_SIZE}px ui-monospace, Menlo, monospace`;
+        probe.textContent = "M".repeat(100);
+        document.body.appendChild(probe);
+        const cellW = probe.getBoundingClientRect().width / 100;
+        document.body.removeChild(probe);
+        const cellH = Math.ceil(FONT_SIZE * 1.2);
+        const el = document.getElementById("terminal");
+        const r = el.getBoundingClientRect();
+        return {
+          cols: Math.max(20, Math.floor(r.width / cellW)),
+          rows: Math.max(8, Math.floor(r.height / cellH)),
+        };
+      }
+
+      let resizeTimer;
+      function onWindowResize() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (!term || !session) return;
+          const { cols, rows } = fitDims();
+          if (cols === term.cols && rows === term.rows) return;
+          term.resize(cols, rows);          // ghostty grid
+          session.resize(cols, rows).catch(() => {}); // PTY SIGWINCH + vt100
+        }, 150);
+      }
+      window.addEventListener("resize", onWindowResize);
+
       async function connect() {
         if (session) session.close();
         await init();
         document.getElementById("terminal").innerHTML = "";
-        term = new Terminal({ fontSize: 14, theme: { background: "#16161e", foreground: "#a9b1d6" } });
+
+        // CRITICAL: ghostty does not auto-fit (defaults to 80x24). Set its grid
+        // explicitly and hand the SAME cols/rows to the PTY so the TUI draws to
+        // the width ghostty renders.
+        const { cols, rows } = fitDims();
+        term = new Terminal({ cols, rows, fontSize: FONT_SIZE, theme: { background: "#16161e", foreground: "#a9b1d6" } });
         term.open(document.getElementById("terminal"));
 
         const url = document.getElementById("url").value;
@@ -81,11 +120,10 @@
         // Keystrokes → PTY.
         term.onData((data) => session.input(data).catch(() => {}));
 
-        const dims = term.rows && term.cols ? { cols: term.cols, rows: term.rows } : { cols: 100, rows: 30 };
         // Exposed for the headless-browser demo/verification.
         window.session = session;
         window.term = term;
-        await session.start(dims.cols, dims.rows);
+        await session.start(cols, rows);
       }
 
       document.getElementById("connect").addEventListener("click", () => connect().catch(console.error));

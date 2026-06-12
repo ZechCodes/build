@@ -518,6 +518,20 @@ fn term_attach(
     // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
     // dupe across a reconnect.
     let term = s.term.as_mut().expect("term created above");
+
+    // Match the PTY + screen model to this client's viewport, or TUIs (which draw
+    // to the reported size) render to the wrong width and garble.
+    if term.cols != cols || term.rows != rows {
+        let _ = term.session.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        term.parser.set_size(rows, cols);
+        term.cols = cols;
+        term.rows = rows;
+    }
     // Drop any prior sender for this same session id (a reconnect on the same id).
     term.attached
         .retain(|snd| snd.session_id() != sender.session_id());

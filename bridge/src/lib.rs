@@ -17,4 +17,5 @@ pub mod orchestrator;
 pub mod pty;
 pub mod task;
 pub mod templates;
+pub mod transport;
 pub mod worktree;

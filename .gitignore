@@ -205,3 +205,6 @@ vendor/
 *.sw?
 # Rust (bridge)
 /bridge/target/
+
+# Provisioned device secrets (generated)
+/deploy/secrets/

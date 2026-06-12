@@ -1,0 +1,88 @@
+# Build v2 over the REAL build-relay (Postgres + Redis + relay), plus the bridge,
+# the client gateway (web-backend shim), and the web client.
+#
+# Prereqs (see deploy/README.md):
+#   podman build -t build-relay:local <path-to-build-relay-checkout>
+#   python3 deploy/provision.py            # writes deploy/secrets/*
+#
+#   podman compose -f deploy/compose.real.yml up -d --build
+#
+# Non-default host ports so this coexists with other relay deployments.
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_USER: build
+      POSTGRES_PASSWORD: build
+      POSTGRES_DB: build
+    # Ephemeral data dir → the seed (schema `build` + devices + approved device)
+    # runs on every fresh container.
+    volumes:
+      - ./secrets/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    ports:
+      - "15432:5432"
+
+  redis:
+    image: docker.io/library/redis:7
+    ports:
+      - "16379:6379"
+
+  relay:
+    image: localhost/build-relay:local
+    environment:
+      DATABASE_URL: postgresql://build:build@postgres:5432/build
+      REDIS_URL: redis://redis:6379/0
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8081"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "18081:8081"
+    restart: unless-stopped
+
+  bridge:
+    build:
+      context: ../bridge
+      dockerfile: Containerfile
+      target: bridge
+    env_file:
+      - ./secrets/bridge.env
+    environment:
+      BRIDGE_RELAY_URL: ws://relay:8081
+      BRIDGE_REPO: /repo
+      BRIDGE_WORKTREES: /worktrees
+      BRIDGE_BASE_BRANCH: main
+      BRIDGE_QA_AGENT: "1"
+    depends_on:
+      - relay
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../gateway
+    env_file:
+      - ./secrets/gateway.env
+    environment:
+      RELAY_INTERNAL_URL: http://relay:8081
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_PORT: "8090"
+    depends_on:
+      - relay
+      - redis
+    ports:
+      - "18090:8090"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+    environment:
+      # The browser client points at the gateway's WS (mapped to the host).
+      CLIENT_RELAY_URL: ws://localhost:18090
+    ports:
+      - "18080:8080"
+    depends_on:
+      - gateway
+    restart: unless-stopped

@@ -20,14 +20,41 @@ use build_bridge::transport;
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("serve") | None => serve().await,
+        Some("provision") => provision(),
         Some("--version") | Some("-V") => {
             println!("build-bridge {}", env!("CARGO_PKG_VERSION"));
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\nusage: build-bridge [serve]");
+            eprintln!("unknown command: {other}\nusage: build-bridge [serve|provision]");
             std::process::exit(2);
         }
     }
+}
+
+/// Generate a device identity bundle as JSON: a UUID device id, the Ed25519
+/// identity key, and the X25519 transport key. The deploy scripts feed the
+/// padded public key into the relay DB (its base64 decoder requires padding) and
+/// the private keys into the bridge.
+fn provision() {
+    use base64::Engine;
+    let pad = |unpadded: &str| {
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(unpadded)
+            .expect("valid base64");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    };
+    let device_id = uuid::Uuid::new_v4().to_string();
+    let identity = transport::generate_identity_keypair();
+    let tp = transport::generate_transport_keypair();
+    let bundle = serde_json::json!({
+        "device_id": device_id,
+        "ed25519_priv_b64": identity.private_key_b64,
+        "ed25519_pub_b64_padded": pad(&identity.public_key_b64),
+        "x25519_priv_b64": tp.private_key_b64,
+        "x25519_pub_b64": tp.public_key_b64,
+        "x25519_pub_b64_padded": pad(&tp.public_key_b64),
+    });
+    println!("{}", serde_json::to_string_pretty(&bundle).unwrap());
 }
 
 async fn serve() {
@@ -41,11 +68,26 @@ async fn serve() {
     );
     let device_url = format!("{}/ws/device", relay_url.trim_end_matches('/'));
 
-    // An ephemeral identity is fine for local dev; production loads a persisted one.
-    let identity = DeviceIdentity {
-        device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
+    // Load a provisioned identity from the environment (matches the relay DB
+    // seed); fall back to an ephemeral one for the no-auth dev relay.
+    let identity = match (
+        std::env::var("BRIDGE_IDENTITY_PRIV"),
+        std::env::var("BRIDGE_TRANSPORT_PRIV"),
+        std::env::var("BRIDGE_TRANSPORT_PUB"),
+    ) {
+        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => DeviceIdentity {
+            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+            identity_private_key_b64: id_priv,
+            transport: transport::KeyPairB64 {
+                public_key_b64: tp_pub,
+                private_key_b64: tp_priv,
+            },
+        },
+        _ => DeviceIdentity {
+            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+            identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
+            transport: transport::generate_transport_keypair(),
+        },
     };
 
     println!(

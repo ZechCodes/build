@@ -75,30 +75,47 @@ impl WorktreeManager {
         }
     }
 
-    /// Create `build/<slug>` from `base_branch` and add a worktree for it.
+    /// Create `build/<slug>` from `base_branch` and add a worktree for it. The name
+    /// is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching the same goal — or
+    /// leftover branches/worktrees from prior tasks — never collides.
     pub fn create(&self, slug: &str, base_branch: &str) -> Result<Worktree, WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
-        let branch = branch_name(slug);
+        let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+        std::fs::create_dir_all(&self.worktrees_root)?;
+
+        let mut name = slug.to_string();
+        let mut n = 2;
+        while self.name_taken(&repo, &name) {
+            name = format!("{slug}-{n}");
+            n += 1;
+        }
+        let branch = branch_name(&name);
 
         // Cut the task branch from the tip of the base branch.
-        let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
         repo.branch(&branch, &base_commit, false)?;
-
-        std::fs::create_dir_all(&self.worktrees_root)?;
-        let path = self.worktrees_root.join(slug);
+        let path = self.worktrees_root.join(&name);
 
         // Point the worktree at the branch we just created.
         let branch_ref = repo.find_reference(&format!("refs/heads/{branch}"))?;
         let mut opts = git2::WorktreeAddOptions::new();
         opts.reference(Some(&branch_ref));
-        repo.worktree(slug, &path, Some(&opts))?;
+        repo.worktree(&name, &path, Some(&opts))?;
 
         Ok(Worktree {
-            name: slug.to_string(),
+            name,
             path,
             branch,
             base_branch: base_branch.to_string(),
         })
+    }
+
+    /// Whether a candidate name is already in use as a branch, a registered
+    /// worktree, or an on-disk directory.
+    fn name_taken(&self, repo: &git2::Repository, name: &str) -> bool {
+        repo.find_branch(&branch_name(name), git2::BranchType::Local)
+            .is_ok()
+            || repo.find_worktree(name).is_ok()
+            || self.worktrees_root.join(name).exists()
     }
 
     /// Remove the worktree's working directory and prune git's record of it. When
@@ -209,6 +226,20 @@ mod tests {
         // A change in one worktree's branch does not appear in the other.
         std::fs::write(a.path.join("only-a.txt"), "a").unwrap();
         assert!(!b.path.join("only-a.txt").exists());
+    }
+
+    #[test]
+    fn create_disambiguates_on_collision() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let a = mgr.create("dup", "main").unwrap();
+        let b = mgr.create("dup", "main").unwrap();
+        let c = mgr.create("dup", "main").unwrap();
+        assert_eq!(a.name, "dup");
+        assert_eq!(b.name, "dup-2");
+        assert_eq!(c.name, "dup-3");
+        assert_eq!(b.branch, "build/dup-2");
+        assert!(b.path.join("README.md").exists());
     }
 
     #[test]

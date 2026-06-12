@@ -1,0 +1,14 @@
+{
+  "name": "build-web-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build v2 web client (E2EE browser client) and end-to-end harness.",
+  "scripts": {
+    "e2e": "node e2e.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@build/secure-transport": "file:../../build-secure-transport/js"
+  }
+}

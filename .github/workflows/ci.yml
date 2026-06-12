@@ -55,6 +55,31 @@ jobs:
           BUILD_SECURE_TRANSPORT_PY: /tmp/bst/python
         run: cargo test --test interop_python -- --nocapture
 
+  web-e2e:
+    name: Browser client end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Clone build-secure-transport as a sibling
+        run: git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git "$GITHUB_WORKSPACE/../build-secure-transport"
+      - name: Install JS deps
+        run: |
+          ( cd "$GITHUB_WORKSPACE/../build-secure-transport/js" && npm install --no-audit --no-fund )
+          ( cd web && npm install --no-audit --no-fund )
+      - name: Build dev relay
+        working-directory: bridge
+        run: cargo build --example dev_relay
+      - name: Run browser client → relay → bridge round-trip
+        run: |
+          ( cd bridge && DEV_RELAY_PORT=8799 cargo run --example dev_relay > /tmp/relay.log 2>&1 & )
+          for i in $(seq 1 60); do grep -q DEV_RELAY_LISTENING /tmp/relay.log && break; sleep 0.5; done
+          cd web && DEV_RELAY_URL=ws://127.0.0.1:8799 node e2e.mjs
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

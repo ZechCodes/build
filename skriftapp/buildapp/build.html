@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build — plan & ship</title>
+    <style>
+      :root { --bg:#16161e; --panel:#1a1b26; --line:#2a2a3a; --fg:#c0caf5; --dim:#7a82a8; --accent:#7aa2f7; --green:#9ece6a; --red:#f7768e; }
+      * { box-sizing: border-box; }
+      body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; }
+      header { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); }
+      header h1 { font-size:15px; margin:0; font-weight:700; }
+      header .who { margin-left:auto; color:var(--dim); font-size:12px; }
+      header a { color:var(--dim); }
+      main { display:grid; grid-template-columns: 1fr 1fr; gap:0; height:calc(100vh - 49px); }
+      .col { padding:16px 18px; overflow:auto; }
+      .col.left { border-right:1px solid var(--line); }
+      h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 8px; }
+      textarea { width:100%; min-height:72px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; resize:vertical; }
+      button { font:inherit; font-weight:600; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--accent); color:#0b0e1a; cursor:pointer; }
+      button.ghost { background:transparent; color:var(--fg); }
+      button:disabled { opacity:.4; cursor:default; }
+      .row { display:flex; gap:8px; align-items:center; margin-top:10px; }
+      .status { margin-left:auto; font-size:12px; color:var(--dim); }
+      .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:#23243a; color:var(--accent); }
+      pre, .plan { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-word; font:12.5px/1.5 ui-monospace,Menlo,monospace; }
+      .files { margin:8px 0; }
+      .files .f { display:flex; gap:8px; font:12.5px ui-monospace,monospace; padding:2px 0; }
+      .files .Added { color:var(--green); } .files .Deleted { color:var(--red); } .files .Modified { color:var(--accent); }
+      .diff .add { color:var(--green); } .diff .del { color:var(--red); } .diff .hunk { color:var(--accent); } .diff .meta { color:var(--dim); }
+      .muted { color:var(--dim); }
+      .stat { font:12px ui-monospace,monospace; color:var(--dim); margin-bottom:6px; }
+    </style>
+    <script type="importmap">
+      { "imports": {
+        "libsodium-wrappers": "https://esm.sh/libsodium-wrappers@0.7.15",
+        "@build/secure-transport": "https://esm.sh/gh/ZechCodes/build-secure-transport/js/src/index.js"
+      } }
+    </script>
+  </head>
+  <body>
+    <header>
+      <h1>Build</h1>
+      <span id="conn" class="chip">connecting…</span>
+      <span class="who">{{USER}} · <a href="/auth/logout">log out</a></span>
+    </header>
+    <main>
+      <div class="col left">
+        <h2>Goal</h2>
+        <textarea id="goal" placeholder="Describe what you want built…">Add a hello() function in a new file greeting.py that returns "Hello, World!", with a pytest test.</textarea>
+        <div class="row">
+          <button id="plan">Create plan</button>
+          <button id="approve" class="ghost" disabled>Approve plan &amp; build</button>
+          <span id="phase" class="status"></span>
+        </div>
+        <h2 style="margin-top:18px">Plan</h2>
+        <div id="planView" class="plan muted">No plan yet — write a goal and create one.</div>
+      </div>
+      <div class="col right">
+        <h2>Diff <span id="diffStat" class="stat"></span></h2>
+        <div id="files" class="files"></div>
+        <pre id="diff" class="diff muted">Diffs appear here as the coding agent edits, creates, and deletes files.</pre>
+      </div>
+    </main>
+
+    <script type="module">
+      import * as transport from "@build/secure-transport";
+
+      const GATEWAY = "ws://localhost:18090";
+      const $ = (id) => document.getElementById(id);
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // --- minimal E2EE session (openSession + call) ---
+      async function openSession() {
+        await transport.ready?.();
+        const ws = new WebSocket(`${GATEWAY}/ws/client`);
+        const q = [], w = [];
+        ws.addEventListener("message", (e) => { const m = JSON.parse(e.data); w.length ? w.shift()(m) : q.push(m); });
+        const recv = () => new Promise((res) => (q.length ? res(q.shift()) : w.push(res)));
+        const send = (o) => ws.send(JSON.stringify(o));
+        await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
+        const hello = await recv();
+        const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
+        const { sessionKeyB64, sessionInit } = await transport.createSessionInit({ sessionId, deviceId: "bridge", deviceTransportPublicKeyB64: hello.transport_public_key });
+        send({ type: "session_init", session_id: sessionId, session_init: sessionInit });
+        const accept = await recv();
+        await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
+        let id = 0;
+        async function call(method, params = {}) {
+          const rid = "r" + ++id;
+          const env = await transport.encryptFrame({ sessionKeyB64, outerFields: { session_id: sessionId, route_to: "device:bridge" }, frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } } });
+          send({ type: "e2ee_envelope", session_id: sessionId, envelope: env });
+          for (;;) {
+            const resp = await recv();
+            if (resp.type !== "e2ee_envelope") continue;
+            const frame = await transport.decryptEnvelope({ sessionKeyB64, envelope: resp.envelope });
+            const p = frame.payload;
+            if (p && p.id === rid) { if (!p.ok) throw new Error(p.error); return p.result; }
+          }
+        }
+        return { call, ws };
+      }
+
+      function renderDiff(diff) {
+        $("diffStat").textContent = diff.stat.files_changed ? `${diff.stat.files_changed} files · +${diff.stat.insertions}/-${diff.stat.deletions}` : "";
+        $("files").innerHTML = diff.files.map((f) => `<div class="f"><span class="${f.status}">${f.status}</span><span>${f.path}</span></div>`).join("");
+        const html = diff.patch.split("\n").map((l) => {
+          const e = l.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+          if (l.startsWith("+")) return `<span class="add">${e}</span>`;
+          if (l.startsWith("-")) return `<span class="del">${e}</span>`;
+          if (l.startsWith("@@")) return `<span class="hunk">${e}</span>`;
+          if (l.startsWith("diff ") || l.startsWith("index ") || l.startsWith("---") || l.startsWith("+++")) return `<span class="meta">${e}</span>`;
+          return e;
+        }).join("\n");
+        $("diff").classList.remove("muted");
+        $("diff").innerHTML = html || "(no changes yet)";
+      }
+
+      (async () => {
+        let call;
+        try { ({ call } = await openSession()); $("conn").textContent = "connected"; $("conn").style.background = "#1f3a28"; $("conn").style.color = "#9ece6a"; }
+        catch (e) { $("conn").textContent = "no bridge"; $("conn").style.color = "#f7768e"; return; }
+
+        let taskId = null;
+
+        $("plan").addEventListener("click", async () => {
+          const goal = $("goal").value.trim();
+          if (!goal) return;
+          $("plan").disabled = true; $("approve").disabled = true;
+          $("planView").textContent = ""; $("planView").classList.add("muted"); $("planView").textContent = "planning agent working…";
+          $("phase").innerHTML = '<span class="chip">planning</span>';
+          try {
+            const t = await call("task.dispatch", { goal });
+            taskId = t.task_id;
+            // poll until plan ready
+            for (;;) {
+              const s = await call("task.get", { task_id: taskId });
+              $("phase").innerHTML = `<span class="chip">${s.state}</span>`;
+              if (s.state === "plan_review") break;
+              if (s.state === "blocked" || s.state === "failed") throw new Error(s.summary || s.state);
+              await sleep(2500);
+            }
+            const plan = await call("task.plan", { task_id: taskId });
+            $("planView").classList.remove("muted");
+            $("planView").textContent = plan.contents.trim();
+            $("approve").disabled = false;
+          } catch (e) { $("planView").textContent = "error: " + e.message; }
+          finally { $("plan").disabled = false; }
+        });
+
+        $("approve").addEventListener("click", async () => {
+          if (!taskId) return;
+          $("approve").disabled = true;
+          $("phase").innerHTML = '<span class="chip">building</span>';
+          try {
+            await call("task.approve_plan", { task_id: taskId });
+            // poll diffs live until review
+            for (;;) {
+              const [s, diff] = await Promise.all([
+                call("task.get", { task_id: taskId }),
+                call("task.diff", { task_id: taskId }).catch(() => null),
+              ]);
+              $("phase").innerHTML = `<span class="chip">${s.state}</span>`;
+              if (diff) renderDiff(diff);
+              if (s.state === "review") break;
+              if (s.state === "blocked" || s.state === "failed") throw new Error(s.summary || s.state);
+              await sleep(1500);
+            }
+            const finalDiff = await call("task.diff", { task_id: taskId });
+            renderDiff(finalDiff);
+            $("phase").innerHTML = '<span class="chip">ready for review</span>';
+          } catch (e) { $("diff").classList.remove("muted"); $("diff").textContent = "error: " + e.message; }
+        });
+      })();
+    </script>
+  </body>
+</html>

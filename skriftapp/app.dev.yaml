@@ -1,0 +1,19 @@
+controllers:
+  - buildapp.controllers:BuildController
+  - skrift.controllers.auth:AuthController
+  - skrift.admin.controller:AdminController
+db:
+  url: sqlite+aiosqlite:///./app.db
+auth:
+  redirect_base_url: http://localhost:8080
+  methods:
+    dummy:
+      type: dummy
+      label: Demo Login
+rate_limit:
+  enabled: false
+# Dev-only: relax CSP so the SPA can use inline scripts, esm.sh modules/WASM,
+# and the gateway WebSocket. Production serves the bundle same-origin instead.
+security_headers:
+  csp_nonce: false
+  content_security_policy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://esm.sh; style-src 'self' 'unsafe-inline' https://esm.sh; img-src 'self' data:; font-src 'self' data: https://esm.sh; connect-src 'self' ws://localhost:18090 https://esm.sh; worker-src 'self' blob:"

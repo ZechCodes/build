@@ -211,3 +211,8 @@ vendor/
 
 # machine-specific (file: dep resolves to a local path)
 web/package-lock.json
+
+# Skrift app runtime (local data + secrets)
+/skriftapp/app.db
+/skriftapp/.env
+**/__pycache__/

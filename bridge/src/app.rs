@@ -53,11 +53,21 @@ struct TermSession {
     session: PtySession,
     parser: vt100::Parser,
     attached: Vec<SessionSender>,
+    /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
+    /// so a repaint becomes one frame instead of ten.
+    pending: Vec<u8>,
     /// Total output bytes processed — the live-tail cursor.
     total: u64,
     cols: u16,
     rows: u16,
 }
+
+/// Flush coalesced terminal output at ~100 fps.
+const TERM_FLUSH_MS: u64 = 10;
+/// If a single flush exceeds this, send the current screen snapshot instead of
+/// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
+/// and bounds per-frame size. The vt100 model makes this lossless for the screen.
+const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
 
 impl TermSession {
     /// Spawn an interactive shell in a PTY, returning the session and a receiver
@@ -82,6 +92,7 @@ impl TermSession {
                 session,
                 parser,
                 attached: Vec::new(),
+                pending: Vec::new(),
                 total: 0,
                 cols,
                 rows,
@@ -527,28 +538,43 @@ fn term_attach(
     Ok(response)
 }
 
-/// Pump PTY output → screen model + every attached client. Senders whose push
-/// fails (client gone) are dropped.
+/// Pump PTY output into the screen model, coalescing bytes and flushing one frame
+/// per ~`TERM_FLUSH_MS` to every attached client. A huge burst collapses to a
+/// screen snapshot so frame size/rate stay bounded and control frames (the
+/// liveness ping) are never head-of-line-blocked behind megabytes of output.
 fn spawn_term_pump(state: Arc<Mutex<AppState>>, mut rx: broadcast::Receiver<Vec<u8>>) {
     tokio::spawn(async move {
+        let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match rx.recv().await {
-                Ok(chunk) => {
+            tokio::select! {
+                recv = rx.recv() => match recv {
+                    // Update the authoritative screen as bytes arrive; buffer raw
+                    // bytes for the next flush.
+                    Ok(chunk) => {
+                        let mut s = state.lock().unwrap();
+                        let Some(term) = s.term.as_mut() else { return; };
+                        term.parser.process(&chunk);
+                        term.total += chunk.len() as u64;
+                        term.pending.extend_from_slice(&chunk);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return, // PTY closed
+                },
+                _ = flush.tick() => {
                     let mut s = state.lock().unwrap();
-                    let Some(term) = s.term.as_mut() else {
-                        return;
+                    let Some(term) = s.term.as_mut() else { return; };
+                    if term.pending.is_empty() { continue; }
+                    let cursor = term.total;
+                    let payload = if term.pending.len() > TERM_SNAPSHOT_THRESHOLD {
+                        // Too much at once — skip the backlog, send the screen.
+                        json!({ "type": "term.reset", "data": term.snapshot(), "cursor": cursor })
+                    } else {
+                        json!({ "type": "term.output", "data": b64encode(&term.pending), "cursor": cursor })
                     };
-                    term.parser.process(&chunk);
-                    term.total += chunk.len() as u64;
-                    let payload = json!({
-                        "type": "term.output",
-                        "data": b64encode(&chunk),
-                        "cursor": term.total,
-                    });
+                    term.pending.clear();
                     term.attached.retain(|snd| snd.push(payload.clone()));
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => return, // PTY closed
             }
         }
     });

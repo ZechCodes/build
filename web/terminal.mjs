@@ -148,6 +148,12 @@ export class TerminalSession {
           this._lastCursor = p.cursor;
           this._onOutput(b64decodeBytes(p.data));
         }
+      } else if (p && p.type === "term.reset") {
+        // The bridge collapsed a huge burst to a screen snapshot — reset + apply.
+        if ((p.cursor || 0) > this._lastCursor) {
+          this._lastCursor = p.cursor;
+          this._onSnapshot(b64decodeBytes(p.data));
+        }
       }
     }
   }

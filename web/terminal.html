@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build — terminal over E2EE (ghostty-web)</title>
+    <style>
+      body { margin: 0; background: #16161e; color: #a9b1d6; font: 14px system-ui, sans-serif; }
+      header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #2a2a3a; }
+      header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      #status { margin-left: auto; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+      .s-connected { background: #1f3a28; color: #4ade80; }
+      .s-connecting { background: #3a341f; color: #fbbf24; }
+      .s-disconnected { background: #3a1f1f; color: #f87171; }
+      #wrap { position: relative; padding: 8px; }
+      #terminal { width: 100%; height: 70vh; }
+      #overlay {
+        position: absolute; inset: 8px; display: none; align-items: center; justify-content: center;
+        background: rgba(22, 22, 30, 0.82); backdrop-filter: blur(2px); border-radius: 6px;
+        font-size: 16px; color: #f87171; font-weight: 600; flex-direction: column; gap: 8px;
+      }
+      #overlay.show { display: flex; }
+      #overlay small { color: #c0caf5; font-weight: 400; }
+      .url { font: inherit; background: #1a1b26; color: #c0caf5; border: 1px solid #2a2a3a; border-radius: 4px; padding: 3px 6px; width: 22ch; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "libsodium-wrappers": "https://esm.sh/libsodium-wrappers@0.7.15",
+          "@build/secure-transport": "https://esm.sh/gh/ZechCodes/build-secure-transport/js/src/index.js",
+          "ghostty-web": "https://esm.sh/ghostty-web"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header>
+      <h1>Build — terminal over end-to-end encryption</h1>
+      <label>relay <input id="url" class="url" value="ws://localhost:18090" /></label>
+      <button id="connect">Connect</button>
+      <span id="status" class="s-disconnected">disconnected</span>
+    </header>
+    <div id="wrap">
+      <div id="terminal"></div>
+      <div id="overlay">
+        <div>⚠ Disconnected</div>
+        <small id="overlay-detail">your machine is unreachable — reconnecting…</small>
+      </div>
+    </div>
+
+    <script type="module">
+      import { init, Terminal } from "ghostty-web";
+      import * as transport from "@build/secure-transport";
+      import { TerminalSession } from "./terminal.mjs";
+
+      const statusEl = document.getElementById("status");
+      const overlay = document.getElementById("overlay");
+      let term, session;
+
+      function setStatus(s) {
+        statusEl.textContent = s;
+        statusEl.className = `s-${s}`;
+        overlay.classList.toggle("show", s !== "connected");
+        if (s === "connecting") document.getElementById("overlay-detail").textContent = "reconnecting…";
+      }
+
+      async function connect() {
+        if (session) session.close();
+        await init();
+        document.getElementById("terminal").innerHTML = "";
+        term = new Terminal({ fontSize: 14, theme: { background: "#16161e", foreground: "#a9b1d6" } });
+        term.open(document.getElementById("terminal"));
+
+        const url = document.getElementById("url").value;
+        session = new TerminalSession({ url, transport, WebSocketImpl: WebSocket });
+        session.onStatus(setStatus);
+        // Snapshot on (re)attach: reset the screen and write the current state.
+        session.onSnapshot((bytes) => { term.reset(); term.write(bytes); });
+        // Live PTY bytes.
+        session.onOutput((bytes) => term.write(bytes));
+        // Keystrokes → PTY.
+        term.onData((data) => session.input(data).catch(() => {}));
+
+        const dims = term.rows && term.cols ? { cols: term.cols, rows: term.rows } : { cols: 100, rows: 30 };
+        await session.start(dims.cols, dims.rows);
+      }
+
+      document.getElementById("connect").addEventListener("click", () => connect().catch(console.error));
+      connect().catch(console.error);
+    </script>
+  </body>
+</html>

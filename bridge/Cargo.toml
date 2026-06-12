@@ -20,7 +20,9 @@ thiserror = "2"
 git2 = "0.20"
 portable-pty = "0.9"
 notify = "6"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 dryoc = "0.7"
 base64 = "0.22"
 sha2 = "0.10"

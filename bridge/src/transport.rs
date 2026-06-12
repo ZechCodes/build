@@ -155,6 +155,21 @@ pub fn sign_transport_key(
     Ok(b64encode(&signature))
 }
 
+/// Sign an arbitrary message with an Ed25519 identity key, returning a *padded*
+/// standard-base64 signature. Used for the relay's WebSocket auth challenge
+/// (`{timestamp}.GET./ws/device`), whose verifier requires base64 padding.
+pub fn sign_message_b64(identity_private_key_b64: &str, message: &[u8]) -> Result<String> {
+    let seed = fixed::<32>(
+        &b64decode(identity_private_key_b64)?,
+        "identity_private_key",
+    )?;
+    let (_public, secret) = crypto_sign_seed_keypair(&seed);
+    let mut signature = [0u8; 64];
+    crypto_sign_detached(&mut signature, message, &secret)
+        .map_err(|e| TransportError::Protocol(e.to_string()))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(signature))
+}
+
 /// Verify a transport-key signature against a pinned identity public key.
 pub fn verify_transport_key_signature(
     identity_public_key_b64: &str,

@@ -13,8 +13,9 @@ RUN git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git 
  && ( cd /build-secure-transport/js && npm install --no-audit --no-fund )
 
 COPY package.json ./
+# --omit=dev skips playwright (browser-demo only); the container just serves + QAs.
 RUN npm pkg set "dependencies.@build/secure-transport=file:/build-secure-transport/js" \
- && npm install --no-audit --no-fund
+ && npm install --omit=dev --no-audit --no-fund
 
 COPY . ./
 EXPOSE 8080

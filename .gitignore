@@ -208,3 +208,6 @@ vendor/
 
 # Provisioned device secrets (generated)
 /deploy/secrets/
+
+# machine-specific (file: dep resolves to a local path)
+web/package-lock.json

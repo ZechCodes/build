@@ -82,6 +82,9 @@
         term.onData((data) => session.input(data).catch(() => {}));
 
         const dims = term.rows && term.cols ? { cols: term.cols, rows: term.rows } : { cols: 100, rows: 30 };
+        // Exposed for the headless-browser demo/verification.
+        window.session = session;
+        window.term = term;
         await session.start(dims.cols, dims.rows);
       }
 

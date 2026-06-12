@@ -75,3 +75,26 @@ RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs   # scenarios A + B
   # wait for /health connected_devices=1, then:
   RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs resume "$SID" 400
   ```
+
+## Terminal over E2EE (ghostty-web)
+
+A real interactive PTY (bash) on the bridge, streamed to a ghostty-web terminal in
+the browser over the encrypted relay. The bridge keeps an authoritative `vt100`
+screen model, so (re)attach sends a screen **snapshot** then live-tails — the
+snapshot-resync model, not byte replay. Disconnects are caught by an
+application-level liveness ping (a relay/bridge outage does not close the
+client↔gateway socket).
+
+```bash
+cd web
+# Protocol-level verification of all four criteria (real-time, input, disconnect,
+# reconnect) over the real relay:
+RELAY_URL=ws://localhost:18090 node term-verify.mjs
+
+# Real ghostty terminal in headless Chromium, bouncing the relay for a genuine
+# disconnect; writes screenshots to /tmp/term-*.png  (needs: npm install --include=dev)
+node term-browser.mjs
+```
+
+For a human: serve `web/` (`node web/serve.mjs`) and open `terminal.html` while the
+stack is up.

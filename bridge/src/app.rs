@@ -21,8 +21,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
+use tokio::io::AsyncBufReadExt;
+
 use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
-use crate::orchestrator::{ActiveTask, Orchestrator, OrchestratorError};
+use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::task::{TaskId, TaskKind, TaskState};
@@ -127,10 +129,28 @@ impl AppState {
         worktrees_root: impl Into<std::path::PathBuf>,
         base_branch: impl Into<String>,
         qa_agent: bool,
+        mcp_socket: impl Into<String>,
     ) -> Self {
-        // A warm no-op harness; in QA the scripted agent does the file writing.
-        let harness = HarnessSpec::new("sh").arg("-c").arg("sleep 86400");
-        let orch = Orchestrator::new(repo_path, worktrees_root, harness, Templates::default());
+        let agent = if qa_agent {
+            // A warm no-op harness; the scripted agent does the file writing.
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 86400"))
+        } else {
+            // Real agent: a one-shot `claude` headless run with the rendered prompt
+            // baked in, the per-task `done` MCP server wired via .build/mcp.json,
+            // and the daemon's control socket so its `done` reaches on_agent_done.
+            let socket = mcp_socket.into();
+            Agent::OneShot(Arc::new(move |prompt: &str| {
+                HarnessSpec::new("claude")
+                    .arg("-p")
+                    .arg(prompt)
+                    .arg("--mcp-config")
+                    .arg(".build/mcp.json")
+                    .arg("--strict-mcp-config")
+                    .arg("--dangerously-skip-permissions")
+                    .env("BRIDGE_MCP_SOCKET", &socket)
+            }))
+        };
+        let orch = Orchestrator::new(repo_path, worktrees_root, agent, Templates::default());
         AppState {
             orch,
             base_branch: base_branch.into(),
@@ -143,12 +163,73 @@ impl AppState {
         }
     }
 
-    /// Wrap this state in the relay's frame handler. `stream.start`/`term.attach`
-    /// need the shared handle (they spawn background producers/pumps), so the
-    /// handler dispatches through [`dispatch_frame`].
-    pub fn into_handler(self) -> FrameHandler {
-        let state = Arc::new(Mutex::new(self));
+    /// Share this state so the relay handler and the done-socket listener both
+    /// drive the same tasks.
+    pub fn shared(self) -> Arc<Mutex<AppState>> {
+        Arc::new(Mutex::new(self))
+    }
+
+    /// The relay's frame handler over a shared state. `stream.start`/`term.attach`
+    /// need the shared handle (background producers/pumps), so it dispatches
+    /// through [`dispatch_frame`].
+    pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
         Arc::new(move |sender, frame| dispatch_frame(&state, sender, frame))
+    }
+
+    /// Convenience for tests: own the state and build a handler in one step.
+    pub fn into_handler(self) -> FrameHandler {
+        Self::handler(self.shared())
+    }
+
+    /// Listen on the daemon control socket for `done` reports forwarded by the
+    /// per-task `build-bridge mcp` servers, and route each to its task's `on_done`.
+    pub fn spawn_done_socket(state: Arc<Mutex<AppState>>, path: String) {
+        tokio::spawn(async move {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::remove_file(&path);
+            let listener = match tokio::net::UnixListener::bind(&path) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("done socket: bind {path} failed: {e}");
+                    return;
+                }
+            };
+            eprintln!("done socket: listening on {path}");
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    let mut lines = tokio::io::BufReader::new(stream).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        let task_id = v.get("task_id").and_then(Value::as_str).unwrap_or("");
+                        if let Ok(report) = serde_json::from_value::<DoneReport>(
+                            v.get("report").cloned().unwrap_or(Value::Null),
+                        ) {
+                            state.lock().unwrap().on_agent_done(task_id, report);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /// Route an agent's `done` to its task's lifecycle transition.
+    fn on_agent_done(&mut self, task_id: &str, report: DoneReport) {
+        if let Some(mut active) = self.tasks.remove(task_id) {
+            if let Err(e) = self.orch.on_done(&mut active, report) {
+                eprintln!("on_agent_done {task_id}: {e}");
+            }
+            self.tasks.insert(task_id.to_string(), active);
+        } else {
+            eprintln!("on_agent_done: unknown task {task_id}");
+        }
     }
 
     /// Synchronous dispatch used by the unit tests (no background producer). The
@@ -746,7 +827,13 @@ mod tests {
     #[test]
     fn full_lifecycle_over_the_app_rpc() {
         let (dir, repo) = init_repo();
-        let mut state = AppState::new(repo.clone(), dir.path().join("wt"), "main", true);
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
 
         // Dispatch a standard task → scripted plan → plan_review.
         let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
@@ -780,7 +867,13 @@ mod tests {
     #[test]
     fn unknown_method_and_missing_params_error_cleanly() {
         let (dir, repo) = init_repo();
-        let mut state = AppState::new(repo, dir.path().join("wt"), "main", true);
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
         assert_eq!(state.handle(req("nope", json!({})))["ok"], false);
         let missing = state.handle(req("task.dispatch", json!({})));
         assert_eq!(missing["ok"], false);
@@ -790,7 +883,14 @@ mod tests {
     #[tokio::test]
     async fn stream_resume_reconstructs_full_output() {
         let (dir, repo) = init_repo();
-        let handler = AppState::new(repo, dir.path().join("wt"), "main", true).into_handler();
+        let handler = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .into_handler();
         let call = |method: &str, params: Value| {
             handler(SessionSender::detached("s"), req(method, params))
         };
@@ -848,7 +948,14 @@ mod tests {
     #[tokio::test]
     async fn terminal_snapshot_reflects_input_across_reattach() {
         let (dir, repo) = init_repo();
-        let handler = AppState::new(repo, dir.path().join("wt"), "main", true).into_handler();
+        let handler = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .into_handler();
         let call = |sid: &str, method: &str, params: Value| {
             handler(SessionSender::detached(sid), req(method, params))
         };

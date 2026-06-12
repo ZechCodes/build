@@ -67,11 +67,23 @@ impl ActiveTask {
     }
 }
 
+/// How the orchestrator launches an agent for a phase.
+#[derive(Clone)]
+pub enum Agent {
+    /// A warm interactive session: spawn the binary, then write the prompt to its
+    /// PTY. Supports in-session revision rounds (the QA harness uses this).
+    Warm(HarnessSpec),
+    /// One-shot: build the full spawn command from the rendered prompt (e.g.
+    /// `claude -p "<prompt>"`). The agent runs, does the work, reports `done`, and
+    /// exits — no warm session.
+    OneShot(std::sync::Arc<dyn Fn(&str) -> HarnessSpec + Send + Sync>),
+}
+
 /// Owns project configuration and drives tasks through the lifecycle.
 pub struct Orchestrator {
     repo_path: PathBuf,
     worktrees: WorktreeManager,
-    harness: HarnessSpec,
+    agent: Agent,
     templates: Templates,
     pty_size: PtySize,
 }
@@ -80,7 +92,7 @@ impl Orchestrator {
     pub fn new(
         repo_path: impl Into<PathBuf>,
         worktrees_root: impl Into<PathBuf>,
-        harness: HarnessSpec,
+        agent: Agent,
         templates: Templates,
     ) -> Self {
         let repo_path = repo_path.into();
@@ -88,7 +100,7 @@ impl Orchestrator {
         Orchestrator {
             repo_path,
             worktrees,
-            harness,
+            agent,
             templates,
             pty_size: PtySize {
                 rows: 40,
@@ -252,8 +264,19 @@ impl Orchestrator {
     }
 
     fn spawn(&self, worktree: &Worktree, prompt: &str) -> Result<PtySession, OrchestratorError> {
-        let session = PtySession::spawn(&self.harness, Some(worktree.path.clone()), self.pty_size)?;
-        session.write_prompt(prompt)?;
+        let session = match &self.agent {
+            Agent::Warm(spec) => {
+                let s = PtySession::spawn(spec, Some(worktree.path.clone()), self.pty_size)?;
+                s.write_prompt(prompt)?;
+                s
+            }
+            Agent::OneShot(build) => {
+                // The prompt is baked into the command (e.g. `claude -p`); nothing
+                // is written to stdin.
+                let spec = build(prompt);
+                PtySession::spawn(&spec, Some(worktree.path.clone()), self.pty_size)?
+            }
+        };
         Ok(session)
     }
 
@@ -283,10 +306,15 @@ impl Orchestrator {
     ) -> Result<(), OrchestratorError> {
         let build_dir = worktree.path.join(".build");
         std::fs::create_dir_all(&build_dir)?;
+        // Absolute path to this binary so the harness can spawn it regardless of PATH.
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(String::from))
+            .unwrap_or_else(|| "build-bridge".to_string());
         let mcp = serde_json::json!({
             "mcpServers": {
                 "build": {
-                    "command": "build-bridge",
+                    "command": exe,
                     "args": ["mcp", "--task", id.0]
                 }
             }
@@ -361,7 +389,7 @@ mod tests {
         Orchestrator::new(
             repo.to_path_buf(),
             dir.path().join("worktrees"),
-            warm_harness(),
+            Agent::Warm(warm_harness()),
             Templates::default(),
         )
     }

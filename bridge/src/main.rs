@@ -91,12 +91,21 @@ async fn serve() {
         },
     };
 
-    println!(
-        "bridge serve → {device_url}  (repo={repo} worktrees={worktrees} base={base_branch} qa_agent={qa_agent})"
+    // The control socket real agents forward `done` to (and the daemon listens on).
+    let mcp_socket = env(
+        "BRIDGE_MCP_SOCKET",
+        &format!("{}/build-bridge-mcp.sock", worktrees.trim_end_matches('/')),
     );
 
-    // Build the handler once so task state survives reconnects.
-    let handler = AppState::new(&repo, &worktrees, &base_branch, qa_agent).into_handler();
+    println!(
+        "bridge serve → {device_url}  (repo={repo} worktrees={worktrees} base={base_branch} qa_agent={qa_agent} mcp_socket={mcp_socket})"
+    );
+
+    // Shared state: the relay handler and the done-socket listener drive the same
+    // tasks; state survives reconnects.
+    let app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket).shared();
+    AppState::spawn_done_socket(app.clone(), mcp_socket.clone());
+    let handler = AppState::handler(app);
 
     loop {
         match relay::run(&device_url, &identity, handler.clone()).await {

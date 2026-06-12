@@ -654,8 +654,10 @@ impl AppState {
         Ok(project_json(project))
     }
 
-    /// Create a brand-new git repo in the projects folder (with an initial commit
-    /// so its base branch resolves and tasks can dispatch) and register it.
+    /// Create a brand-new git repo (with an initial commit so its base branch
+    /// resolves and tasks can dispatch) inside `parent` — a browsed-to directory,
+    /// or the projects folder by default — and register it. An optional `remote`
+    /// is wired as `origin` at creation.
     fn project_create(&mut self, params: &Value) -> Result<Value, String> {
         let name = require_str(params, "name")?;
         let name = name.trim();
@@ -669,11 +671,20 @@ impl AppState {
             .filter(|s| !s.is_empty())
             .unwrap_or("main")
             .to_string();
-        std::fs::create_dir_all(&self.projects_dir)
-            .map_err(|e| format!("cannot create projects folder: {e}"))?;
-        let dest = self.projects_dir.join(name);
+        let parent = match params
+            .get("parent")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(p) => expand_tilde(p),
+            None => self.projects_dir.clone(),
+        };
+        std::fs::create_dir_all(&parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        let dest = parent.join(name);
         if dest.exists() {
-            return Err(format!("'{name}' already exists in the projects folder"));
+            return Err(format!("'{name}' already exists in {}", parent.display()));
         }
         std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {name}: {e}"))?;
         git_in(&dest, &["init", "-b", &base_branch])?;
@@ -693,6 +704,14 @@ impl AppState {
                 "Initial commit",
             ],
         )?;
+        if let Some(remote) = params
+            .get("remote")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            git_in(&dest, &["remote", "add", "origin", remote])?;
+        }
         let id = self.add_project(dest, base_branch);
         self.persist();
         let project = self
@@ -1590,17 +1609,31 @@ mod tests {
             json!({ "projects_dir": projects_dir.to_str().unwrap() }),
         ));
 
-        // Create a brand-new repo: it has an initial commit (base branch resolves)
-        // and is registered with no remote yet.
-        let created = state.handle(req("project.create", json!({ "name": "fresh" })));
+        // Create a repo in a browsed-to location with no remote yet: it has an
+        // initial commit (base branch resolves) and is registered at that path.
+        let where_to = dir_a.path().join("code");
+        let created = state.handle(req(
+            "project.create",
+            json!({ "name": "fresh", "parent": where_to.to_str().unwrap() }),
+        ));
         assert_eq!(created["ok"], true, "{created:?}");
         let project_id = created["result"]["project_id"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(created["result"]["remote"].is_null());
-        let repo = projects_dir.join("fresh");
-        assert!(repo.join(".git").exists(), "git repo created");
+        let repo = where_to.join("fresh");
+        assert!(
+            created["result"]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("code/fresh"),
+            "{created:?}"
+        );
+        assert!(
+            repo.join(".git").exists(),
+            "git repo created at chosen location"
+        );
         // The base branch resolves (there is a commit), so tasks can dispatch.
         let r = git2::Repository::open(&repo).unwrap();
         assert!(
@@ -1623,6 +1656,24 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(listed["remote"], "git@github.com:me/fresh.git");
+
+        // A remote can also be assigned at creation time (default folder).
+        let created2 = state.handle(req(
+            "project.create",
+            json!({ "name": "withremote", "remote": "https://github.com/me/withremote.git" }),
+        ));
+        assert_eq!(created2["ok"], true, "{created2:?}");
+        assert_eq!(
+            created2["result"]["remote"],
+            "https://github.com/me/withremote.git"
+        );
+        assert!(
+            created2["result"]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("projects/withremote"),
+            "{created2:?}"
+        );
     }
 
     #[test]

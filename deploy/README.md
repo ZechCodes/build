@@ -44,6 +44,34 @@ transport public key + device id go to the gateway. Secrets live in
 ```bash
 podman compose -f deploy/compose.real.yml up -d --build
 curl -s localhost:18081/health           # {"connected_devices": 1}
-node web/qa-reconnect.mjs                 # disconnect/reconnect verification
+( cd web && RELAY_URL=ws://localhost:18090 node qa.mjs )            # full app RPC
+( cd web && RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs )  # reconnect
 podman compose -f deploy/compose.real.yml down
 ```
+
+## Reconnect verification
+
+A deterministic simulated agent streams N ordered chunks (`chunk-NNNNNN`) into the
+bridge's **authoritative, seq-numbered log** (keyed by stream id, not by session).
+The client resumes via `stream.events {since}`; we prove its reconstructed output
+reconverges *exactly* (matching sha256, contiguous seqs, no gaps/dupes):
+
+```bash
+cd web
+RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs   # scenarios A + B
+```
+
+- **A — client disconnect mid-stream**: drop the WS partway, reconnect with a new
+  E2EE session, resume from the last seq → full convergence.
+- **B — reconnect while away (load)**: leave immediately; the stream finishes at
+  the bridge; reconnect and replay the whole backlog in **bounded batches**.
+- **C — bridge-side reconnect** (the old system's weak spot): bounce the relay
+  mid-stream so the device drops and re-authenticates; the authoritative state
+  survives and a fresh client reconverges:
+
+  ```bash
+  SID=$(RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs start 400 15)
+  podman restart deploy_relay_1
+  # wait for /health connected_devices=1, then:
+  RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs resume "$SID" 400
+  ```

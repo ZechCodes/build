@@ -20,6 +20,7 @@ use build_bridge::transport;
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("serve") | None => serve().await,
+        Some("mcp") => mcp_stdio(),
         Some("provision") => provision(),
         Some("--version") | Some("-V") => {
             println!("build-bridge {}", env!("CARGO_PKG_VERSION"));
@@ -108,4 +109,39 @@ async fn serve() {
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns
+/// (via the worktree's `.build/mcp.json`). It serves the single `done` tool over
+/// stdio and forwards each report to the running daemon's control socket
+/// (`BRIDGE_MCP_SOCKET`) as `{"task_id","report"}` lines, so a real agent's `done`
+/// reaches `orchestrator.on_done`. Without the socket it just logs (for testing).
+fn mcp_stdio() {
+    use std::io::Write;
+
+    let args: Vec<String> = std::env::args().collect();
+    let task_id = args
+        .iter()
+        .position(|a| a == "--task")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
+    let socket = std::env::var("BRIDGE_MCP_SOCKET").ok();
+
+    let server = build_bridge::mcp::DoneServer::new(&task_id);
+    let stdin = std::io::stdin().lock();
+    let stdout = std::io::stdout().lock();
+    let _ = server.run_stdio(stdin, stdout, |report| {
+        let line = serde_json::json!({ "task_id": task_id, "report": report }).to_string();
+        match &socket {
+            Some(path) => {
+                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(path) {
+                    let _ = writeln!(stream, "{line}");
+                } else {
+                    eprintln!("[mcp] could not reach daemon socket {path}");
+                }
+            }
+            None => eprintln!("[mcp] done: {line}"),
+        }
+    });
 }

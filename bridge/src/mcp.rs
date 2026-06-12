@@ -54,7 +54,7 @@ struct DoneArgs {
 }
 
 /// A validated `done` report — the typed completion event the lifecycle consumes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoneReport {
     pub phase: DonePhase,
     pub status: DoneStatus,

@@ -54,6 +54,26 @@
       .chip.warn { background:var(--red-bg); color:var(--red); }
       .tis { font-size:11px; color:var(--dim); margin-top:5px; }
       .empty { color:var(--dim); font-size:13px; padding:6px 0; }
+      /* notifications */
+      .ncard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; }
+      .ncard.read { opacity:.5; }
+      .ncard .nhead { display:flex; align-items:center; gap:8px; font-weight:650; font-size:14px; }
+      .ncard .nhead .nicon { color:var(--accent); font-size:13px; }
+      .ncard .nhead.muted .nicon { color:var(--green); }
+      .ncard .nhead.warn .nicon { color:var(--red); }
+      .ncard .ngoal { margin-top:6px; font-size:14px; color:var(--ink); font-weight:550; }
+      .ncard .nsub { color:var(--ink2); font-size:13px; margin-top:5px; }
+      .ncard .nbranch { font-family:var(--mono); font-size:12px; color:var(--dim); margin-top:5px; }
+      .ncard .nact { margin-top:12px; }
+      /* settings stub */
+      .settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
+      .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; }
+      .panel h3 { margin:0 0 12px; font-size:14px; display:flex; align-items:center; gap:8px; }
+      .panel .row { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; }
+      .panel .row:first-of-type { border-top:0; }
+      .panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
+      .panel .row .v { color:var(--ink2); }
+      .panel .row.last .k { color:var(--green); }
       /* task view */
       .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
       .thead { display:flex; align-items:center; gap:12px; }
@@ -116,9 +136,9 @@
   <body>
     <nav>
       <span class="logo">build</span>
-      <span class="tab active">◧ Board</span>
-      <span class="tab">Notifications <span class="badge" id="notif" style="display:none">0</span></span>
-      <span class="tab">Settings</span>
+      <span class="tab active" id="nav-board">◧ Board</span>
+      <span class="tab" id="nav-notif">Notifications <span class="badge" id="notif" style="display:none">0</span></span>
+      <span class="tab" id="nav-settings">Settings</span>
       <span class="right">
         <span id="conn"><span class="dot"></span>connecting…</span>
         <span class="e2ee">e2ee</span>
@@ -167,7 +187,18 @@
         return { call };
       }
 
-      const App = { call: null, route: { name: "board" }, poll: null };
+      const App = { call: null, route: { name: "board" }, poll: null, readIds: new Set() };
+
+      // Tasks that are waiting on the user (the board's "NEEDS YOU" bucket).
+      function attnTasks(tasks) { return tasks.filter((t) => t.needs_attention && t.state !== "merged" && t.state !== "abandoned"); }
+      function setBadge(tasks) {
+        const unread = attnTasks(tasks).filter((t) => !App.readIds.has(t.task_id)).length;
+        const b = $("#notif"); b.style.display = unread ? "inline-block" : "none"; b.textContent = unread;
+      }
+      function setActiveNav(name) {
+        const target = { board: "#nav-board", notifications: "#nav-notif", settings: "#nav-settings" }[name] || "#nav-board";
+        ["#nav-board", "#nav-notif", "#nav-settings"].forEach((s) => $(s).classList.toggle("active", s === target));
+      }
 
       // ---------- helpers ----------
       const STATE_LABEL = { plan_review: "READY TO REVIEW", review: "READY TO REVIEW", planning: "PLANNING", building: "BUILDING", created: "CREATED", merged: "MERGED", abandoned: "ABANDONED", blocked: "BLOCKED", failed: "FAILED" };
@@ -216,7 +247,10 @@
 
       function render() {
         if (App.poll) { clearInterval(App.poll); App.poll = null; }
+        setActiveNav(App.route.name);
         if (App.route.name === "board") renderBoard();
+        else if (App.route.name === "notifications") renderNotifications();
+        else if (App.route.name === "settings") renderSettings();
         else renderTask();
       }
 
@@ -247,12 +281,62 @@
             ${bucket("DONE", byBucket.done, true)}`;
           $("#newtask").onclick = openNewTask;
           root.querySelectorAll(".card").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
-          $("#notif").style.display = byBucket.attn.length ? "inline-block" : "none";
-          $("#notif").textContent = byBucket.attn.length;
+          setBadge(tasks);
         };
         const load = async () => { try { draw((await App.call("task.list")).tasks); } catch (e) {} };
         await load();
         App.poll = setInterval(load, 2500);
+      }
+
+      // Notifications: every actionable task state becomes one decision-carrying card.
+      function notifEvent(t) {
+        if (t.state === "plan_review") return { icon: "✦", tone: "", title: "Plan ready to review", sub: payloadFor(t) || "A planning agent finished drafting the plan.", action: "Review plan", tab: "plan", primary: true };
+        if (t.state === "review") return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", tab: "diff", primary: true };
+        if (t.state === "blocked") return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", tab: "diff", primary: false };
+        if (t.state === "failed") return { icon: "▲", tone: "warn", title: "Build failed", sub: t.summary || "The build did not complete.", action: "View task", tab: "diff", primary: false };
+        if (t.state === "merged") return { icon: "✓", tone: "muted", title: "Merge complete", branch: `${t.branch} → ${t.base_branch || "main"}`, action: "View task", tab: "diff", primary: false };
+        return null;
+      }
+      async function renderNotifications() {
+        const root = $("#root");
+        const draw = (tasks) => {
+          setBadge(tasks);
+          const events = tasks.map((t) => ({ t, e: notifEvent(t) })).filter((x) => x.e);
+          events.sort((a, b) => (a.t.state === "merged") - (b.t.state === "merged"));
+          const card = ({ t, e }) => `
+            <div class="ncard ${e.primary && App.readIds.has(t.task_id) ? "read" : ""}">
+              <div class="nhead ${e.tone}"><span class="nicon">${e.icon}</span><span>${e.title}</span></div>
+              <div class="ngoal">${esc(t.goal)}</div>
+              ${e.sub ? `<div class="nsub">${esc(e.sub)}</div>` : ""}
+              ${e.branch ? `<div class="nbranch">${esc(e.branch)}</div>` : ""}
+              <div class="nact"><button class="btn ${e.primary ? "primary" : ""}" data-id="${t.task_id}" data-tab="${e.tab}">${e.action}</button></div>
+            </div>`;
+          const hasUnread = attnTasks(tasks).some((t) => !App.readIds.has(t.task_id));
+          root.innerHTML = `
+            <div class="board-head"><div><h1>Notifications</h1><p>Every card carries its decision. No dead-end pings.</p></div>
+              ${hasUnread ? '<button class="btn" id="markread" style="margin-left:auto">Mark all read</button>' : ""}</div>
+            ${events.length ? events.map(card).join("") : '<div class="empty">You’re all caught up.</div>'}`;
+          root.querySelectorAll(".nact button").forEach((b) => (b.onclick = () => go({ name: "task", id: b.dataset.id, tab: b.dataset.tab })));
+          const mr = $("#markread"); if (mr) mr.onclick = () => { attnTasks(tasks).forEach((t) => App.readIds.add(t.task_id)); draw(tasks); };
+        };
+        const load = async () => { try { draw((await App.call("task.list")).tasks); } catch (e) {} };
+        await load();
+        App.poll = setInterval(load, 2500);
+      }
+
+      // Settings: the privacy story is static; device & key management lands next.
+      function renderSettings() {
+        $("#root").innerHTML = `
+          <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
+          <p class="settings-intro">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
+          <div class="panel">
+            <h3>🔒 What our servers see</h3>
+            <div class="row"><span class="k">Routing IDs</span><span class="v">which device a blob is for — random identifiers, no names</span></div>
+            <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
+            <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
+            <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+          </div>
+          <p class="settings-intro" style="margin-top:18px">Device pairing &amp; key management — coming next.</p>`;
       }
 
       async function renderTask() {
@@ -298,7 +382,7 @@
                   : `<tr class="${r.t}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${esc(r.text)}</td></tr>`).join("")}</table></div>`).join("");
             const working = t.state === "building";
             body.innerHTML = `
-              <div class="diffbar"><span>${diff.stat.files_changed} files <span style="color:var(--green)">+${diff.stat.insertions}</span> <span style="color:var(--red)">−${diff.stat.deletions}</span></span>
+              <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${fIns}</span> <span style="color:var(--red)">−${fDel}</span></span>
                 ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
               ${files.length ? fileHtml : '<div class="empty">No file changes yet.</div>'}
               <div class="actionbar"><span class="hint">Comment on lines to request changes — or approve.</span>
@@ -354,6 +438,11 @@
       }
       $("#dx").onclick = () => $("#drawer").classList.remove("show");
       window.addEventListener("keydown", (e) => { if (e.key === "`" && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); toggleTerminal(); } });
+
+      // ---------- nav ----------
+      $("#nav-board").onclick = () => go({ name: "board" });
+      $("#nav-notif").onclick = () => go({ name: "notifications" });
+      $("#nav-settings").onclick = () => go({ name: "settings" });
 
       // ---------- boot ----------
       (async () => {

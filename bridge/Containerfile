@@ -1,0 +1,26 @@
+# Multi-stage build for the two Rust binaries. `--target relay` and
+# `--target bridge` share the compiled `build` stage.
+
+FROM docker.io/library/rust:1-bookworm AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN cargo build --release --bin relay --bin build-bridge
+
+# --- relay: the opaque-envelope forwarder ---------------------------------
+FROM docker.io/library/debian:bookworm-slim AS relay
+COPY --from=build /src/target/release/relay /usr/local/bin/relay
+EXPOSE 8799
+CMD ["relay"]
+
+# --- bridge: the device daemon (needs git for local repo ops) -------------
+FROM docker.io/library/debian:bookworm-slim AS bridge
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/build-bridge /usr/local/bin/build-bridge
+COPY bridge-entrypoint.sh /usr/local/bin/bridge-entrypoint.sh
+RUN chmod +x /usr/local/bin/bridge-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/bridge-entrypoint.sh"]

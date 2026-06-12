@@ -21,7 +21,8 @@ class BuildController(Controller):
         # Skrift auth: a logged-in user has user_id in the encrypted session.
         user_id = request.session.get("user_id")
         if not user_id:
-            return Redirect("/auth/login")
+            # Land back on the board after login, never the empty CMS root.
+            return Redirect("/auth/login?next=/app/")
 
         result = await db_session.execute(select(User).where(User.id == UUID(user_id)))
         user = result.scalar_one_or_none()

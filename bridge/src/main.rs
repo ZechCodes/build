@@ -4,7 +4,9 @@
 //! application RPC over the E2EE channel. Configuration is by environment:
 //!
 //! - `BRIDGE_RELAY_URL`   relay base URL (default `ws://127.0.0.1:8799`)
-//! - `BRIDGE_REPO`        the git repo tasks operate on (default `/repo`)
+//! - `BRIDGE_REPO`        the default git repo tasks operate on (default `/repo`)
+//! - `BRIDGE_PROJECTS`    extra repos to register, comma-separated, each
+//!                        `path` or `path=branch` (branch defaults to base)
 //! - `BRIDGE_WORKTREES`   where task worktrees are created (default `/worktrees`)
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
@@ -102,8 +104,21 @@ async fn serve() {
     );
 
     // Shared state: the relay handler and the done-socket listener drive the same
-    // tasks; state survives reconnects.
-    let app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket).shared();
+    // tasks; state survives reconnects. The default repo is project one; any extra
+    // repos in BRIDGE_PROJECTS are registered alongside it.
+    let mut app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket);
+    for entry in std::env::var("BRIDGE_PROJECTS").unwrap_or_default().split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (path, branch) = entry
+            .split_once('=')
+            .unwrap_or((entry, base_branch.as_str()));
+        let id = app.add_project(std::path::PathBuf::from(path), branch.to_string());
+        println!("  + project {id}: {path} (base {branch})");
+    }
+    let app = app.shared();
     AppState::spawn_done_socket(app.clone(), mcp_socket.clone());
     let handler = AppState::handler(app);
 

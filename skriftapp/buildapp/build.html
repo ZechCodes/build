@@ -115,6 +115,17 @@
       .sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px rgba(0,0,0,.18); padding:22px 24px; }
       .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
       textarea { width:100%; min-height:96px; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
+      .field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
+      .field label { font-size:12px; color:var(--ink2); font-weight:600; }
+      .sheet select { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+      .addproj { display:flex; gap:8px; margin-top:14px; }
+      .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+      .addproj input.path { flex:1; }
+      .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+      .projrow { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; align-items:baseline; }
+      .projrow:first-child { border-top:0; }
+      .projrow .pname { font-weight:600; min-width:120px; }
+      .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
       .sheet .row { display:flex; align-items:center; gap:10px; margin-top:13px; }
       .sheet .yolo { color:var(--dim); font-size:11.5px; margin-top:12px; line-height:1.4; }
       .toggle { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink2); cursor:pointer; }
@@ -324,11 +335,20 @@
         App.poll = setInterval(load, 2500);
       }
 
-      // Settings: the privacy story is static; device & key management lands next.
-      function renderSettings() {
+      // Settings: Projects control which repo agents work on; the privacy story is
+      // static; device & key management lands next.
+      async function renderSettings() {
         $("#root").innerHTML = `
           <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
-          <p class="settings-intro">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
+          <div class="panel">
+            <h3>📁 Projects</h3>
+            <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
+            <div class="addproj"><input id="projpath" class="path" placeholder="~/code/your-repo (a git repo on this machine)" />
+              <input id="projbranch" placeholder="main" style="max-width:110px" />
+              <button class="btn primary" id="addproj">Add</button></div>
+            <div class="adderr" id="adderr"></div>
+          </div>
+          <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
           <div class="panel">
             <h3>🔒 What our servers see</h3>
             <div class="row"><span class="k">Routing IDs</span><span class="v">which device a blob is for — random identifiers, no names</span></div>
@@ -337,6 +357,25 @@
             <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
           </div>
           <p class="settings-intro" style="margin-top:18px">Device pairing &amp; key management — coming next.</p>`;
+
+        const loadProjects = async () => {
+          try {
+            const { projects } = await App.call("project.list");
+            $("#projlist").innerHTML = projects.map((p) => `
+              <div class="projrow"><span class="pname">${esc(p.name)}</span>
+                <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span></div>`).join("")
+              || '<div class="dim" style="font-size:13px">No projects yet.</div>';
+          } catch (e) { $("#projlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`; }
+        };
+        await loadProjects();
+        $("#addproj").onclick = async () => {
+          const path = $("#projpath").value.trim(); if (!path) return;
+          const base_branch = $("#projbranch").value.trim() || "main";
+          $("#addproj").disabled = true; $("#adderr").textContent = "";
+          try { await App.call("project.add", { path, base_branch }); $("#projpath").value = ""; $("#projbranch").value = ""; await loadProjects(); }
+          catch (e) { $("#adderr").textContent = e.message; }
+          $("#addproj").disabled = false;
+        };
       }
 
       async function renderTask() {
@@ -395,10 +434,11 @@
       }
 
       // ---------- new task sheet ----------
-      function openNewTask() {
+      async function openNewTask() {
         $("#sheet").innerHTML = `
           <h3>New task</h3><div class="sub">Describe a goal. Build plans it, you review, an agent ships it.</div>
           <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
+          <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
           <label class="toggle" style="margin-top:12px"><input type="checkbox" id="quick"> Quick task — skip planning (small, unambiguous changes)</label>
           <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
           <div class="row"><span class="dim mono" style="font-size:11px">${esc("Claude Code")}</span>
@@ -407,11 +447,22 @@
         $("#scrim").classList.add("show");
         $("#goal").focus();
         $("#cancel").onclick = () => $("#scrim").classList.remove("show");
+
+        // Populate the project picker; the bridge picks the first if none chosen.
+        const sel = $("#project");
+        try {
+          const { projects } = await App.call("project.list");
+          sel.innerHTML = projects.length
+            ? projects.map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} · ${esc(p.base_branch)}</option>`).join("")
+            : '<option value="">(no projects — add one in Settings)</option>';
+        } catch (e) { sel.innerHTML = '<option value="">(could not load projects)</option>'; }
+
         $("#dispatch").onclick = async () => {
           const goal = $("#goal").value.trim(); if (!goal) return;
           const kind = $("#quick").checked ? "quick" : "standard";
+          const project_id = sel.value || undefined;
           $("#dispatch").disabled = true; $("#dispatch").textContent = "dispatching…";
-          try { const t = await App.call("task.dispatch", { goal, kind }); $("#scrim").classList.remove("show"); go({ name: "task", id: t.task_id, tab: kind === "quick" ? "diff" : "plan" }); }
+          try { const t = await App.call("task.dispatch", { goal, kind, project_id }); $("#scrim").classList.remove("show"); go({ name: "task", id: t.task_id, tab: kind === "quick" ? "diff" : "plan" }); }
           catch (e) { $("#dispatch").textContent = "error: " + e.message.slice(0, 40); $("#dispatch").disabled = false; }
         };
       }

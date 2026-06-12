@@ -110,17 +110,56 @@ impl TermSession {
     }
 }
 
+/// One registered project: a git repo, its base branch, and the orchestrator that
+/// drives tasks on it. Each project gets its own worktrees subdir and orchestrator
+/// so tasks on different repos never interact.
+struct Project {
+    id: String,
+    name: String,
+    repo_path: std::path::PathBuf,
+    base_branch: String,
+    orch: Orchestrator,
+}
+
+/// Build the harness adapter shared by every project's orchestrator: the
+/// deterministic scripted agent for QA, or a one-shot `claude` headless run for
+/// real work. The closure is shared (Arc) across projects via `Agent: Clone`.
+fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
+    if qa_agent {
+        // A warm no-op harness; the scripted agent does the file writing.
+        Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 86400"))
+    } else {
+        // Real agent: a one-shot `claude` headless run with the rendered prompt
+        // baked in, the per-task `done` MCP server wired via .build/mcp.json, and
+        // the daemon's control socket so its `done` reaches on_agent_done.
+        Agent::OneShot(Arc::new(move |prompt: &str| {
+            HarnessSpec::new("claude")
+                .arg("-p")
+                .arg(prompt)
+                .arg("--mcp-config")
+                .arg(".build/mcp.json")
+                .arg("--strict-mcp-config")
+                .arg("--dangerously-skip-permissions")
+                .env("BRIDGE_MCP_SOCKET", &mcp_socket)
+        }))
+    }
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
-    orch: Orchestrator,
-    base_branch: String,
-    project: String,
+    /// Registered projects (repos) tasks can be dispatched to.
+    projects: Vec<Project>,
+    /// task id → the project it was dispatched to (routes approve/diff/merge/done).
+    task_project: HashMap<String, String>,
+    worktrees_root: std::path::PathBuf,
+    agent: Agent,
     harness: String,
     tasks: HashMap<String, ActiveTask>,
     streams: HashMap<String, StreamState>,
     term: Option<TermSession>,
     next_id: u64,
     next_stream: u64,
+    next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
 }
@@ -133,45 +172,55 @@ impl AppState {
         qa_agent: bool,
         mcp_socket: impl Into<String>,
     ) -> Self {
-        let agent = if qa_agent {
-            // A warm no-op harness; the scripted agent does the file writing.
-            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 86400"))
-        } else {
-            // Real agent: a one-shot `claude` headless run with the rendered prompt
-            // baked in, the per-task `done` MCP server wired via .build/mcp.json,
-            // and the daemon's control socket so its `done` reaches on_agent_done.
-            let socket = mcp_socket.into();
-            Agent::OneShot(Arc::new(move |prompt: &str| {
-                HarnessSpec::new("claude")
-                    .arg("-p")
-                    .arg(prompt)
-                    .arg("--mcp-config")
-                    .arg(".build/mcp.json")
-                    .arg("--strict-mcp-config")
-                    .arg("--dangerously-skip-permissions")
-                    .env("BRIDGE_MCP_SOCKET", &socket)
-            }))
-        };
-        let repo_path = repo_path.into();
-        let project = repo_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("project")
-            .to_string();
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
-        let orch = Orchestrator::new(repo_path, worktrees_root, agent, Templates::default());
-        AppState {
-            orch,
-            base_branch: base_branch.into(),
-            project,
+        let mut state = AppState {
+            projects: Vec::new(),
+            task_project: HashMap::new(),
+            worktrees_root: worktrees_root.into(),
+            agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
             tasks: HashMap::new(),
             streams: HashMap::new(),
             term: None,
             next_id: 1,
             next_stream: 1,
+            next_project: 1,
             qa_agent,
+        };
+        state.add_project(repo_path.into(), base_branch.into());
+        state
+    }
+
+    /// Register a project (repo + base branch) and return its id. Idempotent: a
+    /// repo already registered (by canonical path) returns its existing id. Each
+    /// project gets an isolated worktrees subdir keyed by id.
+    pub fn add_project(&mut self, repo_path: std::path::PathBuf, base_branch: String) -> String {
+        let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
+        if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
+            return existing.id.clone();
         }
+        let id = format!("proj-{}", self.next_project);
+        self.next_project += 1;
+        let name = repo_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let worktrees = self.worktrees_root.join(&id);
+        let orch = Orchestrator::new(
+            repo_path.clone(),
+            worktrees,
+            self.agent.clone(),
+            Templates::default(),
+        );
+        self.projects.push(Project {
+            id: id.clone(),
+            name,
+            repo_path,
+            base_branch,
+            orch,
+        });
+        id
     }
 
     /// Share this state so the relay handler and the done-socket listener both
@@ -231,16 +280,24 @@ impl AppState {
         });
     }
 
-    /// Route an agent's `done` to its task's lifecycle transition.
+    /// Route an agent's `done` to its task's lifecycle transition, on that task's
+    /// project orchestrator.
     fn on_agent_done(&mut self, task_id: &str, report: DoneReport) {
-        if let Some(mut active) = self.tasks.remove(task_id) {
-            if let Err(e) = self.orch.on_done(&mut active, report) {
-                eprintln!("on_agent_done {task_id}: {e}");
-            }
-            self.tasks.insert(task_id.to_string(), active);
-        } else {
+        let Some(mut active) = self.tasks.remove(task_id) else {
             eprintln!("on_agent_done: unknown task {task_id}");
+            return;
+        };
+        let outcome = match self.project_of(task_id) {
+            Ok(pid) => match self.orch_for(&pid) {
+                Ok(orch) => orch.on_done(&mut active, report).map_err(err),
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = outcome {
+            eprintln!("on_agent_done {task_id}: {e}");
         }
+        self.tasks.insert(task_id.to_string(), active);
     }
 
     /// Synchronous dispatch used by the unit tests (no background producer). The
@@ -269,6 +326,8 @@ impl AppState {
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "ping" => Ok(json!({ "pong": true })),
+            "project.list" => Ok(self.project_list()),
+            "project.add" => self.project_add(params),
             "task.dispatch" => self.task_dispatch(params),
             "task.list" => Ok(self.task_list()),
             "task.get" => self.task_get(params),
@@ -363,26 +422,68 @@ impl AppState {
         }))
     }
 
+    /// All registered projects, for the New-task picker and Settings.
+    fn project_list(&self) -> Value {
+        let projects: Vec<Value> = self.projects.iter().map(project_json).collect();
+        json!({ "projects": projects })
+    }
+
+    /// Register a project from a host path. Validates it is a git repo with the
+    /// requested base branch before adding, so a bad path fails loudly here rather
+    /// than at first dispatch.
+    fn project_add(&mut self, params: &Value) -> Result<Value, String> {
+        let path = require_str(params, "path")?;
+        let base_branch = params
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .unwrap_or("main")
+            .to_string();
+        let repo_path = expand_tilde(&path);
+        let repo =
+            git2::Repository::open(&repo_path).map_err(|e| format!("not a git repository: {e}"))?;
+        repo.revparse_single(&base_branch)
+            .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
+        let id = self.add_project(repo_path, base_branch);
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .expect("just added");
+        Ok(project_json(project))
+    }
+
     fn task_dispatch(&mut self, params: &Value) -> Result<Value, String> {
         let goal = require_str(params, "goal")?;
         let kind = match params.get("kind").and_then(Value::as_str) {
             Some("quick") => TaskKind::Quick,
             _ => TaskKind::Standard,
         };
+        // Default to the first project when the client doesn't choose one.
+        let project_id = match params.get("project_id").and_then(Value::as_str) {
+            Some(p) => p.to_string(),
+            None => self
+                .projects
+                .first()
+                .map(|p| p.id.clone())
+                .ok_or("no projects configured")?,
+        };
+        let base = self.base_for(&project_id)?;
         let task_id = format!("task-{}", self.next_id);
         self.next_id += 1;
 
         let mut active = self
-            .orch
-            .dispatch(TaskId::new(&task_id), goal, kind, &self.base_branch)
+            .orch_for(&project_id)?
+            .dispatch(TaskId::new(&task_id), goal, kind, &base)
             .map_err(err)?;
+        self.task_project
+            .insert(task_id.clone(), project_id.clone());
 
         // Scripted agent: produce the plan (standard) or the code (quick) and
         // report done, exactly as a real harness would over MCP.
         if self.qa_agent {
             match active.task.state {
-                TaskState::Planning => self.simulate_plan(&mut active)?,
-                TaskState::Building => self.simulate_build(&mut active)?,
+                TaskState::Planning => self.simulate_plan(&project_id, &mut active)?,
+                TaskState::Building => self.simulate_build(&project_id, &mut active)?,
                 _ => {}
             }
         }
@@ -392,13 +493,42 @@ impl AppState {
         Ok(view)
     }
 
+    /// The orchestrator for a project id.
+    fn orch_for(&self, project_id: &str) -> Result<&Orchestrator, String> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| &p.orch)
+            .ok_or_else(|| format!("unknown project: {project_id}"))
+    }
+
+    /// The base branch configured for a project id.
+    fn base_for(&self, project_id: &str) -> Result<String, String> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.base_branch.clone())
+            .ok_or_else(|| format!("unknown project: {project_id}"))
+    }
+
+    /// The project a task was dispatched to.
+    fn project_of(&self, task_id: &str) -> Result<String, String> {
+        self.task_project
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| "unknown task_id".to_string())
+    }
+
     fn task_approve_plan(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
+        let project_id = self.project_of(&task_id)?;
         let mut active = self.take(&task_id)?;
         let outcome = (|| -> Result<(), String> {
-            self.orch.approve_plan(&mut active).map_err(err)?;
+            self.orch_for(&project_id)?
+                .approve_plan(&mut active)
+                .map_err(err)?;
             if self.qa_agent {
-                self.simulate_build(&mut active)?;
+                self.simulate_build(&project_id, &mut active)?;
             }
             Ok(())
         })();
@@ -410,8 +540,12 @@ impl AppState {
 
     fn task_approve_merge(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
+        let project_id = self.project_of(&task_id)?;
         let mut active = self.take(&task_id)?;
-        let result = self.orch.approve_merge(&mut active).map_err(err);
+        let result = self
+            .orch_for(&project_id)?
+            .approve_merge(&mut active)
+            .map_err(err);
         let view = self.task_view(&task_id, &active);
         self.tasks.insert(task_id, active);
         result?;
@@ -420,8 +554,12 @@ impl AppState {
 
     fn task_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
+        let project_id = self.project_of(&task_id)?;
         let mut active = self.take(&task_id)?;
-        let result = self.orch.abandon(&mut active).map_err(err);
+        let result = self
+            .orch_for(&project_id)?
+            .abandon(&mut active)
+            .map_err(err);
         let view = self.task_view(&task_id, &active);
         self.tasks.insert(task_id, active);
         result?;
@@ -430,8 +568,9 @@ impl AppState {
 
     fn task_diff(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
+        let project_id = self.project_of(&task_id)?;
         let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
-        let diff = self.orch.diff(active).map_err(err)?;
+        let diff = self.orch_for(&project_id)?.diff(active).map_err(err)?;
         let files: Vec<Value> = diff
             .files()
             .iter()
@@ -475,13 +614,13 @@ impl AppState {
 
     // --- the scripted QA agent ------------------------------------------------
 
-    fn simulate_plan(&mut self, active: &mut ActiveTask) -> Result<(), String> {
+    fn simulate_plan(&self, project_id: &str, active: &mut ActiveTask) -> Result<(), String> {
         let plan = format!(
             "# Plan: {goal}\n\n1. Implement the goal.\n2. Add a result file.\n",
             goal = active.task.goal
         );
         write_in_worktree(active, DEFAULT_PLAN_PATH, &plan)?;
-        self.orch
+        self.orch_for(project_id)?
             .on_done(
                 active,
                 DoneReport {
@@ -496,10 +635,10 @@ impl AppState {
             .map_err(err)
     }
 
-    fn simulate_build(&mut self, active: &mut ActiveTask) -> Result<(), String> {
+    fn simulate_build(&self, project_id: &str, active: &mut ActiveTask) -> Result<(), String> {
         let content = format!("Implemented: {}\n", active.task.goal);
         write_in_worktree(active, "result.txt", &content)?;
-        self.orch
+        self.orch_for(project_id)?
             .on_done(
                 active,
                 DoneReport {
@@ -515,14 +654,23 @@ impl AppState {
     // --- helpers --------------------------------------------------------------
 
     fn task_view(&self, task_id: &str, active: &ActiveTask) -> Value {
+        let project_id = self.task_project.get(task_id).cloned().unwrap_or_default();
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         json!({
             "task_id": task_id,
             "goal": active.task.goal,
             "state": state_str(&active.task.state),
             "needs_attention": active.task.state.needs_attention(),
             "branch": active.worktree.branch,
+            "base_branch": active.worktree.base_branch,
             "summary": active.last_summary,
-            "project": self.project,
+            "project": project,
+            "project_id": project_id,
             "harness": self.harness,
         })
     }
@@ -530,6 +678,26 @@ impl AppState {
     fn take(&mut self, task_id: &str) -> Result<ActiveTask, String> {
         self.tasks.remove(task_id).ok_or("unknown task_id".into())
     }
+}
+
+fn project_json(p: &Project) -> Value {
+    json!({
+        "project_id": p.id,
+        "name": p.name,
+        "path": p.repo_path.display().to_string(),
+        "base_branch": p.base_branch,
+    })
+}
+
+/// Expand a leading `~/` to the user's home directory; otherwise return the path
+/// unchanged. Lets the Settings "Add project" field accept `~/code/foo`.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return std::path::Path::new(&home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 fn write_in_worktree(active: &ActiveTask, rel: &str, contents: &str) -> Result<(), String> {
@@ -868,6 +1036,82 @@ mod tests {
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(repo.join("result.txt").exists());
+    }
+
+    #[test]
+    fn dispatch_routes_to_the_selected_project() {
+        let (dir_a, repo_a) = init_repo();
+        let (_dir_b, repo_b) = init_repo();
+        let mut state = AppState::new(
+            repo_a.clone(),
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let proj_b = state.add_project(repo_b.clone(), "main".into());
+
+        // Both projects are listed.
+        let list = state.handle(req("project.list", json!({})));
+        assert_eq!(list["result"]["projects"].as_array().unwrap().len(), 2);
+
+        // Dispatch explicitly to project B → on merge the file lands in repo B only.
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "greet b", "project_id": proj_b }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["project_id"], proj_b);
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
+        assert_eq!(merged["result"]["state"], "merged");
+        assert!(repo_b.join("result.txt").exists(), "merged into project B");
+        assert!(!repo_a.join("result.txt").exists(), "project A untouched");
+    }
+
+    #[test]
+    fn project_add_validates_and_dedupes() {
+        let (dir_a, repo_a) = init_repo();
+        let mut state = AppState::new(
+            repo_a.clone(),
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // A non-repo path is rejected.
+        let bad = state.handle(req(
+            "project.add",
+            json!({ "path": "/definitely/not/a/repo" }),
+        ));
+        assert_eq!(bad["ok"], false);
+        // A real repo is added and listed.
+        let (_dir_c, repo_c) = init_repo();
+        let ok = state.handle(req(
+            "project.add",
+            json!({ "path": repo_c.to_str().unwrap() }),
+        ));
+        assert_eq!(ok["ok"], true, "{ok:?}");
+        assert_eq!(
+            state.handle(req("project.list", json!({})))["result"]["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        // Adding the same repo again is idempotent (deduped by canonical path).
+        state.handle(req(
+            "project.add",
+            json!({ "path": repo_c.to_str().unwrap() }),
+        ));
+        assert_eq!(
+            state.handle(req("project.list", json!({})))["result"]["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -152,6 +152,10 @@ pub struct AppState {
     /// task id → the project it was dispatched to (routes approve/diff/merge/done).
     task_project: HashMap<String, String>,
     worktrees_root: std::path::PathBuf,
+    /// Where cloned repos land and the directory browser starts; user-configurable.
+    projects_dir: std::path::PathBuf,
+    /// Where to persist the projects + settings, if persistence is enabled.
+    config_path: Option<std::path::PathBuf>,
     agent: Agent,
     harness: String,
     tasks: HashMap<String, ActiveTask>,
@@ -177,6 +181,8 @@ impl AppState {
             projects: Vec::new(),
             task_project: HashMap::new(),
             worktrees_root: worktrees_root.into(),
+            projects_dir: default_projects_dir(),
+            config_path: None,
             agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
             tasks: HashMap::new(),
@@ -189,6 +195,62 @@ impl AppState {
         };
         state.add_project(repo_path.into(), base_branch.into());
         state
+    }
+
+    /// Enable persistence at `path`: load any saved projects + projects-dir from it
+    /// (skipping repos that no longer exist), and remember it for future writes.
+    pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
+                if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
+                    self.projects_dir = expand_tilde(dir);
+                }
+                for p in cfg
+                    .get("projects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(repo) = p.get("path").and_then(Value::as_str) {
+                        let base = p
+                            .get("base_branch")
+                            .and_then(Value::as_str)
+                            .unwrap_or("main")
+                            .to_string();
+                        let repo = std::path::PathBuf::from(repo);
+                        if repo.exists() {
+                            self.add_project(repo, base);
+                        }
+                    }
+                }
+            }
+        }
+        self.config_path = Some(path);
+        self
+    }
+
+    /// Override where cloned repos land and the browser starts (e.g. from an env).
+    pub fn set_projects_dir(&mut self, dir: std::path::PathBuf) {
+        self.projects_dir = dir;
+    }
+
+    /// Persist projects + projects-dir to the config file, if one is configured.
+    fn persist(&self) {
+        let Some(path) = &self.config_path else {
+            return;
+        };
+        let cfg = json!({
+            "projects_dir": self.projects_dir.display().to_string(),
+            "projects": self.projects.iter().map(|p| json!({
+                "path": p.repo_path.display().to_string(),
+                "base_branch": p.base_branch,
+            })).collect::<Vec<_>>(),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
     }
 
     /// Register a project (repo + base branch) and return its id. Idempotent: a
@@ -326,8 +388,12 @@ impl AppState {
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "ping" => Ok(json!({ "pong": true })),
+            "fs.list" => self.fs_list(params),
+            "settings.get" => Ok(self.settings_get()),
+            "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.project_list()),
             "project.add" => self.project_add(params),
+            "project.clone" => self.project_clone(params),
             "task.dispatch" => self.task_dispatch(params),
             "task.list" => Ok(self.task_list()),
             "task.get" => self.task_get(params),
@@ -433,17 +499,126 @@ impl AppState {
     /// than at first dispatch.
     fn project_add(&mut self, params: &Value) -> Result<Value, String> {
         let path = require_str(params, "path")?;
-        let base_branch = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .unwrap_or("main")
-            .to_string();
         let repo_path = expand_tilde(&path);
         let repo =
             git2::Repository::open(&repo_path).map_err(|e| format!("not a git repository: {e}"))?;
+        // Use the requested branch, or fall back to the repo's checked-out default —
+        // so browsing to a repo and adding it "just works" without naming a branch.
+        let base_branch = params
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| git_default_branch(&repo_path))
+            .unwrap_or_else(|| "main".to_string());
         repo.revparse_single(&base_branch)
             .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
         let id = self.add_project(repo_path, base_branch);
+        self.persist();
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .expect("just added");
+        Ok(project_json(project))
+    }
+
+    /// Browse host directories so the user can pick a repo without typing a path.
+    /// Returns the canonical path, its parent (for "up"), whether it is itself a git
+    /// repo, and its subdirectories (each flagged if it is a git repo).
+    fn fs_list(&self, params: &Value) -> Result<Value, String> {
+        let path = match params
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            Some(p) => expand_tilde(p),
+            None => expand_tilde("~"),
+        };
+        let path = std::fs::canonicalize(&path)
+            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        let reader =
+            std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let mut dirs: Vec<(String, std::path::PathBuf, bool)> = reader
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| {
+                let p = e.path();
+                let is_git = p.join(".git").exists();
+                (e.file_name().to_string_lossy().into_owned(), p, is_git)
+            })
+            .collect();
+        dirs.sort_by_key(|a| a.0.to_lowercase());
+        let entries: Vec<Value> = dirs
+            .into_iter()
+            .map(|(name, p, is_git)| {
+                json!({ "name": name, "path": p.display().to_string(), "is_git": is_git })
+            })
+            .collect();
+        Ok(json!({
+            "path": path.display().to_string(),
+            "parent": path.parent().map(|p| p.display().to_string()),
+            "is_git": path.join(".git").exists(),
+            "entries": entries,
+        }))
+    }
+
+    fn settings_get(&self) -> Value {
+        json!({ "projects_dir": self.projects_dir.display().to_string() })
+    }
+
+    /// Choose where cloned repos land (and the browser's default start), creating
+    /// the folder and persisting the choice.
+    fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
+        let dir = expand_tilde(&require_str(params, "projects_dir")?);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        self.persist();
+        Ok(self.settings_get())
+    }
+
+    /// Clone a remote into the projects folder and register it as a project. The
+    /// base branch defaults to the clone's checked-out branch.
+    fn project_clone(&mut self, params: &Value) -> Result<Value, String> {
+        let url = require_str(params, "url")?;
+        let name = match params
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(n) => n.to_string(),
+            None => repo_name_from_url(&url),
+        };
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return Err(format!("invalid project name: {name:?}"));
+        }
+        std::fs::create_dir_all(&self.projects_dir)
+            .map_err(|e| format!("cannot create projects folder: {e}"))?;
+        let dest = self.projects_dir.join(&name);
+        if dest.exists() {
+            return Err(format!("'{name}' already exists in the projects folder"));
+        }
+        let out = std::process::Command::new("git")
+            .arg("clone")
+            .arg(&url)
+            .arg(&dest)
+            .output()
+            .map_err(|e| format!("could not run git: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "git clone failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let base = params
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| git_default_branch(&dest))
+            .unwrap_or_else(|| "main".to_string());
+        let id = self.add_project(dest, base);
+        self.persist();
         let project = self
             .projects
             .iter()
@@ -689,15 +864,48 @@ fn project_json(p: &Project) -> Value {
     })
 }
 
-/// Expand a leading `~/` to the user's home directory; otherwise return the path
-/// unchanged. Lets the Settings "Add project" field accept `~/code/foo`.
+/// Expand a leading `~` / `~/` to the user's home directory; otherwise return the
+/// path unchanged. Lets path fields accept `~/code/foo`.
 fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return std::path::PathBuf::from(home);
+        }
+    }
     if let Some(rest) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
             return std::path::Path::new(&home).join(rest);
         }
     }
     std::path::PathBuf::from(path)
+}
+
+/// The default folder cloned repos land in, `~/.build/projects`.
+fn default_projects_dir() -> std::path::PathBuf {
+    expand_tilde("~/.build/projects")
+}
+
+/// Derive a project folder name from a clone URL: the last path segment with a
+/// trailing `.git` stripped (`git@host:org/repo.git` → `repo`).
+fn repo_name_from_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or("repo");
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// The checked-out branch name of a freshly cloned repo (its default branch).
+fn git_default_branch(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
 fn write_in_worktree(active: &ActiveTask, rel: &str, contents: &str) -> Result<(), String> {
@@ -1111,6 +1319,128 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn fs_list_browses_dirs_and_flags_git_repos() {
+        let (dir_a, repo_a) = init_repo();
+        let mut state = AppState::new(
+            repo_a,
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // A browse root with a plain folder and a git repo.
+        let root = dir_a.path().join("browse");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("plain")).unwrap();
+        let repo_dir = root.join("myrepo");
+        std::fs::create_dir(&repo_dir).unwrap();
+        std::fs::create_dir(repo_dir.join(".git")).unwrap();
+
+        let res = state.handle(req("fs.list", json!({ "path": root.to_str().unwrap() })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert!(res["result"]["parent"].is_string());
+        let entries = res["result"]["entries"].as_array().unwrap();
+        assert_eq!(
+            entries.iter().find(|e| e["name"] == "myrepo").unwrap()["is_git"],
+            true
+        );
+        assert_eq!(
+            entries.iter().find(|e| e["name"] == "plain").unwrap()["is_git"],
+            false
+        );
+    }
+
+    #[test]
+    fn settings_set_then_clone_registers_project() {
+        let (dir_src, repo_src) = init_repo();
+        let (dir_a, repo_a) = init_repo();
+        let mut state = AppState::new(
+            repo_a,
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // Point the projects folder at a temp location.
+        let projects_dir = dir_src.path().join("projects");
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "projects_dir": projects_dir.to_str().unwrap() }),
+        ));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert!(
+            state.handle(req("settings.get", json!({})))["result"]["projects_dir"]
+                .as_str()
+                .unwrap()
+                .contains("projects")
+        );
+
+        // Clone the source repo into the projects folder and register it.
+        let cloned = state.handle(req(
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap() }),
+        ));
+        assert_eq!(cloned["ok"], true, "{cloned:?}");
+        let clone_path = cloned["result"]["path"].as_str().unwrap();
+        assert!(std::path::Path::new(clone_path).join("README.md").exists());
+        assert_eq!(
+            state.handle(req("project.list", json!({})))["result"]["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn config_persists_projects_and_dir_across_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir_a, repo_a) = init_repo();
+        let (_dir_b, repo_b) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        {
+            let mut state = AppState::new(
+                repo_a.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&cfg);
+            state.handle(req(
+                "project.add",
+                json!({ "path": repo_b.to_str().unwrap() }),
+            ));
+            state.handle(req(
+                "settings.set",
+                json!({ "projects_dir": tmp.path().join("myprojects").to_str().unwrap() }),
+            ));
+        }
+        // A fresh instance restores the added project and the chosen dir from disk.
+        let mut reloaded = AppState::new(
+            repo_a,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&cfg);
+        assert_eq!(
+            reloaded.handle(req("project.list", json!({})))["result"]["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            reloaded.handle(req("settings.get", json!({})))["result"]["projects_dir"]
+                .as_str()
+                .unwrap()
+                .contains("myprojects")
         );
     }
 

@@ -122,6 +122,16 @@
       .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
       .addproj input.path { flex:1; }
       .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+      .btn.mini { padding:4px 9px; font-size:12px; }
+      .projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .projfolder code { font-family:var(--mono); font-size:11.5px; background:var(--line2); padding:2px 6px; border-radius:5px; }
+      .manualadd { margin-top:12px; } .manualadd summary { font-size:12px; color:var(--dim); cursor:pointer; }
+      .browse-path { font-family:var(--mono); font-size:11.5px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:10px 0; overflow:auto; white-space:nowrap; }
+      .browse-list { max-height:44vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+      .browse-row { display:flex; align-items:center; gap:10px; padding:7px 11px; border-top:1px solid var(--line2); font-size:13px; }
+      .browse-row:first-child { border-top:0; }
+      .browse-row .bname { flex:1; cursor:default; }
+      .browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
       .projrow { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; align-items:baseline; }
       .projrow:first-child { border-top:0; }
       .projrow .pname { font-weight:600; min-width:120px; }
@@ -343,9 +353,17 @@
           <div class="panel">
             <h3>📁 Projects</h3>
             <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
-            <div class="addproj"><input id="projpath" class="path" placeholder="~/code/your-repo (a git repo on this machine)" />
-              <input id="projbranch" placeholder="main" style="max-width:110px" />
-              <button class="btn primary" id="addproj">Add</button></div>
+            <div class="addproj">
+              <button class="btn primary" id="browseadd">Browse for a repo…</button>
+              <button class="btn" id="cloneadd">Clone from URL…</button>
+            </div>
+            <div class="projfolder">Projects folder: <code id="pdir">…</code>
+              <button class="btn mini" id="changedir">Change…</button>
+              <span class="dim">clones land here</span></div>
+            <details class="manualadd"><summary>or enter a path manually</summary>
+              <div class="addproj"><input id="projpath" class="path" placeholder="~/code/your-repo" />
+                <input id="projbranch" placeholder="auto" style="max-width:90px" />
+                <button class="btn" id="addproj">Add</button></div></details>
             <div class="adderr" id="adderr"></div>
           </div>
           <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -358,23 +376,102 @@
           </div>
           <p class="settings-intro" style="margin-top:18px">Device pairing &amp; key management — coming next.</p>`;
 
-        const loadProjects = async () => {
+        const refresh = async () => {
           try {
             const { projects } = await App.call("project.list");
             $("#projlist").innerHTML = projects.map((p) => `
               <div class="projrow"><span class="pname">${esc(p.name)}</span>
                 <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span></div>`).join("")
               || '<div class="dim" style="font-size:13px">No projects yet.</div>';
+            const { projects_dir } = await App.call("settings.get");
+            $("#pdir").textContent = projects_dir;
           } catch (e) { $("#projlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`; }
         };
-        await loadProjects();
+        await refresh();
+
+        // Browse the host filesystem and add the chosen git repo — no typing.
+        $("#browseadd").onclick = () => openBrowser({
+          title: "Browse for a git repo", gitOnly: true,
+          onChoose: async (path) => {
+            try { await App.call("project.add", { path }); $("#scrim").classList.remove("show"); await refresh(); }
+            catch (e) { const el = $("#berr"); if (el) el.textContent = e.message; }
+          },
+        });
+        // Clone a remote into the projects folder.
+        $("#cloneadd").onclick = () => openClone(refresh);
+        // Pick a different projects folder (any directory).
+        $("#changedir").onclick = () => openBrowser({
+          title: "Choose a projects folder", gitOnly: false,
+          onChoose: async (path) => {
+            try { await App.call("settings.set", { projects_dir: path }); $("#scrim").classList.remove("show"); await refresh(); }
+            catch (e) { const el = $("#berr"); if (el) el.textContent = e.message; }
+          },
+        });
         $("#addproj").onclick = async () => {
           const path = $("#projpath").value.trim(); if (!path) return;
-          const base_branch = $("#projbranch").value.trim() || "main";
+          const base_branch = $("#projbranch").value.trim() || undefined;
           $("#addproj").disabled = true; $("#adderr").textContent = "";
-          try { await App.call("project.add", { path, base_branch }); $("#projpath").value = ""; $("#projbranch").value = ""; await loadProjects(); }
+          try { await App.call("project.add", { path, base_branch }); $("#projpath").value = ""; $("#projbranch").value = ""; await refresh(); }
           catch (e) { $("#adderr").textContent = e.message; }
           $("#addproj").disabled = false;
+        };
+      }
+
+      // A host directory browser in the sheet. opts: { title, gitOnly, onChoose }.
+      // gitOnly → only git repos are "Choose"-able and the footer adds the current
+      // repo; otherwise every folder is selectable (used to pick the projects dir).
+      async function openBrowser(opts) {
+        const nav = async (path) => {
+          let data;
+          try { data = await App.call("fs.list", path ? { path } : {}); }
+          catch (e) { const el = $("#berr"); if (el) el.textContent = e.message; return; }
+          const rows = data.entries.map((e) => `
+            <div class="browse-row">
+              <span class="bname">${e.is_git ? "📦" : "📁"} ${esc(e.name)}</span>
+              ${e.is_git ? '<span class="bgit">git</span>' : ""}
+              ${e.is_git && opts.gitOnly
+                ? `<button class="btn primary mini choose" data-path="${esc(e.path)}">Choose</button>`
+                : `<button class="btn mini open" data-path="${esc(e.path)}">Open</button>`}
+            </div>`).join("");
+          const footer = (!opts.gitOnly || data.is_git)
+            ? `<button class="btn primary" id="choosecur" data-path="${esc(data.path)}">${opts.gitOnly ? "Add this repo" : "Use this folder"}</button>` : "";
+          $("#sheet").innerHTML = `
+            <h3>${esc(opts.title)}</h3>
+            <div class="browse-path">${esc(data.path)}</div>
+            <div class="browse-list">
+              ${data.parent ? `<div class="browse-row"><button class="btn mini open" data-path="${esc(data.parent)}">⬆ up</button><span class="bname dim">parent folder</span></div>` : ""}
+              ${rows || '<div class="dim" style="font-size:13px;padding:10px">No subfolders here.</div>'}
+            </div>
+            <div class="row">${footer}<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button></div>
+            <div class="adderr" id="berr"></div>`;
+          $("#bcancel").onclick = () => $("#scrim").classList.remove("show");
+          const cc = $("#choosecur"); if (cc) cc.onclick = () => opts.onChoose(cc.dataset.path);
+          $("#sheet").querySelectorAll(".open").forEach((b) => (b.onclick = () => nav(b.dataset.path)));
+          $("#sheet").querySelectorAll(".choose").forEach((b) => (b.onclick = () => opts.onChoose(b.dataset.path)));
+        };
+        $("#scrim").classList.add("show");
+        $("#sheet").innerHTML = `<h3>${esc(opts.title)}</h3><div class="dim" style="padding:14px">loading…</div>`;
+        await nav(null);
+      }
+
+      // Clone a remote into the projects folder, then refresh.
+      function openClone(onDone) {
+        $("#sheet").innerHTML = `
+          <h3>Clone a repository</h3>
+          <div class="sub">Build clones it into your projects folder and registers it.</div>
+          <div class="field"><label>Remote URL</label><input id="clurl" class="path" placeholder="https://github.com/org/repo.git or git@github.com:org/repo.git" style="width:100%" /></div>
+          <div class="field"><label>Folder name (optional)</label><input id="clname" class="path" placeholder="defaults to the repo name" style="width:100%" /></div>
+          <div class="row"><button class="btn" id="clcancel" style="margin-left:auto">Cancel</button><button class="btn primary" id="cldo">Clone</button></div>
+          <div class="adderr" id="clerr"></div>`;
+        $("#scrim").classList.add("show");
+        $("#clurl").focus();
+        $("#clcancel").onclick = () => $("#scrim").classList.remove("show");
+        $("#cldo").onclick = async () => {
+          const url = $("#clurl").value.trim(); if (!url) return;
+          const name = $("#clname").value.trim() || undefined;
+          $("#cldo").disabled = true; $("#cldo").textContent = "cloning…"; $("#clerr").textContent = "";
+          try { await App.call("project.clone", { url, name }); $("#scrim").classList.remove("show"); onDone && onDone(); }
+          catch (e) { $("#clerr").textContent = e.message; $("#cldo").disabled = false; $("#cldo").textContent = "Clone"; }
         };
       }
 

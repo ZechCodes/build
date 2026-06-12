@@ -5,10 +5,11 @@
 //!
 //! - `BRIDGE_RELAY_URL`   relay base URL (default `ws://127.0.0.1:8799`)
 //! - `BRIDGE_REPO`        the default git repo tasks operate on (default `/repo`)
-//! - `BRIDGE_PROJECTS`    extra repos to register, comma-separated, each
-//!                        `path` or `path=branch` (branch defaults to base)
+//! - `BRIDGE_PROJECTS`    extra repos, comma-separated `path` or `path=branch`
 //! - `BRIDGE_WORKTREES`   where task worktrees are created (default `/worktrees`)
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
+//! - `BRIDGE_PROJECTS_DIR` where cloned repos land (default `~/.build/projects`)
+//! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 
@@ -107,7 +108,10 @@ async fn serve() {
     // tasks; state survives reconnects. The default repo is project one; any extra
     // repos in BRIDGE_PROJECTS are registered alongside it.
     let mut app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket);
-    for entry in std::env::var("BRIDGE_PROJECTS").unwrap_or_default().split(',') {
+    for entry in std::env::var("BRIDGE_PROJECTS")
+        .unwrap_or_default()
+        .split(',')
+    {
         let entry = entry.trim();
         if entry.is_empty() {
             continue;
@@ -117,6 +121,15 @@ async fn serve() {
             .unwrap_or((entry, base_branch.as_str()));
         let id = app.add_project(std::path::PathBuf::from(path), branch.to_string());
         println!("  + project {id}: {path} (base {branch})");
+    }
+
+    // Persist projects + projects-dir so UI-added/cloned repos survive restarts,
+    // and restore them on boot. An env override for the projects folder wins.
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let config_path = env("BRIDGE_CONFIG", &format!("{home}/.build/config.json"));
+    let mut app = app.with_config(&config_path);
+    if let Ok(dir) = std::env::var("BRIDGE_PROJECTS_DIR") {
+        app.set_projects_dir(std::path::PathBuf::from(dir));
     }
     let app = app.shared();
     AppState::spawn_done_socket(app.clone(), mcp_socket.clone());

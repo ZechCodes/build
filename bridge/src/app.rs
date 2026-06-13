@@ -403,6 +403,7 @@ impl AppState {
             "task.diff" => self.task_diff(params),
             "task.approve_plan" => self.task_approve_plan(params),
             "task.send_notes" => self.task_send_notes(params),
+            "task.request_changes" => self.task_request_changes(params),
             "task.approve_merge" => self.task_approve_merge(params),
             "task.abandon" => self.task_abandon(params),
             "stream.events" => self.stream_events(params),
@@ -854,6 +855,28 @@ impl AppState {
                 .map_err(err)?;
             if self.qa_agent {
                 self.simulate_plan(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let view = self.task_view(&task_id, &active);
+        self.tasks.insert(task_id, active);
+        outcome?;
+        Ok(view)
+    }
+
+    /// Send the reviewer's diff comments to the coding agent to make changes —
+    /// works from `review` and from `building` (redirecting a running agent).
+    fn task_request_changes(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let comments = require_str(params, "comments")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .request_changes(&mut active, &comments)
+                .map_err(err)?;
+            if self.qa_agent {
+                self.simulate_build(&project_id, &mut active)?;
             }
             Ok(())
         })();
@@ -1472,6 +1495,38 @@ mod tests {
 
         // Missing comments is a clean error.
         let bad = state.handle(req("task.send_notes", json!({ "task_id": task_id })));
+        assert_eq!(bad["ok"], false);
+        assert!(bad["error"].as_str().unwrap().contains("comments"));
+    }
+
+    #[test]
+    fn request_changes_reruns_building_from_review_and_while_building() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // Quick task → review (QA simulates the build).
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "do work", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+
+        // Request changes from review → re-built (QA simulates) → back to review.
+        let rc = state.handle(req(
+            "task.request_changes",
+            json!({ "task_id": task_id, "comments": "On result.txt line 1: rename the symbol." }),
+        ));
+        assert_eq!(rc["ok"], true, "{rc:?}");
+        assert_eq!(rc["result"]["state"], "review");
+
+        // Missing comments is a clean error.
+        let bad = state.handle(req("task.request_changes", json!({ "task_id": task_id })));
         assert_eq!(bad["ok"], false);
         assert!(bad["error"].as_str().unwrap().contains("comments"));
     }

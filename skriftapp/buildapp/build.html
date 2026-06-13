@@ -126,7 +126,10 @@
       .file .fhead .pm { margin-left:auto; font-size:11px; } .pm .a { color:var(--green); } .pm .d { color:var(--red); }
       .file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
       .file td { padding:0 8px; white-space:pre; vertical-align:top; }
-      .file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:#fcfcfd; border-right:1px solid var(--line2); }
+      .file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:#fcfcfd; border-right:1px solid var(--line2); cursor:pointer; }
+      .file td.ln:hover { color:var(--accent); }
+      .file ::selection { background:#c7d2fe; }
+      tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !important; color:#92400e; }
       tr.add td { background:var(--green-bg); } tr.add td.code { color:#14532d; }
       tr.del td { background:var(--red-bg); } tr.del td.code { color:#7f1d1d; }
       tr.hunk td { background:#f6f6fb; color:var(--accent); }
@@ -721,6 +724,125 @@
           refreshFeedback();
         }
 
+        // Diff-review feedback state, preserved across the live-updating diff poll.
+        const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
+        let dcid = 0, diffKey = null, lastDiffState = null;
+        const assembleDiffNotes = (general) => {
+          let out = "Please make these changes to the code:\n\n";
+          diffComments.forEach((c, i) => {
+            const loc = c.lnA === c.lnB ? `line ${c.lnA}` : `lines ${c.lnA}-${c.lnB}`;
+            out += `${i + 1}. ${c.file} (${loc}):\n> ${c.snippet.replace(/\n/g, "\n> ")}\n   Comment: ${c.comment}\n\n`;
+          });
+          if (general.trim()) out += `General feedback: ${general.trim()}\n`;
+          return out;
+        };
+
+        // The <tr> (with a line number) containing a selection/click node.
+        const rowOf = (node, table) => {
+          let el = node && node.nodeType === 3 ? node.parentElement : node;
+          while (el && el !== table && el.tagName !== "TR") el = el.parentElement;
+          return el && el.tagName === "TR" && el.dataset.ln ? el : null;
+        };
+
+        function renderDiffTab(t, files) {
+          const editable = t.state === "review" || t.state === "building";
+          const working = t.state === "building";
+          const fIns = files.reduce((a, f) => a + f.add, 0), fDel = files.reduce((a, f) => a + f.del, 0);
+          const body = $("#tabbody");
+          const fileHtml = files.map((f) => `
+            <div class="file" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
+              <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span></div>
+              <table>${f.rows.map((r) => r.t === "hunk"
+                ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${esc(r.text)}</td></tr>`
+                : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${esc(r.text)}</td></tr>`).join("")}</table></div>`).join("");
+          body.innerHTML = `
+            <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${fIns}</span> <span style="color:var(--red)">−${fDel}</span></span>
+              ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
+            ${files.length ? fileHtml : '<div class="empty">No file changes yet.</div>'}
+            ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
+              <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
+            <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
+
+          if (editable) {
+            body.querySelectorAll(".file").forEach((fileEl) => {
+              const file = fileEl.dataset.file, table = fileEl.querySelector("table");
+              if (!table) return;
+              table.addEventListener("mouseup", () => setTimeout(() => {
+                const sel = window.getSelection(); if (sel.rangeCount === 0) return;
+                const text = sel.toString();
+                if (text.trim()) {
+                  const sa = rowOf(sel.anchorNode, table), sb = rowOf(sel.focusNode, table);
+                  if (!sa && !sb) return;
+                  let a = +((sa || sb).dataset.ln), b = +((sb || sa).dataset.ln); if (a > b) [a, b] = [b, a];
+                  showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addDiffComment(file, a, b, text, comment));
+                } else {
+                  const tr = rowOf(sel.anchorNode, table); if (!tr || tr.classList.contains("hunk")) return;
+                  const ln = +tr.dataset.ln, snippet = tr.querySelector(".code").textContent;
+                  showCommentPop(tr.getBoundingClientRect(), (comment) => addDiffComment(file, ln, ln, snippet, comment));
+                }
+              }, 0));
+            });
+            $("#dgeneral").oninput = updateDiffActions;
+          }
+          applyDiffHighlights();
+          refreshDiffFeedback();
+        }
+
+        function applyDiffHighlights() {
+          const body = $("#tabbody"); if (!body) return;
+          body.querySelectorAll("tr.dhl").forEach((r) => r.classList.remove("dhl"));
+          diffComments.forEach((c) => {
+            const fileEl = Array.from(body.querySelectorAll(".file")).find((el) => el.dataset.file === c.file);
+            if (!fileEl) return;
+            fileEl.querySelectorAll("tr[data-ln]").forEach((tr) => { const ln = +tr.dataset.ln; if (ln >= c.lnA && ln <= c.lnB) tr.classList.add("dhl"); });
+          });
+        }
+        const addDiffComment = (file, lnA, lnB, snippet, comment) => {
+          const idc = ++dcid;
+          diffComments.push({ id: idc, file, lnA: lnA || lnB, lnB: lnB || lnA, snippet: snippet.trim().slice(0, 400), comment });
+          window.getSelection().removeAllRanges();
+          applyDiffHighlights(); refreshDiffFeedback();
+        };
+        const removeDiffComment = (idc) => {
+          const i = diffComments.findIndex((c) => c.id === idc); if (i >= 0) diffComments.splice(i, 1);
+          applyDiffHighlights(); refreshDiffFeedback();
+        };
+        function refreshDiffFeedback() {
+          const list = $("#difflist");
+          if (list) {
+            list.innerHTML = diffComments.map((c) => {
+              const loc = c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
+              return `<div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
+                <span class="psnip">${esc(c.file)}${esc(loc)} · ${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 90))}</span>
+                <span class="pctext">${esc(c.comment)}</span></div>`;
+            }).join("");
+            list.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeDiffComment(+x.dataset.id)));
+          }
+          updateDiffActions();
+        }
+        function updateDiffActions() {
+          const actions = $("#diffactions"), hint = $("#diffhint"); if (!actions) return;
+          const general = $("#dgeneral") ? $("#dgeneral").value.trim() : "";
+          if (diffComments.length || general) {
+            hint.textContent = "Your comments will be sent to the coding agent to make changes.";
+            actions.innerHTML = `<button class="btn" id="clearrc">Clear</button><button class="btn primary" id="requestChanges">Request Changes</button>`;
+            $("#clearrc").onclick = () => { diffComments.length = 0; if ($("#dgeneral")) $("#dgeneral").value = ""; applyDiffHighlights(); refreshDiffFeedback(); };
+            $("#requestChanges").onclick = async () => {
+              const btn = $("#requestChanges"); btn.disabled = true; btn.textContent = "requesting…";
+              const notes = assembleDiffNotes($("#dgeneral") ? $("#dgeneral").value : "");
+              try { await App.call("task.request_changes", { task_id: id, comments: notes }); diffComments.length = 0; if ($("#dgeneral")) $("#dgeneral").value = ""; diffKey = null; hideCommentPop(); paint(); }
+              catch (e) { btn.disabled = false; btn.textContent = "Request Changes"; hint.textContent = "error: " + e.message.slice(0, 50); }
+            };
+          } else if (lastDiffState === "review") {
+            hint.textContent = "Select code or click a line number to comment, or approve.";
+            actions.innerHTML = `<button class="btn primary" id="approveMerge">Approve &amp; merge</button>`;
+            $("#approveMerge").onclick = async () => { const am = $("#approveMerge"); am.disabled = true; am.textContent = "merging…"; try { await App.call("task.approve_merge", { task_id: id }); go({ name: "board" }); } catch (e) { am.textContent = "merge failed"; } };
+          } else if (lastDiffState === "building") {
+            hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
+            actions.innerHTML = "";
+          } else { hint.textContent = ""; actions.innerHTML = ""; }
+        }
+
         const paint = async () => {
           let t; try { t = await App.call("task.get", { task_id: id }); } catch (e) { return; }
           if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
@@ -738,21 +860,15 @@
             let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
             try { diff = await App.call("task.diff", { task_id: id }); } catch (e) {}
             const files = parseDiff(diff.patch).filter((f) => !f.path.startsWith(".build/") && !f.path.includes("__pycache__") && f.path !== "uv.lock");
-            const fIns = files.reduce((a, f) => a + f.add, 0), fDel = files.reduce((a, f) => a + f.del, 0);
-            const fileHtml = files.map((f) => `
-              <div class="file"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-                <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span></div>
-                <table>${f.rows.map((r) => r.t === "hunk"
-                  ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${esc(r.text)}</td></tr>`
-                  : `<tr class="${r.t}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${esc(r.text)}</td></tr>`).join("")}</table></div>`).join("");
-            const working = t.state === "building";
-            body.innerHTML = `
-              <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${fIns}</span> <span style="color:var(--red)">−${fDel}</span></span>
-                ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
-              ${files.length ? fileHtml : '<div class="empty">No file changes yet.</div>'}
-              <div class="actionbar"><span class="hint">Comment on lines to request changes — or approve.</span>
-                <div class="right">${t.state === "review" ? '<button class="btn" id="reqChanges">Request changes</button><button class="btn primary" id="approveMerge">Approve &amp; merge</button>' : ""}</div></div>`;
-            const am = $("#approveMerge"); if (am) am.onclick = async () => { am.disabled = true; am.textContent = "merging…"; try { await App.call("task.approve_merge", { task_id: id }); go({ name: "board" }); } catch (e) { am.textContent = "merge failed"; } };
+            lastDiffState = t.state;
+            const key = t.state + " " + diff.patch;
+            const gen = $("#dgeneral");
+            // Freeze the diff while the user is actively commenting (pending comments,
+            // open popover, or text in the general box) so anchors/selection survive.
+            const busy = diffComments.length > 0 || _pop || (gen && (gen.value.trim() || document.activeElement === gen));
+            if ($("#diff-feedback") && (key === diffKey || busy)) { updateDiffActions(); return; }
+            diffKey = key;
+            renderDiffTab(t, files);
           }
         };
         shell(null); await paint();

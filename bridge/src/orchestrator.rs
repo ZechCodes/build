@@ -201,15 +201,20 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Submit a batch of diff comments: correct in the still-warm build session.
+    /// Submit a batch of diff comments: address them in a **fresh** build session.
+    /// Valid both from `review` (agent done) and `building` (agent still running) —
+    /// any running session is ended first, so a change request redirects the build
+    /// at any time. The agent's in-progress work stays in the worktree as the
+    /// starting point.
     pub fn request_changes(
         &self,
         active: &mut ActiveTask,
         comments: &str,
     ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::RequestChanges)?;
+        self.end_session(active);
         let prompt = self.render(&self.templates.review_changes, active, comments);
-        self.prompt_warm_session(active, &prompt)?;
+        active.session = Some(self.spawn(&active.worktree, &prompt)?);
         Ok(())
     }
 
@@ -558,6 +563,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.task.state, TaskState::PlanReview);
+    }
+
+    #[tokio::test]
+    async fn request_changes_respawns_build_from_review_and_while_building() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(TaskId::new("c1"), "do work", TaskKind::Quick, "main")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+
+        // While the agent is still building, a change request redirects it: the task
+        // stays Building with a fresh session.
+        orch.request_changes(&mut t, "use the repository pattern")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        assert!(t.subscribe().is_some(), "a fresh session is warm");
+
+        // The agent finishes → Review; a change request from Review re-spawns build.
+        std::fs::write(t.worktree.path.join("out.txt"), "v1\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+        orch.request_changes(&mut t, "rename out.txt to result.txt")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        // The in-progress work is still in the worktree for the new session.
+        assert!(t.worktree.path.join("out.txt").exists());
     }
 
     #[tokio::test]

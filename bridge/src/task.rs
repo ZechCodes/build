@@ -174,8 +174,10 @@ pub fn transition(
         (PlanReview, E::SendNotes) => Ok(Planning),
         (PlanReview, E::ApprovePlan) => Ok(Building),
 
-        // Building: same interruption shapes as planning.
+        // Building: same interruption shapes as planning. Change requests are also
+        // accepted *while* the agent works — it redirects the running build.
         (Building, E::BuildReady) => Ok(Review),
+        (Building, E::RequestChanges) => Ok(Building),
         (Building, E::Blocked) => Ok(Blocked(Build)),
         (Building, E::Failed) => Ok(Failed(Build)),
         (Building, E::WentIdle) => Ok(IdleUnreported(Build)),
@@ -315,6 +317,20 @@ mod tests {
                 (TaskEvent::RequestChanges, TaskState::Building),
                 (TaskEvent::BuildReady, TaskState::Review),
                 (TaskEvent::ApproveMerge, TaskState::Merged),
+            ],
+        );
+    }
+
+    #[test]
+    fn request_changes_while_building_redirects_the_agent() {
+        // A change request can land while the build agent is still running.
+        drive(
+            TaskKind::Quick,
+            &[
+                (TaskEvent::Dispatch, TaskState::Building),
+                (TaskEvent::RequestChanges, TaskState::Building),
+                (TaskEvent::BuildReady, TaskState::Review),
+                (TaskEvent::RequestChanges, TaskState::Building),
             ],
         );
     }

@@ -402,6 +402,7 @@ impl AppState {
             "task.plan" => self.task_plan(params),
             "task.diff" => self.task_diff(params),
             "task.approve_plan" => self.task_approve_plan(params),
+            "task.send_notes" => self.task_send_notes(params),
             "task.approve_merge" => self.task_approve_merge(params),
             "task.abandon" => self.task_abandon(params),
             "stream.events" => self.stream_events(params),
@@ -831,6 +832,28 @@ impl AppState {
                 .map_err(err)?;
             if self.qa_agent {
                 self.simulate_build(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let view = self.task_view(&task_id, &active);
+        self.tasks.insert(task_id, active);
+        outcome?;
+        Ok(view)
+    }
+
+    /// Send the reviewer's plan comments back to the agent to revise the plan
+    /// (plan_review → planning → … → plan_review).
+    fn task_send_notes(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let comments = require_str(params, "comments")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .send_notes(&mut active, &comments)
+                .map_err(err)?;
+            if self.qa_agent {
+                self.simulate_plan(&project_id, &mut active)?;
             }
             Ok(())
         })();
@@ -1417,6 +1440,40 @@ mod tests {
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(repo.join("result.txt").exists());
+    }
+
+    #[test]
+    fn send_notes_reruns_planning() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "plan_review");
+
+        // Requesting updates re-runs planning (QA simulates it) → back to plan_review.
+        let upd = state.handle(req(
+            "task.send_notes",
+            json!({ "task_id": task_id, "comments": "On \"step 1\": please add error handling." }),
+        ));
+        assert_eq!(upd["ok"], true, "{upd:?}");
+        assert_eq!(upd["result"]["state"], "plan_review");
+        // The plan is still readable afterwards.
+        let plan = state.handle(req("task.plan", json!({ "task_id": task_id })));
+        assert!(plan["result"]["contents"]
+            .as_str()
+            .unwrap()
+            .contains("greeting"));
+
+        // Missing comments is a clean error.
+        let bad = state.handle(req("task.send_notes", json!({ "task_id": task_id })));
+        assert_eq!(bad["ok"], false);
+        assert!(bad["error"].as_str().unwrap().contains("comments"));
     }
 
     #[test]

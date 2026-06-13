@@ -104,6 +104,19 @@
       .plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
       .plan pre { background:#f4f4f5; padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
       .plan-loading { color:var(--dim); padding:30px; text-align:center; }
+      .plan ::selection, .plan::selection { background:#c7d2fe; }
+      .plan mark.phl { background:#fde68a; border-radius:2px; padding:0 1px; }
+      /* plan review comments */
+      .plan-feedback { max-width:780px; margin-top:14px; }
+      .plan-general { width:100%; min-height:60px; margin-top:8px; }
+      .pcomment { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:8px 30px 8px 12px; margin-bottom:8px; font-size:13px; position:relative; }
+      .pcomment .psnip { color:var(--ink2); font-style:italic; font-size:12px; border-left:2px solid var(--line); padding-left:8px; margin-bottom:5px; display:block; }
+      .pcomment .pctext { color:var(--ink); }
+      .pcomment .pcx { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
+      .pcomment .pcx:hover { color:var(--red); }
+      .comment-pop { position:fixed; z-index:60; background:#18181b; border-radius:9px; padding:6px; box-shadow:0 8px 24px rgba(0,0,0,.28); display:flex; gap:6px; align-items:center; }
+      .comment-pop button { font:inherit; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
+      .comment-pop input { font:inherit; border:none; border-radius:6px; padding:6px 9px; width:240px; color:var(--ink); }
       /* diff */
       .diffbar { display:flex; align-items:center; gap:14px; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
       .file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:hidden; }
@@ -583,6 +596,32 @@
         };
       }
 
+      // A floating "Comment" popover anchored to a text selection in the plan.
+      let _pop = null;
+      function hideCommentPop() {
+        if (_pop) { if (_pop._onDown) document.removeEventListener("mousedown", _pop._onDown); _pop.remove(); _pop = null; }
+      }
+      function showCommentPop(rect, onAdd) {
+        hideCommentPop();
+        const pop = document.createElement("div");
+        pop.className = "comment-pop";
+        pop.style.top = rect.bottom + 6 + "px";
+        pop.style.left = Math.max(8, rect.left) + "px";
+        pop.innerHTML = `<button class="cp-add">💬 Comment</button>`;
+        document.body.appendChild(pop);
+        pop.querySelector(".cp-add").onclick = () => {
+          pop.innerHTML = `<input class="cp-input" placeholder="Comment on this passage…" /><button class="cp-save">Add</button>`;
+          const input = pop.querySelector(".cp-input"); input.focus();
+          const save = () => { const v = input.value.trim(); if (v) onAdd(v); hideCommentPop(); };
+          pop.querySelector(".cp-save").onclick = save;
+          input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); save(); } else if (e.key === "Escape") hideCommentPop(); };
+        };
+        const onDown = (e) => { if (_pop && !_pop.contains(e.target)) hideCommentPop(); };
+        setTimeout(() => document.addEventListener("mousedown", onDown), 0);
+        pop._onDown = onDown;
+        _pop = pop;
+      }
+
       async function renderTask() {
         const root = $("#root");
         const id = App.route.id; let tab = App.route.tab || "plan";
@@ -601,18 +640,100 @@
           root.querySelectorAll(".tabs .t").forEach((e) => (e.onclick = () => { tab = e.dataset.tab; App.route.tab = tab; root.querySelectorAll(".tabs .t").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab)); paint(); }));
         };
         let last = null;
+        // Plan-review feedback state, preserved across the 1.6s poll.
+        const planComments = []; // { id, snippet, comment }
+        let cid = 0, planKey = null;
+        const assembleNotes = (general) => {
+          let out = "Please revise the plan to address this review feedback.\n\n";
+          planComments.forEach((c, i) => {
+            const snip = c.snippet.replace(/\s+/g, " ").trim();
+            out += `${i + 1}. On the passage: "${snip}"\n   Comment: ${c.comment}\n\n`;
+          });
+          if (general.trim()) out += `General feedback: ${general.trim()}\n`;
+          return out;
+        };
+
+        // Build the plan tab: rendered markdown + select-to-comment + a general
+        // comment box + an action button that morphs to "Request Updates".
+        function renderPlanTab(t, plan) {
+          planComments.length = 0; // a freshly (re)rendered plan starts with no comments
+          const editable = t.state === "plan_review";
+          const body = $("#tabbody");
+          body.innerHTML = `
+            <div class="plan" id="planbody">${renderMarkdown(plan)}</div>
+            ${editable ? `<div class="plan-feedback"><div id="pclist"></div>
+              <textarea id="pgeneral" class="plan-general" placeholder="Add a general comment about the plan and request updates…"></textarea></div>` : ""}
+            <div class="actionbar"><span class="hint" id="phint"></span><div class="right" id="pactions"></div></div>`;
+          const pclist = $("#pclist"), pactions = $("#pactions"), phint = $("#phint");
+
+          const removeComment = (idc) => {
+            const i = planComments.findIndex((c) => c.id === idc); if (i >= 0) planComments.splice(i, 1);
+            const mark = document.querySelector(`mark.phl[data-cid="${idc}"]`);
+            if (mark) { const par = mark.parentNode; while (mark.firstChild) par.insertBefore(mark.firstChild, mark); par.removeChild(mark); par.normalize(); }
+            refreshFeedback();
+          };
+          const updateActions = () => {
+            const general = editable && $("#pgeneral") ? $("#pgeneral").value.trim() : "";
+            if (!editable) { pactions.innerHTML = ""; phint.textContent = ""; return; }
+            if (planComments.length || general) {
+              phint.textContent = "Your comments will be sent to the planning agent to revise the plan.";
+              pactions.innerHTML = `<button class="btn" id="clearfb">Clear</button><button class="btn primary" id="requestUpdates">Request Updates</button>`;
+              $("#clearfb").onclick = () => { planComments.slice().forEach((c) => removeComment(c.id)); if ($("#pgeneral")) $("#pgeneral").value = ""; refreshFeedback(); };
+              $("#requestUpdates").onclick = async () => {
+                const btn = $("#requestUpdates"); btn.disabled = true; btn.textContent = "requesting updates…";
+                const notes = assembleNotes($("#pgeneral") ? $("#pgeneral").value : "");
+                try { await App.call("task.send_notes", { task_id: id, comments: notes }); planComments.length = 0; planKey = null; hideCommentPop(); paint(); }
+                catch (e) { btn.disabled = false; btn.textContent = "Request Updates"; phint.textContent = "error: " + e.message.slice(0, 50); }
+              };
+            } else {
+              phint.textContent = "Select text in the plan to comment, or approve to start the build.";
+              pactions.innerHTML = `<button class="btn primary" id="approvePlan">Approve plan &amp; start build</button>`;
+              $("#approvePlan").onclick = async () => { const ap = $("#approvePlan"); ap.disabled = true; ap.textContent = "starting build…"; await App.call("task.approve_plan", { task_id: id }); App.route.tab = "diff"; tab = "diff"; planKey = null; paint(); };
+            }
+          };
+          function refreshFeedback() {
+            if (pclist) {
+              pclist.innerHTML = planComments.map((c) => `
+                <div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
+                  <span class="psnip">${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 160))}</span>
+                  <span class="pctext">${esc(c.comment)}</span></div>`).join("");
+              pclist.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeComment(+x.dataset.id)));
+            }
+            updateActions();
+          }
+          const addComment = (snippet, comment, range) => {
+            const idc = ++cid;
+            planComments.push({ id: idc, snippet, comment });
+            try { const mark = document.createElement("mark"); mark.className = "phl"; mark.dataset.cid = idc; range.surroundContents(mark); } catch (e) {}
+            window.getSelection().removeAllRanges();
+            refreshFeedback();
+          };
+          if (editable) {
+            const planEl = $("#planbody");
+            planEl.addEventListener("mouseup", () => setTimeout(() => {
+              const sel = window.getSelection(); const text = sel.toString().trim();
+              if (!text || sel.rangeCount === 0 || !planEl.contains(sel.anchorNode) || !planEl.contains(sel.focusNode)) return;
+              const range = sel.getRangeAt(0).cloneRange();
+              showCommentPop(range.getBoundingClientRect(), (comment) => addComment(text, comment, range));
+            }, 0));
+            $("#pgeneral").oninput = updateActions;
+          }
+          refreshFeedback();
+        }
+
         const paint = async () => {
           let t; try { t = await App.call("task.get", { task_id: id }); } catch (e) { return; }
           if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
           last = t;
           const body = $("#tabbody");
           if (tab === "plan") {
-            if (t.state === "planning" || t.state === "created") { body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>'; return; }
+            if (t.state === "planning" || t.state === "created") { body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>'; planKey = "drafting"; planComments.length = 0; return; }
             let plan = ""; try { plan = (await App.call("task.plan", { task_id: id })).contents; } catch (e) {}
-            body.innerHTML = `<div class="plan">${renderMarkdown(plan)}</div>
-              <div class="actionbar"><span class="hint">Review the plan. Approve to start the build in a fresh session.</span>
-                <div class="right">${t.state === "plan_review" ? '<button class="btn primary" id="approvePlan">Approve plan &amp; start build</button>' : ""}</div></div>`;
-            const ap = $("#approvePlan"); if (ap) ap.onclick = async () => { ap.disabled = true; ap.textContent = "starting build…"; await App.call("task.approve_plan", { task_id: id }); App.route.tab = "diff"; tab = "diff"; };
+            const key = t.state + " " + plan;
+            // Skip rebuild when nothing changed, so comments / typed text / selection survive the poll.
+            if (planKey === key && $("#planbody")) return;
+            planKey = key;
+            renderPlanTab(t, plan);
           } else {
             let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
             try { diff = await App.call("task.diff", { task_id: id }); } catch (e) {}

@@ -185,15 +185,19 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Submit a batch of plan notes: revise in the still-warm planning session.
+    /// Submit a batch of plan notes: re-plan against them in a **fresh** session.
+    /// The existing plan file is the agent's starting point (the revise template
+    /// points at it), so a cold agent can revise it — same discipline as
+    /// `approve_plan` starting the build cold.
     pub fn send_notes(
         &self,
         active: &mut ActiveTask,
         notes: &str,
     ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::SendNotes)?;
+        self.end_session(active);
         let prompt = self.render(&self.templates.revise, active, notes);
-        self.prompt_warm_session(active, &prompt)?;
+        active.session = Some(self.spawn(&active.worktree, &prompt)?);
         Ok(())
     }
 
@@ -508,6 +512,52 @@ mod tests {
 
         orch.reply(&mut t, "use the staging credentials").unwrap();
         assert_eq!(t.task.state, TaskState::Building);
+    }
+
+    #[tokio::test]
+    async fn send_notes_revises_then_returns_to_plan_review() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(
+                TaskId::new("p1"),
+                "add greeting",
+                TaskKind::Standard,
+                "main",
+            )
+            .unwrap();
+
+        // First plan → PlanReview.
+        std::fs::write(t.worktree.path.join(".build/plan.md"), "# Plan v1\n").unwrap();
+        orch.on_done(
+            &mut t,
+            done(
+                DonePhase::Plan,
+                DoneStatus::Completed,
+                Some(".build/plan.md"),
+            ),
+        )
+        .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+
+        // Request updates → back to Planning in a fresh revise session.
+        orch.send_notes(&mut t, "tighten step 2 and add error handling")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Planning);
+        assert!(t.subscribe().is_some(), "a fresh revise session is warm");
+
+        // The agent revises the plan and reports done again → PlanReview.
+        std::fs::write(t.worktree.path.join(".build/plan.md"), "# Plan v2\n").unwrap();
+        orch.on_done(
+            &mut t,
+            done(
+                DonePhase::Plan,
+                DoneStatus::Completed,
+                Some(".build/plan.md"),
+            ),
+        )
+        .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
     }
 
     #[tokio::test]

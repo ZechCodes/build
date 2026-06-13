@@ -249,6 +249,33 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Commit any outstanding work on the task branch (the implicit commit step
+    /// every finish action shares). Keeps the worktree; no lifecycle change.
+    pub fn commit(&self, active: &ActiveTask) -> Result<(), OrchestratorError> {
+        self.commit_all(&active.worktree.path, &active.task.goal)
+    }
+
+    /// Commit, then push the task branch to its `origin`. Keeps the worktree, so
+    /// the agent can keep working / the user can open a PR. Errors if there is no
+    /// push destination configured.
+    pub fn push(&self, active: &ActiveTask) -> Result<(), OrchestratorError> {
+        self.commit_all(&active.worktree.path, &active.task.goal)?;
+        self.git(
+            &active.worktree.path,
+            &["push", "-u", "origin", &active.worktree.branch],
+        )?;
+        Ok(())
+    }
+
+    /// Approve & merge (as [`approve_merge`](Self::approve_merge)) and then push
+    /// the updated base branch to `origin`.
+    pub fn merge_and_push(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
+        let base = active.worktree.base_branch.clone();
+        self.approve_merge(active)?;
+        self.git(&self.repo_path, &["push", "origin", &base])?;
+        Ok(())
+    }
+
     /// Abandon: release the session and remove the worktree, keeping the branch.
     pub fn abandon(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Abandon)?;
@@ -591,6 +618,74 @@ mod tests {
         assert_eq!(t.task.state, TaskState::Building);
         // The in-progress work is still in the worktree for the new session.
         assert!(t.worktree.path.join("out.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn commit_keeps_worktree_push_and_merge_push_reach_origin() {
+        let (dir, repo) = init_repo();
+        // A bare origin, wired as the repo's remote (worktrees share it).
+        let origin = dir.path().join("origin.git");
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-b", "main", origin.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success());
+        let git_origin = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("--git-dir")
+                .arg(&origin)
+                .args(args)
+                .output()
+                .unwrap();
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
+        };
+
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(TaskId::new("g1"), "do work", TaskKind::Quick, "main")
+            .unwrap();
+        std::fs::write(t.worktree.path.join("f.txt"), "hi\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+
+        // Commit: keeps the worktree and the Review state.
+        orch.commit(&t).unwrap();
+        assert!(t.worktree.path.exists());
+        assert_eq!(t.task.state, TaskState::Review);
+
+        // Push: the feature branch lands in origin; worktree still there.
+        orch.push(&t).unwrap();
+        assert!(
+            git_origin(&["rev-parse", &t.worktree.branch]).0,
+            "feature branch pushed"
+        );
+        assert!(t.worktree.path.exists());
+
+        // Merge + push: base updated in origin, task merged, worktree gone.
+        orch.merge_and_push(&mut t).unwrap();
+        assert_eq!(t.task.state, TaskState::Merged);
+        assert!(!t.worktree.path.exists());
+        let (ok, tree) = git_origin(&["ls-tree", "--name-only", "main"]);
+        assert!(
+            ok && tree.contains("f.txt"),
+            "base pushed with the work: {tree:?}"
+        );
     }
 
     #[tokio::test]

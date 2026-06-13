@@ -130,6 +130,16 @@
       .file td.ln:hover { color:var(--accent); }
       .file ::selection { background:#c7d2fe; }
       tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !important; color:#92400e; }
+      /* github-style split action button */
+      .splitbtn { position:relative; display:inline-flex; }
+      .splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }
+      .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid rgba(255,255,255,.3); padding:8px 9px; }
+      .splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:25; }
+      .splitmenu[hidden] { display:none; }
+      .splitmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+      .splitmenu .mi:hover { background:var(--accent-soft); }
+      .splitmenu .mi .mt { color:var(--ink); font-weight:550; }
+      .splitmenu .mi .md { color:var(--dim); font-size:11px; }
       tr.add td { background:var(--green-bg); } tr.add td.code { color:#14532d; }
       tr.del td { background:var(--red-bg); } tr.del td.code { color:#7f1d1d; }
       tr.hunk td { background:#f6f6fb; color:var(--accent); }
@@ -726,7 +736,7 @@
 
         // Diff-review feedback state, preserved across the live-updating diff poll.
         const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
-        let dcid = 0, diffKey = null, lastDiffState = null;
+        let dcid = 0, diffKey = null, lastDiffState = null, diffMsg = "";
         const assembleDiffNotes = (general) => {
           let out = "Please make these changes to the code:\n\n";
           diffComments.forEach((c, i) => {
@@ -834,9 +844,42 @@
               catch (e) { btn.disabled = false; btn.textContent = "Request Changes"; hint.textContent = "error: " + e.message.slice(0, 50); }
             };
           } else if (lastDiffState === "review") {
-            hint.textContent = "Select code or click a line number to comment, or approve.";
-            actions.innerHTML = `<button class="btn primary" id="approveMerge">Approve &amp; merge</button>`;
-            $("#approveMerge").onclick = async () => { const am = $("#approveMerge"); am.disabled = true; am.textContent = "merging…"; try { await App.call("task.approve_merge", { task_id: id }); go({ name: "board" }); } catch (e) { am.textContent = "merge failed"; } };
+            // A recent git-action result (Committed./Pushed./error) outlives the poll.
+            hint.textContent = diffMsg || "Select code or click a line number to comment, or finish the worktree.";
+            // GitHub-style split button: primary runs the default (merge), the caret
+            // opens the full menu. Every action commits first; push is explicit.
+            actions.innerHTML = `
+              <div class="splitbtn">
+                <button class="btn primary" id="gitprimary" data-action="merge">Merge</button>
+                <button class="btn primary caret" id="gitcaret" title="More actions">▾</button>
+                <div class="splitmenu" id="gitmenu" hidden>
+                  <div class="mi" data-action="commit"><span class="mt">Commit</span><span class="md">commit the work, stay on the branch</span></div>
+                  <div class="mi" data-action="merge"><span class="mt">Merge</span><span class="md">commit, then merge into ${esc(last && last.base_branch || "main")}</span></div>
+                  <div class="mi" data-action="merge_push"><span class="mt">Merge &amp; push</span><span class="md">merge, then push ${esc(last && last.base_branch || "main")} to origin</span></div>
+                  <div class="mi" data-action="push"><span class="mt">Push</span><span class="md">commit, then push this branch to origin</span></div>
+                </div>
+              </div>`;
+            const labels = { commit: "committing…", merge: "merging…", merge_push: "merging & pushing…", push: "pushing…" };
+            const flash = (msg) => { diffMsg = msg; setTimeout(() => { diffMsg = ""; updateDiffActions(); }, 6000); };
+            const run = async (action, btn) => {
+              btn.disabled = true; diffMsg = ""; const orig = btn.textContent; btn.textContent = labels[action] || "working…";
+              try {
+                await App.call("task.git_action", { task_id: id, action });
+                if (action === "merge" || action === "merge_push") { go({ name: "board" }); }
+                else { flash(action === "commit" ? "Committed." : "Pushed " + (last && last.branch || "branch") + "."); diffKey = null; paint(); }
+              } catch (e) { btn.disabled = false; btn.textContent = orig; flash("error: " + e.message.slice(0, 70)); updateDiffActions(); }
+            };
+            $("#gitprimary").onclick = (e) => run(e.currentTarget.dataset.action, e.currentTarget);
+            const menu = $("#gitmenu");
+            $("#gitcaret").onclick = (e) => {
+              e.stopPropagation();
+              menu.hidden = !menu.hidden;
+              if (!menu.hidden) {
+                const close = (ev) => { if (!$(".splitbtn")?.contains(ev.target)) { menu.hidden = true; document.removeEventListener("mousedown", close); } };
+                setTimeout(() => document.addEventListener("mousedown", close), 0);
+              }
+            };
+            menu.querySelectorAll(".mi").forEach((mi) => (mi.onclick = () => { menu.hidden = true; run(mi.dataset.action, $("#gitprimary")); }));
           } else if (lastDiffState === "building") {
             hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
             actions.innerHTML = "";

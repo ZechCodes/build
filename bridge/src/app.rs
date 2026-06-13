@@ -405,6 +405,7 @@ impl AppState {
             "task.send_notes" => self.task_send_notes(params),
             "task.request_changes" => self.task_request_changes(params),
             "task.approve_merge" => self.task_approve_merge(params),
+            "task.git_action" => self.task_git_action(params),
             "task.abandon" => self.task_abandon(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
@@ -894,6 +895,30 @@ impl AppState {
             .orch_for(&project_id)?
             .approve_merge(&mut active)
             .map_err(err);
+        let view = self.task_view(&task_id, &active);
+        self.tasks.insert(task_id, active);
+        result?;
+        Ok(view)
+    }
+
+    /// Finish-the-worktree git actions from the diff review: `commit` and `push`
+    /// keep the worktree (no lifecycle change); `merge` and `merge_push` merge into
+    /// the base and end the task. Every action commits outstanding work first.
+    fn task_git_action(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let action = require_str(params, "action")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let result = {
+            let orch = self.orch_for(&project_id)?;
+            match action.as_str() {
+                "commit" => orch.commit(&active).map_err(err),
+                "push" => orch.push(&active).map_err(err),
+                "merge" => orch.approve_merge(&mut active).map_err(err),
+                "merge_push" => orch.merge_and_push(&mut active).map_err(err),
+                other => Err(format!("unknown git action: {other}")),
+            }
+        };
         let view = self.task_view(&task_id, &active);
         self.tasks.insert(task_id, active);
         result?;
@@ -1462,6 +1487,55 @@ mod tests {
         // Approve & merge → merged, and the base branch has the file.
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
+        assert!(repo.join("result.txt").exists());
+    }
+
+    #[test]
+    fn git_action_commit_keeps_task_merge_finishes_it() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "do work", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+
+        // Commit keeps the task in review (no merge).
+        let c = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "commit" }),
+        ));
+        assert_eq!(c["ok"], true, "{c:?}");
+        assert_eq!(c["result"]["state"], "review");
+        assert!(
+            !repo.join("result.txt").exists(),
+            "not merged into base yet"
+        );
+
+        // An unknown action is a clean error and leaves the task untouched.
+        let bad = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "rebase" }),
+        ));
+        assert_eq!(bad["ok"], false);
+        assert!(bad["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown git action"));
+
+        // Merge finishes it: base branch carries the work.
+        let m = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "merge" }),
+        ));
+        assert_eq!(m["result"]["state"], "merged");
         assert!(repo.join("result.txt").exists());
     }
 

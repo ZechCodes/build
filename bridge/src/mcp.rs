@@ -115,7 +115,7 @@ impl DoneServer {
             "properties": {
                 "phase": { "type": "string", "enum": ["plan", "build", "revise"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
-                "summary": { "type": "string", "description": "One paragraph: what was done or why it stopped." },
+                "summary": { "type": "string", "description": "A short markdown summary for the human reviewer. Lead with a one-line outcome, then a few '- ' bullet points of the key changes — or, if blocked/failed, what is needed to proceed. Use markdown: bullets, **bold**, and `backticks` for paths and commands. Prefer scannable bullets over one long paragraph." },
                 "outputs": {
                     "type": "object",
                     "properties": {
@@ -315,6 +315,18 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "done");
         assert!(tools[0]["inputSchema"]["properties"]["phase"].is_object());
+    }
+
+    #[test]
+    fn summary_schema_asks_for_markdown_bullets() {
+        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let desc = v["result"]["tools"][0]["inputSchema"]["properties"]["summary"]["description"]
+            .as_str()
+            .unwrap()
+            .to_lowercase();
+        assert!(desc.contains("markdown"), "summary should ask for markdown");
+        assert!(desc.contains("bullet"), "summary should ask for bullets");
     }
 
     #[test]

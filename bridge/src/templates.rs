@@ -19,8 +19,10 @@ do not implement anything. A cold agent with no memory of this conversation shou
 be able to execute the plan from scratch. Write nothing outside `.build/`.
 
 When the plan is ready, call the `done` tool with phase=\"plan\", status=\"completed\",
-a one-paragraph summary, and outputs.plan_path=\"{plan_path}\". If you cannot proceed,
-call `done` with status=\"blocked\" and explain why in the summary.";
+outputs.plan_path=\"{plan_path}\", and a short markdown summary for the reviewer: a
+one-line outcome, then a few `-` bullets of the approach. Use `backticks` for paths
+and commands; prefer scannable bullets over one long paragraph. If you cannot proceed,
+call `done` with status=\"blocked\" and, in the same markdown format, say what you need.";
 
 const BUILD: &str = "\
 Execute the implementation plan at {plan_path}. The goal is:
@@ -30,9 +32,11 @@ Execute the implementation plan at {plan_path}. The goal is:
 Make all changes in this worktree (branched from {base_branch}). Follow the plan.
 
 When the work is complete, call the `done` tool with phase=\"build\",
-status=\"completed\", and a one-paragraph summary of what you did. If you get stuck,
-call `done` with status=\"blocked\" (you need something) or status=\"failed\" (the
-approach did not work) and explain.";
+status=\"completed\", and a short markdown summary for the reviewer: a one-line
+outcome, then a few `-` bullets of the key changes (use `backticks` for paths and
+commands). Prefer scannable bullets over one long paragraph. If you get stuck, call
+`done` with status=\"blocked\" (you need something) or status=\"failed\" (the approach
+did not work) and, in the same markdown format, say what is needed to proceed.";
 
 const REVISE: &str = "\
 The reviewer left notes on the plan at {plan_path}:
@@ -40,8 +44,8 @@ The reviewer left notes on the plan at {plan_path}:
 {comments}
 
 Revise the plan to address every note. Keep writing only inside `.build/`. When done,
-call the `done` tool with phase=\"plan\", status=\"completed\", and
-outputs.plan_path=\"{plan_path}\".";
+call the `done` tool with phase=\"plan\", status=\"completed\", outputs.plan_path=\"{plan_path}\",
+and a short markdown summary (a one-line outcome, then `-` bullets of what changed).";
 
 const REVIEW_CHANGES: &str = "\
 The reviewer requested changes on your diff:
@@ -49,7 +53,8 @@ The reviewer requested changes on your diff:
 {comments}
 
 Address every comment in this worktree. When done, call the `done` tool with
-phase=\"revise\", status=\"completed\", and a one-paragraph summary of what changed.";
+phase=\"revise\", status=\"completed\", and a short markdown summary of what changed
+(a one-line outcome, then `-` bullets). Prefer scannable bullets over one long paragraph.";
 
 /// The four phase templates. Clone-and-edit to override per project.
 #[derive(Debug, Clone)]
@@ -115,6 +120,26 @@ mod tests {
         assert!(t.plan.contains(".build/"));
         assert!(t.build.contains("phase=\"build\""));
         assert!(t.review_changes.contains("phase=\"revise\""));
+    }
+
+    #[test]
+    fn done_summaries_ask_for_markdown_bullets() {
+        let t = Templates::default();
+        for tmpl in [&t.plan, &t.build, &t.revise, &t.review_changes] {
+            let lower = tmpl.to_lowercase();
+            assert!(
+                lower.contains("markdown"),
+                "template should ask for markdown: {tmpl}"
+            );
+            assert!(
+                lower.contains("bullet"),
+                "template should ask for bullets: {tmpl}"
+            );
+            assert!(
+                !lower.contains("one-paragraph"),
+                "no 'one-paragraph' guidance: {tmpl}"
+            );
+        }
     }
 
     #[test]

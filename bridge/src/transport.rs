@@ -170,6 +170,22 @@ pub fn sign_message_b64(identity_private_key_b64: &str, message: &[u8]) -> Resul
     Ok(base64::engine::general_purpose::STANDARD.encode(signature))
 }
 
+/// Verify a *padded* standard-base64 Ed25519 signature over `message` against an
+/// identity public key. The mirror of [`sign_message_b64`] for the relay's WebSocket
+/// auth challenge (`{timestamp}.GET./ws/device`). `b64decode` tolerates both padded
+/// and unpadded base64, so the identity public key may arrive in either form (see
+/// `provision()`, which pads). Pure: no side effects.
+pub fn verify_message_b64(
+    identity_public_key_b64: &str,
+    message: &[u8],
+    signature_b64: &str,
+) -> Result<()> {
+    let public = fixed::<32>(&b64decode(identity_public_key_b64)?, "identity_public_key")?;
+    let signature = fixed::<64>(&b64decode(signature_b64)?, "signature")?;
+    crypto_sign_verify_detached(&signature, message, &public)
+        .map_err(|_| TransportError::Verification)
+}
+
 /// Verify a transport-key signature against a pinned identity public key.
 pub fn verify_transport_key_signature(
     identity_public_key_b64: &str,
@@ -635,6 +651,88 @@ mod tests {
         assert!(matches!(
             decrypt_envelope(&key, &env),
             Err(TransportError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn verify_message_b64_roundtrips_with_sign_message_b64() {
+        let identity = generate_identity_keypair();
+        let challenge = b"1750000000.GET./ws/device";
+        let sig = sign_message_b64(&identity.private_key_b64, challenge).unwrap();
+        verify_message_b64(&identity.public_key_b64, challenge, &sig)
+            .expect("a freshly-signed challenge verifies");
+    }
+
+    #[test]
+    fn verify_message_b64_rejects_tampered_message() {
+        let identity = generate_identity_keypair();
+        let sig =
+            sign_message_b64(&identity.private_key_b64, b"1750000000.GET./ws/device").unwrap();
+        assert_eq!(
+            verify_message_b64(&identity.public_key_b64, b"1750000001.GET./ws/device", &sig),
+            Err(TransportError::Verification)
+        );
+    }
+
+    #[test]
+    fn verify_message_b64_rejects_tampered_signature() {
+        let identity = generate_identity_keypair();
+        let message = b"1750000000.GET./ws/device";
+        let sig = sign_message_b64(&identity.private_key_b64, message).unwrap();
+        // Flip a byte in the decoded signature and re-encode (padded, like the header).
+        let mut raw = base64::engine::general_purpose::STANDARD
+            .decode(&sig)
+            .unwrap();
+        raw[0] ^= 0x01;
+        let tampered = base64::engine::general_purpose::STANDARD.encode(&raw);
+        assert_eq!(
+            verify_message_b64(&identity.public_key_b64, message, &tampered),
+            Err(TransportError::Verification)
+        );
+    }
+
+    #[test]
+    fn verify_message_b64_rejects_wrong_key() {
+        let signer = generate_identity_keypair();
+        let other = generate_identity_keypair();
+        let message = b"1750000000.GET./ws/device";
+        let sig = sign_message_b64(&signer.private_key_b64, message).unwrap();
+        assert_eq!(
+            verify_message_b64(&other.public_key_b64, message, &sig),
+            Err(TransportError::Verification)
+        );
+    }
+
+    #[test]
+    fn verify_message_b64_accepts_padded_and_unpadded_pubkey() {
+        // The identity pubkey may arrive padded (see provision()) or unpadded; both
+        // must verify the same signature.
+        let identity = generate_identity_keypair();
+        let message = b"1750000000.GET./ws/device";
+        let sig = sign_message_b64(&identity.private_key_b64, message).unwrap();
+
+        let unpadded = identity.public_key_b64.trim_end_matches('=').to_string();
+        let padded = base64::engine::general_purpose::STANDARD
+            .encode(b64decode(&identity.public_key_b64).unwrap());
+
+        verify_message_b64(&unpadded, message, &sig).expect("unpadded pubkey verifies");
+        verify_message_b64(&padded, message, &sig).expect("padded pubkey verifies");
+    }
+
+    #[test]
+    fn verify_message_b64_rejects_malformed_inputs() {
+        let identity = generate_identity_keypair();
+        let sig = sign_message_b64(&identity.private_key_b64, b"x").unwrap();
+        // Empty public key → InvalidInput, not a verification failure.
+        assert!(matches!(
+            verify_message_b64("", b"x", &sig),
+            Err(TransportError::InvalidInput(_))
+        ));
+        // Short (non-32-byte) public key → InvalidInput.
+        let short = b64encode(&[0u8; 8]);
+        assert!(matches!(
+            verify_message_b64(&short, b"x", &sig),
+            Err(TransportError::InvalidInput(_))
         ));
     }
 }

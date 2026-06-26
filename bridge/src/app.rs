@@ -1083,7 +1083,7 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
 
 /// Expand a leading `~` / `~/` to the user's home directory; otherwise return the
 /// path unchanged. Lets path fields accept `~/code/foo`.
-fn expand_tilde(path: &str) -> std::path::PathBuf {
+pub(crate) fn expand_tilde(path: &str) -> std::path::PathBuf {
     if path == "~" {
         if let Ok(home) = std::env::var("HOME") {
             return std::path::PathBuf::from(home);

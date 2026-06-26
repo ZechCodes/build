@@ -41,7 +41,7 @@ pub enum TransportError {
 type Result<T> = std::result::Result<T, TransportError>;
 
 /// A base64 (unpadded) keypair, mirroring the reference's field names.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPairB64 {
     pub public_key_b64: String,
     pub private_key_b64: String,

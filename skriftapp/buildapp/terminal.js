@@ -16,11 +16,12 @@ const b64decodeBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const timeout = (ms, msg) => new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms));
 
 export class TerminalSession {
-  constructor({ url, transport, WebSocketImpl, deviceId = "bridge" }) {
+  constructor({ url, transport, WebSocketImpl, deviceId = "bridge", getToken = null }) {
     this.url = url;
     this.transport = transport;
     this.WS = WebSocketImpl;
     this.deviceId = deviceId;
+    this.getToken = getToken;   // async () => gateway token, for the relay handshake
     this._pending = new Map();
     this._reqId = 0;
     this._onOutput = () => {};
@@ -97,9 +98,16 @@ export class TerminalSession {
         timeout(8000, "open timeout"),
       ]);
 
+      // Authenticate to the relay with a gateway token (browser path) so it routes us
+      // only to our own devices; then the relay sends our device's key.
+      if (this.getToken) {
+        const token = await this.getToken();
+        ws.send(JSON.stringify({ type: "authenticate", token }));
+      }
       // E2EE bootstrap (time-boxed so a still-down bridge fails fast → retry).
       const hello = await recvRaw(6000);
       if (!hello || hello.type !== "device_key") throw new Error("expected device_key");
+      this.deviceId = hello.device_id || this.deviceId;
       const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
       const { sessionKeyB64, sessionInit } = await this.transport.createSessionInit({
         sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: hello.transport_public_key,

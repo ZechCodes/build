@@ -16,6 +16,7 @@ pub mod diff;
 pub mod identity;
 pub mod mcp;
 pub mod orchestrator;
+pub mod pairing;
 pub mod pty;
 pub mod relay;
 pub mod task;

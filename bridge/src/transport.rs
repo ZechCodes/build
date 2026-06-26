@@ -136,6 +136,11 @@ pub fn generate_session_key() -> String {
     b64encode(&randombytes_buf(SESSION_KEY_BYTES))
 }
 
+/// `n` cryptographically-random bytes (libsodium CSPRNG). Used for pairing codes.
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    randombytes_buf(n)
+}
+
 // --- identity / verified-device mode ----------------------------------------
 
 /// Sign a transport public key with an identity private key (detached Ed25519).

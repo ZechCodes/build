@@ -19,6 +19,7 @@ pub mod orchestrator;
 pub mod pairing;
 pub mod pty;
 pub mod relay;
+pub mod relay_server;
 pub mod task;
 pub mod templates;
 pub mod transport;

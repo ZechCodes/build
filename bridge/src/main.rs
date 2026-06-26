@@ -12,12 +12,16 @@
 //! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
+//! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
+//! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing (default `http://127.0.0.1:8080`)
+//! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
+//! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 
 use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::transport;
+use build_bridge::{identity, pairing, transport};
 
 #[tokio::main]
 async fn main() {
@@ -72,8 +76,11 @@ async fn serve() {
     );
     let device_url = format!("{}/ws/device", relay_url.trim_end_matches('/'));
 
-    // Load a provisioned identity from the environment (matches the relay DB
-    // seed); fall back to an ephemeral one for the no-auth dev relay.
+    // Identity. A provisioned identity in the environment (matches the relay DB seed)
+    // is a prod/seed override that is treated as already approved and skips pairing.
+    // Otherwise the bridge loads-or-generates a durable identity and pairs it to a user
+    // account: register as pending, print the pairing code + fingerprint, wait for the
+    // human to approve in the web app, then connect.
     let identity = match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
@@ -87,11 +94,45 @@ async fn serve() {
                 private_key_b64: tp_priv,
             },
         },
-        _ => DeviceIdentity {
-            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
-            identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-            transport: transport::generate_transport_keypair(),
-        },
+        _ => {
+            let identity_path =
+                expand_tilde(&env("BRIDGE_IDENTITY_FILE", "~/.build/identity.json"));
+            let stored = match identity::load(&identity_path) {
+                Ok(Some(stored)) => stored,
+                Ok(None) => {
+                    let fresh = identity::generate(&env("BRIDGE_DEVICE_NAME", &hostname()));
+                    if let Err(e) = identity::save(&identity_path, &fresh) {
+                        eprintln!("could not persist identity to {identity_path:?}: {e}");
+                        std::process::exit(1);
+                    }
+                    fresh
+                }
+                Err(e) => {
+                    eprintln!("could not load identity from {identity_path:?}: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
+            let web_url = env("BRIDGE_WEB_URL", &api_url);
+            let client = reqwest::Client::new();
+            let approved = match pairing::ensure_paired(
+                &client,
+                &api_url,
+                &web_url,
+                &identity_path,
+                stored,
+                Duration::from_secs(2),
+            )
+            .await
+            {
+                Ok(approved) => approved,
+                Err(e) => {
+                    eprintln!("pairing failed: {e}");
+                    std::process::exit(1);
+                }
+            };
+            identity::to_device_identity(&approved)
+        }
     };
 
     // The control socket real agents forward `done` to (and the daemon listens on).
@@ -146,6 +187,29 @@ async fn serve() {
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Expand a leading `~/` against `$HOME`. (The bridge binary is a separate crate from
+/// the lib, so it can't use the lib's `pub(crate)` helper.)
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return std::path::Path::new(&home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// A human-recognizable default device name. Falls back to `bridge` when the host
+/// name can't be determined.
+fn hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "bridge".to_string())
 }
 
 /// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns

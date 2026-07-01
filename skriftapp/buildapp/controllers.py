@@ -54,6 +54,20 @@ class BuildController(Controller):
         html = html.replace("{{USER0}}", email[0:1].upper())
         return Response(html, media_type="text/html")
 
+    @get("/sw.js", sync_to_thread=False)
+    async def service_worker(self) -> Response:
+        """The push service worker, at the root of the /app/ scope so it can
+        control the SPA pages. Never cached immutably — a stale worker would
+        outlive deploys. The worker itself is cache-free (no fetch handler)."""
+        worker_path = STATIC_DIR / "sw.js"
+        if not worker_path.is_file():
+            raise NotFoundException()
+        return Response(
+            worker_path.read_bytes(),
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
+
     @get("/static/{asset_path:path}", sync_to_thread=False)
     async def static_asset(self, asset_path: str) -> Response:
         """Hashed bundle assets, same-origin so the strict CSP allows them."""

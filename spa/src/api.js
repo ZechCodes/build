@@ -38,3 +38,27 @@ export async function revokeDevice(deviceId) {
   const response = await fetch(`/api/devices/${deviceId}/revoke`, { method: "POST" });
   if (!response.ok) throw new Error("revoke failed");
 }
+
+export async function fetchVapidPublicKey() {
+  const response = await fetch("/api/push/vapid-public-key");
+  if (!response.ok) throw new Error("push notifications are not configured on the server");
+  return (await response.json()).public_key;
+}
+
+export async function subscribePush(subscription) {
+  const response = await fetch("/api/push/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(subscription),
+  });
+  if (!response.ok) throw new Error("could not store the push subscription");
+}
+
+export async function unsubscribePush(endpoint) {
+  const response = await fetch("/api/push/unsubscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
+  if (!response.ok) throw new Error("could not remove the push subscription");
+}

@@ -11,6 +11,7 @@ import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
 import { openClone } from "../sheets/clone.js";
 import { openAddDevice } from "../sheets/addDevice.js";
+import { disablePush, enablePush, pushState } from "../push.js";
 
 export async function renderSettings() {
   $("#root").innerHTML = `
@@ -39,6 +40,15 @@ export async function renderSettings() {
       <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
       <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+    </div>
+    <div class="panel">
+      <h3>🔔 Notifications</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Get a nudge when a task needs you — a plan or diff to review, or an agent that's blocked. Notifications are content-free: they never include your goals, plans, or diffs.</div>
+      <div class="addproj">
+        <button class="btn" id="pushtoggle" disabled>checking…</button>
+        <span class="dim" id="pushstate" style="font-size:13px"></span>
+      </div>
+      <div class="adderr" id="pusherr"></div>
     </div>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
@@ -126,6 +136,41 @@ export async function renderSettings() {
       $("#adderr").textContent = e.message;
     }
     $("#addproj").disabled = false;
+  };
+
+  // Notifications: a single toggle backed by the browser's push subscription.
+  const refreshPushToggle = async () => {
+    const toggle = $("#pushtoggle");
+    const stateLabel = $("#pushstate");
+    const state = await pushState();
+    toggle.disabled = state === "unsupported" || state === "denied";
+    if (state === "unsupported") {
+      toggle.textContent = "Not available";
+      stateLabel.textContent = "this browser does not support web push";
+    } else if (state === "denied") {
+      toggle.textContent = "Blocked";
+      stateLabel.textContent = "notifications are blocked in your browser settings";
+    } else if (state === "enabled") {
+      toggle.textContent = "Turn off notifications";
+      stateLabel.textContent = "this browser gets a nudge when a task needs you";
+    } else {
+      toggle.textContent = "Turn on notifications";
+      stateLabel.textContent = "off — you'll only see changes when the app is open";
+    }
+  };
+  await refreshPushToggle();
+  $("#pushtoggle").onclick = async () => {
+    const toggle = $("#pushtoggle");
+    toggle.disabled = true;
+    $("#pusherr").textContent = "";
+    try {
+      const state = await pushState();
+      if (state === "enabled") await disablePush();
+      else await enablePush();
+    } catch (e) {
+      $("#pusherr").textContent = e.message;
+    }
+    await refreshPushToggle();
   };
 
   // Devices: list the user's paired devices (over plain HTTP, not the bridge),

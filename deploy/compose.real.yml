@@ -37,6 +37,13 @@ services:
       SKRIFT_ENV: dev
       SECRET_KEY: ${BUILD_SECRET_KEY:-insecure-dev-only-secret-key}
       INTERNAL_API_SECRET: ${BUILD_INTERNAL_API_SECRET:-compose-dev-internal-secret}
+      # Optional web push for local testing (localhost is a secure context, so
+      # push works over http://localhost). Unset ⇒ the push endpoints answer 503
+      # and the SPA toggle reports push as unconfigured. Generate a pair with
+      # deploy/k8s/bootstrap-secrets.sh's openssl recipe if you want it.
+      VAPID_PRIVATE_KEY: ${BUILD_VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${BUILD_VAPID_PUBLIC_KEY:-}
+      VAPID_SUBJECT: ${BUILD_VAPID_SUBJECT:-mailto:dev@getbuild.ing}
     volumes:
       # Not baked into the image (production-only image): the dev config and a
       # dev entrypoint that seeds Skrift's first-run setup after migrating.

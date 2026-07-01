@@ -1,6 +1,6 @@
-# The Skrift app: auth, device registry, gateway tokens, SPA host.
-# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL) come from
-# deploy/k8s/bootstrap-secrets.sh — never from git.
+# The Skrift app: auth, device registry, gateway tokens, web push, SPA host.
+# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*)
+# come from deploy/k8s/bootstrap-secrets.sh — never from git.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,6 +49,23 @@ spec:
                 secretKeyRef:
                   name: build-app
                   key: DATABASE_URL
+            # Web push (content-free attention notifications): the VAPID pair
+            # the SPA subscribes with and /api/push/notify signs with.
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_PRIVATE_KEY
+            - name: VAPID_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_PUBLIC_KEY
+            - name: VAPID_SUBJECT
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_SUBJECT
           # `/` is unauthenticated and cheap: 302 before setup, CMS root after.
           startupProbe:
             httpGet:

@@ -1,4 +1,9 @@
-# Production config (SKRIFT_ENV defaults to "production"). Dev uses app.dev.yaml.
+# Production config (SKRIFT_ENV=production, the default). Dev uses app.dev.yaml.
+#
+# Required environment (set via the container/deployment, or .env):
+#   SECRET_KEY           — Skrift session signing key
+#   DATABASE_URL         — postgresql+asyncpg://user:pass@host:5432/dbname
+#   INTERNAL_API_SECRET  — shared secret the relay presents as X-Internal-Secret
 controllers:
   - buildapp.controllers:BuildController
   - buildapp.devices_controller:DevicesController
@@ -7,15 +12,29 @@ controllers:
 models:
   - buildapp.models
 db:
-  # Injected by the deployment (k8s Secret) — postgresql+asyncpg://...
+  # Env-driven (Skrift interpolates $VARS at config load, failing fast if unset).
   url: $DATABASE_URL
 auth:
+  # Also the pinned WebAuthn origin/RP ID for passkeys — must match the app host.
   redirect_base_url: https://getbuild.ing
   methods:
     passkey:
       type: passkey
       label: Passkey
-# Production CSP: everything same-origin (the SPA bundle is self-hosted, zero
-# CDN); the browser additionally opens a WSS connection to the relay host.
+rate_limit:
+  enabled: true
+# The relay must present X-Internal-Secret on /internal/* — no localhost fallback.
+internal_api:
+  allow_localhost: false
+# Same-origin CSP: the SPA bundle, fonts, and crypto are all served from this app
+# (no esm.sh, no Google fonts). The only external target is the relay websocket.
+# Deviations from bare 'self', each load-bearing for the SPA:
+#   script-src 'wasm-unsafe-eval' — libsodium compiles WASM (does NOT allow JS eval)
+#   style-src  'unsafe-inline'    — xterm/Monaco inject runtime styles; Skrift's CSP
+#                                   nonce covers script-src only
+#   worker-src blob:              — Monaco editor workers
+#   img-src    data:              — inline-encoded icons
+#   connect-src data:             — ghostty-web instantiates its wasm from a data: URL
 security_headers:
-  content_security_policy: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' wss://relay.getbuild.ing; worker-src 'self' blob:"
+  csp_nonce: true
+  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'"

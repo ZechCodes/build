@@ -34,6 +34,7 @@ RUN chmod +x /app/entrypoint.sh \
 USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    SKRIFT_ENV=production
 EXPOSE 8080
 CMD ["/app/entrypoint.sh"]

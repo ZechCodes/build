@@ -3,4 +3,4 @@
 set -eu
 
 skrift db upgrade heads
-exec skrift serve --host 0.0.0.0 --port "${PORT:-8080}"
+exec skrift serve --host "${HOST:-0.0.0.0}" --port "${PORT:-8080}"

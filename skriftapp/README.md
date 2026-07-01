@@ -35,10 +35,29 @@ write a goal → Create plan → Approve plan & build → watch the diff.
 Automated end-to-end: `node ../web/skrift-flow.mjs` (Playwright: login → full flow →
 screenshots to /tmp/build-app-*.png).
 
-## Production notes
+## Production
 
-- Dummy auth is dev-only (Skrift hard-blocks it in production); swap for real OAuth.
-- The relaxed CSP + esm.sh imports are dev conveniences; production serves the
-  client bundle same-origin (no inline, no esm.sh).
-- The one-time setup is normally the Skrift web wizard; the steps above seed it
-  non-interactively.
+`app.yaml` is the real production config (loaded when `SKRIFT_ENV` is unset or
+`production`): passkey-only auth pinned to `https://getbuild.ing`, rate limiting
+on, env-driven Postgres (`$DATABASE_URL`), and a same-origin CSP whose only
+external target is `wss://relay.getbuild.ing`. Dummy auth, the relaxed CSP, and
+the `/internal/*` localhost fallback live only in `app.dev.yaml`.
+
+Container (migrates then serves — `skrift db upgrade head` runs framework +
+app migrations against `$DATABASE_URL` on every start):
+
+```bash
+podman build -t ghcr.io/8ly-dev/build-app -f Containerfile .
+podman run -e SECRET_KEY=... -e INTERNAL_API_SECRET=... \
+  -e DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db \
+  -p 8080:8080 ghcr.io/8ly-dev/build-app
+```
+
+Required env: `SECRET_KEY`, `DATABASE_URL`, and `INTERNAL_API_SECRET` — the
+shared secret the relay must present as `X-Internal-Secret` on `/internal/*`
+(see `buildapp/internal_auth.py`).
+
+The one-time setup is normally the Skrift web wizard (a fresh deploy serves
+`/setup` until completed); the steps above seed it non-interactively.
+
+Tests: `uv run pytest buildapp/` (from this directory).

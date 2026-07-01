@@ -34,7 +34,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -158,14 +157,14 @@ async fn main() {
 // The tungstenite accept callback's error type is large and fixed by the API.
 #[allow(clippy::result_large_err)]
 async fn serve(
-    tcp: TcpStream,
+    mut tcp: TcpStream,
     shared: Arc<Shared>,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Plain-HTTP health probe? Peek without consuming so the WS handshake otherwise
-    // sees an untouched stream.
-    if peek_is_health_request(&tcp).await? {
-        return answer_health(tcp).await;
+    // Plain-HTTP `GET /health` (Kubernetes liveness/readiness) is answered before
+    // the WebSocket handshake; the check peeks, so upgrades pass through untouched.
+    if relay_server::handle_health_probe(&mut tcp).await? {
+        return Ok(());
     }
 
     // Capture the path + device auth headers during the handshake. Structurally
@@ -239,37 +238,6 @@ fn websocket_limits() -> WebSocketConfig {
         max_frame_size: Some(MAX_WS_MESSAGE_BYTES),
         ..WebSocketConfig::default()
     }
-}
-
-/// Peek enough of the request line to classify a plain `GET /health` probe. Bounded
-/// retries cover a straggling first packet; anything undecided falls through to the
-/// WebSocket handshake, which rejects non-upgrade requests itself.
-async fn peek_is_health_request(tcp: &TcpStream) -> std::io::Result<bool> {
-    // "GET /health" plus one byte of lookahead decides the match.
-    let mut prefix = [0u8; 12];
-    for _ in 0..10 {
-        let peeked = tcp.peek(&mut prefix).await?;
-        if peeked == 0 {
-            return Ok(false); // peer closed before sending a request line
-        }
-        if peeked >= prefix.len() || prefix[..peeked].contains(&b'\r') {
-            return Ok(relay_server::is_health_request(&prefix[..peeked]));
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    Ok(false)
-}
-
-/// Answer a k8s liveness/readiness probe: drain the request, 200, close.
-async fn answer_health(mut tcp: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-    let mut request = [0u8; 1024];
-    let _ = tcp.read(&mut request).await;
-    tcp.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-    )
-    .await?;
-    tcp.shutdown().await?;
-    Ok(())
 }
 
 async fn serve_device(

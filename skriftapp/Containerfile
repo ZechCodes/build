@@ -1,0 +1,39 @@
+# Build app image (ghcr.io/8ly-dev/build-app). Build context: skriftapp/.
+#
+#   podman build -t build-app -f skriftapp/Containerfile skriftapp/
+#
+# Self-contained by design: Skrift comes from the PyPI pin in pyproject.toml
+# (matches the framework checkout HEAD), and the SPA is built in-image by the
+# node stage below — no CDN, no private checkouts.
+
+# --- spa: Vite bundle (multi-stage node builder) ---------------------------
+# Contract with the SPA track: the Vite app lives at skriftapp/spa/ and
+# `npm run build` emits its bundle into skriftapp/buildapp/static/. The build
+# is skipped while spa/ doesn't exist yet (build.html is served inline today).
+FROM docker.io/library/node:22-bookworm-slim AS spa
+WORKDIR /build
+COPY . .
+RUN if [ -f spa/package.json ]; then cd spa && npm ci && npm run build; fi
+
+# --- runtime: uv-managed Python 3.13 ---------------------------------------
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS app
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Dependencies first for layer caching.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# App code + the spa stage's build output (inside buildapp/static when present).
+COPY --from=spa /build/app.yaml /build/entrypoint.sh ./
+COPY --from=spa /build/buildapp ./buildapp
+COPY --from=spa /build/migrations ./migrations
+RUN chmod +x /app/entrypoint.sh \
+ && useradd --create-home --uid 10001 appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH=/app
+EXPOSE 8080
+CMD ["/app/entrypoint.sh"]

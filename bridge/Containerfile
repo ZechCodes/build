@@ -10,8 +10,15 @@ COPY . .
 RUN cargo build --release --bin relay --bin build-bridge
 
 # --- relay: the opaque-envelope forwarder ---------------------------------
+# ca-certificates so the relay can call an https api if API URLs ever leave the
+# cluster; non-root because it needs no privileges at all.
 FROM docker.io/library/debian:bookworm-slim AS relay
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 10001 relay
 COPY --from=build /src/target/release/relay /usr/local/bin/relay
+USER relay
 EXPOSE 8799
 CMD ["relay"]
 

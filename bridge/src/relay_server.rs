@@ -337,6 +337,57 @@ impl RelayState {
     }
 }
 
+/// The request-line prefix that marks a plain-HTTP health probe.
+const HEALTH_REQUEST_PREFIX: &[u8] = b"GET /health";
+
+/// Answer plain-HTTP `GET /health` probes (Kubernetes liveness/readiness) on the
+/// relay's WebSocket port. Peeks at the incoming bytes without consuming them, so
+/// a real WebSocket upgrade can proceed unchanged afterwards. Returns `true` when
+/// the connection was a probe: the 200 response has been written and the caller
+/// should drop the socket.
+pub async fn handle_health_probe(tcp: &mut tokio::net::TcpStream) -> std::io::Result<bool> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut peeked = [0u8; HEALTH_REQUEST_PREFIX.len()];
+    loop {
+        let n = tcp.peek(&mut peeked).await?;
+        if n == 0 {
+            return Ok(false); // peer closed before sending a request line
+        }
+        if peeked[..n] != HEALTH_REQUEST_PREFIX[..n] {
+            return Ok(false); // diverges from `GET /health` → not a probe
+        }
+        if n == peeked.len() {
+            break; // full prefix seen: this is a probe
+        }
+        // Partial prefix: wait for more bytes, but never stall the accept path.
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let body = "ok";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    tcp.write_all(response.as_bytes()).await?;
+    tcp.shutdown().await?;
+    // Drain the (peeked, never consumed) request bytes until the peer closes, so
+    // dropping the socket doesn't RST before the probe reads our response.
+    let drain_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut discard = [0u8; 512];
+    loop {
+        match tokio::time::timeout_at(drain_deadline, tcp.read(&mut discard)).await {
+            Ok(Ok(read)) if read > 0 => {}
+            _ => break, // EOF, error, or deadline: the response is on the wire
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

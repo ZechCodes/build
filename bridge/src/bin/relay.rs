@@ -80,7 +80,12 @@ async fn main() {
 
 // The tungstenite accept callback's error type is large and fixed by the API.
 #[allow(clippy::result_large_err)]
-async fn serve(tcp: TcpStream, shared: Arc<Shared>) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve(mut tcp: TcpStream, shared: Arc<Shared>) -> Result<(), Box<dyn std::error::Error>> {
+    // Plain-HTTP `GET /health` (Kubernetes liveness/readiness) is answered before
+    // the WebSocket handshake; the check peeks, so upgrades pass through untouched.
+    if relay_server::handle_health_probe(&mut tcp).await? {
+        return Ok(());
+    }
     // Capture the path + device auth headers during the handshake. Structurally
     // invalid device upgrades (missing headers) are rejected here with a non-101.
     let captured = Arc::new(std::sync::Mutex::new(Upgrade::default()));

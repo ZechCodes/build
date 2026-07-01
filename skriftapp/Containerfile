@@ -1,0 +1,27 @@
+# Build web app (Skrift) — production image.
+#
+#   podman build -t ghcr.io/8ly-dev/build-app -f Containerfile .
+#   podman run -e SECRET_KEY=... -e DATABASE_URL=postgresql+asyncpg://... \
+#     -e INTERNAL_API_SECRET=... -p 8080:8080 ghcr.io/8ly-dev/build-app
+#
+# The entrypoint runs `skrift db upgrade head` (framework + app migrations)
+# before serving, so a fresh database is migrated on first start.
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    SKRIFT_ENV=production
+
+# Dependency layer first so code changes don't re-resolve.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+COPY app.yaml ./
+COPY buildapp ./buildapp
+COPY migrations ./migrations
+COPY container-entrypoint.sh ./
+RUN chmod +x container-entrypoint.sh
+
+EXPOSE 8080
+ENTRYPOINT ["./container-entrypoint.sh"]

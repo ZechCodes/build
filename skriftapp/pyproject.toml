@@ -1,0 +1,22 @@
+[project]
+name = "buildapp"
+version = "2.0.0"
+description = "Build web app on Skrift — auth, device registry, gateway tokens; serves the SPA"
+requires-python = ">=3.13"
+dependencies = [
+    # passkeys extra pulls in webauthn for the production auth method.
+    # Skrift core already ships asyncpg (Postgres) + aiosqlite (dev).
+    "skrift[passkeys]>=0.2.0a9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+# Virtual project: buildapp/ is imported from the working directory by Skrift's
+# controller loading, so there is nothing to build or install.
+package = false
+# Supply-chain cooldown: don't resolve packages published in the last 7 days.
+exclude-newer = "7 days"

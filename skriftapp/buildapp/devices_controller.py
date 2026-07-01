@@ -55,6 +55,26 @@ def _token_hash(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def device_summary(device: Device) -> dict:
+    """Serialize a device for the browser-facing listing.
+
+    Carries the browser<->relay contract fields (``device_id``, ``approved``,
+    ``status``, ``transport_public_key_b64`` — the SPA seals session keys to the
+    transport key) plus the pre-contract SPA fields (``id``, ``name``,
+    ``fingerprint``, ``last_seen_at``).
+    """
+    return {
+        "device_id": str(device.id),
+        "id": str(device.id),
+        "name": device.name,
+        "fingerprint": pairing_crypto.fingerprint(device.identity_public_key_b64),
+        "approved": device.approved,
+        "status": device.status,
+        "transport_public_key_b64": device.transport_public_key_b64,
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+    }
+
+
 class DevicesController(Controller):
     """Device pairing + gateway-token endpoints. Per-route guards (no class-level guard)
     so public/internal routes sit alongside authenticated ones."""
@@ -180,20 +200,7 @@ class DevicesController(Controller):
                 .order_by(Device.created_at.desc())
             )
         ).scalars().all()
-        return Response(
-            {
-                "devices": [
-                    {
-                        "id": str(d.id),
-                        "name": d.name,
-                        "fingerprint": pairing_crypto.fingerprint(d.identity_public_key_b64),
-                        "status": d.status,
-                        "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
-                    }
-                    for d in rows
-                ]
-            }
-        )
+        return Response({"devices": [device_summary(d) for d in rows]})
 
     @post("/api/devices/{device_id:uuid}/revoke", guards=[auth_guard])
     async def revoke(

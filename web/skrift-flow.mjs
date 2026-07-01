@@ -1,12 +1,18 @@
 // End-to-end through the REAL web app: Skrift dummy login → the Build SPA →
-// write a goal → planning agent → approve → coding agent → live git diffs.
+// new task goal → planning agent → approve plan → coding agent → live git diff.
 // Screenshots each stage to /tmp/build-app-*.png.
 //
-// Prereqs: skrift on :8080, gateway :18090, native bridge in real-agent mode.
+// Prereqs (relay-direct topology, gateway retired):
+//   - skriftapp on APP (dummy auth enabled) serving the built SPA at /app/
+//     (cd spa && npm run build)
+//   - the Rust relay on the SPA's VITE_RELAY_URL (default ws://localhost:18090)
+//   - a paired bridge online (real-agent mode or BRIDGE_QA_AGENT=1)
+//
+// Usage: APP=http://localhost:8090 node skrift-flow.mjs
 
 import { chromium } from "playwright";
 
-const APP = "http://localhost:8080";
+const APP = process.env.APP || "http://localhost:8090";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fail = 0;
 const check = (n, ok, d = "") => { console.log(`${ok ? "✓" : "✗"} ${n}${d ? "  — " + d : ""}`); if (!ok) fail++; };
@@ -16,7 +22,7 @@ const page = await browser.newPage({ viewport: { width: 1500, height: 920 } });
 page.on("console", (m) => { if (m.type() === "error") console.log("[page]", m.text()); });
 
 try {
-  // 1. Skrift auth: complete the dummy login form (wait for the POST to finish).
+  // 1. Skrift auth: complete the dummy login form (the browser carries CSRF).
   await page.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
   await page.fill('input[name="email"]', "demo@localhost");
   await page.fill('input[name="name"]', "Demo");
@@ -27,32 +33,30 @@ try {
   await sleep(500);
   check("Skrift dummy login succeeded", !page.url().includes("/auth/login"), page.url());
 
-  // 2. The authed Build app loads and connects to the bridge over E2EE.
+  // 2. The authed Build SPA loads, passes the device gate, and connects over E2EE.
   await page.goto(`${APP}/app/`, { waitUntil: "load" });
   await page.waitForFunction(() => document.getElementById("conn")?.textContent === "connected", null, { timeout: 25000 });
-  check("Skrift auth → Build app loads + connects over E2EE", true);
+  check("Skrift auth → Build SPA loads + connects over E2EE", true);
   await page.screenshot({ path: "/tmp/build-app-1-connected.png" });
 
-  // 3. Write a goal → planning agent writes the plan.
+  // 3. New task: goal in, dispatch, planning agent drafts the plan.
+  await page.click("#newtask");
   await page.fill("#goal", 'Add a hello() function in a new file greeting.py that returns "Hello!", with a pytest test.');
-  await page.click("#plan");
+  await page.click("#dispatch");
   console.log("  planning agent working…");
-  await page.waitForFunction(() => document.getElementById("phase")?.textContent.includes("plan_review"), null, { timeout: 240000 });
-  const planLen = await page.evaluate(() => document.getElementById("planView")?.textContent.length || 0);
+  await page.waitForSelector("#approvePlan", { timeout: 240000 });
+  const planLen = await page.evaluate(() => document.getElementById("planbody")?.textContent.length || 0);
   check("planning agent produced a plan", planLen > 80, `${planLen} chars`);
   await page.screenshot({ path: "/tmp/build-app-2-plan.png" });
 
-  // 4. Approve → coding agent implements → live diffs appear.
-  await page.click("#approve");
+  // 4. Approve → coding agent implements → the diff tab fills with real changes.
+  await page.click("#approvePlan");
   console.log("  coding agent implementing (watching diffs)…");
-  await page.waitForFunction(() => {
-    const t = document.getElementById("phase")?.textContent || "";
-    return t.trim() === "review" || t.includes("ready for review");
-  }, null, { timeout: 360000 });
-  await page.waitForFunction(() => document.querySelectorAll("#files .f").length > 0, null, { timeout: 15000 }).catch(() => {});
-  const files = await page.$$eval("#files .f", (els) => els.map((e) => e.textContent.replace(/\s+/g, " ").trim()));
+  await page.waitForSelector("#gitprimary", { timeout: 360000 });
+  await page.waitForSelector(".file", { timeout: 15000 }).catch(() => {});
+  const files = await page.$$eval(".file .fhead", (els) => els.map((e) => e.textContent.replace(/\s+/g, " ").trim()));
   check("coding agent produced a git diff", files.length > 0, files.join(", "));
-  const diffLen = await page.evaluate(() => document.getElementById("diff")?.textContent.length || 0);
+  const diffLen = await page.evaluate(() => document.getElementById("tabbody")?.textContent.length || 0);
   check("diff content rendered", diffLen > 50, `${diffLen} chars`);
   await page.screenshot({ path: "/tmp/build-app-3-diff.png" });
 } catch (e) {

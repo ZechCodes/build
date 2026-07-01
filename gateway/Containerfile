@@ -1,7 +1,0 @@
-FROM docker.io/library/node:22-bookworm-slim
-WORKDIR /app
-COPY package.json ./
-RUN npm install --no-audit --no-fund
-COPY . ./
-EXPOSE 8090
-CMD ["node", "gateway.mjs"]

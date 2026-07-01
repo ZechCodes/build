@@ -15,6 +15,10 @@ auth:
       label: Demo Login
 rate_limit:
   enabled: false
+# Dev-only: the local relay may call /internal/* without X-Internal-Secret as long
+# as it connects from localhost. Production requires INTERNAL_API_SECRET.
+internal_api:
+  allow_localhost: true
 # Dev-only: relax CSP so the SPA can use inline scripts, esm.sh modules/WASM,
 # and the gateway WebSocket. Production serves the bundle same-origin instead.
 security_headers:

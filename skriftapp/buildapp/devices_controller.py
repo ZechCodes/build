@@ -5,8 +5,9 @@ Three audiences, three guard styles:
   registration requires an Ed25519 signature proving key possession.
 - **authenticated** (browser/session): ``/api/devices/...`` lookup/approve/list/revoke +
   ``/api/gateway-token`` — guarded by ``auth_guard``.
-- **internal** (relay-facing, localhost-only): ``/internal/...`` — the relay reads device
-  keys/approval and validates gateway tokens.
+- **internal** (relay-facing): ``/internal/...`` — the relay reads device keys/approval
+  and validates gateway tokens. Guarded by ``internal_auth_guard`` (``X-Internal-Secret``
+  shared secret; dev config may allow localhost callers instead).
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
-from skrift.lib.client_ip import get_client_ip
 
 from buildapp import pairing_crypto
+from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
 
 # Pending registrations that are never approved get cleaned up after this long.
@@ -48,11 +49,6 @@ def _require_user(request: Request) -> UUID:
     if not user_id:
         raise NotAuthorizedException("Authentication required")
     return UUID(user_id)
-
-
-def _require_localhost(request: Request) -> None:
-    if get_client_ip(request.scope) not in ("127.0.0.1", "::1"):
-        raise NotFoundException()  # don't reveal the internal route exists
 
 
 def _token_hash(raw: str) -> str:
@@ -230,14 +226,13 @@ class DevicesController(Controller):
         await db_session.commit()
         return Response({"token": raw, "expires_in_s": int(GATEWAY_TOKEN_TTL.total_seconds())})
 
-    # ----- internal (relay-facing, localhost-only) ---------------------------
+    # ----- internal (relay-facing, shared-secret guarded) ---------------------
 
-    @get("/internal/devices/{device_id:uuid}")
+    @get("/internal/devices/{device_id:uuid}", guards=[internal_auth_guard])
     async def internal_device(
-        self, device_id: UUID, request: Request, db_session: AsyncSession
+        self, device_id: UUID, db_session: AsyncSession
     ) -> Response:
         """The relay reads a device's pinned key + approval to authenticate /ws/device."""
-        _require_localhost(request)
         device = await db_session.get(Device, device_id)
         if device is None:
             raise NotFoundException()
@@ -252,12 +247,11 @@ class DevicesController(Controller):
             }
         )
 
-    @get("/internal/gateway-token/{token:str}")
+    @get("/internal/gateway-token/{token:str}", guards=[internal_auth_guard])
     async def internal_gateway_token(
-        self, token: str, request: Request, db_session: AsyncSession
+        self, token: str, db_session: AsyncSession
     ) -> Response:
         """The relay validates a browser's gateway token → the owning user id."""
-        _require_localhost(request)
         row = (
             await db_session.execute(
                 select(EphemeralToken).where(
@@ -271,12 +265,11 @@ class DevicesController(Controller):
             raise NotFoundException()
         return Response({"user_id": str(row.user_id)})
 
-    @post("/internal/devices/{device_id:uuid}/status")
+    @post("/internal/devices/{device_id:uuid}/status", guards=[internal_auth_guard])
     async def internal_set_status(
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
         """The relay reports a device online/offline so the SPA can show a status dot."""
-        _require_localhost(request)
         body = await request.json()
         online = bool(body.get("online", False))
         device = await db_session.get(Device, device_id)

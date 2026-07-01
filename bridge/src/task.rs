@@ -13,11 +13,13 @@
 //!               └────────────── abandoned (from any state) ─┘
 //! ```
 //!
-//! A *quick task* skips planning (goal → building → review → merged). Three
-//! agent-reported interruptions can occur during a working phase: `blocked` and
-//! `failed` (the agent calls `done` with that status) and `idle_unreported` (the
-//! PTY went quiet without any `done`). Each remembers the phase it interrupted so
-//! the user's reply returns the task to the right working state.
+//! A *quick task* skips planning (goal → building → review → merged). Four
+//! interruptions can occur during a working phase: `blocked` and `failed` (the
+//! agent calls `done` with that status), `idle_unreported` (the PTY went quiet
+//! without any `done`), and `interrupted` (the daemon itself died mid-phase and
+//! recovered the task from the durable store on boot). Each remembers the phase
+//! it interrupted so the user's reply returns the task to the right working
+//! state.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +69,10 @@ pub enum TaskState {
     /// The PTY went quiet during `Phase` without reporting `done`. An anomaly,
     /// explicitly *not* treated as completion.
     IdleUnreported(Phase),
+    /// The daemon died (or was restarted) while an agent was working in `Phase`.
+    /// The worktree survived; the session did not. The user decides: re-dispatch
+    /// the phase, send notes/changes, or abandon.
+    Interrupted(Phase),
     /// Approved and merged. Terminal.
     Merged,
     /// Abandoned; worktree removed, branch kept. Terminal.
@@ -89,6 +95,7 @@ impl TaskState {
                 | TaskState::Blocked(_)
                 | TaskState::Failed(_)
                 | TaskState::IdleUnreported(_)
+                | TaskState::Interrupted(_)
         )
     }
 
@@ -125,6 +132,9 @@ pub enum TaskEvent {
     Failed,
     /// Quiescence: the PTY went silent without a `done`.
     WentIdle,
+    /// The daemon restarted while the agent was working: the session is gone.
+    /// Raised during boot recovery, never by a live agent.
+    Interrupt,
     /// The user replies to a blocked/failed/idle card; resume the working phase.
     Reply,
     /// Abandon the task from any non-terminal state.
@@ -169,6 +179,7 @@ pub fn transition(
         (Planning, E::Blocked) => Ok(Blocked(Plan)),
         (Planning, E::Failed) => Ok(Failed(Plan)),
         (Planning, E::WentIdle) => Ok(IdleUnreported(Plan)),
+        (Planning, E::Interrupt) => Ok(Interrupted(Plan)),
 
         // Plan review gate: revise (notes) or approve (start build).
         (PlanReview, E::SendNotes) => Ok(Planning),
@@ -181,6 +192,7 @@ pub fn transition(
         (Building, E::Blocked) => Ok(Blocked(Build)),
         (Building, E::Failed) => Ok(Failed(Build)),
         (Building, E::WentIdle) => Ok(IdleUnreported(Build)),
+        (Building, E::Interrupt) => Ok(Interrupted(Build)),
 
         // Diff review gate: request changes (revise) or approve (merge).
         (Review, E::RequestChanges) => Ok(Building),
@@ -197,6 +209,13 @@ pub fn transition(
         (IdleUnreported(Build), E::BuildReady) => Ok(Review),
         (IdleUnreported(phase), E::Blocked) => Ok(Blocked(*phase)),
         (IdleUnreported(phase), E::Failed) => Ok(Failed(*phase)),
+
+        // Interrupted: the daemon restarted mid-phase, killing the session. A
+        // reply re-dispatches the phase; notes/changes route to their revision
+        // loops so the user can steer instead of merely restarting.
+        (Interrupted(phase), E::Reply) => Ok(working_state(*phase)),
+        (Interrupted(Plan), E::SendNotes) => Ok(Planning),
+        (Interrupted(Build), E::RequestChanges) => Ok(Building),
 
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
@@ -406,6 +425,104 @@ mod tests {
                 (TaskEvent::Reply, TaskState::Planning),
             ],
         );
+    }
+
+    #[test]
+    fn interrupt_during_planning_surfaces_interrupted_plan() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Plan)),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupt_during_building_surfaces_interrupted_build() {
+        drive(
+            TaskKind::Quick,
+            &[
+                (TaskEvent::Dispatch, TaskState::Building),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Build)),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupted_plan_reply_redispatches_planning() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Plan)),
+                (TaskEvent::Reply, TaskState::Planning),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupted_plan_accepts_notes_back_to_planning() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Plan)),
+                (TaskEvent::SendNotes, TaskState::Planning),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupted_build_accepts_change_requests_back_to_building() {
+        drive(
+            TaskKind::Quick,
+            &[
+                (TaskEvent::Dispatch, TaskState::Building),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Build)),
+                (TaskEvent::RequestChanges, TaskState::Building),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupted_can_be_abandoned() {
+        drive(
+            TaskKind::Quick,
+            &[
+                (TaskEvent::Dispatch, TaskState::Building),
+                (TaskEvent::Interrupt, TaskState::Interrupted(Phase::Build)),
+                (TaskEvent::Abandon, TaskState::Abandoned),
+            ],
+        );
+    }
+
+    #[test]
+    fn interrupt_is_rejected_outside_working_states() {
+        for state in [
+            TaskState::Created,
+            TaskState::PlanReview,
+            TaskState::Review,
+            TaskState::Blocked(Phase::Build),
+            TaskState::Failed(Phase::Plan),
+            TaskState::IdleUnreported(Phase::Build),
+            TaskState::Interrupted(Phase::Build),
+            TaskState::Merged,
+            TaskState::Abandoned,
+        ] {
+            assert!(
+                transition(&state, TaskKind::Standard, TaskEvent::Interrupt).is_err(),
+                "Interrupt should be rejected from {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_needs_attention() {
+        assert!(TaskState::Interrupted(Phase::Plan).needs_attention());
+        assert!(TaskState::Interrupted(Phase::Build).needs_attention());
+        assert!(!TaskState::Interrupted(Phase::Build).is_working());
+        assert!(!TaskState::Interrupted(Phase::Build).is_terminal());
     }
 
     #[test]

@@ -1407,6 +1407,7 @@ pub fn state_str(state: &TaskState) -> String {
         TaskState::Blocked(_) => "blocked".into(),
         TaskState::Failed(_) => "failed".into(),
         TaskState::IdleUnreported(_) => "idle_unreported".into(),
+        TaskState::Interrupted(_) => "interrupted".into(),
         TaskState::Merged => "merged".into(),
         TaskState::Abandoned => "abandoned".into(),
     }

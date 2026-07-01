@@ -8,15 +8,32 @@
 // verify the device's session_accept → send an encrypted request → read the
 // encrypted response. The relay only ever sees opaque envelopes.
 
-// Read frames until the device's key push arrives, skipping relay control
-// frames (the post-authenticate `authenticated` ack, other devices' keys).
+// Relay control frames that can arrive interleaved with the protocol flow:
+// the post-authenticate ack and the per-device liveness/key pushes.
+const RELAY_CONTROL_FRAMES = new Set([
+  "authenticated",
+  "device_key",
+  "device_online",
+  "device_offline",
+]);
+
+// Read frames until something that is NOT a relay control push arrives.
+async function nextProtocolFrame(recv) {
+  for (;;) {
+    const message = await recv();
+    if (!RELAY_CONTROL_FRAMES.has(message.type)) return message;
+  }
+}
+
+// Read frames until the device's key push arrives, skipping other relay control
+// frames (the `authenticated` ack, liveness pushes, other devices' keys).
 async function awaitDeviceKey(recv, preferDeviceId = null) {
   for (;;) {
     const message = await recv();
     if (message.type === "device_key" && (!preferDeviceId || message.device_id === preferDeviceId)) {
       return message;
     }
-    if (message.type !== "device_key" && message.type !== "authenticated") {
+    if (!RELAY_CONTROL_FRAMES.has(message.type)) {
       throw new Error(`expected device_key, got ${message.type}`);
     }
   }
@@ -40,7 +57,7 @@ export async function openSession({ send, recv, transport, preferDeviceId = null
   });
   send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
 
-  const accept = await recv();
+  const accept = await nextProtocolFrame(recv);
   if (accept.type !== "session_accept") {
     throw new Error(`expected session_accept, got ${accept.type}`);
   }
@@ -56,7 +73,7 @@ export async function openSession({ send, recv, transport, preferDeviceId = null
     });
     send({ type: "e2ee_envelope", session_id: sessionId, envelope });
 
-    const resp = await recv();
+    const resp = await nextProtocolFrame(recv);
     if (resp.type !== "e2ee_envelope") {
       throw new Error(`expected e2ee_envelope, got ${resp.type}`);
     }
@@ -96,7 +113,7 @@ export async function runClientSession({
   send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
 
   // 3. The device proves it unwrapped the key with an encrypted session_accept.
-  const accept = await recv();
+  const accept = await nextProtocolFrame(recv);
   if (accept.type !== "session_accept") {
     throw new Error(`expected session_accept, got ${accept.type}`);
   }
@@ -112,7 +129,7 @@ export async function runClientSession({
   send({ type: "e2ee_envelope", session_id: sessionId, envelope });
 
   // 5. Read and decrypt the device's response.
-  const response = await recv();
+  const response = await nextProtocolFrame(recv);
   if (response.type !== "e2ee_envelope") {
     throw new Error(`expected e2ee_envelope, got ${response.type}`);
   }

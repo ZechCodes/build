@@ -28,11 +28,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from skrift.auth.guards import auth_guard
-from skrift.auth.session_keys import SESSION_USER_ID
 
 from buildapp import pairing_crypto
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
+from buildapp.session_auth import require_user
 
 # Pending registrations that are never approved get cleaned up after this long.
 PENDING_TTL = timedelta(minutes=15)
@@ -42,13 +42,6 @@ GATEWAY_TOKEN_TTL = timedelta(minutes=5)
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
-
-
-def _require_user(request: Request) -> UUID:
-    user_id = request.session.get(SESSION_USER_ID)
-    if not user_id:
-        raise NotAuthorizedException("Authentication required")
-    return UUID(user_id)
 
 
 def _token_hash(raw: str) -> str:
@@ -155,7 +148,7 @@ class DevicesController(Controller):
     async def lookup(self, request: Request, db_session: AsyncSession) -> Response:
         """Resolve a pairing code to a pending device so the human can compare its
         fingerprint before approving."""
-        _require_user(request)
+        require_user(request)
         body = await request.json()
         code = str(body.get("code", "")).strip()
         if not code:
@@ -175,7 +168,7 @@ class DevicesController(Controller):
     @post("/api/devices/approve", guards=[auth_guard])
     async def approve(self, request: Request, db_session: AsyncSession) -> Response:
         """Bind a pending device (located by its pairing code) to the current user."""
-        user_id = _require_user(request)
+        user_id = require_user(request)
         body = await request.json()
         code = str(body.get("code", "")).strip()
         if not code:
@@ -192,7 +185,7 @@ class DevicesController(Controller):
     @get("/api/devices", guards=[auth_guard])
     async def list_devices(self, request: Request, db_session: AsyncSession) -> Response:
         """List the current user's approved devices."""
-        user_id = _require_user(request)
+        user_id = require_user(request)
         rows = (
             await db_session.execute(
                 select(Device)
@@ -207,7 +200,7 @@ class DevicesController(Controller):
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
         """Revoke an owned device — it can no longer authenticate to the relay."""
-        user_id = _require_user(request)
+        user_id = require_user(request)
         device = await db_session.get(Device, device_id)
         if device is None or device.owner_user_id != user_id:
             raise NotFoundException("device not found")
@@ -220,7 +213,7 @@ class DevicesController(Controller):
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""
-        user_id = _require_user(request)
+        user_id = require_user(request)
         raw = "gw_" + secrets.token_urlsafe(24)
         db_session.add(
             EphemeralToken(

@@ -17,6 +17,8 @@ dependencies = [
     "skrift[passkeys]==0.2.0a9",
     # Imported directly by buildapp.pairing_crypto (Ed25519 verification).
     "cryptography>=44",
+    # Web push delivery (VAPID + payload encryption) for buildapp.web_push.
+    "pywebpush>=2.0",
 ]
 
 [dependency-groups]

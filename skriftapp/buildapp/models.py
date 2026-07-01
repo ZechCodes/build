@@ -1,6 +1,9 @@
 """Build app database models — devices paired to user accounts, and the short-lived
 tokens browsers present to the relay.
 
+Web-push subscriptions reuse the framework table (``skrift.db.models.push_subscription``);
+Build adds no push tables of its own.
+
 Registered for Alembic via the ``models:`` key in ``app.dev.yaml`` (Skrift's
 ``load_model_modules`` imports it so ``Base.metadata`` sees these tables).
 """

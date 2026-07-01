@@ -1,6 +1,7 @@
 controllers:
   - buildapp.controllers:BuildController
   - buildapp.devices_controller:DevicesController
+  - buildapp.push_controller:PushController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:

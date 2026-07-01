@@ -4,9 +4,13 @@
 #   SECRET_KEY           — Skrift session signing key
 #   DATABASE_URL         — postgresql+asyncpg://user:pass@host:5432/dbname
 #   INTERNAL_API_SECRET  — shared secret the relay presents as X-Internal-Secret
+#   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
+#   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
+#   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
 controllers:
   - buildapp.controllers:BuildController
   - buildapp.devices_controller:DevicesController
+  - buildapp.push_controller:PushController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:

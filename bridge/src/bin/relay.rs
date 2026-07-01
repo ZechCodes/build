@@ -232,9 +232,16 @@ async fn serve_device(
         }
     }
 
-    {
+    // The device is gone: drop it, then tell the owner's browsers immediately so
+    // they can degrade gracefully (and reconnect on the next device_key) instead of
+    // hanging on a dead session.
+    let clients = {
         let mut state = shared.state.lock().await;
-        state.remove_device(&device_id);
+        state.remove_device(&device_id)
+    };
+    let notice = json!({"type":"device_offline","device_id":device_id}).to_string();
+    for client in clients {
+        let _ = client.send(notice.clone());
     }
     report_status(shared, &device_id, false).await;
 }

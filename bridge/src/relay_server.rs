@@ -185,10 +185,15 @@ impl RelayState {
         self.client_outbounds_for_user(&owner)
     }
 
-    /// Remove a device and drop any sessions routed to it.
-    pub fn remove_device(&mut self, device_id: &str) {
-        self.devices.remove(device_id);
+    /// Remove a device and drop any sessions routed to it. Returns the outbounds of
+    /// the owner's connected clients so the bin can push a `device_offline` notice —
+    /// the browser's cue to degrade gracefully instead of hanging on a dead session.
+    pub fn remove_device(&mut self, device_id: &str) -> Vec<Outbound> {
+        let Some(device) = self.devices.remove(device_id) else {
+            return Vec::new();
+        };
         self.sessions.retain(|_, s| s.device_id != device_id);
+        self.client_outbounds_for_user(&device.owner_user_id)
     }
 
     /// The transport keys to advertise to a freshly-connected client: every device the
@@ -484,5 +489,30 @@ mod tests {
         state.open_session("s1", client, "dev").unwrap();
         state.remove_device("dev");
         assert!(state.device_out_for_client_frame("s1", client).is_none());
+    }
+
+    #[test]
+    fn removing_a_device_returns_only_owner_clients_to_notify() {
+        let mut state = RelayState::new();
+        let (d_out, _d_rx) = chan();
+        state.add_device("dev", "u1", d_out);
+        let (c1_out, mut c1_rx) = chan();
+        let (c2_out, mut c2_rx) = chan();
+        state.add_client("u1", c1_out);
+        state.add_client("u2", c2_out);
+
+        let notify = state.remove_device("dev");
+        assert_eq!(notify.len(), 1, "only the owner's client is notified");
+        notify[0].send("device_offline".into()).unwrap();
+        assert_eq!(c1_rx.try_recv().unwrap(), "device_offline");
+        assert!(c2_rx.try_recv().is_err(), "other users hear nothing");
+    }
+
+    #[test]
+    fn removing_an_unknown_device_notifies_nobody() {
+        let mut state = RelayState::new();
+        let (c_out, _c_rx) = chan();
+        state.add_client("u1", c_out);
+        assert!(state.remove_device("ghost").is_empty());
     }
 }

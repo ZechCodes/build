@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::transport;
@@ -25,6 +26,88 @@ pub const AUTH_SKEW: Duration = Duration::from_secs(60);
 /// A connected peer's outbound channel. Text payloads only; the bin wraps them in
 /// WebSocket frames. Decoupled from tungstenite so this module stays testable.
 pub type Outbound = mpsc::UnboundedSender<String>;
+
+/// Hard cap on a single WebSocket message/frame the relay will buffer. Envelopes are
+/// base64 ciphertext of terminal chunks and diffs; anything past this is abusive.
+pub const MAX_WS_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The relay bin's configuration, resolved from the environment.
+///
+/// - `RELAY_PORT` — listen port (default 8799; `0` binds an ephemeral port).
+/// - `API_INTERNAL_URL` — the api's internal base URL (falls back to the legacy
+///   `RELAY_API_URL`, then `http://127.0.0.1:8080` for dev).
+/// - `RELAY_INTERNAL_SECRET` — sent as `X-Internal-Secret` on every api call; unset or
+///   blank means dev mode where the api trusts localhost instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayConfig {
+    pub port: u16,
+    pub api_url: String,
+    pub internal_secret: Option<String>,
+}
+
+impl RelayConfig {
+    /// Resolve the config through a lookup function (`std::env::var` in the bin,
+    /// a map in tests). Fails fast on an unparseable port instead of masking it
+    /// with the default.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<RelayConfig, String> {
+        let port = match lookup("RELAY_PORT") {
+            Some(raw) => raw
+                .parse::<u16>()
+                .map_err(|_| format!("RELAY_PORT is not a valid port: {raw:?}"))?,
+            None => 8799,
+        };
+        let api_url = lookup("API_INTERNAL_URL")
+            .or_else(|| lookup("RELAY_API_URL"))
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_string())
+            .trim_end_matches('/')
+            .to_string();
+        let internal_secret = lookup("RELAY_INTERNAL_SECRET").filter(|s| !s.is_empty());
+        Ok(RelayConfig {
+            port,
+            api_url,
+            internal_secret,
+        })
+    }
+}
+
+/// Whether a raw request prefix is a plain `GET /health` probe (kubelet, LB) rather
+/// than a WebSocket upgrade. Matched on the request line only, before any handshake.
+pub fn is_health_request(prefix: &[u8]) -> bool {
+    const REQUEST_LINE: &[u8] = b"GET /health";
+    prefix.strip_prefix(REQUEST_LINE).is_some_and(|rest| {
+        // The path must end exactly there: next byte is the version separator,
+        // a query string, or (leniently) the end of the request line.
+        matches!(rest.first(), Some(b' ') | Some(b'?') | Some(b'\r'))
+    })
+}
+
+/// Parse the browser's mandatory first frame `{"type":"authenticate","token":...}`.
+/// Anything else — wrong type, missing token, not JSON — is `None` and the bin
+/// closes the connection: unauthenticated clients get exactly one frame.
+pub fn parse_authenticate_token(text: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(text).ok()?;
+    if msg.get("type").and_then(Value::as_str) != Some("authenticate") {
+        return None;
+    }
+    msg.get("token").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The device a `session_init` frame targets. The documented contract is the outer
+/// `"route_to":"device:<id>"`; older harnesses put the id only inside the sealed-around
+/// `session_init.device_id`, so that remains a fallback. A `route_to` that is present
+/// but not `device:`-shaped is an error (`None`), never a silent fallback.
+pub fn session_target_device(msg: &Value) -> Option<String> {
+    if let Some(route_to) = msg.get("route_to").and_then(Value::as_str) {
+        return route_to
+            .strip_prefix("device:")
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+    }
+    msg.get("session_init")
+        .and_then(|init| init.get("device_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
 
 /// The captured device auth from the WS upgrade headers.
 #[derive(Debug, Clone)]
@@ -145,11 +228,13 @@ struct Session {
     device_id: String,
 }
 
-/// The result of registering a device connection: its connection id, and any clients
-/// whose sessions were severed because this is a reconnect of the same device.
+/// The result of registering a device connection: its connection id, any clients
+/// whose sessions were severed because this is a reconnect of the same device, and
+/// the owner's connected clients to push `device_online` to.
 pub struct DeviceRegistration {
     pub conn_id: u64,
     pub displaced_clients: Vec<Outbound>,
+    pub owner_clients: Vec<Outbound>,
 }
 
 /// The relay's live routing table. Not thread-safe by itself; the bin wraps it in a
@@ -210,6 +295,7 @@ impl RelayState {
         DeviceRegistration {
             conn_id,
             displaced_clients,
+            owner_clients: self.client_outbounds_for_user(owner_user_id),
         }
     }
 
@@ -589,6 +675,171 @@ mod tests {
         // The new connection's own cleanup still works.
         assert_eq!(state.remove_device("dev", new_conn).len(), 1);
         assert!(state.open_session("s2", client, "dev").is_none());
+    }
+
+    #[test]
+    fn relay_config_reads_production_env() {
+        let vars: HashMap<&str, &str> = HashMap::from([
+            ("RELAY_PORT", "9000"),
+            ("API_INTERNAL_URL", "http://api.8ly.svc:8080/"),
+            ("RELAY_INTERNAL_SECRET", "s3cret"),
+        ]);
+        let config = RelayConfig::from_lookup(|k| vars.get(k).map(|v| v.to_string())).unwrap();
+        assert_eq!(config.port, 9000);
+        assert_eq!(config.api_url, "http://api.8ly.svc:8080");
+        assert_eq!(config.internal_secret.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn relay_config_defaults_for_dev() {
+        let config = RelayConfig::from_lookup(|_| None).unwrap();
+        assert_eq!(config.port, 8799);
+        assert_eq!(config.api_url, "http://127.0.0.1:8080");
+        assert_eq!(config.internal_secret, None);
+    }
+
+    #[test]
+    fn relay_config_falls_back_to_legacy_api_url_var() {
+        let vars: HashMap<&str, &str> = HashMap::from([("RELAY_API_URL", "http://legacy:1234")]);
+        let config = RelayConfig::from_lookup(|k| vars.get(k).map(|v| v.to_string())).unwrap();
+        assert_eq!(config.api_url, "http://legacy:1234");
+    }
+
+    #[test]
+    fn relay_config_rejects_unparseable_port_and_blank_secret() {
+        let bad_port: HashMap<&str, &str> = HashMap::from([("RELAY_PORT", "not-a-port")]);
+        assert!(RelayConfig::from_lookup(|k| bad_port.get(k).map(|v| v.to_string())).is_err());
+
+        let blank: HashMap<&str, &str> = HashMap::from([("RELAY_INTERNAL_SECRET", "")]);
+        let config = RelayConfig::from_lookup(|k| blank.get(k).map(|v| v.to_string())).unwrap();
+        assert_eq!(config.internal_secret, None, "blank secret means unset");
+    }
+
+    #[test]
+    fn health_request_detection() {
+        assert!(is_health_request(b"GET /health HTTP/1.1\r\n"));
+        assert!(is_health_request(b"GET /health?probe=1 HTTP/1.1\r\n"));
+        assert!(!is_health_request(b"GET /healthz HTTP/1.1\r\n"));
+        assert!(!is_health_request(b"GET /ws/client HTTP/1.1\r\n"));
+        assert!(!is_health_request(b"POST /health HTTP/1.1\r\n"));
+        assert!(!is_health_request(b"GET /heal"), "incomplete prefix");
+    }
+
+    #[test]
+    fn parse_authenticate_token_accepts_only_the_documented_frame() {
+        assert_eq!(
+            parse_authenticate_token(r#"{"type":"authenticate","token":"gw_abc"}"#),
+            Some("gw_abc".to_string())
+        );
+        assert_eq!(parse_authenticate_token(r#"{"type":"hello"}"#), None);
+        assert_eq!(parse_authenticate_token(r#"{"type":"authenticate"}"#), None);
+        assert_eq!(parse_authenticate_token("not json"), None);
+    }
+
+    #[test]
+    fn session_target_device_prefers_route_to() {
+        let msg: Value = serde_json::from_str(
+            r#"{"type":"session_init","route_to":"device:dev-9","session_init":{"device_id":"dev-1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(session_target_device(&msg), Some("dev-9".to_string()));
+    }
+
+    #[test]
+    fn session_target_device_falls_back_to_session_init_payload() {
+        let msg: Value =
+            serde_json::from_str(r#"{"type":"session_init","session_init":{"device_id":"dev-1"}}"#)
+                .unwrap();
+        assert_eq!(session_target_device(&msg), Some("dev-1".to_string()));
+    }
+
+    #[test]
+    fn session_target_device_rejects_malformed_route_to() {
+        let msg: Value = serde_json::from_str(
+            r#"{"type":"session_init","route_to":"broadcast","session_init":{"device_id":"dev-1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            session_target_device(&msg),
+            None,
+            "a present-but-malformed route_to must not silently fall back"
+        );
+    }
+
+    #[test]
+    fn adding_a_device_reports_owner_clients_for_device_online_push() {
+        let mut state = RelayState::new();
+        let (owner_out, mut owner_rx) = chan();
+        let (other_out, mut other_rx) = chan();
+        state.add_client("u1", owner_out);
+        state.add_client("u2", other_out);
+
+        let (d_out, _d_rx) = chan();
+        let registration = state.add_device("dev", "u1", d_out);
+        assert_eq!(registration.owner_clients.len(), 1);
+        registration.owner_clients[0]
+            .send("device_online".into())
+            .unwrap();
+        assert_eq!(owner_rx.try_recv().unwrap(), "device_online");
+        assert!(other_rx.try_recv().is_err(), "other users hear nothing");
+    }
+
+    #[test]
+    fn one_client_holds_sessions_to_multiple_owned_devices_concurrently() {
+        let mut state = RelayState::new();
+        let (d1_out, mut d1_rx) = chan();
+        let (d2_out, mut d2_rx) = chan();
+        state.add_device("dev-1", "u1", d1_out);
+        state.add_device("dev-2", "u1", d2_out);
+        let (c_out, mut c_rx) = chan();
+        let client = state.add_client("u1", c_out);
+
+        assert!(state.open_session("s1", client, "dev-1").is_some());
+        assert!(state.open_session("s2", client, "dev-2").is_some());
+
+        // Frames route independently per session.
+        state
+            .device_out_for_client_frame("s1", client)
+            .unwrap()
+            .send("to-dev-1".into())
+            .unwrap();
+        state
+            .device_out_for_client_frame("s2", client)
+            .unwrap()
+            .send("to-dev-2".into())
+            .unwrap();
+        assert_eq!(d1_rx.try_recv().unwrap(), "to-dev-1");
+        assert!(d1_rx.try_recv().is_err(), "dev-1 sees only its session");
+        assert_eq!(d2_rx.try_recv().unwrap(), "to-dev-2");
+
+        // Replies come back on the right sessions too.
+        state
+            .client_out_for_device_frame("s1", "dev-1")
+            .unwrap()
+            .send("from-dev-1".into())
+            .unwrap();
+        assert_eq!(c_rx.try_recv().unwrap(), "from-dev-1");
+        // A device cannot answer on the other device's session.
+        assert!(state.client_out_for_device_frame("s1", "dev-2").is_none());
+    }
+
+    #[test]
+    fn cross_user_session_is_rejected_even_with_valid_route() {
+        let mut state = RelayState::new();
+        let (d_out, mut d_rx) = chan();
+        state.add_device("dev-victim", "victim", d_out);
+        let (c_out, _c_rx) = chan();
+        let attacker = state.add_client("attacker", c_out);
+
+        assert!(
+            state.open_session("s1", attacker, "dev-victim").is_none(),
+            "ownership is enforced on session_init"
+        );
+        assert!(
+            state.device_out_for_client_frame("s1", attacker).is_none(),
+            "no session state leaked from the rejected attempt"
+        );
+        assert!(d_rx.try_recv().is_err(), "the device never hears about it");
     }
 
     #[test]

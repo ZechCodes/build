@@ -1,5 +1,10 @@
 # Running Build v2 over the real relay
 
+> **Production (Kubernetes):** see [`k8s/`](k8s/) — kustomize manifests for the
+> `8ly` namespace (app + Rust relay + Postgres), `bootstrap-secrets.sh`, and the
+> [`k8s/CUTOVER.md`](k8s/CUTOVER.md) runbook. This compose stack below is the
+> local/dev topology (it still uses the v1-era build-relay + gateway shim).
+
 This stack runs the **real `build-relay`** (Postgres + Redis + the relay), the
 Rust bridge, the client gateway (the web-backend's relay-facing shim), and the
 web client. Non-default host ports so it coexists with other relay deployments:
@@ -31,6 +36,9 @@ podman build -t build-relay:local /path/to/build-relay
 
 # 3. Provision a device identity → deploy/secrets/{seed.sql,bridge.env,gateway.env}
 python3 deploy/provision.py
+
+# 4. Generate the postgres password (git-ignored; no credentials in compose)
+echo "BUILD_POSTGRES_PASSWORD=$(openssl rand -hex 24)" > deploy/secrets/postgres.env
 ```
 
 `provision.py` mints a UUID device id + Ed25519 identity key + X25519 transport
@@ -42,11 +50,11 @@ transport public key + device id go to the gateway. Secrets live in
 ## Up / verify / down
 
 ```bash
-podman compose -f deploy/compose.real.yml up -d --build
+podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml up -d --build
 curl -s localhost:18081/health           # {"connected_devices": 1}
 ( cd web && RELAY_URL=ws://localhost:18090 node qa.mjs )            # full app RPC
 ( cd web && RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs )  # reconnect
-podman compose -f deploy/compose.real.yml down
+podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml down
 ```
 
 ## Reconnect verification

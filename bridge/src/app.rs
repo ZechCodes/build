@@ -27,9 +27,11 @@ use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
-use crate::task::{TaskId, TaskKind, TaskState};
+use crate::store::{now_rfc3339, PersistedTask, TaskStore};
+use crate::task::{Task, TaskEvent, TaskId, TaskKind, TaskState};
 use crate::templates::{Templates, DEFAULT_PLAN_PATH};
 use crate::transport::Frame;
+use crate::worktree::Worktree;
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
 #[derive(Debug, Clone)]
@@ -159,6 +161,10 @@ pub struct AppState {
     agent: Agent,
     harness: String,
     tasks: HashMap<String, ActiveTask>,
+    /// Durable task records under the bridge state dir, if persistence is enabled.
+    task_store: Option<TaskStore>,
+    /// task id → its RFC 3339 creation time, carried across saves (and restarts).
+    task_created_at: HashMap<String, String>,
     streams: HashMap<String, StreamState>,
     term: Option<TermSession>,
     next_id: u64,
@@ -186,6 +192,8 @@ impl AppState {
             agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
             tasks: HashMap::new(),
+            task_store: None,
+            task_created_at: HashMap::new(),
             streams: HashMap::new(),
             term: None,
             next_id: 1,
@@ -233,6 +241,145 @@ impl AppState {
     /// Override where cloned repos land and the browser starts (e.g. from an env).
     pub fn set_projects_dir(&mut self, dir: std::path::PathBuf) {
         self.projects_dir = dir;
+    }
+
+    /// Enable durable task persistence at `dir` and recover every stored task:
+    /// re-attach tasks whose worktrees survived, surface tasks that were mid-phase
+    /// when the daemon died as `interrupted`, and abandon tasks whose worktrees are
+    /// gone. A corrupt task file is a hard error naming the file — boot fails
+    /// rather than silently dropping a task.
+    pub fn with_task_store(mut self, dir: impl Into<std::path::PathBuf>) -> Result<Self, String> {
+        let store = TaskStore::new(dir);
+        let records = store.load_all().map_err(|e| e.to_string())?;
+        self.task_store = Some(store);
+        for record in records {
+            self.recover_task(record)?;
+        }
+        Ok(self)
+    }
+
+    /// Re-attach one persisted task on boot. The durable core is authoritative;
+    /// the PTY session died with the previous daemon, so a working state becomes
+    /// `Interrupted(phase)` (persisted immediately, so the verdict survives the
+    /// next restart too), and a non-terminal task without its worktree is
+    /// abandoned — the worktree is removed and the branch kept, which is exactly
+    /// what `Abandoned` means.
+    fn recover_task(&mut self, record: PersistedTask) -> Result<(), String> {
+        let task_id = record.id.clone();
+        let mut task = Task::new(TaskId::new(&record.id), record.goal, record.kind);
+        task.state = record.state;
+        let worktree = Worktree {
+            name: record.worktree_name,
+            path: std::path::PathBuf::from(&record.worktree_path),
+            branch: record.branch,
+            base_branch: record.base_branch.clone(),
+        };
+        let mut active =
+            ActiveTask::reattach(task, worktree, record.plan_path, record.last_summary);
+
+        let mut state_changed = false;
+        if !active.task.state.is_terminal() {
+            if !active.worktree.path.exists() {
+                eprintln!(
+                    "recover {task_id}: worktree {} is gone; abandoning (branch kept)",
+                    active.worktree.path.display()
+                );
+                active
+                    .task
+                    .apply(TaskEvent::Abandon)
+                    .map_err(|e| format!("recover {task_id}: {e}"))?;
+                state_changed = true;
+            } else if active.task.state.is_working() {
+                active
+                    .task
+                    .apply(TaskEvent::Interrupt)
+                    .map_err(|e| format!("recover {task_id}: {e}"))?;
+                state_changed = true;
+            }
+        }
+
+        // Project ids are re-minted each boot, so resolve by repo path — and
+        // re-register the project if the config lost it but the repo survives.
+        let repo_path = std::path::PathBuf::from(&record.project_path);
+        if repo_path.exists() {
+            let project_id = self.add_project(repo_path, record.base_branch);
+            self.task_project.insert(task_id.clone(), project_id);
+        } else {
+            eprintln!(
+                "recover {task_id}: project repo {} is gone; task kept without a project",
+                record.project_path
+            );
+        }
+
+        // Reserve the recovered id so new dispatches never collide with it.
+        if let Some(n) = task_id
+            .strip_prefix("task-")
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            self.next_id = self.next_id.max(n + 1);
+        }
+        self.task_created_at
+            .insert(task_id.clone(), record.created_at);
+        if state_changed {
+            self.persist_task(&task_id, &active)?;
+        }
+        self.tasks.insert(task_id, active);
+        Ok(())
+    }
+
+    /// Write a task's durable core to the store (atomic replace). A no-op without
+    /// a configured store (unit tests); an error is surfaced to the caller — a
+    /// task the store cannot hold would silently vanish on the next restart.
+    fn persist_task(&mut self, task_id: &str, active: &ActiveTask) -> Result<(), String> {
+        if self.task_store.is_none() {
+            return Ok(());
+        }
+        let now = now_rfc3339();
+        let created_at = self
+            .task_created_at
+            .entry(task_id.to_string())
+            .or_insert_with(|| now.clone())
+            .clone();
+        let project_path = self
+            .task_project
+            .get(task_id)
+            .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
+            .map(|p| p.repo_path.display().to_string())
+            .unwrap_or_default();
+        let record = PersistedTask {
+            id: task_id.to_string(),
+            goal: active.task.goal.clone(),
+            kind: active.task.kind,
+            project_path,
+            base_branch: active.worktree.base_branch.clone(),
+            state: active.task.state.clone(),
+            branch: active.worktree.branch.clone(),
+            worktree_name: active.worktree.name.clone(),
+            worktree_path: active.worktree.path.display().to_string(),
+            plan_path: active.plan_path.clone(),
+            last_summary: active.last_summary.clone(),
+            created_at,
+            updated_at: now,
+        };
+        self.task_store
+            .as_ref()
+            .expect("checked above")
+            .save(&record)
+            .map_err(|e| format!("task store: {e}"))
+    }
+
+    /// The shared tail of every task mutation: compute the response view, persist
+    /// the durable core, and put the task back in the map. Returns the view and
+    /// the persistence outcome separately so callers can order their errors.
+    fn finish_mutation(
+        &mut self,
+        task_id: String,
+        active: ActiveTask,
+    ) -> (Value, Result<(), String>) {
+        let view = self.task_view(&task_id, &active);
+        let persisted = self.persist_task(&task_id, &active);
+        self.tasks.insert(task_id, active);
+        (view, persisted)
     }
 
     /// Persist projects + projects-dir to the config file, if one is configured.
@@ -359,7 +506,10 @@ impl AppState {
         if let Err(e) = outcome {
             eprintln!("on_agent_done {task_id}: {e}");
         }
-        self.tasks.insert(task_id.to_string(), active);
+        let (_, persisted) = self.finish_mutation(task_id.to_string(), active);
+        if let Err(e) = persisted {
+            eprintln!("on_agent_done {task_id}: {e}");
+        }
     }
 
     /// Synchronous dispatch used by the unit tests (no background producer). The
@@ -404,6 +554,7 @@ impl AppState {
             "task.approve_plan" => self.task_approve_plan(params),
             "task.send_notes" => self.task_send_notes(params),
             "task.request_changes" => self.task_request_changes(params),
+            "task.resume" => self.task_resume(params),
             "task.approve_merge" => self.task_approve_merge(params),
             "task.git_action" => self.task_git_action(params),
             "task.abandon" => self.task_abandon(params),
@@ -793,8 +944,8 @@ impl AppState {
             }
         }
 
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id.clone(), active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        persisted?;
         Ok(view)
     }
 
@@ -837,9 +988,9 @@ impl AppState {
             }
             Ok(())
         })();
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         outcome?;
+        persisted?;
         Ok(view)
     }
 
@@ -859,9 +1010,9 @@ impl AppState {
             }
             Ok(())
         })();
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         outcome?;
+        persisted?;
         Ok(view)
     }
 
@@ -881,9 +1032,34 @@ impl AppState {
             }
             Ok(())
         })();
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    /// Re-dispatch a phase the daemon's death interrupted: a fresh session picks
+    /// the surviving worktree back up.
+    fn task_resume(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .resume(&mut active)
+                .map_err(err)?;
+            if self.qa_agent {
+                match active.task.state {
+                    TaskState::Planning => self.simulate_plan(&project_id, &mut active)?,
+                    TaskState::Building => self.simulate_build(&project_id, &mut active)?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
         Ok(view)
     }
 
@@ -895,9 +1071,9 @@ impl AppState {
             .orch_for(&project_id)?
             .approve_merge(&mut active)
             .map_err(err);
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
+        persisted?;
         Ok(view)
     }
 
@@ -919,9 +1095,9 @@ impl AppState {
                 other => Err(format!("unknown git action: {other}")),
             }
         };
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
+        persisted?;
         Ok(view)
     }
 
@@ -933,9 +1109,9 @@ impl AppState {
             .orch_for(&project_id)?
             .abandon(&mut active)
             .map_err(err);
-        let view = self.task_view(&task_id, &active);
-        self.tasks.insert(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
+        persisted?;
         Ok(view)
     }
 
@@ -1909,6 +2085,211 @@ mod tests {
                 .unwrap()
                 .contains("myprojects")
         );
+    }
+
+    #[test]
+    fn tasks_survive_daemon_restart_including_history() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        {
+            let mut state = AppState::new(
+                repo.clone(),
+                dir.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_task_store(&tasks_dir)
+            .unwrap();
+            let a = state.handle(req("task.dispatch", json!({ "goal": "standard goal" })));
+            assert_eq!(a["result"]["state"], "plan_review");
+            let b = state.handle(req(
+                "task.dispatch",
+                json!({ "goal": "quick goal", "kind": "quick" }),
+            ));
+            let b_id = b["result"]["task_id"].as_str().unwrap().to_string();
+            let merged = state.handle(req("task.approve_merge", json!({ "task_id": b_id })));
+            assert_eq!(merged["result"]["state"], "merged");
+        } // daemon dies
+
+        let mut reloaded = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+        let list = reloaded.handle(req("task.list", json!({})));
+        let tasks = list["result"]["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 2, "both tasks recovered: {tasks:?}");
+        let by_goal = |g: &str| tasks.iter().find(|t| t["goal"] == g).unwrap().clone();
+        // A gate state (no live agent) reattaches as-is.
+        let standard = by_goal("standard goal");
+        assert_eq!(standard["state"], "plan_review");
+        assert!(standard["branch"].as_str().unwrap().starts_with("build/"));
+        // Merged tasks stay listed: they are history.
+        assert_eq!(by_goal("quick goal")["state"], "merged");
+
+        // The recovered plan is still readable through the RPC.
+        let standard_id = standard["task_id"].as_str().unwrap().to_string();
+        let plan = reloaded.handle(req("task.plan", json!({ "task_id": standard_id.clone() })));
+        assert_eq!(plan["ok"], true, "{plan:?}");
+        assert!(plan["result"]["contents"]
+            .as_str()
+            .unwrap()
+            .contains("standard goal"));
+
+        // New dispatches never reuse a recovered id.
+        let c = reloaded.handle(req(
+            "task.dispatch",
+            json!({ "goal": "third goal", "kind": "quick" }),
+        ));
+        assert_eq!(c["ok"], true, "{c:?}");
+        let c_id = c["result"]["task_id"].as_str().unwrap();
+        assert!(
+            tasks.iter().all(|t| t["task_id"] != c_id),
+            "fresh id after recovery"
+        );
+
+        // And a recovered task continues its lifecycle where it left off.
+        let cont = reloaded.handle(req("task.approve_plan", json!({ "task_id": standard_id })));
+        assert_eq!(cont["result"]["state"], "review", "{cont:?}");
+    }
+
+    #[test]
+    fn working_tasks_surface_interrupted_on_boot_and_resume() {
+        use crate::store::{PersistedTask, TaskStore};
+        use crate::task::Phase;
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        // The daemon died mid-plan: a durable record in `planning` whose worktree
+        // survived on disk.
+        let surviving_worktree = dir.path().join("wt-survivor");
+        std::fs::create_dir_all(&surviving_worktree).unwrap();
+        let store = TaskStore::new(&tasks_dir);
+        store
+            .save(&PersistedTask {
+                id: "task-7".into(),
+                goal: "interrupted goal".into(),
+                kind: TaskKind::Standard,
+                project_path: repo.display().to_string(),
+                base_branch: "main".into(),
+                state: TaskState::Planning,
+                branch: "build/interrupted-goal".into(),
+                worktree_name: "interrupted-goal".into(),
+                worktree_path: surviving_worktree.display().to_string(),
+                plan_path: ".build/plan.md".into(),
+                last_summary: None,
+                created_at: "2026-07-01T10:00:00Z".into(),
+                updated_at: "2026-07-01T10:00:00Z".into(),
+            })
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // The dead session is legible: the task needs the user, it is not "working".
+        let got = state.handle(req("task.get", json!({ "task_id": "task-7" })));
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert_eq!(got["result"]["state"], "interrupted");
+        assert_eq!(got["result"]["needs_attention"], true);
+        // The verdict is durable — it survives the *next* restart too.
+        assert_eq!(
+            store.load_all().unwrap()[0].state,
+            TaskState::Interrupted(Phase::Plan)
+        );
+
+        // Recovered ids are reserved: the next dispatch mints task-8, not task-1.
+        let next = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "fresh goal", "kind": "quick" }),
+        ));
+        assert_eq!(next["result"]["task_id"], "task-8");
+
+        // task.resume re-dispatches the interrupted phase (QA simulates the agent).
+        let resumed = state.handle(req("task.resume", json!({ "task_id": "task-7" })));
+        assert_eq!(resumed["ok"], true, "{resumed:?}");
+        assert_eq!(resumed["result"]["state"], "plan_review");
+    }
+
+    #[test]
+    fn missing_worktree_abandons_the_task_on_boot() {
+        use crate::store::{PersistedTask, TaskStore};
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let store = TaskStore::new(&tasks_dir);
+        store
+            .save(&PersistedTask {
+                id: "task-3".into(),
+                goal: "orphaned goal".into(),
+                kind: TaskKind::Quick,
+                project_path: repo.display().to_string(),
+                base_branch: "main".into(),
+                state: TaskState::Building,
+                branch: "build/orphaned-goal".into(),
+                worktree_name: "orphaned-goal".into(),
+                worktree_path: dir.path().join("wt-deleted-by-hand").display().to_string(),
+                plan_path: ".build/plan.md".into(),
+                last_summary: None,
+                created_at: "2026-07-01T09:00:00Z".into(),
+                updated_at: "2026-07-01T09:00:00Z".into(),
+            })
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // The worktree is gone, so the task cannot resume: it lands abandoned
+        // (worktree removed, branch kept — exactly that state's meaning) and stays
+        // listed as history rather than vanishing.
+        let got = state.handle(req("task.get", json!({ "task_id": "task-3" })));
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert_eq!(got["result"]["state"], "abandoned");
+        assert_eq!(
+            store.load_all().unwrap()[0].state,
+            TaskState::Abandoned,
+            "the abandon verdict is persisted"
+        );
+    }
+
+    #[test]
+    fn corrupt_task_file_fails_boot_naming_the_file() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        std::fs::write(tasks_dir.join("task-9.json"), "{ definitely not json").unwrap();
+
+        let err = match AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        {
+            Ok(_) => panic!("a corrupt task file must fail boot, not drop the task"),
+            Err(e) => e,
+        };
+        assert!(err.contains("task-9.json"), "error names the file: {err}");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
 //! - `BRIDGE_PROJECTS_DIR` where cloned repos land (default `~/.build/projects`)
 //! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
+//! - `BRIDGE_TASKS_DIR`   durable task records, one JSON per task (default `~/.build/tasks`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
@@ -172,6 +173,18 @@ async fn serve() {
     if let Ok(dir) = std::env::var("BRIDGE_PROJECTS_DIR") {
         app.set_projects_dir(std::path::PathBuf::from(dir));
     }
+
+    // Durable task records: a restart re-attaches every task (worktrees survive on
+    // disk); a task that was mid-phase surfaces as `interrupted` for the user to
+    // re-dispatch, steer, or abandon. A corrupt task file fails boot loudly.
+    let tasks_dir = env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks"));
+    let app = match app.with_task_store(&tasks_dir) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("task store ({tasks_dir}): {e}");
+            std::process::exit(1);
+        }
+    };
     let app = app.shared();
     AppState::spawn_done_socket(app.clone(), mcp_socket.clone());
     let handler = AppState::handler(app);

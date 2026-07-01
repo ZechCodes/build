@@ -96,6 +96,58 @@ async fn poll_until_approved_waits_then_returns_owner() {
 }
 
 #[tokio::test]
+async fn ensure_paired_uses_the_injected_pairing_code() {
+    // Compose/dev automation injects a known code (BRIDGE_PAIRING_CODE) so a
+    // scripted approver can complete the real pairing flow. The register payload
+    // must carry the hash of exactly that code.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/devices/register"))
+        .respond_with(ResponseTemplate::new(201))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": true, "owner_user_id": "u1"})),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity.json");
+    let id = identity::generate("my-box");
+
+    let client = reqwest::Client::new();
+    let out = pairing::ensure_paired(
+        &client,
+        &server.uri(),
+        &server.uri(),
+        &path,
+        id,
+        Duration::from_millis(10),
+        Some("FIXED-CODE"),
+    )
+    .await
+    .expect("pairing with an injected code succeeds");
+    assert!(out.approved);
+
+    let requests = server.received_requests().await.unwrap();
+    let register = requests
+        .iter()
+        .find(|r| r.url.path() == "/api/devices/register")
+        .expect("a register call landed");
+    let body: serde_json::Value = serde_json::from_slice(&register.body).unwrap();
+    assert_eq!(
+        body["pairing_code_hash"],
+        serde_json::json!(pairing::hash_pairing_code("FIXED-CODE")),
+        "register must carry the injected code's hash"
+    );
+}
+
+#[tokio::test]
 async fn ensure_paired_short_circuits_when_already_approved() {
     // A pre-approved identity must do zero network calls. Point at a server with no
     // mounts so any request would 404 → error; success proves nothing was sent.
@@ -114,6 +166,7 @@ async fn ensure_paired_short_circuits_when_already_approved() {
         &path,
         id.clone(),
         Duration::from_millis(10),
+        None,
     )
     .await
     .expect("already-approved short-circuits");

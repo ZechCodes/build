@@ -200,6 +200,10 @@ pub async fn poll_until_approved(
 /// unchanged with no network calls. Otherwise: register as pending, print the pairing
 /// code + fingerprint + approve URL, poll until approved, persist `approved = true`,
 /// and return the updated identity. Takes ownership and returns the approved copy.
+///
+/// `pairing_code_override` (env `BRIDGE_PAIRING_CODE`) replaces the random code so
+/// dev/compose automation can complete the real approve flow with a known code;
+/// leave it `None` (the default everywhere humans pair) for a fresh random code.
 pub async fn ensure_paired(
     client: &reqwest::Client,
     api_url: &str,
@@ -207,12 +211,16 @@ pub async fn ensure_paired(
     identity_path: &Path,
     mut stored: StoredIdentity,
     poll_interval: Duration,
+    pairing_code_override: Option<&str>,
 ) -> Result<StoredIdentity> {
     if stored.approved {
         return Ok(stored);
     }
 
-    let pairing_code = generate_pairing_code();
+    let pairing_code = match pairing_code_override {
+        Some(code) => code.to_string(),
+        None => generate_pairing_code(),
+    };
     let req = build_register_request(&stored, &pairing_code)?;
     register(client, api_url, &req).await?;
 

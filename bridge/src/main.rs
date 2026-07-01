@@ -19,6 +19,8 @@
 //!   `http://127.0.0.1:8080`; production `https://getbuild.ing`)
 //! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
+//! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
+//!   a random one, so a scripted approver can complete the flow
 
 use std::time::Duration;
 
@@ -117,6 +119,9 @@ async fn serve() {
             };
             let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
             let web_url = env("BRIDGE_WEB_URL", &api_url);
+            // Dev/compose automation only: pair with a known code so a scripted
+            // approver can complete the real flow. Humans get a random code.
+            let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
             let client = reqwest::Client::new();
             let approved = match pairing::ensure_paired(
                 &client,
@@ -125,6 +130,7 @@ async fn serve() {
                 &identity_path,
                 stored,
                 Duration::from_secs(2),
+                pairing_code_override.as_deref(),
             )
             .await
             {

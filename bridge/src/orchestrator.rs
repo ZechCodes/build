@@ -53,6 +53,24 @@ pub struct ActiveTask {
 }
 
 impl ActiveTask {
+    /// Reattach a task recovered from the durable store after a daemon restart:
+    /// the worktree survived on disk, the PTY session did not. The caller (boot
+    /// recovery) has already moved a working state to `Interrupted`.
+    pub fn reattach(
+        task: Task,
+        worktree: Worktree,
+        plan_path: String,
+        last_summary: Option<String>,
+    ) -> Self {
+        ActiveTask {
+            task,
+            worktree,
+            plan_path,
+            last_summary,
+            session: None,
+        }
+    }
+
     /// Subscribe to the live terminal stream, if a session is warm.
     pub fn subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<Vec<u8>>> {
         self.session.as_ref().map(|s| s.subscribe())
@@ -222,6 +240,21 @@ impl Orchestrator {
     pub fn reply(&self, active: &mut ActiveTask, message: &str) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Reply)?;
         self.prompt_warm_session(active, message)?;
+        Ok(())
+    }
+
+    /// Re-dispatch an interrupted phase in a **fresh** session. The daemon that
+    /// spawned the original session died; the worktree (the agent's real state)
+    /// is the starting point, exactly like `approve_plan` starting a cold build.
+    pub fn resume(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
+        active.task.apply(TaskEvent::Reply)?;
+        self.end_session(active);
+        let prompt = match active.task.state {
+            TaskState::Planning => self.render(&self.templates.plan, active, ""),
+            TaskState::Building => self.render(&self.templates.build, active, ""),
+            ref other => unreachable!("reply left task in {other:?}"),
+        };
+        active.session = Some(self.spawn(&active.worktree, &prompt)?);
         Ok(())
     }
 
@@ -686,6 +719,66 @@ mod tests {
             ok && tree.contains("f.txt"),
             "base pushed with the work: {tree:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn resume_redispatches_an_interrupted_build_in_a_fresh_session() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let dispatched = orch
+            .dispatch(TaskId::new("r1"), "do work", TaskKind::Quick, "main")
+            .unwrap();
+
+        // Simulate a daemon restart: only the durable core survives, and boot
+        // recovery marked the working phase interrupted.
+        let mut task = dispatched.task.clone();
+        task.apply(TaskEvent::Interrupt).unwrap();
+        let mut revived = ActiveTask::reattach(
+            task,
+            dispatched.worktree.clone(),
+            dispatched.plan_path.clone(),
+            None,
+        );
+        assert_eq!(
+            revived.task.state,
+            TaskState::Interrupted(crate::task::Phase::Build)
+        );
+        assert!(
+            revived.subscribe().is_none(),
+            "no live session after reattach"
+        );
+
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Building);
+        assert!(
+            revived.subscribe().is_some(),
+            "a fresh build session is warm"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_redispatches_an_interrupted_plan() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let dispatched = orch
+            .dispatch(TaskId::new("r2"), "plan work", TaskKind::Standard, "main")
+            .unwrap();
+
+        let mut task = dispatched.task.clone();
+        task.apply(TaskEvent::Interrupt).unwrap();
+        let mut revived = ActiveTask::reattach(
+            task,
+            dispatched.worktree.clone(),
+            dispatched.plan_path.clone(),
+            Some("earlier summary".into()),
+        );
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Planning);
+        assert!(
+            revived.subscribe().is_some(),
+            "a fresh plan session is warm"
+        );
+        assert_eq!(revived.last_summary.as_deref(), Some("earlier summary"));
     }
 
     #[tokio::test]

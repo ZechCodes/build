@@ -193,6 +193,10 @@
       #drawer .dh { display:flex; align-items:center; gap:10px; padding:7px 14px; border-bottom:1px solid #2a2a3a; color:#a9b1d6; font-family:var(--mono); font-size:12px; }
       #drawer .dh .x { margin-left:auto; cursor:pointer; color:#7a82a8; }
       #term { flex:1; overflow:hidden; padding:6px 10px; }
+      /* Mid-session offline: pause bridge-backed actions in the main view. Api-only
+         surfaces stay live — the sheet (add-device dialog) and the devices panel. */
+      body.offline #root .btn.primary { opacity: .45; pointer-events: none; }
+      body.offline #root #adddev { opacity: 1; pointer-events: auto; }
     </style>
     <script type="importmap">
       { "imports": {
@@ -214,6 +218,9 @@
         <span class="av">{{USER0}}</span>
       </span>
     </nav>
+    <div id="offbar" hidden style="background:#2d2410;color:#e3b341;border-bottom:1px solid #5c4a1e;padding:7px 18px;font-size:12.5px">
+      ⚠ Your device went offline — reconnecting automatically. You can keep reading; actions that need your device are paused.
+    </div>
     <main id="root"></main>
 
     <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
@@ -233,40 +240,117 @@
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
       // ---- E2EE session ----
-      async function openSession() {
+      // ---------- relay session (offline-aware) ----------
+      // One live session at a time. The relay pushes control frames on the same
+      // socket the RPC envelopes ride: device_offline (our bridge dropped) and
+      // device_key (a bridge came online). RPC replies resolve through a pending map
+      // with timeouts, so calls fail fast instead of hanging on a dead session.
+      let sessionGen = 0;
+      const Live = { ws: null, deviceId: null, pending: new Map(), reqId: 0 };
+
+      async function openSession({ waitForDevice = false } = {}) {
         await transport.ready?.();
+        const gen = ++sessionGen;
         // The api mints a short-lived gateway token for our logged-in session; the
         // relay validates it and routes us only to devices we own.
         const { token } = await fetch("/api/gateway-token", { method: "POST" }).then((r) => r.json());
         const ws = new WebSocket(`${GATEWAY}/ws/client`);
         const q = [], w = [];
-        ws.addEventListener("message", (e) => { const m = JSON.parse(e.data); w.length ? w.shift()(m) : q.push(m); });
+        let live = false, key = null, deviceId = null;
+        const deliver = (m) => (w.length ? w.shift()(m) : q.push(m));
+        ws.addEventListener("message", async (e) => {
+          const m = JSON.parse(e.data);
+          if (!live) return deliver(m);   // handshake phase: recvType drains the queue
+          // Live phase: control frames drive offline handling; envelopes resolve RPCs.
+          if (m.type === "device_offline") { if (gen === sessionGen && m.device_id === deviceId) goOffline(); return; }
+          if (m.type !== "e2ee_envelope") return;
+          let f; try { f = await transport.decryptEnvelope({ sessionKeyB64: key, envelope: m.envelope }); } catch { return; }
+          const p = f.payload, pend = p && p.id !== undefined ? Live.pending.get(p.id) : null;
+          if (pend) { Live.pending.delete(p.id); p.ok ? pend.resolve(p.result) : pend.reject(new Error(p.error)); }
+        });
+        ws.addEventListener("close", () => {
+          if (!live) deliver({ type: "__closed" });        // fail the handshake cleanly
+          else if (gen === sessionGen) goOffline();        // relay/network dropped us
+        });
         const recv = () => new Promise((res) => (q.length ? res(q.shift()) : w.push(res)));
-        const recvType = async (type) => { for (;;) { const m = await recv(); if (m.type === type) return m; } };
+        const recvType = async (type) => { for (;;) { const m = await recv(); if (m.type === "__closed") throw new Error("connection closed"); if (m.type === type) return m; } };
         const send = (o) => ws.send(JSON.stringify(o));
         await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
         send({ type: "authenticate", token });
-        // Wait for our device's key, but don't hang forever if none is online.
-        const hello = await Promise.race([
-          recvType("device_key"),   // our device's id + transport key
-          new Promise((_, rej) => setTimeout(() => rej(new Error("no device online")), 8000)),
-        ]);
-        const deviceId = hello.device_id;
+        // Wait for our device's key. At boot we give up after 8s (the gate shows the
+        // waiting screen); during a resume we wait as long as it takes — this socket
+        // IS the "tell me when a device comes back" channel.
+        const hello = waitForDevice
+          ? await recvType("device_key")
+          : await Promise.race([
+              recvType("device_key"),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("no device online")), 8000)),
+            ]);
+        deviceId = hello.device_id;
         const sid = "sess-" + Math.random().toString(36).slice(2, 10);
         const { sessionKeyB64, sessionInit } = await transport.createSessionInit({ sessionId: sid, deviceId, deviceTransportPublicKeyB64: hello.transport_public_key });
         send({ type: "session_init", session_id: sid, session_init: sessionInit });
         await transport.openSessionAccept({ sessionKeyB64, envelope: (await recvType("session_accept")).envelope });
-        let id = 0;
-        async function call(method, params = {}) {
-          const rid = "r" + ++id;
+        key = sessionKeyB64; live = true;
+        Live.ws = ws; Live.deviceId = deviceId;
+        async function call(method, params = {}, timeoutMs = 12000) {
+          if (App.offline) throw new Error("your device is offline — reconnecting…");
+          const rid = "r" + ++Live.reqId;
           const env = await transport.encryptFrame({ sessionKeyB64, outerFields: { session_id: sid, route_to: `device:${deviceId}` }, frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } } });
+          const reply = new Promise((resolve, reject) => Live.pending.set(rid, { resolve, reject }));
           send({ type: "e2ee_envelope", session_id: sid, envelope: env });
-          for (;;) { const r = await recv(); if (r.type !== "e2ee_envelope") continue; const f = await transport.decryptEnvelope({ sessionKeyB64, envelope: r.envelope }); if (f.payload?.id === rid) { if (!f.payload.ok) throw new Error(f.payload.error); return f.payload.result; } }
+          return Promise.race([reply, new Promise((_, rej) => setTimeout(() => { Live.pending.delete(rid); rej(new Error(`${method} timed out`)); }, timeoutMs))]);
         }
         return { call };
       }
 
-      const App = { call: null, route: { name: "board" }, poll: null, readIds: new Set() };
+      const App = { call: null, route: { name: "board" }, poll: null, readIds: new Set(), offline: false };
+
+      // ---------- mid-session offline handling ----------
+      // The relay pushes device_offline the instant our bridge drops; the socket's
+      // own close event covers relay/network loss. Degrade quietly: banner + amber
+      // dot, freeze the current view (the polls fail fast and skip re-rendering, so
+      // in-progress typing/reading is untouched), pause bridge-backed actions — then
+      // resume silently the moment a device is back.
+      let reconnectTimer = null, reconnectDelay = 0;
+      function goOffline() {
+        if (App.offline) return;
+        App.offline = true;
+        sessionGen++;                                  // invalidate the dead session's handlers
+        try { Live.ws?.close(); } catch { /* already gone */ }
+        for (const { reject } of Live.pending.values()) reject(new Error("your device went offline"));
+        Live.pending.clear();
+        document.body.classList.add("offline");
+        $("#offbar").hidden = false;
+        $("#conn").innerHTML = '<span class="dot" style="background:#d29922"></span>reconnecting…';
+        resume();
+      }
+
+      async function resume() {
+        if (!App.offline || App._resuming) return;
+        App._resuming = true;
+        try {
+          // Blocks until a device is online: the fresh authenticated socket receives
+          // the relay's device_key push the moment a bridge returns.
+          const s = await openSession({ waitForDevice: true });
+          App.call = s.call;
+          App.offline = false;
+          reconnectDelay = 0;
+          document.body.classList.remove("offline");
+          $("#offbar").hidden = true;
+          $("#conn").innerHTML = '<span class="dot"></span>connected';
+          // The board holds no user input, so refreshing it is safe; the task view's
+          // own poll resumes and its key-diffing preserves in-progress work.
+          if (App.route.name === "board") render();
+        } catch {
+          // Relay unreachable — retry with backoff until it's back.
+          reconnectDelay = Math.min((reconnectDelay || 1000) * 2, 15000);
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(resume, reconnectDelay);
+        } finally {
+          App._resuming = false;
+        }
+      }
 
       // Tasks that are waiting on the user (the board's "NEEDS YOU" bucket).
       function attnTasks(tasks) { return tasks.filter((t) => t.needs_attention && t.state !== "merged" && t.state !== "abandoned"); }
@@ -963,6 +1047,7 @@
         }
 
         const paint = async () => {
+          if (App.offline) return;   // freeze the view; resume() restarts the flow
           let t; try { t = await App.call("task.get", { task_id: id }); } catch (e) { return; }
           if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
           last = t;

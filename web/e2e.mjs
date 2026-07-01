@@ -16,8 +16,10 @@ import { loginWithDummy } from "./skrift-auth.mjs";
 
 const url = process.env.RELAY_URL || process.env.DEV_RELAY_URL || "ws://127.0.0.1:18090";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
+// With several devices online, pin the one under test (default: first to answer).
+const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 
-const { mintGatewayToken } = await loginWithDummy(apiUrl);
+const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
 const ws = new WebSocket(`${url}/ws/client`);
 
 // Adapt the socket to client.mjs's send(obj) / recv()->obj interface.
@@ -56,10 +58,11 @@ try {
     send,
     recv,
     transport,
+    preferDeviceId,
     log: (m) => console.log("[client]", m),
   });
-  const expected = JSON.stringify({ echo: { method: "ping", n: 1 }, from: "bridge" });
-  if (JSON.stringify(payload) !== expected) {
+  // The bridge's app RPC answers ping with an ok envelope carrying pong.
+  if (!(payload && payload.ok === true && payload.result?.pong === true)) {
     console.error("E2E FAIL: unexpected payload", payload);
     process.exit(1);
   }

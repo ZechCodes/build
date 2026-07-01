@@ -18,6 +18,8 @@ import { loginWithDummy } from "./skrift-auth.mjs";
 
 const url = process.env.RELAY_URL || "ws://127.0.0.1:18090";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
+// With several devices online, pin the one under test (default: first to answer).
+const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 
 let passed = 0;
 const checks = [];
@@ -53,7 +55,7 @@ function connect() {
 }
 
 async function main() {
-  const { mintGatewayToken } = await loginWithDummy(apiUrl);
+  const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
   const c = connect();
   await c.ready;
   // First frame: authenticate with a gateway token; the relay acks and then
@@ -61,7 +63,7 @@ async function main() {
   c.send({ type: "authenticate", token: await mintGatewayToken() });
   const ack = await c.recv();
   check("relay accepts the gateway token", ack.type === "authenticated", `got ${ack.type}`);
-  const { call } = await openSession({ send: c.send, recv: c.recv, transport });
+  const { call } = await openSession({ send: c.send, recv: c.recv, transport, preferDeviceId });
 
   // Liveness.
   const pong = await call("ping");

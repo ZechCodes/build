@@ -15,8 +15,9 @@
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
-//! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing (default
-//!   `http://127.0.0.1:8080`; production `https://getbuild.ing`)
+//! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing and for the
+//!   signed, content-free web-push notifies fired when a task needs the human
+//!   (default `http://127.0.0.1:8080`; production `https://getbuild.ing`)
 //! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
@@ -25,6 +26,7 @@
 use std::time::Duration;
 
 use build_bridge::app::AppState;
+use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::{identity, pairing, transport};
 
@@ -80,6 +82,7 @@ async fn serve() {
         Ok("1") | Ok("true")
     );
     let device_url = format!("{}/ws/device", relay_url.trim_end_matches('/'));
+    let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
 
     // Identity. A provisioned identity in the environment (matches the relay DB seed)
     // is a prod/seed override that is treated as already approved and skips pairing.
@@ -117,7 +120,6 @@ async fn serve() {
                     std::process::exit(1);
                 }
             };
-            let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
             let web_url = env("BRIDGE_WEB_URL", &api_url);
             // Dev/compose automation only: pair with a known code so a scripted
             // approver can complete the real flow. Humans get a random code.
@@ -156,8 +158,14 @@ async fn serve() {
 
     // Shared state: the relay handler and the done-socket listener drive the same
     // tasks; state survives reconnects. The default repo is project one; any extra
-    // repos in BRIDGE_PROJECTS are registered alongside it.
-    let mut app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket);
+    // repos in BRIDGE_PROJECTS are registered alongside it. Attention transitions
+    // fire a signed, content-free web-push notify at the api.
+    let mut app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket)
+        .with_notifier(Notifier::new(
+            &api_url,
+            &identity.device_id,
+            &identity.identity_private_key_b64,
+        ));
     for entry in std::env::var("BRIDGE_PROJECTS")
         .unwrap_or_default()
         .split(',')

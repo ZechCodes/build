@@ -15,6 +15,7 @@ pub mod app;
 pub mod diff;
 pub mod identity;
 pub mod mcp;
+pub mod notify;
 pub mod orchestrator;
 pub mod pairing;
 pub mod pty;

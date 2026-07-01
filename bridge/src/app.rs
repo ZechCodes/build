@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 use tokio::io::AsyncBufReadExt;
 
 use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
@@ -172,6 +173,11 @@ pub struct AppState {
     next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
+    /// Web-push notifier for attention transitions, if configured. Content-free
+    /// by contract — it only ever says "a task needs you".
+    notifier: Option<Notifier>,
+    /// At most one push per task-state change.
+    notify_throttle: NotifyThrottle,
 }
 
 impl AppState {
@@ -200,9 +206,18 @@ impl AppState {
             next_stream: 1,
             next_project: 1,
             qa_agent,
+            notifier: None,
+            notify_throttle: NotifyThrottle::default(),
         };
         state.add_project(repo_path.into(), base_branch.into());
         state
+    }
+
+    /// Enable web-push attention notifications: every task-state change into a
+    /// state that needs the human fires one signed, content-free notify at the api.
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.notifier = Some(notifier);
+        self
     }
 
     /// Enable persistence at `path`: load any saved projects + projects-dir from it
@@ -378,8 +393,32 @@ impl AppState {
     ) -> (Value, Result<(), String>) {
         let view = self.task_view(&task_id, &active);
         let persisted = self.persist_task(&task_id, &active);
+        self.push_notify_if_needed(&task_id, &active.task.state);
         self.tasks.insert(task_id, active);
         (view, persisted)
+    }
+
+    /// Fire one content-free web-push notify when a task-state change lands in a
+    /// state that needs the human. Fire-and-forget: the POST runs off the app
+    /// lock, and a delivery failure only logs — it never blocks the mutation.
+    fn push_notify_if_needed(&mut self, task_id: &str, state: &TaskState) {
+        let Some(notifier) = &self.notifier else {
+            return;
+        };
+        if !self.notify_throttle.should_notify(task_id, state) {
+            return;
+        }
+        let notifier = notifier.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(e) = notifier.notify_attention().await {
+                        eprintln!("push notify: {e}");
+                    }
+                });
+            }
+            Err(_) => eprintln!("push notify: no async runtime; skipped"),
+        }
     }
 
     /// Persist projects + projects-dir to the config file, if one is configured.
@@ -1665,6 +1704,71 @@ mod tests {
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(repo.join("result.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn attention_transitions_fire_one_push_notify_each() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/push/notify"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let identity = crate::transport::generate_identity_keypair();
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_notifier(crate::notify::Notifier::new(
+            &server.uri(),
+            "dev-1",
+            &identity.private_key_b64,
+        ));
+
+        async fn notifies_after(server: &MockServer, expected: usize) -> usize {
+            for _ in 0..100 {
+                if server.received_requests().await.unwrap().len() >= expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            server.received_requests().await.unwrap().len()
+        }
+
+        // Dispatch → (scripted plan) → plan_review: exactly one notify.
+        let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
+        assert_eq!(res["result"]["state"], "plan_review");
+        assert_eq!(notifies_after(&server, 1).await, 1);
+
+        // Reading the plan mutates nothing → still one.
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        state.handle(req("task.plan", json!({ "task_id": task_id })));
+        assert_eq!(notifies_after(&server, 1).await, 1);
+
+        // Approve → (scripted build) → review: a second notify.
+        let approved = state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
+        assert_eq!(approved["result"]["state"], "review");
+        assert_eq!(notifies_after(&server, 2).await, 2);
+
+        // Merge is human-driven; no third notify.
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
+        assert_eq!(merged["result"]["state"], "merged");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+        // The notify body is content-free: no goal, no task id.
+        let body =
+            String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
+        assert!(!body.contains("greeting"), "{body}");
+        assert!(!body.contains(&task_id), "{body}");
     }
 
     #[test]

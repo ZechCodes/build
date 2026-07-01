@@ -1,16 +1,25 @@
 // Node end-to-end harness: runs the real browser-client logic (client.mjs) and
-// the real build-secure-transport JS binding against a live dev relay + bridge.
+// the real build-secure-transport JS binding against a live relay + bridge.
+//
+// Relay-direct topology: dummy-login to the api, mint a gateway token, and
+// authenticate straight to the relay's /ws/client (the node gateway is retired).
 //
 // Proves: browser client → relay → bridge → relay → browser client, fully E2E
 // encrypted, with the JS client and the Rust bridge interoperating.
 //
-// Usage: DEV_RELAY_URL=ws://127.0.0.1:8799 node e2e.mjs
+// Usage: API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node e2e.mjs
 
 import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
 import { runClientSession } from "./client.mjs";
+import { loginWithDummy } from "./skrift-auth.mjs";
 
-const url = process.env.DEV_RELAY_URL || "ws://127.0.0.1:8799";
+const url = process.env.RELAY_URL || process.env.DEV_RELAY_URL || "ws://127.0.0.1:18090";
+const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
+// With several devices online, pin the one under test (default: first to answer).
+const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
+
+const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
 const ws = new WebSocket(`${url}/ws/client`);
 
 // Adapt the socket to client.mjs's send(obj) / recv()->obj interface.
@@ -39,14 +48,21 @@ await new Promise((resolve, reject) => {
 });
 
 try {
+  send({ type: "authenticate", token: await mintGatewayToken() });
+  const ack = await recv();
+  if (ack.type !== "authenticated") {
+    console.error("E2E FAIL: relay refused the gateway token:", ack);
+    process.exit(1);
+  }
   const payload = await runClientSession({
     send,
     recv,
     transport,
+    preferDeviceId,
     log: (m) => console.log("[client]", m),
   });
-  const expected = JSON.stringify({ echo: { method: "ping", n: 1 }, from: "bridge" });
-  if (JSON.stringify(payload) !== expected) {
+  // The bridge's app RPC answers ping with an ok envelope carrying pong.
+  if (!(payload && payload.ok === true && payload.result?.pong === true)) {
     console.error("E2E FAIL: unexpected payload", payload);
     process.exit(1);
   }

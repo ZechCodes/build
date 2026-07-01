@@ -1,16 +1,25 @@
 // QA harness: drives the full platform over the E2EE relay and asserts behavior.
 //
+// Relay-direct topology: dummy-login to the api, mint a gateway token, and
+// authenticate straight to the relay's /ws/client (the node gateway is retired).
 // Runs the real browser-client logic + transport binding against a live relay +
 // bridge. Exercises the task lifecycle (standard + quick), plan/diff inspection,
 // merge results, error handling, and parallel tasks.
 //
-// Usage: RELAY_URL=ws://127.0.0.1:8799 node qa.mjs
+// Prereqs: skriftapp on API_URL (dummy auth enabled), the Rust relay on
+// RELAY_URL, and a paired bridge with BRIDGE_QA_AGENT=1 connected to it.
+//
+// Usage: API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node qa.mjs
 
 import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
 import { openSession } from "./client.mjs";
+import { loginWithDummy } from "./skrift-auth.mjs";
 
-const url = process.env.RELAY_URL || "ws://127.0.0.1:8799";
+const url = process.env.RELAY_URL || "ws://127.0.0.1:18090";
+const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
+// With several devices online, pin the one under test (default: first to answer).
+const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 
 let passed = 0;
 const checks = [];
@@ -46,9 +55,15 @@ function connect() {
 }
 
 async function main() {
+  const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
   const c = connect();
   await c.ready;
-  const { call } = await openSession({ send: c.send, recv: c.recv, transport });
+  // First frame: authenticate with a gateway token; the relay acks and then
+  // pushes device_key for each of our online devices.
+  c.send({ type: "authenticate", token: await mintGatewayToken() });
+  const ack = await c.recv();
+  check("relay accepts the gateway token", ack.type === "authenticated", `got ${ack.type}`);
+  const { call } = await openSession({ send: c.send, recv: c.recv, transport, preferDeviceId });
 
   // Liveness.
   const pong = await call("ping");

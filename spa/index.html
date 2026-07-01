@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build — review is the product</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <nav>
+      <span class="logo">build</span>
+      <span class="tab active" id="nav-board">◧ Board</span>
+      <span class="tab" id="nav-notif">Notifications <span class="badge" id="notif" style="display:none">0</span></span>
+      <span class="tab" id="nav-settings">Settings</span>
+      <span class="right">
+        <select id="devpick" title="Which device runs your tasks" hidden></select>
+        <span id="conn"><span class="dot"></span>connecting…</span>
+        <span class="e2ee">e2ee</span>
+        <span class="av">{{USER0}}</span>
+      </span>
+    </nav>
+    <div id="offbar" hidden>
+      ⚠ <span id="offbar-text">Your device went offline — reconnecting automatically.</span>
+      You can keep reading; actions that need your device are paused.
+    </div>
+    <main id="root"></main>
+
+    <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+    <div id="drawer">
+      <div class="dh"><span id="dtitle">terminal</span><span class="dim">· pty · live · scrollback is the log</span><span class="x" id="dx">` dismiss</span></div>
+      <div id="term"></div>
+    </div>
+  </body>
+</html>

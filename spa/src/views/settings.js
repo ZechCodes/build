@@ -1,0 +1,167 @@
+// Settings: projects (which repo agents work on), the privacy story, and the
+// devices & keys panel (api-backed, stays live even when the bridge is offline).
+
+import { $ } from "../dom.js";
+import { esc } from "../core/text.js";
+import { App } from "../app.js";
+import { refreshDevices } from "../devices.js";
+import { revokeDevice } from "../api.js";
+import { openBrowser } from "../sheets/browser.js";
+import { openNewRepo } from "../sheets/newRepo.js";
+import { openSetRemote } from "../sheets/setRemote.js";
+import { openClone } from "../sheets/clone.js";
+import { openAddDevice } from "../sheets/addDevice.js";
+
+export async function renderSettings() {
+  $("#root").innerHTML = `
+    <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
+    <div class="panel">
+      <h3>📁 Projects</h3>
+      <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
+      <div class="addproj">
+        <button class="btn primary" id="newrepo">New repo…</button>
+        <button class="btn" id="browseadd">Browse for a repo…</button>
+        <button class="btn" id="cloneadd">Clone from URL…</button>
+      </div>
+      <div class="projfolder">Projects folder: <code id="pdir">…</code>
+        <button class="btn mini" id="changedir">Change…</button>
+        <span class="dim">clones land here</span></div>
+      <details class="manualadd"><summary>or enter a path manually</summary>
+        <div class="addproj"><input id="projpath" class="path" placeholder="~/code/your-repo" />
+          <input id="projbranch" placeholder="auto" style="max-width:90px" />
+          <button class="btn" id="addproj">Add</button></div></details>
+      <div class="adderr" id="adderr"></div>
+    </div>
+    <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
+    <div class="panel">
+      <h3>🔒 What our servers see</h3>
+      <div class="row"><span class="k">Routing IDs</span><span class="v">which device a blob is for — random identifiers, no names</span></div>
+      <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
+      <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
+      <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+    </div>
+    <div class="panel">
+      <h3>📱 Devices &amp; keys</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed.</div>
+      <div id="devlist"><span class="dim" style="font-size:13px">loading…</span></div>
+      <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button></div>
+      <div class="adderr" id="deverr"></div>
+    </div>`;
+
+  const refresh = async () => {
+    try {
+      const { projects } = await App.call("project.list");
+      $("#projlist").innerHTML =
+        projects
+          .map(
+            (p) => `
+        <div class="projrow"><span class="pname">${esc(p.name)}</span>
+          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span>
+          <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
+          <button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button></div>`,
+          )
+          .join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
+      const { projects_dir } = await App.call("settings.get");
+      $("#pdir").textContent = projects_dir;
+      $("#projlist").querySelectorAll(".setremote").forEach(
+        (btn) =>
+          (btn.onclick = () => {
+            const project = projects.find((p) => p.project_id === btn.dataset.id);
+            openSetRemote(project, refresh);
+          }),
+      );
+    } catch (e) {
+      $("#projlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`;
+    }
+  };
+  await refresh();
+  $("#newrepo").onclick = () => openNewRepo(refresh);
+
+  // Browse the host filesystem and add the chosen git repo — no typing.
+  $("#browseadd").onclick = () =>
+    openBrowser({
+      title: "Browse for a git repo",
+      gitOnly: true,
+      onChoose: async (path) => {
+        try {
+          await App.call("project.add", { path });
+          $("#scrim").classList.remove("show");
+          await refresh();
+        } catch (e) {
+          const err = $("#berr");
+          if (err) err.textContent = e.message;
+        }
+      },
+    });
+  // Clone a remote into the projects folder.
+  $("#cloneadd").onclick = () => openClone(refresh);
+  // Pick a different projects folder (any directory).
+  $("#changedir").onclick = () =>
+    openBrowser({
+      title: "Choose a projects folder",
+      gitOnly: false,
+      onChoose: async (path) => {
+        try {
+          await App.call("settings.set", { projects_dir: path });
+          $("#scrim").classList.remove("show");
+          await refresh();
+        } catch (e) {
+          const err = $("#berr");
+          if (err) err.textContent = e.message;
+        }
+      },
+    });
+  $("#addproj").onclick = async () => {
+    const path = $("#projpath").value.trim();
+    if (!path) return;
+    const base_branch = $("#projbranch").value.trim() || undefined;
+    $("#addproj").disabled = true;
+    $("#adderr").textContent = "";
+    try {
+      await App.call("project.add", { path, base_branch });
+      $("#projpath").value = "";
+      $("#projbranch").value = "";
+      await refresh();
+    } catch (e) {
+      $("#adderr").textContent = e.message;
+    }
+    $("#addproj").disabled = false;
+  };
+
+  // Devices: list the user's paired devices (over plain HTTP, not the bridge),
+  // each with its fingerprint, online/offline, and a revoke action.
+  const refreshDeviceList = async () => {
+    try {
+      const devices = await refreshDevices();
+      $("#devlist").innerHTML = devices.length
+        ? devices
+            .map(
+              (d) => `
+        <div class="projrow"><span class="pname">${esc(d.name)}</span>
+          <span class="ppath mono" style="font-size:11px" title="${esc(d.fingerprint)}">${esc(d.fingerprint.slice(0, 16))}…</span>
+          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "#3fb950" : "#6e7681"}"></span> ${esc(d.status)}</span>
+          <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
+            )
+            .join("")
+        : '<div class="dim" style="font-size:13px">No devices yet. Start a bridge, then add it with its pairing code.</div>';
+      $("#devlist").querySelectorAll(".revoke").forEach(
+        (btn) =>
+          (btn.onclick = async () => {
+            btn.disabled = true;
+            $("#deverr").textContent = "";
+            try {
+              await revokeDevice(btn.dataset.id);
+              await refreshDeviceList();
+            } catch (e) {
+              $("#deverr").textContent = e.message;
+              btn.disabled = false;
+            }
+          }),
+      );
+    } catch (e) {
+      $("#devlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`;
+    }
+  };
+  await refreshDeviceList();
+  $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
+}

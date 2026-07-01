@@ -8,16 +8,28 @@
 // verify the device's session_accept → send an encrypted request → read the
 // encrypted response. The relay only ever sees opaque envelopes.
 
+// Read frames until the device's key push arrives, skipping relay control
+// frames (the post-authenticate `authenticated` ack, other devices' keys).
+async function awaitDeviceKey(recv, preferDeviceId = null) {
+  for (;;) {
+    const message = await recv();
+    if (message.type === "device_key" && (!preferDeviceId || message.device_id === preferDeviceId)) {
+      return message;
+    }
+    if (message.type !== "device_key" && message.type !== "authenticated") {
+      throw new Error(`expected device_key, got ${message.type}`);
+    }
+  }
+}
+
 // Open an E2EE session and return an RPC `call(method, params)` over it. This is
 // the real client API the UI uses: bootstrap once, then make many encrypted calls
 // to the bridge's application RPC (task.dispatch, task.diff, task.approve_merge…).
-export async function openSession({ send, recv, transport, deviceId = "bridge" }) {
+export async function openSession({ send, recv, transport, preferDeviceId = null }) {
   if (transport.ready) await transport.ready();
 
-  const hello = await recv();
-  if (hello.type !== "device_key") {
-    throw new Error(`expected device_key, got ${hello.type}`);
-  }
+  const hello = await awaitDeviceKey(recv, preferDeviceId);
+  const deviceId = hello.device_id;
   const deviceTransportPublicKeyB64 = hello.transport_public_key;
 
   const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
@@ -26,7 +38,7 @@ export async function openSession({ send, recv, transport, deviceId = "bridge" }
     deviceId,
     deviceTransportPublicKeyB64,
   });
-  send({ type: "session_init", session_id: sessionId, session_init: sessionInit });
+  send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
 
   const accept = await recv();
   if (accept.type !== "session_accept") {
@@ -62,17 +74,15 @@ export async function runClientSession({
   send,
   recv,
   transport,
-  deviceId = "dev-relay-device",
+  preferDeviceId = null,
   request = { method: "ping", n: 1 },
   log = () => {},
 }) {
   if (transport.ready) await transport.ready();
 
   // 1. The relay hands us the device's transport public key.
-  const hello = await recv();
-  if (hello.type !== "device_key") {
-    throw new Error(`expected device_key, got ${hello.type}`);
-  }
+  const hello = await awaitDeviceKey(recv, preferDeviceId);
+  const deviceId = hello.device_id;
   const deviceTransportPublicKeyB64 = hello.transport_public_key;
   log(`device transport key: ${deviceTransportPublicKeyB64.slice(0, 12)}…`);
 
@@ -83,7 +93,7 @@ export async function runClientSession({
     deviceId,
     deviceTransportPublicKeyB64,
   });
-  send({ type: "session_init", session_id: sessionId, session_init: sessionInit });
+  send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: sessionInit });
 
   // 3. The device proves it unwrapped the key with an encrypted session_accept.
   const accept = await recv();

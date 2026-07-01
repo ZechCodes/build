@@ -3,7 +3,8 @@
 //! `build-bridge serve` connects to the relay and serves the orchestrator-backed
 //! application RPC over the E2EE channel. Configuration is by environment:
 //!
-//! - `BRIDGE_RELAY_URL`   relay base URL (default `ws://127.0.0.1:8799`)
+//! - `BRIDGE_RELAY_URL`   relay base URL (default `ws://127.0.0.1:8799`; production
+//!   `wss://relay.getbuild.ing` — TLS is rustls with bundled webpki roots)
 //! - `BRIDGE_REPO`        the default git repo tasks operate on (default `/repo`)
 //! - `BRIDGE_PROJECTS`    extra repos, comma-separated `path` or `path=branch`
 //! - `BRIDGE_WORKTREES`   where task worktrees are created (default `/worktrees`)
@@ -13,7 +14,8 @@
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
-//! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing (default `http://127.0.0.1:8080`)
+//! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing (default
+//!   `http://127.0.0.1:8080`; production `https://getbuild.ing`)
 //! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 

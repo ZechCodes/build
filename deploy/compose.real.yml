@@ -4,8 +4,9 @@
 # Prereqs (see deploy/README.md):
 #   podman build -t build-relay:local <path-to-build-relay-checkout>
 #   python3 deploy/provision.py            # writes deploy/secrets/*
+#   echo "BUILD_POSTGRES_PASSWORD=$(openssl rand -hex 24)" > deploy/secrets/postgres.env
 #
-#   podman compose -f deploy/compose.real.yml up -d --build
+#   podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml up -d --build
 #
 # Non-default host ports so this coexists with other relay deployments.
 
@@ -14,7 +15,9 @@ services:
     image: docker.io/library/postgres:16
     environment:
       POSTGRES_USER: build
-      POSTGRES_PASSWORD: build
+      # No hardcoded credentials: interpolated from deploy/secrets/postgres.env
+      # (git-ignored) via --env-file, or the caller's environment.
+      POSTGRES_PASSWORD: ${BUILD_POSTGRES_PASSWORD:?set BUILD_POSTGRES_PASSWORD (see header comment)}
       POSTGRES_DB: build
     # Ephemeral data dir → the seed (schema `build` + devices + approved device)
     # runs on every fresh container.
@@ -31,7 +34,7 @@ services:
   relay:
     image: localhost/build-relay:local
     environment:
-      DATABASE_URL: postgresql://build:build@postgres:5432/build
+      DATABASE_URL: postgresql://build:${BUILD_POSTGRES_PASSWORD:?set BUILD_POSTGRES_PASSWORD (see header comment)}@postgres:5432/build
       REDIS_URL: redis://redis:6379/0
       RELAY_HOST: 0.0.0.0
       RELAY_PORT: "8081"

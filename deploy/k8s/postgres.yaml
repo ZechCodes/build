@@ -1,0 +1,91 @@
+# Postgres for the Build app. Data lives on a retained DO block-storage volume:
+# deleting the StatefulSet (or even the PVC) keeps the underlying PV/volume.
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-postgres
+spec:
+  clusterIP: None # headless: stable DNS for the single replica
+  selector:
+    app.kubernetes.io/name: build-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: build-postgres
+spec:
+  serviceName: build-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: build-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-postgres
+    spec:
+      # Run as the image's `postgres` user (999) so the entrypoint never needs
+      # root; fsGroup lets it write the block-storage mount.
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:16
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: build
+            - name: POSTGRES_DB
+              value: build
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: build-postgres
+                  key: POSTGRES_PASSWORD
+            # Subdirectory so the volume's lost+found doesn't trip initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "build", "-d", "build"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "build", "-d", "build"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: do-block-storage-retain
+        resources:
+          requests:
+            storage: 10Gi

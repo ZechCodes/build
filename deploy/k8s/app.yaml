@@ -1,0 +1,111 @@
+# The Skrift app: auth, device registry, gateway tokens, SPA host.
+# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL) come from
+# deploy/k8s/bootstrap-secrets.sh — never from git.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-app
+spec:
+  replicas: 1
+  # Migrations run in the entrypoint; don't race two schema writers.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: build-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-app
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: ghcr.io/8ly-dev/build-app:latest
+          imagePullPolicy: Always
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SECRET_KEY
+            - name: INTERNAL_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: INTERNAL_API_SECRET
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: DATABASE_URL
+          # `/` is unauthenticated and cheap: 302 before setup, CMS root after.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30 # up to 150s for migrations on first boot
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-app
+spec:
+  selector:
+    app.kubernetes.io/name: build-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: build-app
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - getbuild.ing
+      secretName: getbuild-ing-tls
+  rules:
+    - host: getbuild.ing
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: build-app
+                port:
+                  name: http

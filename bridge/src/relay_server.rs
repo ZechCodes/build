@@ -130,6 +130,9 @@ struct ConnectedDevice {
     owner_user_id: String,
     transport_key: Option<String>,
     out: Outbound,
+    /// Which physical connection registered this entry — so a stale socket's late
+    /// cleanup can't deregister a newer reconnection of the same device.
+    conn_id: u64,
 }
 
 struct ConnectedClient {
@@ -142,6 +145,13 @@ struct Session {
     device_id: String,
 }
 
+/// The result of registering a device connection: its connection id, and any clients
+/// whose sessions were severed because this is a reconnect of the same device.
+pub struct DeviceRegistration {
+    pub conn_id: u64,
+    pub displaced_clients: Vec<Outbound>,
+}
+
 /// The relay's live routing table. Not thread-safe by itself; the bin wraps it in a
 /// mutex. Methods mutate `&mut self` and never touch the network.
 #[derive(Default)]
@@ -150,6 +160,7 @@ pub struct RelayState {
     clients: HashMap<u64, ConnectedClient>,
     sessions: HashMap<String, Session>,
     next_client_id: u64,
+    next_device_conn_id: u64,
 }
 
 impl RelayState {
@@ -159,17 +170,47 @@ impl RelayState {
 
     // ----- devices -----------------------------------------------------------
 
-    /// Register an authenticated device. Returns the client outbounds that should now
-    /// receive this device's `device_key` once it uploads one (none until then).
-    pub fn add_device(&mut self, device_id: &str, owner_user_id: &str, out: Outbound) {
+    /// Register an authenticated device (a reconnect replaces the previous entry).
+    /// Any sessions still routed to the old connection are severed — their keys died
+    /// with the old device process — and the affected clients are returned so the bin
+    /// can tell them to re-handshake. The `conn_id` goes back to [`remove_device`] so
+    /// a stale socket's late cleanup can't deregister this newer connection.
+    pub fn add_device(
+        &mut self,
+        device_id: &str,
+        owner_user_id: &str,
+        out: Outbound,
+    ) -> DeviceRegistration {
+        let conn_id = self.next_device_conn_id;
+        self.next_device_conn_id += 1;
+
+        let displaced_ids: Vec<u64> = self
+            .sessions
+            .values()
+            .filter(|s| s.device_id == device_id)
+            .map(|s| s.client_id)
+            .collect();
+        self.sessions.retain(|_, s| s.device_id != device_id);
+        let mut seen = std::collections::HashSet::new();
+        let displaced_clients = displaced_ids
+            .into_iter()
+            .filter(|id| seen.insert(*id))
+            .filter_map(|id| self.clients.get(&id).map(|c| c.out.clone()))
+            .collect();
+
         self.devices.insert(
             device_id.to_string(),
             ConnectedDevice {
                 owner_user_id: owner_user_id.to_string(),
                 transport_key: None,
                 out,
+                conn_id,
             },
         );
+        DeviceRegistration {
+            conn_id,
+            displaced_clients,
+        }
     }
 
     /// Record a device's transport key and return the outbounds of every connected
@@ -185,13 +226,17 @@ impl RelayState {
         self.client_outbounds_for_user(&owner)
     }
 
-    /// Remove a device and drop any sessions routed to it. Returns the outbounds of
-    /// the owner's connected clients so the bin can push a `device_offline` notice —
-    /// the browser's cue to degrade gracefully instead of hanging on a dead session.
-    pub fn remove_device(&mut self, device_id: &str) -> Vec<Outbound> {
-        let Some(device) = self.devices.remove(device_id) else {
-            return Vec::new();
-        };
+    /// Remove a device and drop any sessions routed to it — but only if the entry
+    /// still belongs to `conn_id`, so a stale socket's late cleanup is a no-op after
+    /// the device reconnected. Returns the outbounds of the owner's connected clients
+    /// so the bin can push a `device_offline` notice — the browser's cue to degrade
+    /// gracefully instead of hanging on a dead session.
+    pub fn remove_device(&mut self, device_id: &str, conn_id: u64) -> Vec<Outbound> {
+        match self.devices.get(device_id) {
+            Some(device) if device.conn_id == conn_id => {}
+            _ => return Vec::new(),
+        }
+        let device = self.devices.remove(device_id).expect("checked above");
         self.sessions.retain(|_, s| s.device_id != device_id);
         self.client_outbounds_for_user(&device.owner_user_id)
     }
@@ -483,11 +528,11 @@ mod tests {
     fn removing_a_device_drops_its_sessions() {
         let mut state = RelayState::new();
         let (d_out, _d_rx) = chan();
-        state.add_device("dev", "u1", d_out);
+        let conn = state.add_device("dev", "u1", d_out).conn_id;
         let (c_out, _c_rx) = chan();
         let client = state.add_client("u1", c_out);
         state.open_session("s1", client, "dev").unwrap();
-        state.remove_device("dev");
+        state.remove_device("dev", conn);
         assert!(state.device_out_for_client_frame("s1", client).is_none());
     }
 
@@ -495,13 +540,13 @@ mod tests {
     fn removing_a_device_returns_only_owner_clients_to_notify() {
         let mut state = RelayState::new();
         let (d_out, _d_rx) = chan();
-        state.add_device("dev", "u1", d_out);
+        let conn = state.add_device("dev", "u1", d_out).conn_id;
         let (c1_out, mut c1_rx) = chan();
         let (c2_out, mut c2_rx) = chan();
         state.add_client("u1", c1_out);
         state.add_client("u2", c2_out);
 
-        let notify = state.remove_device("dev");
+        let notify = state.remove_device("dev", conn);
         assert_eq!(notify.len(), 1, "only the owner's client is notified");
         notify[0].send("device_offline".into()).unwrap();
         assert_eq!(c1_rx.try_recv().unwrap(), "device_offline");
@@ -513,6 +558,64 @@ mod tests {
         let mut state = RelayState::new();
         let (c_out, _c_rx) = chan();
         state.add_client("u1", c_out);
-        assert!(state.remove_device("ghost").is_empty());
+        assert!(state.remove_device("ghost", 0).is_empty());
+    }
+
+    #[test]
+    fn stale_disconnect_does_not_remove_a_reconnected_device() {
+        // A device reconnects before its old socket's cleanup runs: the stale
+        // cleanup must not deregister the healthy new connection or notify anyone.
+        let mut state = RelayState::new();
+        let (old_out, _old_rx) = chan();
+        let old_conn = state.add_device("dev", "u1", old_out).conn_id;
+        let (new_out, mut new_rx) = chan();
+        let new_conn = state.add_device("dev", "u1", new_out).conn_id; // reconnect, replaces entry
+        let (c_out, _c_rx) = chan();
+        let client = state.add_client("u1", c_out);
+
+        // Old connection's cleanup fires late: must be a no-op.
+        assert!(state.remove_device("dev", old_conn).is_empty());
+        assert!(
+            state.open_session("s1", client, "dev").is_some(),
+            "the reconnected device is still registered and routable"
+        );
+        state
+            .device_out_for_client_frame("s1", client)
+            .unwrap()
+            .send("hi".into())
+            .unwrap();
+        assert_eq!(new_rx.try_recv().unwrap(), "hi");
+
+        // The new connection's own cleanup still works.
+        assert_eq!(state.remove_device("dev", new_conn).len(), 1);
+        assert!(state.open_session("s2", client, "dev").is_none());
+    }
+
+    #[test]
+    fn reconnect_severs_stale_sessions_and_reports_their_clients() {
+        // A device blips and reconnects before the old socket's cleanup: the old
+        // sessions' keys died with the old process, so the clients riding them must
+        // be reported for a re-handshake nudge — and the dead sessions must not
+        // route frames to the new connection.
+        let mut state = RelayState::new();
+        let (old_out, _old_rx) = chan();
+        state.add_device("dev", "u1", old_out);
+        let (c_out, _c_rx) = chan();
+        let client = state.add_client("u1", c_out);
+        state.open_session("s1", client, "dev").unwrap();
+        let (bystander_out, mut bystander_rx) = chan();
+        state.add_client("u1", bystander_out); // connected, but no session
+
+        let (new_out, _new_rx) = chan();
+        let reg = state.add_device("dev", "u1", new_out);
+        assert_eq!(reg.displaced_clients.len(), 1, "only the session's client");
+        reg.displaced_clients[0]
+            .send("re-handshake".into())
+            .unwrap();
+        assert!(bystander_rx.try_recv().is_err(), "bystander not nudged");
+        assert!(
+            state.device_out_for_client_frame("s1", client).is_none(),
+            "the dead session no longer routes"
+        );
     }
 }

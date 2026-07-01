@@ -178,9 +178,15 @@ async fn serve_device(
         }
     };
 
-    {
+    let registration = {
         let mut state = shared.state.lock().await;
-        state.add_device(&device_id, &owner, out_tx.clone());
+        state.add_device(&device_id, &owner, out_tx.clone())
+    };
+    // A reconnect severed any sessions from this device's previous connection (their
+    // keys died with the old process) — nudge those clients to re-handshake now.
+    let stale_notice = json!({"type":"device_offline","device_id":device_id}).to_string();
+    for client in &registration.displaced_clients {
+        let _ = client.send(stale_notice.clone());
     }
     let _ = out_tx.send(
         json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":30}).to_string(),
@@ -209,6 +215,10 @@ async fn serve_device(
                     let mut state = shared.state.lock().await;
                     state.set_device_transport_key(&device_id, &key)
                 };
+                eprintln!(
+                    "device {device_id}: transport key → fan-out to {} client(s)",
+                    clients.len()
+                );
                 let notice =
                     json!({"type":"device_key","device_id":device_id,"transport_public_key":key})
                         .to_string();
@@ -234,10 +244,11 @@ async fn serve_device(
 
     // The device is gone: drop it, then tell the owner's browsers immediately so
     // they can degrade gracefully (and reconnect on the next device_key) instead of
-    // hanging on a dead session.
+    // hanging on a dead session. Guarded by conn_id: if the device already
+    // reconnected, this stale cleanup is a no-op and nobody is notified.
     let clients = {
         let mut state = shared.state.lock().await;
-        state.remove_device(&device_id)
+        state.remove_device(&device_id, registration.conn_id)
     };
     let notice = json!({"type":"device_offline","device_id":device_id}).to_string();
     for client in clients {
@@ -278,6 +289,7 @@ async fn serve_client(
         let mut state = shared.state.lock().await;
         state.add_client(&user_id, out_tx.clone())
     };
+    eprintln!("client {client_id}: connected (user {user_id})");
     let _ = out_tx.send(json!({"type":"authenticated"}).to_string());
     // Advertise transport keys of the user's already-connected devices.
     let keys = {
@@ -336,6 +348,7 @@ async fn serve_client(
         }
     }
 
+    eprintln!("client {client_id}: disconnected");
     let mut state = shared.state.lock().await;
     state.remove_client(client_id);
 }

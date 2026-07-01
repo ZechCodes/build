@@ -70,8 +70,8 @@ services:
     environment:
       BRIDGE_API_URL: http://app:8080
       BRIDGE_WEB_URL: http://localhost:8090
-      # In-network dev transport; production bridges use wss://relay.getbuild.ing. nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-      BRIDGE_RELAY_URL: ws://relay:8799
+      # In-network dev transport; production bridges use wss://relay.getbuild.ing.
+      BRIDGE_RELAY_URL: ws://relay:8799 # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       # Deterministic code so the qa one-shot (or you, in the SPA) can approve
       # this bridge without reading its logs. Dev-stack convenience only.
       BRIDGE_PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
@@ -93,8 +93,8 @@ services:
       - qa
     environment:
       API_URL: http://app:8080
-      # In-network dev transport; TLS is the ingress's job in production. nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-      RELAY_URL: ws://relay:8799
+      # In-network dev transport; TLS is the ingress's job in production.
+      RELAY_URL: ws://relay:8799 # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
       QA_EMAIL: qa@localhost
     command: ["/bin/sh", "-c", "node pair.mjs && node e2e.mjs && node qa.mjs"]

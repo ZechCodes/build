@@ -153,15 +153,33 @@ fn auth_request(url: &str, identity: &DeviceIdentity) -> Result<Request<()>, Rel
 
 /// Connect to the relay and run the device session until the socket closes.
 ///
-/// Decrypted client request frames are passed to `handler`; its returned payload
-/// is encrypted and sent back as an `e2ee_envelope`.
+/// Handles both plain-`ws` URLs (local/dev) and `wss://` (production, e.g.
+/// `wss://relay.getbuild.ing/ws/device`) — TLS is rustls with bundled webpki
+/// roots (the crate's only TLS feature, so the default connector below can never
+/// silently pick native-tls). Decrypted client request frames are passed to
+/// `handler`; its returned payload is encrypted and sent back as an
+/// `e2ee_envelope`.
 pub async fn run(
     url: &str,
     identity: &DeviceIdentity,
     handler: FrameHandler,
 ) -> Result<(), RelayError> {
+    run_with_connector(url, identity, handler, None).await
+}
+
+/// [`run`], with an explicit TLS connector. `None` uses the default (rustls +
+/// webpki roots for `wss://`, plain TCP for `ws` URLs); tests inject
+/// `Connector::Rustls` trusting a self-signed root to exercise real TLS locally.
+pub async fn run_with_connector(
+    url: &str,
+    identity: &DeviceIdentity,
+    handler: FrameHandler,
+    tls_connector: Option<tokio_tungstenite::Connector>,
+) -> Result<(), RelayError> {
     let request = auth_request(url, identity)?;
-    let (stream, _resp) = tokio_tungstenite::connect_async(request).await?;
+    let (stream, _resp) =
+        tokio_tungstenite::connect_async_tls_with_config(request, None, false, tls_connector)
+            .await?;
     let (mut sink, mut source) = stream.split();
 
     // One writer owns the sink; everything else queues messages to it. Unbounded

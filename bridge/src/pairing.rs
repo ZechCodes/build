@@ -14,6 +14,12 @@
 //! Pure request/response *shaping* lives in free functions (unit-tested without a
 //! network); the HTTP calls are thin wrappers around an injected [`reqwest::Client`]
 //! so they can be pointed at a mock server in tests.
+//!
+//! TLS: reqwest is built with its `rustls` feature (see `Cargo.toml`), so
+//! `https://getbuild.ing` pairing calls use rustls with the platform trust store
+//! via `rustls-platform-verifier` — never native-tls/OpenSSL. (reqwest 0.13
+//! dropped the `rustls-tls-webpki-roots` option; the platform verifier is its
+//! rustls root story.)
 
 use std::path::Path;
 use std::time::Duration;

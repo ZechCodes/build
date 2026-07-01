@@ -1,0 +1,17 @@
+# Build-context ignore for images built from the repo root
+# (skriftapp/Containerfile). Keeps the context small and secret-free.
+.git
+.github
+planning
+deploy
+web/node_modules
+spa/node_modules
+spa/package-lock.json
+bridge/target
+skriftapp/.venv
+skriftapp/.env
+skriftapp/app.db
+skriftapp/app.dev.yaml
+skriftapp/buildapp/static
+**/__pycache__
+**/*.pyc

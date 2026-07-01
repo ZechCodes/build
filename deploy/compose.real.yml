@@ -1,48 +1,65 @@
-# Build v2 over the REAL build-relay (Postgres + Redis + relay), plus the bridge
-# and the web client. (The node gateway is retired — relay-direct topology.)
+# Build v2 — the real (production-shaped) local stack:
 #
-# Prereqs (see deploy/README.md):
-#   podman build -t build-relay:local <path-to-build-relay-checkout>
-#   python3 deploy/provision.py            # writes deploy/secrets/*
-#   echo "BUILD_POSTGRES_PASSWORD=$(openssl rand -hex 24)" > deploy/secrets/postgres.env
+#   skriftapp (auth + device registry + gateway tokens + serves the SPA)
+#     ⇅ /internal/* (X-Internal-Secret)
+#   Rust relay (single broker: /ws/device + /ws/client, ciphertext only)
+#     ⇅ E2EE envelopes
+#   bridge (device daemon, deterministic QA agent)
 #
-#   podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml up -d --build
+# No gateway, no Redis, no v1 relay. The app runs SKRIFT_ENV=dev (dummy auth,
+# sqlite inside the container, first-run setup seeded by the mounted
+# entrypoint) so the whole flow — device pairing, login, tasks — works with
+# zero manual secrets. Everything is container-lifetime state: `down` resets
+# the world (including the bridge pairing), `restart` keeps it.
 #
-# Non-default host ports so this coexists with other relay deployments.
+#   podman compose -f deploy/compose.real.yml up -d --build
+#   podman compose -f deploy/compose.real.yml --profile qa run --rm qa
+#   open http://localhost:8090/app/     # dummy login (any email), the SPA
+#
+# The qa one-shot approves the bridge (real register→lookup→approve pairing via
+# BRIDGE_PAIRING_CODE), then runs the E2EE round-trip + the 16-check lifecycle
+# suite. To drive the board yourself first run qa (it pairs the device for
+# qa@localhost) or approve the pending device in Settings → Devices with the
+# pairing code below.
+#
+# Ports: app :8090 (api + SPA), relay :18090 (matches the SPA bundle's
+# VITE_RELAY_URL and app.dev.yaml's connect-src).
 
 services:
-  postgres:
-    image: docker.io/library/postgres:16
+  app:
+    build:
+      context: ..
+      dockerfile: skriftapp/Containerfile
+      args:
+        # The SPA connects to the relay's host-mapped port from the browser.
+        VITE_RELAY_URL: ws://localhost:18090
     environment:
-      POSTGRES_USER: build
-      # No hardcoded credentials: interpolated from deploy/secrets/postgres.env
-      # (git-ignored) via --env-file, or the caller's environment.
-      POSTGRES_PASSWORD: ${BUILD_POSTGRES_PASSWORD:?set BUILD_POSTGRES_PASSWORD (see header comment)}
-      POSTGRES_DB: build
-    # Ephemeral data dir → the seed (schema `build` + devices + approved device)
-    # runs on every fresh container.
+      SKRIFT_ENV: dev
+      SECRET_KEY: ${BUILD_SECRET_KEY:-insecure-dev-only-secret-key}
+      INTERNAL_API_SECRET: ${BUILD_INTERNAL_API_SECRET:-compose-dev-internal-secret}
     volumes:
-      - ./secrets/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+      # Not baked into the image (production-only image): the dev config and a
+      # dev entrypoint that seeds Skrift's first-run setup after migrating.
+      - ../skriftapp/app.dev.yaml:/app/app.dev.yaml:ro
+      - ./app-dev-entrypoint.sh:/app/dev-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/app/dev-entrypoint.sh"]
     ports:
-      - "15432:5432"
-
-  redis:
-    image: docker.io/library/redis:7
-    ports:
-      - "16379:6379"
+      - "8090:8080"
+    restart: unless-stopped
 
   relay:
-    image: localhost/build-relay:local
+    build:
+      context: ../bridge
+      dockerfile: Containerfile
+      target: relay
     environment:
-      DATABASE_URL: postgresql://build:${BUILD_POSTGRES_PASSWORD:?set BUILD_POSTGRES_PASSWORD (see header comment)}@postgres:5432/build
-      REDIS_URL: redis://redis:6379/0
-      RELAY_HOST: 0.0.0.0
-      RELAY_PORT: "8081"
-    depends_on:
-      - postgres
-      - redis
+      API_INTERNAL_URL: http://app:8080
+      RELAY_INTERNAL_SECRET: ${BUILD_INTERNAL_API_SECRET:-compose-dev-internal-secret}
+      RELAY_PORT: "8799"
     ports:
-      - "18081:8081"
+      - "18090:8799"
+    depends_on:
+      - app
     restart: unless-stopped
 
   bridge:
@@ -50,28 +67,38 @@ services:
       context: ../bridge
       dockerfile: Containerfile
       target: bridge
-    env_file:
-      - ./secrets/bridge.env
     environment:
-      BRIDGE_RELAY_URL: ws://relay:8081
+      BRIDGE_API_URL: http://app:8080
+      BRIDGE_WEB_URL: http://localhost:8090
+      # In-network dev transport; production bridges use wss://relay.getbuild.ing. nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+      BRIDGE_RELAY_URL: ws://relay:8799
+      # Deterministic code so the qa one-shot (or you, in the SPA) can approve
+      # this bridge without reading its logs. Dev-stack convenience only.
+      BRIDGE_PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
       BRIDGE_REPO: /repo
       BRIDGE_WORKTREES: /worktrees
       BRIDGE_BASE_BRANCH: main
       BRIDGE_QA_AGENT: "1"
     depends_on:
+      - app
       - relay
     restart: unless-stopped
 
-  # The node gateway is retired: browsers connect straight to the relay's
-  # /ws/client with a gateway token minted by the api (see web/skrift-auth.mjs).
-  web:
+  # One-shot: pair the bridge to qa@localhost, then run the full E2EE + task
+  # lifecycle verification inside the compose network.
+  qa:
     build:
       context: ../web
+    profiles:
+      - qa
     environment:
-      # The browser client points at the relay's WS (mapped to the host).
-      CLIENT_RELAY_URL: ws://localhost:18081
-    ports:
-      - "18080:8080"
+      API_URL: http://app:8080
+      # In-network dev transport; TLS is the ingress's job in production. nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+      RELAY_URL: ws://relay:8799
+      PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
+      QA_EMAIL: qa@localhost
+    command: ["/bin/sh", "-c", "node pair.mjs && node e2e.mjs && node qa.mjs"]
     depends_on:
+      - app
       - relay
-    restart: unless-stopped
+      - bridge

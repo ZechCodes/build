@@ -1,19 +1,32 @@
-# Build app image (ghcr.io/8ly-dev/build-app). Build context: skriftapp/.
+# Build app image (ghcr.io/8ly-dev/build-app). Build context: the REPO ROOT
+# (the SPA lives at spa/, beside skriftapp/):
 #
-#   podman build -t build-app -f skriftapp/Containerfile skriftapp/
+#   podman build -t build-app -f skriftapp/Containerfile .
 #
 # Self-contained by design: Skrift comes from the PyPI pin in pyproject.toml
 # (matches the framework checkout HEAD), and the SPA is built in-image by the
-# node stage below — no CDN, no private checkouts.
+# node stage below — no CDN, no private checkouts. The SPA's
+# `@build/secure-transport` dependency is `file:../../build-secure-transport/js`
+# (a sibling-of-repo checkout, same convention as local dev and CI), so the
+# stage clones the public repo into exactly that position.
 
 # --- spa: Vite bundle (multi-stage node builder) ---------------------------
-# Contract with the SPA track: the Vite app lives at skriftapp/spa/ and
-# `npm run build` emits its bundle into skriftapp/buildapp/static/. The build
-# is skipped while spa/ doesn't exist yet (build.html is served inline today).
 FROM docker.io/library/node:22-bookworm-slim AS spa
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY . .
-RUN if [ -f spa/package.json ]; then cd spa && npm ci && npm run build; fi
+# The audited E2EE binding, placed as the repo's sibling so the SPA's
+# file:../../build-secure-transport/js dependency resolves unchanged.
+RUN git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git /build/build-secure-transport \
+ && ( cd /build/build-secure-transport/js && npm install --no-audit --no-fund )
+COPY spa/ /build/repo/spa/
+# The relay origin is baked into the bundle at build time.
+ARG VITE_RELAY_URL=wss://relay.getbuild.ing
+RUN cd /build/repo/spa \
+ && npm install --no-audit --no-fund \
+ && VITE_RELAY_URL="$VITE_RELAY_URL" npm run build
+# → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
 
 # --- runtime: uv-managed Python 3.13 ---------------------------------------
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS app
@@ -21,13 +34,14 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 # Dependencies first for layer caching.
-COPY pyproject.toml uv.lock ./
+COPY skriftapp/pyproject.toml skriftapp/uv.lock ./
 RUN uv sync --frozen --no-dev
 
-# App code + the spa stage's build output (inside buildapp/static when present).
-COPY --from=spa /build/app.yaml /build/entrypoint.sh ./
-COPY --from=spa /build/buildapp ./buildapp
-COPY --from=spa /build/migrations ./migrations
+# App code + the spa stage's bundle.
+COPY skriftapp/app.yaml skriftapp/entrypoint.sh ./
+COPY skriftapp/buildapp ./buildapp
+COPY skriftapp/migrations ./migrations
+COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
 RUN chmod +x /app/entrypoint.sh \
  && useradd --create-home --uid 10001 appuser \
  && chown -R appuser:appuser /app

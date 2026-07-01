@@ -6,10 +6,10 @@ is the hand-off for your final pass.
 ## Run it
 
 ```bash
-podman compose up -d --build relay bridge web   # bring the stack up
-podman compose --profile qa run --rm qa         # 15-check end-to-end verification
-open http://localhost:8080                       # the browser client UI
-podman compose down                              # tear down
+podman compose -f deploy/compose.real.yml up -d --build        # app + relay + bridge
+podman compose -f deploy/compose.real.yml --profile qa run --rm qa   # pair + e2e + 16-check qa
+open http://localhost:8090/app/                                # the SPA (dummy login)
+podman compose -f deploy/compose.real.yml down                 # tear down (resets pairing)
 ```
 
 Three services on one network, plus a one-shot `qa` verifier:
@@ -116,5 +116,5 @@ web/client.mjs               browser client (openSession + RPC)
 web/qa.mjs                   end-to-end QA harness
 web/serve.mjs                static server
 web/Containerfile, web/.dockerignore
-podman-compose.yml           the stack
+deploy/compose.real.yml      the stack (app + relay + bridge + qa)
 ```

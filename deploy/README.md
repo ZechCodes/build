@@ -1,108 +1,45 @@
-# Running Build v2 over the real relay
+# Running Build v2
 
 > **Production (Kubernetes):** see [`k8s/`](k8s/) — kustomize manifests for the
 > `8ly` namespace (app + Rust relay + Postgres), `bootstrap-secrets.sh`, and the
-> [`k8s/CUTOVER.md`](k8s/CUTOVER.md) runbook. This compose stack below is the
-> local/dev topology (it still uses the v1-era build-relay + gateway shim).
+> [`k8s/CUTOVER.md`](k8s/CUTOVER.md) runbook.
 
-This stack runs the **real `build-relay`** (Postgres + Redis + the relay), the
-Rust bridge, the client gateway (the web-backend's relay-facing shim), and the
-web client. Non-default host ports so it coexists with other relay deployments:
+## Local stack (compose)
 
-| Service | Host port |
-|---|---|
-| relay (`/ws/device`, `/internal`, `/health`) | 18081 |
-| client gateway (browser WS) | 18090 |
-| web client | 18080 |
-| postgres | 15432 |
-| redis | 16379 |
-
-## Why a gateway?
-
-`build-relay` is **device-facing only** — it exposes `/ws/device` and an
-`/internal/device/{id}/send` API, and publishes device→app events to the Redis
-stream `relay:device-events`. The browser never talks to the relay directly; a
-web backend mediates. `gateway/` is a minimal stand-in for that backend: browser
-WS in, `/internal/send` + Redis events out.
-
-## One-time setup
+`compose.real.yml` runs the production topology locally — **skriftapp**
+(auth + device registry + gateway tokens + the SPA), the **Rust relay**
+(single broker: `/ws/device` + `/ws/client`), and a **bridge** with the
+deterministic QA agent. No gateway, no Redis: browsers talk straight to the
+relay with an api-minted gateway token, and the relay validates everything
+against the app over `/internal/*` with `X-Internal-Secret`.
 
 ```bash
-# 1. Build the real relay image from your build-relay checkout
-podman build -t build-relay:local /path/to/build-relay
-
-# 2. Build the bridge binary (used to mint a device identity)
-( cd bridge && cargo build --release --bin build-bridge )
-
-# 3. Provision a device identity → deploy/secrets/{seed.sql,bridge.env,gateway.env}
-python3 deploy/provision.py
-
-# 4. Generate the postgres password (git-ignored; no credentials in compose)
-echo "BUILD_POSTGRES_PASSWORD=$(openssl rand -hex 24)" > deploy/secrets/postgres.env
+podman compose -f deploy/compose.real.yml up -d --build
+podman compose -f deploy/compose.real.yml --profile qa run --rm qa
+open http://localhost:8090/app/        # dummy login (any email)
+podman compose -f deploy/compose.real.yml down
 ```
 
-`provision.py` mints a UUID device id + Ed25519 identity key + X25519 transport
-key. The padded Ed25519 public key is seeded into `build.devices` (approved) so
-the relay authenticates the bridge; the private keys go to the bridge; the
-transport public key + device id go to the gateway. Secrets live in
-`deploy/secrets/` (git-ignored).
+| Service | What it is | Host port |
+|---|---|---|
+| `app`   | skriftapp: dummy auth (dev), devices api, gateway tokens, SPA | 8090 |
+| `relay` | ciphertext-only broker (`/ws/client`, `/ws/device`, `/health`) | 18090 |
+| `bridge`| device daemon on a sample `/repo`, `BRIDGE_QA_AGENT=1` | — |
+| `qa`    | one-shot: pairs the bridge, then `e2e.mjs` + `qa.mjs` (16 checks) | — |
 
-## Up / verify / down
+Pairing is the real device-initiated flow: the bridge registers *pending* with
+a deterministic code (`BRIDGE_PAIRING_CODE`, default `COMPOSE-PAIR`) and the
+qa one-shot — or you, in the SPA under Settings → Devices — approves it. All
+state (app sqlite, bridge identity) is container-lifetime: `down` + `up`
+resets the world consistently; `restart` keeps it.
 
-```bash
-podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml up -d --build
-curl -s localhost:18081/health           # {"connected_devices": 1}
-( cd web && RELAY_URL=ws://localhost:18090 node qa.mjs )            # full app RPC
-( cd web && RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs )  # reconnect
-podman compose --env-file deploy/secrets/postgres.env -f deploy/compose.real.yml down
-```
+No secrets to provision: dev defaults are baked into the compose file and can
+be overridden with `BUILD_SECRET_KEY`, `BUILD_INTERNAL_API_SECRET`,
+`BUILD_PAIRING_CODE`.
 
-## Reconnect verification
+## Known-stale harnesses
 
-A deterministic simulated agent streams N ordered chunks (`chunk-NNNNNN`) into the
-bridge's **authoritative, seq-numbered log** (keyed by stream id, not by session).
-The client resumes via `stream.events {since}`; we prove its reconstructed output
-reconverges *exactly* (matching sha256, contiguous seqs, no gaps/dupes):
-
-```bash
-cd web
-RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs   # scenarios A + B
-```
-
-- **A — client disconnect mid-stream**: drop the WS partway, reconnect with a new
-  E2EE session, resume from the last seq → full convergence.
-- **B — reconnect while away (load)**: leave immediately; the stream finishes at
-  the bridge; reconnect and replay the whole backlog in **bounded batches**.
-- **C — bridge-side reconnect** (the old system's weak spot): bounce the relay
-  mid-stream so the device drops and re-authenticates; the authoritative state
-  survives and a fresh client reconverges:
-
-  ```bash
-  SID=$(RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs start 400 15)
-  podman restart deploy_relay_1
-  # wait for /health connected_devices=1, then:
-  RELAY_URL=ws://localhost:18090 node qa-reconnect.mjs resume "$SID" 400
-  ```
-
-## Terminal over E2EE (ghostty-web)
-
-A real interactive PTY (bash) on the bridge, streamed to a ghostty-web terminal in
-the browser over the encrypted relay. The bridge keeps an authoritative `vt100`
-screen model, so (re)attach sends a screen **snapshot** then live-tails — the
-snapshot-resync model, not byte replay. Disconnects are caught by an
-application-level liveness ping (a relay/bridge outage does not close the
-client↔gateway socket).
-
-```bash
-cd web
-# Protocol-level verification of all four criteria (real-time, input, disconnect,
-# reconnect) over the real relay:
-RELAY_URL=ws://localhost:18090 node term-verify.mjs
-
-# Real ghostty terminal in headless Chromium, bouncing the relay for a genuine
-# disconnect; writes screenshots to /tmp/term-*.png  (needs: npm install --include=dev)
-node term-browser.mjs
-```
-
-For a human: serve `web/` (`node web/serve.mjs`) and open `terminal.html` while the
-stack is up.
+`web/qa-reconnect.mjs`, `web/term-verify.mjs`, `web/term-browser.mjs` still
+speak the pre-auth gateway protocol (no `authenticate` first frame) and need
+updating before they run against this stack. `web/e2e.mjs`, `web/qa.mjs`,
+`web/skrift-flow.mjs`, and `web/pair.mjs` are current.

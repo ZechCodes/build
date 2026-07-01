@@ -1,0 +1,29 @@
+# Packaging for the Build web app so images (and CI) are self-contained.
+#
+# Dependency choice (documented for deploy/): Skrift is pinned to the PyPI
+# release that matches the local framework checkout (0.2.0a9 == GitHub HEAD at
+# the time of pinning), so the container build needs no private checkout. For
+# local framework development keep using the README flow
+# (`uv run --project /path/to/Skrift skrift ...`), or add a temporary
+# [tool.uv.sources] override pointing at your checkout.
+[project]
+name = "build-skriftapp"
+version = "0.1.0"
+description = "Build web app: Skrift auth, device registry, gateway tokens, SPA host"
+requires-python = ">=3.13"
+dependencies = [
+    "skrift==0.2.0a9",
+    # Imported directly by buildapp.pairing_crypto (Ed25519 verification).
+    "cryptography>=44",
+]
+
+[tool.uv]
+package = false
+# Supply-chain cooldown: never resolve packages published in the last 7 days.
+exclude-newer = "7 days"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]

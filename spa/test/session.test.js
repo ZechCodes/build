@@ -34,13 +34,14 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 async function startOpen(overrides = {}) {
   FakeWebSocket.instances.length = 0;
-  const events = { deviceKeys: [], lost: 0 };
+  const events = { deviceKeys: [], offlineDevices: [], lost: 0 };
   const promise = openRelaySession({
     relayUrl: "ws://relay.test",
     transport: fakeTransport,
     WebSocketImpl: FakeWebSocket,
     fetchToken: async () => "tok-1",
     onDeviceKey: (deviceId, key) => events.deviceKeys.push([deviceId, key]),
+    onDeviceOffline: (deviceId) => events.offlineDevices.push(deviceId),
     onLost: () => events.lost++,
     ...overrides,
   });
@@ -158,6 +159,7 @@ describe("openRelaySession", () => {
     ws.serverSend({ type: "device_key", device_id: "dev-z", transport_public_key: "pk-dev-z" });
     await tick();
     expect(events.lost).toBe(0);
+    expect(events.offlineDevices).toEqual(["dev-z"]);
     expect(events.deviceKeys.at(-1)).toEqual(["dev-z", "pk-dev-z"]);
   });
 

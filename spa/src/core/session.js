@@ -26,6 +26,7 @@ export async function openRelaySession({
   deviceWaitMs = DEFAULT_DEVICE_WAIT_MS,
   isPaused = () => false,
   onDeviceKey = () => {},
+  onDeviceOffline = () => {},
   onLost = () => {},
 }) {
   await transport.ready?.();
@@ -54,8 +55,10 @@ export async function openRelaySession({
   const deliver = (message) => (waiters.length ? waiters.shift()(message) : queue.push(message));
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
-    // Every device_key push (handshake or live) keeps the device store current.
+    // Every device_key / device_offline push (handshake or live) keeps the
+    // caller's device store current, whichever device the session targets.
     if (message.type === "device_key") onDeviceKey(message.device_id, message.transport_public_key);
+    if (message.type === "device_offline") onDeviceOffline(message.device_id);
     if (!live) return deliver(message); // handshake phase: recvType drains the queue
     // Live phase: control frames drive offline handling; envelopes resolve RPCs.
     if (message.type === "device_offline") {

@@ -2,7 +2,8 @@
 //
 // Runtime-agnostic: a real browser (native WebSocket + ghostty-web) and the Node
 // verification harness (`ws`) both drive it. It:
-//   - bootstraps an E2EE session through the gateway/relay,
+//   - bootstraps an E2EE session straight through the relay's /ws/client
+//     (authenticate with a gateway token, then wait for the target device_key),
 //   - demuxes incoming frames into RPC responses (by id) and live `term.output`
 //     pushes (server-initiated PTY bytes),
 //   - applies a screen SNAPSHOT on every (re)attach, then live-tails — snapshot
@@ -10,18 +11,19 @@
 //   - auto-reconnects with backoff and re-attaches, reporting status so the UI can
 //     show a disconnected state.
 
-const te = new TextEncoder();
+const textEncoder = new TextEncoder();
 const b64encodeBytes = (u8) => btoa(String.fromCharCode(...u8));
 const b64decodeBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-const timeout = (ms, msg) => new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms));
+const timeout = (ms, msg) => new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
 
 export class TerminalSession {
-  constructor({ url, transport, WebSocketImpl, deviceId = "bridge", getToken = null }) {
+  constructor({ url, transport, WebSocketImpl, getToken, preferDeviceId = () => null }) {
     this.url = url;
     this.transport = transport;
     this.WS = WebSocketImpl;
-    this.deviceId = deviceId;
-    this.getToken = getToken;   // async () => gateway token, for the relay handshake
+    this.getToken = getToken; // async () => gateway token, for the relay handshake
+    this.preferDeviceId = preferDeviceId; // () => device id or null (any device)
+    this.deviceId = null;
     this._pending = new Map();
     this._reqId = 0;
     this._onOutput = () => {};
@@ -45,7 +47,7 @@ export class TerminalSession {
 
   /** Send keystrokes to the PTY. */
   async input(data) {
-    await this._call("term.input", { data: b64encodeBytes(te.encode(data)) });
+    await this._call("term.input", { data: b64encodeBytes(textEncoder.encode(data)) });
   }
 
   async resize(cols, rows) {
@@ -77,7 +79,7 @@ export class TerminalSession {
     const deliver = (m) => (waiters.length ? waiters.shift()(m) : inbox.push(m));
     const recvRaw = (ms) =>
       Promise.race([
-        new Promise((res) => (inbox.length ? res(inbox.shift()) : waiters.push(res))),
+        new Promise((resolve) => (inbox.length ? resolve(inbox.shift()) : waiters.push(resolve))),
         ms ? timeout(ms, "handshake timeout") : new Promise(() => {}),
       ]);
 
@@ -98,25 +100,40 @@ export class TerminalSession {
         timeout(8000, "open timeout"),
       ]);
 
-      // Authenticate to the relay with a gateway token (browser path) so it routes us
-      // only to our own devices; then the relay sends our device's key.
-      if (this.getToken) {
-        const token = await this.getToken();
-        ws.send(JSON.stringify({ type: "authenticate", token }));
-      }
+      // Authenticate to the relay with a gateway token so it routes us only to
+      // our own devices; it acks, then pushes device_key per online device.
+      const token = await this.getToken();
+      ws.send(JSON.stringify({ type: "authenticate", token }));
       // E2EE bootstrap (time-boxed so a still-down bridge fails fast → retry).
-      const hello = await recvRaw(6000);
-      if (!hello || hello.type !== "device_key") throw new Error("expected device_key");
-      this.deviceId = hello.device_id || this.deviceId;
+      // Skip control frames (authenticated, other devices' keys) until the
+      // target device's key arrives.
+      const wanted = this.preferDeviceId();
+      const deadline = Date.now() + 8000;
+      let hello;
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error("no device online");
+        const msg = await recvRaw(remaining);
+        if (!msg) throw new Error("connection closed");
+        if (msg.type === "device_key" && (!wanted || msg.device_id === wanted)) {
+          hello = msg;
+          break;
+        }
+      }
+      this.deviceId = hello.device_id;
       const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
       const { sessionKeyB64, sessionInit } = await this.transport.createSessionInit({
         sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: hello.transport_public_key,
       });
       this._sessionId = sessionId;
       this._key = sessionKeyB64;
-      ws.send(JSON.stringify({ type: "session_init", session_id: sessionId, session_init: sessionInit }));
-      const accept = await recvRaw(6000);
-      if (!accept || accept.type !== "session_accept") throw new Error("expected session_accept");
+      ws.send(JSON.stringify({ type: "session_init", session_id: sessionId, route_to: `device:${this.deviceId}`, session_init: sessionInit }));
+      let accept;
+      for (;;) {
+        accept = await recvRaw(6000);
+        if (!accept) throw new Error("connection closed");
+        if (accept.type === "session_accept") break;
+      }
       await this.transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
 
       this._demux(recvRaw, gen); // routes responses + pushes
@@ -139,6 +156,11 @@ export class TerminalSession {
     while (this._gen === gen) {
       const msg = await recvRaw();
       if (!msg) return; // socket closed
+      if (msg.type === "device_offline" && msg.device_id === this.deviceId) {
+        // Our device dropped — the socket stays up, so trigger the reconnect path.
+        this._onLost(gen);
+        return;
+      }
       if (msg.type !== "e2ee_envelope") continue;
       let frame;
       try {
@@ -166,12 +188,12 @@ export class TerminalSession {
     }
   }
 
-  // Application-level liveness: a relay/bridge/network outage does NOT close the
-  // client↔gateway socket, so we actively ping. A failed ping means the path to
-  // the bridge is down → show disconnected and reconnect.
+  // Application-level liveness: a relay/bridge/network outage does NOT always
+  // close our socket, so we actively ping. A failed ping means the path to the
+  // bridge is down → show disconnected and reconnect.
   async _startLiveness(gen) {
     while (this._gen === gen && !this._closed) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
       if (this._gen !== gen || this._closed) return;
       try {
         await this._call("ping", {}, 3000);

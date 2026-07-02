@@ -78,21 +78,23 @@ spec:
                   name: build-app
                   key: VAPID_SUBJECT
                   optional: true
-          # `/` is unauthenticated and cheap: 302 before setup, CMS root after.
+          # NOT `/`: that's Skrift's CMS home page, which 404s on a fresh site
+          # (post-setup, pre-content) — failing readiness drops every traefik
+          # route and liveness crash-loops the pod. /healthz always exists.
           startupProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             periodSeconds: 5
             failureThreshold: 30 # up to 150s for migrations on first boot
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
             periodSeconds: 20
           resources:

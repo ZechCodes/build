@@ -1,5 +1,6 @@
 controllers:
   - buildapp.controllers:BuildController
+  - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
   - skrift.controllers.auth:AuthController

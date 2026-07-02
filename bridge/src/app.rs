@@ -213,6 +213,28 @@ impl AppState {
         state
     }
 
+    /// Like [`AppState::new`] but with no default project: projects arrive only
+    /// through the UI (`project.add`/`project.clone`) and persisted config. This
+    /// is the end-user path — a default like `/repo` would register a phantom
+    /// project on machines where that path never existed.
+    pub fn new_unrooted(
+        worktrees_root: impl Into<std::path::PathBuf>,
+        base_branch: impl Into<String>,
+        qa_agent: bool,
+        mcp_socket: impl Into<String>,
+    ) -> Self {
+        let mut state = Self::new(
+            "/nonexistent",
+            worktrees_root,
+            base_branch,
+            qa_agent,
+            mcp_socket,
+        );
+        state.projects.clear();
+        state.next_project = 1;
+        state
+    }
+
     /// Enable web-push attention notifications: every task-state change into a
     /// state that needs the human fires one signed, content-free notify at the api.
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
@@ -2684,5 +2706,21 @@ mod tests {
             vec!["s-live"],
             "only the closed session's sender is dropped"
         );
+    }
+
+    #[test]
+    fn unrooted_state_has_no_phantom_project_until_one_is_added() {
+        let (dir, repo) = init_repo();
+        let mut state =
+            AppState::new_unrooted(dir.path().join("wt"), "main", true, "/tmp/test-mcp.sock");
+        let listed = state.dispatch("project.list", &json!({})).unwrap();
+        assert_eq!(listed["projects"].as_array().unwrap().len(), 0);
+
+        let added = state
+            .dispatch("project.add", &json!({"path": repo.to_string_lossy()}))
+            .unwrap();
+        assert!(added["project_id"].as_str().unwrap().starts_with("proj-"));
+        let listed = state.dispatch("project.list", &json!({})).unwrap();
+        assert_eq!(listed["projects"].as_array().unwrap().len(), 1);
     }
 }

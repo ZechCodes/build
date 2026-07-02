@@ -3,11 +3,15 @@
 //! `build-bridge serve` connects to the relay and serves the orchestrator-backed
 //! application RPC over the E2EE channel. Configuration is by environment:
 //!
-//! - `BRIDGE_RELAY_URL`   relay base URL (default `ws://127.0.0.1:8799`; production
-//!   `wss://relay.getbuild.ing` — TLS is rustls with bundled webpki roots)
-//! - `BRIDGE_REPO`        the default git repo tasks operate on (default `/repo`)
+//! Defaults are production: a fresh install needs NO environment — it pairs
+//! against getbuild.ing and keeps state under `~/.build`. Dev stacks override.
+//!
+//! - `BRIDGE_RELAY_URL`   relay base URL (default `wss://relay.getbuild.ing`;
+//!   TLS is rustls with bundled webpki roots)
+//! - `BRIDGE_REPO`        optional default git repo to register as project one;
+//!   unset means projects come from the UI (clone/add) + persisted config
 //! - `BRIDGE_PROJECTS`    extra repos, comma-separated `path` or `path=branch`
-//! - `BRIDGE_WORKTREES`   where task worktrees are created (default `/worktrees`)
+//! - `BRIDGE_WORKTREES`   where task worktrees are created (default `~/.build/worktrees`)
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
 //! - `BRIDGE_PROJECTS_DIR` where cloned repos land (default `~/.build/projects`)
 //! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
@@ -19,7 +23,7 @@
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
 //! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing and for the
 //!   signed, content-free web-push notifies fired when a task needs the human
-//!   (default `http://127.0.0.1:8080`; production `https://getbuild.ing`)
+//!   (default `https://getbuild.ing`)
 //! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
@@ -84,16 +88,18 @@ fn provision() {
 }
 
 async fn serve() {
-    let relay_url = env("BRIDGE_RELAY_URL", "ws://127.0.0.1:8799");
-    let repo = env("BRIDGE_REPO", "/repo");
-    let worktrees = env("BRIDGE_WORKTREES", "/worktrees");
-    let base_branch = env("BRIDGE_BASE_BRANCH", "main");
+    // Production-by-default: with no environment at all this connects to
+    // getbuild.ing and keeps all state under ~/.build. Dev stacks override.
+    let cfg = bridge_config();
+    let relay_url = cfg.relay_url.clone();
+    let worktrees = cfg.worktrees.to_string_lossy().into_owned();
+    let base_branch = cfg.base_branch.clone();
     let qa_agent = matches!(
         std::env::var("BRIDGE_QA_AGENT").as_deref(),
         Ok("1") | Ok("true")
     );
     let device_url = format!("{}/ws/device", relay_url.trim_end_matches('/'));
-    let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
+    let api_url = cfg.api_url.clone();
 
     // Identity. A provisioned identity in the environment (matches the relay DB seed)
     // is a prod/seed override that is treated as already approved and skips pairing.
@@ -114,8 +120,7 @@ async fn serve() {
             },
         },
         _ => {
-            let identity_path =
-                expand_tilde(&env("BRIDGE_IDENTITY_FILE", "~/.build/identity.json"));
+            let identity_path = cfg.identity_file.clone();
             let stored = match identity::load(&identity_path) {
                 Ok(Some(stored)) => stored,
                 Ok(None) => {
@@ -131,7 +136,7 @@ async fn serve() {
                     std::process::exit(1);
                 }
             };
-            let web_url = env("BRIDGE_WEB_URL", &api_url);
+            let web_url = cfg.web_url.clone();
             // Dev/compose automation only: pair with a known code so a scripted
             // approver can complete the real flow. Humans get a random code.
             let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
@@ -158,25 +163,27 @@ async fn serve() {
     };
 
     // The control socket real agents forward `done` to (and the daemon listens on).
-    let mcp_socket = env(
-        "BRIDGE_MCP_SOCKET",
-        &format!("{}/build-bridge-mcp.sock", worktrees.trim_end_matches('/')),
-    );
+    let mcp_socket = cfg.mcp_socket.to_string_lossy().into_owned();
 
+    let repo_display = cfg.repo.clone().unwrap_or_else(|| "<none>".to_string());
     println!(
-        "bridge serve → {device_url}  (repo={repo} worktrees={worktrees} base={base_branch} qa_agent={qa_agent} mcp_socket={mcp_socket})"
+        "bridge serve → {device_url}  (repo={repo_display} worktrees={worktrees} base={base_branch} qa_agent={qa_agent} mcp_socket={mcp_socket})"
     );
 
     // Shared state: the relay handler and the done-socket listener drive the same
-    // tasks; state survives reconnects. The default repo is project one; any extra
-    // repos in BRIDGE_PROJECTS are registered alongside it. Attention transitions
-    // fire a signed, content-free web-push notify at the api.
-    let mut app = AppState::new(&repo, &worktrees, &base_branch, qa_agent, &mcp_socket)
-        .with_notifier(Notifier::new(
-            &api_url,
-            &identity.device_id,
-            &identity.identity_private_key_b64,
-        ));
+    // tasks; state survives reconnects. BRIDGE_REPO (when set) is project one;
+    // otherwise projects arrive via the UI + persisted config. Any extra repos in
+    // BRIDGE_PROJECTS are registered alongside. Attention transitions fire a
+    // signed, content-free web-push notify at the api.
+    let mut app = match &cfg.repo {
+        Some(repo) => AppState::new(repo, &worktrees, &base_branch, qa_agent, &mcp_socket),
+        None => AppState::new_unrooted(&worktrees, &base_branch, qa_agent, &mcp_socket),
+    }
+    .with_notifier(Notifier::new(
+        &api_url,
+        &identity.device_id,
+        &identity.identity_private_key_b64,
+    ));
     for entry in std::env::var("BRIDGE_PROJECTS")
         .unwrap_or_default()
         .split(',')
@@ -246,8 +253,9 @@ async fn install_service() {
         std::process::exit(2);
     }
 
-    let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
-    let identity_path = expand_tilde(&env("BRIDGE_IDENTITY_FILE", "~/.build/identity.json"));
+    let cfg = bridge_config();
+    let api_url = cfg.api_url.clone();
+    let identity_path = cfg.identity_file.clone();
 
     // Gate: local identity + live api approval, never the local flag alone.
     let stored = match identity::load(&identity_path) {
@@ -290,10 +298,7 @@ async fn install_service() {
         .collect();
     for (key, value) in [
         ("BRIDGE_API_URL", api_url.clone()),
-        (
-            "BRIDGE_RELAY_URL",
-            env("BRIDGE_RELAY_URL", "ws://127.0.0.1:8799"),
-        ),
+        ("BRIDGE_RELAY_URL", cfg.relay_url.clone()),
         (
             "BRIDGE_IDENTITY_FILE",
             identity_path.to_string_lossy().into_owned(),
@@ -382,19 +387,14 @@ fn uninstall_service() {
     }
 }
 
-fn env(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+/// Resolve the runtime config from BRIDGE_* env against $HOME.
+fn bridge_config() -> build_bridge::config::BridgeConfig {
+    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
+    build_bridge::config::resolve(|key| std::env::var(key).ok(), &home)
 }
 
-/// Expand a leading `~/` against `$HOME`. (The bridge binary is a separate crate from
-/// the lib, so it can't use the lib's `pub(crate)` helper.)
-fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::Path::new(&home).join(rest);
-        }
-    }
-    std::path::PathBuf::from(path)
+fn env(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
 /// A human-recognizable default device name. Falls back to `bridge` when the host

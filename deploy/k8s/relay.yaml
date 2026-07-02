@@ -6,6 +6,13 @@ metadata:
   name: build-relay
 spec:
   replicas: 1
+  # The relay is a single in-memory broker: device + browser WS connections are
+  # per-pod state. A RollingUpdate would briefly run two brokers behind one
+  # Service — browsers landing on the new pod can't reach devices still attached
+  # to the old one, and presence fanout splits. Recreate preserves the locked
+  # "single broker" topology (a short blip; clients auto-reconnect).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: build-relay
@@ -81,6 +88,11 @@ metadata:
   name: build-relay
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-production
+    # TLS-only router: without this the route also binds traefik's plain-HTTP
+    # `web` entrypoint, and whether http:// is redirected depends on unverified
+    # cluster-wide config. Gateway tokens must never ride cleartext. (The
+    # cert-manager HTTP-01 solver creates its own ingress, so ACME still works.)
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
 spec:
   ingressClassName: traefik
   tls:

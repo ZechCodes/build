@@ -51,21 +51,29 @@ spec:
                   key: DATABASE_URL
             # Web push (content-free attention notifications): the VAPID pair
             # the SPA subscribes with and /api/push/notify signs with.
+            # `optional: true`: a build-app Secret from a pre-web-push bootstrap
+            # run lacks these keys, and the app degrades gracefully without them
+            # (push endpoints answer 503) — a missing key must not
+            # CreateContainerConfigError the whole app. Re-run
+            # bootstrap-secrets.sh to add them.
             - name: VAPID_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
                   name: build-app
                   key: VAPID_PRIVATE_KEY
+                  optional: true
             - name: VAPID_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:
                   name: build-app
                   key: VAPID_PUBLIC_KEY
+                  optional: true
             - name: VAPID_SUBJECT
               valueFrom:
                 secretKeyRef:
                   name: build-app
                   key: VAPID_SUBJECT
+                  optional: true
           # `/` is unauthenticated and cheap: 302 before setup, CMS root after.
           startupProbe:
             httpGet:
@@ -109,6 +117,12 @@ metadata:
   name: build-app
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-production
+    # TLS-only router: without this the route also binds traefik's plain-HTTP
+    # `web` entrypoint, and whether http:// is redirected depends on unverified
+    # cluster-wide config. Skrift session cookies must never ride cleartext.
+    # (The cert-manager HTTP-01 solver creates its own ingress, so ACME still
+    # works over port 80.)
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
 spec:
   ingressClassName: traefik
   tls:

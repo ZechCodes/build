@@ -99,8 +99,32 @@ Then:
 ## Rollback
 
 The old `zechcodes` deployment is only scaled away by step 4. Until you run
-step 4, rollback is simply `kubectl -n 8ly delete -k deploy/k8s` — the old
-ingresses still own the hosts. After step 4, re-create the old ingresses/services
-from your last-known manifests (or `kubectl -n zechcodes rollout undo` if only
-the deployments were touched). The retained Postgres volume survives any
-rollback: the `do-block-storage-retain` PV is never deleted automatically.
+step 4, rollback means removing **only the v2 workloads and routing** — the old
+ingresses still own the hosts:
+
+```bash
+kubectl --context do-nyc1-production-hosting -n 8ly delete ingress build-app build-relay
+kubectl --context do-nyc1-production-hosting -n 8ly delete deployment build-app build-relay
+# Optional: also stop Postgres WITHOUT touching its volume or data:
+kubectl --context do-nyc1-production-hosting -n 8ly scale statefulset build-postgres --replicas=0
+```
+
+**Never `kubectl -n 8ly delete -k deploy/k8s`**: `namespace.yaml` is in the
+kustomization, so `delete -k` deletes the whole `8ly` namespace — cascading to
+the bootstrap Secrets (the Postgres password is only honored at initdb and is
+otherwise unrecoverable against the retained PGDATA; the VAPID keys orphan every
+push subscription) and the `data-build-postgres-0` PVC. Same rule as step 4:
+nothing named `pvc`, `pv`, a Secret, or a database is ever deleted.
+
+After step 4, re-create the old ingresses/services from your last-known
+manifests (or `kubectl -n zechcodes rollout undo` if only the deployments were
+touched). The retained Postgres volume survives any rollback: the
+`do-block-storage-retain` PV is never deleted automatically.
+
+## HTTPS note
+
+Both v2 ingresses pin `traefik.ingress.kubernetes.io/router.entrypoints:
+websecure`, so the app and relay are never served over plain HTTP regardless of
+cluster-wide traefik config. If you want `http://getbuild.ing` to *redirect*
+(rather than 404), verify the cluster's traefik has a global `web` →
+`websecure` redirection; do not loosen the ingress annotation.

@@ -1,120 +1,127 @@
-# Build v2 — Local Platform Handoff
+# Build v2 — Handoff
 
-Status: **running locally via podman compose and verified end-to-end.** This doc
-is the hand-off for your final pass.
+Status: **production-shaped and ready to cut over to getbuild.ing.** The stack
+runs locally under podman compose in exactly the production topology, all test
+suites and lints are green, and the k8s manifests + runbook are in
+`deploy/k8s/`. The only remaining work is operational (secrets bootstrap, image
+push, the zechcodes teardown the user runs by hand) — see
+[`deploy/k8s/CUTOVER.md`](deploy/k8s/CUTOVER.md).
 
-## Run it
+## Topology (final)
+
+```
+                    getbuild.ing                relay.getbuild.ing
+┌─────────┐  HTTPS ┌────────────┐  /internal/*  ┌────────────┐  wss ┌─────────┐
+│ browser │◄──────►│ skriftapp  │◄──────────────│ Rust relay │◄────►│ bridge  │
+│  (SPA)  │        │ api + SPA  │ X-Internal-   │ ciphertext │      │ (user's │
+└────┬────┘        └─────┬──────┘    Secret     │    only    │      │  box)   │
+     │                   ▼                      └────────────┘      └─────────┘
+     │             Postgres 16                        ▲
+     └────────── wss /ws/client ──────────────────────┘
+```
+
+- **skriftapp/** — the Python app server on the Skrift framework: passkey auth
+  (dummy auth is dev-only), device registry + approval/pairing, 5-min gateway
+  tokens, content-free web push, and it serves the built SPA at `/app/`.
+- **bridge/src/bin/relay.rs** (+ `relay_server.rs`) — the single Rust broker.
+  `/ws/device` (Ed25519 challenge auth against the registry) and `/ws/client`
+  (gateway-token auth) on one process. Validates everything against skriftapp
+  over `/internal/*` with `X-Internal-Secret`. Forwards opaque envelopes only —
+  it never holds a session key.
+- **bridge/** — the Rust device daemon (user machines, never deployed):
+  worktree-per-task, full-PTY harnesses, single `done` MCP tool, git-diff
+  watcher, durable task store with boot recovery, E2EE transport, wss relay
+  client, device pairing.
+- **spa/** — the web client: Vite vanilla-ES-module app (no framework), every
+  dependency self-hosted (libsodium, `@build/secure-transport`, ghostty-web
+  with inlined wasm, Inter fonts). Zero CDN. Builds into
+  `skriftapp/buildapp/static/`.
+- **Postgres 16** — users, devices, sessions, push subscriptions.
+
+**Retired:** `gateway/` (Node shim) and Redis are out of the topology — browsers
+talk straight to the relay. `frontend/` (dead React scaffold) is deleted.
+`web/` remains as the Node E2EE test/QA harness only.
+
+## The browser↔relay contract
+
+1. `POST /api/gateway-token` (Skrift-session authed) → `{token}`, 5-min TTL.
+2. `GET /api/devices` → `[{device_id, approved, status, transport_public_key_b64, …}]`.
+3. WS `/ws/client`; first frame `{"type":"authenticate","token":…}`; relay
+   validates via the api and replies `{"type":"authenticated"}` or closes.
+4. Client seals a fresh session key to the **api-pinned** device transport key
+   and sends `session_init` with `route_to: "device:<id>"`; the device answers
+   `session_accept` (protocol unchanged).
+5. Relay pushes `device_online`/`device_offline` to that user's clients.
+6. App frames are opaque encrypted envelopes; the relay never decrypts.
+7. Relay→api internal calls carry `X-Internal-Secret: $INTERNAL_API_SECRET`.
+
+## Run it locally
 
 ```bash
-podman compose -f deploy/compose.real.yml up -d --build        # app + relay + bridge
-podman compose -f deploy/compose.real.yml --profile qa run --rm qa   # pair + e2e + 16-check qa
-open http://localhost:8090/app/                                # the SPA (dummy login)
-podman compose -f deploy/compose.real.yml down                 # tear down (resets pairing)
+podman compose -f deploy/compose.real.yml up -d --build
+podman compose -f deploy/compose.real.yml --profile qa run --rm qa   # pair + e2e + qa checks
+open http://localhost:8090/app/        # dummy login (any email), dev-only
+podman compose -f deploy/compose.real.yml down                       # resets all state
 ```
 
-Three services on one network, plus a one-shot `qa` verifier:
+Services: `app` (skriftapp, :8090), `relay` (:18090), `bridge`
+(`BRIDGE_QA_AGENT=1` on a sample repo), one-shot `qa`. Pairing is the real
+device-initiated flow with a deterministic code (`COMPOSE-PAIR`); approve it
+via the qa one-shot or in the SPA under Settings → Devices. Details:
+[`deploy/README.md`](deploy/README.md).
 
-| Service | What it is | Port |
-|---|---|---|
-| `relay` | Rust opaque-envelope forwarder (dev stand-in for `build-relay`) | 8799 |
-| `bridge`| Rust device daemon: orchestrator + worktrees + diff + E2EE, on a sample `/repo` | — |
-| `web`   | Static server for the browser client (`index.html` + `client.mjs`) | 8080 |
-| `qa`    | Runs `qa.mjs` (real browser-client logic) against the stack | — |
+Dev loops without containers:
 
-The data path is **browser → relay → bridge → relay → browser, fully E2E
-encrypted.** The relay routes by `session_id` and forwards opaque envelopes
-(`{version, session_id, route_to, nonce, ciphertext}`); it holds no session key
-and never decrypts.
-
-## What was verified (QA results)
-
-`podman compose --profile qa run --rm qa` → **15/15 checks pass**, in-network:
-
-- `ping` round-trips over the encrypted channel
-- **Standard lifecycle**: dispatch → `plan_review` (plan readable, mentions the goal)
-  → `approve_plan` → `review` (diff shows the produced file, non-empty patch)
-  → `approve_merge` → `merged`
-- **Quick task**: dispatch → `review` (planning skipped) → `merged`
-- **Parallel tasks**: distinct `build/<slug>` branches, both on the board
-- **Abandon**: reaches `abandoned` (worktree removed, branch kept)
-- **Errors**: unknown method and missing params return clean errors, no crash
-
-Verified directly in the running containers:
-
-- Merges land for real on `main`: `git log` shows `Build: Add a greeting banner`
-  and `Build: Quick fix typo` merge commits; `result.txt` present on `main`.
-- Branches kept after merge/abandon (`build/parallel-task-a`, `build/parallel-task-b`).
-- Web UI serves: `index.html` → HTTP 200 `text/html`, `client.mjs` → HTTP 200
-  `text/javascript`.
-
-The Rust suite is green too: **59 unit/integration tests**, a live Rust↔Python
-crypto interop test, and a browser↔relay↔bridge end-to-end test. `cargo clippy
--D warnings` and `cargo fmt --check` clean; every commit gitleaks-scanned. CI runs
-all of it plus the browser round-trip.
-
-## Architecture (4 repos)
-
-```
-┌─────────────┐   E2EE relay    ┌──────────────┐   spawns    ┌──────────────┐
-│  web client │◄───ciphertext──►│    bridge    │────PTY─────►│ agent harness │
-│  (browser)  │                 │ (this repo)  │◄────MCP─────│  (worktree)   │
-└─────────────┘                 └──────┬───────┘             └──────────────┘
-                                       ▼ watches git worktree
+```bash
+cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cd skriftapp && uv run pytest
+cd spa && npm test && npm run build     # emits skriftapp/buildapp/static/
 ```
 
-- `bridge/` — Rust device daemon (this repo). Modules: `task` (lifecycle),
-  `worktree`, `pty` (full-PTY harness, no SDK), `mcp` (single `done` tool),
-  `diff`, `templates`, `orchestrator` (the spine), `transport` (E2EE binding via
-  dryoc), `relay` (E2EE WS client), `app` (the orchestrator-backed RPC).
-- `web/` — browser client (`client.mjs` runs in-browser and in the Node harness).
-- `build-secure-transport` (separate repo) — audited E2EE crypto (Python + JS);
-  the bridge speaks the same protocol via its Rust port, verified by live interop.
-- `build-relay` (separate repo) — the production relay. The dev `relay` here is a
-  minimal stand-in; the **device-side frame contract is identical**, so the bridge
-  connects to either unchanged.
+`spa/` expects a sibling checkout of `build-secure-transport` next to this repo
+(`file:../../build-secure-transport/js`), same as `web/` and CI.
 
-## The QA scripted agent (important context)
+## Deploy
 
-So the lifecycle runs locally without an LLM, the bridge runs with
-`BRIDGE_QA_AGENT=1`: a deterministic *scripted agent* writes the plan/code files a
-real agent would and reports `done` — exercising the **real** orchestrator path
-(git worktrees, diff, merge, lifecycle). The only thing simulated is the agent's
-authorship. Drop the flag and point `BRIDGE_REPO` at a real repo for real CLI
-agents in PTYs.
+Everything is in [`deploy/k8s/`](deploy/k8s/) (kustomize, namespace `8ly`,
+hosts `getbuild.ing` + `relay.getbuild.ing`, images `ghcr.io/8ly-dev/build-app`
+and `ghcr.io/8ly-dev/build-relay`, TLS via cert-manager
+`letsencrypt-production`, Postgres on `do-block-storage-retain`). The
+step-by-step runbook — secrets bootstrap, first image push, apply, pre-flip
+verification, the **user-run** zechcodes teardown, rollback — is
+[`deploy/k8s/CUTOVER.md`](deploy/k8s/CUTOVER.md). Images are rebuilt/pushed by
+`.github/workflows/deploy-images.yml` on pushes to `main`.
 
-## Known gaps — for your final pass
+## What this branch changed (highlights)
 
-These are deliberately out of the local-demo scope; none require rearchitecting:
+- **Persistence** — the bridge's task store is durable (one JSON file per task,
+  atomic writes), with an `Interrupted(phase)` state and boot recovery/reattach.
+- **TLS** — the bridge speaks `wss://` (rustls + webpki roots); both ingresses
+  are pinned TLS-only.
+- **Auth** — Skrift passkeys in production config; dummy auth is dev-only.
+  Strict CSP; no inline route auth (shared session/guard helpers everywhere).
+- **Single broker** — the Rust relay grew `/ws/client` (token auth, per-user
+  device scoping, online/offline fanout, `/health`, bounded queues, graceful
+  shutdown, replay guards); `gateway/` + Redis retired.
+- **SPA modularization** — `build.html` (1,272 lines, esm.sh CDN imports, a
+  stray NUL byte) became the tested Vite app in `spa/`; `frontend/` deleted;
+  all crypto/deps self-hosted.
+- **Web push** — content-free notifications: device-signed notify with a replay
+  guard, VAPID keys generated by the secrets bootstrap, cache-free service
+  worker, per-subscription failure isolation.
+- **Secrets hygiene** — no secrets in git; `bootstrap-secrets.sh` is idempotent
+  and never regenerates existing values; internal endpoints guarded by
+  `X-Internal-Secret`.
 
-1. **Real `build-relay`** — swap the dev `relay` for the production relay
-   (Postgres + Redis). The bridge's `/ws/device` side already matches it; the
-   open item is the relay's **client/browser endpoint** + the web client wiring to
-   it, plus device **registration/pairing** (`POST /api/devices/register` + SSE
-   approval) and seeding an approved device.
-2. **TLS / `wss`** — the relay client connects over `ws://`. Add a rustls feature
-   to `tokio-tungstenite` for the deployed `wss://` relay.
-3. **Real LLM harness + MCP `done` forward** — the daemon needs a per-task control
-   socket so the `build-bridge mcp` shim can forward an agent's real `done` call to
-   the orchestrator. The `mcp` module (server) and `pty` (spawn) are built; the
-   socket/forward is the missing seam.
-4. **Persistence** — task state is in-memory (resets on bridge restart). Persist
-   the task store for durability across restarts.
-5. **The production React UI** — `frontend/` (kept) is the base; `web/client.mjs`
-   is the reusable E2EE session core to build it on.
-6. **Security review** — the device auth (Ed25519-signed challenge) and the relay
-   client deserve a focused review before production; the crypto binding is a port
-   of the audited protocol and is interop-verified, but is not itself audited.
+## Known gaps / deferred
 
-## File map (added this session)
-
-```
-bridge/Containerfile, bridge/bridge-entrypoint.sh, bridge/.dockerignore
-bridge/src/app.rs            orchestrator-backed E2EE app RPC + QA agent
-bridge/src/main.rs           `build-bridge serve`
-bridge/src/bin/relay.rs      standalone dev relay
-web/client.mjs               browser client (openSession + RPC)
-web/qa.mjs                   end-to-end QA harness
-web/serve.mjs                static server
-web/Containerfile, web/.dockerignore
-deploy/compose.real.yml      the stack (app + relay + bridge + qa)
-```
+1. **Real LLM harness `done`-forward** — the per-task control socket so a real
+   CLI agent's MCP `done` reaches the orchestrator; the compose/QA stack uses
+   the deterministic scripted agent (`BRIDGE_QA_AGENT=1`).
+2. **External crypto audit** — the Rust transport is a port of the audited
+   protocol and is interop-verified (Rust↔Python↔JS), but is not itself audited.
+3. **Stale QA harnesses** — `web/qa-reconnect.mjs`, `web/term-verify.mjs`,
+   `web/term-browser.mjs` still speak the pre-auth protocol (see
+   `deploy/README.md`).
+4. **Bridge re-pairing after cutover** — the v2 registry starts empty; every
+   existing bridge re-pairs against `https://getbuild.ing`.

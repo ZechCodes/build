@@ -10,38 +10,48 @@ Build does not run agents, host code, or see code. Agents run on the user's own 
 bridge; the relay moves ciphertext and nothing else. Build's job is **orchestration**: starting
 work, watching it through git, and gating the transitions where human judgment matters.
 
-See [`planning/v2/`](planning/v2/) for the full scope and UI design brief.
+Task intake is **goal-form + batched plan/diff comments** — there is deliberately no chat UI.
+
+See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and roadmap, and
+[`HANDOFF.md`](HANDOFF.md) for the current state and how to run everything.
 
 ## Architecture
 
 ```
-┌─────────────┐   E2EE relay    ┌──────────────┐   spawns    ┌──────────────┐
-│  Web client │◄───ciphertext──►│    bridge    │────PTY─────►│ agent harness │
-│  (browser)  │                 │ (user's box) │◄────MCP─────│  (worktree)   │
-└─────────────┘                 └──────┬───────┘             └──────────────┘
-                                       │ watches
-                                       ▼
-                                  git worktree
+                    getbuild.ing                relay.getbuild.ing
+┌─────────┐  HTTPS ┌────────────┐  /internal/*  ┌────────────┐  wss ┌─────────┐
+│ browser │◄──────►│ skriftapp  │◄──────────────│ Rust relay │◄────►│ bridge  │
+│  (SPA)  │        │ api + SPA  │               │ ciphertext │      │ (user's │
+└────┬────┘        └─────┬──────┘               │    only    │      │  box)   │
+     │                   ▼                      └────────────┘      └─────────┘
+     │             Postgres 16                        ▲
+     └────────── wss /ws/client ──────────────────────┘
 ```
 
-The system spans four repos:
-
-| Component | Repo | Status |
+| Component | Where | What |
 |---|---|---|
-| E2EE crypto (Python + JS) | `build-secure-transport` | built |
-| Ciphertext-only relay | `build-relay` | built |
-| Device daemon (v2, Rust) | **this repo → `bridge/`** | in progress |
-| Web client (React) | **this repo → `frontend/`** | v2 rebuild pending |
+| `bridge/` | user machines | Rust device daemon: worktree-per-task, full-PTY harnesses, single `done` MCP tool, git-diff watcher, durable task store, E2EE transport, device pairing |
+| `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth) |
+| `skriftapp/` | getbuild.ing | Python app server (Skrift): passkey auth, device registry/approval, gateway tokens, web push, serves the SPA |
+| `spa/` | built into skriftapp | Vite vanilla-ES-module web client — task board, plan/diff review, terminal drawer; all deps self-hosted, zero CDN |
+| `web/` | dev only | Node E2EE test/QA harnesses |
+| `deploy/` | — | podman compose stack + k8s manifests and the cutover runbook |
 
-## bridge/ (Rust device daemon)
+The E2EE crypto layer lives in the separate
+[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport) repo
+(Python + JS bindings; the bridge carries an interop-verified Rust port).
 
-Owns worktrees, spawns harnesses in full PTYs, serves the single-tool (`done`) MCP server,
-watches git, runs git operations, and talks to the relay. Built TDD-first.
+## Develop
 
 ```bash
-cd bridge
-cargo test
+cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cd skriftapp && uv run pytest
+cd spa && npm test && npm run build
 ```
+
+Full local stack (app + relay + bridge + scripted QA) via podman compose:
+see [`deploy/README.md`](deploy/README.md). Production deploy:
+[`deploy/k8s/CUTOVER.md`](deploy/k8s/CUTOVER.md).
 
 ## License
 

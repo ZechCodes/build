@@ -5,6 +5,33 @@
 
 ---
 
+## 0. Decisions (locked)
+
+- **Task intake stays goal-form + batched plan/diff comments. There is no chat
+  UI.** The user states a goal, then reviews: comments on the plan and on the
+  diff are batched into notes the agent receives at phase boundaries. Free-form
+  back-and-forth chat is deliberately out — review is the product, and the
+  terminal drawer is the escape hatch when direct interaction is truly needed.
+- **Broker topology: one merged Rust broker.** The relay
+  (`bridge/src/bin/relay.rs`) terminates both `/ws/device` (Ed25519 challenge
+  auth) and `/ws/client` (api-minted gateway-token auth). The separate
+  `gateway` tier and Redis frame bus described in §2 are **retired**; browsers
+  connect straight to the relay, which validates against the api over
+  `/internal/*` with `X-Internal-Secret`.
+- **`api` language: Python on the Skrift framework** (`skriftapp/`), with
+  Skrift's passkey auth in production. **relay: Rust** (shares the transport
+  binding with the bridge).
+- **Browser-session token:** short-lived (5-min) opaque gateway token minted by
+  the api, validated by the relay via an internal api call (not a JWT).
+- **Web client: Vite vanilla-ES-module SPA** (`spa/`, no framework), all
+  dependencies self-hosted (zero CDN), built into the api's static dir. The
+  React scaffold (`frontend/`) is deleted.
+
+Sections below predate these decisions and are kept for context; where they
+conflict (gateway tier, Redis, §6 open decisions), the list above wins.
+
+---
+
 ## 1. Where we are
 
 Already built and validated (this is the differentiated, higher-risk half):

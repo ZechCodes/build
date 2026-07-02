@@ -1,0 +1,10 @@
+# Providing this file replaces semgrep's built-in defaults, so restore the
+# relevant ones first (gitignored paths + test suites, which use plaintext
+# WebSocket URLs against loopback servers by design).
+:include .gitignore
+test/
+tests/
+
+# Historical v1 planning docs: contain fabricated example tokens as fixtures
+# for the v1 secret-filtering feature they specify. Not shipped code.
+planning/v1/

@@ -200,6 +200,9 @@ body.offline #root #adddev { opacity: 1; pointer-events: auto; }
 
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
 @media (max-width: 720px) {
+  /* iOS Safari auto-zooms focused fields under 16px — every text entry and
+     select must be at least 16px on small screens. */
+  input:not([type=checkbox]), select, textarea { font-size:16px !important; }
   nav { flex-wrap:wrap; row-gap:6px; padding:8px 12px; }
   nav .logo { margin-right:8px; }
   nav .tab { padding:5px 9px; font-size:12.5px; }

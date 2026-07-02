@@ -53,6 +53,17 @@ async function assertVisible(selector, label) {
   return true;
 }
 
+/** Every visible text-entry field must be >=16px or iOS zooms on focus. */
+async function assertFieldFontSizes(label) {
+  const small = await page.evaluate(() =>
+    [...document.querySelectorAll("input:not([type=checkbox]), select, textarea")]
+      .filter((el) => el.offsetParent !== null)
+      .map((el) => ({ tag: el.tagName + (el.id ? "#" + el.id : "." + el.className), px: parseFloat(getComputedStyle(el).fontSize) }))
+      .filter((f) => f.px < 16),
+  );
+  check(`${label}: all fields >=16px (no iOS focus zoom)`, small.length === 0, small.map((f) => `${f.tag}=${f.px}px`).join(" "));
+}
+
 try {
   // ---- 1. Login (dummy) + connect over E2EE ----
   await page.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
@@ -106,6 +117,7 @@ try {
   await page.selectOption("#model", "");
   check("effort re-enables on harness default", await page.$eval("#effort", (e) => !e.disabled));
   await assertNoHScroll("dispatch sheet");
+  await assertFieldFontSizes("dispatch sheet");
   await page.tap("#dispatch");
 
   // ---- 5. Plan review: readable + touch commenting ----
@@ -128,6 +140,7 @@ try {
   await page.waitForSelector(".comment-pop", { timeout: 3000 });
   check("plan: selection popover appears from selectionchange (touch path)", true);
   await page.tap(".comment-pop .cp-add");
+  await assertFieldFontSizes("plan tab + comment popover");
   await page.fill(".comment-pop .cp-input", "mobile plan comment");
   await page.tap(".comment-pop .cp-save");
   await page.waitForSelector("#pclist .pcomment", { timeout: 3000 });
@@ -155,6 +168,7 @@ try {
   await page.waitForSelector(".comment-pop", { timeout: 3000 });
   check("diff: tap on a line opens the comment popover", true);
   await page.tap(".comment-pop .cp-add");
+  await assertFieldFontSizes("diff tab + comment popover");
   await page.fill(".comment-pop .cp-input", "mobile diff comment");
   await page.tap(".comment-pop .cp-save");
   await page.waitForSelector("#difflist .pcomment", { timeout: 3000 });

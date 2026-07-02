@@ -6,9 +6,22 @@ import { $ } from "../dom.js";
 import { RELAY_URL } from "../config.js";
 import { App } from "../app.js";
 import { fetchGatewayToken } from "../api.js";
+import { pinnedDeviceTransportKey } from "../devices.js";
 import { TerminalSession } from "./session.js";
 
 let termSession = null;
+
+/**
+ * Re-point the drawer at the app session's (new) device. A healthy session
+ * never reconnects on its own — the liveness ping keeps it pinned to the old
+ * device — so a device switch must drop it; the auto-reconnect then re-reads
+ * preferDeviceId and attaches to the new device's PTY.
+ */
+export function retargetTerminal() {
+  if (!termSession) return;
+  const wantedDeviceId = App.session?.deviceId || App.selectedDeviceId || null;
+  if (wantedDeviceId && termSession.deviceId !== wantedDeviceId) termSession.simulateDrop();
+}
 
 export async function toggleTerminal() {
   const drawer = $("#drawer");
@@ -28,8 +41,10 @@ export async function toggleTerminal() {
       transport,
       WebSocketImpl: WebSocket,
       getToken: fetchGatewayToken,
+      getPinnedDeviceKey: pinnedDeviceTransportKey,
       // The terminal follows the app session's device (falling back to the
-      // user's sticky choice), re-evaluated on every reconnect.
+      // user's sticky choice), re-evaluated on every reconnect; switchDevice
+      // calls retargetTerminal() to force that reconnect.
       preferDeviceId: () => App.session?.deviceId || App.selectedDeviceId || null,
     });
     termSession.onSnapshot((bytes) => {

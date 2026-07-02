@@ -17,11 +17,17 @@ const b64decodeBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const timeout = (ms, msg) => new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
 
 export class TerminalSession {
-  constructor({ url, transport, WebSocketImpl, getToken, preferDeviceId = () => null }) {
+  constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
+    if (typeof getPinnedDeviceKey !== "function") {
+      throw new Error("getPinnedDeviceKey is required — refusing to trust relay-supplied device keys");
+    }
     this.url = url;
     this.transport = transport;
     this.WS = WebSocketImpl;
     this.getToken = getToken; // async () => gateway token, for the relay handshake
+    // async (deviceId) => the api-pinned transport key. The relay's device_key
+    // push is a routing hint only — we never seal to a key the broker chose.
+    this.getPinnedDeviceKey = getPinnedDeviceKey;
     this.preferDeviceId = preferDeviceId; // () => device id or null (any device)
     this.deviceId = null;
     this._pending = new Map();
@@ -121,9 +127,16 @@ export class TerminalSession {
         }
       }
       this.deviceId = hello.device_id;
+      // Seal to the api-pinned key; a relay-pushed key that differs means the
+      // broker is substituting keys — abort instead of handing it the session.
+      const pinnedKeyB64 = await this.getPinnedDeviceKey(this.deviceId);
+      if (!pinnedKeyB64) throw new Error(`no pinned transport key for device ${this.deviceId}`);
+      if (hello.transport_public_key !== pinnedKeyB64) {
+        throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
+      }
       const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
       const { sessionKeyB64, sessionInit } = await this.transport.createSessionInit({
-        sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: hello.transport_public_key,
+        sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: pinnedKeyB64,
       });
       this._sessionId = sessionId;
       this._key = sessionKeyB64;

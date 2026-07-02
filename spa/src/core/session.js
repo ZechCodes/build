@@ -15,20 +15,30 @@
 
 const DEFAULT_DEVICE_WAIT_MS = 8000;
 const DEFAULT_RPC_TIMEOUT_MS = 12000;
+const DEFAULT_ACCEPT_TIMEOUT_MS = 10000;
 
 export async function openRelaySession({
   relayUrl,
   transport,
   WebSocketImpl,
   fetchToken,
+  getPinnedDeviceKey,
   preferDeviceId = null,
   waitForDevice = false,
   deviceWaitMs = DEFAULT_DEVICE_WAIT_MS,
+  acceptTimeoutMs = DEFAULT_ACCEPT_TIMEOUT_MS,
   isPaused = () => false,
   onDeviceKey = () => {},
   onDeviceOffline = () => {},
   onLost = () => {},
 }) {
+  // The relay is an untrusted broker: its device_key pushes are routing hints
+  // only. Session keys are sealed exclusively to the api-pinned transport key
+  // (bound into the device's Ed25519 registration), so a hostile relay cannot
+  // substitute its own key and MITM the E2EE session.
+  if (typeof getPinnedDeviceKey !== "function") {
+    throw new Error("getPinnedDeviceKey is required — refusing to trust relay-supplied device keys");
+  }
   await transport.ready?.();
   // The api mints a short-lived gateway token for our logged-in session; the
   // relay validates it and routes us only to devices we own.
@@ -116,16 +126,35 @@ export async function openRelaySession({
         ]);
     deviceId = hello.device_id;
 
+    // Seal to the api-pinned key, never the relay-pushed one; a mismatch means
+    // the broker (or someone on the socket) is substituting keys — abort loudly.
+    const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
+    if (!pinnedKeyB64) throw new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`);
+    if (hello.transport_public_key !== pinnedKeyB64) {
+      throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
+    }
+
     sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
     const init = await transport.createSessionInit({
       sessionId,
       deviceId,
-      deviceTransportPublicKeyB64: hello.transport_public_key,
+      deviceTransportPublicKeyB64: pinnedKeyB64,
     });
     sessionKeyB64 = init.sessionKeyB64;
     send({ type: "session_init", session_id: sessionId, route_to: `device:${deviceId}`, session_init: init.sessionInit });
-    const accept = await recvMatching((m) => m.type === "session_accept");
-    await transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
+    // Time-box session_accept and honor a device_offline for our target: a
+    // device that dies right after its device_key snapshot would otherwise hang
+    // this handshake forever (latching the caller's connect/resume flags).
+    const acceptOrOffline = await Promise.race([
+      recvMatching(
+        (m) => m.type === "session_accept" || (m.type === "device_offline" && m.device_id === deviceId),
+      ),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("device did not accept the session")), acceptTimeoutMs),
+      ),
+    ]);
+    if (acceptOrOffline.type === "device_offline") throw new Error("device went offline during the handshake");
+    await transport.openSessionAccept({ sessionKeyB64, envelope: acceptOrOffline.envelope });
   } catch (error) {
     lost = true; // a failed handshake never fires onLost — the caller retries
     try {

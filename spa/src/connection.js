@@ -10,9 +10,18 @@ import * as transport from "@build/secure-transport";
 import { $ } from "./dom.js";
 import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
+import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken } from "./api.js";
 import { App, render, rememberSelectedDevice } from "./app.js";
-import { deviceName, markDeviceOnline, markDeviceOffline, paintDevicePicker } from "./devices.js";
+import {
+  deviceName,
+  markDeviceOnline,
+  markDeviceOffline,
+  paintDevicePicker,
+  pinnedDeviceTransportKey,
+  refreshDevices,
+} from "./devices.js";
+import { retargetTerminal } from "./terminal/drawer.js";
 
 export function setConn(html) {
   $("#conn").innerHTML = html;
@@ -24,6 +33,7 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     transport,
     WebSocketImpl: WebSocket,
     fetchToken: fetchGatewayToken,
+    getPinnedDeviceKey: pinnedDeviceTransportKey,
     preferDeviceId,
     waitForDevice,
     isPaused: () => App.offline,
@@ -69,11 +79,14 @@ export async function resume() {
   if (!App.offline || App._resuming) return;
   App._resuming = true;
   try {
-    // Blocks until the device is online: the fresh authenticated socket receives
-    // the relay's device_key push the moment a bridge returns. An explicit device
-    // choice is honored; otherwise any of the user's devices brings us back.
+    // Blocks until a device is online: the fresh authenticated socket receives
+    // the relay's device_key push the moment a bridge returns. The sticky
+    // choice is honored only when that device is online right now — otherwise
+    // ANY of the user's devices brings us back (waiting on an offline sticky
+    // device would discard the working device's return forever).
+    const devices = await refreshDevices();
     const session = await openAppSession({
-      preferDeviceId: App.selectedDeviceId,
+      preferDeviceId: onlineStickyDeviceId(devices, App.selectedDeviceId),
       waitForDevice: true,
     });
     if (!App.offline) {
@@ -99,8 +112,10 @@ export async function resume() {
 
 /** Re-target the app at another device: open the new session first, then swap. */
 export async function switchDevice(deviceId) {
-  rememberSelectedDevice(deviceId);
-  if (App.session?.deviceId === deviceId && !App.offline) return;
+  if (App.session?.deviceId === deviceId && !App.offline) {
+    rememberSelectedDevice(deviceId);
+    return;
+  }
   const previous = App.session;
   const wasOffline = App.offline;
   App.offline = false; // let the fresh session's calls through
@@ -116,7 +131,11 @@ export async function switchDevice(deviceId) {
   } catch {
     /* already gone */
   }
+  // Persist the sticky choice only once the switch actually succeeded — an
+  // unreachable pick must not poison future boots/resumes.
+  rememberSelectedDevice(deviceId);
   adoptSession(session);
   restoreOnline();
+  retargetTerminal(); // the drawer follows the app session's device
   render();
 }

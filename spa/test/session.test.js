@@ -40,6 +40,8 @@ async function startOpen(overrides = {}) {
     transport: fakeTransport,
     WebSocketImpl: FakeWebSocket,
     fetchToken: async () => "tok-1",
+    // The api-pinned transport keys — the fakes' relay pushes match by default.
+    getPinnedDeviceKey: async (deviceId) => `pk-${deviceId}`,
     onDeviceKey: (deviceId, key) => events.deviceKeys.push([deviceId, key]),
     onDeviceOffline: (deviceId) => events.offlineDevices.push(deviceId),
     onLost: () => events.lost++,
@@ -186,6 +188,72 @@ describe("openRelaySession", () => {
     await expect(session.call("task.list", {})).rejects.toThrow(/offline/);
   });
 
+  it("seals the session key to the api-pinned transport key, not the relay-pushed one", async () => {
+    const sealedTo = [];
+    const spyTransport = {
+      ...fakeTransport,
+      createSessionInit: async (args) => {
+        sealedTo.push(args.deviceTransportPublicKeyB64);
+        return fakeTransport.createSessionInit(args);
+      },
+    };
+    const { promise, ws } = await startOpen({
+      transport: spyTransport,
+      getPinnedDeviceKey: async () => "pk-dev-a",
+    });
+    await completeHandshake(ws, "dev-a");
+    await promise;
+    expect(sealedTo).toEqual(["pk-dev-a"]);
+  });
+
+  it("hard-rejects when the relay-pushed device key does not match the api-pinned key", async () => {
+    const { promise, ws } = await startOpen({
+      getPinnedDeviceKey: async () => "pk-genuine",
+    });
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-attacker" });
+    await expect(promise).rejects.toThrow(/does not match/);
+    expect(ws.sent.find((m) => m.type === "session_init")).toBeUndefined();
+  });
+
+  it("refuses a device the api does not know a transport key for", async () => {
+    const { promise, ws } = await startOpen({ getPinnedDeviceKey: async () => null });
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-x", transport_public_key: "pk-dev-x" });
+    await expect(promise).rejects.toThrow(/no pinned transport key/);
+    expect(ws.sent.find((m) => m.type === "session_init")).toBeUndefined();
+  });
+
+  it("requires a pinned-key source instead of silently trusting the relay", async () => {
+    await expect(
+      openRelaySession({
+        relayUrl: "ws://relay.test",
+        transport: fakeTransport,
+        WebSocketImpl: FakeWebSocket,
+        fetchToken: async () => "tok",
+      }),
+    ).rejects.toThrow(/getPinnedDeviceKey/);
+  });
+
+  it("times out the handshake when session_accept never arrives", async () => {
+    const { promise, ws } = await startOpen({ acceptTimeoutMs: 20 });
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-dev-a" });
+    await tick();
+    expect(ws.sent.find((m) => m.type === "session_init")).toBeDefined();
+    await expect(promise).rejects.toThrow(/did not accept/);
+  });
+
+  it("fails the handshake when the target device goes offline before session_accept", async () => {
+    const { promise, ws, events } = await startOpen();
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-dev-a" });
+    await tick();
+    ws.serverSend({ type: "device_offline", device_id: "dev-a" });
+    await expect(promise).rejects.toThrow(/went offline/);
+    expect(events.lost).toBe(0); // handshake failure is the caller's retry, not onLost
+  });
+
   it("times out RPCs that never get a reply", async () => {
     vi.useFakeTimers();
     try {
@@ -195,6 +263,7 @@ describe("openRelaySession", () => {
         transport: fakeTransport,
         WebSocketImpl: FakeWebSocket,
         fetchToken: async () => "tok",
+        getPinnedDeviceKey: async () => "pk",
       });
       await vi.advanceTimersByTimeAsync(0);
       const ws = FakeWebSocket.instances[0];

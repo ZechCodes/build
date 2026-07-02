@@ -5,6 +5,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { RELAY_URL } from "../config.js";
+import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
 import { openAppSession, adoptSession, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
@@ -24,8 +25,8 @@ async function enterApp() {
   try {
     // Honor an explicit device choice when that device is online; otherwise
     // whichever of the user's devices answers first.
-    const selected = App.devices.find((d) => d.id === App.selectedDeviceId && d.status === "online");
-    adoptSession(await openAppSession({ preferDeviceId: selected ? selected.id : null }));
+    const preferDeviceId = onlineStickyDeviceId(App.devices, App.selectedDeviceId);
+    adoptSession(await openAppSession({ preferDeviceId }));
   } finally {
     App._connecting = false;
   }

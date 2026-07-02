@@ -17,6 +17,20 @@ export function deviceName(deviceId) {
   return App.devices.find((d) => d.id === deviceId)?.name || null;
 }
 
+/**
+ * The api-pinned transport key for a device — the E2EE trust anchor sessions
+ * seal to (never the relay-pushed key). Unknown devices trigger one refresh
+ * (e.g. approved in another tab); still-unknown devices return null and the
+ * session layer refuses to connect to them.
+ */
+export async function pinnedDeviceTransportKey(deviceId) {
+  const pinnedKey = () => App.devices.find((d) => d.id === deviceId)?.transport_public_key_b64 || null;
+  const known = pinnedKey();
+  if (known) return known;
+  await refreshDevices();
+  return pinnedKey();
+}
+
 export function markDeviceOnline(deviceId) {
   const device = App.devices.find((d) => d.id === deviceId);
   if (!device) {

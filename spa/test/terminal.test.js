@@ -38,6 +38,7 @@ describe("TerminalSession", () => {
       transport: fakeTransport,
       WebSocketImpl: FakeWebSocket,
       getToken: async () => "tok-9",
+      getPinnedDeviceKey: async (deviceId) => `pk-${deviceId.slice(-1)}`,
       preferDeviceId: () => "dev-b",
     });
     const outputs = [];
@@ -85,6 +86,38 @@ describe("TerminalSession", () => {
     push(4, "stale");
     await tick();
     expect(outputs).toEqual(["live"]);
+    session.close();
+  });
+
+  it("seals to the api-pinned key and hard-fails on a mismatched relay-pushed key", async () => {
+    FakeWebSocket.instances.length = 0;
+    const sealedTo = [];
+    const spyTransport = {
+      ...fakeTransport,
+      createSessionInit: async (args) => {
+        sealedTo.push(args.deviceTransportPublicKeyB64);
+        return fakeTransport.createSessionInit(args);
+      },
+    };
+    const session = new TerminalSession({
+      url: "ws://relay.test",
+      transport: spyTransport,
+      WebSocketImpl: FakeWebSocket,
+      getToken: async () => "tok",
+      getPinnedDeviceKey: async () => "pk-genuine",
+      preferDeviceId: () => "dev-a",
+    });
+    const started = session.start(80, 24);
+    started.catch(() => {});
+    await tick();
+    const ws = FakeWebSocket.instances[0];
+    ws.emit("open");
+    await tick();
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-attacker" });
+    await expect(started).rejects.toThrow(/does not match/);
+    expect(sealedTo).toEqual([]);
+    expect(ws.sent.find((m) => m.type === "session_init")).toBeUndefined();
     session.close();
   });
 });

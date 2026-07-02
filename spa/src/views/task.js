@@ -109,7 +109,16 @@ export async function renderTask() {
           const approve = $("#approvePlan");
           approve.disabled = true;
           approve.textContent = "starting build…";
-          await App.call("task.approve_plan", { task_id: id });
+          try {
+            await App.call("task.approve_plan", { task_id: id });
+          } catch (e) {
+            // Restore the button — the poll's key-diffing skips repaints when
+            // nothing changed, so a wedged button would otherwise stay dead.
+            approve.disabled = false;
+            approve.textContent = "Approve plan & start build";
+            phint.textContent = "error: " + e.message.slice(0, 50);
+            return;
+          }
           App.route.tab = "diff";
           tab = "diff";
           planKey = null;

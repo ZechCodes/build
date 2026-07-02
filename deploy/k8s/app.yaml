@@ -18,6 +18,8 @@ spec:
       labels:
         app.kubernetes.io/name: build-app
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       securityContext:
         seccompProfile:
           type: RuntimeDefault

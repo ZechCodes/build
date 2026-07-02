@@ -21,6 +21,8 @@ spec:
       labels:
         app.kubernetes.io/name: build-relay
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       securityContext:
         seccompProfile:
           type: RuntimeDefault

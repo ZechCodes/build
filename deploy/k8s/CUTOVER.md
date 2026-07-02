@@ -16,9 +16,14 @@ Cluster context: `do-nyc1-production-hosting`.
 
 ## 0. One-time prerequisites
 
-- The GHCR packages `ghcr.io/8ly-dev/build-app` and `ghcr.io/8ly-dev/build-relay`
-  must be **public** (or add an `imagePullSecrets` to both Deployments and create
-  a `ghcr` pull secret in namespace `8ly`).
+- Both Deployments reference the `ghcr-pull` imagePullSecret, so the GHCR
+  packages `ghcr.io/8ly-dev/build-app` and `ghcr.io/8ly-dev/build-relay` may stay
+  private. Create it once (never commit the token):
+
+  ```bash
+  kubectl --context do-nyc1-production-hosting -n 8ly create secret docker-registry ghcr-pull \
+    --docker-server=ghcr.io --docker-username=<gh-user> --docker-password=<token-with-read:packages>
+  ```
 - Images are published by `.github/workflows/deploy-images.yml` on every push to
   `main`. For a first manual push:
 

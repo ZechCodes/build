@@ -8,7 +8,7 @@ export function hasCommentPop() {
 
 export function hideCommentPop() {
   if (activePop) {
-    if (activePop._onDown) document.removeEventListener("mousedown", activePop._onDown);
+    if (activePop._onDown) document.removeEventListener("pointerdown", activePop._onDown);
     activePop.remove();
     activePop = null;
   }
@@ -18,8 +18,9 @@ export function showCommentPop(rect, onAdd) {
   hideCommentPop();
   const pop = document.createElement("div");
   pop.className = "comment-pop";
-  pop.style.top = rect.bottom + 6 + "px";
-  pop.style.left = Math.max(8, rect.left) + "px";
+  // Clamp inside the viewport: touch selections often end at the screen edge.
+  pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 56) + "px";
+  pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 160)) + "px";
   pop.innerHTML = `<button class="cp-add">💬 Comment</button>`;
   document.body.appendChild(pop);
   pop.querySelector(".cp-add").onclick = () => {
@@ -42,7 +43,7 @@ export function showCommentPop(rect, onAdd) {
   const onDown = (e) => {
     if (activePop && !activePop.contains(e.target)) hideCommentPop();
   };
-  setTimeout(() => document.addEventListener("mousedown", onDown), 0);
+  setTimeout(() => document.addEventListener("pointerdown", onDown), 0);
   pop._onDown = onDown;
   activePop = pop;
 }

@@ -10,6 +10,8 @@ import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
+import { watchSelection } from "../selectWatch.js";
+import { toggleTerminal } from "../terminal/drawer.js";
 
 export async function renderTask() {
   const root = $("#root");
@@ -21,12 +23,13 @@ export async function renderTask() {
       <div class="back" id="back">← Board</div>
       <div class="thead"><h1>${esc(m.goal || "")}</h1>
         <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span>
-          <span>terminal <span class="kbd">\`</span></span></div></div>
+          <span id="termToggle" role="button" style="cursor:pointer">terminal <span class="kbd">\`</span></span></div></div>
       <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span></div>
       <div class="tabs"><div class="t ${tab === "plan" ? "active" : ""}" data-tab="plan">Plan</div>
         <div class="t ${tab === "diff" ? "active" : ""}" data-tab="diff">Diff</div></div>
       <div id="tabbody"></div>`;
     $("#back").onclick = () => go({ name: "board" });
+    $("#termToggle").onclick = () => toggleTerminal(); // tap target — the backtick shortcut has no key on mobile
     root.querySelectorAll(".tabs .t").forEach(
       (e) =>
         (e.onclick = () => {
@@ -40,6 +43,10 @@ export async function renderTask() {
   };
   let last = null;
   loadModelCatalog(); // warm the selector catalog before plan_review needs it
+  // Selection watchers are document-level; dispose the previous render's before
+  // wiring new ones or the 1.6s poll accumulates listeners.
+  let planSelDispose = null,
+    diffSelDispose = null;
   // Plan-review feedback state, preserved across the 1.6s poll.
   const planComments = []; // { id, snippet, comment }
   let cid = 0,
@@ -48,6 +55,7 @@ export async function renderTask() {
   // Build the plan tab: rendered markdown + select-to-comment + a general
   // comment box + an action button that morphs to "Request Updates".
   function renderPlanTab(t, plan) {
+    $("#tabbody").onclick = null; // drop the diff tab's tap-to-comment handler
     planComments.length = 0; // a freshly (re)rendered plan starts with no comments
     const editable = t.state === "plan_review";
     const body = $("#tabbody");
@@ -172,15 +180,12 @@ export async function renderTask() {
     };
     if (editable) {
       const planEl = $("#planbody");
-      planEl.addEventListener("mouseup", () =>
-        setTimeout(() => {
-          const sel = window.getSelection();
-          const text = sel.toString().trim();
-          if (!text || sel.rangeCount === 0 || !planEl.contains(sel.anchorNode) || !planEl.contains(sel.focusNode)) return;
-          const range = sel.getRangeAt(0).cloneRange();
-          showCommentPop(range.getBoundingClientRect(), (comment) => addComment(text, comment, range));
-        }, 0),
-      );
+      if (planSelDispose) planSelDispose();
+      planSelDispose = watchSelection(planEl, (sel) => {
+        const text = sel.toString().trim();
+        const range = sel.getRangeAt(0).cloneRange();
+        showCommentPop(range.getBoundingClientRect(), (comment) => addComment(text, comment, range));
+      });
       $("#pgeneral").oninput = updateActions;
     }
     refreshFeedback();
@@ -229,33 +234,35 @@ export async function renderTask() {
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
 
     if (editable) {
-      body.querySelectorAll(".file").forEach((fileEl) => {
+      // Range selections (mouse drag or touch handles) → comment on the span.
+      if (diffSelDispose) diffSelDispose();
+      diffSelDispose = watchSelection(body, (sel) => {
+        const fileEl = rowOf(sel.anchorNode, body)?.closest(".file");
+        if (!fileEl) return;
         const file = fileEl.dataset.file,
           table = fileEl.querySelector("table");
-        if (!table) return;
-        table.addEventListener("mouseup", () =>
-          setTimeout(() => {
-            const sel = window.getSelection();
-            if (sel.rangeCount === 0) return;
-            const text = sel.toString();
-            if (text.trim()) {
-              const startRow = rowOf(sel.anchorNode, table),
-                endRow = rowOf(sel.focusNode, table);
-              if (!startRow && !endRow) return;
-              let a = +(startRow || endRow).dataset.ln,
-                b = +(endRow || startRow).dataset.ln;
-              if (a > b) [a, b] = [b, a];
-              showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addDiffComment(file, a, b, text, comment));
-            } else {
-              const tr = rowOf(sel.anchorNode, table);
-              if (!tr || tr.classList.contains("hunk")) return;
-              const ln = +tr.dataset.ln,
-                snippet = tr.querySelector(".code").textContent;
-              showCommentPop(tr.getBoundingClientRect(), (comment) => addDiffComment(file, ln, ln, snippet, comment));
-            }
-          }, 0),
-        );
+        const startRow = rowOf(sel.anchorNode, table),
+          endRow = rowOf(sel.focusNode, table);
+        if (!startRow && !endRow) return;
+        let a = +(startRow || endRow).dataset.ln,
+          b = +(endRow || startRow).dataset.ln;
+        if (a > b) [a, b] = [b, a];
+        const text = sel.toString();
+        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addDiffComment(file, a, b, text, comment));
       });
+      // A plain tap/click on a line comments that line — the touch-first path.
+      // (#tabbody persists across the 1.6s repaint: single-assignment handler,
+      // never addEventListener, or handlers accumulate.)
+      body.onclick = (e) => {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
+        const fileEl = e.target.closest(".file");
+        const tr = e.target.closest("tr[data-ln]");
+        if (!fileEl || !tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
+        const ln = +tr.dataset.ln,
+          snippet = tr.querySelector(".code").textContent;
+        showCommentPop(tr.getBoundingClientRect(), (comment) => addDiffComment(fileEl.dataset.file, ln, ln, snippet, comment));
+      };
       $("#dgeneral").oninput = updateDiffActions;
     }
     applyDiffHighlights();
@@ -389,10 +396,10 @@ export async function renderTask() {
           const close = (ev) => {
             if (!$(".splitbtn")?.contains(ev.target)) {
               menu.hidden = true;
-              document.removeEventListener("mousedown", close);
+              document.removeEventListener("pointerdown", close);
             }
           };
-          setTimeout(() => document.addEventListener("mousedown", close), 0);
+          setTimeout(() => document.addEventListener("pointerdown", close), 0);
         }
       };
       menu.querySelectorAll(".mi").forEach(

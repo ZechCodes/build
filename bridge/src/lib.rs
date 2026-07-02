@@ -21,6 +21,7 @@ pub mod pairing;
 pub mod pty;
 pub mod relay;
 pub mod relay_server;
+pub mod service;
 pub mod store;
 pub mod task;
 pub mod templates;

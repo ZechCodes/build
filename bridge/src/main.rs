@@ -24,13 +24,18 @@
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
 //!   a random one, so a scripted approver can complete the flow
+//!
+//! `build-bridge install-service` (macOS) installs a launchd LaunchAgent that
+//! keeps `serve` running across crashes and logins. It is gated on pairing:
+//! the api must confirm this device is approved and owned by an account before
+//! anything is written. `uninstall-service` removes it.
 
 use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::{identity, pairing, transport};
+use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
 async fn main() {
@@ -38,11 +43,15 @@ async fn main() {
         Some("serve") | None => serve().await,
         Some("mcp") => mcp_stdio(),
         Some("provision") => provision(),
+        Some("install-service") => install_service().await,
+        Some("uninstall-service") => uninstall_service(),
         Some("--version") | Some("-V") => {
             println!("build-bridge {}", env!("CARGO_PKG_VERSION"));
         }
         Some(other) => {
-            eprintln!("unknown command: {other}\nusage: build-bridge [serve|provision]");
+            eprintln!(
+                "unknown command: {other}\nusage: build-bridge [serve|provision|install-service|uninstall-service]"
+            );
             std::process::exit(2);
         }
     }
@@ -225,6 +234,151 @@ async fn serve() {
             Err(e) => eprintln!("relay error: {e}; reconnecting in 2s"),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Install the launchd LaunchAgent (macOS). Refuses unless this device is
+/// paired: the api must report it approved and owned by an account. The gate
+/// runs BEFORE anything is written.
+async fn install_service() {
+    if !cfg!(target_os = "macos") {
+        eprintln!("install-service writes a launchd LaunchAgent and is macOS-only");
+        std::process::exit(2);
+    }
+
+    let api_url = env("BRIDGE_API_URL", "http://127.0.0.1:8080");
+    let identity_path = expand_tilde(&env("BRIDGE_IDENTITY_FILE", "~/.build/identity.json"));
+
+    // Gate: local identity + live api approval, never the local flag alone.
+    let stored = match identity::load(&identity_path) {
+        Ok(stored) => stored,
+        Err(e) => {
+            eprintln!("could not load identity from {identity_path:?}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let api_status = match &stored {
+        None => Err("no identity".to_string()),
+        Some(stored) => {
+            let client = reqwest::Client::new();
+            pairing::fetch_status(&client, &api_url, &stored.device_id)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    };
+    let owner = match service::check_install_gate(
+        stored.is_some(),
+        api_status.as_ref().map_err(String::as_str),
+    ) {
+        Ok(owner) => owner,
+        Err(gate) => {
+            eprintln!("not installing: {gate}");
+            std::process::exit(1);
+        }
+    };
+
+    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
+    let binary_path = std::env::current_exe().expect("current executable path");
+    let log_dir = home.join(".build/log");
+    std::fs::create_dir_all(&log_dir).expect("create log dir");
+
+    // Carry every BRIDGE_* var set right now, and pin the two URLs and the
+    // identity file to their resolved values so the daemon can't drift from
+    // what the gate just verified.
+    let mut daemon_env: Vec<(String, String)> = std::env::vars()
+        .filter(|(key, _)| key.starts_with("BRIDGE_"))
+        .collect();
+    for (key, value) in [
+        ("BRIDGE_API_URL", api_url.clone()),
+        (
+            "BRIDGE_RELAY_URL",
+            env("BRIDGE_RELAY_URL", "ws://127.0.0.1:8799"),
+        ),
+        (
+            "BRIDGE_IDENTITY_FILE",
+            identity_path.to_string_lossy().into_owned(),
+        ),
+    ] {
+        if !daemon_env.iter().any(|(k, _)| k == key) {
+            daemon_env.push((key.to_string(), value));
+        }
+    }
+    daemon_env.sort();
+
+    let config = service::ServiceConfig {
+        binary_path,
+        log_dir: log_dir.clone(),
+        env: daemon_env,
+    };
+    let plist_file = service::plist_path(&home);
+    std::fs::create_dir_all(plist_file.parent().expect("plist parent"))
+        .expect("create LaunchAgents dir");
+    std::fs::write(&plist_file, service::render_launchd_plist(&config)).expect("write plist");
+
+    let uid = String::from_utf8(
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .expect("id -u")
+            .stdout,
+    )
+    .expect("uid utf8")
+    .trim()
+    .to_string();
+    // Re-installs: boot the old instance out first; ignore "not loaded" errors.
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/{}", service::SERVICE_LABEL)])
+        .status();
+    let bootstrap = std::process::Command::new("launchctl")
+        .args([
+            "bootstrap",
+            &format!("gui/{uid}"),
+            &plist_file.to_string_lossy(),
+        ])
+        .status()
+        .expect("run launchctl bootstrap");
+    if !bootstrap.success() {
+        eprintln!("launchctl bootstrap failed (plist written to {plist_file:?})");
+        std::process::exit(1);
+    }
+    println!(
+        "installed {} for account owner {owner}\n  plist: {}\n  logs:  {}/bridge.log",
+        service::SERVICE_LABEL,
+        plist_file.display(),
+        log_dir.display()
+    );
+}
+
+/// Remove the LaunchAgent: stop the daemon and delete the plist.
+fn uninstall_service() {
+    if !cfg!(target_os = "macos") {
+        eprintln!("uninstall-service is macOS-only");
+        std::process::exit(2);
+    }
+    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
+    let plist_file = service::plist_path(&home);
+    let uid = String::from_utf8(
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .expect("id -u")
+            .stdout,
+    )
+    .expect("uid utf8")
+    .trim()
+    .to_string();
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/{}", service::SERVICE_LABEL)])
+        .status();
+    match std::fs::remove_file(&plist_file) {
+        Ok(()) => println!("removed {}", plist_file.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("nothing installed at {}", plist_file.display());
+        }
+        Err(e) => {
+            eprintln!("could not remove {}: {e}", plist_file.display());
+            std::process::exit(1);
+        }
     }
 }
 

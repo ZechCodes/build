@@ -35,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -43,11 +43,23 @@ use tokio_tungstenite::tungstenite::Message;
 
 use build_bridge::relay_server::{
     self, AuthOutcome, DeviceAuth, DeviceRecord, Outbound, RelayConfig, RelayState, ReplayGuard,
-    AUTH_SKEW, MAX_WS_MESSAGE_BYTES,
+    AUTH_SKEW, MAX_WS_MESSAGE_BYTES, REPLAY_TTL,
 };
 
 /// How long shutdown waits for connection tasks to say goodbye before exiting anyway.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// The whole pre-auth phase (health-probe peek + WS upgrade) must finish within
+/// this, or a silent/slow-loris peer pins a task and an FD forever and blocks
+/// graceful shutdown for the full grace period.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+/// An accepted client must send its `authenticate` frame within this.
+const CLIENT_AUTH_DEADLINE: Duration = Duration::from_secs(10);
+/// A single WS write stalled longer than this means the peer stopped reading —
+/// sever the connection instead of queueing into it forever.
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a connected device's approval is re-checked at the api, so revoking
+/// a device actually severs its live relay connection (not just future ones).
+const DEVICE_REVALIDATION_INTERVAL: Duration = Duration::from_secs(60);
 
 struct Shared {
     state: Mutex<RelayState>,
@@ -99,7 +111,7 @@ async fn main() {
     let bound_port = listener.local_addr().expect("bound address").port();
     let shared = Arc::new(Shared {
         state: Mutex::new(RelayState::new()),
-        replay: Mutex::new(ReplayGuard::new(AUTH_SKEW)),
+        replay: Mutex::new(ReplayGuard::new(REPLAY_TTL)),
         http: reqwest::Client::new(),
         config,
     });
@@ -161,56 +173,74 @@ async fn serve(
     shared: Arc<Shared>,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Plain-HTTP `GET /health` (Kubernetes liveness/readiness) is answered before
-    // the WebSocket handshake; the check peeks, so upgrades pass through untouched.
-    if relay_server::handle_health_probe(&mut tcp).await? {
-        return Ok(());
-    }
-
     // Capture the path + device auth headers during the handshake. Structurally
     // invalid device upgrades (missing headers) are rejected here with a non-101.
     let captured = Arc::new(std::sync::Mutex::new(Upgrade::default()));
     let capture = Arc::clone(&captured);
-    let ws = tokio_tungstenite::accept_hdr_async_with_config(
-        tcp,
-        move |req: &Request, resp: Response| {
-            let path = req.uri().path().to_string();
-            let header = |name: &str| {
-                req.headers()
-                    .get(name)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-            };
-            let upgrade = Upgrade {
-                device_id: header("x-device-id"),
-                timestamp: header("x-timestamp"),
-                signature: header("x-signature"),
-                path: path.clone(),
-            };
-            if path == "/ws/device"
-                && (upgrade.device_id.is_none()
-                    || upgrade.timestamp.is_none()
-                    || upgrade.signature.is_none())
-            {
-                let mut err = ErrorResponse::new(Some("missing device auth headers".into()));
-                *err.status_mut() = StatusCode::UNAUTHORIZED;
-                return Err(err);
-            }
-            *capture.lock().unwrap() = upgrade;
-            Ok(resp)
+
+    // The whole pre-auth phase — health-probe peek + WS upgrade — runs under one
+    // deadline and honors shutdown, so a silent peer can neither pin this task
+    // forever nor stall SIGTERM for the full grace period.
+    let pre_auth = async move {
+        // Plain-HTTP `GET /health` (Kubernetes liveness/readiness) is answered before
+        // the WebSocket handshake; the check peeks, so upgrades pass through untouched.
+        if relay_server::handle_health_probe(&mut tcp).await? {
+            return Ok::<_, Box<dyn std::error::Error>>(None);
+        }
+        let ws = tokio_tungstenite::accept_hdr_async_with_config(
+            tcp,
+            move |req: &Request, resp: Response| {
+                let path = req.uri().path().to_string();
+                let header = |name: &str| {
+                    req.headers()
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string)
+                };
+                let upgrade = Upgrade {
+                    device_id: header("x-device-id"),
+                    timestamp: header("x-timestamp"),
+                    signature: header("x-signature"),
+                    path: path.clone(),
+                };
+                if path == "/ws/device"
+                    && (upgrade.device_id.is_none()
+                        || upgrade.timestamp.is_none()
+                        || upgrade.signature.is_none())
+                {
+                    let mut err = ErrorResponse::new(Some("missing device auth headers".into()));
+                    *err.status_mut() = StatusCode::UNAUTHORIZED;
+                    return Err(err);
+                }
+                *capture.lock().unwrap() = upgrade;
+                Ok(resp)
+            },
+            Some(websocket_limits()),
+        )
+        .await?;
+        Ok(Some(ws))
+    };
+    let ws = tokio::select! {
+        outcome = tokio::time::timeout(HANDSHAKE_DEADLINE, pre_auth) => match outcome {
+            Ok(Ok(Some(ws))) => ws,
+            Ok(Ok(None)) => return Ok(()), // health probe: answered and done
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Ok(()), // slow-loris / idle socket: drop it
         },
-        Some(websocket_limits()),
-    )
-    .await?;
+        _ = shutdown.recv() => return Ok(()),
+    };
     let upgrade = captured.lock().unwrap().clone();
 
     let (mut sink, mut source) = ws.split();
-    // One writer owns the sink; peers queue text payloads to it.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    // One writer owns the sink; peers queue text payloads to it through a
+    // byte-bounded channel, and a stalled TCP write severs the peer — one slow
+    // reader can never grow relay memory without limit.
+    let (out_tx, mut out_rx) = relay_server::outbound_channel();
     let writer = tokio::spawn(async move {
         while let Some(text) = out_rx.recv().await {
-            if sink.send(Message::Text(text)).await.is_err() {
-                return;
+            match tokio::time::timeout(WRITE_STALL_TIMEOUT, sink.send(Message::Text(text))).await {
+                Ok(Ok(())) => {}
+                _ => return, // peer gone, or it stopped reading: sever
             }
         }
         // Every sender is gone: this peer is being disconnected on purpose (cleanup
@@ -305,12 +335,30 @@ async fn serve_device(
     report_status(shared, &device_id, true).await;
     eprintln!("device {device_id}: authenticated (owner {owner})");
 
+    // Auth happens once at connect, so revocation must be re-checked while the
+    // connection lives — otherwise "Revoke" in the app never cuts off a
+    // compromised device until it happens to reconnect.
+    let mut revalidate = tokio::time::interval_at(
+        tokio::time::Instant::now() + DEVICE_REVALIDATION_INTERVAL,
+        DEVICE_REVALIDATION_INTERVAL,
+    );
+    revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         let message = tokio::select! {
             next = source.next() => match next {
                 Some(Ok(message)) => message,
                 _ => break,
             },
+            _ = revalidate.tick() => {
+                // Fail open only on an unreachable api (a blip must not drop every
+                // device); an affirmative "not approved / unknown" severs now.
+                if device_authorization(shared, &device_id, &owner).await == Some(false) {
+                    eprintln!("device {device_id}: no longer authorized; severing");
+                    break;
+                }
+                continue;
+            }
             _ = shutdown.recv() => break,
         };
         let Message::Text(text) = message else {
@@ -363,10 +411,14 @@ async fn serve_device(
     // The device is gone: drop it, then tell the owner's browsers immediately so
     // they can degrade gracefully (and reconnect on the next device_online) instead
     // of hanging on a dead session. Guarded by conn_id: if the device already
-    // reconnected, this stale cleanup is a no-op and nobody is notified.
-    let clients = {
+    // reconnected, this stale cleanup is a no-op — nobody is notified and the api
+    // is NOT told the (live, routable) device went offline.
+    let removal = {
         let mut state = shared.state.lock().await;
         state.remove_device(&device_id, registration.conn_id)
+    };
+    let Some(clients) = removal else {
+        return; // stale disconnect: a newer connection owns this device now
     };
     let notice = json!({"type":"device_offline","device_id":device_id}).to_string();
     for client in clients {
@@ -382,9 +434,16 @@ async fn serve_client(
     shutdown: &mut broadcast::Receiver<()>,
 ) {
     // The browser gets exactly one frame while unauthenticated: it must be a text
-    // `authenticate` frame carrying a valid gateway token, or the connection ends.
+    // `authenticate` frame carrying a valid gateway token — sent promptly — or the
+    // connection ends (a silent socket must not pin this task forever).
     let first_frame = tokio::select! {
-        next = source.next() => next,
+        next = tokio::time::timeout(CLIENT_AUTH_DEADLINE, source.next()) => match next {
+            Ok(frame) => frame,
+            Err(_) => {
+                eprintln!("client: no authenticate frame within the deadline; refused");
+                return;
+            }
+        },
         _ = shutdown.recv() => return,
     };
     let Some(Ok(Message::Text(first_text))) = first_frame else {
@@ -471,8 +530,16 @@ async fn serve_client(
     }
 
     eprintln!("client {client_id}: disconnected");
-    let mut state = shared.state.lock().await;
-    state.remove_client(client_id);
+    // Tell each severed session's device the browser is gone, so it stops
+    // encrypting terminal output into a session nobody will read and drops the
+    // session key.
+    let severed = {
+        let mut state = shared.state.lock().await;
+        state.remove_client(client_id)
+    };
+    for (session_id, device) in severed {
+        let _ = device.send(json!({"type":"session_closed","session_id":session_id}).to_string());
+    }
 }
 
 // --- api lookups (all fail closed: any error means "not authorized") -----------
@@ -495,6 +562,33 @@ async fn lookup_device(shared: &Arc<Shared>, device_id: &str) -> Option<DeviceRe
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// Re-check a connected device's authorization at the api.
+/// `Some(true)` — still approved by the same owner; `Some(false)` — the api
+/// affirmatively says revoked/unknown/re-owned (sever the connection);
+/// `None` — the api is unreachable (fail open for an already-authenticated
+/// connection: a blip must not drop every connected device).
+async fn device_authorization(
+    shared: &Arc<Shared>,
+    device_id: &str,
+    owner_user_id: &str,
+) -> Option<bool> {
+    let url = format!("{}/internal/devices/{device_id}", shared.config.api_url);
+    let resp = shared.internal_get(&url).send().await.ok()?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Some(false);
+    }
+    if !resp.status().is_success() {
+        return None; // 5xx etc.: treat like unreachable, keep the connection
+    }
+    let body: Value = resp.json().await.ok()?;
+    let approved = body
+        .get("approved")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let same_owner = body.get("owner_user_id").and_then(Value::as_str) == Some(owner_user_id);
+    Some(approved && same_owner)
 }
 
 async fn lookup_gateway_token(shared: &Arc<Shared>, token: &str) -> Option<String> {

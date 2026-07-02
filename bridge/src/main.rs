@@ -14,6 +14,8 @@
 //! - `BRIDGE_TASKS_DIR`   durable task records, one JSON per task (default `~/.build/tasks`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
+//! - `BRIDGE_IDLE_SECONDS` PTY-quiet threshold before a working task without a
+//!   `done` is demoted to `idle_unreported` (default 300)
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
 //! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing and for the
 //!   signed, content-free web-push notifies fired when a task needs the human
@@ -203,6 +205,18 @@ async fn serve() {
     };
     let app = app.shared();
     AppState::spawn_done_socket(app.clone(), mcp_socket.clone());
+    // Quiescence/crash watchdog (scope §5.4): a harness that exits or goes silent
+    // without ever calling `done` demotes its task to `idle_unreported` instead of
+    // leaving it stuck in planning/building for the daemon's whole life.
+    let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(300);
+    AppState::spawn_idle_monitor(
+        app.clone(),
+        Duration::from_secs(idle_threshold),
+        Duration::from_secs(5),
+    );
     let handler = AppState::handler(app);
 
     loop {

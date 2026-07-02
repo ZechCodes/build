@@ -67,9 +67,10 @@ pub fn load(path: &Path) -> Result<Option<StoredIdentity>> {
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
-/// Atomically persist `identity` to `path` with `0600` permissions: write a sibling
-/// temp file, lock it down, then rename over the target — so there is never a window
-/// where the final file is partially written or group/other-readable. Best-effort
+/// Atomically persist `identity` to `path` with `0600` permissions: create a sibling
+/// temp file that is owner-only from its **first byte** (`O_CREAT` with mode `0600`,
+/// not write-then-chmod — a chmod-after-write leaves a window where another local
+/// user could read the private keys), then rename over the target. Best-effort
 /// `0700` on the parent directory. Does not mutate `identity`.
 pub fn save(path: &Path, identity: &StoredIdentity) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -81,11 +82,31 @@ pub fn save(path: &Path, identity: &StoredIdentity) -> Result<()> {
 
     let json = serde_json::to_vec_pretty(identity)?;
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    // Set perms before the rename so the final path is never readable by others.
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    write_owner_only(&tmp, &json)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Write `bytes` to a file that is `0600` from the moment it exists — the mode
+/// rides the `open(2)` call, so there is no world-readable window at all.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    // Remove any leftover tmp first: O_CREAT's mode only applies to newly
+    // created files, and a stale file could carry looser permissions.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Build the runtime [`DeviceIdentity`] the relay client needs from a stored identity.
@@ -127,6 +148,24 @@ mod tests {
         save(&path, &generate("my-box")).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "identity file must be owner-only");
+    }
+
+    #[test]
+    fn temp_file_is_owner_only_from_creation() {
+        // The mode must ride the open(2) call — chmod-after-write would leave a
+        // window where another local user can read the private keys.
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("identity.tmp");
+        write_owner_only(&tmp, b"secret").unwrap();
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "temp file must be owner-only at creation");
+
+        // A stale, looser-permissioned leftover tmp is replaced, not reused.
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_owner_only(&tmp, b"secret-2").unwrap();
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "stale tmp perms must not survive");
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"secret-2");
     }
 
     #[test]

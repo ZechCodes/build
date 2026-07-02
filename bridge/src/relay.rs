@@ -231,8 +231,15 @@ pub async fn run_with_connector(
                 }
             }
             "e2ee_envelope" => {
-                if let Err(e) = handle_envelope(&out_tx, &sessions, &msg, &handler) {
+                if let Err(e) = handle_envelope(&out_tx, &mut sessions, &msg, &handler) {
                     tracing_protocol_error(&e);
+                }
+            }
+            // The relay says the browser behind this session is gone: forget the
+            // session key and let the app stop pushing into it.
+            "session_closed" => {
+                if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
+                    end_session(&mut sessions, session_id, &handler);
                 }
             }
             // "response"/"error"/unknown: nothing for the device to do here.
@@ -288,13 +295,14 @@ fn handle_session_init(
 /// application along with a [`SessionSender`], and send the response back.
 fn handle_envelope(
     out_tx: &mpsc::UnboundedSender<Message>,
-    sessions: &HashMap<String, String>,
+    sessions: &mut HashMap<String, String>,
     msg: &Value,
     handler: &FrameHandler,
 ) -> Result<(), RelayError> {
     let session_id = field_str(msg, "session_id")?;
     let session_key = sessions
         .get(&session_id)
+        .cloned()
         .ok_or_else(|| RelayError::Protocol(format!("no session key for {session_id}")))?;
     let envelope: Envelope = serde_json::from_value(
         msg.get("envelope")
@@ -303,15 +311,16 @@ fn handle_envelope(
     )
     .map_err(|e| RelayError::Protocol(format!("bad envelope: {e}")))?;
 
-    let frame = transport::decrypt_envelope(session_key, &envelope)?;
-    // `close` frames end the conversation; nothing to answer.
+    let frame = transport::decrypt_envelope(&session_key, &envelope)?;
+    // `close` frames end the conversation: forget the key and tell the app.
     if frame.frame_type == "close" {
+        end_session(sessions, &session_id, handler);
         return Ok(());
     }
 
     let sender = SessionSender {
         session_id: session_id.clone(),
-        session_key: session_key.clone(),
+        session_key,
         out: out_tx.clone(),
     };
     // The response rides the same push channel; the app may also have pushed
@@ -319,6 +328,25 @@ fn handle_envelope(
     let response_payload = handler(sender.clone(), frame);
     sender.push(response_payload);
     Ok(())
+}
+
+/// Drop a finished session: forget its key — old session keys must not stay
+/// decryptable for the connection's lifetime — and hand the app a synthetic
+/// `close` frame so it releases the session's attachments (e.g. terminal
+/// senders) instead of encrypting into a session nobody will read again.
+fn end_session(sessions: &mut HashMap<String, String>, session_id: &str, handler: &FrameHandler) {
+    if sessions.remove(session_id).is_none() {
+        return; // unknown/already-closed session: nothing to release
+    }
+    let closed = Frame {
+        session_id: session_id.to_string(),
+        message_id: String::new(),
+        frame_type: "close".into(),
+        sender: "relay".into(),
+        created_at: String::new(),
+        payload: Value::Null,
+    };
+    let _ = handler(SessionSender::detached(session_id), closed);
 }
 
 fn spawn_heartbeat(

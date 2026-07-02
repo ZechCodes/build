@@ -32,6 +32,15 @@ pub enum TaskStoreError {
         #[source]
         source: serde_json::Error,
     },
+    /// A task file exists but is empty — the signature of a power loss between
+    /// a rename becoming durable and the data blocks reaching disk. Named and
+    /// actionable (the record held no recoverable data) rather than a bare
+    /// JSON-parse error.
+    #[error(
+        "empty task file {path}: an interrupted write left no data — delete it to boot \
+         (its worktree, if any, is untouched on disk)"
+    )]
+    Empty { path: PathBuf },
 }
 
 /// The durable core of one task, exactly what boot recovery needs to re-attach
@@ -72,15 +81,28 @@ impl TaskStore {
         self.dir.join(format!("{task_id}.json"))
     }
 
-    /// Persist one task record atomically: write to a `.tmp` sibling, then
-    /// rename over the final path, so readers never observe a torn file.
+    /// Persist one task record atomically **and durably**: write to a `.tmp`
+    /// sibling, fsync it, rename over the final path, then fsync the directory.
+    /// The fsyncs matter: rename-without-fsync is atomic against a process crash
+    /// but not against power loss — the rename can become durable before the data
+    /// blocks, leaving a zero-length record that blocks the next boot.
     pub fn save(&self, record: &PersistedTask) -> Result<(), TaskStoreError> {
+        use std::io::Write;
+
         std::fs::create_dir_all(&self.dir)?;
         let final_path = self.path_for(&record.id);
         let tmp_path = self.dir.join(format!("{}.json.tmp", record.id));
         let json = serde_json::to_string_pretty(record).expect("a task record always serializes");
-        std::fs::write(&tmp_path, json)?;
+        let mut tmp_file = std::fs::File::create(&tmp_path)?;
+        tmp_file.write_all(json.as_bytes())?;
+        tmp_file.sync_all()?;
+        drop(tmp_file);
         std::fs::rename(&tmp_path, &final_path)?;
+        // Make the rename itself durable (best-effort where the platform allows
+        // opening a directory read-only).
+        if let Ok(dir_handle) = std::fs::File::open(&self.dir) {
+            let _ = dir_handle.sync_all();
+        }
         Ok(())
     }
 
@@ -98,6 +120,9 @@ impl TaskStore {
                 continue;
             }
             let text = std::fs::read_to_string(&path)?;
+            if text.trim().is_empty() {
+                return Err(TaskStoreError::Empty { path });
+            }
             let record: PersistedTask =
                 serde_json::from_str(&text).map_err(|source| TaskStoreError::Corrupt {
                     path: path.clone(),
@@ -220,6 +245,24 @@ mod tests {
             "error names the corrupt file: {message}"
         );
         assert!(matches!(err, TaskStoreError::Corrupt { .. }));
+    }
+
+    #[test]
+    fn empty_task_file_is_a_named_actionable_error() {
+        // A power loss can make the rename durable before the data blocks: the
+        // record exists but is zero-length. The error must say exactly which file
+        // and that deleting it is safe — not a bare JSON parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let tasks = dir.path().join("tasks");
+        let store = TaskStore::new(&tasks);
+        store.save(&record("task-1", TaskState::Review)).unwrap();
+        std::fs::write(tasks.join("task-2.json"), "").unwrap();
+
+        let err = store.load_all().expect_err("empty file must fail loudly");
+        assert!(matches!(err, TaskStoreError::Empty { .. }));
+        let message = err.to_string();
+        assert!(message.contains("task-2.json"), "names the file: {message}");
+        assert!(message.contains("delete"), "actionable: {message}");
     }
 
     #[test]

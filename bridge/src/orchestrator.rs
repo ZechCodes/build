@@ -83,6 +83,23 @@ impl ActiveTask {
         }
         Ok(())
     }
+
+    /// Whether the phase's harness process has exited (crashed or finished without
+    /// a `done`). `false` when no session is live (nothing to watch).
+    pub fn harness_exited(&self) -> bool {
+        self.session.as_ref().is_some_and(PtySession::has_exited)
+    }
+
+    /// How long the phase's PTY has been silent, if a session is live — the
+    /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
+    pub fn harness_idle_for(&self) -> Option<std::time::Duration> {
+        self.session.as_ref().map(PtySession::idle_for)
+    }
+
+    /// The harness's OS process id, if a session is live and running.
+    pub fn harness_pid(&self) -> Option<u32> {
+        self.session.as_ref().and_then(PtySession::pid)
+    }
 }
 
 /// How the orchestrator launches an agent for a phase.
@@ -276,7 +293,7 @@ impl Orchestrator {
         // The agent's work may be uncommitted; commit it on the task branch so the
         // merge carries it. Empty trees are skipped.
         self.commit_all(&active.worktree.path, &active.task.goal)?;
-        self.merge_into_base(&active.worktree.branch)?;
+        self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)?;
         self.worktrees
             .remove(&active.worktree, /* keep_branch */ false)?;
         Ok(())
@@ -362,7 +379,9 @@ impl Orchestrator {
 
     fn end_session(&self, active: &mut ActiveTask) {
         if let Some(session) = active.session.take() {
-            let _ = session.kill();
+            // Kill AND reap: kill alone leaves a zombie per phase transition,
+            // which over a long-lived daemon exhausts the process table.
+            session.kill_and_reap();
         }
     }
 
@@ -405,7 +424,22 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn merge_into_base(&self, branch: &str) -> Result<(), OrchestratorError> {
+    /// Merge the task branch into `base_branch` via the primary checkout. The
+    /// primary repo is the user's live checkout, so first verify it actually has
+    /// the base branch checked out — merging into whatever happens to be at HEAD
+    /// would land the task on the wrong branch (and a later push of the base
+    /// branch would silently publish nothing).
+    fn merge_into_base(&self, branch: &str, base_branch: &str) -> Result<(), OrchestratorError> {
+        let head = self
+            .git(&self.repo_path, &["symbolic-ref", "--short", "HEAD"])?
+            .trim()
+            .to_string();
+        if head != base_branch {
+            return Err(OrchestratorError::Git(format!(
+                "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
+                 check out {base_branch:?} (or commit/stash your work) and approve again"
+            )));
+        }
         self.git(&self.repo_path, &["merge", "--no-edit", branch])?;
         Ok(())
     }
@@ -779,6 +813,117 @@ mod tests {
             "a fresh plan session is warm"
         );
         assert_eq!(revived.last_summary.as_deref(), Some("earlier summary"));
+    }
+
+    #[tokio::test]
+    async fn approve_merge_refuses_when_primary_checkout_is_not_on_base() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(TaskId::new("m1"), "do work", TaskKind::Quick, "main")
+            .unwrap();
+        std::fs::write(t.worktree.path.join("f.txt"), "hi\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+
+        // The user wandered off base in their live checkout.
+        assert!(Command::new("git")
+            .args(["checkout", "-b", "user-feature"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        let error = orch.approve_merge(&mut t).expect_err("must refuse");
+        let message = error.to_string();
+        assert!(
+            message.contains("user-feature") && message.contains("main"),
+            "error names both branches: {message}"
+        );
+        assert!(
+            !repo.join("f.txt").exists(),
+            "nothing was merged into the wrong branch"
+        );
+
+        // Back on base, the merge goes through (the state machine already moved to
+        // Merged on the first attempt, so drive the git tail directly).
+        assert!(Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        orch.commit(&t).unwrap();
+        orch.merge_into_base(&t.worktree.branch, &t.worktree.base_branch)
+            .unwrap();
+        assert!(repo.join("f.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn ending_a_session_reaps_the_harness_instead_of_leaving_a_zombie() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(TaskId::new("z1"), "plan work", TaskKind::Standard, "main")
+            .unwrap();
+        let pid = t.harness_pid().expect("warm harness is running");
+        orch.on_done(
+            &mut t,
+            done(
+                DonePhase::Plan,
+                DoneStatus::Completed,
+                Some(".build/plan.md"),
+            ),
+        )
+        .unwrap();
+
+        // approve_plan ends the plan session; the old harness must be fully reaped
+        // (no zombie), not just killed.
+        orch.approve_plan(&mut t).unwrap();
+        let stat = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&stat.stdout).trim().to_string();
+        assert!(
+            !stat.starts_with('Z'),
+            "old harness pid {pid} is a zombie (stat {stat:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_exit_and_idle_are_observable_for_the_quiescence_monitor() {
+        let (dir, repo) = init_repo();
+        // A harness that exits immediately — the crash/exit-without-done case.
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("exit 0")),
+            Templates::default(),
+        );
+        let mut t = orch
+            .dispatch(TaskId::new("i1"), "do work", TaskKind::Quick, "main")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+
+        // The child exits promptly; poll until has_exited observes it.
+        let mut exited = false;
+        for _ in 0..50 {
+            if t.harness_exited() {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(exited, "a dead harness must be observable");
+        assert!(t.harness_idle_for().is_some());
+
+        // The monitor's transition: WentIdle demotes to idle_unreported.
+        orch.on_idle(&mut t).unwrap();
+        assert_eq!(
+            t.task.state,
+            TaskState::IdleUnreported(crate::task::Phase::Build)
+        );
     }
 
     #[tokio::test]

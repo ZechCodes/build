@@ -211,6 +211,27 @@ impl PtySession {
         Ok(())
     }
 
+    /// Whether the harness process has exited (crash, completion, kill). Reaps the
+    /// child if it has — `try_wait` collects the exit status — so polling this
+    /// never leaves a zombie behind.
+    pub fn has_exited(&self) -> bool {
+        matches!(self.child.lock().unwrap().try_wait(), Ok(Some(_)))
+    }
+
+    /// The harness's OS process id, if it is still running.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().unwrap().process_id()
+    }
+
+    /// Kill the harness and reap it. `kill` alone leaves a zombie: portable-pty's
+    /// unix child does not reap on drop, so every phase transition on a long-lived
+    /// daemon would otherwise leak one process-table entry.
+    pub fn kill_and_reap(&self) {
+        let mut child = self.child.lock().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     /// Block until the harness exits, returning whether it exited successfully.
     pub fn wait(&self) -> Result<bool, PtyError> {
         Ok(self.child.lock().unwrap().wait()?.success())

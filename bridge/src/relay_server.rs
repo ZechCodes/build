@@ -11,6 +11,8 @@
 //! (client, device)` map so envelopes route by session like the production relay.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -22,14 +24,90 @@ use crate::transport;
 pub const AUTH_PATH: &str = "/ws/device";
 /// Allowed clock skew between the device's timestamp and the relay.
 pub const AUTH_SKEW: Duration = Duration::from_secs(60);
-
-/// A connected peer's outbound channel. Text payloads only; the bin wraps them in
-/// WebSocket frames. Decoupled from tungstenite so this module stays testable.
-pub type Outbound = mpsc::UnboundedSender<String>;
+/// How long the [`ReplayGuard`] must remember a seen challenge. A device's clock
+/// may run up to `AUTH_SKEW` ahead, and its signature then stays valid for
+/// another `AUTH_SKEW` — so the guard's memory must span **both** windows, or a
+/// captured challenge becomes replayable the moment the guard forgets it.
+pub const REPLAY_TTL: Duration = Duration::from_secs(2 * AUTH_SKEW.as_secs());
 
 /// Hard cap on a single WebSocket message/frame the relay will buffer. Envelopes are
 /// base64 ciphertext of terminal chunks and diffs; anything past this is abusive.
 pub const MAX_WS_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Hard cap on the bytes queued to one peer's writer. A browser that stops reading
+/// (backgrounded tab, stalled TCP) while its device streams terminal output would
+/// otherwise grow an unbounded queue until the relay OOMs. Past the cap, sends to
+/// that peer fail — the snapshot+cursor resume design recovers the lost frames.
+pub const MAX_OUTBOUND_QUEUE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Why an [`Outbound::send`] was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundSendError {
+    /// The peer's writer is gone (connection closed).
+    Closed,
+    /// The peer's queue is over [`MAX_OUTBOUND_QUEUE_BYTES`]: it reads too slowly.
+    Overflow,
+}
+
+/// A connected peer's outbound channel: text payloads only (the bin wraps them in
+/// WebSocket frames), with a byte-bounded queue so one slow reader can never grow
+/// relay memory without limit. Decoupled from tungstenite so this stays testable.
+#[derive(Clone)]
+pub struct Outbound {
+    tx: mpsc::UnboundedSender<String>,
+    queued_bytes: Arc<AtomicUsize>,
+}
+
+impl Outbound {
+    /// Queue `text` to the peer's writer. Fails when the writer is gone or the
+    /// peer has [`MAX_OUTBOUND_QUEUE_BYTES`] already queued (a laggard).
+    pub fn send(&self, text: String) -> Result<(), OutboundSendError> {
+        if self.queued_bytes.load(Ordering::Acquire) >= MAX_OUTBOUND_QUEUE_BYTES {
+            return Err(OutboundSendError::Overflow);
+        }
+        self.queued_bytes.fetch_add(text.len(), Ordering::AcqRel);
+        self.tx.send(text).map_err(|refused| {
+            self.queued_bytes
+                .fetch_sub(refused.0.len(), Ordering::AcqRel);
+            OutboundSendError::Closed
+        })
+    }
+}
+
+/// The writer half of an [`Outbound`] channel; dequeuing releases queue budget.
+pub struct OutboundReceiver {
+    rx: mpsc::UnboundedReceiver<String>,
+    queued_bytes: Arc<AtomicUsize>,
+}
+
+impl OutboundReceiver {
+    pub async fn recv(&mut self) -> Option<String> {
+        let text = self.rx.recv().await;
+        if let Some(text) = &text {
+            self.queued_bytes.fetch_sub(text.len(), Ordering::AcqRel);
+        }
+        text
+    }
+
+    pub fn try_recv(&mut self) -> Result<String, mpsc::error::TryRecvError> {
+        let text = self.rx.try_recv()?;
+        self.queued_bytes.fetch_sub(text.len(), Ordering::AcqRel);
+        Ok(text)
+    }
+}
+
+/// A fresh byte-bounded outbound channel for one peer connection.
+pub fn outbound_channel() -> (Outbound, OutboundReceiver) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let queued_bytes = Arc::new(AtomicUsize::new(0));
+    (
+        Outbound {
+            tx,
+            queued_bytes: Arc::clone(&queued_bytes),
+        },
+        OutboundReceiver { rx, queued_bytes },
+    )
+}
 
 /// The relay bin's configuration, resolved from the environment.
 ///
@@ -314,17 +392,19 @@ impl RelayState {
 
     /// Remove a device and drop any sessions routed to it — but only if the entry
     /// still belongs to `conn_id`, so a stale socket's late cleanup is a no-op after
-    /// the device reconnected. Returns the outbounds of the owner's connected clients
-    /// so the bin can push a `device_offline` notice — the browser's cue to degrade
-    /// gracefully instead of hanging on a dead session.
-    pub fn remove_device(&mut self, device_id: &str, conn_id: u64) -> Vec<Outbound> {
+    /// the device reconnected. `None` means exactly that stale no-op: the caller must
+    /// not report the device offline (it is live on a newer connection). `Some`
+    /// carries the outbounds of the owner's connected clients so the bin can push a
+    /// `device_offline` notice — the browser's cue to degrade gracefully instead of
+    /// hanging on a dead session.
+    pub fn remove_device(&mut self, device_id: &str, conn_id: u64) -> Option<Vec<Outbound>> {
         match self.devices.get(device_id) {
             Some(device) if device.conn_id == conn_id => {}
-            _ => return Vec::new(),
+            _ => return None,
         }
         let device = self.devices.remove(device_id).expect("checked above");
         self.sessions.retain(|_, s| s.device_id != device_id);
-        self.client_outbounds_for_user(&device.owner_user_id)
+        Some(self.client_outbounds_for_user(&device.owner_user_id))
     }
 
     /// The transport keys to advertise to a freshly-connected client: every device the
@@ -353,17 +433,34 @@ impl RelayState {
         client_id
     }
 
-    /// Remove a client and drop its sessions.
-    pub fn remove_client(&mut self, client_id: u64) {
+    /// Remove a client and drop its sessions. Returns `(session_id, device outbound)`
+    /// for every severed session whose device is still connected, so the bin can send
+    /// the device a `session_closed` notice — otherwise the device keeps encrypting
+    /// terminal output into sessions nobody will ever read again.
+    pub fn remove_client(&mut self, client_id: u64) -> Vec<(String, Outbound)> {
         self.clients.remove(&client_id);
+        let severed: Vec<(String, Outbound)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.client_id == client_id)
+            .filter_map(|(session_id, s)| {
+                self.devices
+                    .get(&s.device_id)
+                    .map(|d| (session_id.clone(), d.out.clone()))
+            })
+            .collect();
         self.sessions.retain(|_, s| s.client_id != client_id);
+        severed
     }
 
     // ----- routing -----------------------------------------------------------
 
     /// Open a session from a client to a device, enforcing ownership. Returns the
     /// device's outbound to forward the `session_init` to, or `None` if the device is
-    /// unknown or owned by a different user (the cross-account guard).
+    /// unknown or owned by a different user (the cross-account guard), or the
+    /// `session_id` is already registered to a *different* live client — a colliding
+    /// or hostile client must not be able to sever someone else's session by
+    /// re-registering its id.
     pub fn open_session(
         &mut self,
         session_id: &str,
@@ -371,6 +468,11 @@ impl RelayState {
         device_id: &str,
     ) -> Option<Outbound> {
         let user_id = self.clients.get(&client_id)?.user_id.clone();
+        if let Some(existing) = self.sessions.get(session_id) {
+            if existing.client_id != client_id {
+                return None;
+            }
+        }
         let device = self.devices.get(device_id)?;
         if device.owner_user_id != user_id {
             return None;
@@ -585,8 +687,49 @@ mod tests {
         assert!(guard.check_and_record("d1", "1000", "sigB", now));
     }
 
-    fn chan() -> (Outbound, mpsc::UnboundedReceiver<String>) {
-        mpsc::unbounded_channel()
+    fn chan() -> (Outbound, OutboundReceiver) {
+        outbound_channel()
+    }
+
+    #[test]
+    fn replay_guard_ttl_covers_the_full_signature_validity_window() {
+        // A device clock up to AUTH_SKEW ahead signs a timestamp that stays valid
+        // for AUTH_SKEW after the guard's connect-time record — the guard must not
+        // forget the tuple while the signature can still authenticate.
+        assert!(
+            REPLAY_TTL >= AUTH_SKEW * 2,
+            "TTL must span both skew windows"
+        );
+        let mut guard = ReplayGuard::new(REPLAY_TTL);
+        let now = Instant::now();
+        assert!(guard.check_and_record("d1", "1000", "sigA", now));
+        let just_past_skew = now + AUTH_SKEW + Duration::from_secs(1);
+        assert!(
+            !guard.check_and_record("d1", "1000", "sigA", just_past_skew),
+            "still rejected while the signature could remain valid"
+        );
+        let past_validity = now + REPLAY_TTL + Duration::from_secs(1);
+        assert!(guard.check_and_record("d1", "1000", "sigA", past_validity));
+    }
+
+    #[test]
+    fn outbound_queue_bounds_bytes_and_recovers_as_the_reader_drains() {
+        let (out, mut rx) = outbound_channel();
+        let chunk = "x".repeat(MAX_OUTBOUND_QUEUE_BYTES / 2);
+        out.send(chunk.clone()).unwrap();
+        out.send(chunk.clone()).unwrap();
+        // The queue is at the cap: a laggard's next frame is refused, not buffered.
+        assert_eq!(out.send("y".into()), Err(OutboundSendError::Overflow));
+        // Draining releases budget and sends flow again.
+        assert!(rx.try_recv().is_ok());
+        out.send("y".into()).unwrap();
+    }
+
+    #[test]
+    fn outbound_send_fails_closed_when_the_writer_is_gone() {
+        let (out, rx) = outbound_channel();
+        drop(rx);
+        assert_eq!(out.send("y".into()), Err(OutboundSendError::Closed));
     }
 
     #[test]
@@ -688,7 +831,7 @@ mod tests {
         state.add_client("u1", c1_out);
         state.add_client("u2", c2_out);
 
-        let notify = state.remove_device("dev", conn);
+        let notify = state.remove_device("dev", conn).expect("really removed");
         assert_eq!(notify.len(), 1, "only the owner's client is notified");
         notify[0].send("device_offline".into()).unwrap();
         assert_eq!(c1_rx.try_recv().unwrap(), "device_offline");
@@ -696,11 +839,11 @@ mod tests {
     }
 
     #[test]
-    fn removing_an_unknown_device_notifies_nobody() {
+    fn removing_an_unknown_device_is_a_stale_no_op() {
         let mut state = RelayState::new();
         let (c_out, _c_rx) = chan();
         state.add_client("u1", c_out);
-        assert!(state.remove_device("ghost", 0).is_empty());
+        assert!(state.remove_device("ghost", 0).is_none());
     }
 
     #[test]
@@ -715,8 +858,9 @@ mod tests {
         let (c_out, _c_rx) = chan();
         let client = state.add_client("u1", c_out);
 
-        // Old connection's cleanup fires late: must be a no-op.
-        assert!(state.remove_device("dev", old_conn).is_empty());
+        // Old connection's cleanup fires late: must be a no-op the caller can tell
+        // apart from a real removal — the device must NOT be reported offline.
+        assert!(state.remove_device("dev", old_conn).is_none());
         assert!(
             state.open_session("s1", client, "dev").is_some(),
             "the reconnected device is still registered and routable"
@@ -729,8 +873,63 @@ mod tests {
         assert_eq!(new_rx.try_recv().unwrap(), "hi");
 
         // The new connection's own cleanup still works.
-        assert_eq!(state.remove_device("dev", new_conn).len(), 1);
+        assert_eq!(
+            state.remove_device("dev", new_conn).expect("removed").len(),
+            1
+        );
         assert!(state.open_session("s2", client, "dev").is_none());
+    }
+
+    #[test]
+    fn a_client_cannot_hijack_another_clients_session_id() {
+        let mut state = RelayState::new();
+        let (d_out, mut d_rx) = chan();
+        state.add_device("dev", "u1", d_out);
+        let (c1_out, _c1_rx) = chan();
+        let (c2_out, _c2_rx) = chan();
+        let victim = state.add_client("u1", c1_out);
+        let hijacker = state.add_client("u1", c2_out);
+        state.open_session("s1", victim, "dev").unwrap();
+
+        assert!(
+            state.open_session("s1", hijacker, "dev").is_none(),
+            "an existing session id belonging to another client is rejected"
+        );
+        // The victim's session still routes both ways.
+        state
+            .device_out_for_client_frame("s1", victim)
+            .unwrap()
+            .send("still-mine".into())
+            .unwrap();
+        assert_eq!(d_rx.try_recv().unwrap(), "still-mine");
+        // The same client MAY re-init its own session id (a re-handshake).
+        assert!(state.open_session("s1", victim, "dev").is_some());
+    }
+
+    #[test]
+    fn client_disconnect_reports_severed_sessions_for_device_teardown() {
+        let mut state = RelayState::new();
+        let (d_out, mut d_rx) = chan();
+        state.add_device("dev", "u1", d_out);
+        let (c_out, _c_rx) = chan();
+        let client = state.add_client("u1", c_out);
+        state.open_session("s1", client, "dev").unwrap();
+        state.open_session("s2", client, "dev").unwrap();
+
+        let mut severed = state.remove_client(client);
+        severed.sort_by(|a, b| a.0.cmp(&b.0));
+        let ids: Vec<&str> = severed.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["s1", "s2"], "each severed session is reported");
+        severed[0].1.send("session_closed:s1".into()).unwrap();
+        assert_eq!(d_rx.try_recv().unwrap(), "session_closed:s1");
+    }
+
+    #[test]
+    fn client_disconnect_with_no_sessions_reports_nothing() {
+        let mut state = RelayState::new();
+        let (c_out, _c_rx) = chan();
+        let client = state.add_client("u1", c_out);
+        assert!(state.remove_client(client).is_empty());
     }
 
     #[test]

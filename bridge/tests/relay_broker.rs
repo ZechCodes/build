@@ -386,6 +386,39 @@ async fn one_client_sessions_to_multiple_devices_and_ownership_is_enforced() {
 }
 
 #[tokio::test]
+async fn client_disconnect_sends_session_closed_to_the_device() {
+    let api = mock_api().await;
+    let device = identity::generate("laptop");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start(&api.uri());
+
+    let mut client = authed_client(&relay).await;
+    let mut device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    client
+        .send(Message::Text(
+            json!({
+                "type": "session_init",
+                "session_id": "s-gone",
+                "route_to": format!("device:{}", device.device_id),
+                "session_init": {"device_id": device.device_id},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut device_ws).await["session_id"], "s-gone");
+
+    // The browser goes away: the device must be told the session is dead, so it
+    // stops encrypting output into it and drops the session key.
+    client.close(None).await.unwrap();
+    let notice = recv_json(&mut device_ws).await;
+    assert_eq!(notice["type"], "session_closed");
+    assert_eq!(notice["session_id"], "s-gone");
+}
+
+#[tokio::test]
 async fn sigterm_closes_websockets_cleanly_and_exits_zero() {
     let api = mock_api().await;
     let mut relay = RelayProcess::start(&api.uri());

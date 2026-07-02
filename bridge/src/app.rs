@@ -632,6 +632,75 @@ impl AppState {
         Ok(json!({ "ok": true }))
     }
 
+    /// A session ended: detach it from the terminal so the pump stops encrypting
+    /// (and serializing) output frames into a session the relay will just drop.
+    fn drop_session(&mut self, session_id: &str) {
+        if let Some(term) = self.term.as_mut() {
+            term.attached.retain(|snd| snd.session_id() != session_id);
+        }
+    }
+
+    /// Demote every working task whose harness has crashed/exited or gone quiet
+    /// without a `done` to `idle_unreported`, persisting the transition. Returns
+    /// the demoted task ids. The scope's quiescence rule: silence is an anomaly
+    /// signal, never a completion — without this a crashed agent would leave its
+    /// task stuck in planning/building for the daemon's whole life.
+    fn mark_idle_tasks(&mut self, quiet_threshold: Duration) -> Vec<String> {
+        let idle_ids: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, active)| {
+                matches!(active.task.state, TaskState::Planning | TaskState::Building)
+            })
+            .filter(|(_, active)| {
+                active.harness_exited()
+                    || active
+                        .harness_idle_for()
+                        .is_some_and(|idle| idle >= quiet_threshold)
+            })
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+
+        for task_id in &idle_ids {
+            let Some(mut active) = self.tasks.remove(task_id) else {
+                continue;
+            };
+            let outcome = match self.project_of(task_id) {
+                Ok(project_id) => match self.orch_for(&project_id) {
+                    Ok(orch) => orch.on_idle(&mut active).map_err(err),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            };
+            if let Err(e) = outcome {
+                eprintln!("idle monitor {task_id}: {e}");
+            }
+            let (_, persisted) = self.finish_mutation(task_id.clone(), active);
+            if let Err(e) = persisted {
+                eprintln!("idle monitor {task_id}: {e}");
+            }
+        }
+        idle_ids
+    }
+
+    /// Watch every working task's harness and demote crashed/quiet ones to
+    /// `idle_unreported` — the daemon-side driver for [`Self::mark_idle_tasks`].
+    pub fn spawn_idle_monitor(
+        state: Arc<Mutex<AppState>>,
+        quiet_threshold: Duration,
+        poll_interval: Duration,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(poll_interval).await;
+                let demoted = state.lock().unwrap().mark_idle_tasks(quiet_threshold);
+                for task_id in demoted {
+                    eprintln!("idle monitor: {task_id} went idle without a done report");
+                }
+            }
+        });
+    }
+
     /// Return a bounded batch of events with `seq > since` for resume. The batch
     /// is capped (`limit`, default 64) so a client far behind catches up in
     /// bounded chunks rather than one giant replay — proper reconnect load.
@@ -1392,6 +1461,13 @@ fn err(e: OrchestratorError) -> String {
 /// the `SessionSender` (to push live output to this client); everything else runs
 /// under a short-held lock.
 fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Frame) -> Value {
+    // A session ended (client `close` frame, or the relay's session_closed on
+    // browser disconnect): release its attachments so the bridge stops encrypting
+    // terminal output into a session nobody will ever read.
+    if frame.frame_type == "close" {
+        state.lock().unwrap().drop_session(sender.session_id());
+        return json!({ "ok": true });
+    }
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
     let method = frame
         .payload
@@ -2513,5 +2589,100 @@ mod tests {
             "reattach snapshot should reflect prior output; got: {snap:?}"
         );
         assert!(b["result"]["cursor"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn idle_monitor_demotes_a_quiet_harness_to_idle_unreported() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // A warm harness that never speaks and never calls `done` — the crashed/
+        // silent agent case. Dispatched through a side orchestrator so the task
+        // sits in `Building` with a live but mute session.
+        let orch = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("wt-side"),
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 30")),
+            Templates::default(),
+        );
+        let active = orch
+            .dispatch(
+                crate::task::TaskId::new("task-9"),
+                "quiet work",
+                TaskKind::Quick,
+                "main",
+            )
+            .unwrap();
+        assert_eq!(active.task.state, TaskState::Building);
+        let project_id = state.projects[0].id.clone();
+        state.task_project.insert("task-9".into(), project_id);
+        state.tasks.insert("task-9".into(), active);
+
+        // Under a generous threshold nothing is idle yet.
+        assert!(state.mark_idle_tasks(Duration::from_secs(3600)).is_empty());
+
+        // The PTY has been silent since the prompt echo; a tiny threshold demotes.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let demoted = state.mark_idle_tasks(Duration::from_millis(50));
+        assert_eq!(demoted, vec!["task-9".to_string()]);
+        assert_eq!(
+            state.tasks.get("task-9").unwrap().task.state,
+            TaskState::IdleUnreported(crate::task::Phase::Build)
+        );
+
+        // A second sweep is a no-op: the task is no longer in a working state.
+        assert!(state.mark_idle_tasks(Duration::from_millis(50)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_close_frame_detaches_the_sessions_terminal_sender() {
+        let (dir, repo) = init_repo();
+        let state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .shared();
+        {
+            let mut s = state.lock().unwrap();
+            let (term, _rx) = TermSession::spawn(80, 24).unwrap();
+            s.term = Some(term);
+            let term = s.term.as_mut().unwrap();
+            term.attached.push(SessionSender::detached("s-live"));
+            term.attached.push(SessionSender::detached("s-dead"));
+        }
+
+        let close = Frame {
+            session_id: "s-dead".into(),
+            message_id: String::new(),
+            frame_type: "close".into(),
+            sender: "relay".into(),
+            created_at: String::new(),
+            payload: Value::Null,
+        };
+        let response = dispatch_frame(&state, SessionSender::detached("s-dead"), close);
+        assert_eq!(response["ok"], true);
+
+        let s = state.lock().unwrap();
+        let attached: Vec<&str> = s
+            .term
+            .as_ref()
+            .unwrap()
+            .attached
+            .iter()
+            .map(SessionSender::session_id)
+            .collect();
+        assert_eq!(
+            attached,
+            vec!["s-live"],
+            "only the closed session's sender is dropped"
+        );
     }
 }

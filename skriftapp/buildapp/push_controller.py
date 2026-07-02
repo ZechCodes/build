@@ -41,11 +41,19 @@ from skrift.push import save_subscription
 
 from buildapp import pairing_crypto, web_push
 from buildapp.models import Device
+from buildapp.request_body import require_json_object
 from buildapp.session_auth import require_user
 
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+# The freshness window alone leaves a captured signed notify replayable for its
+# whole span (notification-spam). Remember recently seen (device, timestamp,
+# signature) tuples and refuse duplicates — same scheme as the relay's device
+# auth. In-process: the api runs single-replica (Recreate strategy).
+_notify_replay_guard = web_push.NotifyReplayGuard()
 
 
 def _vapid_public_key() -> str:
@@ -105,7 +113,7 @@ class PushController(Controller):
     async def unsubscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Remove this browser's subscription — only if the current user owns it."""
         user_id = require_user(request)
-        body = await request.json()
+        body = require_json_object(await request.json())
         endpoint = str(body.get("endpoint", ""))
         if not endpoint:
             raise ClientException("endpoint required")
@@ -147,6 +155,10 @@ class PushController(Controller):
             raise NotAuthorizedException("notify signature invalid")
         if not web_push.notify_timestamp_fresh(timestamp, _now()):
             raise NotAuthorizedException("notify timestamp out of window")
+        if not _notify_replay_guard.check_and_record(
+            str(device_id), timestamp, signature, _now()
+        ):
+            raise NotAuthorizedException("notify replayed")
 
         subscriptions = (
             (

@@ -18,7 +18,12 @@ RUN apt-get update \
 WORKDIR /build
 # The audited E2EE binding, placed as the repo's sibling so the SPA's
 # file:../../build-secure-transport/js dependency resolves unchanged.
-RUN git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git /build/build-secure-transport \
+# PINNED to the audited commit — never HEAD: this JS performs all session
+# crypto in the production bundle, so a push to that repo must not flow into
+# getbuild.ing without a deliberate pin bump reviewed here.
+ARG BUILD_SECURE_TRANSPORT_COMMIT=4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793
+RUN git clone https://github.com/ZechCodes/build-secure-transport.git /build/build-secure-transport \
+ && git -C /build/build-secure-transport checkout --detach "$BUILD_SECURE_TRANSPORT_COMMIT" \
  && ( cd /build/build-secure-transport/js && npm install --no-audit --no-fund )
 COPY spa/ /build/repo/spa/
 # The relay origin is baked into the bundle at build time.
@@ -29,7 +34,9 @@ RUN cd /build/repo/spa \
 # → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
 
 # --- runtime: uv-managed Python 3.13 ---------------------------------------
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS app
+# uv version pinned so builds are reproducible and pyproject's [tool.uv]
+# settings (exclude-newer cooldown) parse the same way in CI as locally.
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim AS app
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 

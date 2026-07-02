@@ -5,8 +5,8 @@ The bundle is produced by ``cd spa && npm run build`` into ``buildapp/static/``:
 assets under ``static/assets/`` (js, css, self-hosted fonts). Zero CDN.
 """
 
+import asyncio
 from pathlib import Path
-from uuid import UUID
 
 from litestar import Controller, Request, get
 from litestar.exceptions import NotFoundException
@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from skrift.db.models.user import User
+
+from buildapp.session_auth import session_user_id
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -38,24 +40,29 @@ MEDIA_TYPES = {
 class BuildController(Controller):
     path = "/app"
 
-    @get("/", sync_to_thread=False)
+    @get("/")
     async def index(self, request: Request, db_session: AsyncSession) -> Response | Redirect:
-        # Skrift auth: a logged-in user has user_id in the encrypted session.
-        user_id = request.session.get("user_id")
-        if not user_id:
-            # Land back on the board after login, never the empty CMS root.
+        # Skrift auth via the shared session helper (a malformed session value
+        # means "not logged in", never a 500). Unlike the API routes' auth_guard
+        # (which answers 401), the SPA shell redirects to login — landing back on
+        # the board afterwards, never the empty CMS root.
+        user_id = session_user_id(request)
+        if user_id is None:
             return Redirect("/auth/login?next=/app/")
 
-        result = await db_session.execute(select(User).where(User.id == UUID(user_id)))
+        result = await db_session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         email = getattr(user, "email", None) or "user"
 
-        html = (STATIC_DIR / "index.html").read_text()
+        html = await asyncio.to_thread((STATIC_DIR / "index.html").read_text)
         html = html.replace("{{USER0}}", email[0:1].upper())
         return Response(html, media_type="text/html")
 
-    @get("/sw.js", sync_to_thread=False)
-    async def service_worker(self) -> Response:
+    # Sync handlers on purpose: Litestar runs them in its threadpool
+    # (sync_to_thread=True), keeping blocking file reads — including multi-MB
+    # wasm assets — off the event loop.
+    @get("/sw.js", sync_to_thread=True)
+    def service_worker(self) -> Response:
         """The push service worker, at the root of the /app/ scope so it can
         control the SPA pages. Never cached immutably — a stale worker would
         outlive deploys. The worker itself is cache-free (no fetch handler)."""
@@ -68,8 +75,8 @@ class BuildController(Controller):
             headers={"Cache-Control": "no-cache"},
         )
 
-    @get("/static/{asset_path:path}", sync_to_thread=False)
-    async def static_asset(self, asset_path: str) -> Response:
+    @get("/static/{asset_path:path}", sync_to_thread=True)
+    def static_asset(self, asset_path: str) -> Response:
         """Hashed bundle assets, same-origin so the strict CSP allows them."""
         resolved = (STATIC_DIR / asset_path.lstrip("/")).resolve()
         if not resolved.is_relative_to(STATIC_DIR.resolve()) or not resolved.is_file():

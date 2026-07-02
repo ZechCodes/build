@@ -44,3 +44,15 @@ def test_notify_route_is_device_signature_authenticated_not_session():
     ]
     assert len(notify_handlers) == 1
     assert auth_guard not in (notify_handlers[0].guards or [])
+
+
+def test_notify_route_checks_the_replay_guard():
+    """The freshness window alone leaves a captured signed notify replayable for
+    its whole span — notify must also consult the replay guard."""
+    import inspect
+
+    notify_handler = next(
+        h for h in _route_handlers() if "/api/push/notify" in _paths(h)
+    )
+    source = inspect.getsource(notify_handler.fn)
+    assert "_notify_replay_guard.check_and_record" in source

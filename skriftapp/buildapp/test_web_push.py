@@ -109,7 +109,7 @@ def _subscription(endpoint: str) -> dict:
 def test_send_to_subscriptions_counts_and_prunes_gone_endpoints():
     sent = []
 
-    def fake_send(subscription_info, data, vapid_private_key, vapid_claims):
+    def fake_send(subscription_info, data, vapid_private_key, vapid_claims, timeout):
         if subscription_info["endpoint"] == "https://push/gone":
             raise _FakePushError(410)
         sent.append((subscription_info["endpoint"], data))
@@ -128,7 +128,7 @@ def test_send_to_subscriptions_counts_and_prunes_gone_endpoints():
 
 
 def test_send_to_subscriptions_transient_error_is_not_pruned():
-    def fake_send(subscription_info, data, vapid_private_key, vapid_claims):
+    def fake_send(subscription_info, data, vapid_private_key, vapid_claims, timeout):
         raise _FakePushError(500)
 
     delivered, gone = web_push.send_to_subscriptions(
@@ -148,3 +148,80 @@ def test_subscription_gone_statuses():
     assert not web_push.subscription_gone(201)
     assert not web_push.subscription_gone(500)
     assert not web_push.subscription_gone(None)
+
+
+def test_send_passes_an_explicit_bounded_timeout():
+    # pywebpush's default timeout is 10000 handed to requests as SECONDS —
+    # a hanging push service would block the worker thread for hours.
+    seen_timeouts = []
+
+    def fake_send(subscription_info, data, vapid_private_key, vapid_claims, timeout):
+        seen_timeouts.append(timeout)
+
+    web_push.send_to_subscriptions(
+        [_subscription("https://push/a")],
+        payload="{}",
+        vapid_private_key="priv",
+        vapid_subject="mailto:ops@getbuild.ing",
+        send=fake_send,
+    )
+    assert seen_timeouts == [web_push.PUSH_SEND_TIMEOUT_SECONDS]
+    assert web_push.PUSH_SEND_TIMEOUT_SECONDS <= 30
+
+
+def test_transport_errors_do_not_abort_the_remaining_subscriptions():
+    # pywebpush does not wrap transport failures: a ConnectionError from one dead
+    # endpoint must not 500 the whole notify or skip the other browsers.
+    import requests
+
+    sent = []
+
+    def fake_send(subscription_info, data, vapid_private_key, vapid_claims, timeout):
+        if subscription_info["endpoint"] == "https://push/dead":
+            raise requests.exceptions.ConnectionError("no route to push service")
+        sent.append(subscription_info["endpoint"])
+
+    delivered, gone = web_push.send_to_subscriptions(
+        [_subscription("https://push/dead"), _subscription("https://push/b")],
+        payload="{}",
+        vapid_private_key="priv",
+        vapid_subject="mailto:ops@getbuild.ing",
+        send=fake_send,
+    )
+    assert delivered == 1
+    assert gone == [], "a transport failure is transient, never a prune"
+    assert sent == ["https://push/b"]
+
+
+# --- notify replay guard -----------------------------------------------------------
+
+
+def test_replay_guard_rejects_a_duplicate_notify_within_ttl():
+    guard = web_push.NotifyReplayGuard()
+    now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    assert guard.check_and_record("dev-1", 1750000000, "sigA", now)
+    assert not guard.check_and_record("dev-1", 1750000000, "sigA", now)
+    assert not guard.check_and_record(
+        "dev-1", 1750000000, "sigA", now + timedelta(minutes=4)
+    ), "still rejected while the signature could remain fresh"
+
+
+def test_replay_guard_ttl_covers_the_full_freshness_window():
+    # A notify stamped up to NOTIFY_FRESHNESS_WINDOW in the future stays fresh for
+    # another full window: the guard must remember at least twice the window.
+    guard = web_push.NotifyReplayGuard()
+    now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    assert guard.check_and_record("dev-1", 1750000000, "sigA", now)
+    within_validity = now + 2 * web_push.NOTIFY_FRESHNESS_WINDOW
+    assert not guard.check_and_record("dev-1", 1750000000, "sigA", within_validity)
+    past_validity = now + 2 * web_push.NOTIFY_FRESHNESS_WINDOW + timedelta(seconds=1)
+    assert guard.check_and_record("dev-1", 1750000000, "sigA", past_validity)
+
+
+def test_replay_guard_distinguishes_devices_timestamps_and_signatures():
+    guard = web_push.NotifyReplayGuard()
+    now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    assert guard.check_and_record("dev-1", 1750000000, "sigA", now)
+    assert guard.check_and_record("dev-2", 1750000000, "sigA", now)
+    assert guard.check_and_record("dev-1", 1750000001, "sigA", now)
+    assert guard.check_and_record("dev-1", 1750000000, "sigB", now)

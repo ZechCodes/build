@@ -32,6 +32,7 @@ from skrift.auth.guards import auth_guard
 from buildapp import pairing_crypto
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
+from buildapp.request_body import require_json_object
 from buildapp.session_auth import require_user
 
 # Pending registrations that are never approved get cleaned up after this long.
@@ -80,7 +81,7 @@ class DevicesController(Controller):
     async def register(self, request: Request, db_session: AsyncSession) -> Response:
         """A bridge self-registers as *pending*. Verifies the Ed25519 signature over the
         registration challenge (proof of key possession) before storing anything."""
-        body = await request.json()
+        body = require_json_object(await request.json())
         try:
             device_id = UUID(str(body["device_id"]))
             name = str(body["name"]).strip() or "device"
@@ -88,7 +89,7 @@ class DevicesController(Controller):
             tp_pub = str(body["transport_public_key_b64"])
             code_hash = str(body["pairing_code_hash"])
             signature = str(body["signature_b64"])
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             raise ClientException("malformed registration")
 
         challenge = pairing_crypto.registration_challenge(
@@ -149,7 +150,7 @@ class DevicesController(Controller):
         """Resolve a pairing code to a pending device so the human can compare its
         fingerprint before approving."""
         require_user(request)
-        body = await request.json()
+        body = require_json_object(await request.json())
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -169,7 +170,7 @@ class DevicesController(Controller):
     async def approve(self, request: Request, db_session: AsyncSession) -> Response:
         """Bind a pending device (located by its pairing code) to the current user."""
         user_id = require_user(request)
-        body = await request.json()
+        body = require_json_object(await request.json())
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -214,6 +215,12 @@ class DevicesController(Controller):
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""
         user_id = require_user(request)
+        # Opportunistically purge expired tokens (mirrors register's pending-device
+        # purge): every reconnect mints a 5-minute token, and nothing else ever
+        # deletes them — without this the table grows forever.
+        await db_session.execute(
+            delete(EphemeralToken).where(EphemeralToken.expires_at < _now())
+        )
         raw = "gw_" + secrets.token_urlsafe(24)
         db_session.add(
             EphemeralToken(
@@ -270,7 +277,7 @@ class DevicesController(Controller):
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
         """The relay reports a device online/offline so the SPA can show a status dot."""
-        body = await request.json()
+        body = require_json_object(await request.json())
         online = bool(body.get("online", False))
         device = await db_session.get(Device, device_id)
         if device is None:

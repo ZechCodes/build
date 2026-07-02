@@ -61,6 +61,12 @@ pub struct PersistedTask {
     pub worktree_path: String,
     pub plan_path: String,
     pub last_summary: Option<String>,
+    /// Model/effort the task's agents run on (None = harness default). Added
+    /// after the first release: defaulted so pre-existing task files load.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
@@ -154,6 +160,28 @@ mod tests {
     use super::*;
     use crate::task::{Phase, TaskKind, TaskState};
 
+    #[test]
+    fn task_files_from_before_model_choice_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        // A pre-model-choice file is exactly today's serialization minus the
+        // new keys — build it that way so the fixture never drifts from the
+        // real wire format.
+        let mut legacy = serde_json::to_value(record("task-1", TaskState::PlanReview)).unwrap();
+        let map = legacy.as_object_mut().unwrap();
+        map.remove("model");
+        map.remove("effort");
+        std::fs::write(
+            dir.path().join("task-1.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let store = TaskStore::new(dir.path());
+        let loaded = store.load_all().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].model, None);
+        assert_eq!(loaded[0].effort, None);
+    }
+
     fn record(id: &str, state: TaskState) -> PersistedTask {
         PersistedTask {
             id: id.into(),
@@ -167,6 +195,8 @@ mod tests {
             worktree_path: "/home/u/.build/worktrees/add-a-greeting".into(),
             plan_path: ".build/plan.md".into(),
             last_summary: Some("planned it".into()),
+            model: Some("claude-opus-4-8".into()),
+            effort: Some("xhigh".into()),
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
         }

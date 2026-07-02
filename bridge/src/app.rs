@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 use tokio::io::AsyncBufReadExt;
 
 use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::models::{self, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
 use crate::pty::{HarnessSpec, PtySession};
@@ -135,15 +136,18 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // Real agent: a one-shot `claude` headless run with the rendered prompt
         // baked in, the per-task `done` MCP server wired via .build/mcp.json, and
         // the daemon's control socket so its `done` reaches on_agent_done.
-        Agent::OneShot(Arc::new(move |prompt: &str| {
-            HarnessSpec::new("claude")
+        Agent::OneShot(Arc::new(move |prompt: &str, choice: &ModelChoice| {
+            let mut spec = HarnessSpec::new("claude")
                 .arg("-p")
                 .arg(prompt)
                 .arg("--mcp-config")
                 .arg(".build/mcp.json")
                 .arg("--strict-mcp-config")
-                .arg("--dangerously-skip-permissions")
-                .env("BRIDGE_MCP_SOCKET", &mcp_socket)
+                .arg("--dangerously-skip-permissions");
+            for arg in choice.harness_args() {
+                spec = spec.arg(arg);
+            }
+            spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
         }))
     }
 }
@@ -311,8 +315,16 @@ impl AppState {
             branch: record.branch,
             base_branch: record.base_branch.clone(),
         };
-        let mut active =
-            ActiveTask::reattach(task, worktree, record.plan_path, record.last_summary);
+        let mut active = ActiveTask::reattach(
+            task,
+            worktree,
+            record.plan_path,
+            record.last_summary,
+            ModelChoice {
+                model: record.model,
+                effort: record.effort,
+            },
+        );
 
         let mut state_changed = false;
         if !active.task.state.is_terminal() {
@@ -395,6 +407,8 @@ impl AppState {
             worktree_path: active.worktree.path.display().to_string(),
             plan_path: active.plan_path.clone(),
             last_summary: active.last_summary.clone(),
+            model: active.model_choice.model.clone(),
+            effort: active.model_choice.effort.clone(),
             created_at,
             updated_at: now,
         };
@@ -599,6 +613,10 @@ impl AppState {
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "ping" => Ok(json!({ "pong": true })),
+            "models.list" => Ok(json!({
+                "models": models::catalog(),
+                "efforts": models::EFFORT_LEVELS,
+            })),
             "fs.list" => self.fs_list(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
@@ -1057,9 +1075,10 @@ impl AppState {
         let task_id = format!("task-{}", self.next_id);
         self.next_id += 1;
 
+        let model_choice = model_choice_from(params)?;
         let mut active = self
             .orch_for(&project_id)?
-            .dispatch(TaskId::new(&task_id), goal, kind, &base)
+            .dispatch(TaskId::new(&task_id), goal, kind, &base, model_choice)
             .map_err(err)?;
         self.task_project
             .insert(task_id.clone(), project_id.clone());
@@ -1107,11 +1126,17 @@ impl AppState {
 
     fn task_approve_plan(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
+        // Absent model/effort params inherit the task's dispatch-time choice.
+        let model_override = if params.get("model").is_some() || params.get("effort").is_some() {
+            Some(model_choice_from(params)?)
+        } else {
+            None
+        };
         let project_id = self.project_of(&task_id)?;
         let mut active = self.take(&task_id)?;
         let outcome = (|| -> Result<(), String> {
             self.orch_for(&project_id)?
-                .approve_plan(&mut active)
+                .approve_plan(&mut active, model_override)
                 .map_err(err)?;
             if self.qa_agent {
                 self.simulate_build(&project_id, &mut active)?;
@@ -1351,6 +1376,8 @@ impl AppState {
             "project": project,
             "project_id": project_id,
             "harness": self.harness,
+            "model": active.model_choice.model,
+            "effort": active.model_choice.effort,
         })
     }
 
@@ -1464,6 +1491,24 @@ fn write_in_worktree(active: &ActiveTask, rel: &str, contents: &str) -> Result<(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(path, contents).map_err(|e| e.to_string())
+}
+
+/// Parse and validate the optional `model`/`effort` params of a request.
+fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
+    let choice = ModelChoice {
+        model: params
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
+        effort: params
+            .get("effort")
+            .and_then(Value::as_str)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string),
+    };
+    choice.validate()?;
+    Ok(choice)
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -2385,6 +2430,8 @@ mod tests {
                 worktree_path: surviving_worktree.display().to_string(),
                 plan_path: ".build/plan.md".into(),
                 last_summary: None,
+                model: None,
+                effort: None,
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -2444,6 +2491,8 @@ mod tests {
                 worktree_path: dir.path().join("wt-deleted-by-hand").display().to_string(),
                 plan_path: ".build/plan.md".into(),
                 last_summary: None,
+                model: None,
+                effort: None,
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })
@@ -2638,6 +2687,7 @@ mod tests {
                 "quiet work",
                 TaskKind::Quick,
                 "main",
+                Default::default(),
             )
             .unwrap();
         assert_eq!(active.task.state, TaskState::Building);
@@ -2706,6 +2756,64 @@ mod tests {
             vec!["s-live"],
             "only the closed session's sender is dropped"
         );
+    }
+
+    #[test]
+    fn models_list_serves_the_catalog_and_effort_levels() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock");
+        let res = state.handle(req("models.list", json!({})));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let models = res["result"]["models"].as_array().unwrap();
+        assert!(models.iter().any(|m| m["id"] == "claude-opus-4-8"));
+        assert!(models.iter().all(|m| m["supports_effort"].is_boolean()));
+        let efforts = res["result"]["efforts"].as_array().unwrap();
+        assert!(efforts.iter().any(|e| e == "xhigh"));
+    }
+
+    #[test]
+    fn dispatch_stores_the_model_choice_and_rejects_bad_ones() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock");
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "g", "model": "claude-sonnet-5", "effort": "high" }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["model"], "claude-sonnet-5");
+        assert_eq!(res["result"]["effort"], "high");
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        let got = state.handle(req("task.get", json!({ "task_id": task_id })));
+        assert_eq!(got["result"]["model"], "claude-sonnet-5");
+
+        let bad = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "g2", "effort": "ultra" }),
+        ));
+        assert_eq!(bad["ok"], false);
+        let bad = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "g3", "model": "--model" }),
+        ));
+        assert_eq!(bad["ok"], false);
+    }
+
+    #[test]
+    fn real_harness_argv_includes_the_selected_model_and_effort() {
+        let Agent::OneShot(build) = build_agent(false, "/tmp/m.sock".into()) else {
+            panic!("real agent should be one-shot");
+        };
+        let choice = ModelChoice {
+            model: Some("claude-opus-4-8".into()),
+            effort: Some("xhigh".into()),
+        };
+        let spec = build("do the thing", &choice);
+        let args = spec.args.join(" ");
+        assert!(args.contains("--model claude-opus-4-8"), "{args}");
+        assert!(args.contains("--effort xhigh"), "{args}");
+        // Defaults add nothing: the user's harness config decides.
+        let spec = build("do the thing", &ModelChoice::default());
+        assert!(!spec.args.join(" ").contains("--model"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub mod config;
 pub mod diff;
 pub mod identity;
 pub mod mcp;
+pub mod models;
 pub mod notify;
 pub mod orchestrator;
 pub mod pairing;

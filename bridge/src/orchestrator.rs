@@ -17,6 +17,7 @@ use portable_pty::PtySize;
 
 use crate::diff::{diff_against_base, DiffError, WorktreeDiff};
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
+use crate::models::ModelChoice;
 use crate::pty::{HarnessSpec, PtyError, PtySession};
 use crate::task::{IllegalTransition, Task, TaskEvent, TaskId, TaskKind, TaskState};
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
@@ -48,6 +49,8 @@ pub struct ActiveTask {
     pub plan_path: String,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
+    /// Which model/effort this task's agents run on (None = harness default).
+    pub model_choice: ModelChoice,
     /// The warm PTY session for the current phase (None before dispatch/after end).
     session: Option<PtySession>,
 }
@@ -61,12 +64,14 @@ impl ActiveTask {
         worktree: Worktree,
         plan_path: String,
         last_summary: Option<String>,
+        model_choice: ModelChoice,
     ) -> Self {
         ActiveTask {
             task,
             worktree,
             plan_path,
             last_summary,
+            model_choice,
             session: None,
         }
     }
@@ -102,6 +107,9 @@ impl ActiveTask {
     }
 }
 
+/// Builds the one-shot harness command for a rendered prompt + model choice.
+pub type OneShotBuilder = std::sync::Arc<dyn Fn(&str, &ModelChoice) -> HarnessSpec + Send + Sync>;
+
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
 pub enum Agent {
@@ -111,7 +119,7 @@ pub enum Agent {
     /// One-shot: build the full spawn command from the rendered prompt (e.g.
     /// `claude -p "<prompt>"`). The agent runs, does the work, reports `done`, and
     /// exits — no warm session.
-    OneShot(std::sync::Arc<dyn Fn(&str) -> HarnessSpec + Send + Sync>),
+    OneShot(OneShotBuilder),
 }
 
 /// Owns project configuration and drives tasks through the lifecycle.
@@ -155,6 +163,7 @@ impl Orchestrator {
         goal: impl Into<String>,
         kind: TaskKind,
         base_branch: &str,
+        model_choice: ModelChoice,
     ) -> Result<ActiveTask, OrchestratorError> {
         let goal = goal.into();
         let slug = slugify(&goal);
@@ -169,6 +178,7 @@ impl Orchestrator {
             worktree,
             plan_path: DEFAULT_PLAN_PATH.to_string(),
             last_summary: None,
+            model_choice,
             session: None,
         };
 
@@ -178,7 +188,7 @@ impl Orchestrator {
             TaskState::Building => self.render(&self.templates.build, &active, ""),
             ref other => unreachable!("dispatch left task in {other:?}"),
         };
-        active.session = Some(self.spawn(&active.worktree, &prompt)?);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(active)
     }
 
@@ -212,11 +222,18 @@ impl Orchestrator {
 
     /// Approve the plan and start the build in a **fresh** session — if a cold
     /// agent can't execute the plan, the plan wasn't done.
-    pub fn approve_plan(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
+    pub fn approve_plan(
+        &self,
+        active: &mut ActiveTask,
+        model_override: Option<ModelChoice>,
+    ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::ApprovePlan)?;
+        if let Some(choice) = model_override {
+            active.model_choice = choice;
+        }
         self.end_session(active);
         let prompt = self.render(&self.templates.build, active, "");
-        active.session = Some(self.spawn(&active.worktree, &prompt)?);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
 
@@ -232,7 +249,7 @@ impl Orchestrator {
         active.task.apply(TaskEvent::SendNotes)?;
         self.end_session(active);
         let prompt = self.render(&self.templates.revise, active, notes);
-        active.session = Some(self.spawn(&active.worktree, &prompt)?);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
 
@@ -249,7 +266,7 @@ impl Orchestrator {
         active.task.apply(TaskEvent::RequestChanges)?;
         self.end_session(active);
         let prompt = self.render(&self.templates.review_changes, active, comments);
-        active.session = Some(self.spawn(&active.worktree, &prompt)?);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
 
@@ -271,7 +288,7 @@ impl Orchestrator {
             TaskState::Building => self.render(&self.templates.build, active, ""),
             ref other => unreachable!("reply left task in {other:?}"),
         };
-        active.session = Some(self.spawn(&active.worktree, &prompt)?);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
 
@@ -349,7 +366,12 @@ impl Orchestrator {
         )
     }
 
-    fn spawn(&self, worktree: &Worktree, prompt: &str) -> Result<PtySession, OrchestratorError> {
+    fn spawn(
+        &self,
+        worktree: &Worktree,
+        prompt: &str,
+        model_choice: &ModelChoice,
+    ) -> Result<PtySession, OrchestratorError> {
         let session = match &self.agent {
             Agent::Warm(spec) => {
                 let s = PtySession::spawn(spec, Some(worktree.path.clone()), self.pty_size)?;
@@ -358,8 +380,8 @@ impl Orchestrator {
             }
             Agent::OneShot(build) => {
                 // The prompt is baked into the command (e.g. `claude -p`); nothing
-                // is written to stdin.
-                let spec = build(prompt);
+                // is written to stdin. The model choice becomes harness argv.
+                let spec = build(prompt, model_choice);
                 PtySession::spawn(&spec, Some(worktree.path.clone()), self.pty_size)?
             }
         };
@@ -497,6 +519,66 @@ mod tests {
         )
     }
 
+    /// A one-shot agent that records every (prompt, model choice) it is asked
+    /// to spawn, standing in for the real `claude` command builder.
+    fn recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<ModelChoice>>>) -> Agent {
+        Agent::OneShot(std::sync::Arc::new(
+            move |_prompt: &str, choice: &ModelChoice| {
+                log.lock().unwrap().push(choice.clone());
+                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn model_choice_reaches_every_spawn_and_approve_can_override_it() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            recording_agent(log.clone()),
+            Templates::default(),
+        );
+
+        let dispatch_choice = ModelChoice {
+            model: Some("claude-opus-4-8".into()),
+            effort: Some("xhigh".into()),
+        };
+        let mut t = orch
+            .dispatch(
+                TaskId::new("m1"),
+                "Add a greeting",
+                TaskKind::Standard,
+                "main",
+                dispatch_choice.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            std::slice::from_ref(&dispatch_choice)
+        );
+
+        // Plan done → approve with a DIFFERENT model for the coding agent.
+        t.task.apply(TaskEvent::PlanReady).unwrap();
+        let build_choice = ModelChoice {
+            model: Some("claude-sonnet-5".into()),
+            effort: Some("high".into()),
+        };
+        orch.approve_plan(&mut t, Some(build_choice.clone()))
+            .unwrap();
+        assert_eq!(t.model_choice, build_choice);
+        assert_eq!(
+            log.lock().unwrap().as_slice(),
+            &[dispatch_choice, build_choice.clone()]
+        );
+
+        // A change request re-spawns with the task's CURRENT choice, no new input.
+        t.task.apply(TaskEvent::BuildReady).unwrap();
+        orch.request_changes(&mut t, "tweak it").unwrap();
+        assert_eq!(log.lock().unwrap().last().unwrap(), &build_choice);
+    }
+
     fn done(phase: DonePhase, status: DoneStatus, plan_path: Option<&str>) -> DoneReport {
         DoneReport {
             phase,
@@ -520,6 +602,7 @@ mod tests {
                 "Add a greeting",
                 TaskKind::Standard,
                 "main",
+                Default::default(),
             )
             .unwrap();
         assert_eq!(t.task.state, TaskState::Planning);
@@ -548,7 +631,7 @@ mod tests {
         assert!(!orch.diff(&t).unwrap().touched_outside_plan_scope());
 
         // Approve → fresh build session.
-        orch.approve_plan(&mut t).unwrap();
+        orch.approve_plan(&mut t, None).unwrap();
         assert_eq!(t.task.state, TaskState::Building);
 
         // The agent writes code, then reports done → Review.
@@ -582,7 +665,13 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
 
         let mut t = orch
-            .dispatch(TaskId::new("q1"), "fix typo", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("q1"),
+                "fix typo",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         assert_eq!(t.task.state, TaskState::Building, "no plan phase");
 
@@ -601,7 +690,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("b1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("b1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
 
         orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Blocked, None))
@@ -623,6 +718,7 @@ mod tests {
                 "add greeting",
                 TaskKind::Standard,
                 "main",
+                Default::default(),
             )
             .unwrap();
 
@@ -664,7 +760,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("c1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("c1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         assert_eq!(t.task.state, TaskState::Building);
 
@@ -724,7 +826,13 @@ mod tests {
 
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("g1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("g1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         std::fs::write(t.worktree.path.join("f.txt"), "hi\n").unwrap();
         orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
@@ -760,7 +868,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let dispatched = orch
-            .dispatch(TaskId::new("r1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("r1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
 
         // Simulate a daemon restart: only the durable core survives, and boot
@@ -772,6 +886,7 @@ mod tests {
             dispatched.worktree.clone(),
             dispatched.plan_path.clone(),
             None,
+            Default::default(),
         );
         assert_eq!(
             revived.task.state,
@@ -795,7 +910,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let dispatched = orch
-            .dispatch(TaskId::new("r2"), "plan work", TaskKind::Standard, "main")
+            .dispatch(
+                TaskId::new("r2"),
+                "plan work",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
             .unwrap();
 
         let mut task = dispatched.task.clone();
@@ -805,6 +926,7 @@ mod tests {
             dispatched.worktree.clone(),
             dispatched.plan_path.clone(),
             Some("earlier summary".into()),
+            Default::default(),
         );
         orch.resume(&mut revived).unwrap();
         assert_eq!(revived.task.state, TaskState::Planning);
@@ -820,7 +942,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("m1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("m1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         std::fs::write(t.worktree.path.join("f.txt"), "hi\n").unwrap();
         orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
@@ -864,7 +992,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("z1"), "plan work", TaskKind::Standard, "main")
+            .dispatch(
+                TaskId::new("z1"),
+                "plan work",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         let pid = t.harness_pid().expect("warm harness is running");
         orch.on_done(
@@ -879,7 +1013,7 @@ mod tests {
 
         // approve_plan ends the plan session; the old harness must be fully reaped
         // (no zombie), not just killed.
-        orch.approve_plan(&mut t).unwrap();
+        orch.approve_plan(&mut t, None).unwrap();
         let stat = Command::new("ps")
             .args(["-o", "stat=", "-p", &pid.to_string()])
             .output()
@@ -902,7 +1036,13 @@ mod tests {
             Templates::default(),
         );
         let mut t = orch
-            .dispatch(TaskId::new("i1"), "do work", TaskKind::Quick, "main")
+            .dispatch(
+                TaskId::new("i1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         assert_eq!(t.task.state, TaskState::Building);
 
@@ -931,7 +1071,13 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
-            .dispatch(TaskId::new("a1"), "scrap this", TaskKind::Standard, "main")
+            .dispatch(
+                TaskId::new("a1"),
+                "scrap this",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
             .unwrap();
         let branch = t.worktree.branch.clone();
 

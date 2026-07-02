@@ -19,7 +19,21 @@ export const App = {
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
+  modelCatalog: null, // models.list result, fetched once per session
 };
+
+/** The bridge's model catalog ({models, efforts}), cached for the session.
+ *  An older bridge without the RPC yields empty lists — selectors then offer
+ *  only "Harness default", which is exactly what that bridge supports. */
+export async function loadModelCatalog() {
+  if (App.modelCatalog) return App.modelCatalog;
+  try {
+    App.modelCatalog = await App.call("models.list");
+  } catch {
+    App.modelCatalog = { models: [], efforts: [] };
+  }
+  return App.modelCatalog;
+}
 
 export function rememberSelectedDevice(deviceId) {
   App.selectedDeviceId = deviceId;

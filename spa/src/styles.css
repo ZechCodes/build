@@ -155,6 +155,7 @@ textarea { width:100%; min-height:96px; background:var(--bg); border:1px solid v
 .addproj input.path { flex:1; }
 .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
 .btn.mini { padding:4px 9px; font-size:12px; }
+select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink2); max-width:150px; }
 .projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .projfolder code { font-family:var(--mono); font-size:11.5px; background:var(--line2); padding:2px 6px; border-radius:5px; }
 .manualadd { margin-top:12px; } .manualadd summary { font-size:12px; color:var(--dim); cursor:pointer; }

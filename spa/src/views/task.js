@@ -6,7 +6,8 @@ import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { assemblePlanNotes, assembleDiffNotes } from "../core/notes.js";
-import { App, go } from "../app.js";
+import { App, go, loadModelCatalog } from "../app.js";
+import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 
@@ -38,6 +39,7 @@ export async function renderTask() {
     );
   };
   let last = null;
+  loadModelCatalog(); // warm the selector catalog before plan_review needs it
   // Plan-review feedback state, preserved across the 1.6s poll.
   const planComments = []; // { id, snippet, comment }
   let cid = 0,
@@ -104,13 +106,27 @@ export async function renderTask() {
         };
       } else {
         phint.textContent = "Select text in the plan to comment, or approve to start the build.";
-        pactions.innerHTML = `<button class="btn primary" id="approvePlan">Approve plan &amp; start build</button>`;
+        // The coding agent's model defaults to the task's dispatch-time choice;
+        // picking here overrides it for the build (and later revisions).
+        const catalog = App.modelCatalog || { models: [], efforts: [] };
+        pactions.innerHTML = `
+          <select id="apModel" class="mini" title="Coding agent model">${modelOptionsHtml(catalog.models, t.model)}</select>
+          <select id="apEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(catalog.efforts, t.effort)}</select>
+          <button class="btn primary" id="approvePlan">Approve plan &amp; start build</button>`;
+        const syncEffort = () => {
+          const supported = effortSupported(catalog.models, $("#apModel").value);
+          $("#apEffort").disabled = !supported;
+          if (!supported) $("#apEffort").value = "";
+        };
+        $("#apModel").onchange = syncEffort;
+        syncEffort();
         $("#approvePlan").onclick = async () => {
           const approve = $("#approvePlan");
           approve.disabled = true;
           approve.textContent = "starting build…";
+          const params = modelParams(catalog.models, $("#apModel").value, $("#apEffort").value);
           try {
-            await App.call("task.approve_plan", { task_id: id });
+            await App.call("task.approve_plan", { task_id: id, ...params });
           } catch (e) {
             // Restore the button — the poll's key-diffing skips repaints when
             // nothing changed, so a wedged button would otherwise stay dead.

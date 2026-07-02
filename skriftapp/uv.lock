@@ -236,7 +236,7 @@ dev = [
 requires-dist = [
     { name = "cryptography", specifier = ">=44" },
     { name = "pywebpush", specifier = ">=2.0" },
-    { name = "skrift", extras = ["passkeys"], specifier = "==0.2.0a9" },
+    { name = "skrift", extras = ["passkeys"], path = "vendor/skrift-0.2.0a10-py3-none-any.whl" },
 ]
 
 [package.metadata.requires-dev]
@@ -1462,8 +1462,8 @@ wheels = [
 
 [[package]]
 name = "skrift"
-version = "0.2.0a9"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.0a10"
+source = { path = "vendor/skrift-0.2.0a10-py3-none-any.whl" }
 dependencies = [
     { name = "advanced-alchemy" },
     { name = "aiosmtplib" },
@@ -1483,15 +1483,49 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/b6/483f8820d76a6d8114ac37848df07034551b54d60c37d39dd8cfc228526b/skrift-0.2.0a9.tar.gz", hash = "sha256:fe096c0399543eeb3e81dcbe02976717eda38c4b85f1e16ec3f787209725ebda", size = 420678 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/2c/2c3b698b0c7c88bfc8c6d24164b2eaf92ffa5485fa0457aced6937b7ddbd/skrift-0.2.0a9-py3-none-any.whl", hash = "sha256:e2319a4c1bbbe2cbb6f670992ece7448011b7db96d3e55401c0d3733b7a81856", size = 584948 },
+    { filename = "skrift-0.2.0a10-py3-none-any.whl", hash = "sha256:265c7486dc49b47fbe37d3e3f6be20bb35e9cd348d21183e08ccf24fb1bae36d" },
 ]
 
 [package.optional-dependencies]
 passkeys = [
     { name = "webauthn" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "advanced-alchemy", specifier = ">=0.26.0" },
+    { name = "aioboto3", marker = "extra == 's3'", specifier = ">=13.0.0" },
+    { name = "aiosmtplib", specifier = ">=3.0.0" },
+    { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "alembic", specifier = ">=1.14.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "fast-query-parsers", specifier = ">=1.0.2" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "hypercorn", specifier = ">=0.17.0" },
+    { name = "litestar", extras = ["cryptography", "jinja"], specifier = ">=2.14.0" },
+    { name = "logfire", extras = ["asgi", "httpx", "sqlalchemy"], marker = "extra == 'logfire'", specifier = ">=3.0.0" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
+    { name = "mdit-py-plugins", specifier = ">=0.4.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pydantic-ai-slim", marker = "extra == 'agents'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", marker = "extra == 'agents-anthropic'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", marker = "extra == 'agents-google'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", marker = "extra == 'agents-openai'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", extras = ["anthropic"], marker = "extra == 'agents-anthropic'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", extras = ["google"], marker = "extra == 'agents-google'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-ai-slim", extras = ["openai"], marker = "extra == 'agents-openai'", specifier = ">=1.89.1,<2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.7.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "pywebpush", marker = "extra == 'push'", specifier = ">=2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
+    { name = "ruamel-yaml", specifier = ">=0.18.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
+    { name = "webauthn", marker = "extra == 'passkeys'", specifier = ">=2.2.0" },
+    { name = "zensical", marker = "extra == 'docs'", specifier = ">=0.0.19" },
+]
+provides-extras = ["agents", "agents-anthropic", "agents-google", "agents-openai", "docs", "logfire", "passkeys", "push", "redis", "s3"]
 
 [[package]]
 name = "sniffio"

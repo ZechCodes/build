@@ -165,6 +165,9 @@ target/
 
 # Go (if any Go components added)
 vendor/
+# ...but the interim vendored skrift wheel ships with the app image build
+!skriftapp/vendor/
+!skriftapp/vendor/*.whl
 *.exe
 *.exe~
 

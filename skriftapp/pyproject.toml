@@ -14,7 +14,7 @@ requires-python = ">=3.13"
 dependencies = [
     # passkeys extra pulls in webauthn for the production auth method.
     # Skrift core already ships asyncpg (Postgres) + aiosqlite (dev).
-    "skrift[passkeys]==0.2.0a9",
+    "skrift[passkeys]==0.2.0a10",
     # Imported directly by buildapp.pairing_crypto (Ed25519 verification).
     "cryptography>=44",
     # Web push delivery (VAPID + payload encryption) for buildapp.web_push.
@@ -39,3 +39,9 @@ exclude-newer = "2026-06-27T00:00:00Z"
 # Virtual project: buildapp/ is imported from the working directory by Skrift's
 # controller loading, so there is nothing to build or install.
 package = false
+
+# INTERIM: skrift 0.2.0a10 is not on PyPI yet — it carries the setup-wizard
+# template-globals fix (csrf_field/favicon_url/sized on the setup app engine).
+# Drop this source and the vendor/ wheel once 0.2.0a10 is published.
+[tool.uv.sources]
+skrift = { path = "vendor/skrift-0.2.0a10-py3-none-any.whl" }

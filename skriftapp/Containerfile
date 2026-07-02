@@ -40,8 +40,10 @@ FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim AS app
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Dependencies first for layer caching.
+# Dependencies first for layer caching. vendor/ carries the interim skrift
+# wheel referenced by [tool.uv.sources] until 0.2.0a10 is on PyPI.
 COPY skriftapp/pyproject.toml skriftapp/uv.lock ./
+COPY skriftapp/vendor ./vendor
 RUN uv sync --frozen --no-dev
 
 # App code + the spa stage's bundle.

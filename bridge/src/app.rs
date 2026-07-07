@@ -563,13 +563,24 @@ impl AppState {
                 }
             };
             eprintln!("done socket: listening on {path}");
+            // A single accept error must not permanently stop `done` reporting, but
+            // a *persistent* one (EMFILE/ENFILE on fd exhaustion) leaves the listener
+            // readable so accept returns Err immediately — `continue` alone would spin
+            // a worker at 100% CPU and flood the log. Back off between failed accepts;
+            // reset the moment one succeeds.
+            let mut accept_backoff =
+                crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
             loop {
                 let (stream, _) = match listener.accept().await {
-                    Ok(pair) => pair,
+                    Ok(pair) => {
+                        accept_backoff.reset();
+                        pair
+                    }
                     Err(e) => {
-                        // A single accept error must not permanently stop `done`
-                        // reporting: log it and keep serving future connections.
-                        eprintln!("done socket: accept error: {e}; continuing");
+                        let wait = accept_backoff.current();
+                        eprintln!("done socket: accept error: {e}; retrying in {wait:?}");
+                        tokio::time::sleep(wait).await;
+                        accept_backoff.increase();
                         continue;
                     }
                 };
@@ -1913,6 +1924,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::Command;
+    use tokio::io::AsyncWriteExt;
 
     fn init_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -2741,6 +2753,110 @@ mod tests {
         assert_eq!(
             got["result"]["last_error"],
             "agent exited unexpectedly (exit code 7)"
+        );
+    }
+
+    #[tokio::test]
+    async fn done_socket_routes_reports_and_keeps_serving_after_each_connection() {
+        // The done control socket must process a forwarded `done` report AND keep
+        // accepting further connections — a regression to break-on-first-connection
+        // (or a spin/stall) would leave later agents unable to report.
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        // Two Building tasks (no live session needed — on_done only applies events).
+        for id in ["task-1", "task-2"] {
+            let mut task = Task::new(TaskId::new(id), "do work".to_string(), TaskKind::Quick);
+            task.apply(TaskEvent::Dispatch).unwrap();
+            assert_eq!(task.state, TaskState::Building);
+            let worktree = Worktree {
+                name: id.into(),
+                path: dir.path().join(format!("wt-{id}")),
+                branch: format!("build/{id}"),
+                base_branch: "main".into(),
+            };
+            let active = ActiveTask::reattach(
+                task,
+                worktree,
+                ".build/plan.md".into(),
+                None,
+                Default::default(),
+                None,
+            );
+            state.task_project.insert(id.into(), project_id.clone());
+            state.tasks.insert(id.into(), active);
+        }
+
+        let app = state.shared();
+        let sock_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(app.clone(), sock_path.display().to_string());
+
+        let send_blocked = |id: &'static str| {
+            let sock_path = sock_path.clone();
+            async move {
+                let report = DoneReport {
+                    phase: DonePhase::Build,
+                    status: DoneStatus::Blocked,
+                    summary: format!("{id} is stuck"),
+                    outputs: DoneOutputs::default(),
+                };
+                let line = format!(
+                    "{}\n",
+                    json!({ "task_id": id, "report": serde_json::to_value(&report).unwrap() })
+                );
+                // The listener binds asynchronously; retry until it is up.
+                let mut stream = None;
+                for _ in 0..100 {
+                    if let Ok(s) = tokio::net::UnixStream::connect(&sock_path).await {
+                        stream = Some(s);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let mut stream = stream.expect("done socket never came up");
+                stream.write_all(line.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+                // Dropping the stream closes it, ending the server's per-conn reader.
+            }
+        };
+
+        let wait_blocked = |id: &'static str| {
+            let app = app.clone();
+            async move {
+                for _ in 0..100 {
+                    let blocked = matches!(
+                        app.lock()
+                            .unwrap()
+                            .tasks
+                            .get(id)
+                            .map(|a| a.task.state.clone()),
+                        Some(TaskState::Blocked(_))
+                    );
+                    if blocked {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                false
+            }
+        };
+
+        // First connection: task-1 is routed to blocked.
+        send_blocked("task-1").await;
+        assert!(wait_blocked("task-1").await, "first report must route");
+
+        // A SECOND, independent connection proves the accept loop kept serving.
+        send_blocked("task-2").await;
+        assert!(
+            wait_blocked("task-2").await,
+            "the socket must keep accepting connections after the first"
         );
     }
 

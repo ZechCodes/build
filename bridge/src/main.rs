@@ -37,6 +37,7 @@
 use std::time::Duration;
 
 use build_bridge::app::AppState;
+use build_bridge::backoff::Backoff;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::{identity, pairing, service, transport};
@@ -238,22 +239,24 @@ async fn serve() {
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted
     // long enough to be "clean" resets the delay, so a brief blip still recovers
-    // fast.
-    let min_backoff = Duration::from_secs(2);
-    let max_backoff = Duration::from_secs(30);
-    let mut backoff = min_backoff;
+    // fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
+    let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
         match relay::run(&device_url, &identity, handler.clone()).await {
-            Ok(()) => eprintln!("relay disconnected; reconnecting in {}s", backoff.as_secs()),
-            Err(e) => eprintln!("relay error: {e}; reconnecting in {}s", backoff.as_secs()),
+            Ok(()) => eprintln!(
+                "relay disconnected; reconnecting in {}s",
+                backoff.current().as_secs()
+            ),
+            Err(e) => eprintln!(
+                "relay error: {e}; reconnecting in {}s",
+                backoff.current().as_secs()
+            ),
         }
         // A session that stayed up a while was healthy: start the next retry cheap.
-        if connected_at.elapsed() >= max_backoff {
-            backoff = min_backoff;
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(max_backoff);
+        backoff.note_session(connected_at.elapsed());
+        tokio::time::sleep(backoff.current()).await;
+        backoff.increase();
     }
 }
 

@@ -541,7 +541,17 @@ impl Orchestrator {
                  check out {base_branch:?} (or commit/stash your work) and approve again"
             )));
         }
-        self.git(&self.repo_path, &["merge", "--no-edit", branch])?;
+        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", branch]) {
+            // A conflict leaves the primary checkout wedged mid-merge; abort it so
+            // the checkout returns to a clean base and later merges aren't poisoned.
+            // Best-effort — the merge failure is the error we surface either way.
+            if let Err(abort_error) = self.git(&self.repo_path, &["merge", "--abort"]) {
+                eprintln!(
+                    "merge_into_base {branch}: merge failed and abort also failed: {abort_error}"
+                );
+            }
+            return Err(merge_error);
+        }
         Ok(())
     }
 
@@ -736,6 +746,64 @@ mod tests {
             repo.join(".build/plan.md").exists(),
             "plan kept through merge"
         );
+    }
+
+    /// Merge honesty (contract #2): a conflicting merge must fail cleanly. It
+    /// reports `merge_failed:`, keeps the task in review — and, critically, must
+    /// NOT leave the primary checkout wedged mid-merge, or every later merge is
+    /// poisoned. Two quick tasks branch from the same base and touch the same
+    /// file; the first lands, the second conflicts, and a third unrelated task
+    /// must still merge afterwards.
+    #[tokio::test]
+    async fn conflicting_merge_aborts_and_leaves_the_checkout_mergeable() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+
+        let to_review = |id: &str, file: &str, contents: &str| {
+            let mut t = orch
+                .dispatch(
+                    TaskId::new(id),
+                    "same file",
+                    TaskKind::Quick,
+                    "main",
+                    Default::default(),
+                )
+                .unwrap();
+            std::fs::write(t.worktree.path.join(file), contents).unwrap();
+            orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+                .unwrap();
+            assert_eq!(t.task.state, TaskState::Review);
+            t
+        };
+
+        // Both cut from the same base tip and write the SAME file.
+        let mut first = to_review("c1", "result.txt", "first\n");
+        let mut second = to_review("c2", "result.txt", "second\n");
+
+        orch.approve_merge(&mut first).unwrap();
+        assert_eq!(first.task.state, TaskState::Merged);
+
+        let conflict = orch
+            .approve_merge(&mut second)
+            .expect_err("the second write must conflict");
+        assert!(
+            conflict.to_string().starts_with("merge_failed:"),
+            "{conflict:?}"
+        );
+        assert_eq!(second.task.state, TaskState::Review, "task stays in review");
+
+        // The primary checkout must be clean, not mid-merge.
+        assert!(
+            !repo.join(".git/MERGE_HEAD").exists(),
+            "a failed merge must be aborted, not left staged with conflicts"
+        );
+
+        // Proof the checkout recovered: an unrelated task still merges.
+        let mut third = to_review("c3", "other.txt", "third\n");
+        orch.approve_merge(&mut third)
+            .expect("checkout still mergeable");
+        assert_eq!(third.task.state, TaskState::Merged);
+        assert!(repo.join("other.txt").exists());
     }
 
     #[tokio::test]

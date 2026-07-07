@@ -2684,6 +2684,72 @@ mod tests {
     }
 
     #[test]
+    fn missing_project_repo_abandons_the_task_on_boot_with_a_reason() {
+        // A non-terminal task whose project repo no longer exists can never advance
+        // (there is no orchestrator to route to), so boot recovery abandons it with a
+        // legible last_error rather than leaving an untouchable orphan. The worktree
+        // itself is present, so this exercises the repo-missing branch specifically —
+        // not the worktree-missing one.
+        use crate::store::{PersistedTask, TaskStore};
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        // The worktree survives on disk; only the project repo is gone.
+        let live_worktree = dir.path().join("live-worktree");
+        std::fs::create_dir_all(&live_worktree).unwrap();
+        let missing_repo = dir.path().join("repo-deleted-by-hand");
+
+        let store = TaskStore::new(&tasks_dir);
+        store
+            .save(&PersistedTask {
+                id: "task-4".into(),
+                goal: "work whose repo vanished".into(),
+                kind: TaskKind::Quick,
+                project_path: missing_repo.display().to_string(),
+                base_branch: "main".into(),
+                state: TaskState::Building,
+                branch: "build/vanished".into(),
+                worktree_name: "vanished".into(),
+                worktree_path: live_worktree.display().to_string(),
+                plan_path: ".build/plan.md".into(),
+                last_summary: None,
+                model: None,
+                effort: None,
+                last_error: None,
+                created_at: "2026-07-01T09:00:00Z".into(),
+                updated_at: "2026-07-01T09:00:00Z".into(),
+            })
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        let got = state.handle(req("task.get", json!({ "task_id": "task-4" })));
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert_eq!(got["result"]["state"], "abandoned");
+        assert_eq!(
+            got["result"]["last_error"],
+            format!("project repo missing at {}", missing_repo.display())
+        );
+        // The abandon verdict AND its reason are persisted, so they survive the next
+        // restart too.
+        let persisted = store.load_all().unwrap();
+        assert_eq!(persisted[0].state, TaskState::Abandoned);
+        assert!(persisted[0]
+            .last_error
+            .as_deref()
+            .unwrap()
+            .starts_with("project repo missing at"));
+    }
+
+    #[test]
     fn corrupt_task_file_fails_boot_naming_the_file() {
         let (dir, repo) = init_repo();
         let tasks_dir = dir.path().join("tasks");

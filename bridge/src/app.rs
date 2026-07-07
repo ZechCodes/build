@@ -1273,8 +1273,13 @@ impl AppState {
             .map_err(err);
         // A merge failure leaves the task at its review gate; record the reason so
         // the board surfaces it (contract: `merge_failed:` message, state unchanged).
+        // Only merge failures — a legality error (e.g. a duplicate approval of an
+        // already-merged task) carries no `merge_failed:` prefix and must never
+        // deface a terminal task with a spurious banner.
         if let Err(message) = &result {
-            active.last_error = Some(message.clone());
+            if message.starts_with("merge_failed:") {
+                active.last_error = Some(message.clone());
+            }
         }
         let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
@@ -2760,6 +2765,59 @@ mod tests {
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(merged["result"]["last_error"].is_null(), "cleared on merge");
+    }
+
+    #[test]
+    fn duplicate_approve_merge_never_defaces_a_merged_task() {
+        // Contract #1: last_error carries ONLY a merge failure (or a harness crash).
+        // A second approve_merge on an already-merged task (two open windows, or a
+        // retried RPC) fails the up-front legality check with an "illegal transition"
+        // error that has no `merge_failed:` prefix — that must NOT be recorded as
+        // last_error, or the merged card shows a spurious ⚠ banner forever.
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        let quick = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick work", "kind": "quick" }),
+        ));
+        let quick_id = quick["result"]["task_id"].as_str().unwrap().to_string();
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": quick_id })));
+        assert_eq!(merged["result"]["state"], "merged");
+        assert!(merged["result"]["last_error"].is_null());
+
+        // The duplicate approval errors, but the merged task stays clean.
+        let dup = state.handle(req("task.approve_merge", json!({ "task_id": quick_id })));
+        assert_eq!(dup["ok"], false);
+        assert!(
+            !dup["error"].as_str().unwrap().starts_with("merge_failed:"),
+            "the legality error is not a merge failure: {dup:?}"
+        );
+
+        let got = state.handle(req("task.get", json!({ "task_id": quick_id })));
+        assert_eq!(got["result"]["state"], "merged");
+        assert!(
+            got["result"]["last_error"].is_null(),
+            "a merged task must never be defaced by a duplicate approval: {got:?}"
+        );
+        // The persisted record is clean too — the spurious banner must not survive a
+        // restart either.
+        let persisted = crate::store::TaskStore::new(&tasks_dir)
+            .load_all()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == quick_id)
+            .expect("record persisted");
+        assert!(persisted.last_error.is_none(), "{persisted:?}");
     }
 
     #[test]

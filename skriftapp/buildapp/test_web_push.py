@@ -36,16 +36,17 @@ def _sign(private_key: Ed25519PrivateKey, message: str) -> str:
 
 
 def test_notify_challenge_binds_all_fields():
-    base = web_push.notify_challenge("dev-1", "attention", 1750000000)
-    assert base == "notify.dev-1.attention.1750000000"
-    assert base != web_push.notify_challenge("dev-2", "attention", 1750000000)
-    assert base != web_push.notify_challenge("dev-1", "other", 1750000000)
-    assert base != web_push.notify_challenge("dev-1", "attention", 1750000001)
+    base = web_push.notify_challenge("dev-1", "task-1", "attention", 1750000000)
+    assert base == "notify.dev-1.task-1.attention.1750000000"
+    assert base != web_push.notify_challenge("dev-2", "task-1", "attention", 1750000000)
+    assert base != web_push.notify_challenge("dev-1", "task-2", "attention", 1750000000)
+    assert base != web_push.notify_challenge("dev-1", "task-1", "other", 1750000000)
+    assert base != web_push.notify_challenge("dev-1", "task-1", "attention", 1750000001)
 
 
 def test_notify_signature_verifies_against_device_identity_key():
     private_key, public_b64 = _ed25519_pair()
-    challenge = web_push.notify_challenge("dev-1", "attention", 1750000000)
+    challenge = web_push.notify_challenge("dev-1", "task-1", "attention", 1750000000)
     signature = _sign(private_key, challenge)
     assert pairing_crypto.verify_registration(public_b64, challenge, signature)
 
@@ -53,9 +54,10 @@ def test_notify_signature_verifies_against_device_identity_key():
 def test_notify_signature_rejects_tampered_fields():
     private_key, public_b64 = _ed25519_pair()
     signature = _sign(
-        private_key, web_push.notify_challenge("dev-1", "attention", 1750000000)
+        private_key,
+        web_push.notify_challenge("dev-1", "task-1", "attention", 1750000000),
     )
-    forged = web_push.notify_challenge("dev-1", "attention", 1750009999)
+    forged = web_push.notify_challenge("dev-1", "task-1", "attention", 1750009999)
     assert not pairing_crypto.verify_registration(public_b64, forged, signature)
 
 
@@ -86,11 +88,28 @@ def test_timestamp_stale_or_far_future_rejected():
 # --- the content-free payload -----------------------------------------------------
 
 
-def test_attention_payload_is_content_free():
-    payload = json.loads(web_push.attention_payload())
-    assert payload == {"kind": "attention", "url": "/app/"}
-    # Nothing else may ever ride along: no goal, no task id, no device name.
-    assert set(payload.keys()) == {"kind", "url"}
+def test_push_payload_carries_only_id_kind_and_deep_link():
+    payload = json.loads(web_push.push_payload("task-7", "plan_ready"))
+    assert payload == {
+        "task_id": "task-7",
+        "kind": "plan_ready",
+        "url": "/app/#/task/task-7",
+    }
+    # Exactly these three keys — no goal, no plan text, no device name.
+    assert set(payload.keys()) == {"task_id", "kind", "url"}
+
+
+def test_push_payload_kinds_are_the_allowed_set():
+    assert web_push.ALLOWED_KINDS == {
+        "plan_ready",
+        "task_done",
+        "blocked",
+        "attention",
+    }
+    for kind in web_push.ALLOWED_KINDS:
+        payload = json.loads(web_push.push_payload("task-1", kind))
+        assert payload["kind"] == kind
+        assert payload["url"].startswith("/app/#/task/")
 
 
 # --- delivery + pruning -----------------------------------------------------------

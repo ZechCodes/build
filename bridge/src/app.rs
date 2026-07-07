@@ -461,11 +461,16 @@ impl AppState {
         if !self.notify_throttle.should_notify(task_id, state) {
             return;
         }
+        // The throttle already gated on a push-worthy state, so a kind exists.
+        let Some(kind) = crate::notify::kind_for_state(state) else {
+            return;
+        };
         let notifier = notifier.clone();
+        let task_id = task_id.to_string();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    if let Err(e) = notifier.notify_attention().await {
+                    if let Err(e) = notifier.notify(&task_id, kind).await {
                         eprintln!("push notify: {e}");
                     }
                 });
@@ -2002,11 +2007,22 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
 
-        // The notify body is content-free: no goal, no task id.
-        let body =
-            String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
-        assert!(!body.contains("greeting"), "{body}");
-        assert!(!body.contains(&task_id), "{body}");
+        // The notify body carries the opaque task id + a generic kind, and the
+        // kinds match the transitions (plan_review → plan_ready, review →
+        // task_done). It must never carry the goal text.
+        let requests = server.received_requests().await.unwrap();
+        let first: crate::notify::NotifyRequest =
+            serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(first.task_id, task_id);
+        assert_eq!(first.kind, "plan_ready");
+        let second: crate::notify::NotifyRequest =
+            serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(second.kind, "task_done");
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(
+            !body.contains("greeting"),
+            "no goal text in the notify: {body}"
+        );
     }
 
     #[test]

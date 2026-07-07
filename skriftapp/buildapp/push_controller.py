@@ -14,8 +14,9 @@ Two audiences, mirroring ``devices_controller``:
   an Ed25519 signature over a timestamped challenge, verified against the
   device's pinned identity key (same proof-of-key scheme as registration).
 
-E2EE invariant: the pushed payload is always ``web_push.attention_payload()`` —
-``{"kind": "attention", "url": "/app/"}`` — never task content.
+E2EE invariant: the pushed payload is always ``web_push.push_payload(task_id,
+kind)`` — ``{"task_id", "kind", "url"}`` where ``task_id`` is opaque and ``kind``
+a generic status label — never task content (goals/plan text).
 """
 
 from __future__ import annotations
@@ -130,25 +131,27 @@ class PushController(Controller):
 
     @post("/api/push/notify")
     async def notify(self, request: Request, db_session: AsyncSession) -> Response:
-        """A bridge reports that a task needs its human. Pushes the generic,
-        content-free attention payload to every subscription of the device's
-        owner. Authenticated by the device's Ed25519 signature over a
-        timestamped challenge; a freshness window bounds replay."""
+        """A bridge reports that a task needs its human. Pushes a content-free
+        ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking
+        into ``/app/``) to every subscription of the device's owner. Authenticated
+        by the device's Ed25519 signature over a timestamped challenge that binds
+        the task and kind; a freshness window bounds replay."""
         body = await request.json()
         try:
             device_id = UUID(str(body["device_id"]))
+            task_id = str(body["task_id"])
             kind = str(body["kind"])
             timestamp = int(body["timestamp"])
             signature = str(body["signature_b64"])
         except (KeyError, ValueError, TypeError):
             raise ClientException("malformed notify")
-        if kind != web_push.ATTENTION_KIND:
+        if kind not in web_push.ALLOWED_KINDS:
             raise ClientException("unknown notify kind")
 
         device = await db_session.get(Device, device_id)
         if device is None or not device.approved or device.owner_user_id is None:
             raise NotAuthorizedException("notify not authorized")
-        challenge = web_push.notify_challenge(str(device_id), kind, timestamp)
+        challenge = web_push.notify_challenge(str(device_id), task_id, kind, timestamp)
         if not pairing_crypto.verify_registration(
             device.identity_public_key_b64, challenge, signature
         ):
@@ -187,7 +190,7 @@ class PushController(Controller):
         delivered, gone_endpoints = await asyncio.to_thread(
             web_push.send_to_subscriptions,
             subscription_infos,
-            web_push.attention_payload(),
+            web_push.push_payload(task_id, kind),
             vapid_private_key,
             vapid_subject,
         )

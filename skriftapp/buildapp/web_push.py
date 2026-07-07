@@ -25,25 +25,35 @@ import requests
 from pywebpush import WebPushException, webpush
 
 __all__ = [
+    "ALLOWED_KINDS",
     "ATTENTION_KIND",
+    "BLOCKED_KIND",
     "NOTIFY_FRESHNESS_WINDOW",
+    "PLAN_READY_KIND",
     "PUSH_SEND_TIMEOUT_SECONDS",
+    "TASK_DONE_KIND",
     "VAPID_PRIVATE_KEY_ENV",
     "VAPID_PUBLIC_KEY_ENV",
     "VAPID_SUBJECT_ENV",
     "NotifyReplayGuard",
     "WebPushException",
-    "attention_payload",
     "notify_challenge",
     "notify_timestamp_fresh",
+    "push_payload",
     "send_to_subscriptions",
     "subscription_gone",
 ]
 
 logger = logging.getLogger(__name__)
 
-# The only notify kind: "a task needs your attention". Content-free by contract.
+# Notify kinds (contract #6). A kind is a generic status label, never task text;
+# the service worker renders kind-specific copy, and the real state loads over the
+# E2EE channel once the app opens.
+PLAN_READY_KIND = "plan_ready"
+TASK_DONE_KIND = "task_done"
+BLOCKED_KIND = "blocked"
 ATTENTION_KIND = "attention"
+ALLOWED_KINDS = frozenset({PLAN_READY_KIND, TASK_DONE_KIND, BLOCKED_KIND, ATTENTION_KIND})
 
 # How far a notify timestamp may drift from server time before it's rejected
 # (replay bound + clock-skew allowance).
@@ -59,11 +69,11 @@ VAPID_PUBLIC_KEY_ENV = "VAPID_PUBLIC_KEY"
 VAPID_SUBJECT_ENV = "VAPID_SUBJECT"
 
 
-def notify_challenge(device_id: str, kind: str, timestamp: int) -> str:
+def notify_challenge(device_id: str, task_id: str, kind: str, timestamp: int) -> str:
     """The canonical message the bridge signs for a notify. Binds the device, the
-    kind, and the timestamp so a captured signature cannot be replayed onto a
-    different notification (mirrors ``bridge/src/notify.rs::notify_challenge``)."""
-    return f"notify.{device_id}.{kind}.{timestamp}"
+    task, the kind, and the timestamp so a captured signature cannot be replayed
+    onto a different notification (mirrors ``bridge/src/notify.rs::notify_challenge``)."""
+    return f"notify.{device_id}.{task_id}.{kind}.{timestamp}"
 
 
 def notify_timestamp_fresh(timestamp: int, now: datetime) -> bool:
@@ -73,9 +83,15 @@ def notify_timestamp_fresh(timestamp: int, now: datetime) -> bool:
     return drift <= NOTIFY_FRESHNESS_WINDOW.total_seconds()
 
 
-def attention_payload() -> str:
-    """The one payload we ever push: generic, content-free, points at the app."""
-    return json.dumps({"kind": ATTENTION_KIND, "url": "/app/"})
+def push_payload(task_id: str, kind: str) -> str:
+    """The push payload delivered to the service worker (contract #6):
+    ``{"task_id", "kind", "url"}``. Still content-free — ``task_id`` is opaque and
+    ``kind`` is a generic status label; the ``url`` deep-links to the task view
+    under ``/app/`` (hash route ``#/task/<id>``), and the real task state loads
+    only over the E2EE channel once the app opens."""
+    return json.dumps(
+        {"task_id": task_id, "kind": kind, "url": f"/app/#/task/{task_id}"}
+    )
 
 
 def subscription_gone(status_code: int | None) -> bool:

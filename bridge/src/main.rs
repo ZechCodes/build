@@ -235,12 +235,25 @@ async fn serve() {
     );
     let handler = AppState::handler(app);
 
+    // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
+    // become a tight reconnect loop hammering the server. A connection that lasted
+    // long enough to be "clean" resets the delay, so a brief blip still recovers
+    // fast.
+    let min_backoff = Duration::from_secs(2);
+    let max_backoff = Duration::from_secs(30);
+    let mut backoff = min_backoff;
     loop {
+        let connected_at = std::time::Instant::now();
         match relay::run(&device_url, &identity, handler.clone()).await {
-            Ok(()) => eprintln!("relay disconnected; reconnecting in 2s"),
-            Err(e) => eprintln!("relay error: {e}; reconnecting in 2s"),
+            Ok(()) => eprintln!("relay disconnected; reconnecting in {}s", backoff.as_secs()),
+            Err(e) => eprintln!("relay error: {e}; reconnecting in {}s", backoff.as_secs()),
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // A session that stayed up a while was healthy: start the next retry cheap.
+        if connected_at.elapsed() >= max_backoff {
+            backoff = min_backoff;
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
     }
 }
 

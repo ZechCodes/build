@@ -67,6 +67,11 @@ pub struct PersistedTask {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// The most recent thing that went wrong for this task (merge failure, harness
+    /// crash), shown on the card until the task advances again. Defaulted so task
+    /// files written before this field load as `None`.
+    #[serde(default)]
+    pub last_error: Option<String>,
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
@@ -139,6 +144,24 @@ impl TaskStore {
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(records)
     }
+
+    /// Delete a task's persisted record (and any leftover `.tmp` from an interrupted
+    /// write). Removing a record that isn't there is not an error — delete is only
+    /// ever called for a terminal task the board wants gone, and idempotency keeps a
+    /// double-delete or a never-persisted task from failing the RPC.
+    pub fn delete(&self, task_id: &str) -> Result<(), TaskStoreError> {
+        for path in [
+            self.path_for(task_id),
+            self.dir.join(format!("{task_id}.json.tmp")),
+        ] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(TaskStoreError::Io(e)),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Only `*.json` files are task records; `.tmp` leftovers from an interrupted
@@ -170,6 +193,7 @@ mod tests {
         let map = legacy.as_object_mut().unwrap();
         map.remove("model");
         map.remove("effort");
+        map.remove("last_error");
         std::fs::write(
             dir.path().join("task-1.json"),
             serde_json::to_vec(&legacy).unwrap(),
@@ -180,6 +204,21 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].model, None);
         assert_eq!(loaded[0].effort, None);
+        assert_eq!(loaded[0].last_error, None);
+    }
+
+    #[test]
+    fn delete_removes_the_record_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        store.save(&record("task-1", TaskState::Merged)).unwrap();
+        assert_eq!(store.load_all().unwrap().len(), 1);
+
+        store.delete("task-1").unwrap();
+        assert_eq!(store.load_all().unwrap(), Vec::new(), "record gone");
+        // Deleting again (or a task that never persisted) is not an error.
+        store.delete("task-1").unwrap();
+        store.delete("never-existed").unwrap();
     }
 
     fn record(id: &str, state: TaskState) -> PersistedTask {
@@ -197,6 +236,7 @@ mod tests {
             last_summary: Some("planned it".into()),
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
+            last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
         }

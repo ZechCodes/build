@@ -39,6 +39,22 @@ pub enum OrchestratorError {
     Serde(#[from] serde_json::Error),
     #[error("git command failed: {0}")]
     Git(String),
+    /// A merge approval whose git work failed (conflict, wrong base checkout,
+    /// nothing to commit). The `merge_failed:` prefix is the cross-stream contract
+    /// the web client keys on to show the reason in the task banner; the state
+    /// stays in review because the merge never happened.
+    #[error("merge_failed: {0}")]
+    MergeFailed(String),
+}
+
+/// Convert any git failure hit during a merge approval into [`OrchestratorError::MergeFailed`]
+/// so the RPC message carries the contract's `merge_failed:` prefix.
+fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
+    match error {
+        OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
+        already @ OrchestratorError::MergeFailed(_) => already,
+        other => OrchestratorError::MergeFailed(other.to_string()),
+    }
 }
 
 /// One task in flight: its lifecycle state, its worktree, and its warm session.
@@ -51,6 +67,9 @@ pub struct ActiveTask {
     pub last_summary: Option<String>,
     /// Which model/effort this task's agents run on (None = harness default).
     pub model_choice: ModelChoice,
+    /// The most recent failure surfaced to the reviewer (merge failure, harness
+    /// crash). Set by the app layer; cleared here whenever the task advances again.
+    pub last_error: Option<String>,
     /// The warm PTY session for the current phase (None before dispatch/after end).
     session: Option<PtySession>,
 }
@@ -65,6 +84,7 @@ impl ActiveTask {
         plan_path: String,
         last_summary: Option<String>,
         model_choice: ModelChoice,
+        last_error: Option<String>,
     ) -> Self {
         ActiveTask {
             task,
@@ -72,6 +92,7 @@ impl ActiveTask {
             plan_path,
             last_summary,
             model_choice,
+            last_error,
             session: None,
         }
     }
@@ -93,6 +114,13 @@ impl ActiveTask {
     /// a `done`). `false` when no session is live (nothing to watch).
     pub fn harness_exited(&self) -> bool {
         self.session.as_ref().is_some_and(PtySession::has_exited)
+    }
+
+    /// The exit code of the phase's harness once it has exited — the `N` in the
+    /// "agent exited unexpectedly (exit code N)" attention message. `None` while it
+    /// is still running or no session is live.
+    pub fn harness_exit_code(&self) -> Option<i32> {
+        self.session.as_ref().and_then(PtySession::exit_code)
     }
 
     /// How long the phase's PTY has been silent, if a session is live — the
@@ -179,6 +207,7 @@ impl Orchestrator {
             plan_path: DEFAULT_PLAN_PATH.to_string(),
             last_summary: None,
             model_choice,
+            last_error: None,
             session: None,
         };
 
@@ -211,6 +240,8 @@ impl Orchestrator {
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => TaskEvent::BuildReady,
         };
         active.task.apply(event)?;
+        // The task advanced on its own report; any prior crash/merge error is stale.
+        active.last_error = None;
         Ok(())
     }
 
@@ -228,6 +259,7 @@ impl Orchestrator {
         model_override: Option<ModelChoice>,
     ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::ApprovePlan)?;
+        active.last_error = None;
         if let Some(choice) = model_override {
             active.model_choice = choice;
         }
@@ -247,6 +279,7 @@ impl Orchestrator {
         notes: &str,
     ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::SendNotes)?;
+        active.last_error = None;
         self.end_session(active);
         let prompt = self.render(&self.templates.revise, active, notes);
         active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
@@ -264,6 +297,7 @@ impl Orchestrator {
         comments: &str,
     ) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::RequestChanges)?;
+        active.last_error = None;
         self.end_session(active);
         let prompt = self.render(&self.templates.review_changes, active, comments);
         active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
@@ -273,6 +307,7 @@ impl Orchestrator {
     /// Reply to a blocked/failed/idle card with a human follow-up; resume the phase.
     pub fn reply(&self, active: &mut ActiveTask, message: &str) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Reply)?;
+        active.last_error = None;
         self.prompt_warm_session(active, message)?;
         Ok(())
     }
@@ -282,6 +317,7 @@ impl Orchestrator {
     /// is the starting point, exactly like `approve_plan` starting a cold build.
     pub fn resume(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Reply)?;
+        active.last_error = None;
         self.end_session(active);
         let prompt = match active.task.state {
             TaskState::Planning => self.render(&self.templates.plan, active, ""),
@@ -301,18 +337,41 @@ impl Orchestrator {
         )?)
     }
 
-    /// Approve the diff and merge: commit any outstanding work on the task branch,
-    /// merge it into the base branch, release the session, and remove the worktree.
+    /// Approve the diff and merge. Merge honesty (contract): the git work runs
+    /// **first** — only if commit + merge succeed does the task become `Merged`. A
+    /// git failure (conflict, wrong base checkout) leaves the task in `review` and
+    /// returns a `merge_failed:` error, so the board never shows a merged task whose
+    /// branch was in fact never merged. Worktree cleanup runs after the merge
+    /// committed and is best-effort — a failed prune must not un-merge the task.
     pub fn approve_merge(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
-        active.task.apply(TaskEvent::ApproveMerge)?;
-        self.end_session(active);
+        // Reject the approval up front if the task isn't at a review gate, without
+        // touching git or the lifecycle (a pure legality check).
+        crate::task::transition(
+            &active.task.state,
+            active.task.kind,
+            TaskEvent::ApproveMerge,
+        )?;
 
-        // The agent's work may be uncommitted; commit it on the task branch so the
-        // merge carries it. Empty trees are skipped.
-        self.commit_all(&active.worktree.path, &active.task.goal)?;
-        self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)?;
-        self.worktrees
-            .remove(&active.worktree, /* keep_branch */ false)?;
+        // Run (and only then commit to) the merge. Any git failure keeps the task in
+        // its review state with a contract-shaped `merge_failed:` reason.
+        self.commit_all(&active.worktree.path, &active.task.goal)
+            .map_err(as_merge_failure)?;
+        self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)
+            .map_err(as_merge_failure)?;
+
+        // The merge landed: now advance the lifecycle and tear down.
+        active.task.apply(TaskEvent::ApproveMerge)?;
+        active.last_error = None;
+        self.end_session(active);
+        if let Err(cleanup) = self
+            .worktrees
+            .remove(&active.worktree, /* keep_branch */ false)
+        {
+            eprintln!(
+                "approve_merge {}: merge succeeded but worktree cleanup failed: {cleanup}",
+                active.worktree.name
+            );
+        }
         Ok(())
     }
 
@@ -343,13 +402,33 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Abandon: release the session and remove the worktree, keeping the branch.
+    /// Abandon from any non-terminal state: kill the harness, mark the task
+    /// `Abandoned`, and best-effort prune its worktree + branch. Cleanup is
+    /// best-effort by contract — a leftover worktree/branch is logged, never a
+    /// reason to fail the abandon (the lifecycle verdict is what matters and must
+    /// persist).
     pub fn abandon(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Abandon)?;
         self.end_session(active);
-        self.worktrees
-            .remove(&active.worktree, /* keep_branch */ true)?;
+        if let Err(cleanup) = self
+            .worktrees
+            .remove(&active.worktree, /* keep_branch */ false)
+        {
+            eprintln!(
+                "abandon {}: task abandoned but worktree/branch cleanup failed: {cleanup}",
+                active.worktree.name
+            );
+        }
         Ok(())
+    }
+
+    /// Best-effort teardown of a leftover worktree + branch for a task being
+    /// deleted from the board. A failed cleanup is logged, never fatal — deleting
+    /// the task record is what removes it, and a stray worktree is only clutter.
+    pub fn discard_worktree(&self, worktree: &Worktree) {
+        if let Err(e) = self.worktrees.remove(worktree, /* keep_branch */ false) {
+            eprintln!("discard_worktree {}: {e}", worktree.name);
+        }
     }
 
     // --- internals -------------------------------------------------------------
@@ -887,6 +966,7 @@ mod tests {
             dispatched.plan_path.clone(),
             None,
             Default::default(),
+            None,
         );
         assert_eq!(
             revived.task.state,
@@ -927,6 +1007,7 @@ mod tests {
             dispatched.plan_path.clone(),
             Some("earlier summary".into()),
             Default::default(),
+            None,
         );
         orch.resume(&mut revived).unwrap();
         assert_eq!(revived.task.state, TaskState::Planning);
@@ -965,6 +1046,10 @@ mod tests {
         let error = orch.approve_merge(&mut t).expect_err("must refuse");
         let message = error.to_string();
         assert!(
+            message.starts_with("merge_failed:"),
+            "merge failure carries the contract prefix: {message}"
+        );
+        assert!(
             message.contains("user-feature") && message.contains("main"),
             "error names both branches: {message}"
         );
@@ -972,18 +1057,19 @@ mod tests {
             !repo.join("f.txt").exists(),
             "nothing was merged into the wrong branch"
         );
+        // Merge honesty: a failed merge leaves the task at its review gate, never
+        // `Merged` — the state must match what git actually did.
+        assert_eq!(t.task.state, TaskState::Review);
 
-        // Back on base, the merge goes through (the state machine already moved to
-        // Merged on the first attempt, so drive the git tail directly).
+        // Back on base, the same approval now succeeds end to end.
         assert!(Command::new("git")
             .args(["checkout", "main"])
             .current_dir(&repo)
             .status()
             .unwrap()
             .success());
-        orch.commit(&t).unwrap();
-        orch.merge_into_base(&t.worktree.branch, &t.worktree.base_branch)
-            .unwrap();
+        orch.approve_merge(&mut t).expect("merge succeeds on base");
+        assert_eq!(t.task.state, TaskState::Merged);
         assert!(repo.join("f.txt").exists());
     }
 
@@ -1067,7 +1153,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn abandon_removes_worktree_keeps_branch() {
+    async fn abandon_removes_worktree_and_prunes_branch() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let mut t = orch
@@ -1085,10 +1171,34 @@ mod tests {
         assert_eq!(t.task.state, TaskState::Abandoned);
         assert!(!t.worktree.path.exists());
 
+        // Contract: abandon best-effort prunes the worktree *and* the branch.
         let r = git2::Repository::open(&repo).unwrap();
         assert!(
-            r.find_branch(&branch, git2::BranchType::Local).is_ok(),
-            "branch kept after abandon"
+            r.find_branch(&branch, git2::BranchType::Local).is_err(),
+            "branch pruned after abandon"
         );
+    }
+
+    #[tokio::test]
+    async fn abandon_succeeds_even_when_worktree_cleanup_cannot_run() {
+        // Cleanup is best-effort: a worktree already deleted out from under the
+        // bridge must not fail the abandon — the lifecycle verdict still lands.
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(
+                TaskId::new("a2"),
+                "scrap this too",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        // Remove the git worktree registration so prune will error inside abandon.
+        orch.worktrees.remove(&t.worktree, true).unwrap();
+
+        orch.abandon(&mut t)
+            .expect("abandon never fails on cleanup");
+        assert_eq!(t.task.state, TaskState::Abandoned);
     }
 }

@@ -324,6 +324,7 @@ impl AppState {
                 model: record.model,
                 effort: record.effort,
             },
+            record.last_error,
         );
 
         let mut state_changed = false;
@@ -353,9 +354,24 @@ impl AppState {
         if repo_path.exists() {
             let project_id = self.add_project(repo_path, record.base_branch);
             self.task_project.insert(task_id.clone(), project_id);
+        } else if !active.task.state.is_terminal() {
+            // The repo itself is gone, so the task can never advance and — with no
+            // project to route to — every later RPC would return "unknown task_id".
+            // Abandon it so it stays legible on the board with a reason, instead of
+            // becoming an untouchable orphan.
+            eprintln!(
+                "recover {task_id}: project repo {} is gone; abandoning",
+                record.project_path
+            );
+            active
+                .task
+                .apply(TaskEvent::Abandon)
+                .map_err(|e| format!("recover {task_id}: {e}"))?;
+            active.last_error = Some(format!("project repo missing at {}", record.project_path));
+            state_changed = true;
         } else {
             eprintln!(
-                "recover {task_id}: project repo {} is gone; task kept without a project",
+                "recover {task_id}: project repo {} is gone; task kept as history",
                 record.project_path
             );
         }
@@ -409,6 +425,7 @@ impl AppState {
             last_summary: active.last_summary.clone(),
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
+            last_error: active.last_error.clone(),
             created_at,
             updated_at: now,
         };
@@ -542,8 +559,14 @@ impl AppState {
             };
             eprintln!("done socket: listening on {path}");
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    break;
+                let (stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        // A single accept error must not permanently stop `done`
+                        // reporting: log it and keep serving future connections.
+                        eprintln!("done socket: accept error: {e}; continuing");
+                        continue;
+                    }
                 };
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
@@ -637,6 +660,7 @@ impl AppState {
             "task.approve_merge" => self.task_approve_merge(params),
             "task.git_action" => self.task_git_action(params),
             "task.abandon" => self.task_abandon(params),
+            "task.delete" => self.task_delete(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
             "term.input" => self.term_input(params),
@@ -686,26 +710,39 @@ impl AppState {
     /// signal, never a completion — without this a crashed agent would leave its
     /// task stuck in planning/building for the daemon's whole life.
     fn mark_idle_tasks(&mut self, quiet_threshold: Duration) -> Vec<String> {
-        let idle_ids: Vec<String> = self
+        // For each demoted task, remember whether its harness *exited* (with which
+        // code) versus merely fell silent — an exited harness gets the contract's
+        // "agent exited unexpectedly (exit code N)" last_error so the crash is
+        // legible; a quiet-but-alive one does not.
+        let idle: Vec<(String, Option<i32>)> = self
             .tasks
             .iter()
             .filter(|(_, active)| {
                 matches!(active.task.state, TaskState::Planning | TaskState::Building)
             })
-            .filter(|(_, active)| {
-                active.harness_exited()
-                    || active
-                        .harness_idle_for()
-                        .is_some_and(|idle| idle >= quiet_threshold)
+            .filter_map(|(task_id, active)| {
+                if active.harness_exited() {
+                    Some((
+                        task_id.clone(),
+                        Some(active.harness_exit_code().unwrap_or(-1)),
+                    ))
+                } else if active
+                    .harness_idle_for()
+                    .is_some_and(|idle| idle >= quiet_threshold)
+                {
+                    Some((task_id.clone(), None))
+                } else {
+                    None
+                }
             })
-            .map(|(task_id, _)| task_id.clone())
             .collect();
 
-        for task_id in &idle_ids {
-            let Some(mut active) = self.tasks.remove(task_id) else {
+        let idle_ids: Vec<String> = idle.iter().map(|(task_id, _)| task_id.clone()).collect();
+        for (task_id, exit_code) in idle {
+            let Some(mut active) = self.tasks.remove(&task_id) else {
                 continue;
             };
-            let outcome = match self.project_of(task_id) {
+            let outcome = match self.project_of(&task_id) {
                 Ok(project_id) => match self.orch_for(&project_id) {
                     Ok(orch) => orch.on_idle(&mut active).map_err(err),
                     Err(e) => Err(e),
@@ -714,6 +751,9 @@ impl AppState {
             };
             if let Err(e) = outcome {
                 eprintln!("idle monitor {task_id}: {e}");
+            }
+            if let Some(code) = exit_code {
+                active.last_error = Some(format!("agent exited unexpectedly (exit code {code})"));
             }
             let (_, persisted) = self.finish_mutation(task_id.clone(), active);
             if let Err(e) = persisted {
@@ -1226,6 +1266,11 @@ impl AppState {
             .orch_for(&project_id)?
             .approve_merge(&mut active)
             .map_err(err);
+        // A merge failure leaves the task at its review gate; record the reason so
+        // the board surfaces it (contract: `merge_failed:` message, state unchanged).
+        if let Err(message) = &result {
+            active.last_error = Some(message.clone());
+        }
         let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
         persisted?;
@@ -1250,6 +1295,12 @@ impl AppState {
                 other => Err(format!("unknown git action: {other}")),
             }
         };
+        // Merge-shaped failures leave the task in review; keep the reason legible.
+        if let Err(message) = &result {
+            if message.starts_with("merge_failed:") {
+                active.last_error = Some(message.clone());
+            }
+        }
         let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
         persisted?;
@@ -1268,6 +1319,49 @@ impl AppState {
         result?;
         persisted?;
         Ok(view)
+    }
+
+    /// Delete a terminal task from the board: prune any leftover worktree + branch,
+    /// remove the durable record, and drop the in-memory bookkeeping. Valid only for
+    /// terminal tasks (merged/abandoned/failed) — a live task must be abandoned
+    /// first, so this never discards work an agent might still be doing.
+    fn task_delete(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
+        let state = active.task.state.clone();
+        if !matches!(
+            state,
+            TaskState::Merged | TaskState::Abandoned | TaskState::Failed(_)
+        ) {
+            return Err(format!(
+                "task.delete: task is {} — only terminal tasks \
+                 (merged/abandoned/failed) can be deleted",
+                state_str(&state)
+            ));
+        }
+        let worktree = active.worktree.clone();
+        let project_id = self.task_project.get(&task_id).cloned();
+
+        // A failed task still holds its worktree; merged/abandoned usually don't.
+        // Best-effort prune — never fail the delete on leftover cleanup.
+        if worktree.path.exists() {
+            if let Some(orch) = project_id
+                .as_deref()
+                .and_then(|pid| self.orch_for(pid).ok())
+            {
+                orch.discard_worktree(&worktree);
+            }
+        }
+
+        if let Some(store) = &self.task_store {
+            store
+                .delete(&task_id)
+                .map_err(|e| format!("task store: {e}"))?;
+        }
+        self.tasks.remove(&task_id);
+        self.task_project.remove(&task_id);
+        self.task_created_at.remove(&task_id);
+        Ok(json!({ "ok": true }))
     }
 
     fn task_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -1373,6 +1467,7 @@ impl AppState {
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
             "summary": active.last_summary,
+            "last_error": active.last_error,
             "project": project,
             "project_id": project_id,
             "harness": self.harness,
@@ -2432,6 +2527,7 @@ mod tests {
                 last_summary: None,
                 model: None,
                 effort: None,
+                last_error: None,
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -2493,6 +2589,7 @@ mod tests {
                 last_summary: None,
                 model: None,
                 effort: None,
+                last_error: None,
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })
@@ -2541,6 +2638,162 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("task-9.json"), "error names the file: {err}");
+    }
+
+    #[tokio::test]
+    async fn crashed_harness_is_marked_idle_with_the_exit_code() {
+        // A working task whose harness exits non-zero without ever calling `done`
+        // must land in idle_unreported within seconds, carrying the exit code so the
+        // crash is legible (contract #5).
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let orch = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("wt-side"),
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("exit 7")),
+            Templates::default(),
+        );
+        let active = orch
+            .dispatch(
+                crate::task::TaskId::new("task-9"),
+                "crashy work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        let project_id = state.projects[0].id.clone();
+        state.task_project.insert("task-9".into(), project_id);
+        state.tasks.insert("task-9".into(), active);
+
+        // Poll like the 5s monitor does; a generous threshold so only the *exit*
+        // (not quiescence) drives the demotion.
+        let mut demoted = Vec::new();
+        for _ in 0..50 {
+            demoted = state.mark_idle_tasks(Duration::from_secs(3600));
+            if !demoted.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(demoted, vec!["task-9".to_string()]);
+        let got = state.handle(req("task.get", json!({ "task_id": "task-9" })));
+        assert_eq!(got["result"]["state"], "idle_unreported");
+        assert_eq!(
+            got["result"]["last_error"],
+            "agent exited unexpectedly (exit code 7)"
+        );
+    }
+
+    #[test]
+    fn merge_failure_sets_last_error_and_keeps_the_review_state() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "do work", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+
+        // Wander the primary checkout off base so the merge can't land.
+        assert!(Command::new("git")
+            .args(["checkout", "-b", "user-feature"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        let failed = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
+        assert_eq!(failed["ok"], false);
+        assert!(
+            failed["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("merge_failed:"),
+            "{failed:?}"
+        );
+
+        // The task stays in review, now with the reason recorded for the banner.
+        let got = state.handle(req("task.get", json!({ "task_id": task_id })));
+        assert_eq!(got["result"]["state"], "review");
+        assert!(got["result"]["last_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("merge_failed:"));
+
+        // Back on base, a retry merges and clears the error.
+        assert!(Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
+        assert_eq!(merged["result"]["state"], "merged");
+        assert!(merged["result"]["last_error"].is_null(), "cleared on merge");
+    }
+
+    #[test]
+    fn delete_is_terminal_only_and_removes_the_task() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // A live (non-terminal) task cannot be deleted.
+        let live = state.handle(req("task.dispatch", json!({ "goal": "still going" })));
+        let live_id = live["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(live["result"]["state"], "plan_review");
+        let refused = state.handle(req("task.delete", json!({ "task_id": live_id })));
+        assert_eq!(refused["ok"], false);
+        assert!(refused["error"].as_str().unwrap().contains("terminal"));
+
+        // A merged task can: it disappears from the board and its record is gone.
+        let quick = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick work", "kind": "quick" }),
+        ));
+        let quick_id = quick["result"]["task_id"].as_str().unwrap().to_string();
+        state.handle(req("task.approve_merge", json!({ "task_id": quick_id })));
+        let deleted = state.handle(req("task.delete", json!({ "task_id": quick_id })));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert_eq!(deleted["result"]["ok"], true);
+        let list = state.handle(req("task.list", json!({})));
+        let ids: Vec<&str> = list["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["task_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.contains(&quick_id.as_str()),
+            "deleted task gone: {ids:?}"
+        );
+        assert!(!tasks_dir.join(format!("{quick_id}.json")).exists());
+
+        // Deleting a task that doesn't exist is a clean error, not a panic.
+        let missing = state.handle(req("task.delete", json!({ "task_id": "task-999" })));
+        assert_eq!(missing["ok"], false);
     }
 
     #[test]

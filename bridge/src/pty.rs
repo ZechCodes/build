@@ -84,6 +84,11 @@ pub struct PtySession {
     output_tx: broadcast::Sender<Vec<u8>>,
     last_activity: Arc<Mutex<Instant>>,
     submit: SubmitKey,
+    /// The child's exit code, cached the first time it is observed. `try_wait`
+    /// reaps the child exactly once, so the status must be remembered here or the
+    /// crash-detection message ("exit code N") could never recover the code after
+    /// the first poll.
+    exit_code: Mutex<Option<i32>>,
 }
 
 impl PtySession {
@@ -153,6 +158,7 @@ impl PtySession {
             output_tx,
             last_activity,
             submit: spec.submit.clone(),
+            exit_code: Mutex::new(None),
         })
     }
 
@@ -215,7 +221,21 @@ impl PtySession {
     /// child if it has — `try_wait` collects the exit status — so polling this
     /// never leaves a zombie behind.
     pub fn has_exited(&self) -> bool {
-        matches!(self.child.lock().unwrap().try_wait(), Ok(Some(_)))
+        self.exit_code().is_some()
+    }
+
+    /// The child's exit code once it has exited, or `None` while it is still
+    /// running. Caches the first observed status: `try_wait` reaps the child once,
+    /// so a later poll would otherwise lose the code (contract: the crash message
+    /// carries the real exit code).
+    pub fn exit_code(&self) -> Option<i32> {
+        let mut cached = self.exit_code.lock().unwrap();
+        if cached.is_none() {
+            if let Ok(Some(status)) = self.child.lock().unwrap().try_wait() {
+                *cached = Some(status.exit_code() as i32);
+            }
+        }
+        *cached
     }
 
     /// The harness's OS process id, if it is still running.
@@ -342,6 +362,27 @@ mod tests {
         let leaf = canonical.file_name().unwrap().to_string_lossy().to_string();
         let out = read_until(&mut rx, &leaf).await;
         assert!(out.contains(&leaf), "pwd should show the worktree: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn exit_code_is_cached_and_survives_repeated_polls() {
+        // A harness that exits with a distinct non-zero code — the crash case whose
+        // code the attention message must carry.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("exit 3");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let mut code = None;
+        for _ in 0..50 {
+            if let Some(c) = session.exit_code() {
+                code = Some(c);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(code, Some(3), "the real exit code is observed");
+        // Repeated polls keep returning it even though try_wait reaps only once.
+        assert_eq!(session.exit_code(), Some(3));
+        assert!(session.has_exited());
     }
 
     #[tokio::test]

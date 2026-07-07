@@ -133,6 +133,15 @@ impl ActiveTask {
     pub fn harness_pid(&self) -> Option<u32> {
         self.session.as_ref().and_then(PtySession::pid)
     }
+
+    /// Kill and reap the phase's harness, dropping the session. Used when a task is
+    /// torn down (deleted) while it may still hold a live PTY — a Failed task keeps
+    /// its session alive for replies, so deleting one must not leak the process.
+    pub fn end_session(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.kill_and_reap();
+        }
+    }
 }
 
 /// Builds the one-shot harness command for a rendered prompt + model choice.
@@ -479,11 +488,9 @@ impl Orchestrator {
     }
 
     fn end_session(&self, active: &mut ActiveTask) {
-        if let Some(session) = active.session.take() {
-            // Kill AND reap: kill alone leaves a zombie per phase transition,
-            // which over a long-lived daemon exhausts the process table.
-            session.kill_and_reap();
-        }
+        // Kill AND reap: kill alone leaves a zombie per phase transition, which over
+        // a long-lived daemon exhausts the process table.
+        active.end_session();
     }
 
     /// Write the per-task MCP config under `.build/` so it never trips plan-scope

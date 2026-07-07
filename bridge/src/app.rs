@@ -1352,6 +1352,20 @@ impl AppState {
         let worktree = active.worktree.clone();
         let project_id = self.task_project.get(&task_id).cloned();
 
+        // Delete the durable record first: if the store fails, nothing else has
+        // changed yet, so the task stays intact and consistent on the board.
+        if let Some(store) = &self.task_store {
+            store
+                .delete(&task_id)
+                .map_err(|e| format!("task store: {e}"))?;
+        }
+
+        // Own the task so we can tear it down. A Failed task keeps its PTY session
+        // alive (so the user could reply); kill and reap it, or the harness process
+        // leaks and its worktree is pruned out from under a still-running agent.
+        let mut active = self.tasks.remove(&task_id).expect("checked above");
+        active.end_session();
+
         // A failed task still holds its worktree; merged/abandoned usually don't.
         // Best-effort prune — never fail the delete on leftover cleanup.
         if worktree.path.exists() {
@@ -1363,12 +1377,6 @@ impl AppState {
             }
         }
 
-        if let Some(store) = &self.task_store {
-            store
-                .delete(&task_id)
-                .map_err(|e| format!("task store: {e}"))?;
-        }
-        self.tasks.remove(&task_id);
         self.task_project.remove(&task_id);
         self.task_created_at.remove(&task_id);
         Ok(json!({ "ok": true }))
@@ -2868,6 +2876,73 @@ mod tests {
         // Deleting a task that doesn't exist is a clean error, not a panic.
         let missing = state.handle(req("task.delete", json!({ "task_id": "task-999" })));
         assert_eq!(missing["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn delete_kills_a_failed_tasks_live_harness() {
+        // A Failed task keeps its PTY session alive on purpose (the user can reply).
+        // Deleting it must kill AND reap that harness first — otherwise the agent
+        // process leaks (or lingers as an unreaped zombie) and its worktree is pruned
+        // out from under a still-running process.
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        // A warm harness that stays alive well past the test, standing in for a real
+        // interactive CLI still running after a done(failed).
+        let orch = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("wt-side"),
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 120")),
+            Templates::default(),
+        );
+        let active = orch
+            .dispatch(
+                crate::task::TaskId::new("task-9"),
+                "crashy work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        let project_id = state.projects[0].id.clone();
+        state.task_project.insert("task-9".into(), project_id);
+        state.tasks.insert("task-9".into(), active);
+
+        // The agent reports failed: the task goes Failed but its session stays live.
+        state.on_agent_done(
+            "task-9",
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Failed,
+                summary: "gave up".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let got = state.handle(req("task.get", json!({ "task_id": "task-9" })));
+        assert_eq!(got["result"]["state"], "failed");
+        let pid = state.tasks["task-9"]
+            .harness_pid()
+            .expect("failed task still holds a live harness");
+
+        // Delete the terminal task.
+        let deleted = state.handle(req("task.delete", json!({ "task_id": "task-9" })));
+        assert_eq!(deleted["result"]["ok"], true, "{deleted:?}");
+
+        // The harness must be gone — kill -0 returns ESRCH once it is reaped.
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(
+            !alive,
+            "delete must kill and reap the failed task's harness (pid {pid})"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ export async function renderBoard() {
           <span class="chip ${chipClass(t.state)}">${STATE_LABEL[t.state] || t.state}</span></div>
         <div class="meta"><span>${esc(t.project)}</span><span>·</span><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
         ${payloadFor(t) ? `<div class="payload">${esc(payloadFor(t))}</div>` : ""}
+        ${t.last_error ? `<div class="cerr">⚠ ${esc(t.last_error)}</div>` : ""}
       </div>`;
     const bucket = (label, items, quiet) =>
       items.length

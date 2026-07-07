@@ -9,6 +9,7 @@ import { assemblePlanNotes, assembleDiffNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
+import { canDelete, canAbandon, mergeFailureReason } from "../core/taskActions.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { toggleTerminal } from "../terminal/drawer.js";
@@ -24,12 +25,16 @@ export async function renderTask() {
       <div class="thead"><h1>${esc(m.goal || "")}</h1>
         <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span>
           <span id="termToggle" role="button" style="cursor:pointer">terminal <span class="kbd">\`</span></span></div></div>
-      <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span></div>
+      <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>
+        <span class="taskactions" id="taskactions"></span></div>
+      <div class="task-error" id="taskError" role="alert" hidden></div>
       <div class="tabs"><div class="t ${tab === "plan" ? "active" : ""}" data-tab="plan">Plan</div>
         <div class="t ${tab === "diff" ? "active" : ""}" data-tab="diff">Diff</div></div>
       <div id="tabbody"></div>`;
     $("#back").onclick = () => go({ name: "board" });
     $("#termToggle").onclick = () => toggleTerminal(); // tap target — the backtick shortcut has no key on mobile
+    wireActions(m);
+    showBanner(m.last_error);
     root.querySelectorAll(".tabs .t").forEach(
       (e) =>
         (e.onclick = () => {
@@ -42,6 +47,64 @@ export async function renderTask() {
     );
   };
   let last = null;
+
+  // The dismissible error banner (bridge task_view.last_error: merge failure,
+  // harness crash). Lives outside the tab body so it survives tab switches; the
+  // poll keeps it in sync with the task's current last_error.
+  const showBanner = (message) => {
+    const el = $("#taskError");
+    if (!el) return;
+    if (message) {
+      el.textContent = message;
+      el.hidden = false;
+    } else {
+      el.textContent = "";
+      el.hidden = true;
+    }
+  };
+
+  // Removal actions, mapped 1:1 to the bridge RPCs by the task's state: Abandon
+  // (task.abandon) for a live task, Delete (task.delete) for a terminal one.
+  const wireActions = (m) => {
+    const el = $("#taskactions");
+    if (!el) return;
+    const state = m && m.state;
+    if (canDelete(state)) {
+      el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
+      $("#deleteTask").onclick = async () => {
+        const btn = $("#deleteTask");
+        btn.disabled = true;
+        btn.textContent = "deleting…";
+        try {
+          await App.call("task.delete", { task_id: id });
+          go({ name: "board" });
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = "Delete";
+          showBanner("error: " + e.message.slice(0, 80));
+        }
+      };
+    } else if (canAbandon(state)) {
+      el.innerHTML = `<button class="btn mini" id="abandonTask">Abandon</button>`;
+      $("#abandonTask").onclick = async () => {
+        if (!window.confirm("Abandon this task? Its worktree and branch are removed; the task stays as history.")) return;
+        const btn = $("#abandonTask");
+        btn.disabled = true;
+        btn.textContent = "abandoning…";
+        try {
+          await App.call("task.abandon", { task_id: id });
+          paint();
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = "Abandon";
+          showBanner("error: " + e.message.slice(0, 80));
+        }
+      };
+    } else {
+      el.innerHTML = "";
+    }
+  };
+
   loadModelCatalog(); // warm the selector catalog before plan_review needs it
   // Selection watchers are document-level; dispose the previous render's before
   // wiring new ones or the 1.6s poll accumulates listeners.
@@ -383,7 +446,8 @@ export async function renderTask() {
         } catch (e) {
           btn.disabled = false;
           btn.textContent = originalLabel;
-          flash("error: " + e.message.slice(0, 70));
+          const reason = mergeFailureReason(e.message);
+          flash(reason ? "merge failed: " + reason.slice(0, 70) : "error: " + e.message.slice(0, 70));
           updateDiffActions();
         }
       };
@@ -428,6 +492,9 @@ export async function renderTask() {
     }
     if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
     last = t;
+    // Keep the error banner in sync even when the state is unchanged — a merge
+    // failure leaves the task in review, so the shell won't re-render.
+    showBanner(t.last_error);
     const body = $("#tabbody");
     if (tab === "plan") {
       if (t.state === "planning" || t.state === "created") {

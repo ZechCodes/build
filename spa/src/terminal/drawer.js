@@ -10,6 +10,25 @@ import { pinnedDeviceTransportKey } from "../devices.js";
 import { TerminalSession } from "./session.js";
 
 let termSession = null;
+let termFitAddon = null;
+let term = null;
+
+/** Refit the terminal to the drawer's current size and tell the PTY, but only
+ *  while the drawer is open (a hidden drawer has no measurable size). Driven by a
+ *  ResizeObserver on the drawer and by window resize (rotation, split-view).
+ *
+ *  We compute the target grid with the addon's proposeDimensions() but apply it
+ *  with a direct term.resize() rather than the addon's fit(): fit() carries a
+ *  _lastCols cache and a 50ms _isResizing guard that, when several triggers fire
+ *  close together, can swallow the real update. A direct resize is deterministic
+ *  and idempotent (skipped when the grid is unchanged), and still emits the
+ *  terminal's onResize → the PTY. */
+function fitTerminalToViewport() {
+  if (!termFitAddon || !term || !$("#drawer").classList.contains("show")) return;
+  const dims = termFitAddon.proposeDimensions();
+  if (!dims || !(dims.cols > 0) || !(dims.rows > 0)) return;
+  if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
+}
 
 /**
  * Re-point the drawer at the app session's (new) device. A healthy session
@@ -31,11 +50,16 @@ export async function toggleTerminal() {
   }
   drawer.classList.add("show");
   if (!termSession) {
-    const { init, Terminal } = await import("ghostty-web");
+    const { init, Terminal, FitAddon } = await import("ghostty-web");
     await init();
     $("#term").innerHTML = "";
-    const term = new Terminal({ cols: 140, rows: 16, fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
+    term = new Terminal({ cols: 140, rows: 16, fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
     term.open($("#term"));
+    // Fit the terminal (and the PTY) to the drawer instead of a fixed 140×16 —
+    // a fixed grid overflows a phone and never matches the real window.
+    termFitAddon = new FitAddon();
+    term.loadAddon(termFitAddon);
+    termFitAddon.fit();
     termSession = new TerminalSession({
       url: RELAY_URL,
       transport,
@@ -53,7 +77,18 @@ export async function toggleTerminal() {
     });
     termSession.onOutput((bytes) => term.write(bytes));
     term.onData((data) => termSession.input(data).catch(() => {}));
-    await termSession.start(140, 16);
+    // Every refit (initial, ResizeObserver, or window resize) tells the PTY the
+    // new grid so wrapping stays correct.
+    term.onResize(({ cols, rows }) => termSession.resize(cols, rows).catch(() => {}));
+    // Expose the live terminal for the QA harness (feature-check terminal-resize).
+    window.__buildTerminal = term;
+    await termSession.start(term.cols, term.rows);
+    // Refit when the drawer's box changes (viewport resize, rotation, keyboard).
+    new ResizeObserver(() => fitTerminalToViewport()).observe($("#term"));
+    window.addEventListener("resize", fitTerminalToViewport);
+  } else {
+    // Re-fit on reopen — the viewport may have changed while it was closed.
+    fitTerminalToViewport();
   }
 }
 

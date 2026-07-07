@@ -29,7 +29,11 @@ self.addEventListener("push", (event) => {
   try {
     const payload = event.data ? event.data.json() : null;
     if (payload) {
-      if (typeof payload.url === "string" && payload.url.startsWith("/")) url = payload.url;
+      // Only a same-origin absolute path is a safe deep link. Reject a
+      // protocol-relative "//host/path" (a buggy payload) — it is cross-origin and
+      // would navigate away from the app; fall back to the app root.
+      if (typeof payload.url === "string" && payload.url.startsWith("/") && !payload.url.startsWith("//"))
+        url = payload.url;
       if (typeof payload.kind === "string") kind = payload.kind;
       if (typeof payload.task_id === "string") taskId = payload.task_id;
     }
@@ -67,8 +71,12 @@ self.addEventListener("notificationclick", (event) => {
         if ("navigate" in existing) {
           try {
             await existing.navigate(url);
-          } catch {
-            // Cross-origin or unsupported — the focus above is enough.
+          } catch (err) {
+            // navigate() rejects for an uncontrolled window (shift-reload, mid-update)
+            // or a malformed deep link. Don't swallow it silently: log it and open a
+            // fresh window on the target so the click still lands there.
+            console.warn("sw: deep-link navigate failed; opening a new window", err);
+            return self.clients.openWindow(url);
           }
         }
         return existing;

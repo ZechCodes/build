@@ -9,7 +9,7 @@ import { assemblePlanNotes, assembleDiffNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
-import { canDelete, canAbandon, mergeFailureReason } from "../core/taskActions.js";
+import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/taskActions.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { toggleTerminal } from "../terminal/drawer.js";
@@ -34,7 +34,7 @@ export async function renderTask() {
     $("#back").onclick = () => go({ name: "board" });
     $("#termToggle").onclick = () => toggleTerminal(); // tap target — the backtick shortcut has no key on mobile
     wireActions(m);
-    showBanner(m.last_error);
+    showBanner(bannerText(localError, m.last_error));
     root.querySelectorAll(".tabs .t").forEach(
       (e) =>
         (e.onclick = () => {
@@ -48,9 +48,15 @@ export async function renderTask() {
   };
   let last = null;
 
+  // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
+  // last_error for these, so without holding it here the 1.6s poll would call
+  // showBanner(t.last_error) and clear the message within ~0–1.6s — too fast to
+  // read. It takes precedence over the polled last_error until the next user action.
+  let localError = null;
+
   // The dismissible error banner (bridge task_view.last_error: merge failure,
   // harness crash). Lives outside the tab body so it survives tab switches; the
-  // poll keeps it in sync with the task's current last_error.
+  // poll keeps it in sync with the task's current last_error (or a held localError).
   const showBanner = (message) => {
     const el = $("#taskError");
     if (!el) return;
@@ -72,6 +78,7 @@ export async function renderTask() {
     if (canDelete(state)) {
       el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
       $("#deleteTask").onclick = async () => {
+        localError = null; // a fresh action clears any stale local error
         const btn = $("#deleteTask");
         btn.disabled = true;
         btn.textContent = "deleting…";
@@ -81,13 +88,15 @@ export async function renderTask() {
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Delete";
-          showBanner("error: " + e.message.slice(0, 80));
+          localError = "error: " + e.message.slice(0, 80);
+          showBanner(localError);
         }
       };
     } else if (canAbandon(state)) {
       el.innerHTML = `<button class="btn mini" id="abandonTask">Abandon</button>`;
       $("#abandonTask").onclick = async () => {
         if (!window.confirm("Abandon this task? Its worktree and branch are removed; the task stays as history.")) return;
+        localError = null; // a fresh action clears any stale local error
         const btn = $("#abandonTask");
         btn.disabled = true;
         btn.textContent = "abandoning…";
@@ -97,7 +106,8 @@ export async function renderTask() {
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Abandon";
-          showBanner("error: " + e.message.slice(0, 80));
+          localError = "error: " + e.message.slice(0, 80);
+          showBanner(localError);
         }
       };
     } else {
@@ -493,8 +503,10 @@ export async function renderTask() {
     if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
     last = t;
     // Keep the error banner in sync even when the state is unchanged — a merge
-    // failure leaves the task in review, so the shell won't re-render.
-    showBanner(t.last_error);
+    // failure leaves the task in review, so the shell won't re-render. A held
+    // local RPC error (Abandon/Delete failure) wins over the polled last_error so
+    // the poll can't wipe it before the user has read it.
+    showBanner(bannerText(localError, t.last_error));
     const body = $("#tabbody");
     if (tab === "plan") {
       if (t.state === "planning" || t.state === "created") {

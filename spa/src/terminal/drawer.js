@@ -78,8 +78,13 @@ export async function toggleTerminal() {
     termSession.onOutput((bytes) => term.write(bytes));
     term.onData((data) => termSession.input(data).catch(() => {}));
     // Every refit (initial, ResizeObserver, or window resize) tells the PTY the
-    // new grid so wrapping stays correct.
-    term.onResize(({ cols, rows }) => termSession.resize(cols, rows).catch(() => {}));
+    // new grid so wrapping stays correct. A resize RPC that the bridge rejects on a
+    // healthy connection leaves the PTY grid diverged from the rendering, so don't
+    // swallow it silently — log it (disconnect/timeout failures still self-heal on
+    // the next reconnect's re-attach).
+    term.onResize(({ cols, rows }) =>
+      termSession.resize(cols, rows).catch((err) => console.warn("terminal resize failed:", err)),
+    );
     // Expose the live terminal for the QA harness (feature-check terminal-resize).
     window.__buildTerminal = term;
     await termSession.start(term.cols, term.rows);

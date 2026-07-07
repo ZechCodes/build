@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canDelete, canAbandon, mergeFailureReason } from "../src/core/taskActions.js";
+import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../src/core/taskActions.js";
 
 describe("task removal actions match the bridge contract", () => {
   it("delete is offered only for terminal states (merged/abandoned/failed)", () => {
@@ -35,5 +35,23 @@ describe("merge failure reason extraction", () => {
     expect(mergeFailureReason("unknown task_id")).toBeNull();
     expect(mergeFailureReason(null)).toBeNull();
     expect(mergeFailureReason(undefined)).toBeNull();
+  });
+});
+
+describe("error banner precedence", () => {
+  it("a held local error wins over the polled last_error", () => {
+    // The whole point: a failed delete/abandon (localError) must not be wiped by
+    // the next poll, which supplies the task's last_error (often null).
+    expect(bannerText("error: task store io", null)).toBe("error: task store io");
+    expect(bannerText("error: task store io", "merge_failed: x")).toBe("error: task store io");
+  });
+
+  it("falls back to the polled last_error when there is no local error", () => {
+    expect(bannerText(null, "merge_failed: conflict")).toBe("merge_failed: conflict");
+  });
+
+  it("is empty (banner hidden) when neither is set", () => {
+    expect(bannerText(null, null)).toBe("");
+    expect(bannerText(null, undefined)).toBe("");
   });
 });

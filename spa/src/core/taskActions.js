@@ -28,3 +28,11 @@ export function mergeFailureReason(message) {
   if (!message.startsWith(prefix)) return null;
   return message.slice(prefix.length).trim();
 }
+
+/** What the task error banner should show. A locally-held RPC failure (a failed
+ *  task.abandon / task.delete, which the bridge does NOT record in last_error)
+ *  takes precedence over the polled last_error, so the 1.6s poll can't wipe it
+ *  before the user reads it. Falsy for both means the banner is hidden. */
+export function bannerText(localError, polledLastError) {
+  return localError || polledLastError || "";
+}

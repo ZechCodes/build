@@ -8,6 +8,7 @@
 #   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
 #   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
 controllers:
+  - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController

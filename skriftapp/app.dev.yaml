@@ -1,4 +1,5 @@
 controllers:
+  - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController

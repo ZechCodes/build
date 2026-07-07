@@ -1281,10 +1281,25 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
+        // Prune only after the Merged verdict is durably persisted (contract #3).
+        let merged_worktree = result.is_ok().then(|| active.worktree.clone());
         let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
         persisted?;
+        if let Some(worktree) = merged_worktree {
+            self.prune_merged_worktree(&project_id, &worktree);
+        }
         Ok(view)
+    }
+
+    /// Prune a merged task's worktree + branch once its `Merged` verdict is durable.
+    /// Best-effort and ordered strictly after the persist (contract #3): a crash
+    /// before this leaves a surviving worktree that just re-merges as a no-op on
+    /// re-approve, never a merged task that boot recovery mislabels as abandoned.
+    fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
+        if let Ok(orch) = self.orch_for(project_id) {
+            orch.discard_worktree(worktree);
+        }
     }
 
     /// Finish-the-worktree git actions from the diff review: `commit` and `push`
@@ -1311,9 +1326,17 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
+        // A `merge`/`merge_push` that landed leaves the task Merged; prune only after
+        // that verdict is durably persisted (contract #3). `commit`/`push` keep the
+        // worktree, so they never match.
+        let merged_worktree = (result.is_ok() && matches!(active.task.state, TaskState::Merged))
+            .then(|| active.worktree.clone());
         let (view, persisted) = self.finish_mutation(task_id, active);
         result?;
         persisted?;
+        if let Some(worktree) = merged_worktree {
+            self.prune_merged_worktree(&project_id, &worktree);
+        }
         Ok(view)
     }
 
@@ -1887,6 +1910,7 @@ pub fn state_str(state: &TaskState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -2773,6 +2797,53 @@ mod tests {
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(merged["result"]["last_error"].is_null(), "cleared on merge");
+    }
+
+    #[test]
+    fn a_merge_whose_persist_fails_keeps_its_worktree_for_self_healing() {
+        // Contract #3 ordering: the Merged verdict is persisted BEFORE the worktree
+        // and branch are pruned. If the persist fails (here: the task store dir made
+        // unwritable), the RPC errors and the worktree must survive — on the next
+        // boot the stored record still says `review`, its worktree is intact, and a
+        // re-approve re-merges as a no-op. If cleanup ran before the persist, a crash
+        // in that window would delete the branch and make boot recovery mislabel the
+        // merged work as `Abandoned`.
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        let quick = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "persist race", "kind": "quick" }),
+        ));
+        let quick_id = quick["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(quick["result"]["state"], "review");
+        let worktree_path = state.tasks[&quick_id].worktree.path.clone();
+        assert!(worktree_path.exists());
+
+        // Make the next persist fail: the store can no longer create its tmp file.
+        std::fs::set_permissions(&tasks_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": quick_id })));
+        // Restore write access before any assertion can unwind and leak the temp dir.
+        std::fs::set_permissions(&tasks_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(merged["ok"], false, "persist failure surfaces: {merged:?}");
+        assert!(merged["error"].as_str().unwrap().contains("task store"));
+        // The merge landed in git, but the worktree is untouched because the persist
+        // never succeeded — cleanup is strictly after a durable Merged.
+        assert!(
+            worktree_path.exists(),
+            "worktree pruned before the verdict was persisted"
+        );
     }
 
     #[test]

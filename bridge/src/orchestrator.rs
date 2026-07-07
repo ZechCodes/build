@@ -350,8 +350,16 @@ impl Orchestrator {
     /// **first** — only if commit + merge succeed does the task become `Merged`. A
     /// git failure (conflict, wrong base checkout) leaves the task in `review` and
     /// returns a `merge_failed:` error, so the board never shows a merged task whose
-    /// branch was in fact never merged. Worktree cleanup runs after the merge
-    /// committed and is best-effort — a failed prune must not un-merge the task.
+    /// branch was in fact never merged.
+    ///
+    /// Worktree/branch cleanup is deliberately **not** done here: the caller
+    /// persists the `Merged` verdict first and only then prunes (via
+    /// [`discard_worktree`](Self::discard_worktree)). Ordering matters (contract #3)
+    /// — if cleanup ran before the persist and the daemon died in between, the
+    /// stored record would still say `review` with its worktree/branch gone, and
+    /// boot recovery would mislabel genuinely-merged work as `Abandoned`. Deferring
+    /// cleanup to after the persist collapses that window to a self-healing one (a
+    /// surviving worktree just re-merges as a no-op on re-approve).
     pub fn approve_merge(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
         // Reject the approval up front if the task isn't at a review gate, without
         // touching git or the lifecycle (a pure legality check).
@@ -368,19 +376,11 @@ impl Orchestrator {
         self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)
             .map_err(as_merge_failure)?;
 
-        // The merge landed: now advance the lifecycle and tear down.
+        // The merge landed: advance the lifecycle and end the session. The worktree
+        // stays on disk until the caller has persisted this verdict.
         active.task.apply(TaskEvent::ApproveMerge)?;
         active.last_error = None;
         self.end_session(active);
-        if let Err(cleanup) = self
-            .worktrees
-            .remove(&active.worktree, /* keep_branch */ false)
-        {
-            eprintln!(
-                "approve_merge {}: merge succeeded but worktree cleanup failed: {cleanup}",
-                active.worktree.name
-            );
-        }
         Ok(())
     }
 
@@ -740,14 +740,22 @@ mod tests {
         let review_diff = orch.diff(&t).unwrap();
         assert!(review_diff.files().iter().any(|f| f.path == "greeting.txt"));
 
-        // Approve & merge → Merged, worktree gone, base branch has the file.
+        // Approve & merge → Merged, base branch has the file. The merge itself does
+        // NOT prune the worktree — that is the caller's step, after persisting the
+        // verdict (contract #3), so the worktree survives the merge.
         orch.approve_merge(&mut t).unwrap();
         assert_eq!(t.task.state, TaskState::Merged);
-        assert!(!t.worktree.path.exists(), "worktree removed");
+        assert!(
+            t.worktree.path.exists(),
+            "the merge leaves cleanup to the caller"
+        );
         assert!(
             repo.join("greeting.txt").exists(),
             "merged into base working tree"
         );
+        // The caller prunes once the Merged verdict is durable.
+        orch.discard_worktree(&t.worktree);
+        assert!(!t.worktree.path.exists(), "worktree pruned after persist");
         // The plan is kept through merge (intent as infrastructure).
         assert!(
             repo.join(".build/plan.md").exists(),
@@ -1006,9 +1014,15 @@ mod tests {
         );
         assert!(t.worktree.path.exists());
 
-        // Merge + push: base updated in origin, task merged, worktree gone.
+        // Merge + push: base updated in origin, task merged. Cleanup is the caller's
+        // step (contract #3), so the worktree survives the merge itself.
         orch.merge_and_push(&mut t).unwrap();
         assert_eq!(t.task.state, TaskState::Merged);
+        assert!(
+            t.worktree.path.exists(),
+            "merge leaves cleanup to the caller"
+        );
+        orch.discard_worktree(&t.worktree);
         assert!(!t.worktree.path.exists());
         let (ok, tree) = git_origin(&["ls-tree", "--name-only", "main"]);
         assert!(

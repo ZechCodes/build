@@ -20,8 +20,9 @@ use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::pty::{HarnessSpec, PtyError, PtySession};
 use crate::task::{
-    stage_transition, CommentState, IllegalStageTransition, IllegalTransition, Stage, StageComment,
-    StageEvent, StageManifestEntry, StageState, Task, TaskEvent, TaskId, TaskKind, TaskState,
+    stage_transition, CommentState, IllegalStageTransition, IllegalTransition, Phase, Stage,
+    StageComment, StageEvent, StageManifestEntry, StageState, Task, TaskEvent, TaskId, TaskKind,
+    TaskState,
 };
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
 use crate::worktree::{slugify, Worktree, WorktreeError, WorktreeManager};
@@ -363,23 +364,28 @@ impl Orchestrator {
         active: &mut ActiveTask,
         report: DoneReport,
     ) -> Result<(), OrchestratorError> {
-        if let Some(path) = &report.outputs.plan_path {
-            active.plan_path = path.clone();
-        }
-        active.last_summary = Some(report.summary.clone());
-
         match (report.phase, report.status) {
             // A blocked/failed report from any session — stage build, fix,
             // validation, or legacy — parks the task and disarms run-all (§0.6).
             (_, DoneStatus::Blocked) => {
-                active.auto_advance = false;
                 active.task.apply(TaskEvent::Blocked)?;
+                active.auto_advance = false;
             }
             (_, DoneStatus::Failed) => {
-                active.auto_advance = false;
                 active.task.apply(TaskEvent::Failed)?;
+                active.auto_advance = false;
             }
             (DonePhase::Plan, DoneStatus::Completed) => {
+                // Legality FIRST: a stray plan report (any in-flight session may
+                // misuse phase=plan) must be rejected with zero mutation — the
+                // caller persists the task even when this returns Err, so a
+                // manifest merged before the check would smuggle agent-chosen
+                // paths/titles into already-reviewed stages.
+                crate::task::transition(
+                    &active.task.state,
+                    active.task.kind,
+                    TaskEvent::PlanReady,
+                )?;
                 if let Some(entries) = &report.outputs.stages {
                     if !entries.is_empty() {
                         merge_stage_manifest(&mut active.stages, entries.clone());
@@ -387,10 +393,15 @@ impl Orchestrator {
                 }
                 active.task.apply(TaskEvent::PlanReady)?;
             }
-            // A per-stage plan-revision session (the task is Planning, not
-            // Building, so this cannot be a stage build/fix report).
+            // A per-stage plan-revision session (the task is Planning — or was
+            // demoted to IdleUnreported(Plan) by quiescence, which never decides
+            // anything, so its late report is still honored).
             (DonePhase::Revise, DoneStatus::Completed)
-                if active.is_multi_stage() && active.task.state == TaskState::Planning =>
+                if active.is_multi_stage()
+                    && matches!(
+                        active.task.state,
+                        TaskState::Planning | TaskState::IdleUnreported(Phase::Plan)
+                    ) =>
             {
                 self.consume_stage_revision(active, &report)?;
             }
@@ -407,7 +418,13 @@ impl Orchestrator {
                 active.task.apply(TaskEvent::BuildReady)?;
             }
         }
-        // The task advanced on its own report; any prior crash/merge error is stale.
+        // Only a consumed report leaves a trace: the surfaced summary, the
+        // reported plan path, and the clearing of any stale crash/merge error
+        // all land strictly after the transition above succeeded.
+        if let Some(path) = &report.outputs.plan_path {
+            active.plan_path = path.clone();
+        }
+        active.last_summary = Some(report.summary.clone());
         active.last_error = None;
         Ok(())
     }
@@ -427,7 +444,20 @@ impl Orchestrator {
             .stage_index(&stage_id)
             .map_err(OrchestratorError::Gate)?;
         match active.stages[index].state {
-            StageState::Building => {}
+            StageState::Building => {
+                // Coarse-state legality before ANY mutation: accepting a stage
+                // build completion has the same legality as legacy BuildReady
+                // (Building / IdleUnreported(Build)). A report landing while the
+                // task is Blocked/Failed must be rejected atomically — the stage
+                // advance, commit, and session swap below would otherwise leave
+                // the task and stage machines incoherent (the caller persists
+                // the task even on Err).
+                crate::task::transition(
+                    &active.task.state,
+                    active.task.kind,
+                    TaskEvent::BuildReady,
+                )?;
+            }
             // A build report while the validation agent runs would skip the gate;
             // only a `validate` report may move a Validating stage.
             StageState::Validating | StageState::Built => {
@@ -494,18 +524,27 @@ impl Orchestrator {
             .clone()
             .expect("mcp validated: outputs.validation present on phase=validate/completed");
         let passed = validation.passed;
+        let last_stage = index + 1 == active.stages.len();
+        let verdict = if passed {
+            TaskEvent::ValidationPassed { last_stage }
+        } else {
+            TaskEvent::ValidationFailed
+        };
+        // Coarse-state legality before ANY mutation: a verdict landing while the
+        // task is Blocked/Failed (e.g. the validation agent blocked, then was
+        // nudged over the raw PTY) must be rejected atomically — advancing the
+        // stage to its terminal Validated and killing the session here would
+        // strand the task (the caller persists it even on Err).
+        crate::task::transition(&active.task.state, active.task.kind, verdict)?;
         apply_stage_event(
             &mut active.stages[index],
             StageEvent::ValidationDone { passed },
         )?;
         active.stages[index].validation = Some(validation);
         self.end_session(active);
+        active.task.apply(verdict)?;
 
         if passed {
-            let last_stage = index + 1 == active.stages.len();
-            active
-                .task
-                .apply(TaskEvent::ValidationPassed { last_stage })?;
             if !last_stage && active.auto_advance {
                 let next = &active.stages[index + 1];
                 if next.state == StageState::Approved {
@@ -514,7 +553,6 @@ impl Orchestrator {
                 }
             }
         } else {
-            active.task.apply(TaskEvent::ValidationFailed)?;
             active.auto_advance = false;
         }
         Ok(())
@@ -528,16 +566,19 @@ impl Orchestrator {
         active: &mut ActiveTask,
         report: &DoneReport,
     ) -> Result<(), OrchestratorError> {
-        active.task.apply(TaskEvent::PlanReady)?;
+        // Resolve the stage and probe both transitions before committing either,
+        // so a rejected report leaves zero mutation behind.
         let stage_id = active.revising_stage_id.clone().ok_or_else(|| {
             OrchestratorError::Gate(
                 "revise report for a multi-stage task with no stage revision in flight".to_string(),
             )
         })?;
-        let stage = active
-            .stage_mut(&stage_id)
+        let index = active
+            .stage_index(&stage_id)
             .map_err(OrchestratorError::Gate)?;
-        apply_stage_event(stage, StageEvent::Revised)?;
+        stage_transition(&active.stages[index].state, StageEvent::Revised)?;
+        active.task.apply(TaskEvent::PlanReady)?;
+        apply_stage_event(&mut active.stages[index], StageEvent::Revised)?;
         if let Some(resolutions) = &report.outputs.comment_resolutions {
             for resolution in resolutions {
                 let matching = active.comments.iter_mut().find(|c| {
@@ -2188,6 +2229,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stray_plan_report_in_an_illegal_state_never_touches_the_manifest() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "sp1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+
+        // A live build/fix/validate session misusing done(phase=plan) must be
+        // rejected with ZERO mutation: on_agent_done persists the task even on
+        // Err, so a manifest merged before the legality check would let any
+        // in-flight session rewrite an already-reviewed stage's path/title.
+        let mut poisoned = manifest_entry("first", "First (poisoned)", 1);
+        poisoned.path = ".build/plan/99-other.md".into();
+        let mut stray = done_plan_stages(vec![poisoned]);
+        stray.summary = "stray".into();
+        stray.outputs.plan_path = Some(".build/evil.md".into());
+        let err = orch.on_done(&mut t, stray).unwrap_err();
+        assert!(matches!(err, OrchestratorError::Transition(_)), "{err}");
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.stage("first").unwrap().title, "First");
+        assert_eq!(t.stage("first").unwrap().path, ".build/plan/01-first.md");
+        assert_eq!(t.plan_path, templates::STAGES_MANIFEST_PATH);
+        assert_ne!(t.last_summary.as_deref(), Some("stray"));
+    }
+
+    #[tokio::test]
+    async fn late_build_report_while_blocked_is_rejected_without_mutation() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "lb1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Blocked, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Blocked(crate::task::Phase::Build));
+        assert_eq!(t.stage("first").unwrap().state, StageState::Building);
+
+        // The user types into the PTY, the agent finishes and reports completed
+        // while the task is still Blocked — same as legacy, the report must be
+        // rejected atomically (no stage advance, no commit, no session swap).
+        let before = last_commit_subject(&t.worktree.path);
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        let err = orch
+            .on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap_err();
+        assert!(matches!(err, OrchestratorError::Transition(_)), "{err}");
+        assert_eq!(t.task.state, TaskState::Blocked(crate::task::Phase::Build));
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Building,
+            "no half-applied stage advance"
+        );
+        assert_eq!(
+            last_commit_subject(&t.worktree.path),
+            before,
+            "no commit while blocked"
+        );
+        assert!(t.subscribe().is_some(), "session kept for the reply");
+    }
+
+    #[tokio::test]
+    async fn late_validation_verdict_while_blocked_is_rejected_without_mutation() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "lv1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done(DonePhase::Validate, DoneStatus::Blocked, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Blocked(crate::task::Phase::Build));
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+
+        // A completed verdict while the task is Blocked must not advance the
+        // stage to a terminal Validated, store the report, or kill the session
+        // — that pairing (Blocked + stage-terminal, no session) is unrecoverable.
+        let err = orch
+            .on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap_err();
+        assert!(matches!(err, OrchestratorError::Transition(_)), "{err}");
+        assert_eq!(t.task.state, TaskState::Blocked(crate::task::Phase::Build));
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        assert!(
+            t.stage("first").unwrap().validation.is_none(),
+            "verdict not stored"
+        );
+        assert!(t.subscribe().is_some(), "session kept for the reply");
+    }
+
+    #[tokio::test]
     async fn multi_stage_review_change_requests_round_trip_like_legacy() {
         // After the final stage validates, the diff-review loop (request_changes →
         // done) must still work even though the task is multi-stage: the current
@@ -2371,6 +2505,56 @@ mod tests {
             c2.state,
             CommentState::Open,
             "unresolved comments stay open"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_stage_revision_report_after_idle_demotion_is_still_consumed() {
+        use crate::task::CommentState;
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "ir1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        t.comments = vec![comment_on("c-1", "first", CommentState::Open)];
+        orch.send_stage_notes(&mut t, "first").unwrap();
+        assert_eq!(t.task.state, TaskState::Planning);
+
+        // The revise agent went quiet past the idle threshold, then finished
+        // anyway. Quiescence never decided anything, so the late report must be
+        // consumed exactly like the on-time one — not misrouted and dropped.
+        orch.on_idle(&mut t).unwrap();
+        assert_eq!(
+            t.task.state,
+            TaskState::IdleUnreported(crate::task::Phase::Plan)
+        );
+        orch.on_done(
+            &mut t,
+            DoneReport {
+                phase: DonePhase::Revise,
+                status: DoneStatus::Completed,
+                summary: "revised".into(),
+                outputs: DoneOutputs {
+                    comment_resolutions: Some(vec![crate::mcp::CommentResolution {
+                        comment_id: "c-1".into(),
+                        response: "reworded the schema section".into(),
+                    }]),
+                    ..DoneOutputs::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        assert_eq!(t.revising_stage_id, None);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Planned,
+            "the revised doc resets the stale approval"
+        );
+        let c1 = t.comments.iter().find(|c| c.id == "c-1").unwrap();
+        assert_eq!(c1.state, CommentState::Addressed);
+        assert_eq!(
+            c1.agent_reply.as_deref(),
+            Some("reworded the schema section")
         );
     }
 

@@ -3,8 +3,10 @@
 // Relay-direct topology: dummy-login to the api, mint a gateway token, and
 // authenticate straight to the relay's /ws/client (the node gateway is retired).
 // Runs the real browser-client logic + transport binding against a live relay +
-// bridge. Exercises the task lifecycle (standard + quick), plan/diff inspection,
-// merge results, error handling, and parallel tasks.
+// bridge. Exercises the task lifecycle (multi-stage standard + quick): stage
+// board, structured comments + revision, the per-stage validation gate,
+// run-all auto-advance, diff inspection, merge results, error handling, and
+// parallel tasks.
 //
 // Prereqs: skriftapp on API_URL (dummy auth enabled), the Rust relay on
 // RELAY_URL, and a paired bridge with BRIDGE_QA_AGENT=1 connected to it.
@@ -69,27 +71,100 @@ async function main() {
   const pong = await call("ping");
   check("ping round-trips over E2EE", pong.pong === true);
 
-  // Standard task: dispatch → plan → approve → diff → merge.
+  // Standard task: dispatch → multi-stage plan → comment/revise → per-stage
+  // approve/dispatch behind the validation gate → diff → merge.
   const t = await call("task.dispatch", { goal: "Add a greeting banner" });
   check("dispatch reaches plan_review", t.state === "plan_review", `state=${t.state}`);
   check("dispatch returns a build/ branch", /^build\//.test(t.branch), t.branch);
 
-  const plan = await call("task.plan", { task_id: t.task_id });
-  check("plan document mentions the goal", plan.contents.includes("Add a greeting banner"));
+  const board = await call("task.stages", { task_id: t.task_id });
+  check("plan arrives as multiple stages", board.stages.length === 2, `${board.stages.length} stages`);
+  check(
+    "stages start planned",
+    board.stages.every((s) => s.state === "planned"),
+    board.stages.map((s) => s.state).join(",")
+  );
+  const [first, second] = board.stages;
 
-  const approved = await call("task.approve_plan", { task_id: t.task_id });
-  check("approve_plan reaches review", approved.state === "review", `state=${approved.state}`);
+  let legacyPlanErrored = false;
+  try {
+    await call("task.plan", { task_id: t.task_id });
+  } catch (e) {
+    legacyPlanErrored = /multi-stage/.test(e.message);
+  }
+  check("legacy task.plan is retired for multi-stage tasks", legacyPlanErrored);
+
+  const doc = await call("task.stage_doc", { task_id: t.task_id, stage_id: first.id });
+  check("stage doc mentions the goal", doc.contents.includes("Add a greeting banner"));
+
+  // Structured comment → batched send → the revision resolves it.
+  const added = await call("task.comment_add", {
+    task_id: t.task_id,
+    stage_id: first.id,
+    body: "Please tighten this step.",
+    anchor: { heading_path: ["Stage: First half"], snippet: "Implement the first half" },
+  });
+  check("comment is minted open", added.comment.state === "open", added.comment.id);
+  await call("task.stage_send_notes", { task_id: t.task_id, stage_id: first.id });
+  const afterRevise = await call("task.stages", { task_id: t.task_id });
+  const revisedComment = afterRevise.stages.find((s) => s.id === first.id).comments[0];
+  check("revision addresses the comment", revisedComment.state === "addressed", revisedComment.agent_reply);
+  const revisedDoc = await call("task.stage_doc", { task_id: t.task_id, stage_id: first.id });
+  check("stage doc was actually revised", revisedDoc.contents.includes("(revised)"));
+
+  // The validation gate: stage 2 cannot run before stage 1 validates.
+  await call("task.stage_approve", { task_id: t.task_id, stage_id: second.id });
+  let gateErrored = false;
+  try {
+    await call("task.stage_dispatch", { task_id: t.task_id, stage_id: second.id });
+  } catch (e) {
+    gateErrored = true;
+  }
+  check("stage 2 dispatch is gated on stage 1 validation", gateErrored);
+
+  await call("task.stage_approve", { task_id: t.task_id, stage_id: first.id });
+  const afterFirst = await call("task.stage_dispatch", { task_id: t.task_id, stage_id: first.id });
+  check("task returns to plan_review between stages", afterFirst.state === "plan_review", `state=${afterFirst.state}`);
+  const midBoard = await call("task.stages", { task_id: t.task_id });
+  const firstDone = midBoard.stages.find((s) => s.id === first.id);
+  check("stage 1 validates after its build", firstDone.state === "validated_passed", firstDone.state);
+  check(
+    "validation carries notes for the next stage",
+    firstDone.validation.passed === true && firstDone.validation.notes_for_next_stage.length > 0,
+    firstDone.validation.notes_for_next_stage
+  );
+
+  const afterSecond = await call("task.stage_dispatch", { task_id: t.task_id, stage_id: second.id });
+  check("final stage lands the task in review", afterSecond.state === "review", `state=${afterSecond.state}`);
 
   const diff = await call("task.diff", { task_id: t.task_id });
   check(
-    "diff shows the produced file",
-    diff.files.some((f) => f.path === "result.txt"),
+    "diff shows both stages' files",
+    diff.files.some((f) => f.path === `result-${first.id}.txt`) &&
+      diff.files.some((f) => f.path === `result-${second.id}.txt`),
     `${diff.stat.files_changed} files, +${diff.stat.insertions}`
   );
   check("diff patch is non-empty", diff.patch.length > 0);
 
   const merged = await call("task.approve_merge", { task_id: t.task_id });
   check("approve_merge reaches merged", merged.state === "merged", `state=${merged.state}`);
+
+  // Run-all: approve every stage, arm auto-advance, and the chain runs to review.
+  const r = await call("task.dispatch", { goal: "Run-all banner polish" });
+  const runAllBoard = await call("task.stages", { task_id: r.task_id });
+  for (const s of runAllBoard.stages) {
+    await call("task.stage_approve", { task_id: r.task_id, stage_id: s.id });
+  }
+  const chained = await call("task.set_auto_advance", { task_id: r.task_id, enabled: true });
+  check("run-all chains every stage to review", chained.state === "review", `state=${chained.state}`);
+  const chainedBoard = await call("task.stages", { task_id: r.task_id });
+  check(
+    "run-all validates every stage",
+    chainedBoard.stages.every((s) => s.state === "validated_passed"),
+    chainedBoard.stages.map((s) => s.state).join(",")
+  );
+  const runAllMerged = await call("task.approve_merge", { task_id: r.task_id });
+  check("run-all task merges", runAllMerged.state === "merged");
 
   // Quick task: dispatch → review → merge (no plan phase).
   const q = await call("task.dispatch", { goal: "Quick fix typo", kind: "quick" });

@@ -130,8 +130,10 @@ struct Project {
 /// real work. The closure is shared (Arc) across projects via `Agent: Clone`.
 fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
-        // A warm no-op harness; the scripted agent does the file writing.
-        Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("sleep 86400"))
+        // A warm no-op harness that drains stdin like a real interactive CLI
+        // (a non-reading child would let the PTY input queue fill and block
+        // prompt writes); the scripted agent does the file writing.
+        Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"))
     } else {
         // Real agent: a one-shot `claude` headless run with the rendered prompt
         // baked in, the per-task `done` MCP server wired via .build/mcp.json, and

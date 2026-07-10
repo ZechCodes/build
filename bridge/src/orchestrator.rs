@@ -606,10 +606,13 @@ mod tests {
         (dir, repo)
     }
 
-    /// A warm "harness" that simply stays alive (it ignores the prompt). The test
+    /// A warm "harness" that stays alive and drains stdin (it discards the
+    /// prompt), like a real interactive CLI. Draining matters: a child that never
+    /// reads lets the PTY's canonical-mode input queue fill, so writing a
+    /// full-size rendered prompt would block and then fail with EIO. The test
     /// plays the agent: it writes files and forwards `done` reports.
     fn warm_harness() -> HarnessSpec {
-        HarnessSpec::new("sh").arg("-c").arg("sleep 30")
+        HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null")
     }
 
     fn orchestrator(dir: &tempfile::TempDir, repo: &Path) -> Orchestrator {

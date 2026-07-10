@@ -90,6 +90,8 @@ pub enum DoneError {
     MissingValidationReport,
     #[error("invalid outputs.stages: {0}")]
     InvalidStages(String),
+    #[error("plan_path {0:?} must be a plain relative path inside the worktree (no '..', no leading '/')")]
+    PlanPathEscapesWorktree(String),
 }
 
 /// A stable kebab-case slug: lowercase alphanumerics in hyphen-separated runs,
@@ -124,6 +126,14 @@ fn validate_stages(entries: &[crate::task::StageManifestEntry]) -> Result<(), St
                 entry.path
             ));
         }
+        // The prefix check alone accepts `.build/plan/../../..` — the joined
+        // path must also be traversal-free so it can never leave the plan dir.
+        if !crate::task::is_worktree_contained_path(&entry.path) {
+            return Err(format!(
+                "path \"{}\" must not contain traversal segments",
+                entry.path
+            ));
+        }
         if entry.title.trim().is_empty() {
             return Err(format!("stage \"{}\" has an empty title", entry.id));
         }
@@ -138,6 +148,13 @@ impl DoneReport {
             && args.outputs.plan_path.is_none()
         {
             return Err(DoneError::MissingPlanPath);
+        }
+        // A reported plan_path is later joined under the worktree and read back
+        // over RPC, so an escaping path would exfiltrate arbitrary host files.
+        if let Some(path) = &args.outputs.plan_path {
+            if !crate::task::is_worktree_contained_path(path) {
+                return Err(DoneError::PlanPathEscapesWorktree(path.clone()));
+            }
         }
         if args.phase == DonePhase::Plan && args.status == DoneStatus::Completed {
             if let Some(entries) = &args.outputs.stages {
@@ -605,6 +622,33 @@ mod tests {
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains(".build/plan/"), "got: {text}");
         assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_traversal_stage_path_is_rejected() {
+        // `.build/plan/../../..` satisfies a naive prefix check but escapes the
+        // plan dir (and the worktree) when joined — it must be rejected.
+        let stages =
+            r#"[{"id":"a","title":"A","path":".build/plan/../../../../../../etc/passwd"}]"#;
+        let h = server().handle_message(&plan_done_message(19, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("traversal"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_traversal_plan_path_is_rejected() {
+        for bad_path in ["../../outside.md", "/etc/passwd"] {
+            let message = format!(
+                r#"{{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{{"name":"done","arguments":{{"phase":"plan","status":"completed","summary":"plan ready","outputs":{{"plan_path":"{bad_path}"}}}}}}}}"#
+            );
+            let h = server().handle_message(&message);
+            let v = parse(&h.reply.unwrap());
+            assert_eq!(v["result"]["isError"], true, "path {bad_path:?} accepted");
+            assert!(h.report.is_none());
+        }
     }
 
     #[test]

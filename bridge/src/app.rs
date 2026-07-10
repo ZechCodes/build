@@ -1494,6 +1494,14 @@ impl AppState {
         if active.is_multi_stage() {
             return Err("multi-stage task: use task.stages / task.stage_doc".to_string());
         }
+        // Defense in depth: plan_path is agent-reported (fenced at the `done`
+        // tool), so never follow a record that would escape the worktree.
+        if !crate::task::is_worktree_contained_path(&active.plan_path) {
+            return Err(format!(
+                "plan path escapes the worktree: {:?}",
+                active.plan_path
+            ));
+        }
         let path = active.worktree.path.join(&active.plan_path);
         let contents =
             std::fs::read_to_string(&path).map_err(|e| format!("plan not available: {e}"))?;
@@ -1560,6 +1568,17 @@ impl AppState {
             return Err("not a multi-stage task".to_string());
         }
         let stage = active.stage(&stage_id)?;
+        // Defense in depth against a corrupted persisted manifest: the `done`
+        // validation already fences agent-supplied paths, but never read outside
+        // the worktree's plan dir regardless of what the record says.
+        if !stage.path.starts_with(".build/plan/")
+            || !crate::task::is_worktree_contained_path(&stage.path)
+        {
+            return Err(format!(
+                "stage doc path escapes .build/plan/: {:?}",
+                stage.path
+            ));
+        }
         let path = active.worktree.path.join(&stage.path);
         let contents =
             std::fs::read_to_string(&path).map_err(|e| format!("stage doc not available: {e}"))?;
@@ -2560,6 +2579,41 @@ mod tests {
         assert_eq!(merged["result"]["state"], "merged");
         assert!(repo.join("result-first-half.txt").exists());
         assert!(repo.join("result-second-half.txt").exists());
+    }
+
+    #[test]
+    fn stage_doc_read_refuses_a_stage_path_that_escapes_the_plan_dir() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "plan_review");
+
+        // A corrupted persisted manifest path (the defense-in-depth case: the
+        // validation fence failed or an old record predates it) must never let
+        // task.stage_doc read outside the worktree's plan dir.
+        state
+            .tasks
+            .get_mut(&task_id)
+            .unwrap()
+            .stage_mut("first-half")
+            .unwrap()
+            .path = ".build/plan/../../../../../../etc/hosts".into();
+        let res = state.handle(req(
+            "task.stage_doc",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert!(
+            res["error"].as_str().unwrap().contains("escapes"),
+            "{res:?}"
+        );
     }
 
     #[tokio::test]

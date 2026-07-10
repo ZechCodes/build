@@ -21,6 +21,8 @@
 //! it interrupted so the user's reply returns the task to the right working
 //! state.
 
+use std::path::{Component, Path};
+
 use serde::{Deserialize, Serialize};
 
 /// Opaque task identifier. The caller supplies it (the bridge mints a UUID).
@@ -327,6 +329,18 @@ pub fn stage_transition(
     }
 }
 
+/// True iff `path` stays inside whatever directory it is joined under: it is
+/// non-empty, relative, and made only of normal components — no `..`, no `.`
+/// segments, no root. This is the fence that keeps agent-supplied paths (the
+/// manifest echo, `plan_path`) from escaping the worktree; a naive prefix check
+/// alone would accept `.build/plan/../../../etc/passwd`.
+pub fn is_worktree_contained_path(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
 /// One entry of the plan manifest as the agent reports it (`.build/plan/stages.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageManifestEntry {
@@ -463,6 +477,19 @@ mod tests {
     #[test]
     fn new_task_starts_created() {
         assert_eq!(task(TaskKind::Standard).state, TaskState::Created);
+    }
+
+    #[test]
+    fn worktree_contained_path_accepts_only_plain_relative_paths() {
+        assert!(is_worktree_contained_path(".build/plan/01-a.md"));
+        assert!(is_worktree_contained_path(".build/plan.md"));
+        assert!(!is_worktree_contained_path(""));
+        assert!(!is_worktree_contained_path("/etc/passwd"));
+        assert!(!is_worktree_contained_path(
+            ".build/plan/../../../../etc/passwd"
+        ));
+        assert!(!is_worktree_contained_path("../sibling.md"));
+        assert!(!is_worktree_contained_path("./.build/plan/01-a.md"));
     }
 
     #[test]

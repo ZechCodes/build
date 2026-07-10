@@ -96,6 +96,9 @@ services:
   qa:
     build:
       context: ../web
+      # Explicit: docker compose (CI) only auto-discovers "Dockerfile"; podman
+      # accepts Containerfile without this.
+      dockerfile: Containerfile
     profiles:
       - qa
     environment:

@@ -60,25 +60,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - name: Clone build-secure-transport as a sibling
-        run: git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git "$GITHUB_WORKSPACE/../build-secure-transport"
-      - name: Install JS deps
-        run: |
-          ( cd "$GITHUB_WORKSPACE/../build-secure-transport/js" && npm install --no-audit --no-fund )
-          ( cd web && npm install --no-audit --no-fund )
-      - name: Build dev relay
-        working-directory: bridge
-        run: cargo build --example dev_relay
-      - name: Run browser client → relay → bridge round-trip
-        run: |
-          ( cd bridge && DEV_RELAY_PORT=8799 cargo run --example dev_relay > /tmp/relay.log 2>&1 & )
-          for i in $(seq 1 60); do grep -q DEV_RELAY_LISTENING /tmp/relay.log && break; sleep 0.5; done
-          cd web && DEV_RELAY_URL=ws://127.0.0.1:8799 node e2e.mjs
+      # e2e.mjs speaks the auth-era protocol (dummy-login → gateway token →
+      # relay /ws/client), so it needs the real stack, not the bare dev relay.
+      - name: Build + start the real stack (app, relay, bridge)
+        run: docker compose -f deploy/compose.real.yml up -d --build --wait
+      - name: Pair the QA bridge and run the E2EE round-trip + lifecycle suite
+        run: docker compose -f deploy/compose.real.yml --profile qa run --rm qa
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f deploy/compose.real.yml logs --tail 150
 
   secrets:
     name: Secret scan
@@ -87,5 +77,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+      # The gitleaks GitHub Action requires a paid license for org accounts;
+      # the CLI does not, so run the pinned binary directly.
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar -xz gitleaks
+          ./gitleaks git --no-banner --redact --verbose .

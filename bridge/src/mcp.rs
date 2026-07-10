@@ -21,6 +21,8 @@ pub enum DonePhase {
     Plan,
     Build,
     Revise,
+    /// An automated validation pass gating the next stage of a multi-stage plan.
+    Validate,
 }
 
 /// The agent's claim about how the phase ended.
@@ -35,12 +37,29 @@ pub enum DoneStatus {
     Failed,
 }
 
+/// One per-comment resolution from a stage plan-revision session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentResolution {
+    pub comment_id: String,
+    pub response: String,
+}
+
 /// Structured outputs a phase can report.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoneOutputs {
     /// Required when `phase=plan` and `status=completed`: where the plan was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_path: Option<String>,
+    /// Echo of `.build/plan/stages.json`. Presence of a non-empty array on
+    /// phase=plan/completed marks the task multi-stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stages: Option<Vec<crate::task::StageManifestEntry>>,
+    /// Required when phase=validate and status=completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<crate::task::ValidationReport>,
+    /// Optional on phase=revise/completed: per-comment resolutions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_resolutions: Option<Vec<CommentResolution>>,
 }
 
 /// The raw `done` arguments as they arrive over the wire, before validation.
@@ -67,6 +86,49 @@ pub struct DoneReport {
 pub enum DoneError {
     #[error("plan_path is required when phase=plan and status=completed")]
     MissingPlanPath,
+    #[error("outputs.validation is required when phase=validate and status=completed")]
+    MissingValidationReport,
+    #[error("invalid outputs.stages: {0}")]
+    InvalidStages(String),
+}
+
+/// A stable kebab-case slug: lowercase alphanumerics in hyphen-separated runs,
+/// no leading/trailing/doubled hyphens.
+fn is_kebab_slug(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Validate a manifest echo per the spec's ordered rule list, naming the first
+/// offense found (checked in manifest order, one rule at a time per entry).
+fn validate_stages(entries: &[crate::task::StageManifestEntry]) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("stages must be non-empty".to_string());
+    }
+    let mut seen_ids = std::collections::HashSet::new();
+    for entry in entries {
+        if !is_kebab_slug(&entry.id) {
+            return Err(format!("id \"{}\" is not a kebab-case slug", entry.id));
+        }
+        if !seen_ids.insert(entry.id.clone()) {
+            return Err(format!("duplicate id \"{}\"", entry.id));
+        }
+        if !entry.path.starts_with(".build/plan/") {
+            return Err(format!(
+                "path \"{}\" must start with .build/plan/",
+                entry.path
+            ));
+        }
+        if entry.title.trim().is_empty() {
+            return Err(format!("stage \"{}\" has an empty title", entry.id));
+        }
+    }
+    Ok(())
 }
 
 impl DoneReport {
@@ -76,6 +138,17 @@ impl DoneReport {
             && args.outputs.plan_path.is_none()
         {
             return Err(DoneError::MissingPlanPath);
+        }
+        if args.phase == DonePhase::Plan && args.status == DoneStatus::Completed {
+            if let Some(entries) = &args.outputs.stages {
+                validate_stages(entries).map_err(DoneError::InvalidStages)?;
+            }
+        }
+        if args.phase == DonePhase::Validate
+            && args.status == DoneStatus::Completed
+            && args.outputs.validation.is_none()
+        {
+            return Err(DoneError::MissingValidationReport);
         }
         Ok(DoneReport {
             phase: args.phase,
@@ -113,13 +186,49 @@ impl DoneServer {
         json!({
             "type": "object",
             "properties": {
-                "phase": { "type": "string", "enum": ["plan", "build", "revise"] },
+                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
                 "summary": { "type": "string", "description": "A short markdown summary for the human reviewer. Lead with a one-line outcome, then a few '- ' bullet points of the key changes — or, if blocked/failed, what is needed to proceed. Use markdown: bullets, **bold**, and `backticks` for paths and commands. Prefer scannable bullets over one long paragraph." },
                 "outputs": {
                     "type": "object",
                     "properties": {
-                        "plan_path": { "type": "string", "description": "Required when phase=plan and status=completed." }
+                        "plan_path": { "type": "string", "description": "Required when phase=plan and status=completed. For a multi-stage plan, the manifest path .build/plan/stages.json." },
+                        "stages": {
+                            "type": "array",
+                            "description": "Echo of .build/plan/stages.json, in execution order. Required when phase=plan, status=completed and the plan is multi-stage.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "Stable kebab-case slug; never changes across revisions." },
+                                    "title": { "type": "string" },
+                                    "path": { "type": "string", "description": "Worktree-relative, under .build/plan/." },
+                                    "summary": { "type": "string" }
+                                },
+                                "required": ["id", "title", "path"]
+                            }
+                        },
+                        "validation": {
+                            "type": "object",
+                            "description": "Required when phase=validate and status=completed.",
+                            "properties": {
+                                "passed": { "type": "boolean" },
+                                "findings": { "type": "string", "description": "Markdown: what the diff did and did not satisfy from the stage doc." },
+                                "notes_for_next_stage": { "type": "string", "description": "Markdown notes the next stage's builder should know. Empty string if none." }
+                            },
+                            "required": ["passed", "findings", "notes_for_next_stage"]
+                        },
+                        "comment_resolutions": {
+                            "type": "array",
+                            "description": "When phase=revise and the prompt listed [c-N] comment ids: one entry per comment saying how it was addressed.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "comment_id": { "type": "string" },
+                                    "response": { "type": "string" }
+                                },
+                                "required": ["comment_id", "response"]
+                            }
+                        }
                     }
                 }
             },
@@ -392,6 +501,158 @@ mod tests {
         let v = parse(&h.reply.unwrap());
         assert_eq!(v["result"]["isError"], true);
         assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn tools_list_schema_enumerates_validate_phase_and_new_outputs() {
+        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let schema = &v["result"]["tools"][0]["inputSchema"];
+        let phases = schema["properties"]["phase"]["enum"].as_array().unwrap();
+        assert!(phases.iter().any(|p| p == "validate"));
+        let outputs = &schema["properties"]["outputs"]["properties"];
+        assert!(outputs["stages"].is_object());
+        assert!(outputs["validation"].is_object());
+        assert!(outputs["comment_resolutions"].is_object());
+    }
+
+    #[test]
+    fn done_validate_completed_without_validation_is_rejected() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"done","arguments":{"phase":"validate","status":"completed","summary":"looks good"}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert_eq!(
+            v["result"]["content"][0]["text"],
+            DoneError::MissingValidationReport.to_string()
+        );
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_validate_completed_with_validation_emits_report() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"done","arguments":{"phase":"validate","status":"completed","summary":"pass","outputs":{"validation":{"passed":true,"findings":"all good","notes_for_next_stage":"none"}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], false);
+        let report = h.report.expect("a report should be emitted");
+        assert_eq!(report.phase, DonePhase::Validate);
+        let validation = report.outputs.validation.expect("validation carried");
+        assert!(validation.passed);
+        assert_eq!(validation.findings, "all good");
+        assert_eq!(validation.notes_for_next_stage, "none");
+    }
+
+    #[test]
+    fn done_validate_blocked_needs_no_validation_report() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"done","arguments":{"phase":"validate","status":"blocked","summary":"cannot run tests"}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], false);
+        assert!(h.report.is_some());
+    }
+
+    fn plan_done_message(id: i64, stages_json: &str) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"done","arguments":{{"phase":"plan","status":"completed","summary":"plan ready","outputs":{{"plan_path":".build/plan/stages.json","stages":{stages_json}}}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn done_plan_completed_with_good_manifest_echo_carries_entries() {
+        let stages = r#"[{"id":"database-schema","title":"Database schema","path":".build/plan/01-database-schema.md","summary":"Create the tables."},{"id":"api-endpoints","title":"API endpoints","path":".build/plan/02-api-endpoints.md","summary":""}]"#;
+        let h = server().handle_message(&plan_done_message(11, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], false);
+        let report = h.report.expect("a report should be emitted");
+        let entries = report.outputs.stages.expect("stages carried");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "database-schema");
+        assert_eq!(entries[1].summary, "");
+    }
+
+    #[test]
+    fn done_plan_completed_with_duplicate_stage_ids_is_rejected() {
+        let stages = r#"[{"id":"dup","title":"A","path":".build/plan/01-a.md"},{"id":"dup","title":"B","path":".build/plan/02-b.md"}]"#;
+        let h = server().handle_message(&plan_done_message(12, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("duplicate id"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_bad_id_chars_is_rejected() {
+        let stages = r#"[{"id":"Not_Kebab","title":"A","path":".build/plan/01-a.md"}]"#;
+        let h = server().handle_message(&plan_done_message(13, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("kebab-case"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_path_outside_plan_dir_is_rejected() {
+        let stages = r#"[{"id":"a","title":"A","path":"src/a.md"}]"#;
+        let h = server().handle_message(&plan_done_message(14, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(".build/plan/"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_empty_title_is_rejected() {
+        let stages = r#"[{"id":"a","title":"","path":".build/plan/01-a.md"}]"#;
+        let h = server().handle_message(&plan_done_message(15, stages));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("empty title"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_plan_completed_with_empty_stages_array_is_rejected() {
+        let h = server().handle_message(&plan_done_message(16, "[]"));
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("non-empty"), "got: {text}");
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_revise_completed_with_comment_resolutions_round_trips() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed comments","outputs":{"comment_resolutions":[{"comment_id":"c-1","response":"switched to a timestamp"}]}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], false);
+        let report = h.report.expect("a report should be emitted");
+        let resolutions = report
+            .outputs
+            .comment_resolutions
+            .expect("resolutions carried");
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(resolutions[0].comment_id, "c-1");
+        assert_eq!(resolutions[0].response, "switched to a timestamp");
+    }
+
+    #[test]
+    fn done_build_completed_ignores_stray_stages_and_validation_outputs() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"stages":[],"validation":{"passed":true,"findings":"","notes_for_next_stage":""}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], false);
+        assert!(h.report.is_some());
     }
 
     #[test]

@@ -1479,6 +1479,7 @@ impl AppState {
                     summary: format!("Planned: {}", active.task.goal),
                     outputs: DoneOutputs {
                         plan_path: Some(DEFAULT_PLAN_PATH.to_string()),
+                        ..DoneOutputs::default()
                     },
                 },
             )

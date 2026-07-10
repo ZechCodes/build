@@ -246,7 +246,12 @@ impl Orchestrator {
             (_, DoneStatus::Blocked) => TaskEvent::Blocked,
             (_, DoneStatus::Failed) => TaskEvent::Failed,
             (DonePhase::Plan, DoneStatus::Completed) => TaskEvent::PlanReady,
-            (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => TaskEvent::BuildReady,
+            // Validate is multi-stage-only; Layer 4 replaces this whole routing
+            // table with the §6.2 on_done match. Grouped here only so the
+            // workspace stays exhaustive and compiling in the interim.
+            (DonePhase::Build | DonePhase::Revise | DonePhase::Validate, DoneStatus::Completed) => {
+                TaskEvent::BuildReady
+            }
         };
         active.task.apply(event)?;
         // The task advanced on its own report; any prior crash/merge error is stale.
@@ -450,6 +455,7 @@ impl Orchestrator {
                 plan_path: &active.plan_path,
                 comments,
                 base_branch: &active.worktree.base_branch,
+                ..Vars::default()
             },
         )
     }
@@ -682,6 +688,7 @@ mod tests {
             summary: "summary".into(),
             outputs: DoneOutputs {
                 plan_path: plan_path.map(String::from),
+                ..DoneOutputs::default()
             },
         }
     }

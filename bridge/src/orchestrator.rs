@@ -674,6 +674,80 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Send a stage's open comments to a fresh plan-revision session (the
+    /// multi-stage analogue of `send_notes`): the persisted open comments ARE
+    /// the payload, rendered server-side per the §4.4 format.
+    pub fn send_stage_notes(
+        &self,
+        active: &mut ActiveTask,
+        stage_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        let index = active
+            .stage_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        crate::task::transition(&active.task.state, active.task.kind, TaskEvent::SendNotes)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
+        if !matches!(
+            active.stages[index].state,
+            StageState::Planned | StageState::Approved
+        ) {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} is not in plan review (state {:?})",
+                active.stages[index].state
+            )));
+        }
+        let open: Vec<StageComment> = active
+            .open_comments_for(stage_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        if open.is_empty() {
+            return Err(OrchestratorError::Gate(format!(
+                "no open comments on stage {stage_id}"
+            )));
+        }
+
+        active.task.apply(TaskEvent::SendNotes)?;
+        active.revising_stage_id = Some(stage_id.to_string());
+        active.last_error = None;
+        self.end_session(active);
+        let comments = templates::assemble_stage_comments(&open);
+        let prompt = self.render_stage(&self.templates.revise_stage, active, index, &comments);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        Ok(())
+    }
+
+    /// Send a validation-failed stage back to a fresh fix session. The stored
+    /// validation findings drive the prompt; `note` is the reviewer's optional
+    /// steer. The start sha is kept so the stage diff covers all of its work.
+    pub fn fix_stage(
+        &self,
+        active: &mut ActiveTask,
+        stage_id: &str,
+        note: &str,
+    ) -> Result<(), OrchestratorError> {
+        let index = active
+            .stage_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        crate::task::transition(&active.task.state, active.task.kind, TaskEvent::ApprovePlan)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot fix a stage: {e}")))?;
+        if active.stages[index].state != (StageState::Validated { passed: false }) {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} has no failed validation to fix (state {:?})",
+                active.stages[index].state
+            )));
+        }
+
+        active.task.apply(TaskEvent::ApprovePlan)?;
+        apply_stage_event(&mut active.stages[index], StageEvent::Dispatch)?;
+        active.current_stage_id = Some(stage_id.to_string());
+        active.last_error = None;
+        self.end_session(active);
+        let prompt = self.render_stage(&self.templates.fix_stage, active, index, note);
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        Ok(())
+    }
+
     /// Submit a batch of diff comments: address them in a **fresh** build session.
     /// Valid both from `review` (agent done) and `building` (agent still running) —
     /// any running session is ended first, so a change request redirects the build
@@ -703,17 +777,90 @@ impl Orchestrator {
     /// Re-dispatch an interrupted phase in a **fresh** session. The daemon that
     /// spawned the original session died; the worktree (the agent's real state)
     /// is the starting point, exactly like `approve_plan` starting a cold build.
+    /// On the multi-stage path the persisted stage sub-state routes which
+    /// session to respawn (spec §1.3).
     pub fn resume(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
         active.task.apply(TaskEvent::Reply)?;
         active.last_error = None;
         self.end_session(active);
         let prompt = match active.task.state {
+            TaskState::Planning if active.is_multi_stage() => {
+                self.resume_multi_stage_plan_prompt(active)?
+            }
             TaskState::Planning => self.render(&self.templates.plan, active, ""),
+            TaskState::Building if active.is_multi_stage() => {
+                self.resume_multi_stage_build_prompt(active)?
+            }
             TaskState::Building => self.render(&self.templates.build, active, ""),
             ref other => unreachable!("reply left task in {other:?}"),
         };
         active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
+    }
+
+    /// An interrupted multi-stage plan phase: a per-stage revision (there is a
+    /// revising stage) respawns `revise_stage` with the stage's open comments;
+    /// a full (re-)plan respawns the initial plan template.
+    fn resume_multi_stage_plan_prompt(
+        &self,
+        active: &ActiveTask,
+    ) -> Result<String, OrchestratorError> {
+        let Some(stage_id) = active.revising_stage_id.clone() else {
+            return Ok(self.render(&self.templates.plan, active, ""));
+        };
+        let index = active
+            .stage_index(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        let open: Vec<StageComment> = active
+            .open_comments_for(&stage_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        let comments = templates::assemble_stage_comments(&open);
+        Ok(self.render_stage(&self.templates.revise_stage, active, index, &comments))
+    }
+
+    /// An interrupted multi-stage build phase, routed by the current stage's
+    /// persisted sub-state: `Building` respawns the build session (or the fix
+    /// session, when a failed validation report shows that is what died);
+    /// `Built`/`Validating` respawn the validation pass (a `Built` stage is
+    /// forced to `Validating` first).
+    fn resume_multi_stage_build_prompt(
+        &self,
+        active: &mut ActiveTask,
+    ) -> Result<String, OrchestratorError> {
+        let stage_id = active.current_stage_id.clone().ok_or_else(|| {
+            OrchestratorError::Gate(
+                "multi-stage task is building but has no current stage".to_string(),
+            )
+        })?;
+        let index = active
+            .stage_index(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        match active.stages[index].state {
+            StageState::Building => {
+                let died_in_fix_session = active.stages[index]
+                    .validation
+                    .as_ref()
+                    .is_some_and(|report| !report.passed);
+                let template = if died_in_fix_session {
+                    &self.templates.fix_stage
+                } else {
+                    &self.templates.build_stage
+                };
+                Ok(self.render_stage(template, active, index, ""))
+            }
+            StageState::Built => {
+                apply_stage_event(&mut active.stages[index], StageEvent::StartValidation)?;
+                Ok(self.render_stage(&self.templates.validate, active, index, ""))
+            }
+            StageState::Validating => {
+                Ok(self.render_stage(&self.templates.validate, active, index, ""))
+            }
+            ref other => Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} cannot resume from state {other:?}"
+            ))),
+        }
     }
 
     /// The worktree's current diff against base — progress fact while building, the
@@ -2225,6 +2372,293 @@ mod tests {
             CommentState::Open,
             "unresolved comments stay open"
         );
+    }
+
+    // ---- Multi-stage: per-stage revision, fix sessions, and resume routing ----
+
+    fn anchored_comment(id: &str, stage_id: &str) -> crate::task::StageComment {
+        crate::task::StageComment {
+            id: id.to_string(),
+            stage_id: stage_id.to_string(),
+            anchor: Some(crate::task::CommentAnchor {
+                heading_path: vec!["Database schema".into(), "Tables".into()],
+                snippet: "users table gets a soft-delete column".into(),
+            }),
+            body: "use a deleted_at timestamp".into(),
+            state: crate::task::CommentState::Open,
+            agent_reply: None,
+        }
+    }
+
+    /// Simulate a daemon restart mid-flight: only the durable core survives and
+    /// boot recovery has marked the working phase interrupted.
+    fn interrupted_copy(t: &ActiveTask) -> ActiveTask {
+        let mut task = t.task.clone();
+        task.apply(TaskEvent::Interrupt).unwrap();
+        ActiveTask::reattach(
+            task,
+            t.worktree.clone(),
+            t.plan_path.clone(),
+            t.last_summary.clone(),
+            Default::default(),
+            None,
+            t.stages.clone(),
+            t.current_stage_id.clone(),
+            t.revising_stage_id.clone(),
+            t.auto_advance,
+            t.comments.clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn send_stage_notes_spawns_a_revise_session_from_the_stored_comments() {
+        use crate::task::CommentState;
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "sn1");
+        orch.approve_stage(&mut t, "first").unwrap();
+
+        // No open comments → gate.
+        let err = orch.send_stage_notes(&mut t, "first").unwrap_err();
+        assert_eq!(err.to_string(), "no open comments on stage first");
+
+        t.comments = vec![
+            anchored_comment("c-1", "first"),
+            comment_on("c-2", "first", CommentState::Open),
+            comment_on("c-3", "first", CommentState::Addressed),
+            comment_on("c-4", "second", CommentState::Open),
+        ];
+        orch.send_stage_notes(&mut t, "first").unwrap();
+        assert_eq!(t.task.state, TaskState::Planning);
+        assert_eq!(t.revising_stage_id.as_deref(), Some("first"));
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains(
+                "1. [c-1] Under \"Database schema > Tables\", on the passage: \"users table gets a soft-delete column\""
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.contains("2. [c-2] (general)"), "{prompt}");
+        assert!(
+            !prompt.contains("c-3") && !prompt.contains("c-4"),
+            "addressed and other-stage comments stay out: {prompt}"
+        );
+        assert!(prompt.contains("\"First\""), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn send_stage_notes_gates_on_task_state_and_stage_state() {
+        use crate::task::CommentState;
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "sn2");
+        orch.approve_stage(&mut t, "first").unwrap();
+        t.comments = vec![
+            comment_on("c-1", "first", CommentState::Open),
+            comment_on("c-2", "second", CommentState::Open),
+        ];
+
+        // Task not at a plan gate (stage 1 building) → rejected.
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        let err = orch.send_stage_notes(&mut t, "second").unwrap_err();
+        assert!(err.to_string().contains("cannot send stage notes"), "{err}");
+
+        // Stage past plan review (validated_failed awaits fix, not notes).
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(false, "- broken", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        let err = orch.send_stage_notes(&mut t, "first").unwrap_err();
+        assert!(err.to_string().contains("not in plan review"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn fix_stage_respawns_with_findings_and_keeps_the_start_sha() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "fx1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        let start_sha = t.stage("first").unwrap().start_sha.clone().unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(false, "- missing index", ""))
+            .unwrap();
+
+        // Only a validation-failed stage can be sent to a fix session.
+        let err = orch.fix_stage(&mut t, "second", "").unwrap_err();
+        assert!(err.to_string().contains("no failed validation"), "{err}");
+
+        orch.fix_stage(&mut t, "first", "also add the covering index")
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.stage("first").unwrap().state, StageState::Building);
+        assert_eq!(
+            t.stage("first").unwrap().start_sha.as_deref(),
+            Some(start_sha.as_str()),
+            "the stage diff keeps covering all of the stage's work"
+        );
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("- missing index"), "{prompt}");
+        assert!(prompt.contains("also add the covering index"), "{prompt}");
+        assert!(prompt.contains(&start_sha), "{prompt}");
+
+        // The fix round closes exactly like a first build: validate → stage board.
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        orch.on_done(&mut t, done_validate(true, "- fixed", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validated { passed: true }
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_routes_an_interrupted_stage_build_to_a_fresh_stage_session() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "rs1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+
+        // Died during the stage build session → build_stage template again.
+        let mut revived = interrupted_copy(&t);
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Building);
+        assert_eq!(revived.stage("first").unwrap().state, StageState::Building);
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("Execute ONE stage"), "{prompt}");
+        assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn resume_routes_an_interrupted_fix_session_back_to_fix_stage() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "rs2");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(false, "- missing index", ""))
+            .unwrap();
+        orch.fix_stage(&mut t, "first", "").unwrap();
+
+        // Died during the FIX session: the stage is Building with a failed
+        // report stored — recovery must respawn a fix session, not a build one.
+        let mut revived = interrupted_copy(&t);
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Building);
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains("did not pass. Findings:"),
+            "fix template respawned: {prompt}"
+        );
+        assert!(prompt.contains("- missing index"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn resume_routes_an_interrupted_validation_back_to_a_validate_session() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "rs3");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+
+        // Died while the validation agent ran → a fresh validate session.
+        let mut revived = interrupted_copy(&t);
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Building);
+        assert_eq!(
+            revived.stage("first").unwrap().state,
+            StageState::Validating
+        );
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("VALIDATION agent"), "{prompt}");
+
+        // Died between BuildDone and StartValidation (stage persisted as Built):
+        // recovery forces it to Validating and validates.
+        let mut built = interrupted_copy(&revived);
+        built.stage_mut("first").unwrap().state = StageState::Built;
+        orch.resume(&mut built).unwrap();
+        assert_eq!(built.stage("first").unwrap().state, StageState::Validating);
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("VALIDATION agent"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn resume_routes_an_interrupted_stage_revision_back_to_revise_stage() {
+        use crate::task::CommentState;
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "rs4");
+        t.comments = vec![comment_on("c-1", "first", CommentState::Open)];
+        orch.send_stage_notes(&mut t, "first").unwrap();
+        assert_eq!(t.task.state, TaskState::Planning);
+
+        let mut revived = interrupted_copy(&t);
+        orch.resume(&mut revived).unwrap();
+        assert_eq!(revived.task.state, TaskState::Planning);
+        assert_eq!(revived.revising_stage_id.as_deref(), Some("first"));
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains("reviewer left comments") && prompt.contains("[c-1]"),
+            "revise_stage respawned with the open comments: {prompt}"
+        );
+
+        // A multi-stage task interrupted during a full re-plan (no revising
+        // stage) resumes the initial plan template instead.
+        let mut replanning = interrupted_copy(&revived);
+        replanning.revising_stage_id = None;
+        orch.resume(&mut replanning).unwrap();
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("PLAN mode"), "{prompt}");
     }
 
     // ---- Multi-stage: ActiveTask bookkeeping ----

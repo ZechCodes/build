@@ -23,15 +23,18 @@ use tokio::sync::broadcast;
 
 use tokio::io::AsyncBufReadExt;
 
-use crate::mcp::{DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::store::{now_rfc3339, PersistedTask, TaskStore};
-use crate::task::{Task, TaskEvent, TaskId, TaskKind, TaskState};
-use crate::templates::{Templates, DEFAULT_PLAN_PATH};
+use crate::task::{
+    CommentAnchor, CommentState, Stage, StageComment, StageManifestEntry, StageState, Task,
+    TaskEvent, TaskId, TaskKind, TaskState, ValidationReport,
+};
+use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::transport::Frame;
 use crate::worktree::Worktree;
 
@@ -680,6 +683,15 @@ impl AppState {
             "task.list" => Ok(self.task_list()),
             "task.get" => self.task_get(params),
             "task.plan" => self.task_plan(params),
+            "task.stages" => self.task_stages(params),
+            "task.stage_doc" => self.task_stage_doc(params),
+            "task.stage_approve" => self.task_stage_approve(params),
+            "task.stage_dispatch" => self.task_stage_dispatch(params),
+            "task.stage_send_notes" => self.task_stage_send_notes(params),
+            "task.stage_fix" => self.task_stage_fix(params),
+            "task.comment_add" => self.task_comment_add(params),
+            "task.comment_delete" => self.task_comment_delete(params),
+            "task.set_auto_advance" => self.task_set_auto_advance(params),
             "task.diff" => self.task_diff(params),
             "task.approve_plan" => self.task_approve_plan(params),
             "task.send_notes" => self.task_send_notes(params),
@@ -1201,6 +1213,17 @@ impl AppState {
             None
         };
         let project_id = self.project_of(&task_id)?;
+        if self
+            .tasks
+            .get(&task_id)
+            .is_some_and(ActiveTask::is_multi_stage)
+        {
+            return Err(
+                "multi-stage task: approve and dispatch stages individually \
+                 (task.stage_approve, task.stage_dispatch)"
+                    .to_string(),
+            );
+        }
         let mut active = self.take(&task_id)?;
         let outcome = (|| -> Result<(), String> {
             self.orch_for(&project_id)?
@@ -1223,6 +1246,15 @@ impl AppState {
         let task_id = require_str(params, "task_id")?;
         let comments = require_str(params, "comments")?;
         let project_id = self.project_of(&task_id)?;
+        if self
+            .tasks
+            .get(&task_id)
+            .is_some_and(ActiveTask::is_multi_stage)
+        {
+            return Err(
+                "multi-stage task: use task.comment_add + task.stage_send_notes".to_string(),
+            );
+        }
         let mut active = self.take(&task_id)?;
         let outcome = (|| -> Result<(), String> {
             self.orch_for(&project_id)?
@@ -1273,7 +1305,13 @@ impl AppState {
                 .map_err(err)?;
             if self.qa_agent {
                 match active.task.state {
+                    TaskState::Planning if active.revising_stage_id.is_some() => {
+                        self.simulate_stage_revise(&project_id, &mut active)?;
+                    }
                     TaskState::Planning => self.simulate_plan(&project_id, &mut active)?,
+                    TaskState::Building if active.is_multi_stage() => {
+                        self.qa_drive_stage_chain(&project_id, &mut active)?;
+                    }
                     TaskState::Building => self.simulate_build(&project_id, &mut active)?,
                     _ => {}
                 }
@@ -1453,6 +1491,9 @@ impl AppState {
     fn task_plan(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
+        if active.is_multi_stage() {
+            return Err("multi-stage task: use task.stages / task.stage_doc".to_string());
+        }
         let path = active.worktree.path.join(&active.plan_path);
         let contents =
             std::fs::read_to_string(&path).map_err(|e| format!("plan not available: {e}"))?;
@@ -1474,23 +1515,275 @@ impl AppState {
         json!({ "tasks": tasks })
     }
 
+    // --- multi-stage plan surface ----------------------------------------------
+
+    /// The stage board: manifest order, sub-state, and every comment (open and
+    /// addressed) per stage. Read-only, like `task.plan`.
+    fn task_stages(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
+        if !active.is_multi_stage() {
+            return Err("not a multi-stage task".to_string());
+        }
+        let stages: Vec<Value> = active
+            .stages
+            .iter()
+            .map(|stage| {
+                let mut view = stage_json(active, stage);
+                let comments: Vec<Value> = active
+                    .comments
+                    .iter()
+                    .filter(|c| c.stage_id == stage.id)
+                    .map(comment_json)
+                    .collect();
+                view.as_object_mut()
+                    .expect("stage_json returns an object")
+                    .insert("comments".to_string(), json!(comments));
+                view
+            })
+            .collect();
+        Ok(json!({
+            "task_id": task_id,
+            "auto_advance": active.auto_advance,
+            "current_stage_id": active.current_stage_id,
+            "stages": stages,
+        }))
+    }
+
+    /// Read one stage's plan document from the worktree on demand, exactly as
+    /// `task.plan` reads the legacy file.
+    fn task_stage_doc(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
+        if !active.is_multi_stage() {
+            return Err("not a multi-stage task".to_string());
+        }
+        let stage = active.stage(&stage_id)?;
+        let path = active.worktree.path.join(&stage.path);
+        let contents =
+            std::fs::read_to_string(&path).map_err(|e| format!("stage doc not available: {e}"))?;
+        Ok(json!({ "stage_id": stage.id, "path": stage.path, "contents": contents }))
+    }
+
+    fn task_stage_approve(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .approve_stage(&mut active, &stage_id)
+                .map_err(err)
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    fn task_stage_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let model_override = if params.get("model").is_some() || params.get("effort").is_some() {
+            Some(model_choice_from(params)?)
+        } else {
+            None
+        };
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .dispatch_stage(&mut active, &stage_id, model_override)
+                .map_err(err)?;
+            self.qa_drive_stage_chain(&project_id, &mut active)
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    /// Send a stage's open comments to a fresh plan-revision session — the
+    /// persisted open comments ARE the payload, no `comments` param.
+    fn task_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .send_stage_notes(&mut active, &stage_id)
+                .map_err(err)?;
+            if self.qa_agent {
+                self.simulate_stage_revise(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    fn task_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let note = params
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .fix_stage(&mut active, &stage_id, &note)
+                .map_err(err)?;
+            self.qa_drive_stage_chain(&project_id, &mut active)
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    /// Add a structured plan-review comment to a stage. Legal while the task is
+    /// non-terminal and the stage is still in plan review (`planned`/`approved`).
+    fn task_comment_add(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let body = require_str(params, "body")?;
+        let mut active = self.take(&task_id)?;
+        let mut minted: Option<StageComment> = None;
+        let outcome = (|| -> Result<(), String> {
+            if body.trim().is_empty() {
+                return Err("comment body must not be empty".to_string());
+            }
+            if active.task.state.is_terminal() {
+                return Err("cannot comment on a terminal task".to_string());
+            }
+            let stage_state = active.stage(&stage_id)?.state;
+            if !matches!(stage_state, StageState::Planned | StageState::Approved) {
+                return Err(format!(
+                    "comments are only accepted on planned/approved stages (stage is {})",
+                    stage_state_str(&stage_state)
+                ));
+            }
+            let anchor = parse_comment_anchor(params.get("anchor"))?;
+            let comment = StageComment {
+                id: active.mint_comment_id(),
+                stage_id: stage_id.clone(),
+                anchor,
+                body: body.clone(),
+                state: CommentState::Open,
+                agent_reply: None,
+            };
+            active.comments.push(comment.clone());
+            minted = Some(comment);
+            Ok(())
+        })();
+        let (_, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        let comment = minted.expect("outcome Ok implies a comment was minted");
+        Ok(json!({ "comment": comment_json(&comment) }))
+    }
+
+    fn task_comment_delete(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let comment_id = require_str(params, "comment_id")?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            let index = active
+                .comments
+                .iter()
+                .position(|c| c.id == comment_id)
+                .ok_or_else(|| format!("unknown comment_id: {comment_id}"))?;
+            if active.comments[index].state != CommentState::Open {
+                return Err("only open comments can be deleted".to_string());
+            }
+            active.comments.remove(index);
+            Ok(())
+        })();
+        let (_, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(json!({ "ok": true }))
+    }
+
+    /// "Run all": arm/disarm auto-advance, and — the run-all trigger — if
+    /// enabling it lands on a dispatchable next stage right now, dispatch it
+    /// immediately (same path as `task.stage_dispatch`).
+    fn task_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let enabled = params
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .ok_or("missing required param: enabled")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            if active.task.state.is_terminal() {
+                return Err("cannot set auto_advance on a terminal task".to_string());
+            }
+            active.auto_advance = enabled;
+            if enabled && active.task.state == TaskState::PlanReview {
+                if let Some(next_id) = dispatchable_next_stage(&active) {
+                    self.orch_for(&project_id)?
+                        .dispatch_stage(&mut active, &next_id, None)
+                        .map_err(err)?;
+                    self.qa_drive_stage_chain(&project_id, &mut active)?;
+                }
+            }
+            Ok(())
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
     // --- the scripted QA agent ------------------------------------------------
 
     fn simulate_plan(&self, project_id: &str, active: &mut ActiveTask) -> Result<(), String> {
-        let plan = format!(
-            "# Plan: {goal}\n\n1. Implement the goal.\n2. Add a result file.\n",
-            goal = active.task.goal
-        );
-        write_in_worktree(active, DEFAULT_PLAN_PATH, &plan)?;
+        let goal = active.task.goal.clone();
+        write_in_worktree(
+            active,
+            ".build/plan/01-first-half.md",
+            &format!("# Stage: First half\n\n1. Implement the first half of: {goal}\n"),
+        )?;
+        write_in_worktree(
+            active,
+            ".build/plan/02-second-half.md",
+            &format!("# Stage: Second half\n\n1. Implement the second half of: {goal}\n"),
+        )?;
+        let stages = vec![
+            StageManifestEntry {
+                id: "first-half".to_string(),
+                title: "First half".to_string(),
+                path: ".build/plan/01-first-half.md".to_string(),
+                summary: "First half.".to_string(),
+            },
+            StageManifestEntry {
+                id: "second-half".to_string(),
+                title: "Second half".to_string(),
+                path: ".build/plan/02-second-half.md".to_string(),
+                summary: "Second half.".to_string(),
+            },
+        ];
+        let manifest = serde_json::to_string_pretty(&stages).map_err(|e| e.to_string())?;
+        write_in_worktree(active, STAGES_MANIFEST_PATH, &manifest)?;
         self.orch_for(project_id)?
             .on_done(
                 active,
                 DoneReport {
                     phase: DonePhase::Plan,
                     status: DoneStatus::Completed,
-                    summary: format!("Planned: {}", active.task.goal),
+                    summary: format!("Planned: {goal}"),
                     outputs: DoneOutputs {
-                        plan_path: Some(DEFAULT_PLAN_PATH.to_string()),
+                        plan_path: Some(STAGES_MANIFEST_PATH.to_string()),
+                        stages: Some(stages),
                         ..DoneOutputs::default()
                     },
                 },
@@ -1509,6 +1802,119 @@ impl AppState {
                     status: DoneStatus::Completed,
                     summary: format!("Built: {}", active.task.goal),
                     outputs: DoneOutputs::default(),
+                },
+            )
+            .map_err(err)
+    }
+
+    /// Simulate one stage's build session (if it is running) and, since that
+    /// always hands off to a validation session, the validation session too —
+    /// the QA harness plays both agents so one RPC call lands the stage on a
+    /// verdict, exactly as the real pipeline would after two `done` reports.
+    fn simulate_stage_build(
+        &self,
+        project_id: &str,
+        active: &mut ActiveTask,
+    ) -> Result<(), String> {
+        let stage_id = active
+            .current_stage_id
+            .clone()
+            .ok_or_else(|| "QA stage build: no current stage".to_string())?;
+        if active.stage(&stage_id)?.state == StageState::Building {
+            let content = format!("Implemented stage {stage_id}: {}\n", active.task.goal);
+            write_in_worktree(active, &format!("result-{stage_id}.txt"), &content)?;
+            self.orch_for(project_id)?
+                .on_done(
+                    active,
+                    DoneReport {
+                        phase: DonePhase::Build,
+                        status: DoneStatus::Completed,
+                        summary: format!("Built stage {stage_id}"),
+                        outputs: DoneOutputs::default(),
+                    },
+                )
+                .map_err(err)?;
+        }
+        if active.stage(&stage_id)?.state == StageState::Validating {
+            self.orch_for(project_id)?
+                .on_done(
+                    active,
+                    DoneReport {
+                        phase: DonePhase::Validate,
+                        status: DoneStatus::Completed,
+                        summary: format!("Validated stage {stage_id}"),
+                        outputs: DoneOutputs {
+                            validation: Some(ValidationReport {
+                                passed: true,
+                                findings: "QA validation: pass.".to_string(),
+                                notes_for_next_stage: "QA notes for the next stage.".to_string(),
+                            }),
+                            ..DoneOutputs::default()
+                        },
+                    },
+                )
+                .map_err(err)?;
+        }
+        Ok(())
+    }
+
+    /// Drive the QA harness through however many stages "run all" chains into:
+    /// each `simulate_stage_build` hop may itself trigger the orchestrator's
+    /// internal auto-advance dispatch (spec §6.2), which leaves the task
+    /// `building` again on the next stage — keep going until it doesn't.
+    fn qa_drive_stage_chain(
+        &self,
+        project_id: &str,
+        active: &mut ActiveTask,
+    ) -> Result<(), String> {
+        if !self.qa_agent {
+            return Ok(());
+        }
+        let max_hops = active.stages.len() + 1;
+        for _ in 0..max_hops {
+            if !(active.is_multi_stage() && active.task.state == TaskState::Building) {
+                return Ok(());
+            }
+            self.simulate_stage_build(project_id, active)?;
+        }
+        Err("QA stage chain did not converge".to_string())
+    }
+
+    /// Simulate a per-stage plan-revision session: rewrite the stage doc and
+    /// resolve every open comment on the stage being revised.
+    fn simulate_stage_revise(
+        &self,
+        project_id: &str,
+        active: &mut ActiveTask,
+    ) -> Result<(), String> {
+        let stage_id = active
+            .revising_stage_id
+            .clone()
+            .ok_or_else(|| "QA stage revise: no stage revision in flight".to_string())?;
+        let stage_path = active.stage(&stage_id)?.path.clone();
+        let mut contents = std::fs::read_to_string(active.worktree.path.join(&stage_path))
+            .map_err(|e| format!("QA stage revise: could not read stage doc: {e}"))?;
+        contents.push_str("\n(revised)\n");
+        write_in_worktree(active, &stage_path, &contents)?;
+        let resolutions: Vec<CommentResolution> = active
+            .open_comments_for(&stage_id)
+            .into_iter()
+            .map(|c| CommentResolution {
+                comment_id: c.id.clone(),
+                response: "QA: addressed.".to_string(),
+            })
+            .collect();
+        self.orch_for(project_id)?
+            .on_done(
+                active,
+                DoneReport {
+                    phase: DonePhase::Revise,
+                    status: DoneStatus::Completed,
+                    summary: format!("Revised stage {stage_id}"),
+                    outputs: DoneOutputs {
+                        comment_resolutions: Some(resolutions),
+                        ..DoneOutputs::default()
+                    },
                 },
             )
             .map_err(err)
@@ -1538,12 +1944,108 @@ impl AppState {
             "harness": self.harness,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
+            "auto_advance": active.auto_advance,
+            "current_stage_id": active.current_stage_id,
+            "stages": active
+                .stages
+                .iter()
+                .map(|stage| stage_json(active, stage))
+                .collect::<Vec<_>>(),
         })
     }
 
     fn take(&mut self, task_id: &str) -> Result<ActiveTask, String> {
         self.tasks.remove(task_id).ok_or("unknown task_id".into())
     }
+}
+
+/// The wire view of one stage (spec §7.3) — id/title/summary/path, its
+/// sub-state, its open-comment count, and its validation report if any.
+fn stage_json(active: &ActiveTask, stage: &Stage) -> Value {
+    let open_comments = active
+        .comments
+        .iter()
+        .filter(|c| c.stage_id == stage.id && c.state == CommentState::Open)
+        .count();
+    json!({
+        "id": stage.id,
+        "title": stage.title,
+        "summary": stage.summary,
+        "path": stage.path,
+        "state": stage_state_str(&stage.state),
+        "open_comments": open_comments,
+        "validation": stage.validation.as_ref().map(|v| json!({
+            "passed": v.passed,
+            "findings": v.findings,
+            "notes_for_next_stage": v.notes_for_next_stage,
+        })),
+    })
+}
+
+fn comment_json(c: &StageComment) -> Value {
+    json!({
+        "id": c.id,
+        "stage_id": c.stage_id,
+        "anchor": c.anchor.as_ref().map(|a| json!({
+            "heading_path": a.heading_path,
+            "snippet": a.snippet,
+        })),
+        "body": c.body,
+        "state": match c.state {
+            CommentState::Open => "open",
+            CommentState::Addressed => "addressed",
+        },
+        "agent_reply": c.agent_reply,
+    })
+}
+
+/// Parse the optional `anchor` param of `task.comment_add`: `null`/absent is a
+/// general comment; present, it must carry a string-array `heading_path` and a
+/// string `snippet` (capped server-side at 400 chars).
+fn parse_comment_anchor(value: Option<&Value>) -> Result<Option<CommentAnchor>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let heading_path = v
+                .get("heading_path")
+                .and_then(Value::as_array)
+                .ok_or("anchor.heading_path must be an array of strings")?
+                .iter()
+                .map(|entry| {
+                    entry.as_str().map(str::to_string).ok_or_else(|| {
+                        "anchor.heading_path must be an array of strings".to_string()
+                    })
+                })
+                .collect::<Result<Vec<String>, String>>()?;
+            let snippet = v
+                .get("snippet")
+                .and_then(Value::as_str)
+                .ok_or("anchor.snippet must be a string")?;
+            let snippet: String = snippet.chars().take(400).collect();
+            Ok(Some(CommentAnchor {
+                heading_path,
+                snippet,
+            }))
+        }
+    }
+}
+
+/// The first stage that `task.stage_dispatch` would currently accept: the
+/// earliest stage not yet `validated_passed` — provided it is itself `approved`
+/// and every stage before it already passed validation. `None` when nothing is
+/// dispatchable right now (mirrors `dispatch_stage`'s gate).
+fn dispatchable_next_stage(active: &ActiveTask) -> Option<String> {
+    for (index, stage) in active.stages.iter().enumerate() {
+        if stage.state == (StageState::Validated { passed: true }) {
+            continue;
+        }
+        return (stage.state == StageState::Approved
+            && active.stages[..index]
+                .iter()
+                .all(|s| s.state == (StageState::Validated { passed: true })))
+        .then(|| stage.id.clone());
+    }
+    None
 }
 
 fn project_json(p: &Project) -> Value {
@@ -1931,6 +2433,19 @@ pub fn state_str(state: &TaskState) -> String {
     }
 }
 
+/// Render a stage sub-state as a stable snake_case string for the wire.
+pub fn stage_state_str(state: &StageState) -> String {
+    match state {
+        StageState::Planned => "planned".into(),
+        StageState::Approved => "approved".into(),
+        StageState::Building => "building".into(),
+        StageState::Built => "built".into(),
+        StageState::Validating => "validating".into(),
+        StageState::Validated { passed: true } => "validated_passed".into(),
+        StageState::Validated { passed: false } => "validated_failed".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1982,33 +2497,69 @@ mod tests {
             "/tmp/test-mcp.sock",
         );
 
-        // Dispatch a standard task → scripted plan → plan_review.
+        // Dispatch a standard task → scripted multi-stage plan → plan_review.
         let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
         assert_eq!(res["ok"], true);
         let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
         assert_eq!(res["result"]["state"], "plan_review");
+        assert_eq!(res["result"]["stages"].as_array().unwrap().len(), 2);
 
-        // The plan is readable.
-        let plan = state.handle(req("task.plan", json!({ "task_id": task_id })));
-        assert!(plan["result"]["contents"]
+        // The legacy plan surface is retired for a multi-stage task.
+        let legacy_plan = state.handle(req("task.plan", json!({ "task_id": task_id })));
+        assert_eq!(legacy_plan["ok"], false);
+
+        // Each stage doc is readable through the multi-stage surface.
+        let doc = state.handle(req(
+            "task.stage_doc",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert!(doc["result"]["contents"]
             .as_str()
             .unwrap()
             .contains("add a greeting"));
 
-        // Approve → scripted build → review, with a diff.
-        let approved = state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
-        assert_eq!(approved["result"]["state"], "review");
+        // Approve + dispatch stage 1 → scripted build + validation → back to
+        // plan_review (stage 1 done, stage 2 still ahead).
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        let s1 = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(s1["result"]["state"], "plan_review", "{s1:?}");
+        let stages = state.handle(req("task.stages", json!({ "task_id": task_id })));
+        let first = stages["result"]["stages"][0].clone();
+        assert_eq!(first["state"], "validated_passed");
+        assert_eq!(first["validation"]["passed"], true);
+
+        // Approve + dispatch stage 2 → the final stage's validation opens review.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        let s2 = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(s2["result"]["state"], "review", "{s2:?}");
+
         let diff = state.handle(req("task.diff", json!({ "task_id": task_id })));
-        assert!(diff["result"]["files"]
+        let files: Vec<String> = diff["result"]["files"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|f| f["path"] == "result.txt"));
+            .map(|f| f["path"].as_str().unwrap().to_string())
+            .collect();
+        assert!(files.contains(&"result-first-half.txt".to_string()));
+        assert!(files.contains(&"result-second-half.txt".to_string()));
 
-        // Approve & merge → merged, and the base branch has the file.
+        // Approve & merge → merged, and the base branch has both stages' files.
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
-        assert!(repo.join("result.txt").exists());
+        assert!(repo.join("result-first-half.txt").exists());
+        assert!(repo.join("result-second-half.txt").exists());
     }
 
     #[tokio::test]
@@ -2048,19 +2599,42 @@ mod tests {
             server.received_requests().await.unwrap().len()
         }
 
-        // Dispatch → (scripted plan) → plan_review: exactly one notify.
+        // Dispatch → (scripted 2-stage plan) → plan_review: exactly one notify.
         let res = state.handle(req("task.dispatch", json!({ "goal": "add a greeting" })));
         assert_eq!(res["result"]["state"], "plan_review");
         assert_eq!(notifies_after(&server, 1).await, 1);
 
-        // Reading the plan mutates nothing → still one.
+        // Reading the stage board mutates nothing → still one.
         let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
-        state.handle(req("task.plan", json!({ "task_id": task_id })));
+        state.handle(req("task.stages", json!({ "task_id": task_id })));
         assert_eq!(notifies_after(&server, 1).await, 1);
 
-        // Approve → (scripted build) → review: a second notify.
-        let approved = state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
-        assert_eq!(approved["result"]["state"], "review");
+        // Approve + dispatch stage 1: the whole build+validate cycle runs inside
+        // this one RPC call (the QA agent drives it to completion before the
+        // handler persists), landing back on plan_review — the *same* wire state
+        // as before the call, so the throttle fires no notify for it.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        let s1 = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(s1["result"]["state"], "plan_review", "{s1:?}");
+        assert_eq!(notifies_after(&server, 1).await, 1);
+
+        // Approve + dispatch stage 2 → the final stage's validation opens
+        // review: a genuine state change, a second notify.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        let s2 = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(s2["result"]["state"], "review", "{s2:?}");
         assert_eq!(notifies_after(&server, 2).await, 2);
 
         // Merge is human-driven; no third notify.
@@ -2137,7 +2711,7 @@ mod tests {
     }
 
     #[test]
-    fn send_notes_reruns_planning() {
+    fn stage_send_notes_revises_the_stage_and_resolves_comments() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(
             repo,
@@ -2150,24 +2724,509 @@ mod tests {
         let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
         assert_eq!(res["result"]["state"], "plan_review");
 
-        // Requesting updates re-runs planning (QA simulates it) → back to plan_review.
+        // A general comment (no anchor) and an anchored one on the first stage.
+        let general = state.handle(req(
+            "task.comment_add",
+            json!({ "task_id": task_id, "stage_id": "first-half", "body": "split this further" }),
+        ));
+        assert_eq!(general["ok"], true, "{general:?}");
+        assert_eq!(general["result"]["comment"]["anchor"], Value::Null);
+        let anchored = state.handle(req(
+            "task.comment_add",
+            json!({
+                "task_id": task_id, "stage_id": "first-half", "body": "use a timestamp",
+                "anchor": { "heading_path": ["Stage: First half"], "snippet": "implement the first half" },
+            }),
+        ));
+        assert_eq!(anchored["ok"], true, "{anchored:?}");
+        let anchored_id = anchored["result"]["comment"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let stages = state.handle(req("task.stages", json!({ "task_id": task_id })));
+        assert_eq!(stages["result"]["stages"][0]["open_comments"], 2);
+
+        // Send the stage's comments back to a fresh plan-revision session (QA
+        // rewrites the doc and resolves every open comment) → planned again.
         let upd = state.handle(req(
-            "task.send_notes",
-            json!({ "task_id": task_id, "comments": "On \"step 1\": please add error handling." }),
+            "task.stage_send_notes",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
         ));
         assert_eq!(upd["ok"], true, "{upd:?}");
         assert_eq!(upd["result"]["state"], "plan_review");
-        // The plan is still readable afterwards.
-        let plan = state.handle(req("task.plan", json!({ "task_id": task_id })));
+
+        let stages = state.handle(req("task.stages", json!({ "task_id": task_id })));
+        let first = stages["result"]["stages"][0].clone();
+        assert_eq!(first["state"], "planned");
+        assert_eq!(first["open_comments"], 0);
+        let comments = first["comments"].as_array().unwrap();
+        assert!(comments
+            .iter()
+            .all(|c| c["state"] == "addressed" && c["agent_reply"] == "QA: addressed."));
+
+        // The stage doc changed.
+        let doc = state.handle(req(
+            "task.stage_doc",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert!(doc["result"]["contents"]
+            .as_str()
+            .unwrap()
+            .contains("(revised)"));
+
+        // No open comments left → sending notes again is a clean error.
+        let bad = state.handle(req(
+            "task.stage_send_notes",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(bad["ok"], false);
+        assert!(bad["error"].as_str().unwrap().contains("no open comments"));
+
+        // The legacy single-plan surface is off-limits for a multi-stage task.
+        let legacy = state.handle(req(
+            "task.send_notes",
+            json!({ "task_id": task_id, "comments": "anything" }),
+        ));
+        assert_eq!(legacy["ok"], false);
+        assert_eq!(
+            legacy["error"],
+            "multi-stage task: use task.comment_add + task.stage_send_notes"
+        );
+
+        // Deleting an already-addressed comment is rejected.
+        let del = state.handle(req(
+            "task.comment_delete",
+            json!({ "task_id": task_id, "comment_id": anchored_id }),
+        ));
+        assert_eq!(del["ok"], false);
+        assert_eq!(del["error"], "only open comments can be deleted");
+
+        // An unknown comment id is a clean error.
+        let unknown = state.handle(req(
+            "task.comment_delete",
+            json!({ "task_id": task_id, "comment_id": "c-999" }),
+        ));
+        assert_eq!(unknown["ok"], false);
+        assert_eq!(unknown["error"], "unknown comment_id: c-999");
+    }
+
+    #[test]
+    fn multi_stage_gate_rejections_and_unknown_stage_errors() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req("task.dispatch", json!({ "goal": "gate this" })));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+
+        // Unknown stage id, on every stage-scoped method.
+        for (method, extra) in [
+            ("task.stage_doc", json!({})),
+            ("task.stage_approve", json!({})),
+            ("task.stage_dispatch", json!({})),
+            ("task.stage_send_notes", json!({})),
+            ("task.stage_fix", json!({})),
+            ("task.comment_add", json!({ "body": "hi" })),
+        ] {
+            let mut params = json!({ "task_id": task_id, "stage_id": "no-such-stage" });
+            for (k, v) in extra.as_object().unwrap() {
+                params[k] = v.clone();
+            }
+            let res = state.handle(req(method, params));
+            assert_eq!(res["ok"], false, "{method}: {res:?}");
+            assert_eq!(
+                res["error"], "unknown stage_id: no-such-stage",
+                "{method}: {res:?}"
+            );
+        }
+
+        // Unknown task id.
+        let res = state.handle(req("task.stages", json!({ "task_id": "task-999" })));
+        assert_eq!(res["error"], "unknown task_id");
+
+        // A legacy-only method on a multi-stage task, exact message (§7.2).
+        let res = state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
+        assert_eq!(res["ok"], false);
+        assert_eq!(
+            res["error"],
+            "multi-stage task: approve and dispatch stages individually \
+             (task.stage_approve, task.stage_dispatch)"
+        );
+
+        // Dispatching an unapproved stage is rejected.
+        let res = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(res["ok"], false);
+        assert!(
+            res["error"].as_str().unwrap().contains("not approved"),
+            "{res:?}"
+        );
+
+        // Dispatching stage 2 before stage 1 has passed validation is rejected,
+        // even though stage 2 is itself approved.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        let res = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(res["ok"], false);
+        assert!(
+            res["error"]
+                .as_str()
+                .unwrap()
+                .contains("has not passed validation yet"),
+            "{res:?}"
+        );
+
+        // Once stage 1 dispatches (QA drives it to validated_passed) and the
+        // task reaches `review`, dispatching any stage again is illegal — the
+        // task is no longer at the plan_review gate.
+        state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        let done = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(done["result"]["state"], "review", "{done:?}");
+        let stale = state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(stale["ok"], false);
+        assert!(
+            stale["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot dispatch a stage"),
+            "{stale:?}"
+        );
+    }
+
+    #[test]
+    fn comment_add_rejects_missing_stage_wrong_state_and_empty_body() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req("task.dispatch", json!({ "goal": "comment gates" })));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+
+        // Empty body is rejected.
+        let empty = state.handle(req(
+            "task.comment_add",
+            json!({ "task_id": task_id, "stage_id": "first-half", "body": "   " }),
+        ));
+        assert_eq!(empty["ok"], false);
+
+        // A malformed anchor is rejected.
+        let bad_anchor = state.handle(req(
+            "task.comment_add",
+            json!({
+                "task_id": task_id, "stage_id": "first-half", "body": "hi",
+                "anchor": { "heading_path": "not-an-array", "snippet": "x" },
+            }),
+        ));
+        assert_eq!(bad_anchor["ok"], false);
+
+        // Once the stage is validated, comments are no longer accepted.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        let after = state.handle(req(
+            "task.comment_add",
+            json!({ "task_id": task_id, "stage_id": "first-half", "body": "too late" }),
+        ));
+        assert_eq!(after["ok"], false);
+        assert_eq!(
+            after["error"],
+            "comments are only accepted on planned/approved stages (stage is validated_passed)"
+        );
+    }
+
+    #[test]
+    fn set_auto_advance_runs_every_approved_stage_to_review() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req("task.dispatch", json!({ "goal": "run all" })));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+
+        // Approve both stages up front, then arm run-all with one call: the
+        // whole pipeline (stage 1 build+validate → auto-dispatch stage 2 →
+        // build+validate) runs inside this single RPC.
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": task_id, "stage_id": "second-half" }),
+        ));
+        let armed = state.handle(req(
+            "task.set_auto_advance",
+            json!({ "task_id": task_id, "enabled": true }),
+        ));
+        assert_eq!(armed["ok"], true, "{armed:?}");
+        assert_eq!(armed["result"]["state"], "review", "{armed:?}");
+        assert_eq!(armed["result"]["auto_advance"], true);
+
+        let stages = state.handle(req("task.stages", json!({ "task_id": task_id })));
+        let list = stages["result"]["stages"].as_array().unwrap();
+        assert!(list.iter().all(|s| s["state"] == "validated_passed"));
+
+        // Disarming is a pure flag flip; no dispatch fires from a terminal-ish
+        // review gate.
+        let disarmed = state.handle(req(
+            "task.set_auto_advance",
+            json!({ "task_id": task_id, "enabled": false }),
+        ));
+        assert_eq!(disarmed["result"]["auto_advance"], false);
+    }
+
+    #[test]
+    fn multi_stage_state_persists_and_reloads_mid_flight() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let task_id;
+        {
+            let mut state = AppState::new(
+                repo.clone(),
+                dir.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_task_store(&tasks_dir)
+            .unwrap();
+            let res = state.handle(req("task.dispatch", json!({ "goal": "reload me" })));
+            task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+            state.handle(req(
+                "task.stage_approve",
+                json!({ "task_id": task_id, "stage_id": "first-half" }),
+            ));
+            state.handle(req(
+                "task.stage_dispatch",
+                json!({ "task_id": task_id, "stage_id": "first-half" }),
+            ));
+            state.handle(req(
+                "task.comment_add",
+                json!({ "task_id": task_id, "stage_id": "second-half", "body": "note for later" }),
+            ));
+            // Stage 2 is not approved, so this arms run-all without dispatching.
+            let armed = state.handle(req(
+                "task.set_auto_advance",
+                json!({ "task_id": task_id, "enabled": true }),
+            ));
+            assert_eq!(armed["result"]["state"], "plan_review", "{armed:?}");
+        } // daemon dies
+
+        let mut reloaded = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        let got = reloaded.handle(req("task.get", json!({ "task_id": task_id })));
+        assert_eq!(got["result"]["state"], "plan_review", "{got:?}");
+        assert_eq!(got["result"]["auto_advance"], true);
+        assert_eq!(got["result"]["current_stage_id"], "first-half");
+        assert_eq!(got["result"]["stages"][0]["state"], "validated_passed");
+
+        let stages = reloaded.handle(req("task.stages", json!({ "task_id": task_id })));
+        let list = stages["result"]["stages"].as_array().unwrap();
+        assert_eq!(list[0]["validation"]["passed"], true);
+        let second_comments = list[1]["comments"].as_array().unwrap();
+        assert_eq!(second_comments.len(), 1);
+        assert_eq!(second_comments[0]["body"], "note for later");
+        assert_eq!(second_comments[0]["state"], "open");
+    }
+
+    #[test]
+    fn interrupted_multi_stage_build_resumes_via_stage_routing() {
+        use crate::store::TaskStore;
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        // A surviving worktree: its own tiny git repo, exactly like a real
+        // worktree the daemon lost track of when it died mid-build.
+        let (_wt_dir, surviving_worktree) = init_repo();
+
+        let store = TaskStore::new(&tasks_dir);
+        store
+            .save(&PersistedTask {
+                id: "task-9".into(),
+                goal: "multi stage goal".into(),
+                kind: TaskKind::Standard,
+                project_path: repo.display().to_string(),
+                base_branch: "main".into(),
+                state: TaskState::Building,
+                branch: "build/multi-stage-goal".into(),
+                worktree_name: "multi-stage-goal".into(),
+                worktree_path: surviving_worktree.display().to_string(),
+                plan_path: STAGES_MANIFEST_PATH.to_string(),
+                last_summary: None,
+                model: None,
+                effort: None,
+                last_error: None,
+                stages: vec![
+                    Stage {
+                        id: "first-half".into(),
+                        title: "First half".into(),
+                        path: ".build/plan/01-first-half.md".into(),
+                        summary: "First half.".into(),
+                        state: StageState::Validated { passed: true },
+                        start_sha: Some("deadbeef".into()),
+                        validation: Some(ValidationReport {
+                            passed: true,
+                            findings: "ok".into(),
+                            notes_for_next_stage: "watch the seam".into(),
+                        }),
+                    },
+                    Stage {
+                        id: "second-half".into(),
+                        title: "Second half".into(),
+                        path: ".build/plan/02-second-half.md".into(),
+                        summary: "Second half.".into(),
+                        state: StageState::Building,
+                        start_sha: Some("cafef00d".into()),
+                        validation: None,
+                    },
+                ],
+                current_stage_id: Some("second-half".into()),
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
+                created_at: "2026-07-01T10:00:00Z".into(),
+                updated_at: "2026-07-01T10:00:00Z".into(),
+            })
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // The dead build session is legible as `interrupted`, stage state kept.
+        let got = state.handle(req("task.get", json!({ "task_id": "task-9" })));
+        assert_eq!(got["result"]["state"], "interrupted");
+        assert_eq!(got["result"]["needs_attention"], true);
+        assert_eq!(got["result"]["stages"][1]["state"], "building");
+
+        // Resume respawns the stage-2 build session (routed by the persisted
+        // sub-state, spec §1.3); the QA harness drives it through build →
+        // validate, and — this being the final stage — lands on `review`.
+        let resumed = state.handle(req("task.resume", json!({ "task_id": "task-9" })));
+        assert_eq!(resumed["ok"], true, "{resumed:?}");
+        assert_eq!(resumed["result"]["state"], "review", "{resumed:?}");
+        assert_eq!(resumed["result"]["stages"][1]["state"], "validated_passed");
+    }
+
+    #[test]
+    fn legacy_persisted_record_still_uses_the_single_plan_surface() {
+        use crate::store::TaskStore;
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let surviving_worktree = dir.path().join("wt-legacy");
+        std::fs::create_dir_all(surviving_worktree.join(".build")).unwrap();
+        std::fs::write(
+            surviving_worktree.join(".build/plan.md"),
+            "# Plan\n1. do the legacy thing.\n",
+        )
+        .unwrap();
+
+        let store = TaskStore::new(&tasks_dir);
+        store
+            .save(&PersistedTask {
+                id: "task-1".into(),
+                goal: "legacy goal".into(),
+                kind: TaskKind::Standard,
+                project_path: repo.display().to_string(),
+                base_branch: "main".into(),
+                state: TaskState::PlanReview,
+                branch: "build/legacy-goal".into(),
+                worktree_name: "legacy-goal".into(),
+                worktree_path: surviving_worktree.display().to_string(),
+                plan_path: ".build/plan.md".into(),
+                last_summary: None,
+                model: None,
+                effort: None,
+                last_error: None,
+                stages: Vec::new(),
+                current_stage_id: None,
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
+                created_at: "2026-07-01T10:00:00Z".into(),
+                updated_at: "2026-07-01T10:00:00Z".into(),
+            })
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // stages is empty ⇒ every multi-stage RPC treats it as legacy.
+        let stages = state.handle(req("task.stages", json!({ "task_id": "task-1" })));
+        assert_eq!(stages["ok"], false);
+        assert_eq!(stages["error"], "not a multi-stage task");
+
+        // task.plan still reads the legacy file.
+        let plan = state.handle(req("task.plan", json!({ "task_id": "task-1" })));
+        assert_eq!(plan["ok"], true, "{plan:?}");
         assert!(plan["result"]["contents"]
             .as_str()
             .unwrap()
-            .contains("greeting"));
+            .contains("legacy thing"));
 
-        // Missing comments is a clean error.
-        let bad = state.handle(req("task.send_notes", json!({ "task_id": task_id })));
-        assert_eq!(bad["ok"], false);
-        assert!(bad["error"].as_str().unwrap().contains("comments"));
+        // task.approve_plan still runs the legacy build (QA simulates it).
+        let approved = state.handle(req("task.approve_plan", json!({ "task_id": "task-1" })));
+        assert_eq!(approved["result"]["state"], "review", "{approved:?}");
     }
 
     #[test]
@@ -2219,15 +3278,16 @@ mod tests {
         let list = state.handle(req("project.list", json!({})));
         assert_eq!(list["result"]["projects"].as_array().unwrap().len(), 2);
 
-        // Dispatch explicitly to project B → on merge the file lands in repo B only.
+        // Dispatch explicitly to project B (a quick task — routing is orthogonal
+        // to the plan pipeline) → on merge the file lands in repo B only.
         let res = state.handle(req(
             "task.dispatch",
-            json!({ "goal": "greet b", "project_id": proj_b }),
+            json!({ "goal": "greet b", "project_id": proj_b, "kind": "quick" }),
         ));
         assert_eq!(res["ok"], true, "{res:?}");
         assert_eq!(res["result"]["project_id"], proj_b);
+        assert_eq!(res["result"]["state"], "review");
         let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
-        state.handle(req("task.approve_plan", json!({ "task_id": task_id })));
         let merged = state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
         assert_eq!(merged["result"]["state"], "merged");
         assert!(repo_b.join("result.txt").exists(), "merged into project B");
@@ -2552,11 +3612,14 @@ mod tests {
         // Merged tasks stay listed: they are history.
         assert_eq!(by_goal("quick goal")["state"], "merged");
 
-        // The recovered plan is still readable through the RPC.
+        // The recovered stage docs are still readable through the RPC.
         let standard_id = standard["task_id"].as_str().unwrap().to_string();
-        let plan = reloaded.handle(req("task.plan", json!({ "task_id": standard_id.clone() })));
-        assert_eq!(plan["ok"], true, "{plan:?}");
-        assert!(plan["result"]["contents"]
+        let doc = reloaded.handle(req(
+            "task.stage_doc",
+            json!({ "task_id": standard_id.clone(), "stage_id": "first-half" }),
+        ));
+        assert_eq!(doc["ok"], true, "{doc:?}");
+        assert!(doc["result"]["contents"]
             .as_str()
             .unwrap()
             .contains("standard goal"));
@@ -2574,8 +3637,15 @@ mod tests {
         );
 
         // And a recovered task continues its lifecycle where it left off.
-        let cont = reloaded.handle(req("task.approve_plan", json!({ "task_id": standard_id })));
-        assert_eq!(cont["result"]["state"], "review", "{cont:?}");
+        reloaded.handle(req(
+            "task.stage_approve",
+            json!({ "task_id": standard_id.clone(), "stage_id": "first-half" }),
+        ));
+        let cont = reloaded.handle(req(
+            "task.stage_dispatch",
+            json!({ "task_id": standard_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(cont["result"]["state"], "plan_review", "{cont:?}");
     }
 
     #[test]

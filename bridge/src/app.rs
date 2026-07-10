@@ -327,6 +327,11 @@ impl AppState {
                 effort: record.effort,
             },
             record.last_error,
+            record.stages,
+            record.current_stage_id,
+            record.revising_stage_id,
+            record.auto_advance,
+            record.comments,
         );
 
         let mut state_changed = false;
@@ -428,13 +433,11 @@ impl AppState {
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
             last_error: active.last_error.clone(),
-            // ActiveTask does not carry multi-stage bookkeeping yet (Layer 4/5
-            // wire that up); every task persists on the legacy path until then.
-            stages: Vec::new(),
-            current_stage_id: None,
-            revising_stage_id: None,
-            auto_advance: false,
-            comments: Vec::new(),
+            stages: active.stages.clone(),
+            current_stage_id: active.current_stage_id.clone(),
+            revising_stage_id: active.revising_stage_id.clone(),
+            auto_advance: active.auto_advance,
+            comments: active.comments.clone(),
             created_at,
             updated_at: now,
         };
@@ -2880,6 +2883,11 @@ mod tests {
                 None,
                 Default::default(),
                 None,
+                Vec::new(),
+                None,
+                None,
+                false,
+                Vec::new(),
             );
             state.task_project.insert(id.into(), project_id.clone());
             state.tasks.insert(id.into(), active);

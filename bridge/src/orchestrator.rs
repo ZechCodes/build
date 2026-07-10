@@ -19,7 +19,10 @@ use crate::diff::{diff_against_base, DiffError, WorktreeDiff};
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::pty::{HarnessSpec, PtyError, PtySession};
-use crate::task::{IllegalTransition, Task, TaskEvent, TaskId, TaskKind, TaskState};
+use crate::task::{
+    CommentState, IllegalStageTransition, IllegalTransition, Stage, StageComment, Task, TaskEvent,
+    TaskId, TaskKind, TaskState,
+};
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
 use crate::worktree::{slugify, Worktree, WorktreeError, WorktreeManager};
 
@@ -33,6 +36,11 @@ pub enum OrchestratorError {
     Diff(#[from] DiffError),
     #[error(transparent)]
     Transition(#[from] IllegalTransition),
+    #[error(transparent)]
+    Stage(#[from] IllegalStageTransition),
+    /// A rejected stage-gate precondition; the message is surfaced verbatim over RPC.
+    #[error("{0}")]
+    Gate(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
@@ -70,6 +78,16 @@ pub struct ActiveTask {
     /// The most recent failure surfaced to the reviewer (merge failure, harness
     /// crash). Set by the app layer; cleared here whenever the task advances again.
     pub last_error: Option<String>,
+    /// Multi-stage plan: manifest + per-stage sub-state. Empty = legacy path.
+    pub stages: Vec<Stage>,
+    /// The stage whose build/fix/validate session is (or was last) in flight.
+    pub current_stage_id: Option<String>,
+    /// The stage a plan-revision session is running for (routes Interrupted(Plan)).
+    pub revising_stage_id: Option<String>,
+    /// "Run all": auto-dispatch the next approved stage when validation passes.
+    pub auto_advance: bool,
+    /// Persisted per-stage plan comments (flat; each carries its stage_id).
+    pub comments: Vec<StageComment>,
     /// The warm PTY session for the current phase (None before dispatch/after end).
     session: Option<PtySession>,
 }
@@ -78,6 +96,7 @@ impl ActiveTask {
     /// Reattach a task recovered from the durable store after a daemon restart:
     /// the worktree survived on disk, the PTY session did not. The caller (boot
     /// recovery) has already moved a working state to `Interrupted`.
+    #[allow(clippy::too_many_arguments)] // mirrors the persisted record field-for-field
     pub fn reattach(
         task: Task,
         worktree: Worktree,
@@ -85,6 +104,11 @@ impl ActiveTask {
         last_summary: Option<String>,
         model_choice: ModelChoice,
         last_error: Option<String>,
+        stages: Vec<Stage>,
+        current_stage_id: Option<String>,
+        revising_stage_id: Option<String>,
+        auto_advance: bool,
+        comments: Vec<StageComment>,
     ) -> Self {
         ActiveTask {
             task,
@@ -93,8 +117,62 @@ impl ActiveTask {
             last_summary,
             model_choice,
             last_error,
+            stages,
+            current_stage_id,
+            revising_stage_id,
+            auto_advance,
+            comments,
             session: None,
         }
+    }
+
+    /// A task is multi-stage iff its manifest is non-empty (spec §0.4).
+    pub fn is_multi_stage(&self) -> bool {
+        !self.stages.is_empty()
+    }
+
+    /// The stage with `id`, in manifest order.
+    pub fn stage(&self, stage_id: &str) -> Result<&Stage, String> {
+        self.stages
+            .iter()
+            .find(|s| s.id == stage_id)
+            .ok_or_else(|| format!("unknown stage_id: {stage_id}"))
+    }
+
+    pub fn stage_mut(&mut self, stage_id: &str) -> Result<&mut Stage, String> {
+        self.stages
+            .iter_mut()
+            .find(|s| s.id == stage_id)
+            .ok_or_else(|| format!("unknown stage_id: {stage_id}"))
+    }
+
+    /// Index of a stage in manifest (= execution) order.
+    pub fn stage_index(&self, stage_id: &str) -> Result<usize, String> {
+        self.stages
+            .iter()
+            .position(|s| s.id == stage_id)
+            .ok_or_else(|| format!("unknown stage_id: {stage_id}"))
+    }
+
+    /// Open comments on one stage, insertion order.
+    pub fn open_comments_for(&self, stage_id: &str) -> Vec<&StageComment> {
+        self.comments
+            .iter()
+            .filter(|c| c.stage_id == stage_id && c.state == CommentState::Open)
+            .collect()
+    }
+
+    /// Mint the next comment id: "c-<n>", n = 1 + max numeric suffix among the
+    /// task's existing comment ids — so ids never collide after deletes.
+    pub fn mint_comment_id(&self) -> String {
+        let max_suffix = self
+            .comments
+            .iter()
+            .filter_map(|c| c.id.strip_prefix("c-"))
+            .filter_map(|n| n.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        format!("c-{}", max_suffix + 1)
     }
 
     /// Subscribe to the live terminal stream, if a session is warm.
@@ -217,6 +295,11 @@ impl Orchestrator {
             last_summary: None,
             model_choice,
             last_error: None,
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            comments: Vec::new(),
             session: None,
         };
 
@@ -1066,6 +1149,11 @@ mod tests {
             None,
             Default::default(),
             None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            Vec::new(),
         );
         assert_eq!(
             revived.task.state,
@@ -1107,6 +1195,11 @@ mod tests {
             Some("earlier summary".into()),
             Default::default(),
             None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            Vec::new(),
         );
         orch.resume(&mut revived).unwrap();
         assert_eq!(revived.task.state, TaskState::Planning);
@@ -1276,6 +1369,152 @@ mod tests {
             r.find_branch(&branch, git2::BranchType::Local).is_err(),
             "branch pruned after abandon"
         );
+    }
+
+    // ---- Multi-stage: ActiveTask bookkeeping ----
+
+    fn stage_named(id: &str, state: crate::task::StageState) -> crate::task::Stage {
+        crate::task::Stage {
+            id: id.to_string(),
+            title: format!("Stage {id}"),
+            path: format!(".build/plan/01-{id}.md"),
+            summary: String::new(),
+            state,
+            start_sha: None,
+            validation: None,
+        }
+    }
+
+    fn comment_on(
+        id: &str,
+        stage_id: &str,
+        state: crate::task::CommentState,
+    ) -> crate::task::StageComment {
+        crate::task::StageComment {
+            id: id.to_string(),
+            stage_id: stage_id.to_string(),
+            anchor: None,
+            body: format!("comment {id}"),
+            state,
+            agent_reply: None,
+        }
+    }
+
+    /// A detached ActiveTask for pure bookkeeping tests (no worktree on disk).
+    fn bare_active(
+        stages: Vec<crate::task::Stage>,
+        comments: Vec<crate::task::StageComment>,
+    ) -> ActiveTask {
+        ActiveTask::reattach(
+            Task::new(TaskId::new("t"), "goal", TaskKind::Standard),
+            Worktree {
+                name: "wt".into(),
+                path: PathBuf::from("/nonexistent"),
+                branch: "build/wt".into(),
+                base_branch: "main".into(),
+            },
+            DEFAULT_PLAN_PATH.into(),
+            None,
+            Default::default(),
+            None,
+            stages,
+            None,
+            None,
+            false,
+            comments,
+        )
+    }
+
+    #[test]
+    fn multi_stage_iff_stages_nonempty() {
+        use crate::task::StageState;
+        assert!(!bare_active(vec![], vec![]).is_multi_stage());
+        assert!(bare_active(vec![stage_named("a", StageState::Planned)], vec![]).is_multi_stage());
+    }
+
+    #[test]
+    fn stage_lookups_find_by_id_and_name_unknown_ids() {
+        use crate::task::StageState;
+        let mut active = bare_active(
+            vec![
+                stage_named("first", StageState::Planned),
+                stage_named("second", StageState::Approved),
+            ],
+            vec![],
+        );
+        assert_eq!(active.stage("second").unwrap().state, StageState::Approved);
+        assert_eq!(active.stage_index("second").unwrap(), 1);
+        assert_eq!(active.stage_mut("first").unwrap().id, "first");
+        for outcome in [
+            active.stage("nope").err(),
+            active.stage_index("nope").err(),
+            active.stage_mut("nope").err(),
+        ] {
+            assert_eq!(outcome, Some("unknown stage_id: nope".to_string()));
+        }
+    }
+
+    #[test]
+    fn open_comments_for_filters_by_stage_and_state_in_insertion_order() {
+        use crate::task::{CommentState, StageState};
+        let active = bare_active(
+            vec![stage_named("first", StageState::Planned)],
+            vec![
+                comment_on("c-1", "first", CommentState::Open),
+                comment_on("c-2", "other", CommentState::Open),
+                comment_on("c-3", "first", CommentState::Addressed),
+                comment_on("c-4", "first", CommentState::Open),
+            ],
+        );
+        let open: Vec<&str> = active
+            .open_comments_for("first")
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(open, vec!["c-1", "c-4"]);
+    }
+
+    #[test]
+    fn mint_comment_id_never_reuses_a_numeric_suffix() {
+        use crate::task::CommentState;
+        assert_eq!(bare_active(vec![], vec![]).mint_comment_id(), "c-1");
+        let active = bare_active(
+            vec![],
+            vec![
+                comment_on("c-3", "first", CommentState::Open),
+                comment_on("c-7", "first", CommentState::Addressed),
+                comment_on("garbled", "first", CommentState::Open),
+            ],
+        );
+        assert_eq!(active.mint_comment_id(), "c-8");
+    }
+
+    #[test]
+    fn reattach_carries_the_stage_bookkeeping() {
+        use crate::task::{CommentState, StageState};
+        let active = ActiveTask::reattach(
+            Task::new(TaskId::new("t"), "goal", TaskKind::Standard),
+            Worktree {
+                name: "wt".into(),
+                path: PathBuf::from("/nonexistent"),
+                branch: "build/wt".into(),
+                base_branch: "main".into(),
+            },
+            DEFAULT_PLAN_PATH.into(),
+            None,
+            Default::default(),
+            None,
+            vec![stage_named("first", StageState::Building)],
+            Some("first".into()),
+            Some("first".into()),
+            true,
+            vec![comment_on("c-1", "first", CommentState::Open)],
+        );
+        assert_eq!(active.stages.len(), 1);
+        assert_eq!(active.current_stage_id.as_deref(), Some("first"));
+        assert_eq!(active.revising_stage_id.as_deref(), Some("first"));
+        assert!(active.auto_advance);
+        assert_eq!(active.comments.len(), 1);
     }
 
     #[tokio::test]

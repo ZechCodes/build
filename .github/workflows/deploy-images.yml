@@ -1,7 +1,9 @@
-name: Deploy images
+name: Deploy
 
-# Build + push the two production images to GHCR on every push to main.
-# GITHUB_TOKEN with packages:write is enough — no extra secrets.
+# Build the two production images, push them to GHCR under this repo's owner
+# (GITHUB_TOKEN can write those packages natively — no extra registry secrets),
+# then roll them out to the production cluster (ns 8ly) with the repo's
+# existing DIGITALOCEAN_ACCESS_TOKEN — same CD pattern as the v1 pipeline.
 
 on:
   push:
@@ -12,7 +14,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io/8ly-dev
+  REGISTRY: ghcr.io/zechcodes
 
 jobs:
   build-app:
@@ -65,3 +67,31 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/build-relay:latest
             ${{ env.REGISTRY }}/build-relay:${{ github.sha }}
+
+  deploy:
+    name: Deploy to production (ns 8ly)
+    runs-on: ubuntu-latest
+    needs: [build-app, build-relay]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Configure kubectl
+        run: doctl kubernetes cluster kubeconfig save production-hosting
+
+      - name: Deploy SHA-pinned images
+        run: |
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml   | kubectl -n 8ly apply -f -
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
+          kubectl -n 8ly rollout status deployment/build-app --timeout=300s
+          kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
+
+      - name: Verify public endpoints
+        run: |
+          curl -sf -o /dev/null https://getbuild.ing/healthz
+          curl -sf -o /dev/null https://relay.getbuild.ing/health
+          test "$(curl -s -o /dev/null -w '%{http_code}' https://getbuild.ing/)" = "302"

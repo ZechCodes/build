@@ -92,7 +92,10 @@ mod tests {
         let env = |key: &str| -> Option<String> {
             Some(
                 match key {
-                    "BRIDGE_RELAY_URL" => "ws://relay:8081",
+                    // Plain-ws is deliberate here: a test fixture for the local
+                    // compose dev stack, never a production connection default
+                    // (which is wss — see defaults_are_production_...).
+                    "BRIDGE_RELAY_URL" => "ws://relay:8081", // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
                     "BRIDGE_API_URL" => "http://app:8080",
                     "BRIDGE_WEB_URL" => "http://localhost:8090",
                     "BRIDGE_REPO" => "/repo",
@@ -106,7 +109,7 @@ mod tests {
             )
         };
         let config = resolve(env, Path::new("/Users/dev"));
-        assert_eq!(config.relay_url, "ws://relay:8081");
+        assert_eq!(config.relay_url, "ws://relay:8081"); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         assert_eq!(config.api_url, "http://app:8080");
         assert_eq!(config.web_url, "http://localhost:8090");
         assert_eq!(config.repo.as_deref(), Some("/repo"));

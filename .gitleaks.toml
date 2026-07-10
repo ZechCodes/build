@@ -1,0 +1,23 @@
+# Gitleaks configuration for this repo. Extends the default ruleset; the
+# allowlists below suppress documented example credentials and vendored-library
+# false positives that live in git history (v1 docs/planning and the retired
+# Hugo theme), none of which are real secrets:
+#   - v1 docs/planning markdown: illustrative JWTs and `sk-...`/`ak_test_...`
+#     placeholder keys inside API examples and security-testing walkthroughs
+#   - v1 Terminal test fixture: a made-up token in a frontend unit test
+#   - themes libsodium-wrappers.js: minified libsodium symbol names
+#     (crypto_kdf_blake2b_BYTES_MAX, ...) misread as generic API keys
+# Real leaks anywhere else still fail the scan.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented example secrets and vendored-library false positives"
+paths = [
+  '''v1/docs/.*\.md''',
+  '''v1/planning/.*\.md''',
+  '''v1/snapshot-manager/docs/.*\.md''',
+  '''v1/frontend/src/components/Terminal/__tests__/Terminal\.advanced\.test\.tsx''',
+  '''themes/build/static/js/libsodium-wrappers\.js''',
+]

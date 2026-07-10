@@ -127,18 +127,23 @@ export function renderStagesTab(ctx) {
   });
 }
 
-function renderStageList(ctx) {
-  const { body, task, stagesData, callRpc, repaint, onSelectStage } = ctx;
-  const taskId = task.task_id;
+// Pure markup for the stage board (exported for tests). The list container
+// carries id="stagelist" — task.js keys its poll freeze/rebuild skip on that
+// id, so a rename here silently re-renders the board on every poll tick and
+// clobbers in-flight control state (busy buttons, the run-all checkbox).
+export function stageBoardHtml(task, stagesData) {
   const stages = stagesData.stages || [];
   const allPlanned = stages.length > 0 && stages.every((s) => s.state === "planned");
-  // At the merge gate the final stage's validation report is the decision context.
+  // At the merge gate the final stage's validation report is the decision
+  // context: heading + FINDINGS (spec §8.4). notes_for_next_stage is empty on
+  // a final stage (there is no next stage), so it can never be the body here.
+  const final = stages.length ? stages[stages.length - 1] : null;
   const reviewBanner =
-    task.state === "review" && stages.length && stages[stages.length - 1].validation
+    task.state === "review" && final && final.validation
       ? validationBanner(
-          stages[stages.length - 1].validation.passed ? "pass" : "fail",
-          `Validation of "${stages[stages.length - 1].title}" ${stages[stages.length - 1].validation.passed ? "passed" : "failed"}`,
-          stages[stages.length - 1].validation.passed ? stages[stages.length - 1].validation.notes_for_next_stage : stages[stages.length - 1].validation.findings,
+          final.validation.passed ? "pass" : "fail",
+          `Validation of "${final.title}" ${final.validation.passed ? "passed" : "failed"}`,
+          final.validation.findings,
         )
       : "";
 
@@ -156,14 +161,21 @@ function renderStageList(ctx) {
     })
     .join("");
 
-  body.innerHTML = `
+  return `
     ${reviewBanner}
     <div class="stagehead">
       <label class="runall"><input type="checkbox" id="runall"${stagesData.auto_advance ? " checked" : ""}/> Run all (auto-advance)</label>
       ${allPlanned ? `<button class="btn mini" id="approveall">Approve all</button>` : ""}
       <span class="hint" id="stageshint"></span>
     </div>
-    <div class="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
+    <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
+}
+
+function renderStageList(ctx) {
+  const { body, task, stagesData, callRpc, repaint, onSelectStage } = ctx;
+  const taskId = task.task_id;
+  const stages = stagesData.stages || [];
+  body.innerHTML = stageBoardHtml(task, stagesData);
 
   const runall = body.querySelector("#runall");
   runall.onchange = async () => {

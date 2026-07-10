@@ -13,6 +13,7 @@ import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/t
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { toggleTerminal } from "../terminal/drawer.js";
+import { renderStagesTab } from "./stages.js";
 
 export async function renderTask() {
   const root = $("#root");
@@ -124,6 +125,58 @@ export async function renderTask() {
   const planComments = []; // { id, snippet, comment }
   let cid = 0,
     planKey = null;
+
+  // Multi-stage plan tab state (task.stages / task.stage_doc), preserved across
+  // the poll. `selectedStageId` null → the stage board; set → that stage's doc.
+  let stagesKey = null,
+    selectedStageId = null;
+
+  // Render the multi-stage plan tab: the stage board, or one stage's doc + its
+  // persisted comments. Comments and stage docs are server state, so this fetches
+  // task.stages every poll (for comment bodies) and task.stage_doc for the open
+  // stage, then rebuilds only when the payload changed and the user is not
+  // mid-comment — the same freeze discipline as the diff tab.
+  async function paintStages(t) {
+    let stagesData;
+    try {
+      stagesData = await App.call("task.stages", { task_id: id });
+    } catch {
+      return; // not readable yet; the next poll retries
+    }
+    let stageDoc = null;
+    if (selectedStageId) {
+      try {
+        stageDoc = await App.call("task.stage_doc", { task_id: id, stage_id: selectedStageId });
+      } catch {
+        /* doc not available yet — the view shows a loading placeholder */
+      }
+    }
+    const key = t.state + " " + JSON.stringify(stagesData) + " " + selectedStageId + " " + (stageDoc ? stageDoc.contents.length : 0);
+    const noteBox = $("#stage-general") || $("#fixnote");
+    const busy = hasCommentPop() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));
+    const rendered = $("#stagelist") || $("#stagedoc");
+    if (rendered && (key === stagesKey || busy)) return;
+    stagesKey = key;
+    renderStagesTab({
+      body: $("#tabbody"),
+      task: t,
+      stagesData,
+      stageDoc,
+      selectedStageId,
+      catalog: App.modelCatalog || { models: [], efforts: [] },
+      callRpc: (method, params) => App.call(method, params),
+      repaint: () => {
+        stagesKey = null;
+        paint();
+      },
+      onSelectStage: (stageId) => {
+        selectedStageId = stageId;
+        stagesKey = null;
+        hideCommentPop();
+        paint();
+      },
+    });
+  }
 
   // Build the plan tab: rendered markdown + select-to-comment + a general
   // comment box + an action button that morphs to "Request Updates".
@@ -509,6 +562,12 @@ export async function renderTask() {
     showBanner(bannerText(localError, t.last_error));
     const body = $("#tabbody");
     if (tab === "plan") {
+      // Multi-stage task (stages non-empty) → the stage board flow. Legacy
+      // single-plan tasks (stages empty) keep the original single-doc flow below.
+      if (t.stages && t.stages.length) {
+        await paintStages(t);
+        return;
+      }
       if (t.state === "planning" || t.state === "created") {
         body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
         planKey = "drafting";

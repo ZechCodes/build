@@ -13,13 +13,32 @@ describe("esc", () => {
 });
 
 describe("renderMarkdown", () => {
-  it("renders headings, paragraphs and inline formatting", () => {
+  it("renders headings with slug ids, paragraphs and inline formatting", () => {
     const html = renderMarkdown("# Title\n## Sub\n### Deep\nSome **bold** and `code`.");
-    expect(html).toContain("<h1>Title</h1>");
-    expect(html).toContain("<h2>Sub</h2>");
-    expect(html).toContain("<h3>Deep</h3>");
+    expect(html).toContain('<h1 id="title">Title</h1>');
+    expect(html).toContain('<h2 id="sub">Sub</h2>');
+    expect(html).toContain('<h3 id="deep">Deep</h3>');
     expect(html).toContain("<strong>bold</strong>");
     expect(html).toContain("<code>code</code>");
+  });
+
+  it("derives the heading id from the raw text, stripping inline markers", () => {
+    const html = renderMarkdown("## The `users` table");
+    expect(html).toContain('<h2 id="the-users-table">');
+    expect(html).toContain("<code>users</code>");
+  });
+
+  it("disambiguates duplicate headings with numeric suffixes in document order", () => {
+    const html = renderMarkdown("## Tables\n## Tables\n## Tables");
+    expect(html).toContain('<h2 id="tables">');
+    expect(html).toContain('<h2 id="tables-2">');
+    expect(html).toContain('<h2 id="tables-3">');
+  });
+
+  it("omits the id attribute for a heading with no slug characters", () => {
+    const html = renderMarkdown("## !!!");
+    expect(html).toContain("<h2>");
+    expect(html).not.toContain('id=""');
   });
 
   it("renders bullet and numbered lists", () => {

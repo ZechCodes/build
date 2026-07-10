@@ -20,8 +20,8 @@ use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::pty::{HarnessSpec, PtyError, PtySession};
 use crate::task::{
-    CommentState, IllegalStageTransition, IllegalTransition, Stage, StageComment, Task, TaskEvent,
-    TaskId, TaskKind, TaskState,
+    stage_transition, CommentState, IllegalStageTransition, IllegalTransition, Stage, StageComment,
+    StageEvent, StageManifestEntry, StageState, Task, TaskEvent, TaskId, TaskKind, TaskState,
 };
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
 use crate::worktree::{slugify, Worktree, WorktreeError, WorktreeManager};
@@ -63,6 +63,48 @@ fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
+}
+
+/// Advance one stage's sub-state; the stage owns the mutation, `stage_transition`
+/// stays pure (same discipline as `Task::apply`).
+fn apply_stage_event(stage: &mut Stage, event: StageEvent) -> Result<(), IllegalStageTransition> {
+    stage.state = stage_transition(&stage.state, event)?;
+    Ok(())
+}
+
+/// Merge a fresh manifest echo into the existing stage records by id: an id
+/// that already exists keeps its lifecycle (`state`/`start_sha`/`validation`)
+/// and takes the new `title`/`path`/`summary`; new ids append as `Planned`; ids
+/// missing from the echo are dropped while still un-built (Planned/Approved)
+/// but kept with a warning once building started — a plan revision must not
+/// vaporize built work. On the first plan the merge is trivially "all new".
+fn merge_stage_manifest(stages: &mut Vec<Stage>, entries: Vec<StageManifestEntry>) {
+    let previous = std::mem::take(stages);
+    let mut leftover: Vec<(usize, Stage)> = previous.into_iter().enumerate().collect();
+    let mut merged: Vec<Stage> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match leftover.iter().position(|(_, stage)| stage.id == entry.id) {
+            Some(position) => {
+                let (_, mut existing) = leftover.remove(position);
+                existing.title = entry.title;
+                existing.path = entry.path;
+                existing.summary = entry.summary;
+                merged.push(existing);
+            }
+            None => merged.push(Stage::from_manifest(entry)),
+        }
+    }
+    for (original_index, stage) in leftover {
+        if matches!(stage.state, StageState::Planned | StageState::Approved) {
+            continue; // never built; the revision dropped it.
+        }
+        eprintln!(
+            "plan revision dropped stage {:?} which already has built work; keeping it",
+            stage.id
+        );
+        merged.insert(original_index.min(merged.len()), stage);
+    }
+    *stages = merged;
 }
 
 /// One task in flight: its lifecycle state, its worktree, and its warm session.
@@ -314,7 +356,8 @@ impl Orchestrator {
     }
 
     /// Consume an agent's `done` report (the MCP server forwards these), mapping
-    /// it to the matching lifecycle event.
+    /// it to the matching lifecycle event — and, on the multi-stage path, to the
+    /// matching stage sub-state transition (spec §6.2).
     pub fn on_done(
         &self,
         active: &mut ActiveTask,
@@ -325,20 +368,196 @@ impl Orchestrator {
         }
         active.last_summary = Some(report.summary.clone());
 
-        let event = match (report.phase, report.status) {
-            (_, DoneStatus::Blocked) => TaskEvent::Blocked,
-            (_, DoneStatus::Failed) => TaskEvent::Failed,
-            (DonePhase::Plan, DoneStatus::Completed) => TaskEvent::PlanReady,
-            // Validate is multi-stage-only; Layer 4 replaces this whole routing
-            // table with the §6.2 on_done match. Grouped here only so the
-            // workspace stays exhaustive and compiling in the interim.
-            (DonePhase::Build | DonePhase::Revise | DonePhase::Validate, DoneStatus::Completed) => {
-                TaskEvent::BuildReady
+        match (report.phase, report.status) {
+            // A blocked/failed report from any session — stage build, fix,
+            // validation, or legacy — parks the task and disarms run-all (§0.6).
+            (_, DoneStatus::Blocked) => {
+                active.auto_advance = false;
+                active.task.apply(TaskEvent::Blocked)?;
             }
-        };
-        active.task.apply(event)?;
+            (_, DoneStatus::Failed) => {
+                active.auto_advance = false;
+                active.task.apply(TaskEvent::Failed)?;
+            }
+            (DonePhase::Plan, DoneStatus::Completed) => {
+                if let Some(entries) = &report.outputs.stages {
+                    if !entries.is_empty() {
+                        merge_stage_manifest(&mut active.stages, entries.clone());
+                    }
+                }
+                active.task.apply(TaskEvent::PlanReady)?;
+            }
+            // A per-stage plan-revision session (the task is Planning, not
+            // Building, so this cannot be a stage build/fix report).
+            (DonePhase::Revise, DoneStatus::Completed)
+                if active.is_multi_stage() && active.task.state == TaskState::Planning =>
+            {
+                self.consume_stage_revision(active, &report)?;
+            }
+            (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed)
+                if active.is_multi_stage() =>
+            {
+                self.on_stage_session_done(active)?;
+            }
+            (DonePhase::Validate, DoneStatus::Completed) => {
+                self.on_validation_done(active, &report)?;
+            }
+            // Legacy single-plan / Quick path: a completed build opens review.
+            (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => {
+                active.task.apply(TaskEvent::BuildReady)?;
+            }
+        }
         // The task advanced on its own report; any prior crash/merge error is stale.
         active.last_error = None;
+        Ok(())
+    }
+
+    /// A stage build/fix session reported done(completed): commit the stage's
+    /// work and hand it to a fresh validation session. No task-level event — the
+    /// task stays `Building` until validation's verdict moves it.
+    fn on_stage_session_done(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
+        let Some(stage_id) = active.current_stage_id.clone() else {
+            eprintln!(
+                "on_done {}: build report for a multi-stage task with no current stage; ignoring",
+                active.task.id.0
+            );
+            return Ok(());
+        };
+        let index = active
+            .stage_index(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        match active.stages[index].state {
+            StageState::Building => {}
+            // A build report while the validation agent runs would skip the gate;
+            // only a `validate` report may move a Validating stage.
+            StageState::Validating | StageState::Built => {
+                eprintln!(
+                    "on_done {}: stage {stage_id} is awaiting validation; ignoring a non-validate report",
+                    active.task.id.0
+                );
+                return Ok(());
+            }
+            // Post-review change requests (`request_changes`) run while the
+            // current stage is already validated; their `done` closes the loop
+            // exactly as on the legacy path.
+            _ => {
+                active.task.apply(TaskEvent::BuildReady)?;
+                return Ok(());
+            }
+        }
+        apply_stage_event(&mut active.stages[index], StageEvent::BuildDone)?;
+        let commit_goal = format!("{} — stage {stage_id}", active.task.goal);
+        self.commit_all(&active.worktree.path, &commit_goal)?;
+        apply_stage_event(&mut active.stages[index], StageEvent::StartValidation)?;
+        self.end_session(active);
+        let prompt = self.render_stage(&self.templates.validate, active, index, "");
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        Ok(())
+    }
+
+    /// The validation agent's verdict. Pass: the stage is done — the final stage
+    /// opens merge review, an inner stage returns to the stage board (and, with
+    /// run-all armed, auto-dispatches the next approved stage). Fail: back to the
+    /// stage board with run-all disarmed; the stored report drives `fix_stage`.
+    fn on_validation_done(
+        &self,
+        active: &mut ActiveTask,
+        report: &DoneReport,
+    ) -> Result<(), OrchestratorError> {
+        if !active.is_multi_stage() {
+            eprintln!(
+                "on_done {}: validate report for a task without stages; ignoring",
+                active.task.id.0
+            );
+            return Ok(());
+        }
+        let Some(stage_id) = active.current_stage_id.clone() else {
+            eprintln!(
+                "on_done {}: validate report with no current stage; ignoring",
+                active.task.id.0
+            );
+            return Ok(());
+        };
+        let index = active
+            .stage_index(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        if active.stages[index].state != StageState::Validating {
+            eprintln!(
+                "on_done {}: stage {stage_id} is not validating; ignoring a validate report",
+                active.task.id.0
+            );
+            return Ok(());
+        }
+        let validation = report
+            .outputs
+            .validation
+            .clone()
+            .expect("mcp validated: outputs.validation present on phase=validate/completed");
+        let passed = validation.passed;
+        apply_stage_event(
+            &mut active.stages[index],
+            StageEvent::ValidationDone { passed },
+        )?;
+        active.stages[index].validation = Some(validation);
+        self.end_session(active);
+
+        if passed {
+            let last_stage = index + 1 == active.stages.len();
+            active
+                .task
+                .apply(TaskEvent::ValidationPassed { last_stage })?;
+            if !last_stage && active.auto_advance {
+                let next = &active.stages[index + 1];
+                if next.state == StageState::Approved {
+                    let next_id = next.id.clone();
+                    self.dispatch_stage(active, &next_id, None)?;
+                }
+            }
+        } else {
+            active.task.apply(TaskEvent::ValidationFailed)?;
+            active.auto_advance = false;
+        }
+        Ok(())
+    }
+
+    /// A per-stage plan-revision session completed: the doc changed (any prior
+    /// approval is stale), and the agent's per-comment resolutions land on the
+    /// stored comments.
+    fn consume_stage_revision(
+        &self,
+        active: &mut ActiveTask,
+        report: &DoneReport,
+    ) -> Result<(), OrchestratorError> {
+        active.task.apply(TaskEvent::PlanReady)?;
+        let stage_id = active.revising_stage_id.clone().ok_or_else(|| {
+            OrchestratorError::Gate(
+                "revise report for a multi-stage task with no stage revision in flight".to_string(),
+            )
+        })?;
+        let stage = active
+            .stage_mut(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        apply_stage_event(stage, StageEvent::Revised)?;
+        if let Some(resolutions) = &report.outputs.comment_resolutions {
+            for resolution in resolutions {
+                let matching = active.comments.iter_mut().find(|c| {
+                    c.id == resolution.comment_id
+                        && c.stage_id == stage_id
+                        && c.state == CommentState::Open
+                });
+                match matching {
+                    Some(comment) => {
+                        comment.state = CommentState::Addressed;
+                        comment.agent_reply = Some(resolution.response.clone());
+                    }
+                    None => eprintln!(
+                        "stage revision for {stage_id}: unknown or non-open comment {:?}; skipping",
+                        resolution.comment_id
+                    ),
+                }
+            }
+        }
+        active.revising_stage_id = None;
         Ok(())
     }
 
@@ -362,6 +581,78 @@ impl Orchestrator {
         }
         self.end_session(active);
         let prompt = self.render(&self.templates.build, active, "");
+        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        Ok(())
+    }
+
+    /// Approve one stage's doc: Planned → Approved. Pure bookkeeping, no session.
+    /// Legal from any non-terminal task state — approving future stages while an
+    /// earlier one builds is how "run all" gets armed.
+    pub fn approve_stage(
+        &self,
+        active: &mut ActiveTask,
+        stage_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        if active.task.state.is_terminal() {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot approve a stage on a terminal task (state {:?})",
+                active.task.state
+            )));
+        }
+        let stage = active
+            .stage_mut(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        apply_stage_event(stage, StageEvent::Approve)?;
+        Ok(())
+    }
+
+    /// Dispatch one stage's build in a **fresh** cold session — the multi-stage
+    /// analogue of `approve_plan`. The sequential gate lives here: a stage runs
+    /// only from the stage board (`PlanReview`), only once approved, and only
+    /// after every earlier stage passed validation.
+    pub fn dispatch_stage(
+        &self,
+        active: &mut ActiveTask,
+        stage_id: &str,
+        model_override: Option<ModelChoice>,
+    ) -> Result<(), OrchestratorError> {
+        let index = active
+            .stage_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        crate::task::transition(&active.task.state, active.task.kind, TaskEvent::ApprovePlan)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot dispatch a stage: {e}")))?;
+        if active.stages[index].state != StageState::Approved {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} is not approved (state {:?})",
+                active.stages[index].state
+            )));
+        }
+        if let Some(unvalidated) = active.stages[..index]
+            .iter()
+            .find(|s| s.state != (StageState::Validated { passed: true }))
+        {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {} has not passed validation yet",
+                unvalidated.id
+            )));
+        }
+
+        active.task.apply(TaskEvent::ApprovePlan)?;
+        apply_stage_event(&mut active.stages[index], StageEvent::Dispatch)?;
+        active.current_stage_id = Some(stage_id.to_string());
+        if active.stages[index].start_sha.is_none() {
+            let sha = self
+                .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+                .trim()
+                .to_string();
+            active.stages[index].start_sha = Some(sha);
+        }
+        if let Some(choice) = model_override {
+            active.model_choice = choice;
+        }
+        active.last_error = None;
+        self.end_session(active);
+        let prompt = self.render_stage(&self.templates.build_stage, active, index, "");
         active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
@@ -539,6 +830,52 @@ impl Orchestrator {
                 comments,
                 base_branch: &active.worktree.base_branch,
                 ..Vars::default()
+            },
+        )
+    }
+
+    /// Render a stage-scoped template with the full stage variable set: the
+    /// stage's own fields, the next stage's doc path (empty on the final stage),
+    /// the previous stage's validation notes, and this stage's own findings
+    /// (which the `fix_stage` template consumes).
+    fn render_stage(
+        &self,
+        template: &str,
+        active: &ActiveTask,
+        index: usize,
+        comments: &str,
+    ) -> String {
+        let stage = &active.stages[index];
+        let next_stage_path = active
+            .stages
+            .get(index + 1)
+            .map(|s| s.path.as_str())
+            .unwrap_or("");
+        let prior_notes = index
+            .checked_sub(1)
+            .and_then(|previous| active.stages[previous].validation.as_ref())
+            .map(|v| v.notes_for_next_stage.as_str())
+            .unwrap_or("");
+        let findings = stage
+            .validation
+            .as_ref()
+            .map(|v| v.findings.as_str())
+            .unwrap_or("");
+        templates::render(
+            template,
+            &Vars {
+                goal: &active.task.goal,
+                plan_path: &active.plan_path,
+                comments,
+                base_branch: &active.worktree.base_branch,
+                stage_id: &stage.id,
+                stage_title: &stage.title,
+                stage_path: &stage.path,
+                stage_summary: &stage.summary,
+                next_stage_path,
+                stage_start_sha: stage.start_sha.as_deref().unwrap_or(""),
+                findings,
+                prior_notes,
             },
         )
     }
@@ -1368,6 +1705,525 @@ mod tests {
         assert!(
             r.find_branch(&branch, git2::BranchType::Local).is_err(),
             "branch pruned after abandon"
+        );
+    }
+
+    // ---- Multi-stage: lifecycle ----
+
+    use crate::task::{StageManifestEntry, StageState, ValidationReport};
+
+    fn manifest_entry(id: &str, title: &str, position: usize) -> StageManifestEntry {
+        StageManifestEntry {
+            id: id.into(),
+            title: title.into(),
+            path: format!(".build/plan/{position:02}-{id}.md"),
+            summary: format!("{title}."),
+        }
+    }
+
+    fn done_plan_stages(entries: Vec<StageManifestEntry>) -> DoneReport {
+        DoneReport {
+            phase: DonePhase::Plan,
+            status: DoneStatus::Completed,
+            summary: "planned".into(),
+            outputs: DoneOutputs {
+                plan_path: Some(templates::STAGES_MANIFEST_PATH.to_string()),
+                stages: Some(entries),
+                ..DoneOutputs::default()
+            },
+        }
+    }
+
+    fn done_validate(passed: bool, findings: &str, notes: &str) -> DoneReport {
+        DoneReport {
+            phase: DonePhase::Validate,
+            status: DoneStatus::Completed,
+            summary: "validated".into(),
+            outputs: DoneOutputs {
+                validation: Some(ValidationReport {
+                    passed,
+                    findings: findings.into(),
+                    notes_for_next_stage: notes.into(),
+                }),
+                ..DoneOutputs::default()
+            },
+        }
+    }
+
+    /// Dispatch a standard task and land it at PlanReview with a two-stage
+    /// manifest (the test plays the plan agent: write the docs, echo via done).
+    fn two_stage_task(orch: &Orchestrator, id: &str) -> ActiveTask {
+        let mut t = orch
+            .dispatch(
+                TaskId::new(id),
+                "Add greetings",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        let plan_dir = t.worktree.path.join(".build/plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("01-first.md"), "# Stage: First\n").unwrap();
+        std::fs::write(plan_dir.join("02-second.md"), "# Stage: Second\n").unwrap();
+        orch.on_done(
+            &mut t,
+            done_plan_stages(vec![
+                manifest_entry("first", "First", 1),
+                manifest_entry("second", "Second", 2),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        t
+    }
+
+    fn last_commit_subject(worktree: &Path) -> String {
+        let out = Command::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(worktree)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A one-shot agent that records every rendered prompt it is asked to spawn.
+    fn prompt_recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Agent {
+        Agent::OneShot(std::sync::Arc::new(
+            move |prompt: &str, _choice: &ModelChoice| {
+                log.lock().unwrap().push(prompt.to_string());
+                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn multi_stage_spine_stages_build_validate_then_review() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "ms1");
+        assert!(t.is_multi_stage());
+        assert_eq!(t.plan_path, templates::STAGES_MANIFEST_PATH);
+        assert_eq!(t.stage("first").unwrap().state, StageState::Planned);
+        assert_eq!(t.stage("second").unwrap().state, StageState::Planned);
+
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Approved);
+        assert_eq!(
+            t.task.state,
+            TaskState::PlanReview,
+            "approval is bookkeeping"
+        );
+
+        // Dispatch stage 1: fresh cold session, start sha pinned.
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.stage("first").unwrap().state, StageState::Building);
+        assert_eq!(t.current_stage_id.as_deref(), Some("first"));
+        let start_sha = t.stage("first").unwrap().start_sha.clone().expect("sha");
+        assert!(t.subscribe().is_some(), "stage build session is warm");
+
+        // The build agent works, then reports done → committed + validating; the
+        // task-level state does NOT move (only validation's verdict moves it).
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building, "validation is running");
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        let subject = last_commit_subject(&t.worktree.path);
+        assert!(
+            subject.contains("stage first"),
+            "stage work committed before validation: {subject:?}"
+        );
+
+        // Validation passes → back to the stage board (PlanReview), report kept.
+        orch.on_done(&mut t, done_validate(true, "- ok", "note for second"))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validated { passed: true }
+        );
+        assert_eq!(
+            t.stage("first")
+                .unwrap()
+                .validation
+                .as_ref()
+                .map(|v| v.notes_for_next_stage.as_str()),
+            Some("note for second")
+        );
+        assert_eq!(
+            t.stage("first").unwrap().start_sha.as_deref(),
+            Some(start_sha.as_str()),
+            "start sha survives validation"
+        );
+
+        // Stage 2 builds on stage 1's commits; final validation opens merge review.
+        orch.dispatch_stage(&mut t, "second", None).unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        std::fs::write(t.worktree.path.join("second.txt"), "two\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review, "last stage → merge review");
+
+        orch.approve_merge(&mut t).unwrap();
+        assert_eq!(t.task.state, TaskState::Merged);
+        assert!(repo.join("first.txt").exists());
+        assert!(repo.join("second.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn dispatch_stage_gates_reject_out_of_order_dispatches() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "g1");
+
+        // Unknown stage id.
+        let err = orch.dispatch_stage(&mut t, "nope", None).unwrap_err();
+        assert_eq!(err.to_string(), "unknown stage_id: nope");
+
+        // Not approved yet.
+        let err = orch.dispatch_stage(&mut t, "first", None).unwrap_err();
+        assert!(err.to_string().contains("not approved"), "{err}");
+        assert_eq!(t.task.state, TaskState::PlanReview, "gate rejects cleanly");
+
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+
+        // Stage 2 while stage 1 has not passed validation.
+        let err = orch.dispatch_stage(&mut t, "second", None).unwrap_err();
+        assert!(
+            err.to_string().contains("has not passed validation"),
+            "{err}"
+        );
+
+        // From a non-PlanReview state (stage 1 building).
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        let err = orch.dispatch_stage(&mut t, "second", None).unwrap_err();
+        assert!(err.to_string().contains("cannot dispatch a stage"), "{err}");
+        assert_eq!(t.stage("second").unwrap().state, StageState::Approved);
+    }
+
+    #[tokio::test]
+    async fn failed_validation_parks_at_plan_review_and_disarms_run_all() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "vf1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+        t.auto_advance = true;
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+
+        orch.on_done(&mut t, done_validate(false, "- migration missing", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validated { passed: false }
+        );
+        assert_eq!(
+            t.stage("first")
+                .unwrap()
+                .validation
+                .as_ref()
+                .map(|v| v.findings.as_str()),
+            Some("- migration missing")
+        );
+        assert!(!t.auto_advance, "a failed validation disarms run-all");
+        assert_eq!(
+            t.stage("second").unwrap().state,
+            StageState::Approved,
+            "the next stage was never dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_advance_dispatches_the_next_approved_stage() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "aa1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+        t.auto_advance = true;
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+
+        // Validation pass → the next approved stage dispatches with no human call.
+        orch.on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.current_stage_id.as_deref(), Some("second"));
+        assert_eq!(t.stage("second").unwrap().state, StageState::Building);
+        assert!(t.auto_advance, "run-all stays armed after a pass");
+        assert!(t.subscribe().is_some(), "stage 2 session is warm");
+    }
+
+    #[tokio::test]
+    async fn auto_advance_waits_at_plan_review_when_next_stage_is_unapproved() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "aa2");
+        orch.approve_stage(&mut t, "first").unwrap();
+        t.auto_advance = true;
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap();
+
+        assert_eq!(t.task.state, TaskState::PlanReview, "waits for approval");
+        assert_eq!(t.stage("second").unwrap().state, StageState::Planned);
+        assert!(t.auto_advance, "run-all stays armed while waiting");
+    }
+
+    #[tokio::test]
+    async fn blocked_during_validation_keeps_the_stage_validating() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "bv1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        t.auto_advance = true;
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+
+        orch.on_done(&mut t, done(DonePhase::Validate, DoneStatus::Blocked, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Blocked(crate::task::Phase::Build));
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validating,
+            "the stage sub-state routes recovery back to a validate session"
+        );
+        assert!(!t.auto_advance, "blocked disarms run-all");
+    }
+
+    #[tokio::test]
+    async fn stray_validate_and_build_reports_are_ignored_not_promoted() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+
+        // A legacy quick task must ignore a validate report outright.
+        let mut quick = orch
+            .dispatch(
+                TaskId::new("sv1"),
+                "quick work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        orch.on_done(&mut quick, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(quick.task.state, TaskState::Building, "ignored");
+
+        // A multi-stage task mid-validation must ignore a stray build report —
+        // otherwise a rogue `done(build)` would skip the validation gate.
+        let mut t = two_stage_task(&orch, "sv2");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+    }
+
+    #[tokio::test]
+    async fn multi_stage_review_change_requests_round_trip_like_legacy() {
+        // After the final stage validates, the diff-review loop (request_changes →
+        // done) must still work even though the task is multi-stage: the current
+        // stage is already validated, so the revise `done` closes as BuildReady.
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "rc1");
+        for stage_id in ["first", "second"] {
+            orch.approve_stage(&mut t, stage_id).unwrap();
+            orch.dispatch_stage(&mut t, stage_id, None).unwrap();
+            std::fs::write(t.worktree.path.join(format!("{stage_id}.txt")), "x\n").unwrap();
+            orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+                .unwrap();
+            orch.on_done(&mut t, done_validate(true, "- ok", ""))
+                .unwrap();
+        }
+        assert_eq!(t.task.state, TaskState::Review);
+
+        orch.request_changes(&mut t, "rename the file").unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        orch.on_done(&mut t, done(DonePhase::Revise, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review, "change loop closes");
+    }
+
+    #[tokio::test]
+    async fn stage_prompts_carry_stage_doc_prior_notes_and_start_sha() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let mut t = two_stage_task(&orch, "pp1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        let build_prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(build_prompt.contains("\"First\""), "{build_prompt}");
+        assert!(
+            build_prompt.contains(".build/plan/01-first.md"),
+            "{build_prompt}"
+        );
+
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        let validate_prompt = log.lock().unwrap().last().unwrap().clone();
+        let start_sha = t.stage("first").unwrap().start_sha.clone().unwrap();
+        assert!(validate_prompt.contains("VALIDATION"), "{validate_prompt}");
+        assert!(validate_prompt.contains(&start_sha), "{validate_prompt}");
+        assert!(
+            validate_prompt.contains(".build/plan/02-second.md"),
+            "next stage doc is in the validation prompt: {validate_prompt}"
+        );
+
+        orch.on_done(&mut t, done_validate(true, "- ok", "watch the rename"))
+            .unwrap();
+        orch.dispatch_stage(&mut t, "second", None).unwrap();
+        let second_prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            second_prompt.contains("watch the rename"),
+            "prior validation notes reach the next stage build: {second_prompt}"
+        );
+
+        // Final-stage validation renders an empty next_stage_path.
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        let final_validate = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            !final_validate.contains("{next_stage_path}"),
+            "{final_validate}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replan_merges_the_manifest_by_id_and_keeps_built_stages() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "rm1");
+
+        // Drive "first" all the way to validated so it has built work.
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        orch.on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+
+        // A re-plan drops "first" (built → kept, with its record), retitles
+        // "second" (state kept, metadata refreshed), and appends "third".
+        orch.send_notes(&mut t, "restructure").unwrap();
+        orch.on_done(
+            &mut t,
+            done_plan_stages(vec![
+                manifest_entry("second", "Second v2", 2),
+                manifest_entry("third", "Third", 3),
+            ]),
+        )
+        .unwrap();
+        let ids: Vec<&str> = t.stages.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second", "third"]);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validated { passed: true },
+            "built work is never vaporized by a revision"
+        );
+        assert!(t.stage("first").unwrap().validation.is_some());
+        assert_eq!(t.stage("second").unwrap().title, "Second v2");
+        assert_eq!(t.stage("second").unwrap().state, StageState::Planned);
+        assert_eq!(t.stage("third").unwrap().state, StageState::Planned);
+
+        // A dropped stage that never built simply disappears.
+        orch.send_notes(&mut t, "drop third").unwrap();
+        orch.on_done(
+            &mut t,
+            done_plan_stages(vec![manifest_entry("second", "Second v2", 2)]),
+        )
+        .unwrap();
+        let ids: Vec<&str> = t.stages.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn stage_revision_done_resolves_comments_and_resets_approval() {
+        use crate::task::CommentState;
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "cr1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        t.comments = vec![
+            comment_on("c-1", "first", CommentState::Open),
+            comment_on("c-2", "first", CommentState::Open),
+        ];
+
+        // A revise session is in flight for "first" (send_stage_notes sets this
+        // up; here the state is arranged directly to isolate the done handling).
+        t.task.apply(TaskEvent::SendNotes).unwrap();
+        t.revising_stage_id = Some("first".into());
+
+        orch.on_done(
+            &mut t,
+            DoneReport {
+                phase: DonePhase::Revise,
+                status: DoneStatus::Completed,
+                summary: "revised".into(),
+                outputs: DoneOutputs {
+                    comment_resolutions: Some(vec![
+                        crate::mcp::CommentResolution {
+                            comment_id: "c-1".into(),
+                            response: "switched to a timestamp".into(),
+                        },
+                        crate::mcp::CommentResolution {
+                            comment_id: "c-999".into(),
+                            response: "unknown id is skipped".into(),
+                        },
+                    ]),
+                    ..DoneOutputs::default()
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(t.task.state, TaskState::PlanReview);
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Planned,
+            "a revised doc resets the stale approval"
+        );
+        assert_eq!(t.revising_stage_id, None);
+        let c1 = t.comments.iter().find(|c| c.id == "c-1").unwrap();
+        assert_eq!(c1.state, CommentState::Addressed);
+        assert_eq!(c1.agent_reply.as_deref(), Some("switched to a timestamp"));
+        let c2 = t.comments.iter().find(|c| c.id == "c-2").unwrap();
+        assert_eq!(
+            c2.state,
+            CommentState::Open,
+            "unresolved comments stay open"
         );
     }
 

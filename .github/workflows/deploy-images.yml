@@ -91,7 +91,12 @@ jobs:
           kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
 
       - name: Verify public endpoints
+        # The ingress needs a moment to switch endpoints after the rollout.
         run: |
-          curl -sf -o /dev/null https://getbuild.ing/healthz
-          curl -sf -o /dev/null https://relay.getbuild.ing/health
-          test "$(curl -s -o /dev/null -w '%{http_code}' https://getbuild.ing/)" = "302"
+          verify() {
+            curl -sf -o /dev/null https://getbuild.ing/healthz &&
+            curl -sf -o /dev/null https://relay.getbuild.ing/health &&
+            test "$(curl -s -o /dev/null -w '%{http_code}' https://getbuild.ing/)" = "302"
+          }
+          for i in $(seq 1 12); do verify && exit 0; sleep 5; done
+          verify

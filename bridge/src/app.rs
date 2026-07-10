@@ -428,6 +428,13 @@ impl AppState {
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
             last_error: active.last_error.clone(),
+            // ActiveTask does not carry multi-stage bookkeeping yet (Layer 4/5
+            // wire that up); every task persists on the legacy path until then.
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            comments: Vec::new(),
             created_at,
             updated_at: now,
         };
@@ -2596,6 +2603,11 @@ mod tests {
                 model: None,
                 effort: None,
                 last_error: None,
+                stages: Vec::new(),
+                current_stage_id: None,
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -2658,6 +2670,11 @@ mod tests {
                 model: None,
                 effort: None,
                 last_error: None,
+                stages: Vec::new(),
+                current_stage_id: None,
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })
@@ -2719,6 +2736,11 @@ mod tests {
                 model: None,
                 effort: None,
                 last_error: None,
+                stages: Vec::new(),
+                current_stage_id: None,
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })

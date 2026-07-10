@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::task::{TaskKind, TaskState};
+use crate::task::{Stage, StageComment, TaskKind, TaskState};
 
 /// Things that can go wrong reading or writing the task store.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +72,23 @@ pub struct PersistedTask {
     /// files written before this field load as `None`.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Multi-stage: manifest + per-stage sub-state + validation reports. Empty
+    /// for legacy single-plan tasks and Quick tasks — empty means "legacy path".
+    #[serde(default)]
+    pub stages: Vec<Stage>,
+    /// The stage whose build/fix/validate session is (or was last) in flight.
+    #[serde(default)]
+    pub current_stage_id: Option<String>,
+    /// The stage a plan-revision session is running for (routes
+    /// `Interrupted(Plan)` recovery).
+    #[serde(default)]
+    pub revising_stage_id: Option<String>,
+    /// "Run all": auto-dispatch the next approved stage when validation passes.
+    #[serde(default)]
+    pub auto_advance: bool,
+    /// Persisted per-stage plan comments (flat; each carries its `stage_id`).
+    #[serde(default)]
+    pub comments: Vec<StageComment>,
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
@@ -181,7 +198,10 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{Phase, TaskKind, TaskState};
+    use crate::task::{
+        CommentAnchor, CommentState, Phase, Stage, StageComment, StageState, TaskKind, TaskState,
+        ValidationReport,
+    };
 
     #[test]
     fn task_files_from_before_model_choice_still_load() {
@@ -205,6 +225,99 @@ mod tests {
         assert_eq!(loaded[0].model, None);
         assert_eq!(loaded[0].effort, None);
         assert_eq!(loaded[0].last_error, None);
+    }
+
+    /// The binding spec's pinned legacy rule (§5): a record with no multi-stage
+    /// keys at all — i.e. any file written before this feature — loads with
+    /// `stages: []` and every other new field at its zero value, so the legacy
+    /// single-plan code path (`plan_path`, `task.plan`, `task.approve_plan`,
+    /// `task.send_notes`) keeps working untouched.
+    #[test]
+    fn pre_multi_stage_task_files_still_load_on_the_legacy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut legacy = serde_json::to_value(record("task-1", TaskState::PlanReview)).unwrap();
+        let map = legacy.as_object_mut().unwrap();
+        map.remove("stages");
+        map.remove("current_stage_id");
+        map.remove("revising_stage_id");
+        map.remove("auto_advance");
+        map.remove("comments");
+        std::fs::write(
+            dir.path().join("task-1.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let store = TaskStore::new(dir.path());
+        let loaded = store.load_all().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].stages, Vec::new());
+        assert_eq!(loaded[0].current_stage_id, None);
+        assert_eq!(loaded[0].revising_stage_id, None);
+        assert!(!loaded[0].auto_advance);
+        assert_eq!(loaded[0].comments, Vec::new());
+    }
+
+    /// Full round-trip of the new multi-stage shape: two stages (one still
+    /// failing validation, carrying a report and a `start_sha`), two comments
+    /// (one anchored/open, one general/addressed with an agent reply),
+    /// `auto_advance` on, and both stage-tracking ids set.
+    #[test]
+    fn multi_stage_record_round_trips_every_new_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        let mut rec = record("task-1", TaskState::PlanReview);
+        rec.stages = vec![
+            Stage {
+                id: "database-schema".into(),
+                title: "Database schema".into(),
+                path: ".build/plan/01-database-schema.md".into(),
+                summary: "Create the tables and the migration.".into(),
+                state: StageState::Validated { passed: false },
+                start_sha: Some("deadbeef".into()),
+                validation: Some(ValidationReport {
+                    passed: false,
+                    findings: "missing the soft-delete column".into(),
+                    notes_for_next_stage: "".into(),
+                }),
+            },
+            Stage {
+                id: "api-endpoints".into(),
+                title: "API endpoints".into(),
+                path: ".build/plan/02-api-endpoints.md".into(),
+                summary: "CRUD routes over the new tables.".into(),
+                state: StageState::Planned,
+                start_sha: None,
+                validation: None,
+            },
+        ];
+        rec.current_stage_id = Some("database-schema".into());
+        rec.revising_stage_id = Some("api-endpoints".into());
+        rec.auto_advance = true;
+        rec.comments = vec![
+            StageComment {
+                id: "c-1".into(),
+                stage_id: "database-schema".into(),
+                anchor: Some(CommentAnchor {
+                    heading_path: vec!["Database schema".into(), "Tables".into()],
+                    snippet: "users table gets a soft-delete column".into(),
+                }),
+                body: "use a deleted_at timestamp, not a boolean".into(),
+                state: CommentState::Open,
+                agent_reply: None,
+            },
+            StageComment {
+                id: "c-2".into(),
+                stage_id: "database-schema".into(),
+                anchor: None,
+                body: "this stage feels too big".into(),
+                state: CommentState::Addressed,
+                agent_reply: Some("split into two migrations".into()),
+            },
+        ];
+        store.save(&rec).unwrap();
+
+        let loaded = store.load_all().unwrap();
+        assert_eq!(loaded, vec![rec]);
     }
 
     #[test]
@@ -237,6 +350,11 @@ mod tests {
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
             last_error: None,
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            comments: Vec::new(),
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
         }

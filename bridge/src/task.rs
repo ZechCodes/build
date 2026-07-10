@@ -139,6 +139,11 @@ pub enum TaskEvent {
     Reply,
     /// Abandon the task from any non-terminal state.
     Abandon,
+    /// The validation agent reported done(phase=validate, completed, passed=true).
+    /// `last_stage` = the validated stage is the manifest's final stage.
+    ValidationPassed { last_stage: bool },
+    /// done(phase=validate, completed, passed=false).
+    ValidationFailed,
 }
 
 /// A rejected transition: `event` is not valid from `from`.
@@ -217,6 +222,18 @@ pub fn transition(
         (Interrupted(Plan), E::SendNotes) => Ok(Planning),
         (Interrupted(Build), E::RequestChanges) => Ok(Building),
 
+        // Multi-stage validation outcomes. The task stays `Building` while a
+        // stage's validation agent runs; only the verdict moves the coarse state.
+        // The final stage's pass opens merge review; otherwise the task returns
+        // to the between-stages gate (PlanReview — the stage board). The
+        // IdleUnreported(Build) arms preserve the existing rule: quiescence never
+        // decided anything, so a late validation `done` is still honored.
+        (Building | IdleUnreported(Build), E::ValidationPassed { last_stage: true }) => Ok(Review),
+        (Building | IdleUnreported(Build), E::ValidationPassed { last_stage: false }) => {
+            Ok(PlanReview)
+        }
+        (Building | IdleUnreported(Build), E::ValidationFailed) => Ok(PlanReview),
+
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
 
@@ -231,6 +248,170 @@ fn working_state(phase: Phase) -> TaskState {
         Phase::Plan => TaskState::Planning,
         Phase::Build => TaskState::Building,
     }
+}
+
+/// Position of one stage in its per-stage lifecycle. The task-level state stays
+/// coarse; this is the sub-state the stage carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageState {
+    /// The stage doc exists in the manifest; not yet approved by the human.
+    Planned,
+    /// The human approved this stage's doc.
+    Approved,
+    /// A build (or fix) session is running for this stage.
+    Building,
+    /// The build session reported done; validation has not started yet.
+    Built,
+    /// A validation agent session is running for this stage.
+    Validating,
+    /// Validation reported. `passed: true` is terminal for the stage;
+    /// `passed: false` awaits `Dispatch` (a fix session) or a plan change.
+    Validated { passed: bool },
+}
+
+/// Everything that can drive a stage transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StageEvent {
+    /// The human approves the stage doc. Planned → Approved.
+    Approve,
+    /// A build session is spawned for this stage. Approved → Building;
+    /// Validated{passed:false} → Building (the fix path).
+    Dispatch,
+    /// The stage's build/fix session reported done(completed). Building → Built.
+    BuildDone,
+    /// The validation session is spawned. Built → Validating.
+    StartValidation,
+    /// The validation session reported done(completed). Validating → Validated.
+    ValidationDone { passed: bool },
+    /// A plan-revision session completed for this stage; the doc changed, so any
+    /// approval is stale. Planned → Planned; Approved → Planned.
+    Revised,
+}
+
+/// A rejected stage transition.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("illegal stage transition: {event:?} is not valid from {from:?}")]
+pub struct IllegalStageTransition {
+    pub from: StageState,
+    pub event: StageEvent,
+}
+
+/// The pure stage transition function — same discipline as `transition`.
+pub fn stage_transition(
+    state: &StageState,
+    event: StageEvent,
+) -> Result<StageState, IllegalStageTransition> {
+    use StageEvent as E;
+    use StageState::*;
+
+    match (state, event) {
+        // Plan review of the stage doc: approve it, or a revision session
+        // rewrote it (any prior approval is stale).
+        (Planned, E::Approve) => Ok(Approved),
+        (Planned | Approved, E::Revised) => Ok(Planned),
+
+        // Dispatch spawns a build session (first build, or a fix session after a
+        // failed validation). `Validated{passed:true}` is stage-terminal.
+        (Approved | Validated { passed: false }, E::Dispatch) => Ok(Building),
+
+        // Build → validation pipeline.
+        (Building, E::BuildDone) => Ok(Built),
+        (Built, E::StartValidation) => Ok(Validating),
+        (Validating, E::ValidationDone { passed }) => Ok(Validated { passed }),
+
+        _ => Err(IllegalStageTransition {
+            from: *state,
+            event,
+        }),
+    }
+}
+
+/// One entry of the plan manifest as the agent reports it (`.build/plan/stages.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageManifestEntry {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// The validation agent's verdict for one stage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationReport {
+    pub passed: bool,
+    /// Markdown findings — what matched/diverged from the stage doc.
+    pub findings: String,
+    /// Markdown notes handed to the next stage's build prompt (and surfaced on
+    /// the next stage in the UI). Empty string when there is nothing to say.
+    pub notes_for_next_stage: String,
+}
+
+/// One stage: manifest data + lifecycle sub-state + validation outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stage {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+    #[serde(default)]
+    pub summary: String,
+    pub state: StageState,
+    /// `git rev-parse HEAD` of the worktree at the moment this stage was first
+    /// dispatched — the base of "the diff this stage produced". Kept across fix
+    /// re-dispatches so the stage diff always covers all of the stage's work.
+    #[serde(default)]
+    pub start_sha: Option<String>,
+    #[serde(default)]
+    pub validation: Option<ValidationReport>,
+}
+
+impl Stage {
+    /// A freshly planned stage from a manifest entry.
+    pub fn from_manifest(entry: StageManifestEntry) -> Stage {
+        Stage {
+            id: entry.id,
+            title: entry.title,
+            path: entry.path,
+            summary: entry.summary,
+            state: StageState::Planned,
+            start_sha: None,
+            validation: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommentState {
+    Open,
+    Addressed,
+}
+
+/// Where a plan comment anchors inside a stage doc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentAnchor {
+    /// The chain of enclosing heading *texts* (raw markdown text, outermost
+    /// first), e.g. ["Database schema", "Tables"]. Empty for a top-of-doc anchor.
+    pub heading_path: Vec<String>,
+    /// The selected passage, trimmed, capped at 400 chars by the producer.
+    pub snippet: String,
+}
+
+/// One persisted, structured plan-review comment on a stage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageComment {
+    /// Bridge-minted: "c-<n>", n = 1 + max numeric suffix among the task's
+    /// existing comment ids (so ids never collide after deletes).
+    pub id: String,
+    pub stage_id: String,
+    /// None = a general comment on the stage (no text anchor).
+    #[serde(default)]
+    pub anchor: Option<CommentAnchor>,
+    pub body: String,
+    pub state: CommentState,
+    #[serde(default)]
+    pub agent_reply: Option<String>,
 }
 
 /// A task: identity, goal, kind, and current lifecycle state. Worktree/branch
@@ -609,6 +790,363 @@ mod tests {
         .is_err());
         // Can't send notes from Review (that's RequestChanges).
         assert!(transition(&TaskState::Review, TaskKind::Standard, TaskEvent::SendNotes).is_err());
+    }
+
+    // ---- Stage sub-state machine (multi-stage planning) ----
+
+    #[test]
+    fn stage_transition_full_table() {
+        use StageEvent as E;
+        use StageState::*;
+        let table: &[(StageState, StageEvent, StageState)] = &[
+            (Planned, E::Approve, Approved),
+            (Planned, E::Revised, Planned),
+            (Approved, E::Revised, Planned),
+            (Approved, E::Dispatch, Building),
+            (Validated { passed: false }, E::Dispatch, Building),
+            (Building, E::BuildDone, Built),
+            (Built, E::StartValidation, Validating),
+            (
+                Validating,
+                E::ValidationDone { passed: true },
+                Validated { passed: true },
+            ),
+            (
+                Validating,
+                E::ValidationDone { passed: false },
+                Validated { passed: false },
+            ),
+        ];
+        for (from, event, to) in table {
+            assert_eq!(
+                stage_transition(from, *event).expect("legal stage transition"),
+                *to,
+                "{event:?} from {from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_transition_rejects_everything_not_in_the_table() {
+        use StageEvent as E;
+        use StageState::*;
+        let all_events = [
+            E::Approve,
+            E::Dispatch,
+            E::BuildDone,
+            E::StartValidation,
+            E::ValidationDone { passed: true },
+            E::ValidationDone { passed: false },
+            E::Revised,
+        ];
+        let legal: &[(StageState, StageEvent)] = &[
+            (Planned, E::Approve),
+            (Planned, E::Revised),
+            (Approved, E::Revised),
+            (Approved, E::Dispatch),
+            (Validated { passed: false }, E::Dispatch),
+            (Building, E::BuildDone),
+            (Built, E::StartValidation),
+            (Validating, E::ValidationDone { passed: true }),
+            (Validating, E::ValidationDone { passed: false }),
+        ];
+        for from in [
+            Planned,
+            Approved,
+            Building,
+            Built,
+            Validating,
+            Validated { passed: true },
+            Validated { passed: false },
+        ] {
+            for event in all_events {
+                if legal.contains(&(from, event)) {
+                    continue;
+                }
+                let err = stage_transition(&from, event)
+                    .expect_err(&format!("{event:?} should be rejected from {from:?}"));
+                assert_eq!(err.from, from);
+                assert_eq!(err.event, event);
+            }
+        }
+    }
+
+    #[test]
+    fn validated_passed_is_stage_terminal() {
+        use StageEvent as E;
+        for event in [
+            E::Approve,
+            E::Dispatch,
+            E::BuildDone,
+            E::StartValidation,
+            E::ValidationDone { passed: true },
+            E::Revised,
+        ] {
+            assert!(
+                stage_transition(&StageState::Validated { passed: true }, event).is_err(),
+                "{event:?} should be rejected from Validated{{passed:true}}"
+            );
+        }
+    }
+
+    #[test]
+    fn building_stage_rejects_approve_and_dispatch() {
+        assert!(stage_transition(&StageState::Building, StageEvent::Approve).is_err());
+        assert!(stage_transition(&StageState::Building, StageEvent::Dispatch).is_err());
+    }
+
+    #[test]
+    fn revised_resets_approval() {
+        assert_eq!(
+            stage_transition(&StageState::Approved, StageEvent::Revised).unwrap(),
+            StageState::Planned
+        );
+        assert_eq!(
+            stage_transition(&StageState::Planned, StageEvent::Revised).unwrap(),
+            StageState::Planned
+        );
+    }
+
+    // ---- Task-level validation events ----
+
+    #[test]
+    fn validation_passed_on_last_stage_moves_building_to_review() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::PlanReady, TaskState::PlanReview),
+                (TaskEvent::ApprovePlan, TaskState::Building),
+                (
+                    TaskEvent::ValidationPassed { last_stage: true },
+                    TaskState::Review,
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn validation_passed_mid_plan_returns_to_plan_review() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::PlanReady, TaskState::PlanReview),
+                (TaskEvent::ApprovePlan, TaskState::Building),
+                (
+                    TaskEvent::ValidationPassed { last_stage: false },
+                    TaskState::PlanReview,
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn validation_failed_returns_to_plan_review() {
+        drive(
+            TaskKind::Standard,
+            &[
+                (TaskEvent::Dispatch, TaskState::Planning),
+                (TaskEvent::PlanReady, TaskState::PlanReview),
+                (TaskEvent::ApprovePlan, TaskState::Building),
+                (TaskEvent::ValidationFailed, TaskState::PlanReview),
+            ],
+        );
+    }
+
+    #[test]
+    fn late_validation_outcomes_are_honored_from_idle_unreported_build() {
+        // Quiescence never decided anything: a late validation `done` still moves
+        // the task, exactly like a late BuildReady.
+        for (event, expected) in [
+            (
+                TaskEvent::ValidationPassed { last_stage: true },
+                TaskState::Review,
+            ),
+            (
+                TaskEvent::ValidationPassed { last_stage: false },
+                TaskState::PlanReview,
+            ),
+            (TaskEvent::ValidationFailed, TaskState::PlanReview),
+        ] {
+            let got = transition(
+                &TaskState::IdleUnreported(Phase::Build),
+                TaskKind::Standard,
+                event,
+            )
+            .expect("legal from IdleUnreported(Build)");
+            assert_eq!(got, expected, "after {event:?}");
+        }
+    }
+
+    #[test]
+    fn validation_events_are_rejected_outside_build_working_states() {
+        for state in [
+            TaskState::Created,
+            TaskState::Planning,
+            TaskState::PlanReview,
+            TaskState::Review,
+            TaskState::IdleUnreported(Phase::Plan),
+            TaskState::Blocked(Phase::Build),
+            TaskState::Failed(Phase::Build),
+            TaskState::Interrupted(Phase::Build),
+            TaskState::Merged,
+            TaskState::Abandoned,
+        ] {
+            for event in [
+                TaskEvent::ValidationPassed { last_stage: true },
+                TaskEvent::ValidationPassed { last_stage: false },
+                TaskEvent::ValidationFailed,
+            ] {
+                assert!(
+                    transition(&state, TaskKind::Standard, event).is_err(),
+                    "{event:?} should be rejected from {state:?}"
+                );
+            }
+        }
+    }
+
+    // ---- Serde shapes ----
+
+    #[test]
+    fn stage_state_serde_round_trips() {
+        for (state, json) in [
+            (StageState::Planned, "\"planned\""),
+            (StageState::Approved, "\"approved\""),
+            (StageState::Building, "\"building\""),
+            (StageState::Built, "\"built\""),
+            (StageState::Validating, "\"validating\""),
+            (
+                StageState::Validated { passed: true },
+                "{\"validated\":{\"passed\":true}}",
+            ),
+            (
+                StageState::Validated { passed: false },
+                "{\"validated\":{\"passed\":false}}",
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<StageState>(json).unwrap(),
+                state,
+                "round-trip of {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_manifest_entry_summary_defaults_empty() {
+        let entry: StageManifestEntry = serde_json::from_str(
+            r#"{"id":"database-schema","title":"Database schema","path":".build/plan/01-database-schema.md"}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.summary, "");
+        assert_eq!(entry.id, "database-schema");
+    }
+
+    #[test]
+    fn stage_from_manifest_starts_planned_with_empty_extras() {
+        let stage = Stage::from_manifest(StageManifestEntry {
+            id: "api-endpoints".into(),
+            title: "API endpoints".into(),
+            path: ".build/plan/02-api-endpoints.md".into(),
+            summary: "CRUD routes.".into(),
+        });
+        assert_eq!(stage.id, "api-endpoints");
+        assert_eq!(stage.title, "API endpoints");
+        assert_eq!(stage.path, ".build/plan/02-api-endpoints.md");
+        assert_eq!(stage.summary, "CRUD routes.");
+        assert_eq!(stage.state, StageState::Planned);
+        assert_eq!(stage.start_sha, None);
+        assert_eq!(stage.validation, None);
+    }
+
+    #[test]
+    fn stage_serde_round_trips_including_validation_report() {
+        let stage = Stage {
+            id: "database-schema".into(),
+            title: "Database schema".into(),
+            path: ".build/plan/01-database-schema.md".into(),
+            summary: "Tables and migration.".into(),
+            state: StageState::Validated { passed: false },
+            start_sha: Some("abc123".into()),
+            validation: Some(ValidationReport {
+                passed: false,
+                findings: "- migration missing".into(),
+                notes_for_next_stage: "".into(),
+            }),
+        };
+        let json = serde_json::to_string(&stage).unwrap();
+        assert_eq!(serde_json::from_str::<Stage>(&json).unwrap(), stage);
+
+        // start_sha/validation are #[serde(default)]: a bare stage still loads.
+        let bare: Stage = serde_json::from_str(
+            r#"{"id":"s","title":"S","path":".build/plan/01-s.md","state":"planned"}"#,
+        )
+        .unwrap();
+        assert_eq!(bare.summary, "");
+        assert_eq!(bare.start_sha, None);
+        assert_eq!(bare.validation, None);
+    }
+
+    #[test]
+    fn validation_report_serde_round_trips() {
+        let report = ValidationReport {
+            passed: true,
+            findings: "- all good".into(),
+            notes_for_next_stage: "watch the renamed symbol".into(),
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ValidationReport>(&json).unwrap(),
+            report
+        );
+    }
+
+    #[test]
+    fn stage_comment_serde_with_and_without_anchor() {
+        let anchored = StageComment {
+            id: "c-3".into(),
+            stage_id: "database-schema".into(),
+            anchor: Some(CommentAnchor {
+                heading_path: vec!["Database schema".into(), "Tables".into()],
+                snippet: "users table gets a soft-delete column".into(),
+            }),
+            body: "use a deleted_at timestamp".into(),
+            state: CommentState::Open,
+            agent_reply: None,
+        };
+        let json = serde_json::to_string(&anchored).unwrap();
+        assert!(
+            json.contains("\"open\""),
+            "CommentState is lowercase: {json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<StageComment>(&json).unwrap(),
+            anchored
+        );
+
+        let general = StageComment {
+            id: "c-4".into(),
+            stage_id: "database-schema".into(),
+            anchor: None,
+            body: "split this stage".into(),
+            state: CommentState::Addressed,
+            agent_reply: Some("done".into()),
+        };
+        let json = serde_json::to_string(&general).unwrap();
+        assert!(json.contains("\"addressed\""));
+        assert_eq!(
+            serde_json::from_str::<StageComment>(&json).unwrap(),
+            general
+        );
+
+        // anchor/agent_reply are #[serde(default)]: a minimal comment loads.
+        let minimal: StageComment =
+            serde_json::from_str(r#"{"id":"c-1","stage_id":"s","body":"b","state":"open"}"#)
+                .unwrap();
+        assert_eq!(minimal.anchor, None);
+        assert_eq!(minimal.agent_reply, None);
     }
 
     #[test]

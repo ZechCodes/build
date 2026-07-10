@@ -799,6 +799,23 @@ impl Orchestrator {
         active: &mut ActiveTask,
         comments: &str,
     ) -> Result<(), OrchestratorError> {
+        // On a multi-stage task the "building" window includes the stage's
+        // validation pass. Ending THAT session here would replace it with a
+        // review_changes session whose completed report the stage machine
+        // ignores (only a `validate` report may move a Validating stage) —
+        // hanging the task and discarding the user's comments. Hold the
+        // change request until the verdict lands.
+        if active.is_multi_stage() {
+            if let Some(stage_id) = active.current_stage_id.clone() {
+                let stage = active.stage(&stage_id).map_err(OrchestratorError::Gate)?;
+                if matches!(stage.state, StageState::Built | StageState::Validating) {
+                    return Err(OrchestratorError::Gate(format!(
+                        "stage {stage_id} is awaiting validation; wait for the verdict \
+                         before requesting changes"
+                    )));
+                }
+            }
+        }
         active.task.apply(TaskEvent::RequestChanges)?;
         active.last_error = None;
         self.end_session(active);
@@ -821,10 +838,14 @@ impl Orchestrator {
     /// On the multi-stage path the persisted stage sub-state routes which
     /// session to respawn (spec §1.3).
     pub fn resume(&self, active: &mut ActiveTask) -> Result<(), OrchestratorError> {
-        active.task.apply(TaskEvent::Reply)?;
-        active.last_error = None;
-        self.end_session(active);
-        let prompt = match active.task.state {
+        // Route the prompt BEFORE committing the Reply transition: the caller
+        // persists the task even when this returns Err, so a routing failure
+        // (e.g. a stage sub-state with no resume path) after a committed Reply
+        // would strand the task in Building with no session — un-resumable,
+        // un-demotable, and outside every attention bucket.
+        let resumed_state =
+            crate::task::transition(&active.task.state, active.task.kind, TaskEvent::Reply)?;
+        let prompt = match resumed_state {
             TaskState::Planning if active.is_multi_stage() => {
                 self.resume_multi_stage_plan_prompt(active)?
             }
@@ -833,8 +854,11 @@ impl Orchestrator {
                 self.resume_multi_stage_build_prompt(active)?
             }
             TaskState::Building => self.render(&self.templates.build, active, ""),
-            ref other => unreachable!("reply left task in {other:?}"),
+            ref other => unreachable!("reply would leave task in {other:?}"),
         };
+        active.task.apply(TaskEvent::Reply)?;
+        active.last_error = None;
+        self.end_session(active);
         active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
         Ok(())
     }
@@ -898,6 +922,13 @@ impl Orchestrator {
             StageState::Validating => {
                 Ok(self.render_stage(&self.templates.validate, active, index, ""))
             }
+            // The stage machinery is done; the interrupted session was a
+            // post-review change request, whose comments were not persisted.
+            StageState::Validated { passed: true } => Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} already passed validation — the interrupted session was a \
+                 post-review change request; re-send the diff comments with Request Changes, \
+                 or approve the merge"
+            ))),
             ref other => Err(OrchestratorError::Gate(format!(
                 "stage {stage_id} cannot resume from state {other:?}"
             ))),
@@ -2843,6 +2874,107 @@ mod tests {
         orch.resume(&mut replanning).unwrap();
         let prompt = log.lock().unwrap().last().unwrap().clone();
         assert!(prompt.contains("PLAN mode"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn resume_failure_never_strands_the_task_out_of_its_interrupted_state() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "rs5");
+        for stage_id in ["first", "second"] {
+            orch.approve_stage(&mut t, stage_id).unwrap();
+            orch.dispatch_stage(&mut t, stage_id, None).unwrap();
+            std::fs::write(t.worktree.path.join(format!("{stage_id}.txt")), "x\n").unwrap();
+            orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+                .unwrap();
+            orch.on_done(&mut t, done_validate(true, "- ok", ""))
+                .unwrap();
+        }
+        assert_eq!(t.task.state, TaskState::Review);
+        // A post-review change request is running when the daemon dies: the
+        // current stage is stage-terminal (Validated{passed:true}).
+        orch.request_changes(&mut t, "rename the file").unwrap();
+        let mut revived = interrupted_copy(&t);
+        assert_eq!(
+            revived.task.state,
+            TaskState::Interrupted(crate::task::Phase::Build)
+        );
+
+        // There is no resume route for a validated stage — but the failure must
+        // leave the task in its resumable, needs-attention Interrupted state,
+        // never half-applied to Building with no session (which nothing could
+        // ever demote or resume again).
+        let err = orch.resume(&mut revived).unwrap_err();
+        assert!(err.to_string().contains("Request Changes"), "{err}");
+        assert_eq!(
+            revived.task.state,
+            TaskState::Interrupted(crate::task::Phase::Build)
+        );
+        assert!(revived.task.state.needs_attention());
+
+        // The documented escape hatch: re-send the change request, which closes
+        // exactly like the legacy loop.
+        orch.request_changes(&mut revived, "rename the file")
+            .unwrap();
+        assert_eq!(revived.task.state, TaskState::Building);
+        orch.on_done(
+            &mut revived,
+            done(DonePhase::Revise, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(revived.task.state, TaskState::Review);
+    }
+
+    #[tokio::test]
+    async fn request_changes_is_gated_while_a_stage_awaits_validation() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "rq1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+
+        // The task reads "building" so the diff tab accepts comments — but
+        // firing them now would kill the validation agent and the replacement
+        // session's report would be ignored. Reject without touching anything.
+        let err = orch.request_changes(&mut t, "use tabs").unwrap_err();
+        assert!(err.to_string().contains("awaiting validation"), "{err}");
+        assert_eq!(t.task.state, TaskState::Building);
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        assert!(t.subscribe().is_some(), "validation session not killed");
+
+        // The verdict still lands normally afterwards.
+        orch.on_done(&mut t, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::PlanReview);
+    }
+
+    #[tokio::test]
+    async fn request_changes_redirects_a_running_stage_build_through_the_stage_pipeline() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "rq2");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Building);
+
+        // Mid-build redirects stay legal on multi-stage tasks: the replacement
+        // session's done still flows through the stage pipeline (commit →
+        // validation), never around it.
+        orch.request_changes(&mut t, "use tabs").unwrap();
+        assert_eq!(t.task.state, TaskState::Building);
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Revise, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(
+            t.stage("first").unwrap().state,
+            StageState::Validating,
+            "redirected stage work still passes the validation gate"
+        );
+        assert_eq!(t.task.state, TaskState::Building);
     }
 
     // ---- Multi-stage: ActiveTask bookkeeping ----

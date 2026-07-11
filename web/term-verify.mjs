@@ -10,10 +10,48 @@
 import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
 import { TerminalSession } from "./terminal.mjs";
+import { openSession } from "./client.mjs";
+import { loginWithDummy } from "./skrift-auth.mjs";
 
 const url = process.env.RELAY_URL || "ws://localhost:18090";
+const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
+const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dec = new TextDecoder();
+
+// Discover a keyed-terminal scope: authenticate, open a request-response session,
+// and take the first registered project as the terminal's { project_id } root.
+async function discoverScope(mintGatewayToken) {
+  const ws = new WebSocket(`${url}/ws/client`);
+  const queue = [];
+  const waiters = [];
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data.toString());
+    waiters.length ? waiters.shift()(msg) : queue.push(msg);
+  });
+  const recv = () =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("recv timeout")), 10000);
+      const deliver = (m) => {
+        clearTimeout(timer);
+        resolve(m);
+      };
+      queue.length ? deliver(queue.shift()) : waiters.push(deliver);
+    });
+  const send = (obj) => ws.send(JSON.stringify(obj));
+  await new Promise((resolve, reject) => {
+    ws.on("open", resolve);
+    ws.on("error", reject);
+  });
+  send({ type: "authenticate", token: await mintGatewayToken() });
+  await recv(); // authenticated ack
+  const { call } = await openSession({ send, recv, transport, preferDeviceId });
+  const projectList = await call("project.list");
+  ws.close();
+  const projectId = (projectList.projects || [])[0] && projectList.projects[0].project_id;
+  if (!projectId) throw new Error("no project registered — cannot scope a terminal");
+  return { project_id: projectId };
+}
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -35,7 +73,9 @@ async function main() {
   let lastSnapshot = "";
   const statuses = [];
 
-  const term = new TerminalSession({ url, transport, WebSocketImpl: WebSocket });
+  const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
+  const scope = await discoverScope(mintGatewayToken);
+  const term = new TerminalSession({ url, transport, WebSocketImpl: WebSocket, scope, getToken: mintGatewayToken });
   term.onOutput((bytes) => (output += dec.decode(bytes)));
   term.onSnapshot((bytes) => (lastSnapshot = dec.decode(bytes)));
   term.onStatus((s) => statuses.push(s));

@@ -16,11 +16,14 @@ const b64decodeBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const timeout = (ms, msg) => new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms));
 
 export class TerminalSession {
-  constructor({ url, transport, WebSocketImpl, deviceId = "bridge" }) {
+  constructor({ url, transport, WebSocketImpl, deviceId = "bridge", scope = {}, getToken = null }) {
     this.url = url;
     this.transport = transport;
     this.WS = WebSocketImpl;
     this.deviceId = deviceId;
+    this.scope = scope; // { task_id } | { project_id[, worktree_id] } — the term's root
+    this.getToken = getToken; // async () => gateway token, for the paired relay
+    this._termId = null; // minted by term.create on first connect; reused on reconnect
     this._pending = new Map();
     this._reqId = 0;
     this._onOutput = () => {};
@@ -44,13 +47,13 @@ export class TerminalSession {
 
   /** Send keystrokes to the PTY. */
   async input(data) {
-    await this._call("term.input", { data: b64encodeBytes(te.encode(data)) });
+    await this._call("term.input", { term_id: this._termId, data: b64encodeBytes(te.encode(data)) });
   }
 
   async resize(cols, rows) {
     this.cols = cols;
     this.rows = rows;
-    await this._call("term.resize", { cols, rows });
+    await this._call("term.resize", { term_id: this._termId, cols, rows });
   }
 
   /** Permanent close — no reconnect. */
@@ -97,25 +100,49 @@ export class TerminalSession {
         timeout(8000, "open timeout"),
       ]);
 
+      // Authenticate to the paired relay with a gateway token (when supplied),
+      // then wait for the target device's key; skip control frames until it lands.
+      if (this.getToken) {
+        ws.send(JSON.stringify({ type: "authenticate", token: await this.getToken() }));
+      }
       // E2EE bootstrap (time-boxed so a still-down bridge fails fast → retry).
-      const hello = await recvRaw(6000);
-      if (!hello || hello.type !== "device_key") throw new Error("expected device_key");
+      let hello;
+      const deadline = Date.now() + 8000;
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error("expected device_key");
+        const msg = await recvRaw(remaining);
+        if (!msg) throw new Error("connection closed");
+        if (msg.type === "device_key") {
+          hello = msg;
+          break;
+        }
+      }
+      // Route to the device the relay just advertised (an authenticated relay
+      // mints a real device id; the direct-dev path keeps the "bridge" default).
+      if (this.getToken) this.deviceId = hello.device_id;
       const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
       const { sessionKeyB64, sessionInit } = await this.transport.createSessionInit({
         sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: hello.transport_public_key,
       });
       this._sessionId = sessionId;
       this._key = sessionKeyB64;
-      ws.send(JSON.stringify({ type: "session_init", session_id: sessionId, session_init: sessionInit }));
+      ws.send(JSON.stringify({ type: "session_init", session_id: sessionId, route_to: `device:${this.deviceId}`, session_init: sessionInit }));
       const accept = await recvRaw(6000);
       if (!accept || accept.type !== "session_accept") throw new Error("expected session_accept");
       await this.transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
 
       this._demux(recvRaw, gen); // routes responses + pushes
 
-      // Attach → apply the current screen snapshot, then live output flows.
+      // Keyed flow: mint the terminal once (term.create in this.scope), then
+      // attach by id here and on every reconnect. Attach applies the current
+      // screen snapshot; live output flows after.
       this._lastCursor = 0;
-      const r = await this._call("term.attach", { cols: this.cols, rows: this.rows });
+      if (!this._termId) {
+        const created = await this._call("term.create", { ...this.scope, cols: this.cols, rows: this.rows });
+        this._termId = created.term_id;
+      }
+      const r = await this._call("term.attach", { term_id: this._termId, cols: this.cols, rows: this.rows });
       this._lastCursor = r.cursor || 0;
       this._onStatus("connected");
       this._backoff = 400;
@@ -143,12 +170,12 @@ export class TerminalSession {
           this._pending.delete(p.id);
           p.ok ? pend.resolve(p.result) : pend.reject(new Error(p.error));
         }
-      } else if (p && p.type === "term.output") {
+      } else if (p && p.type === "term.output" && p.term_id === this._termId) {
         if ((p.cursor || 0) > this._lastCursor) {
           this._lastCursor = p.cursor;
           this._onOutput(b64decodeBytes(p.data));
         }
-      } else if (p && p.type === "term.reset") {
+      } else if (p && p.type === "term.reset" && p.term_id === this._termId) {
         // The bridge collapsed a huge burst to a screen snapshot — reset + apply.
         if ((p.cursor || 0) > this._lastCursor) {
           this._lastCursor = p.cursor;

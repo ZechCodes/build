@@ -176,17 +176,18 @@ try {
   await page.tap("#difflist .pcx"); // remove it so approve stays available
   await sleep(200);
 
-  // ---- 8. Terminal drawer: tap target + visibility (before merge — the
-  // merge action navigates back to the board) ----
-  await assertVisible("#termToggle", "terminal toggle");
-  await page.tap("#termToggle");
-  await page.waitForSelector("#drawer.show", { timeout: 10000 });
-  check("terminal drawer opens by tap", true);
-  const drawerBox = await page.locator("#drawer").boundingBox();
-  check("terminal drawer fits viewport", drawerBox.width <= page.viewportSize().width + 1);
-  await page.tap("#dx");
+  // ---- 8. Terminal tab: tap target + visibility (before merge — the merge
+  // action navigates back to the board) ----
+  await assertVisible("[data-newterm]", "terminal + tab");
+  await page.tap("[data-newterm]");
+  // The new terminal tab mounts a ghostty pane that fits within the viewport.
+  await page.waitForFunction(() => window.__buildTerminal && window.__buildTerminal.cols > 0, null, { timeout: 30000 });
+  check("terminal tab opens by tap", true);
+  const paneBox = await page.locator(".termpane").boundingBox();
+  check("terminal pane fits viewport", paneBox.width <= page.viewportSize().width + 1);
+  await page.tap(".tabs .t.active .tx"); // close the terminal tab via its ×
   await sleep(200);
-  check("terminal drawer closes by tap", !(await page.$("#drawer.show")));
+  check("terminal tab closes by tap", !(await page.$(".tabs .t.active .tx")) || (await page.$$(".termpane")).length === 0);
 
   // ---- 9. Merge via the split button; the app returns to the board ----
   await page.waitForSelector("#gitprimary", { timeout: 10000 });

@@ -15,8 +15,21 @@
 
 import WebSocket from "ws";
 import * as transport from "@build/secure-transport";
-import { openSession } from "./client.mjs";
+import { openSession, openPushSession } from "./client.mjs";
 import { loginWithDummy } from "./skrift-auth.mjs";
+
+const b64encode = (s) => Buffer.from(s, "utf8").toString("base64");
+const b64decode = (s) => Buffer.from(s || "", "base64").toString("utf8");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(pred, ms) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const hit = pred();
+    if (hit) return hit;
+    if (Date.now() >= deadline) return null;
+    await sleep(50);
+  }
+}
 
 const url = process.env.RELAY_URL || "ws://127.0.0.1:18090";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
@@ -236,6 +249,99 @@ async function main() {
   }
   check("missing param returns a clean error", badParamsErrored);
 
+  // ---- Worktree surfaces (keyed terminals, agent attach, fs browse, primary) ----
+  // A dedicated second relay connection mirrors production's terminal socket:
+  // request/response terminal RPCs + server-initiated PTY pushes on one session,
+  // keeping floods off the main request-response `call` session.
+  const projectList = await call("project.list");
+  const projectId = (projectList.projects || [])[0] && projectList.projects[0].project_id;
+  check("a project is registered for the surface checks", !!projectId, projectId || "none");
+
+  const tc = connect();
+  await tc.ready;
+  tc.send({ type: "authenticate", token: await mintGatewayToken() });
+  const tack = await tc.recv();
+  check("terminal socket accepts the gateway token", tack.type === "authenticated");
+  const pushes = [];
+  const term = await openPushSession({ send: tc.send, recv: tc.recv, transport, preferDeviceId, onPush: (p) => pushes.push(p) });
+
+  if (projectId) {
+    // 1. Keyed terminal round-trip in the primary scope.
+    const created = await term.call("term.create", { project_id: projectId, cols: 80, rows: 24 });
+    check("term.create mints a keyed id", /^term-\d+$/.test(created.term_id || ""), created.term_id);
+    const attached = await term.call("term.attach", { term_id: created.term_id, cols: 80, rows: 24 });
+    check(
+      "term.attach returns a snapshot + numeric cursor",
+      typeof attached.snapshot === "string" && typeof attached.cursor === "number",
+      `cursor=${attached.cursor}`,
+    );
+    const marker = `qa-term-${Date.now()}`;
+    await term.call("term.input", { term_id: created.term_id, data: b64encode(`echo ${marker}\r`) });
+    const echoed = await waitFor(() => {
+      const text = pushes
+        .filter((p) => (p.type === "term.output" || p.type === "term.reset") && p.term_id === created.term_id)
+        .map((p) => b64decode(p.data))
+        .join("");
+      return text.includes(marker) ? text : null;
+    }, 10000);
+    check("terminal echoes input back over the relay", !!echoed);
+    const listed = await term.call("term.list", { project_id: projectId });
+    check("term.list includes the open terminal", (listed.terminals || []).some((t2) => t2.term_id === created.term_id));
+    await term.call("term.close", { term_id: created.term_id });
+    const listed2 = await term.call("term.list", { project_id: projectId });
+    check("term.close removes it from term.list", !(listed2.terminals || []).some((t2) => t2.term_id === created.term_id));
+
+    // 4. Primary-changes summary + project.diff shape.
+    const withPrimary = await call("task.list");
+    const pc = (withPrimary.primary_changes || []).find((p) => p.project_id === projectId);
+    check(
+      "task.list.primary_changes carries a branch + numeric files_changed",
+      !!pc && typeof pc.branch === "string" && pc.branch.length > 0 && typeof pc.files_changed === "number",
+      pc ? `${pc.branch} (${pc.files_changed})` : "missing",
+    );
+    const pd = await call("project.diff", { project_id: projectId });
+    check(
+      "project.diff returns the stat/files/patch shape",
+      pd && pd.stat && Array.isArray(pd.files) && typeof pd.patch === "string",
+      pd && pd.stat && `${pd.stat.files_changed} files`,
+    );
+  }
+
+  // 2 + 3. fs round-trip and fencing, against a live plan_review task's worktree.
+  // `b` (Parallel task B) is still in plan_review — its worktree and stage docs
+  // exist on disk (t was merged+pruned, a was abandoned).
+  const tree = await call("fs.tree", { task_id: b.task_id });
+  const names = (tree.entries || []).map((e) => e.name);
+  check("fs.tree lists .build and hides .git", names.includes(".build") && !names.includes(".git"), names.join(","));
+  const bStages = await call("task.stages", { task_id: b.task_id });
+  const firstStage = bStages.stages[0];
+  const stageFile = await call("fs.read", { task_id: b.task_id, path: firstStage.path });
+  const stageDoc = await call("task.stage_doc", { task_id: b.task_id, stage_id: firstStage.id });
+  check(
+    "fs.read returns the stage doc's exact bytes",
+    b64decode(stageFile.content_b64) === stageDoc.contents,
+    `${stageFile.size} bytes, mime=${stageFile.mime}`,
+  );
+  let fenceErrored = false;
+  try {
+    await call("fs.read", { task_id: b.task_id, path: "../../../etc/passwd" });
+  } catch (e) {
+    fenceErrored = /path escapes/.test(e.message);
+  }
+  check("fs.read fences a traversal path", fenceErrored);
+
+  // 5. Agent attach: a live task returns its reserved id + a boolean live; a
+  // merged task (still a record) attaches with live:false.
+  const agentLive = await term.call("agent.attach", { task_id: b.task_id });
+  check(
+    "agent.attach returns the reserved id + boolean live",
+    agentLive.term_id === `agent:${b.task_id}` && typeof agentLive.live === "boolean",
+    `live=${agentLive.live}`,
+  );
+  const agentMerged = await term.call("agent.attach", { task_id: t.task_id });
+  check("agent.attach on a merged task succeeds with live:false", agentMerged.live === false, `live=${agentMerged.live}`);
+
+  tc.ws.close();
   c.ws.close();
 
   const failed = checks.filter((x) => !x.ok);

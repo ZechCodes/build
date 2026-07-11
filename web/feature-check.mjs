@@ -9,7 +9,7 @@
 //                           the task view surfaces the merge_failed reason
 //   f. offline error state  stop the bridge → explicit offline banner, not blank;
 //                           start it → silent recovery
-//   g. terminal resize      the drawer terminal refits cols/rows to the viewport
+//   g. terminal resize      the terminal tab pane refits cols/rows to the viewport
 //   h. push payload shape   /api/push/notify enforces the content-free contract
 //                           (kind allowlist, device-auth, no goal/title field)
 //
@@ -84,9 +84,8 @@ async function connect() {
 
 /** Dispatch a standard task; returns its task id once the plan is ready to review. */
 async function dispatchStandardTask(goal) {
-  // Defensive: a prior section may have left the terminal drawer open, whose
-  // canvas would intercept clicks on the board.
-  await page.evaluate(() => document.getElementById("drawer")?.classList.remove("show")).catch(() => {});
+  // Navigating to the board unmounts any terminal pane a prior section left open
+  // (the view-teardown hook disposes it) — no drawer to defensively close anymore.
   await page.goto(`${APP}/app/#/`, { waitUntil: "load" }).catch(() => {});
   await page.waitForSelector("#newtask", { timeout: 15000 });
   await page.click("#newtask");
@@ -231,16 +230,17 @@ await section("merge-honesty", async () => {
   check("board card surfaces the merge error", !!hasErr);
 });
 
-// ---- g. Terminal drawer refits cols/rows to the viewport -------------------
+// ---- g. Terminal tab refits cols/rows to the viewport ----------------------
 await section("terminal-resize", async () => {
-  // Open a fresh task's view so the terminal drawer has a host page.
-  const id = await dispatchStandardTask(`feature-terminal drawer ${Date.now()}`);
+  // Open a fresh task's view, then `+` a terminal tab (the drawer is gone — the
+  // terminal is a tab on the worktree surface).
+  const id = await dispatchStandardTask(`feature-terminal tab ${Date.now()}`);
   await page.goto(`${APP}/app/#/task/${encodeURIComponent(id)}/plan`, { waitUntil: "load" });
   await page.setViewportSize({ width: 1200, height: 860 });
-  await page.waitForSelector("#termToggle", { timeout: 10000 });
-  await page.click("#termToggle");
-  await page.waitForSelector("#drawer.show", { timeout: 10000 });
-  // The drawer boots ghostty-web (wasm) lazily and exposes the instance for QA.
+  await page.waitForSelector("[data-newterm]", { timeout: 10000 });
+  await page.click("[data-newterm]");
+  // Selecting the new terminal tab mounts a ghostty pane (wasm booted lazily),
+  // which exposes the instance for QA via window.__buildTerminal.
   await page.waitForFunction(() => window.__buildTerminal && window.__buildTerminal.cols > 0, null, { timeout: 30000 });
   const wide = await page.evaluate(() => ({ cols: window.__buildTerminal.cols, rows: window.__buildTerminal.rows }));
   check("terminal reports a live cols/rows once booted", wide.cols > 0 && wide.rows > 0, `cols=${wide.cols} rows=${wide.rows}`);
@@ -263,7 +263,8 @@ await section("terminal-resize", async () => {
     { timeout: 10000 },
   );
   check("terminal cols grow again when the viewport grows", true);
-  await page.click("#dx").catch(() => {});
+  // Close the terminal tab via its × (leaves the surface's default tab active).
+  await page.click(".tabs .t.active .tx").catch(() => {});
 });
 
 // ---- h. Push payload shape (content-free contract #6) ----------------------

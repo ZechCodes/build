@@ -12,9 +12,10 @@ export async function renderProject() {
   const root = $("#root");
   const projectId = App.route.projectId;
 
-  const draw = (project, tasks, externalWorktrees) => {
+  const draw = (project, tasks, externalWorktrees, primaryChanges) => {
     const mine = tasks.filter((t) => t.project_id === projectId);
     const worktrees = externalWorktrees.filter((w) => w.project_id === projectId);
+    const primary = (primaryChanges || []).find((c) => c.project_id === projectId) || null;
     const byBucket = { attn: [], work: [], done: [] };
     for (const t of mine) {
       if (t.state === "merged" || t.state === "abandoned") byBucket.done.push(t);
@@ -36,7 +37,18 @@ export async function renderProject() {
     const worktreeBucket = worktrees.length
       ? `<div class="bucket"><h2>WORKTREES <span class="n">${worktrees.length}</span></h2>${worktrees.map((w) => externalWorktreeCard(w)).join("")}</div>`
       : "";
-    const anyContent = mine.length || worktrees.length;
+    // The primary checkout as one card: branch, path, and a dirty +/− when it has
+    // uncommitted changes. Links to the main surface (#/main/<projectId>).
+    const dirty = primary && primary.files_changed
+      ? `<span class="pm"><span class="a">+${primary.insertions || 0}</span> <span class="d">−${primary.deletions || 0}</span></span>`
+      : "";
+    const mainBucket = primary
+      ? `<div class="bucket"><h2>MAIN</h2>
+          <div class="card quiet" data-main="${esc(projectId)}">
+            <div class="top"><span class="title mono">${esc(primary.branch)}</span>${dirty}</div>
+            <div class="meta"><span>${esc(project ? project.path : "")}</span></div></div></div>`
+      : "";
+    const anyContent = mine.length || worktrees.length || primary;
     root.innerHTML = `
       <div class="board-head"><div>
           <div class="crumb"><a href="#/board">← Board</a></div>
@@ -47,12 +59,16 @@ export async function renderProject() {
       ${bucket("NEEDS YOU", byBucket.attn, false)}
       ${bucket("WORKING", byBucket.work, true)}
       ${bucket("DONE", byBucket.done, true)}
+      ${mainBucket}
       ${worktreeBucket}`;
     $("#newtask").onclick = () => openNewTask({ projectId });
     root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
     root
       .querySelectorAll(".card[data-wt]")
       .forEach((c) => (c.onclick = () => go({ name: "worktree", projectId: c.dataset.project, worktreeId: c.dataset.wt })));
+    root
+      .querySelectorAll(".card[data-main]")
+      .forEach((c) => (c.onclick = () => go({ name: "main", projectId: c.dataset.main })));
     setBadge(tasks);
   };
 
@@ -60,7 +76,7 @@ export async function renderProject() {
     try {
       const [list, projectList] = await Promise.all([App.call("task.list"), App.call("project.list")]);
       const project = (projectList.projects || []).find((p) => p.project_id === projectId) || null;
-      draw(project, list.tasks || [], list.external_worktrees || []);
+      draw(project, list.tasks || [], list.external_worktrees || [], list.primary_changes || []);
     } catch {
       /* offline / transient — the poll retries */
     }

@@ -66,6 +66,13 @@ describe("buildSidebarModel", () => {
     expect(p1.uncommitted).toBe(1);
     expect(p2.uncommitted).toBe(1);
   });
+
+  it("attaches the primary-changes summary per project (null when absent)", () => {
+    const primaryChanges = [{ project_id: "p1", branch: "main", files_changed: 3, insertions: 12, deletions: 4 }];
+    const [p1, p2] = buildSidebarModel({ projects, tasks: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
+    expect(p1.primary).toEqual({ branch: "main", files_changed: 3, insertions: 12, deletions: 4 });
+    expect(p2.primary).toBeNull();
+  });
 });
 
 describe("projectHtml", () => {
@@ -115,6 +122,21 @@ describe("projectHtml", () => {
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<b>evil</b>");
     expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("renders a main row with the branch and a dirty count, wired to the main surface", () => {
+    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "main", files_changed: 2, insertions: 5, deletions: 1 } }), ui());
+    expect(html).toContain('data-main="p1"');
+    expect(html).toContain("main ");
+    expect(html).toContain("2 uncommitted");
+  });
+
+  it("omits the dirty count when the main checkout is clean and the main row when unknown", () => {
+    const clean = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } }), ui());
+    expect(clean).toContain("data-main=");
+    expect(clean).not.toContain("uncommitted");
+    const none = projectHtml(model({ worktrees: [], uncommitted: 0, primary: null }), ui());
+    expect(none).not.toContain("data-main=");
   });
 
   it("marks the route's active task", () => {

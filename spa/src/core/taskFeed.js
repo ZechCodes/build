@@ -7,8 +7,9 @@ const subscribers = new Set();
 let timer = null;
 let last = null;
 
-/** Subscribe to feed snapshots ({tasks, externalWorktrees, projects}); the
- *  current snapshot (if any) is delivered immediately. Returns unsubscribe. */
+/** Subscribe to feed snapshots ({tasks, externalWorktrees, projects,
+ *  primaryChanges}); the current snapshot (if any) is delivered immediately.
+ *  Returns unsubscribe. */
 export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (last) fn(last);
@@ -24,6 +25,7 @@ async function tick() {
     last = {
       tasks: list.tasks || [],
       externalWorktrees: list.external_worktrees || [],
+      primaryChanges: list.primary_changes || [],
       projects: projectList.projects || [],
     };
     subscribers.forEach((fn) => fn(last));

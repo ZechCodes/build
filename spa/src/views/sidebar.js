@@ -42,6 +42,7 @@ function draw() {
     projects: lastFeed.projects,
     tasks: lastFeed.tasks,
     externalWorktrees: lastFeed.externalWorktrees,
+    primaryChanges: lastFeed.primaryChanges,
     readIds: App.readIds,
     nowMs: Date.now(),
   });
@@ -86,6 +87,9 @@ function draw() {
   });
   aside.querySelectorAll(".srow[data-wt]").forEach((r) => {
     r.onclick = () => go({ name: "worktree", projectId: r.dataset.project, worktreeId: r.dataset.wt });
+  });
+  aside.querySelectorAll(".srow[data-main]").forEach((r) => {
+    r.onclick = () => go({ name: "main", projectId: r.dataset.main });
   });
 }
 

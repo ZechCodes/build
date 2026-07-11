@@ -14,8 +14,10 @@ function ageSeconds(iso, nowMs) {
   return Number.isFinite(t) ? Math.max(0, (nowMs - t) / 1000) : null;
 }
 
-/** Group the task feed into the per-project sidebar model. */
-export function buildSidebarModel({ projects, tasks, externalWorktrees, readIds, nowMs }) {
+/** Group the task feed into the per-project sidebar model. `primaryChanges` is
+ *  task.list's cached primary-checkout summary, attached per project as
+ *  `m.primary = {branch, files_changed, insertions, deletions} | null`. */
+export function buildSidebarModel({ projects, tasks, externalWorktrees, primaryChanges, readIds, nowMs }) {
   return (projects || []).map((p) => {
     const mine = (tasks || []).filter((t) => t.project_id === p.project_id);
     const needsYou = mine.filter((t) => t.needs_attention && !TERMINAL.has(t.state));
@@ -27,6 +29,7 @@ export function buildSidebarModel({ projects, tasks, externalWorktrees, readIds,
       .sort((a, b) => a.age_s - b.age_s)
       .slice(0, DONE_RECENTLY_CAP);
     const worktrees = (externalWorktrees || []).filter((w) => w.project_id === p.project_id);
+    const pc = (primaryChanges || []).find((c) => c.project_id === p.project_id) || null;
     return {
       project_id: p.project_id,
       name: p.name,
@@ -36,6 +39,9 @@ export function buildSidebarModel({ projects, tasks, externalWorktrees, readIds,
       doneRecently,
       worktrees,
       uncommitted: worktrees.filter((w) => (w.dirty_files || 0) > 0).length,
+      primary: pc
+        ? { branch: pc.branch, files_changed: pc.files_changed || 0, insertions: pc.insertions || 0, deletions: pc.deletions || 0 }
+        : null,
     };
   });
 }
@@ -55,6 +61,17 @@ const doneIcon = (t) => (t.state === "merged" ? "✓" : "×");
 
 function section(label, rowsHtml) {
   return rowsHtml ? `<div class="ssec"><div class="sseclabel">${label}</div>${rowsHtml}</div>` : "";
+}
+
+// The primary-checkout "main" row: branch + a dirty count when the working tree
+// has uncommitted changes. Links to #/main/<projectId> (wired by the view).
+function mainLine(m) {
+  if (!m.primary) return "";
+  const dirty = m.primary.files_changed
+    ? ` <span class="swt-dirty">· ${m.primary.files_changed} uncommitted</span>`
+    : "";
+  return `<div class="srow smain-line" data-main="${esc(m.project_id)}">
+    <span class="sicon">⌂</span><span class="stitle mono">main <span class="dim">${esc(m.primary.branch)}</span>${dirty}</span></div>`;
 }
 
 function worktreeLine(m, open) {
@@ -122,7 +139,7 @@ export function projectHtml(m, ui) {
     .join("");
   return `<div class="sproj">${head}<div class="sproj-body">
     ${section("Needs you", needs)}${section("Running", running)}${section("Done recently", done)}
-    ${worktreeLine(m, ui.wtOpen.has(m.project_id))}</div></div>`;
+    ${mainLine(m)}${worktreeLine(m, ui.wtOpen.has(m.project_id))}</div></div>`;
 }
 
 /** The whole rail. */

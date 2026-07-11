@@ -416,20 +416,41 @@ impl AppState {
             let project_id = self.add_project(repo_path, record.base_branch);
             self.task_project.insert(task_id.clone(), project_id);
         } else if !active.task.state.is_terminal() {
-            // The repo itself is gone, so the task can never advance and — with no
-            // project to route to — every later RPC would return "unknown task_id".
-            // Abandon it so it stays legible on the board with a reason, instead of
-            // becoming an untouchable orphan.
-            eprintln!(
-                "recover {task_id}: project repo {} is gone; abandoning",
-                record.project_path
-            );
-            active
-                .task
-                .apply(TaskEvent::Abandon)
-                .map_err(|e| format!("recover {task_id}: {e}"))?;
-            active.last_error = Some(format!("project repo missing at {}", record.project_path));
-            state_changed = true;
+            if active.adopted {
+                // Automated actions never touch (or write off) an adopted
+                // worktree: park the task needs-attention instead of abandoning.
+                // A working state is demoted to Interrupted (its session is gone
+                // anyway); gate states (Review, Blocked, …) already need attention.
+                eprintln!(
+                    "recover {task_id}: project repo {} is gone; parking adopted task",
+                    record.project_path
+                );
+                if active.task.state.is_working() {
+                    active
+                        .task
+                        .apply(TaskEvent::Interrupt)
+                        .map_err(|e| format!("recover {task_id}: {e}"))?;
+                }
+                active.last_error =
+                    Some(format!("project repo missing at {}", record.project_path));
+                state_changed = true;
+            } else {
+                // The repo itself is gone, so the task can never advance and — with
+                // no project to route to — every later RPC would return "unknown
+                // task_id". Abandon it so it stays legible on the board with a
+                // reason, instead of becoming an untouchable orphan.
+                eprintln!(
+                    "recover {task_id}: project repo {} is gone; abandoning",
+                    record.project_path
+                );
+                active
+                    .task
+                    .apply(TaskEvent::Abandon)
+                    .map_err(|e| format!("recover {task_id}: {e}"))?;
+                active.last_error =
+                    Some(format!("project repo missing at {}", record.project_path));
+                state_changed = true;
+            }
         } else {
             eprintln!(
                 "recover {task_id}: project repo {} is gone; task kept as history",
@@ -3963,6 +3984,123 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("project repo missing at"));
+    }
+
+    /// The pruning principle's automated-action gate (spec §0.5 / §5.8): boot
+    /// recovery is automated, so a repo-missing ADOPTED task is parked
+    /// needs-attention (Review stays Review; a working state demotes to
+    /// Interrupted) instead of being written off as abandoned. Native records
+    /// with the same setup still auto-abandon.
+    #[test]
+    fn boot_recovery_parks_adopted_tasks_when_the_repo_is_gone() {
+        use crate::store::{PersistedTask, TaskStore};
+
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let missing_repo = dir.path().join("repo-deleted-by-hand");
+        let store = TaskStore::new(&tasks_dir);
+
+        let record = |id: &str, state: TaskState, adopted: bool, created: &str| {
+            // Each task's user worktree survives on disk; only the repo is gone.
+            let worktree = dir.path().join(format!("user-wt-{id}"));
+            std::fs::create_dir_all(&worktree).unwrap();
+            PersistedTask {
+                id: id.into(),
+                goal: format!("goal for {id}"),
+                kind: TaskKind::Quick,
+                project_path: missing_repo.display().to_string(),
+                base_branch: "main".into(),
+                state,
+                branch: format!("user/{id}"),
+                worktree_name: id.into(),
+                worktree_path: worktree.display().to_string(),
+                plan_path: ".build/plan.md".into(),
+                last_summary: None,
+                model: None,
+                effort: None,
+                last_error: None,
+                stages: Vec::new(),
+                current_stage_id: None,
+                revising_stage_id: None,
+                auto_advance: false,
+                comments: Vec::new(),
+                adopted,
+                pending_continuation: adopted,
+                created_at: created.into(),
+                updated_at: created.into(),
+            }
+        };
+        store
+            .save(&record(
+                "task-1",
+                TaskState::Review,
+                true,
+                "2026-07-01T09:00:00Z",
+            ))
+            .unwrap();
+        store
+            .save(&record(
+                "task-2",
+                TaskState::Building,
+                true,
+                "2026-07-01T09:01:00Z",
+            ))
+            .unwrap();
+        store
+            .save(&record(
+                "task-3",
+                TaskState::Review,
+                false,
+                "2026-07-01T09:02:00Z",
+            ))
+            .unwrap();
+
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+
+        // Adopted, gate state: parked as-is — still in review, with the reason.
+        let parked = state.handle(req("task.get", json!({ "task_id": "task-1" })));
+        assert_eq!(parked["ok"], true, "{parked:?}");
+        assert_eq!(parked["result"]["state"], "review");
+        assert_eq!(
+            parked["result"]["last_error"],
+            format!("project repo missing at {}", missing_repo.display())
+        );
+
+        // Adopted, working state: its session is gone, so it parks interrupted.
+        let interrupted = state.handle(req("task.get", json!({ "task_id": "task-2" })));
+        assert_eq!(interrupted["result"]["state"], "interrupted");
+
+        // Native record with the identical setup still auto-abandons (unchanged).
+        let native = state.handle(req("task.get", json!({ "task_id": "task-3" })));
+        assert_eq!(native["result"]["state"], "abandoned");
+
+        // The parked verdicts (and their worktrees) are durable and untouched.
+        let persisted = store.load_all().unwrap();
+        assert_eq!(persisted[0].state, TaskState::Review);
+        assert!(persisted[0]
+            .last_error
+            .as_deref()
+            .unwrap()
+            .starts_with("project repo missing at"));
+        assert!(
+            persisted[0].adopted,
+            "the adopted flag survives the parking"
+        );
+        assert_eq!(
+            persisted[1].state,
+            TaskState::Interrupted(crate::task::Phase::Build)
+        );
+        assert_eq!(persisted[2].state, TaskState::Abandoned);
+        assert!(dir.path().join("user-wt-task-1").exists());
+        assert!(dir.path().join("user-wt-task-2").exists());
     }
 
     #[test]

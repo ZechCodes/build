@@ -115,7 +115,7 @@ async function main() {
   await waitFor(() => output.includes(marker2), 6000, "live output after reconnect");
   check("live output works after reconnect", output.includes(marker2));
 
-  term.close();
+  await term.close(); // reaps the server PTY — a leaked shell per run trips the 16-terminal cap
   console.log("");
   if (failures) {
     console.error(`TERMINAL QA FAIL: ${failures} check(s) failed`);

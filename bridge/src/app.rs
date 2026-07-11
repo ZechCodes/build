@@ -7824,6 +7824,44 @@ mod tests {
     }
 
     #[test]
+    fn fs_tree_rejects_a_symlinked_directory_escape() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        // A directory symlink inside the worktree pointing outside it: every
+        // lexical component is Normal, so only canonical containment (the same
+        // fence fs.read rides) can refuse listing through it.
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("linkdir")).unwrap();
+
+        let escape = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "path": "linkdir" }),
+        ));
+        assert_eq!(escape["ok"], false, "{escape:?}");
+        assert!(
+            escape["error"].as_str().unwrap().contains("escapes"),
+            "{escape:?}"
+        );
+
+        // Nested through the symlinked directory is refused the same way.
+        let nested = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "path": "linkdir/sub" }),
+        ));
+        assert_eq!(nested["ok"], false, "{nested:?}");
+    }
+
+    #[test]
     fn fs_tree_serves_all_three_scope_kinds() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(

@@ -107,7 +107,7 @@ async function main() {
   }
 
   console.log("\n(full path: client → gateway → real relay → Redis → bridge, E2EE end-to-end)");
-  session.close();
+  await session.close(); // reaps the server PTY before exiting — no leaked shells
   process.exit(0);
 }
 

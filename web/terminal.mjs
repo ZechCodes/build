@@ -56,9 +56,17 @@ export class TerminalSession {
     await this._call("term.resize", { term_id: this._termId, cols, rows });
   }
 
-  /** Permanent close — no reconnect. */
-  close() {
+  /** Permanent close — no reconnect. Best-effort term.close first: a client
+   *  disconnect alone only detaches senders (the PTY persists by design), so
+   *  without it every harness run leaks a shell in the daemon until the
+   *  16-terminal cap makes term.create fail. */
+  async close() {
     this._closed = true;
+    if (this._termId) {
+      const termId = this._termId;
+      this._termId = null;
+      try { await this._call("term.close", { term_id: termId }, 4000); } catch { /* best-effort */ }
+    }
     try { this._ws && this._ws.close(); } catch { /* ignore */ }
   }
 

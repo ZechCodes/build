@@ -25,7 +25,9 @@ use crate::task::{
     TaskState,
 };
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
-use crate::worktree::{slugify, Worktree, WorktreeError, WorktreeManager};
+use crate::worktree::{
+    derive_adoption_goal, slugify, ExternalWorktree, Worktree, WorktreeError, WorktreeManager,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -390,6 +392,65 @@ impl Orchestrator {
         };
         self.spawn_session(&mut active, &prompt)?;
         Ok(active)
+    }
+
+    /// Mint a Quick-kind task around an existing external worktree. No agent
+    /// session is spawned — the task lands in `Review` (there is work to
+    /// review). Order matters: checkpoint FIRST (pre-Build work stays its own
+    /// legible commit), then scaffold `.build/mcp.json` (left uncommitted, as
+    /// on the native path). Any error aborts with nothing persisted — the
+    /// caller only persists on `Ok`.
+    pub fn adopt(
+        &self,
+        id: TaskId,
+        external: &ExternalWorktree,
+        base_branch: &str,
+        model_choice: ModelChoice,
+    ) -> Result<ActiveTask, OrchestratorError> {
+        let Some(branch) = external.branch.clone() else {
+            return Err(OrchestratorError::Gate(
+                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
+            ));
+        };
+        if branch == base_branch {
+            // Merging a branch into itself is meaningless, and the primary
+            // checkout could never merge while its base is checked out elsewhere.
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
+            )));
+        }
+
+        self.commit_all_with_message(&external.path, "Checkpoint: adopted by Build")?;
+
+        let worktree = Worktree {
+            name: external.name.clone(),
+            path: external.path.clone(),
+            branch: branch.clone(),
+            base_branch: base_branch.to_string(),
+        };
+        self.scaffold_build_dir(&worktree, &id)?;
+
+        let goal = derive_adoption_goal(&branch, &external.head_subject);
+        let mut task = Task::new(id, goal, TaskKind::Quick);
+        task.apply(TaskEvent::Dispatch)?;
+        task.apply(TaskEvent::BuildReady)?;
+
+        Ok(ActiveTask {
+            task,
+            worktree,
+            plan_path: DEFAULT_PLAN_PATH.to_string(),
+            last_summary: None,
+            model_choice,
+            last_error: None,
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            comments: Vec::new(),
+            adopted: true,
+            pending_continuation: true,
+            session: None,
+        })
     }
 
     /// Consume an agent's `done` report (the MCP server forwards these), mapping
@@ -1214,11 +1275,21 @@ impl Orchestrator {
     }
 
     fn commit_all(&self, worktree_path: &Path, goal: &str) -> Result<(), OrchestratorError> {
+        self.commit_all_with_message(worktree_path, &format!("Build: {goal}"))
+    }
+
+    /// Stage everything and commit with `message` verbatim; a clean tree is a
+    /// no-op (nothing staged, nothing committed).
+    fn commit_all_with_message(
+        &self,
+        worktree_path: &Path,
+        message: &str,
+    ) -> Result<(), OrchestratorError> {
         self.git(worktree_path, &["add", "-A"])?;
         // Only commit if something is staged.
         let status = self.git(worktree_path, &["status", "--porcelain"])?;
         if !status.trim().is_empty() {
-            self.git(worktree_path, &["commit", "-m", &format!("Build: {goal}")])?;
+            self.git(worktree_path, &["commit", "-m", message])?;
         }
         Ok(())
     }
@@ -2016,6 +2087,224 @@ mod tests {
         assert!(
             r.find_branch(&branch, git2::BranchType::Local).is_err(),
             "branch pruned after abandon"
+        );
+    }
+
+    // ---- Worktree adoption ----
+
+    use crate::worktree::{discover_external_worktrees, ExternalWorktree};
+
+    /// Create a user worktree at `dir/<name>` on a new `branch` (cut from the
+    /// primary HEAD) and return its discovered summary — the same shape the
+    /// app layer resolves a `worktree_id` to.
+    fn user_worktree(
+        dir: &tempfile::TempDir,
+        repo: &Path,
+        name: &str,
+        branch: &str,
+    ) -> ExternalWorktree {
+        let path = dir.path().join(name);
+        assert!(Command::new("git")
+            .args(["worktree", "add", "-b", branch, path.to_str().unwrap()])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success());
+        discover_external_worktrees(repo, "main", &std::collections::HashSet::new())
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .expect("the new worktree is discoverable")
+    }
+
+    fn worktree_head(worktree: &Path) -> String {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(worktree)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn adopt_lands_in_review_with_a_checkpoint_commit() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
+        std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
+
+        let t = orch
+            .adopt(TaskId::new("ad1"), &external, "main", Default::default())
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+        assert_eq!(t.task.kind, TaskKind::Quick);
+        assert_eq!(t.task.goal, "user/thing", "goal derived from the branch");
+        assert!(t.adopted);
+        assert!(t.pending_continuation);
+        assert!(t.subscribe().is_none(), "adoption spawns no session");
+        assert!(external.path.join(".build/mcp.json").exists());
+
+        // The dirty state became its own legible commit, with the exact message.
+        assert_eq!(
+            last_commit_subject(&external.path),
+            "Checkpoint: adopted by Build"
+        );
+        // Checkpoint-before-scaffold: the checkpoint must not smuggle in mcp.json.
+        let shown = Command::new("git")
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .current_dir(&external.path)
+            .output()
+            .unwrap();
+        let files = String::from_utf8_lossy(&shown.stdout).into_owned();
+        assert!(files.contains("notes.txt"), "{files}");
+        assert!(!files.contains(".build/mcp.json"), "{files}");
+    }
+
+    #[tokio::test]
+    async fn adopt_on_a_clean_worktree_makes_no_checkpoint() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-clean", "user/clean");
+        let head_before = worktree_head(&external.path);
+
+        let t = orch
+            .adopt(TaskId::new("ad2"), &external, "main", Default::default())
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+        assert_eq!(
+            worktree_head(&external.path),
+            head_before,
+            "no commit on a clean tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopt_refuses_detached_head_and_base_branch() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut external = user_worktree(&dir, &repo, "wt-refuse", "user/refuse");
+
+        let refusal = |external: &ExternalWorktree, id: &str| match orch.adopt(
+            TaskId::new(id),
+            external,
+            "main",
+            Default::default(),
+        ) {
+            Ok(_) => panic!("adoption must be refused"),
+            Err(e) => e.to_string(),
+        };
+
+        external.branch = None;
+        assert_eq!(
+            refusal(&external, "rf1"),
+            "cannot adopt a detached-HEAD worktree — check out a branch first"
+        );
+
+        external.branch = Some("main".into());
+        assert_eq!(
+            refusal(&external, "rf2"),
+            "cannot adopt a worktree with the base branch \"main\" checked out"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopt_generic_branch_takes_the_commit_subject() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-wip", "wip");
+        assert_eq!(external.head_subject, "initial");
+
+        let t = orch
+            .adopt(TaskId::new("gg1"), &external, "main", Default::default())
+            .unwrap();
+        assert_eq!(t.task.goal, "initial", "generic branch → HEAD subject");
+    }
+
+    #[tokio::test]
+    async fn adopted_first_session_continues_when_a_transcript_exists() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            options_recording_agent(log.clone()),
+            Templates::default(),
+        )
+        .with_transcript_probe(std::sync::Arc::new(|_| true));
+        let external = user_worktree(&dir, &repo, "wt-cont", "user/continue-me");
+
+        let mut t = orch
+            .adopt(TaskId::new("ct1"), &external, "main", Default::default())
+            .unwrap();
+        assert!(log.lock().unwrap().is_empty(), "adoption spawns nothing");
+
+        // The FIRST session after adoption continues the user's conversation.
+        orch.request_changes(&mut t, "polish it").unwrap();
+        assert!(log.lock().unwrap()[0].continue_session);
+        assert!(!t.pending_continuation, "one-shot flag consumed");
+
+        // Back to Review, then a second session is fresh (cold-agent discipline).
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+        orch.request_changes(&mut t, "one more pass").unwrap();
+        let recorded = log.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert!(!recorded[1].continue_session);
+    }
+
+    #[tokio::test]
+    async fn adopted_first_session_is_fresh_without_a_transcript() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            options_recording_agent(log.clone()),
+            Templates::default(),
+        )
+        .with_transcript_probe(std::sync::Arc::new(|_| false));
+        let external = user_worktree(&dir, &repo, "wt-fresh", "user/fresh");
+
+        let mut t = orch
+            .adopt(TaskId::new("fr1"), &external, "main", Default::default())
+            .unwrap();
+        orch.request_changes(&mut t, "polish it").unwrap();
+        assert!(!log.lock().unwrap()[0].continue_session);
+        assert!(
+            !t.pending_continuation,
+            "flag consumed even without a transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopted_merge_then_abandon_flow_still_works() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+
+        // Merge: the adopted work lands on base like any reviewed task.
+        let external = user_worktree(&dir, &repo, "wt-merge", "user/merge-me");
+        std::fs::write(external.path.join("feature.txt"), "work\n").unwrap();
+        let mut t = orch
+            .adopt(TaskId::new("mg1"), &external, "main", Default::default())
+            .unwrap();
+        orch.approve_merge(&mut t).unwrap();
+        assert_eq!(t.task.state, TaskState::Merged);
+        assert!(repo.join("feature.txt").exists(), "merged into base");
+
+        // Abandon: user-triggered, so pruning the adopted worktree is allowed.
+        let external = user_worktree(&dir, &repo, "wt-drop", "user/abandon-me");
+        let mut t = orch
+            .adopt(TaskId::new("ab1"), &external, "main", Default::default())
+            .unwrap();
+        orch.abandon(&mut t).unwrap();
+        assert_eq!(t.task.state, TaskState::Abandoned);
+        assert!(!external.path.exists(), "worktree pruned");
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("user/abandon-me", git2::BranchType::Local)
+                .is_err(),
+            "branch pruned"
         );
     }
 

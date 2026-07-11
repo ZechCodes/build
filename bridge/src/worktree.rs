@@ -5,7 +5,8 @@
 //! the same repo never touch each other. On abandon the worktree is removed but
 //! the branch is kept (abandoning stays reversible-ish); merge decides for itself.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// The branch-name prefix for every task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
@@ -17,6 +18,8 @@ pub enum WorktreeError {
     Git(#[from] git2::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("git command failed: {0}")]
+    Command(String),
 }
 
 /// A task's worktree: where it lives, which branch it's on, and what it was cut
@@ -144,6 +147,286 @@ impl WorktreeManager {
 /// Build the task branch name for a slug: `build/<slug>`.
 fn branch_name(slug: &str) -> String {
     format!("{BRANCH_PREFIX}/{slug}")
+}
+
+/// One git worktree of the project repo that Build did not create (or no longer
+/// tracks): the raw material of adoption. Pure data — discovery never mutates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalWorktree {
+    /// Stable id: "wt-" + the first 12 hex chars of sha256 over the canonical
+    /// absolute path (UTF-8 bytes of `path.display().to_string()`).
+    pub id: String,
+    /// Git's internal worktree name (`repo.find_worktree(name)` works) — kept so
+    /// adoption can build a `Worktree` that `WorktreeManager::remove` understands.
+    pub name: String,
+    /// Canonical absolute path of the working directory.
+    pub path: PathBuf,
+    /// Checked-out branch, or None for a detached HEAD (browsable, not adoptable).
+    pub branch: Option<String>,
+    pub head_sha: String,
+    /// HEAD commit subject (`%s`). UNTRUSTED display text.
+    pub head_subject: String,
+    /// Seconds since the HEAD commit's committer time (clamped at 0).
+    pub head_age_seconds: u64,
+    /// `git status --porcelain` line count — staged + unstaged + untracked.
+    pub dirty_files: usize,
+    /// Roll-up of `diff_against_merge_base(path, base_branch)` (§2).
+    pub diffstat: crate::diff::DiffStat,
+}
+
+/// The stable external-worktree id for a canonical absolute path.
+pub fn external_worktree_id(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(path.display().to_string().as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("wt-{}", &hex[..12])
+}
+
+/// Branch stems that carry no meaningful goal on their own — adoption falls
+/// back to the HEAD commit subject for these.
+const GENERIC_BRANCH_STEMS: &[&str] = &[
+    "main", "master", "dev", "develop", "wip", "tmp", "temp", "test", "testing", "scratch",
+    "patch", "fix", "feature", "new", "branch",
+];
+
+/// The silently derived goal for an adopted worktree: the branch name verbatim,
+/// unless the branch is generic — then the HEAD commit subject.
+pub fn derive_adoption_goal(branch: &str, head_subject: &str) -> String {
+    let segment = branch.rsplit('/').next().unwrap_or(branch).to_lowercase();
+    let stem = strip_trailing_digit_run(&segment);
+    let is_generic = stem.is_empty() || GENERIC_BRANCH_STEMS.contains(&stem.as_str());
+
+    if !is_generic {
+        return branch.to_string();
+    }
+    let subject = head_subject.trim();
+    if !subject.is_empty() {
+        subject.to_string()
+    } else if !branch.is_empty() {
+        branch.to_string()
+    } else {
+        "Adopted worktree".to_string()
+    }
+}
+
+/// Strip one trailing run of ASCII digits, and the single `-`/`_` immediately
+/// before that run, from a branch segment (`wip-2` -> `wip`, `test_3` -> `test`).
+fn strip_trailing_digit_run(segment: &str) -> String {
+    let chars: Vec<char> = segment.chars().collect();
+    let mut end = chars.len();
+    while end > 0 && chars[end - 1].is_ascii_digit() {
+        end -= 1;
+    }
+    if end == chars.len() {
+        return segment.to_string();
+    }
+    if end > 0 && (chars[end - 1] == '-' || chars[end - 1] == '_') {
+        end -= 1;
+    }
+    chars[..end].iter().collect()
+}
+
+/// Enumerate every git worktree of `repo_path` that is neither the primary
+/// checkout nor in `excluded_paths` (canonical paths of task-bound worktrees),
+/// with a review summary per worktree. Read-only. A worktree whose summary
+/// cannot be computed (corrupt checkout, no merge base with the base branch)
+/// is skipped with an eprintln! — one broken stray must not fail the scan.
+pub fn discover_external_worktrees(
+    repo_path: &Path,
+    base_branch: &str,
+    excluded_paths: &HashSet<PathBuf>,
+) -> Result<Vec<ExternalWorktree>, WorktreeError> {
+    let output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let primary_canonical = std::fs::canonicalize(repo_path)?;
+    let repo = git2::Repository::open(repo_path)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut found = Vec::new();
+    for block in stdout.split("\n\n") {
+        let Some(entry) = parse_worktree_block(
+            block,
+            &repo,
+            &primary_canonical,
+            excluded_paths,
+            base_branch,
+            now,
+        ) else {
+            continue;
+        };
+        found.push(entry);
+    }
+
+    found.sort_by(|a, b| {
+        a.head_age_seconds
+            .cmp(&b.head_age_seconds)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(found)
+}
+
+/// Parse one `git worktree list --porcelain` block into an [`ExternalWorktree`],
+/// or `None` if it should be skipped (bare/prunable, primary checkout, excluded,
+/// gone from disk, or a summary that could not be computed — each case logs its
+/// own `eprintln!` except the deliberately silent structural skips).
+fn parse_worktree_block(
+    block: &str,
+    repo: &git2::Repository,
+    primary_canonical: &Path,
+    excluded_paths: &HashSet<PathBuf>,
+    base_branch: &str,
+    now: i64,
+) -> Option<ExternalWorktree> {
+    let block = block.trim();
+    if block.is_empty() {
+        return None;
+    }
+
+    let mut path = None;
+    let mut head_sha = None;
+    let mut branch = None;
+    let mut detached = false;
+    let mut bare = false;
+    let mut prunable = false;
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(rest));
+        } else if let Some(rest) = line.strip_prefix("HEAD ") {
+            head_sha = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
+            branch = Some(rest.to_string());
+        } else if line == "detached" {
+            detached = true;
+        } else if line == "bare" {
+            bare = true;
+        } else if line.starts_with("prunable") {
+            prunable = true;
+        }
+    }
+    if bare || prunable {
+        return None;
+    }
+    let path = path?;
+    if !path.exists() {
+        return None;
+    }
+    let canonical_path = std::fs::canonicalize(&path).ok()?;
+    if canonical_path == primary_canonical {
+        return None;
+    }
+    if excluded_paths.contains(&canonical_path) {
+        return None;
+    }
+    let head_sha = head_sha?;
+    if !detached && branch.is_none() {
+        // Malformed block: neither a branch nor an explicit detached marker.
+        return None;
+    }
+
+    let name = resolve_worktree_name(repo, &canonical_path).or_else(|| {
+        eprintln!(
+            "discover_external_worktrees: no git worktree name for {}",
+            canonical_path.display()
+        );
+        None
+    })?;
+
+    let head_oid = git2::Oid::from_str(&head_sha)
+        .inspect_err(|e| {
+            eprintln!(
+                "discover_external_worktrees: bad HEAD sha for {}: {e}",
+                canonical_path.display()
+            );
+        })
+        .ok()?;
+    let commit = repo
+        .find_commit(head_oid)
+        .inspect_err(|e| {
+            eprintln!(
+                "discover_external_worktrees: no commit {head_sha} for {}: {e}",
+                canonical_path.display()
+            );
+        })
+        .ok()?;
+    let head_subject = commit.summary().unwrap_or("").to_string();
+    let head_age_seconds = (now - commit.time().seconds()).max(0) as u64;
+
+    let dirty_files = worktree_status_line_count(&canonical_path)
+        .inspect_err(|e| {
+            eprintln!(
+                "discover_external_worktrees: status failed for {}: {e}",
+                canonical_path.display()
+            );
+        })
+        .ok()?;
+
+    let diffstat = crate::diff::diff_against_merge_base(&canonical_path, base_branch)
+        .inspect_err(|e| {
+            eprintln!(
+                "discover_external_worktrees: diff failed for {}: {e}",
+                canonical_path.display()
+            );
+        })
+        .ok()?
+        .stat();
+
+    Some(ExternalWorktree {
+        id: external_worktree_id(&canonical_path),
+        name,
+        path: canonical_path,
+        branch,
+        head_sha,
+        head_subject,
+        head_age_seconds,
+        dirty_files,
+        diffstat,
+    })
+}
+
+/// Match a canonicalized worktree path against git's own worktree registry to
+/// recover the name `WorktreeManager` and `repo.find_worktree` expect.
+fn resolve_worktree_name(repo: &git2::Repository, canonical_path: &Path) -> Option<String> {
+    let names = repo.worktrees().ok()?;
+    for name in names.iter().flatten() {
+        let Ok(candidate) = repo.find_worktree(name) else {
+            continue;
+        };
+        if std::fs::canonicalize(candidate.path()).ok().as_deref() == Some(canonical_path) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Count of non-empty `git status --porcelain` lines in `worktree_path`.
+fn worktree_status_line_count(worktree_path: &Path) -> Result<usize, WorktreeError> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::Command(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count())
 }
 
 #[cfg(test)]
@@ -275,5 +558,153 @@ mod tests {
                 .is_err(),
             "branch deleted"
         );
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn external_worktree_id_is_stable_and_prefixed() {
+        let a = PathBuf::from("/Users/zech/Projects/8ly/Build");
+        let b = PathBuf::from("/Users/zech/Projects/8ly/Build-hotfix");
+
+        let id_a1 = external_worktree_id(&a);
+        let id_a2 = external_worktree_id(&a);
+        let id_b = external_worktree_id(&b);
+
+        assert_eq!(id_a1, id_a2);
+        assert_ne!(id_a1, id_b);
+        assert!(id_a1.starts_with("wt-"));
+        assert_eq!(id_a1.len(), 15);
+    }
+
+    #[test]
+    fn discovery_lists_a_user_worktree_and_skips_the_primary() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-a");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "hotfix/thing",
+            ],
+        );
+        std::fs::write(wt_path.join("dirty.txt"), "dirty\n").unwrap();
+
+        let excluded = std::collections::HashSet::new();
+        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+
+        assert_eq!(found.len(), 1);
+        let entry = &found[0];
+        assert_eq!(entry.branch, Some("hotfix/thing".to_string()));
+        assert_eq!(entry.dirty_files, 1);
+        assert!(!entry.head_subject.is_empty());
+        assert_eq!(entry.name, "wt-a");
+        assert!(entry.id.starts_with("wt-"));
+
+        let primary_canonical = std::fs::canonicalize(&repo).unwrap();
+        assert!(found.iter().all(|w| w.path != primary_canonical));
+    }
+
+    #[test]
+    fn discovery_excludes_bound_paths() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-bound");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "bound/thing",
+            ],
+        );
+
+        let mut excluded = std::collections::HashSet::new();
+        excluded.insert(std::fs::canonicalize(&wt_path).unwrap());
+        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn discovery_reports_detached_head() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-d");
+        git_in(
+            &repo,
+            &["worktree", "add", "--detach", wt_path.to_str().unwrap()],
+        );
+
+        let excluded = std::collections::HashSet::new();
+        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].branch, None);
+    }
+
+    #[test]
+    fn discovery_cache_invalidation_sees_new_head() {
+        // Not a cache test (Layer 1 owns no cache) — confirms a fresh scan after
+        // a new commit reflects the moved HEAD, the property the app-layer cache
+        // invalidation relies on.
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-c");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feature/thing",
+            ],
+        );
+        let excluded = std::collections::HashSet::new();
+        let before = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+        let sha_before = before[0].head_sha.clone();
+
+        std::fs::write(wt_path.join("more.txt"), "more\n").unwrap();
+        git_in(&wt_path, &["add", "more.txt"]);
+        git_in(&wt_path, &["commit", "-m", "more work"]);
+
+        let after = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+        assert_ne!(before[0].head_sha, after[0].head_sha);
+        assert_ne!(sha_before, after[0].head_sha);
+    }
+
+    #[test]
+    fn derive_adoption_goal_pinned_cases() {
+        assert_eq!(
+            derive_adoption_goal("hotfix/login-redirect", "irrelevant"),
+            "hotfix/login-redirect"
+        );
+        assert_eq!(
+            derive_adoption_goal("wip", "Fix the thing"),
+            "Fix the thing"
+        );
+        assert_eq!(
+            derive_adoption_goal("wip-2", "some subject"),
+            "some subject"
+        );
+        assert_eq!(
+            derive_adoption_goal("zech/test_3", "some subject"),
+            "some subject"
+        );
+        assert_eq!(
+            derive_adoption_goal("feature", "some subject"),
+            "some subject"
+        );
+        assert_eq!(derive_adoption_goal("", ""), "Adopted worktree");
     }
 }

@@ -12,6 +12,7 @@
 //! over MCP; the orchestrator code path is identical.
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -153,6 +154,9 @@ const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
 /// At most this many user terminals daemon-wide, all scopes combined. Agent
 /// screens don't count (at most one per task, bounded by tasks).
 const MAX_USER_TERMINALS: usize = 16;
+/// `fs.read` never returns more than this many content bytes in one response,
+/// regardless of the file's real size (spec §4).
+const FS_READ_MAX_BYTES: u64 = 1_048_576;
 
 impl TermScreen {
     fn new(cols: u16, rows: u16) -> TermScreen {
@@ -297,6 +301,10 @@ struct Project {
     /// Cached external-worktree scan, refreshed at most every
     /// `EXTERNAL_SCAN_INTERVAL` (or on demand via `force`).
     external_scan: Option<ExternalScanCache>,
+    /// Cached `task.list.primary_changes` entry for this project, refreshed at
+    /// most every `PRIMARY_SUMMARY_TTL` (spec §5.3) — same discipline as
+    /// `external_scan` / the task-stat cache.
+    primary_summary: Option<(std::time::Instant, Value)>,
 }
 
 /// External-worktree scans are refreshed at most this often per project; the
@@ -307,6 +315,10 @@ const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 /// How long a task's `task.list` diffstat is served from cache before the next
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 const TASK_STAT_TTL: Duration = Duration::from_secs(10);
+
+/// How long the primary-checkout `task.list.primary_changes` summary is served
+/// from cache before the next poll recomputes it (spec §5.3).
+const PRIMARY_SUMMARY_TTL: Duration = Duration::from_secs(10);
 
 /// One project's cached external-worktree scan.
 struct ExternalScanCache {
@@ -849,6 +861,7 @@ impl AppState {
             base_branch,
             orch,
             external_scan: None,
+            primary_summary: None,
         });
         id
     }
@@ -1073,6 +1086,9 @@ impl AppState {
                 "efforts": models::EFFORT_LEVELS,
             })),
             "fs.list" => self.fs_list(params),
+            "fs.tree" => self.fs_tree(params),
+            "fs.read" => self.fs_read(params),
+            "project.diff" => self.project_diff(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.project_list()),
@@ -1517,6 +1533,83 @@ impl AppState {
             "parent": path.parent().map(|p| p.display().to_string()),
             "is_git": path.join(".git").exists(),
             "entries": entries,
+        }))
+    }
+
+    /// One directory level of a worktree-backed scope (spec §4.2): server-side
+    /// scope resolution, the shared fence, `.git` skipped, dirs before
+    /// files+symlinks, each group case-insensitive.
+    fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = TermScope::parse(params)?;
+        let root = scope.resolve_root(self)?;
+        let path = params
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let target = fenced_scope_path(&root, &path)?;
+        if !target.is_dir() {
+            return Err("not a directory".to_string());
+        }
+        let reader = std::fs::read_dir(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let mut dirs: Vec<(String, Value)> = Vec::new();
+        let mut rest: Vec<(String, Value)> = Vec::new();
+        for entry in reader.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                dirs.push((name.clone(), json!({ "name": name, "kind": "dir" })));
+            } else if file_type.is_symlink() {
+                rest.push((name.clone(), json!({ "name": name, "kind": "symlink" })));
+            } else {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                rest.push((
+                    name.clone(),
+                    json!({ "name": name, "kind": "file", "size": size }),
+                ));
+            }
+        }
+        dirs.sort_by_key(|(name, _)| name.to_lowercase());
+        rest.sort_by_key(|(name, _)| name.to_lowercase());
+        let entries: Vec<Value> = dirs.into_iter().chain(rest).map(|(_, v)| v).collect();
+        Ok(json!({ "path": path, "entries": entries }))
+    }
+
+    /// Read one file from a worktree-backed scope, base64 always, capped at
+    /// [`FS_READ_MAX_BYTES`] server-side (spec §4.3).
+    fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = TermScope::parse(params)?;
+        let root = scope.resolve_root(self)?;
+        let path = require_str(params, "path")?;
+        let target = fenced_scope_path(&root, &path)?;
+        let leaf =
+            std::fs::symlink_metadata(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+        if leaf.file_type().is_symlink() {
+            return Err("refusing to read a symlink".to_string());
+        }
+        if leaf.is_dir() {
+            return Err("not a file".to_string());
+        }
+        let size = leaf.len();
+        let file = std::fs::File::open(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let mut content = Vec::with_capacity(size.min(FS_READ_MAX_BYTES) as usize);
+        file.take(FS_READ_MAX_BYTES)
+            .read_to_end(&mut content)
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
+        let truncated = size > FS_READ_MAX_BYTES;
+        let head_len = content.len().min(8192);
+        let mime = mime_hint(&target, &content[..head_len]);
+        Ok(json!({
+            "path": path,
+            "size": size,
+            "truncated": truncated,
+            "mime": mime,
+            "content_b64": b64encode(&content),
         }))
     }
 
@@ -2171,7 +2264,8 @@ impl AppState {
             })
             .collect();
         let external_worktrees = self.external_worktrees_json();
-        json!({ "tasks": tasks, "external_worktrees": external_worktrees })
+        let primary_changes = self.primary_changes_json();
+        json!({ "tasks": tasks, "external_worktrees": external_worktrees, "primary_changes": primary_changes })
     }
 
     /// Every project's external worktrees, ride-along shape for `task.list`
@@ -2211,6 +2305,92 @@ impl AppState {
             }
         }
         entries
+    }
+
+    /// Every project's primary-checkout changes summary, cached per project
+    /// for [`PRIMARY_SUMMARY_TTL`] (spec §5.3) — the `task.list` ride-along
+    /// for the sidebar "main" row and the project page's MAIN bucket. A
+    /// per-project failure (unborn HEAD, fs error) logs and contributes
+    /// nothing, same posture as `external_worktrees_json`.
+    fn primary_changes_json(&mut self) -> Vec<Value> {
+        let mut entries = Vec::new();
+        for i in 0..self.projects.len() {
+            if let Some((computed_at, cached)) = &self.projects[i].primary_summary {
+                if computed_at.elapsed() < PRIMARY_SUMMARY_TTL {
+                    entries.push(cached.clone());
+                    continue;
+                }
+            }
+            let project = &self.projects[i];
+            let project_id = project.id.clone();
+            let repo = git2::Repository::open(&project.repo_path);
+            let branch = repo
+                .as_ref()
+                .ok()
+                .and_then(|r| r.head().ok())
+                .and_then(|h| h.shorthand().map(str::to_string))
+                .unwrap_or_else(|| "HEAD".to_string());
+            let summary = match crate::diff::diff_against_head(&project.repo_path) {
+                Ok(diff) => {
+                    let stat = diff.stat();
+                    Some(json!({
+                        "project_id": project_id,
+                        "branch": branch,
+                        "files_changed": stat.files_changed,
+                        "insertions": stat.insertions,
+                        "deletions": stat.deletions,
+                    }))
+                }
+                Err(e) => {
+                    eprintln!("primary_changes {project_id}: {e}");
+                    None
+                }
+            };
+            self.projects[i].primary_summary =
+                summary.clone().map(|s| (std::time::Instant::now(), s));
+            if let Some(summary) = summary {
+                entries.push(summary);
+            }
+        }
+        entries
+    }
+
+    /// The primary checkout's uncommitted-changes review surface (spec §5.2):
+    /// same shape as `worktree.diff` so `parseDiff`/`diffFilesHtml` reuse is
+    /// mechanical.
+    fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project_id".to_string())?;
+        let repo_path = project.repo_path.clone();
+        let repo = git2::Repository::open(&repo_path).ok();
+        let branch = repo
+            .as_ref()
+            .and_then(|r| r.head().ok())
+            .and_then(|h| h.shorthand().map(str::to_string))
+            .unwrap_or_else(|| "HEAD".to_string());
+        let diff = crate::diff::diff_against_head(&repo_path).map_err(|e| e.to_string())?;
+        let files: Vec<Value> = diff
+            .files()
+            .iter()
+            .map(|f| json!({ "path": f.path, "status": format!("{:?}", f.status) }))
+            .collect();
+        let stat = diff.stat();
+        Ok(json!({
+            "project_id": project_id,
+            "branch": branch,
+            "path": repo_path.display().to_string(),
+            "stat": {
+                "files_changed": stat.files_changed,
+                "insertions": stat.insertions,
+                "deletions": stat.deletions,
+            },
+            "files": files,
+            "patch": diff.patch(),
+        }))
     }
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
@@ -3022,6 +3202,58 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("missing required param: {key}"))
+}
+
+/// Resolve a client-supplied relative `path` under a worktree-backed `root`,
+/// fenced on both ends (spec §4.1): the lexical fence
+/// (`is_worktree_contained_path` — no `..`, no root, no non-Normal component)
+/// PLUS canonical containment, which is what actually defeats a symlink
+/// pointing outside the root (a symlink's own path components are all
+/// Normal, so the lexical fence alone cannot catch it). `path` empty means
+/// the scope root itself. Returns the joined (not canonicalized) path — safe
+/// to use for further fs calls once containment is established.
+fn fenced_scope_path(root: &std::path::Path, path: &str) -> Result<std::path::PathBuf, String> {
+    if !path.is_empty() && !crate::task::is_worktree_contained_path(path) {
+        return Err("path escapes the worktree".to_string());
+    }
+    let joined = if path.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let canonical_root =
+        std::fs::canonicalize(root).map_err(|e| format!("cannot resolve scope root: {e}"))?;
+    let canonical_target =
+        std::fs::canonicalize(&joined).map_err(|e| format!("cannot read {path}: {e}"))?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err("path escapes the worktree".to_string());
+    }
+    Ok(joined)
+}
+
+/// Extension-based mime hint for `fs.read` previews (spec §4.3's pinned
+/// table). `head` is (at most) the first 8 KiB of the file's content — used
+/// only to distinguish text from binary when the extension doesn't match.
+fn mime_hint(path: &std::path::Path, head: &[u8]) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+    match ext.as_deref() {
+        Some("md") | Some("markdown") => "text/markdown",
+        Some("html") | Some("htm") => "text/html",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("bmp") => "image/bmp",
+        Some("json") => "application/json",
+        Some("pdf") => "application/pdf",
+        _ if head.contains(&0u8) => "application/octet-stream",
+        _ => "text/plain",
+    }
 }
 
 fn err(e: OrchestratorError) -> String {
@@ -7488,5 +7720,370 @@ mod tests {
             !native_worktree.exists(),
             "native worktree pruned on delete"
         );
+    }
+
+    // --- fs.tree / fs.read (spec §4) --------------------------------------------
+
+    #[test]
+    fn fs_tree_lists_one_level_dirs_first_case_insensitive_and_skips_git() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::create_dir(repo.join("Zdir")).unwrap();
+        std::fs::create_dir(repo.join("adir")).unwrap();
+        std::fs::write(repo.join("adir/nested.txt"), "nested\n").unwrap();
+        std::fs::write(repo.join("B.txt"), "b\n").unwrap();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+
+        let res = state.handle(req("fs.tree", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["path"], "");
+        let entries = res["result"]["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&".git"), "{names:?}");
+
+        // dirs-first, each group case-insensitive.
+        let kinds: Vec<&str> = entries
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        let last_dir = kinds.iter().rposition(|k| *k == "dir");
+        let first_file = kinds.iter().position(|k| *k == "file");
+        if let (Some(last_dir), Some(first_file)) = (last_dir, first_file) {
+            assert!(last_dir < first_file, "{kinds:?}");
+        }
+        let dir_names: Vec<&str> = entries
+            .iter()
+            .filter(|e| e["kind"] == "dir")
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(dir_names, vec!["adir", "Zdir"]);
+        let file_names: Vec<&str> = entries
+            .iter()
+            .filter(|e| e["kind"] == "file")
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(file_names, vec!["a.txt", "B.txt", "README.md"]);
+        let readme = entries.iter().find(|e| e["name"] == "README.md").unwrap();
+        assert!(readme["size"].as_u64().unwrap() > 0);
+
+        // One level only: nested.txt is not listed at the root.
+        assert!(!names.contains(&"nested.txt"));
+
+        // Recurse one level via `path`.
+        let sub = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "path": "adir" }),
+        ));
+        assert_eq!(sub["ok"], true, "{sub:?}");
+        assert_eq!(sub["result"]["path"], "adir");
+        let sub_entries = sub["result"]["entries"].as_array().unwrap();
+        assert_eq!(sub_entries.len(), 1);
+        assert_eq!(sub_entries[0]["name"], "nested.txt");
+        assert_eq!(sub_entries[0]["kind"], "file");
+    }
+
+    #[test]
+    fn fs_tree_rejects_escapes_and_non_directories() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let escape = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "path": "../../../etc" }),
+        ));
+        assert_eq!(escape["ok"], false, "{escape:?}");
+        assert!(
+            escape["error"].as_str().unwrap().contains("escapes"),
+            "{escape:?}"
+        );
+
+        let not_dir = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "path": "README.md" }),
+        ));
+        assert_eq!(not_dir["ok"], false, "{not_dir:?}");
+        assert_eq!(not_dir["error"], "not a directory");
+    }
+
+    #[test]
+    fn fs_tree_serves_all_three_scope_kinds() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        // Task scope.
+        let dispatched = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "fs tree scope", "kind": "quick" }),
+        ));
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let task_tree = state.handle(req("fs.tree", json!({ "task_id": task_id })));
+        assert_eq!(task_tree["ok"], true, "{task_tree:?}");
+        let task_names: Vec<String> = task_tree["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            task_names.contains(&"README.md".to_string()),
+            "{task_names:?}"
+        );
+        assert!(!task_names.contains(&".git".to_string()));
+
+        // External worktree scope.
+        let ext_path = add_external_worktree(&repo, dir.path(), "fs-tree-wt", "fs/tree");
+        std::fs::write(ext_path.join("extra.txt"), "extra\n").unwrap();
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let ext_tree = state.handle(req(
+            "fs.tree",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(ext_tree["ok"], true, "{ext_tree:?}");
+        let ext_names: Vec<String> = ext_tree["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            ext_names.contains(&"extra.txt".to_string()),
+            "{ext_names:?}"
+        );
+        assert!(!ext_names.contains(&".git".to_string()));
+    }
+
+    #[test]
+    fn fs_read_round_trips_content_and_infers_mime() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::write(repo.join("notes.md"), "# hi\n").unwrap();
+        std::fs::write(repo.join("page.html"), "<h1>hi</h1>\n").unwrap();
+        std::fs::write(repo.join("icon.svg"), "<svg></svg>\n").unwrap();
+        std::fs::write(repo.join("pic.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        std::fs::write(repo.join("plain.txt"), "just text\n").unwrap();
+        std::fs::write(repo.join("blob.bin"), [0u8, 1, 2, 3, 0, 4]).unwrap();
+
+        let mut read = |path: &str| {
+            state.handle(req(
+                "fs.read",
+                json!({ "project_id": project_id, "path": path }),
+            ))
+        };
+
+        let md = read("notes.md");
+        assert_eq!(md["result"]["mime"], "text/markdown");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(md["result"]["content_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, b"# hi\n");
+        assert_eq!(md["result"]["truncated"], false);
+        assert_eq!(md["result"]["size"], 5);
+
+        assert_eq!(read("page.html")["result"]["mime"], "text/html");
+        assert_eq!(read("icon.svg")["result"]["mime"], "image/svg+xml");
+        assert_eq!(read("pic.png")["result"]["mime"], "image/png");
+        assert_eq!(read("plain.txt")["result"]["mime"], "text/plain");
+        assert_eq!(
+            read("blob.bin")["result"]["mime"],
+            "application/octet-stream"
+        );
+
+        let missing = read("nope.txt");
+        assert_eq!(missing["ok"], false, "{missing:?}");
+
+        let dir_read = read("");
+        assert_eq!(dir_read["ok"], false, "{dir_read:?}");
+    }
+
+    #[test]
+    fn fs_read_truncates_oversized_files() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let real_size = FS_READ_MAX_BYTES as usize + 4096;
+        std::fs::write(repo.join("big.bin"), vec![b'a'; real_size]).unwrap();
+
+        let res = state.handle(req(
+            "fs.read",
+            json!({ "project_id": project_id, "path": "big.bin" }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["size"], real_size as u64);
+        assert_eq!(res["result"]["truncated"], true);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(res["result"]["content_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded.len(), FS_READ_MAX_BYTES as usize);
+    }
+
+    #[test]
+    fn fs_read_rejects_lexical_and_symlink_escapes() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        // Lexical escape: caught before any filesystem access.
+        let lexical = state.handle(req(
+            "fs.read",
+            json!({ "project_id": project_id, "path": "../../../etc/passwd" }),
+        ));
+        assert_eq!(lexical["ok"], false, "{lexical:?}");
+        assert!(
+            lexical["error"].as_str().unwrap().contains("escapes"),
+            "{lexical:?}"
+        );
+
+        // Symlink leaf pointing inside the root: still refused (leaf check,
+        // regardless of target).
+        std::os::unix::fs::symlink(repo.join("README.md"), repo.join("inside-link")).unwrap();
+        let inside_link = state.handle(req(
+            "fs.read",
+            json!({ "project_id": project_id, "path": "inside-link" }),
+        ));
+        assert_eq!(inside_link["ok"], false, "{inside_link:?}");
+        assert!(
+            inside_link["error"].as_str().unwrap().contains("symlink"),
+            "{inside_link:?}"
+        );
+
+        // Symlinked directory pointing outside the root: canonical containment
+        // catches it even though every lexical component is Normal.
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("linkdir")).unwrap();
+        let dir_escape = state.handle(req(
+            "fs.read",
+            json!({ "project_id": project_id, "path": "linkdir/secret.txt" }),
+        ));
+        assert_eq!(dir_escape["ok"], false, "{dir_escape:?}");
+        assert!(
+            dir_escape["error"].as_str().unwrap().contains("escapes"),
+            "{dir_escape:?}"
+        );
+    }
+
+    // --- primary-checkout surface (spec §5) -------------------------------------
+
+    #[test]
+    fn project_diff_shape_and_unknown_project() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("uncommitted.txt"), "dirty\n").unwrap();
+
+        let res = state.handle(req("project.diff", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["project_id"], project_id);
+        assert_eq!(res["result"]["branch"], "main");
+        assert!(res["result"]["path"].as_str().unwrap().contains("repo"));
+        assert!(res["result"]["stat"]["files_changed"].as_u64().unwrap() >= 1);
+        let files = res["result"]["files"].as_array().unwrap();
+        assert!(files.iter().any(|f| f["path"] == "uncommitted.txt"));
+        assert!(res["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("uncommitted.txt"));
+
+        let unknown = state.handle(req("project.diff", json!({ "project_id": "proj-99" })));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert_eq!(unknown["error"], "unknown project_id");
+    }
+
+    #[test]
+    fn task_list_carries_a_cached_primary_changes_summary() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
+
+        let entry = |res: &Value| {
+            res["result"]["primary_changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["project_id"] == json!(project_id.clone()))
+                .unwrap()
+                .clone()
+        };
+
+        let list = state.handle(req("task.list", json!({})));
+        let summary = entry(&list);
+        assert_eq!(summary["branch"], "main");
+        assert!(
+            summary["files_changed"].as_u64().unwrap() >= 1,
+            "{summary:?}"
+        );
+
+        // Served from cache on the next poll (identical, no per-poll git
+        // churn) — same discipline as the task-stat and external-scan caches.
+        let list2 = state.handle(req("task.list", json!({})));
+        let summary2 = entry(&list2);
+        assert_eq!(summary, summary2, "served from cache, not recomputed");
     }
 }

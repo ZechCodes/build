@@ -251,6 +251,16 @@ fn notify_to_git(err: notify::Error) -> DiffError {
     DiffError::Git(git2::Error::from_str(&err.to_string()))
 }
 
+/// The primary checkout's uncommitted delta: HEAD's tree vs the working
+/// directory and index, untracked included — staged + unstaged + new files.
+/// This is the "main worktree" review surface; committed work is upstream's
+/// business, not a review surface.
+pub fn diff_against_head(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = repo.head()?.peel_to_tree()?;
+    diff_tree_to_dirty_workdir(&repo, &head_tree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +462,57 @@ mod tests {
         let diff = diff_against_merge_base(&repo, "main").unwrap();
         let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"dirty.txt"), "got {paths:?}");
+    }
+
+    #[test]
+    fn diff_against_head_is_empty_on_a_clean_checkout() {
+        let (_dir, repo) = init_repo();
+        let diff = diff_against_head(&repo).unwrap();
+        assert_eq!(diff.stat(), DiffStat::default());
+        assert!(diff.files().is_empty());
+        assert!(diff.patch().is_empty());
+    }
+
+    #[test]
+    fn diff_against_head_counts_staged_unstaged_and_untracked() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        // Unstaged modification.
+        std::fs::write(repo.join("README.md"), "# project\nline\nmodified\n").unwrap();
+        // Staged new file.
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(&["add", "staged.txt"]);
+        // Untracked new file.
+        std::fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
+
+        let diff = diff_against_head(&repo).unwrap();
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"), "got {paths:?}");
+        assert!(paths.contains(&"staged.txt"), "got {paths:?}");
+        assert!(paths.contains(&"untracked.txt"), "got {paths:?}");
+        assert_eq!(diff.stat().files_changed, 3, "{:?}", diff.stat());
+    }
+
+    #[test]
+    fn diff_against_head_excludes_the_scaffolded_mcp_config() {
+        let (_dir, repo) = init_repo();
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
+        std::fs::write(repo.join("visible.txt"), "real work\n").unwrap();
+
+        let diff = diff_against_head(&repo).unwrap();
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"visible.txt"), "{paths:?}");
+        assert!(!paths.contains(&".build/mcp.json"), "{paths:?}");
+        assert_eq!(diff.stat().files_changed, 1, "{:?}", diff.stat());
+        assert!(!diff.patch().contains("mcp.json"));
     }
 
     #[tokio::test]

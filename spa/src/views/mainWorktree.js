@@ -100,7 +100,11 @@ export async function renderMain() {
   };
 
   const closeTerminal = async (termId) => {
-    await terminals.close(termId);
+    try {
+      await terminals.close(termId);
+    } catch {
+      /* raced with the reaper — drop the tab regardless */
+    }
     if (shellCtl) shellCtl.setTabs(staticTabs());
     if (tab === termId) selectTab("changes");
   };

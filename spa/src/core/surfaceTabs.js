@@ -8,6 +8,7 @@
 import { terminalManager } from "../terminal/manager.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import { renderFilesTab } from "../views/files.js";
+import { esc } from "./text.js";
 
 /** Track a surface's open user terminals: list on mount, create on `+`, close on
  *  `×`. Ordinal labels ("1", "2", …) come from position in creation/list order. */
@@ -94,7 +95,14 @@ export function mountAuxTab(host, tabId, { scope, callRpc, onExit }) {
   let disposed = false;
   mountUserTerminalPane(paneHost, tabId, { onExit }).then(
     (p) => (disposed ? p.dispose() : (pane = p)),
-    () => {},
+    (e) => {
+      if (disposed) return;
+      // "unknown term_id" = the terminal is gone (exited/closed elsewhere/reaped
+      // while this tab was unmounted). §7.2: drop the tab — never a blank pane
+      // that fails identically on every click. Other failures stay visible.
+      if (/unknown term_id/.test((e && e.message) || "")) onExit("reaped");
+      else paneHost.innerHTML = `<div class="empty">terminal unavailable: ${esc((e && e.message) || "error")}</div>`;
+    },
   );
   return {
     dispose() {

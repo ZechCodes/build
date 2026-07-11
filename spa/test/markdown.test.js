@@ -3,8 +3,8 @@ import { renderMarkdown } from "../src/core/markdown.js";
 import { esc } from "../src/core/text.js";
 
 describe("esc", () => {
-  it("escapes html metacharacters", () => {
-    expect(esc('<b a="1">&</b>')).toBe('&lt;b a="1"&gt;&amp;&lt;/b&gt;');
+  it("escapes html metacharacters (quotes included — attribute contexts)", () => {
+    expect(esc('<b a="1">&</b>')).toBe("&lt;b a=&quot;1&quot;&gt;&amp;&lt;/b&gt;");
   });
   it("tolerates null/undefined", () => {
     expect(esc(null)).toBe("");

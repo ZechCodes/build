@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { previewModeFor, previewHasSourceToggle, decodeBase64Text } from "../src/views/files.js";
+import { previewModeFor, previewHasSourceToggle, decodeBase64Text, filesTreeHtml } from "../src/views/files.js";
 import { esc } from "../src/core/text.js";
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
@@ -38,6 +38,43 @@ describe("previewHasSourceToggle", () => {
     expect(previewHasSourceToggle("image")).toBe(false);
     expect(previewHasSourceToggle("binary")).toBe(false);
     expect(previewHasSourceToggle("source")).toBe(false);
+  });
+});
+
+// The tree pane interpolates untrusted repo file/dir names into row HTML —
+// this exercises the REAL row-building path (spec §9: an `<img src=x onerror>`
+// filename must render inert), not esc() in isolation.
+describe("filesTreeHtml", () => {
+  it("escapes hostile file/dir/symlink names in the rendered rows", () => {
+    const html = filesTreeHtml("", [
+      { kind: "dir", name: "<img src=x onerror=alert(1)>" },
+      { kind: "file", name: "<script>alert(2)</script>.txt", size: 3 },
+      { kind: "symlink", name: "<svg onload=alert(3)>" },
+    ]);
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<svg");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).toContain("&lt;script&gt;alert(2)&lt;/script&gt;.txt");
+  });
+
+  it("a quoted filename cannot break out of the data-dir/data-file attributes", () => {
+    const html = filesTreeHtml("", [
+      { kind: "dir", name: 'd" onmouseover="alert(1)' },
+      { kind: "file", name: 'f" onfocus="alert(2)', size: 1 },
+    ]);
+    expect(html).not.toContain('onmouseover="alert(1)"');
+    expect(html).not.toContain('onfocus="alert(2)"');
+    expect(html).toContain("&quot;");
+  });
+
+  it("escapes the breadcrumb directory and renders the up-row only below the root", () => {
+    const nested = filesTreeHtml('<b>evil</b>/"sub', [{ kind: "file", name: "a.txt", size: 1 }]);
+    expect(nested).not.toContain("<b>evil</b>");
+    expect(nested).toContain("fup");
+    const root = filesTreeHtml("", []);
+    expect(root).not.toContain("fup");
+    expect(root).toContain("Empty directory.");
   });
 });
 

@@ -1,7 +1,12 @@
 // Pure text helpers shared by every surface.
 
+// Quotes are escaped too: esc() output is interpolated into attribute values
+// (data-dir="...", data-tab="...") where an unescaped quote from an untrusted
+// name (e.g. a repo filename) would inject live attributes.
 export const esc = (value) =>
-  (value ?? "").toString().replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  (value ?? "")
+    .toString()
+    .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

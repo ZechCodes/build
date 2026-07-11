@@ -8,6 +8,13 @@ describe("esc", () => {
     expect(esc(null)).toBe("");
     expect(esc(undefined)).toBe("");
   });
+
+  it("escapes quotes so untrusted text cannot break out of an attribute value", () => {
+    // esc() output is interpolated into attributes (data-dir="...", data-tab="...");
+    // an unescaped quote would let a hostile filename inject live attributes.
+    expect(esc('x" onmouseover="alert(1)')).toBe("x&quot; onmouseover=&quot;alert(1)");
+    expect(esc("x' onmouseover='alert(1)")).toBe("x&#39; onmouseover=&#39;alert(1)");
+  });
 });
 
 describe("humanAge", () => {

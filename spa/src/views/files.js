@@ -47,6 +47,25 @@ export function decodeBase64Text(contentB64) {
 const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
 const parentPath = (dir) => dir.split("/").slice(0, -1).join("/");
 
+/** Pure: the tree pane's HTML for one directory listing — breadcrumb, an `..`
+ *  row below the root, then dirs/files/symlinks. Repo file names are untrusted
+ *  input (spec §9): every name is escaped, in row labels AND in the data-dir/
+ *  data-file attributes the click wiring reads back. */
+export function filesTreeHtml(dir, entries) {
+  const crumb = `<div class="fcrumb mono">${dir ? esc(dir) : "/"}</div>`;
+  const up = dir ? `<div class="frow fup" data-up="1"><span class="fk">↰</span> ..</div>` : "";
+  const rows = entries
+    .map((entry) => {
+      if (entry.kind === "dir")
+        return `<div class="frow fdir" data-dir="${esc(entry.name)}"><span class="fk">▸</span> ${esc(entry.name)}</div>`;
+      if (entry.kind === "symlink")
+        return `<div class="frow fsym" title="symlink — not followed"><span class="fk">↳</span> ${esc(entry.name)}</div>`;
+      return `<div class="frow ffile" data-file="${esc(entry.name)}"><span class="fk">·</span> ${esc(entry.name)}<span class="fsize mono">${Number(entry.size) || 0}</span></div>`;
+    })
+    .join("");
+  return crumb + (up + rows || '<div class="empty">Empty directory.</div>');
+}
+
 /** Render the preview body HTML for a fs.read response + a source-override flag. */
 function previewBodyHtml(file, showSource) {
   const mode = previewModeFor(file.mime, file.truncated);
@@ -80,23 +99,8 @@ export function renderFilesTab(body, { scope, callRpc }) {
   let dir = ""; // current directory, relative to the scope root
   let sourceOverride = false; // per-selected-file "view source" toggle
 
-  const breadcrumb = () => {
-    const label = dir ? esc(dir) : "/";
-    return `<div class="fcrumb mono">${label}</div>`;
-  };
-
   const renderTree = (entries) => {
-    const up = dir ? `<div class="frow fup" data-up="1"><span class="fk">↰</span> ..</div>` : "";
-    const rows = entries
-      .map((entry) => {
-        if (entry.kind === "dir")
-          return `<div class="frow fdir" data-dir="${esc(entry.name)}"><span class="fk">▸</span> ${esc(entry.name)}</div>`;
-        if (entry.kind === "symlink")
-          return `<div class="frow fsym" title="symlink — not followed"><span class="fk">↳</span> ${esc(entry.name)}</div>`;
-        return `<div class="frow ffile" data-file="${esc(entry.name)}"><span class="fk">·</span> ${esc(entry.name)}<span class="fsize mono">${Number(entry.size) || 0}</span></div>`;
-      })
-      .join("");
-    treeEl.innerHTML = breadcrumb() + (up + rows || '<div class="empty">Empty directory.</div>');
+    treeEl.innerHTML = filesTreeHtml(dir, entries);
     if (dir) treeEl.querySelector(".fup").onclick = () => loadTree(parentPath(dir));
     treeEl.querySelectorAll(".fdir").forEach((row) => (row.onclick = () => loadTree(joinPath(dir, row.dataset.dir))));
     treeEl.querySelectorAll(".ffile").forEach((row) => (row.onclick = () => selectFile(joinPath(dir, row.dataset.file), row)));

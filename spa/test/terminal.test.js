@@ -259,6 +259,152 @@ describe("TerminalSocket", () => {
     socket.close();
   });
 
+  it("applies an equal-cursor term.reset (the agent pump's start-of-session wipe)", async () => {
+    const { socket, ws, init } = await connected();
+    const snaps = [];
+    const outputs = [];
+    // Attach to a task whose previous session's screen is retained: the response
+    // carries cursor == total. The pump the attach spawned then wipes with
+    // term.reset{cursor: total} — resets never advance `total`, so the cursor is
+    // EQUAL to the attach cursor. The wipe must still apply or the new session's
+    // bytes garble over the old screen.
+    const at = socket.attachAgent("task-9", {
+      cols: 120, rows: 40,
+      onSnapshot: (b) => snaps.push(dec(b)),
+      onOutput: (b) => outputs.push(dec(b)),
+      onLive: () => {},
+    });
+    at.catch(() => {});
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64("OLD SCREEN"), cursor: 42, live: true });
+    await at;
+    expect(snaps).toEqual(["OLD SCREEN"]);
+
+    push(ws, init, { type: "term.reset", term_id: "agent:task-9", cursor: 42, data: b64("") });
+    push(ws, init, { type: "term.output", term_id: "agent:task-9", cursor: 50, data: b64("new session") });
+    await tick();
+    expect(snaps).toEqual(["OLD SCREEN", ""]);
+    expect(outputs).toEqual(["new session"]);
+    socket.close();
+  });
+
+  it("a streamed frame on an idle agent screen reports the session live again", async () => {
+    const { socket, ws, init } = await connected();
+    const lives = [];
+    const closed = [];
+    const at = socket.attachAgent("task-4", {
+      cols: 120, rows: 40,
+      onSnapshot: () => {}, onOutput: () => {},
+      onLive: (l) => lives.push(l), onClosed: (r) => closed.push(r),
+    });
+    at.catch(() => {});
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64("LAST"), cursor: 10, live: false });
+    await at;
+    expect(lives).toEqual([false]);
+
+    // A new session starts while the tab stays mounted: the pump's reset +
+    // output arrive with no new attach. The screen must report live again so
+    // the "no active agent session" chip clears.
+    push(ws, init, { type: "term.reset", term_id: "agent:task-4", cursor: 10, data: b64("") });
+    await tick();
+    expect(lives).toEqual([false, true]);
+    // Further frames do not re-report (no chip-toggling spam).
+    push(ws, init, { type: "term.output", term_id: "agent:task-4", cursor: 12, data: b64("x") });
+    await tick();
+    expect(lives).toEqual([false, true]);
+
+    // Session ends (screen retained) → the NEXT session's frames re-report live.
+    push(ws, init, { type: "term.closed", term_id: "agent:task-4", reason: "agent_session_ended" });
+    push(ws, init, { type: "term.output", term_id: "agent:task-4", cursor: 20, data: b64("y") });
+    await tick();
+    expect(closed).toEqual(["agent_session_ended"]);
+    expect(lives).toEqual([false, true, true]);
+    socket.close();
+  });
+
+  it("buffers pushes that outrun the attach response and replays them after the snapshot", async () => {
+    const { socket, ws, init } = await connected();
+    const order = [];
+    const at = socket.attachTerminal("term-5", {
+      cols: 80, rows: 24,
+      onSnapshot: (b) => order.push(`snap:${dec(b)}`),
+      onOutput: (b) => order.push(`out:${dec(b)}`),
+    });
+    at.catch(() => {});
+    await tick();
+    const attach = lastPayload(ws);
+    // The bridge registers the sender under the AppState lock, but the response
+    // is enqueued after the handler returns — a 10ms pump flush can slip in
+    // ahead of it. Those bytes are PAST the snapshot cursor and must not be
+    // wiped by the late-applied snapshot.
+    push(ws, init, { type: "term.output", term_id: "term-5", cursor: 4, data: b64("stale") });
+    push(ws, init, { type: "term.output", term_id: "term-5", cursor: 7, data: b64("tail") });
+    respond(ws, init, attach.id, { snapshot: b64("SNAP"), cursor: 5 });
+    await at;
+    expect(order).toEqual(["snap:SNAP", "out:tail"]);
+    socket.close();
+  });
+
+  it("a rejected attach deregisters the terminal instead of leaking a dead entry", async () => {
+    const { socket, ws, init } = await connected();
+    const outputs = [];
+    const at = socket.attachTerminal("term-8", { cols: 80, rows: 24, onOutput: (b) => outputs.push(dec(b)), onSnapshot: () => {} });
+    await tick();
+    rejectCall(ws, init, lastPayload(ws).id, "unknown term_id");
+    await expect(at).rejects.toThrow(/unknown term_id/);
+
+    // The dead id is gone: pushes are ignored and a reconnect does not retry it.
+    push(ws, init, { type: "term.output", term_id: "term-8", cursor: 3, data: b64("ghost") });
+    await tick();
+    expect(outputs).toEqual([]);
+    socket.simulateDrop();
+    await new Promise((r) => setTimeout(r, 600));
+    const ws2 = FakeWebSocket.instances.at(-1);
+    await handshake(ws2);
+    await tick();
+    const reattaches = ws2.sent
+      .filter((m) => m.type === "e2ee_envelope")
+      .map((m) => m.envelope.frameFields.payload.method)
+      .filter((m) => m === "term.attach" || m === "agent.attach");
+    expect(reattaches).toEqual([]);
+    socket.close();
+  });
+
+  it("reconnect reaps an agent screen whose task is gone (no eternal retry)", async () => {
+    const { socket, ws, init } = await connected();
+    const closed = [];
+    const at = socket.attachAgent("task-7", { cols: 120, rows: 40, onSnapshot: () => {}, onLive: () => {}, onClosed: (r) => closed.push(r) });
+    at.catch(() => {});
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64("A"), cursor: 1, live: false });
+    await at;
+
+    // The task is deleted while we are away; the re-attach is rejected.
+    socket.simulateDrop();
+    await new Promise((r) => setTimeout(r, 600));
+    const ws2 = FakeWebSocket.instances.at(-1);
+    const init2 = await handshake(ws2);
+    const p = lastPayload(ws2);
+    expect(p.method).toBe("agent.attach");
+    rejectCall(ws2, init2, p.id, "unknown task_id");
+    await tick();
+    expect(closed).toEqual(["reaped"]);
+
+    // Deregistered: the next reconnect does not retry it.
+    socket.simulateDrop();
+    await new Promise((r) => setTimeout(r, 900));
+    const ws3 = FakeWebSocket.instances.at(-1);
+    await handshake(ws3);
+    await tick();
+    const retries = ws3.sent
+      .filter((m) => m.type === "e2ee_envelope")
+      .map((m) => m.envelope.frameFields.payload.method)
+      .filter((m) => m === "agent.attach");
+    expect(retries).toEqual([]);
+    socket.close();
+  });
+
   it("create/list/close carry the scope spread and the right shapes", async () => {
     const { socket, ws, init } = await connected();
 

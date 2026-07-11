@@ -89,9 +89,14 @@ export class TerminalSocket {
   async attachTerminal(termId, opts = {}) {
     await this.whenConnected();
     const entry = this._register(termId, "user", null, opts);
-    const r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
-    entry.lastCursor = r.cursor || 0;
-    entry.onSnapshot(b64decodeBytes(r.snapshot));
+    let r;
+    try {
+      r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+    } catch (e) {
+      this._deregisterFailedAttach(termId, entry);
+      throw e;
+    }
+    this._applyAttachResult(entry, r);
     return r;
   }
 
@@ -100,11 +105,36 @@ export class TerminalSocket {
     await this.whenConnected();
     const termId = `agent:${taskId}`;
     const entry = this._register(termId, "agent", taskId, opts);
-    const r = await this._call("agent.attach", { task_id: taskId, cols: entry.cols, rows: entry.rows });
+    let r;
+    try {
+      r = await this._call("agent.attach", { task_id: taskId, cols: entry.cols, rows: entry.rows });
+    } catch (e) {
+      this._deregisterFailedAttach(termId, entry);
+      throw e;
+    }
+    this._applyAttachResult(entry, r);
+    return r;
+  }
+
+  /** An attach that never took must not leave its registration behind — a dead
+   *  id would swallow pushes and be retried on every reconnect forever. */
+  _deregisterFailedAttach(termId, entry) {
+    if (this._terms.get(termId) === entry) this._terms.delete(termId);
+  }
+
+  /** Apply an attach response's snapshot, then replay any pushes that outran it
+   *  on the wire (the bridge registers the sender under its state lock but
+   *  enqueues the response after the handler returns, so a pump flush can slip
+   *  in between — those bytes are PAST the snapshot cursor and must survive). */
+  _applyAttachResult(entry, r) {
     entry.lastCursor = r.cursor || 0;
     entry.onSnapshot(b64decodeBytes(r.snapshot));
-    entry.onLive(!!r.live);
-    return r;
+    if (entry.kind === "agent") {
+      entry.live = !!r.live;
+      entry.onLive(entry.live);
+    }
+    entry.attached = true;
+    for (const p of entry.preAttach.splice(0)) this._applyStreamFrame(entry, p);
   }
 
   /** Deregister a terminal (tab unmounted) — the server PTY keeps running. */
@@ -129,6 +159,9 @@ export class TerminalSocket {
       cols: opts.cols || 80,
       rows: opts.rows || 24,
       lastCursor: 0,
+      attached: false, // pushes buffer in preAttach until the attach response applies
+      preAttach: [],
+      live: false, // agent kind: last reported session liveness
       onOutput: opts.onOutput || noop,
       onSnapshot: opts.onSnapshot || noop,
       onClosed: opts.onClosed || noop,
@@ -244,26 +277,23 @@ export class TerminalSocket {
   }
 
   /// Re-attach every registered terminal after a (re)connect. User terminals go
-  /// through term.attach; an `unknown term_id` rejection means the server reaped
-  /// it (scope vanished) → onClosed("reaped") + deregister. Agent screens go
-  /// through agent.attach and refresh onLive. Each snapshot resets that term's
-  /// cursor to the response cursor first (snapshot resync, not byte replay).
+  /// through term.attach; agent screens through agent.attach (refreshing onLive).
+  /// An `unknown term_id`/`unknown task_id` rejection means the server reaped the
+  /// terminal / dropped the task → onClosed("reaped") + deregister, never an
+  /// eternal per-reconnect retry. Each snapshot resets that term's cursor to the
+  /// response cursor first (snapshot resync, not byte replay).
   async _reattachAll() {
     for (const [termId, entry] of [...this._terms]) {
       entry.lastCursor = 0;
+      entry.attached = false;
+      entry.preAttach = [];
       try {
-        if (entry.kind === "agent") {
-          const r = await this._call("agent.attach", { task_id: entry.taskId, cols: entry.cols, rows: entry.rows });
-          entry.lastCursor = r.cursor || 0;
-          entry.onSnapshot(b64decodeBytes(r.snapshot));
-          entry.onLive(!!r.live);
-        } else {
-          const r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
-          entry.lastCursor = r.cursor || 0;
-          entry.onSnapshot(b64decodeBytes(r.snapshot));
-        }
+        const r = entry.kind === "agent"
+          ? await this._call("agent.attach", { task_id: entry.taskId, cols: entry.cols, rows: entry.rows })
+          : await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+        this._applyAttachResult(entry, r);
       } catch (e) {
-        if (entry.kind === "user" && /unknown term_id/.test(e.message || "")) {
+        if (/unknown (term_id|task_id)/.test(e.message || "")) {
           this._terms.delete(termId);
           entry.onClosed("reaped");
         }
@@ -298,25 +328,49 @@ export class TerminalSocket {
       if (!p || !p.term_id) continue;
       const entry = this._terms.get(p.term_id);
       if (!entry) continue; // a frame for a term we don't render — drop it
-      if (p.type === "term.output") {
-        if ((p.cursor || 0) > entry.lastCursor) {
-          entry.lastCursor = p.cursor;
-          entry.onOutput(b64decodeBytes(p.data));
-        }
-      } else if (p.type === "term.reset") {
-        // A huge burst collapsed to a screen snapshot — reset + apply.
-        if ((p.cursor || 0) > entry.lastCursor) {
-          entry.lastCursor = p.cursor;
-          entry.onSnapshot(b64decodeBytes(p.data));
-        }
+      if (p.type === "term.output" || p.type === "term.reset") {
+        if (entry.attached) this._applyStreamFrame(entry, p);
+        else entry.preAttach.push(p); // outran the attach response — replay after it
       } else if (p.type === "term.closed") {
         // An agent screen that merely ended its session is RETAINED (the tab keeps
         // its last screen for the next session); user terminals deregister.
-        if (!(entry.kind === "agent" && p.reason === "agent_session_ended")) {
+        if (entry.kind === "agent" && p.reason === "agent_session_ended") {
+          entry.live = false; // the next session's frames re-report live
+        } else {
           this._terms.delete(p.term_id);
         }
         entry.onClosed(p.reason);
       }
+    }
+  }
+
+  /** Apply one live push to a terminal's screen, deduping on cursor. Output
+   *  applies strictly past the cursor; term.reset applies at cursor >= — the
+   *  agent pump's start-of-session wipe is pushed at cursor == total (resets
+   *  never advance it), which EQUALS the attach cursor the client just stored,
+   *  and dropping it garbles session transitions (reset application is a full
+   *  screen snapshot, so an equal-cursor replay is idempotent). */
+  _applyStreamFrame(entry, p) {
+    if (p.type === "term.output") {
+      if ((p.cursor || 0) > entry.lastCursor) {
+        entry.lastCursor = p.cursor;
+        entry.onOutput(b64decodeBytes(p.data));
+        this._markAgentLive(entry);
+      }
+    } else if ((p.cursor || 0) >= entry.lastCursor) {
+      entry.lastCursor = p.cursor || 0;
+      entry.onSnapshot(b64decodeBytes(p.data));
+      this._markAgentLive(entry);
+    }
+  }
+
+  /** Frames only stream while a session is pumping, so an applied frame on an
+   *  idle agent screen means a new session started — report it live (once) so
+   *  the "no active agent session" chip clears without a re-attach. */
+  _markAgentLive(entry) {
+    if (entry.kind === "agent" && !entry.live) {
+      entry.live = true;
+      entry.onLive(true);
     }
   }
 

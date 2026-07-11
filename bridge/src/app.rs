@@ -26,7 +26,9 @@ use tokio::io::AsyncBufReadExt;
 use crate::mcp::{CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
-use crate::orchestrator::{ActiveTask, Agent, Orchestrator, OrchestratorError};
+use crate::orchestrator::{
+    ActiveTask, Agent, Orchestrator, OrchestratorError, SpawnOptions, TranscriptProbe,
+};
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::store::{now_rfc3339, PersistedTask, TaskStore};
@@ -141,20 +143,58 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // Real agent: a one-shot `claude` headless run with the rendered prompt
         // baked in, the per-task `done` MCP server wired via .build/mcp.json, and
         // the daemon's control socket so its `done` reaches on_agent_done.
-        Agent::OneShot(Arc::new(move |prompt: &str, choice: &ModelChoice| {
-            let mut spec = HarnessSpec::new("claude")
-                .arg("-p")
-                .arg(prompt)
-                .arg("--mcp-config")
-                .arg(".build/mcp.json")
-                .arg("--strict-mcp-config")
-                .arg("--dangerously-skip-permissions");
-            for arg in choice.harness_args() {
-                spec = spec.arg(arg);
-            }
-            spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
-        }))
+        Agent::OneShot(Arc::new(
+            move |prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
+                let mut spec = HarnessSpec::new("claude")
+                    .arg("-p")
+                    .arg(prompt)
+                    .arg("--mcp-config")
+                    .arg(".build/mcp.json")
+                    .arg("--strict-mcp-config")
+                    .arg("--dangerously-skip-permissions");
+                if options.continue_session {
+                    spec = spec.arg("--continue");
+                }
+                for arg in choice.harness_args() {
+                    spec = spec.arg(arg);
+                }
+                spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
+            },
+        ))
     }
+}
+
+/// The transcript directory name Claude Code uses for a cwd under
+/// `~/.claude/projects/`: the absolute path with `/` and `.` replaced by `-`.
+/// Heuristic by design — a false negative just means a fresh session.
+pub(crate) fn encode_claude_project_dir(path: &std::path::Path) -> String {
+    path.display()
+        .to_string()
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
+/// True iff the encoded directory exists under `root` and holds at least one
+/// `.jsonl` transcript.
+pub(crate) fn claude_transcript_exists(root: &std::path::Path, cwd: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root.join(encode_claude_project_dir(cwd))) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
+}
+
+/// The production transcript probe, rooted at `~/.claude/projects` (claude-
+/// specific, like the harness argv in [`build_agent`]).
+fn default_claude_transcript_probe() -> TranscriptProbe {
+    Arc::new(|cwd: &std::path::Path| {
+        let Ok(home) = std::env::var("HOME") else {
+            return false;
+        };
+        claude_transcript_exists(&std::path::Path::new(&home).join(".claude/projects"), cwd)
+    })
 }
 
 /// Shared application state behind the relay handler.
@@ -182,6 +222,9 @@ pub struct AppState {
     next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
+    /// Whether the harness has a prior conversation for a worktree cwd — drives
+    /// `--continue` on an adopted task's first session. Never true in QA mode.
+    transcript_probe: TranscriptProbe,
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
     notifier: Option<Notifier>,
@@ -198,6 +241,11 @@ impl AppState {
         mcp_socket: impl Into<String>,
     ) -> Self {
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
+        let transcript_probe: TranscriptProbe = if qa_agent {
+            Arc::new(|_| false)
+        } else {
+            default_claude_transcript_probe()
+        };
         let mut state = AppState {
             projects: Vec::new(),
             task_project: HashMap::new(),
@@ -215,6 +263,7 @@ impl AppState {
             next_stream: 1,
             next_project: 1,
             qa_agent,
+            transcript_probe,
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
         };
@@ -537,7 +586,8 @@ impl AppState {
             worktrees,
             self.agent.clone(),
             Templates::default(),
-        );
+        )
+        .with_transcript_probe(self.transcript_probe.clone());
         self.projects.push(Project {
             id: id.clone(),
             name,
@@ -4635,13 +4685,61 @@ mod tests {
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
         };
-        let spec = build("do the thing", &choice);
+        let spec = build("do the thing", &choice, &SpawnOptions::default());
         let args = spec.args.join(" ");
         assert!(args.contains("--model claude-opus-4-8"), "{args}");
         assert!(args.contains("--effort xhigh"), "{args}");
+        assert!(!args.contains("--continue"), "{args}");
         // Defaults add nothing: the user's harness config decides.
-        let spec = build("do the thing", &ModelChoice::default());
+        let spec = build(
+            "do the thing",
+            &ModelChoice::default(),
+            &SpawnOptions::default(),
+        );
         assert!(!spec.args.join(" ").contains("--model"));
+        // A continuation spawn resumes the cwd's conversation, flag placed right
+        // after the permission arg and before any model args.
+        let spec = build(
+            "do the thing",
+            &choice,
+            &SpawnOptions {
+                continue_session: true,
+            },
+        );
+        let args = spec.args.join(" ");
+        assert!(
+            args.contains("--dangerously-skip-permissions --continue --model"),
+            "{args}"
+        );
+    }
+
+    #[test]
+    fn encode_claude_project_dir_and_probe() {
+        // Claude Code's transcript dir encoding: '/' and '.' both become '-'.
+        assert_eq!(
+            encode_claude_project_dir(std::path::Path::new("/Users/z/proj.web")),
+            "-Users-z-proj-web"
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let cwd = std::path::Path::new("/Users/z/proj.web");
+        assert!(
+            !claude_transcript_exists(root.path(), cwd),
+            "no encoded dir → no transcript"
+        );
+        let encoded_dir = root.path().join("-Users-z-proj-web");
+        std::fs::create_dir_all(&encoded_dir).unwrap();
+        assert!(
+            !claude_transcript_exists(root.path(), cwd),
+            "an empty dir holds no transcript"
+        );
+        std::fs::write(encoded_dir.join("notes.txt"), "not a transcript").unwrap();
+        assert!(
+            !claude_transcript_exists(root.path(), cwd),
+            "only .jsonl files count"
+        );
+        std::fs::write(encoded_dir.join("session.jsonl"), "{}\n").unwrap();
+        assert!(claude_transcript_exists(root.path(), cwd));
     }
 
     #[test]

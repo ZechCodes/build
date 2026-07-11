@@ -275,8 +275,21 @@ impl ActiveTask {
     }
 }
 
-/// Builds the one-shot harness command for a rendered prompt + model choice.
-pub type OneShotBuilder = std::sync::Arc<dyn Fn(&str, &ModelChoice) -> HarnessSpec + Send + Sync>;
+/// Per-spawn context a one-shot harness builder may honor.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpawnOptions {
+    /// Resume the harness's own most-recent conversation for this cwd
+    /// (claude: `--continue`). Set only for the first session after adoption.
+    pub continue_session: bool,
+}
+
+/// Builds the one-shot harness command for a rendered prompt + model + context.
+pub type OneShotBuilder =
+    std::sync::Arc<dyn Fn(&str, &ModelChoice, &SpawnOptions) -> HarnessSpec + Send + Sync>;
+
+/// Whether the harness has an existing conversation transcript for a worktree
+/// cwd. Injectable so tests never touch the real home directory.
+pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
@@ -297,6 +310,9 @@ pub struct Orchestrator {
     agent: Agent,
     templates: Templates,
     pty_size: PtySize,
+    /// Decides whether an adopted task's first session may continue the
+    /// harness's prior conversation. Defaults to "never" — the app layer opts in.
+    transcript_probe: TranscriptProbe,
 }
 
 impl Orchestrator {
@@ -319,7 +335,15 @@ impl Orchestrator {
                 pixel_width: 0,
                 pixel_height: 0,
             },
+            transcript_probe: std::sync::Arc::new(|_| false),
         }
+    }
+
+    /// Opt in to harness-conversation continuation for adopted tasks: `probe`
+    /// answers whether a transcript exists for a worktree cwd.
+    pub fn with_transcript_probe(mut self, probe: TranscriptProbe) -> Self {
+        self.transcript_probe = probe;
+        self
     }
 
     /// Dispatch a goal: create the worktree, scaffold `.build/`, transition out of
@@ -364,7 +388,7 @@ impl Orchestrator {
             TaskState::Building => self.render(&self.templates.build, &active, ""),
             ref other => unreachable!("dispatch left task in {other:?}"),
         };
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(&mut active, &prompt)?;
         Ok(active)
     }
 
@@ -493,7 +517,7 @@ impl Orchestrator {
         apply_stage_event(&mut active.stages[index], StageEvent::StartValidation)?;
         self.end_session(active);
         let prompt = self.render_stage(&self.templates.validate, active, index, "");
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -634,7 +658,7 @@ impl Orchestrator {
         }
         self.end_session(active);
         let prompt = self.render(&self.templates.build, active, "");
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -706,7 +730,7 @@ impl Orchestrator {
         active.last_error = None;
         self.end_session(active);
         let prompt = self.render_stage(&self.templates.build_stage, active, index, "");
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -723,7 +747,7 @@ impl Orchestrator {
         active.last_error = None;
         self.end_session(active);
         let prompt = self.render(&self.templates.revise, active, notes);
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -766,7 +790,7 @@ impl Orchestrator {
         self.end_session(active);
         let comments = templates::assemble_stage_comments(&open);
         let prompt = self.render_stage(&self.templates.revise_stage, active, index, &comments);
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -797,7 +821,7 @@ impl Orchestrator {
         active.last_error = None;
         self.end_session(active);
         let prompt = self.render_stage(&self.templates.fix_stage, active, index, note);
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -832,7 +856,7 @@ impl Orchestrator {
         active.last_error = None;
         self.end_session(active);
         let prompt = self.render(&self.templates.review_changes, active, comments);
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -871,7 +895,7 @@ impl Orchestrator {
         active.task.apply(TaskEvent::Reply)?;
         active.last_error = None;
         self.end_session(active);
-        active.session = Some(self.spawn(&active.worktree, &prompt, &active.model_choice)?);
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -1111,26 +1135,36 @@ impl Orchestrator {
         )
     }
 
-    fn spawn(
+    /// Spawn the task's next session, consuming the one-shot continuation flag:
+    /// the first spawn after adoption probes for an existing harness transcript
+    /// in the worktree and asks the one-shot builder to continue it. Native
+    /// tasks (flag false) are byte-identical to the pre-adoption behavior.
+    fn spawn_session(
         &self,
-        worktree: &Worktree,
+        active: &mut ActiveTask,
         prompt: &str,
-        model_choice: &ModelChoice,
-    ) -> Result<PtySession, OrchestratorError> {
+    ) -> Result<(), OrchestratorError> {
+        let continue_session =
+            active.pending_continuation && (self.transcript_probe)(&active.worktree.path);
+        active.pending_continuation = false;
+        let options = SpawnOptions { continue_session };
         let session = match &self.agent {
             Agent::Warm(spec) => {
-                let s = PtySession::spawn(spec, Some(worktree.path.clone()), self.pty_size)?;
+                // Warm harnesses (the QA agent) take the prompt over the PTY and
+                // never see SpawnOptions: continuation is one-shot-specific.
+                let s = PtySession::spawn(spec, Some(active.worktree.path.clone()), self.pty_size)?;
                 s.write_prompt(prompt)?;
                 s
             }
             Agent::OneShot(build) => {
                 // The prompt is baked into the command (e.g. `claude -p`); nothing
                 // is written to stdin. The model choice becomes harness argv.
-                let spec = build(prompt, model_choice);
-                PtySession::spawn(&spec, Some(worktree.path.clone()), self.pty_size)?
+                let spec = build(prompt, &active.model_choice, &options);
+                PtySession::spawn(&spec, Some(active.worktree.path.clone()), self.pty_size)?
             }
         };
-        Ok(session)
+        active.session = Some(session);
+        Ok(())
     }
 
     fn prompt_warm_session(
@@ -1279,7 +1313,7 @@ mod tests {
     /// to spawn, standing in for the real `claude` command builder.
     fn recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<ModelChoice>>>) -> Agent {
         Agent::OneShot(std::sync::Arc::new(
-            move |_prompt: &str, choice: &ModelChoice| {
+            move |_prompt: &str, choice: &ModelChoice, _options: &SpawnOptions| {
                 log.lock().unwrap().push(choice.clone());
                 HarnessSpec::new("sh").arg("-c").arg("exit 0")
             },
@@ -1333,6 +1367,48 @@ mod tests {
         t.task.apply(TaskEvent::BuildReady).unwrap();
         orch.request_changes(&mut t, "tweak it").unwrap();
         assert_eq!(log.lock().unwrap().last().unwrap(), &build_choice);
+    }
+
+    /// A one-shot agent that records the [`SpawnOptions`] of every spawn.
+    fn options_recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<SpawnOptions>>>) -> Agent {
+        Agent::OneShot(std::sync::Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                log.lock().unwrap().push(*options);
+                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+            },
+        ))
+    }
+
+    /// The native path is byte-identical to today: no spawn ever asks the
+    /// harness to continue a prior conversation, even with a transcript present.
+    #[tokio::test]
+    async fn native_dispatch_never_continues() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            options_recording_agent(log.clone()),
+            Templates::default(),
+        )
+        .with_transcript_probe(std::sync::Arc::new(|_| true));
+
+        let mut t = orch
+            .dispatch(
+                TaskId::new("n1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        orch.request_changes(&mut t, "tweak it").unwrap();
+        let recorded = log.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert!(
+            recorded.iter().all(|options| !options.continue_session),
+            "native spawns never continue: {recorded:?}"
+        );
     }
 
     fn done(phase: DonePhase, status: DoneStatus, plan_path: Option<&str>) -> DoneReport {
@@ -2025,7 +2101,7 @@ mod tests {
     /// A one-shot agent that records every rendered prompt it is asked to spawn.
     fn prompt_recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Agent {
         Agent::OneShot(std::sync::Arc::new(
-            move |prompt: &str, _choice: &ModelChoice| {
+            move |prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
                 log.lock().unwrap().push(prompt.to_string());
                 HarnessSpec::new("sh").arg("-c").arg("exit 0")
             },

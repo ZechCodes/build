@@ -21,7 +21,7 @@ import {
   pinnedDeviceTransportKey,
   refreshDevices,
 } from "./devices.js";
-import { retargetTerminal } from "./terminal/drawer.js";
+import { retargetTerminals } from "./terminal/manager.js";
 
 export function setConn(html) {
   $("#conn").innerHTML = html;
@@ -136,6 +136,6 @@ export async function switchDevice(deviceId) {
   rememberSelectedDevice(deviceId);
   adoptSession(session);
   restoreOnline();
-  retargetTerminal(); // the drawer follows the app session's device
+  retargetTerminals(); // the terminal socket follows the app session's device
   render();
 }

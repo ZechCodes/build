@@ -11,7 +11,6 @@ import { $ } from "./dom.js";
 import { App, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
 import { registerPushWorker } from "./push.js";
-import { initTerminalDrawer } from "./terminal/drawer.js";
 import { boot } from "./views/gate.js";
 
 // Keep the (cache-free) push worker current on every boot so notification
@@ -23,7 +22,6 @@ if (location.pathname.startsWith("/app")) {
 
 initRouter();
 initDevicePicker();
-initTerminalDrawer();
 
 $("#nav-board").onclick = () => go({ name: "board" });
 $("#nav-notif").onclick = () => go({ name: "notifications" });

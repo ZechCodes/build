@@ -1,22 +1,28 @@
-// E2EE terminal session — the client half of the bridge's terminal.
+// E2EE terminal socket — the client half of the bridge's keyed terminals.
 //
-// Runtime-agnostic: a real browser (native WebSocket + ghostty-web) and the Node
-// verification harness (`ws`) both drive it. It:
+// ONE socket per browser tab multiplexes every terminal (user shells + agent
+// screens) by `term_id`, keeping PTY floods off the app RPC session (no
+// head-of-line blocking of RPCs). It:
 //   - bootstraps an E2EE session straight through the relay's /ws/client
 //     (authenticate with a gateway token, then wait for the target device_key),
-//   - demuxes incoming frames into RPC responses (by id) and live `term.output`
-//     pushes (server-initiated PTY bytes),
+//   - demuxes incoming frames into RPC responses (by id) and live terminal
+//     pushes (`term.output` / `term.reset` / `term.closed`) routed by `term_id`
+//     to the registered terminal,
 //   - applies a screen SNAPSHOT on every (re)attach, then live-tails — snapshot
-//     resync, not byte replay,
-//   - auto-reconnects with backoff and re-attaches, reporting status so the UI can
-//     show a disconnected state.
+//     resync, not byte replay — deduping output/reset on `cursor` PER term_id,
+//   - auto-reconnects with backoff and RE-ATTACHES every registered terminal,
+//     reporting status so the UI can show a disconnected state.
+//
+// Connecting no longer implies attaching: `start()` brings the socket up; each
+// tab calls attachTerminal/attachAgent to register + attach its own term_id.
 
 const textEncoder = new TextEncoder();
 const b64encodeBytes = (u8) => btoa(String.fromCharCode(...u8));
-const b64decodeBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64decodeBytes = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt(0));
 const timeout = (ms, msg) => new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
+const noop = () => {};
 
-export class TerminalSession {
+export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     if (typeof getPinnedDeviceKey !== "function") {
       throw new Error("getPinnedDeviceKey is required — refusing to trust relay-supplied device keys");
@@ -32,34 +38,104 @@ export class TerminalSession {
     this.deviceId = null;
     this._pending = new Map();
     this._reqId = 0;
-    this._onOutput = () => {};
-    this._onSnapshot = () => {};
-    this._onStatus = () => {};
+    this._onStatus = noop;
     this._closed = false;
-    this._lastCursor = 0;
     this._backoff = 400;
+    // termId → { kind, taskId?, cols, rows, lastCursor, onOutput, onSnapshot, onClosed, onLive }
+    this._terms = new Map();
+    this._connected = false;
+    this._connectWaiters = [];
   }
 
-  onOutput(fn) { this._onOutput = fn; }      // (Uint8Array) live PTY bytes
-  onSnapshot(fn) { this._onSnapshot = fn; }  // (Uint8Array) full screen on (re)attach
-  onStatus(fn) { this._onStatus = fn; }      // 'connecting'|'connected'|'disconnected'
+  onStatus(fn) { this._onStatus = fn; } // 'connecting'|'connected'|'disconnected'
 
-  async start(cols, rows) {
-    this.cols = cols;
-    this.rows = rows;
+  async start() {
     this._closed = false;
     await this._connect();
   }
 
-  /** Send keystrokes to the PTY. */
-  async input(data) {
-    await this._call("term.input", { data: b64encodeBytes(textEncoder.encode(data)) });
+  /** Resolve once the socket is connected (immediately if it already is). */
+  whenConnected() {
+    if (this._connected) return Promise.resolve();
+    return new Promise((resolve) => this._connectWaiters.push(resolve));
   }
 
-  async resize(cols, rows) {
-    this.cols = cols;
-    this.rows = rows;
-    await this._call("term.resize", { cols, rows });
+  // ---- terminal lifecycle (all ride this one socket) --------------------
+
+  /** term.create — mint a user terminal in the given scope. */
+  async createTerminal(scope, cols, rows) {
+    await this.whenConnected();
+    return this._call("term.create", { ...scope, cols, rows });
+  }
+
+  /** term.list — the open user terminals for a scope (never agent ids). */
+  async listTerminals(scope) {
+    await this.whenConnected();
+    const r = await this._call("term.list", { ...scope });
+    return r.terminals || [];
+  }
+
+  /** term.close — kill the server PTY and deregister locally. */
+  async closeTerminal(termId) {
+    try {
+      await this.whenConnected();
+      await this._call("term.close", { term_id: termId });
+    } finally {
+      this._terms.delete(termId);
+    }
+  }
+
+  /** Register a user terminal and attach — the snapshot flows through opts.onSnapshot. */
+  async attachTerminal(termId, opts = {}) {
+    await this.whenConnected();
+    const entry = this._register(termId, "user", null, opts);
+    const r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+    entry.lastCursor = r.cursor || 0;
+    entry.onSnapshot(b64decodeBytes(r.snapshot));
+    return r;
+  }
+
+  /** Register a task's agent screen and attach — never errors on a dead session. */
+  async attachAgent(taskId, opts = {}) {
+    await this.whenConnected();
+    const termId = `agent:${taskId}`;
+    const entry = this._register(termId, "agent", taskId, opts);
+    const r = await this._call("agent.attach", { task_id: taskId, cols: entry.cols, rows: entry.rows });
+    entry.lastCursor = r.cursor || 0;
+    entry.onSnapshot(b64decodeBytes(r.snapshot));
+    entry.onLive(!!r.live);
+    return r;
+  }
+
+  /** Deregister a terminal (tab unmounted) — the server PTY keeps running. */
+  detach(termId) {
+    this._terms.delete(termId);
+  }
+
+  /** Send keystrokes to a terminal's PTY. */
+  async input(termId, data) {
+    await this._call("term.input", { term_id: termId, data: b64encodeBytes(textEncoder.encode(data)) });
+  }
+
+  async resize(termId, cols, rows) {
+    const entry = this._terms.get(termId);
+    if (entry) { entry.cols = cols; entry.rows = rows; }
+    await this._call("term.resize", { term_id: termId, cols, rows });
+  }
+
+  _register(termId, kind, taskId, opts) {
+    const entry = {
+      kind, taskId,
+      cols: opts.cols || 80,
+      rows: opts.rows || 24,
+      lastCursor: 0,
+      onOutput: opts.onOutput || noop,
+      onSnapshot: opts.onSnapshot || noop,
+      onClosed: opts.onClosed || noop,
+      onLive: opts.onLive || noop,
+    };
+    this._terms.set(termId, entry);
+    return entry;
   }
 
   /** Permanent close — no reconnect. */
@@ -68,13 +144,14 @@ export class TerminalSession {
     try { this._ws && this._ws.close(); } catch { /* ignore */ }
   }
 
-  /** Drop the socket but allow auto-reconnect (used to exercise reconnect). */
+  /** Drop the socket but allow auto-reconnect (device retarget / reconnect test). */
   simulateDrop() {
     try { this._ws && this._ws.close(); } catch { /* ignore */ }
   }
 
   async _connect() {
     const gen = (this._gen = (this._gen || 0) + 1);
+    this._connected = false;
     this._onStatus("connecting");
     if (this.transport.ready) await this.transport.ready();
 
@@ -151,17 +228,47 @@ export class TerminalSession {
 
       this._demux(recvRaw, gen); // routes responses + pushes
 
-      // Attach → apply the current screen snapshot, then live output flows.
-      this._lastCursor = 0;
-      const r = await this._call("term.attach", { cols: this.cols, rows: this.rows });
-      this._lastCursor = r.cursor || 0;
+      // Re-attach every terminal registered before this (re)connect. On the very
+      // first connect this is empty; after a drop it restores every open tab.
+      await this._reattachAll();
+
       this._onStatus("connected");
       this._backoff = 400;
-      this._onSnapshot(b64decodeBytes(r.snapshot));
+      this._connected = true;
+      this._connectWaiters.splice(0).forEach((resolve) => resolve());
       this._startLiveness(gen);
     } catch (e) {
       try { ws.close(); } catch { /* ignore */ }
       throw e;
+    }
+  }
+
+  /// Re-attach every registered terminal after a (re)connect. User terminals go
+  /// through term.attach; an `unknown term_id` rejection means the server reaped
+  /// it (scope vanished) → onClosed("reaped") + deregister. Agent screens go
+  /// through agent.attach and refresh onLive. Each snapshot resets that term's
+  /// cursor to the response cursor first (snapshot resync, not byte replay).
+  async _reattachAll() {
+    for (const [termId, entry] of [...this._terms]) {
+      entry.lastCursor = 0;
+      try {
+        if (entry.kind === "agent") {
+          const r = await this._call("agent.attach", { task_id: entry.taskId, cols: entry.cols, rows: entry.rows });
+          entry.lastCursor = r.cursor || 0;
+          entry.onSnapshot(b64decodeBytes(r.snapshot));
+          entry.onLive(!!r.live);
+        } else {
+          const r = await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+          entry.lastCursor = r.cursor || 0;
+          entry.onSnapshot(b64decodeBytes(r.snapshot));
+        }
+      } catch (e) {
+        if (entry.kind === "user" && /unknown term_id/.test(e.message || "")) {
+          this._terms.delete(termId);
+          entry.onClosed("reaped");
+        }
+        // Other failures leave the entry registered — the next reconnect retries.
+      }
     }
   }
 
@@ -186,17 +293,29 @@ export class TerminalSession {
           this._pending.delete(p.id);
           p.ok ? pend.resolve(p.result) : pend.reject(new Error(p.error));
         }
-      } else if (p && p.type === "term.output") {
-        if ((p.cursor || 0) > this._lastCursor) {
-          this._lastCursor = p.cursor;
-          this._onOutput(b64decodeBytes(p.data));
+        continue;
+      }
+      if (!p || !p.term_id) continue;
+      const entry = this._terms.get(p.term_id);
+      if (!entry) continue; // a frame for a term we don't render — drop it
+      if (p.type === "term.output") {
+        if ((p.cursor || 0) > entry.lastCursor) {
+          entry.lastCursor = p.cursor;
+          entry.onOutput(b64decodeBytes(p.data));
         }
-      } else if (p && p.type === "term.reset") {
-        // The bridge collapsed a huge burst to a screen snapshot — reset + apply.
-        if ((p.cursor || 0) > this._lastCursor) {
-          this._lastCursor = p.cursor;
-          this._onSnapshot(b64decodeBytes(p.data));
+      } else if (p.type === "term.reset") {
+        // A huge burst collapsed to a screen snapshot — reset + apply.
+        if ((p.cursor || 0) > entry.lastCursor) {
+          entry.lastCursor = p.cursor;
+          entry.onSnapshot(b64decodeBytes(p.data));
         }
+      } else if (p.type === "term.closed") {
+        // An agent screen that merely ended its session is RETAINED (the tab keeps
+        // its last screen for the next session); user terminals deregister.
+        if (!(entry.kind === "agent" && p.reason === "agent_session_ended")) {
+          this._terms.delete(p.term_id);
+        }
+        entry.onClosed(p.reason);
       }
     }
   }
@@ -234,6 +353,7 @@ export class TerminalSession {
   _onLost(gen) {
     if (this._closed || gen !== this._gen) return;
     this._gen++; // invalidate this connection so its demux/liveness stop
+    this._connected = false;
     this._onStatus("disconnected");
     for (const { reject } of this._pending.values()) reject(new Error("disconnected"));
     this._pending.clear();

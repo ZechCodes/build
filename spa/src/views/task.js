@@ -14,7 +14,6 @@ import { STATE_LABEL, chipClass } from "./shared.js";
 import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/taskActions.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
-import { toggleTerminal } from "../terminal/drawer.js";
 import { renderStagesTab } from "./stages.js";
 
 // The diff-tab git split button: each option id maps to a task.git_action call.
@@ -55,8 +54,7 @@ export async function renderTask() {
     root.innerHTML = `
       <div class="back" id="back">← Board</div>
       <div class="thead"><h1>${esc(m.goal || "")}</h1>
-        <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span>
-          <span id="termToggle" role="button" style="cursor:pointer">terminal <span class="kbd">\`</span></span></div></div>
+        <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span></div></div>
       <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>${m.adopted ? "<span>·</span><span>adopted</span>" : ""}
         <span class="taskactions" id="taskactions"></span></div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
@@ -64,7 +62,6 @@ export async function renderTask() {
         <div class="t ${tab === "diff" ? "active" : ""}" data-tab="diff">Diff</div></div>
       <div id="tabbody"></div>`;
     $("#back").onclick = () => go({ name: "board" });
-    $("#termToggle").onclick = () => toggleTerminal(); // tap target — the backtick shortcut has no key on mobile
     wireActions(m);
     showBanner(bannerText(localError, m.last_error));
     root.querySelectorAll(".tabs .t").forEach(

@@ -38,7 +38,7 @@ use crate::task::{
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::transport::Frame;
-use crate::worktree::Worktree;
+use crate::worktree::{discover_external_worktrees, ExternalWorktree, Worktree};
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
 #[derive(Debug, Clone)]
@@ -128,6 +128,20 @@ struct Project {
     repo_path: std::path::PathBuf,
     base_branch: String,
     orch: Orchestrator,
+    /// Cached external-worktree scan, refreshed at most every
+    /// `EXTERNAL_SCAN_INTERVAL` (or on demand via `force`).
+    external_scan: Option<ExternalScanCache>,
+}
+
+/// External-worktree scans are refreshed at most this often per project; the
+/// board polls task.list every ~1.6 s and must never trigger a full rescan per
+/// poll.
+const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
+
+/// One project's cached external-worktree scan.
+struct ExternalScanCache {
+    scanned_at: std::time::Instant,
+    worktrees: Vec<ExternalWorktree>,
 }
 
 /// Build the harness adapter shared by every project's orchestrator: the
@@ -615,8 +629,98 @@ impl AppState {
             repo_path,
             base_branch,
             orch,
+            external_scan: None,
         });
         id
+    }
+
+    /// Canonical paths of every task-bound worktree (all states): they are
+    /// Build's, never external. `fs::canonicalize` with the raw path as fallback.
+    fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
+        self.tasks
+            .values()
+            .map(|active| {
+                std::fs::canonicalize(&active.worktree.path)
+                    .unwrap_or_else(|_| active.worktree.path.clone())
+            })
+            .collect()
+    }
+
+    /// The project's external worktrees. Serves the cache when younger than
+    /// `EXTERNAL_SCAN_INTERVAL`; `force` bypasses the cadence (adoption-time
+    /// resolution). A scan error logs and returns the last-known list (or
+    /// empty) — `task.list` must stay alive. Errors are only surfaced when
+    /// `force` is set.
+    fn external_worktrees(
+        &mut self,
+        project_id: &str,
+        force: bool,
+    ) -> Result<Vec<ExternalWorktree>, String> {
+        let excluded = self.bound_worktree_paths();
+        let base = self.base_for(project_id)?;
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        if !force {
+            if let Some(cache) = &project.external_scan {
+                if cache.scanned_at.elapsed() < EXTERNAL_SCAN_INTERVAL {
+                    return Ok(cache.worktrees.clone());
+                }
+            }
+        }
+        match discover_external_worktrees(&project.repo_path, &base, &excluded) {
+            Ok(worktrees) => {
+                project.external_scan = Some(ExternalScanCache {
+                    scanned_at: std::time::Instant::now(),
+                    worktrees: worktrees.clone(),
+                });
+                Ok(worktrees)
+            }
+            Err(e) => {
+                eprintln!("external_worktrees {project_id}: {e}");
+                if force {
+                    Err(e.to_string())
+                } else {
+                    Ok(project
+                        .external_scan
+                        .as_ref()
+                        .map(|c| c.worktrees.clone())
+                        .unwrap_or_default())
+                }
+            }
+        }
+    }
+
+    /// Drop one project's cache so the next poll rescans (adopt/release just
+    /// changed what is bound).
+    fn invalidate_external_scan(&mut self, project_id: &str) {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+            project.external_scan = None;
+        }
+    }
+
+    /// Resolve a client-supplied `worktree_id` against the discovered list
+    /// only — a raw path is never accepted. Cache-first; a miss forces one
+    /// fresh scan before failing, so a just-appeared worktree resolves without
+    /// waiting out the cache.
+    fn resolve_external_worktree(
+        &mut self,
+        project_id: &str,
+        worktree_id: &str,
+    ) -> Result<ExternalWorktree, String> {
+        if let Some(w) = self
+            .external_worktrees(project_id, false)?
+            .into_iter()
+            .find(|w| w.id == worktree_id)
+        {
+            return Ok(w);
+        }
+        self.external_worktrees(project_id, true)?
+            .into_iter()
+            .find(|w| w.id == worktree_id)
+            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))
     }
 
     /// Share this state so the relay handler and the done-socket listener both
@@ -757,6 +861,9 @@ impl AppState {
             "task.dispatch" => self.task_dispatch(params),
             "task.list" => Ok(self.task_list()),
             "task.get" => self.task_get(params),
+            "task.adopt" => self.task_adopt(params),
+            "task.release" => self.task_release(params),
+            "worktree.diff" => self.worktree_diff(params),
             "task.plan" => self.task_plan(params),
             "task.stages" => self.task_stages(params),
             "task.stage_doc" => self.task_stage_doc(params),
@@ -1402,6 +1509,12 @@ impl AppState {
     fn task_approve_merge(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let project_id = self.project_of(&task_id)?;
+        let adopted = self
+            .tasks
+            .get(&task_id)
+            .map(|a| a.adopted)
+            .ok_or("unknown task_id")?;
+        let cleanup = merge_cleanup_from(params, adopted)?;
         let mut active = self.take(&task_id)?;
         let result = self
             .orch_for(&project_id)?
@@ -1417,13 +1530,14 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
-        // Prune only after the Merged verdict is durably persisted (contract #3).
+        // Act on the worktree only after the Merged verdict is durably persisted
+        // (contract #3).
         let merged_worktree = result.is_ok().then(|| active.worktree.clone());
-        let (view, persisted) = self.finish_mutation(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id.clone(), active);
         result?;
         persisted?;
         if let Some(worktree) = merged_worktree {
-            self.prune_merged_worktree(&project_id, &worktree);
+            self.apply_merge_cleanup(&task_id, &project_id, &worktree, cleanup);
         }
         Ok(view)
     }
@@ -1438,6 +1552,33 @@ impl AppState {
         }
     }
 
+    /// What happens to the worktree + branch after a user-approved merge lands
+    /// (spec §5.7): the default keeps today's behavior; `keep` and `release` are
+    /// the split-button's other choices.
+    fn apply_merge_cleanup(
+        &mut self,
+        task_id: &str,
+        project_id: &str,
+        worktree: &Worktree,
+        cleanup: MergeCleanup,
+    ) {
+        match cleanup {
+            MergeCleanup::Prune => self.prune_merged_worktree(project_id, worktree),
+            MergeCleanup::Keep => {}
+            MergeCleanup::Release => {
+                if let Some(store) = &self.task_store {
+                    if let Err(e) = store.delete(task_id) {
+                        eprintln!("merge cleanup release {task_id}: task store: {e}");
+                    }
+                }
+                self.tasks.remove(task_id);
+                self.task_project.remove(task_id);
+                self.task_created_at.remove(task_id);
+                self.invalidate_external_scan(project_id);
+            }
+        }
+    }
+
     /// Finish-the-worktree git actions from the diff review: `commit` and `push`
     /// keep the worktree (no lifecycle change); `merge` and `merge_push` merge into
     /// the base and end the task. Every action commits outstanding work first.
@@ -1445,6 +1586,20 @@ impl AppState {
         let task_id = require_str(params, "task_id")?;
         let action = require_str(params, "action")?;
         let project_id = self.project_of(&task_id)?;
+        let is_merge_action = matches!(action.as_str(), "merge" | "merge_push");
+        if !is_merge_action && params.get("cleanup").is_some() {
+            return Err("cleanup only applies to merge actions".to_string());
+        }
+        let adopted = self
+            .tasks
+            .get(&task_id)
+            .map(|a| a.adopted)
+            .ok_or("unknown task_id")?;
+        let cleanup = if is_merge_action {
+            merge_cleanup_from(params, adopted)?
+        } else {
+            MergeCleanup::Prune // unused for commit/push
+        };
         let mut active = self.take(&task_id)?;
         let result = {
             let orch = self.orch_for(&project_id)?;
@@ -1462,16 +1617,16 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
-        // A `merge`/`merge_push` that landed leaves the task Merged; prune only after
-        // that verdict is durably persisted (contract #3). `commit`/`push` keep the
-        // worktree, so they never match.
+        // A `merge`/`merge_push` that landed leaves the task Merged; act on the
+        // worktree only after that verdict is durably persisted (contract #3).
+        // `commit`/`push` keep the worktree, so they never match.
         let merged_worktree = (result.is_ok() && matches!(active.task.state, TaskState::Merged))
             .then(|| active.worktree.clone());
-        let (view, persisted) = self.finish_mutation(task_id, active);
+        let (view, persisted) = self.finish_mutation(task_id.clone(), active);
         result?;
         persisted?;
         if let Some(worktree) = merged_worktree {
-            self.prune_merged_worktree(&project_id, &worktree);
+            self.apply_merge_cleanup(&task_id, &project_id, &worktree, cleanup);
         }
         Ok(view)
     }
@@ -1509,6 +1664,7 @@ impl AppState {
             ));
         }
         let worktree = active.worktree.clone();
+        let adopted = active.adopted;
         let project_id = self.task_project.get(&task_id).cloned();
 
         // Delete the durable record first: if the store fails, nothing else has
@@ -1526,8 +1682,10 @@ impl AppState {
         active.end_session();
 
         // A failed task still holds its worktree; merged/abandoned usually don't.
-        // Best-effort prune — never fail the delete on leftover cleanup.
-        if worktree.path.exists() {
+        // Best-effort prune — never fail the delete on leftover cleanup. Deleting
+        // an adopted task's card must never delete the user's files (spec §5.7):
+        // delete removes the card, not the worktree it was minted around.
+        if worktree.path.exists() && !adopted {
             if let Some(orch) = project_id
                 .as_deref()
                 .and_then(|pid| self.orch_for(pid).ok())
@@ -1589,13 +1747,146 @@ impl AppState {
         Ok(self.task_view(&task_id, active))
     }
 
-    fn task_list(&self) -> Value {
+    fn task_list(&mut self) -> Value {
         let tasks: Vec<Value> = self
             .tasks
             .iter()
             .map(|(id, active)| self.task_view(id, active))
             .collect();
-        json!({ "tasks": tasks })
+        let external_worktrees = self.external_worktrees_json();
+        json!({ "tasks": tasks, "external_worktrees": external_worktrees })
+    }
+
+    /// Every project's external worktrees, ride-along shape for `task.list`
+    /// (spec §5.3): scan order per project, projects concatenated in
+    /// registration order. A per-project scan failure is already logged inside
+    /// `external_worktrees`; it just contributes nothing here.
+    fn external_worktrees_json(&mut self) -> Vec<Value> {
+        let projects: Vec<(String, String, String)> = self
+            .projects
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone(), p.base_branch.clone()))
+            .collect();
+        let mut entries = Vec::new();
+        for (project_id, project_name, base_branch) in projects {
+            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
+                continue;
+            };
+            for w in worktrees {
+                let adoptable = w.branch.as_deref().is_some_and(|b| b != base_branch);
+                entries.push(json!({
+                    "worktree_id": w.id,
+                    "project_id": project_id,
+                    "project": project_name,
+                    "path": w.path.display().to_string(),
+                    "branch": w.branch,
+                    "head_sha": w.head_sha,
+                    "head_subject": w.head_subject,
+                    "head_age_seconds": w.head_age_seconds,
+                    "dirty_files": w.dirty_files,
+                    "diffstat": {
+                        "files_changed": w.diffstat.files_changed,
+                        "insertions": w.diffstat.insertions,
+                        "deletions": w.diffstat.deletions,
+                    },
+                    "adoptable": adoptable,
+                }));
+            }
+        }
+        entries
+    }
+
+    /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
+    /// never adopts.
+    fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let worktree_id = require_str(params, "worktree_id")?;
+        let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
+        let base = self.base_for(&project_id)?;
+        let diff = crate::diff::diff_against_merge_base(&external.path, &base)
+            .map_err(|e| e.to_string())?;
+        let files: Vec<Value> = diff
+            .files()
+            .iter()
+            .map(|f| json!({ "path": f.path, "status": format!("{:?}", f.status) }))
+            .collect();
+        let stat = diff.stat();
+        let adoptable = external.branch.as_deref().is_some_and(|b| b != base);
+        Ok(json!({
+            "worktree_id": external.id,
+            "branch": external.branch,
+            "head_subject": external.head_subject,
+            "dirty_files": external.dirty_files,
+            "path": external.path.display().to_string(),
+            "adoptable": adoptable,
+            "stat": {
+                "files_changed": stat.files_changed,
+                "insertions": stat.insertions,
+                "deletions": stat.deletions,
+            },
+            "files": files,
+            "patch": diff.patch(),
+        }))
+    }
+
+    /// Mint a Quick-kind task around an external worktree — the first mutating
+    /// action on a browsed worktree transparently adopts it (spec §5.5). No
+    /// agent session is spawned.
+    fn task_adopt(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let worktree_id = require_str(params, "worktree_id")?;
+        let model_choice = model_choice_from(params)?;
+        // Force a fresh scan: adoption must never act on a stale card (a
+        // worktree adopted or removed since the last poll resolves to unknown
+        // here).
+        let external = self
+            .external_worktrees(&project_id, true)?
+            .into_iter()
+            .find(|w| w.id == worktree_id)
+            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?;
+        let base = self.base_for(&project_id)?;
+        let task_id = format!("task-{}", self.next_id);
+        self.next_id += 1;
+        let active = self
+            .orch_for(&project_id)?
+            .adopt(TaskId::new(&task_id), &external, &base, model_choice)
+            .map_err(err)?;
+        self.task_project
+            .insert(task_id.clone(), project_id.clone());
+        self.invalidate_external_scan(&project_id);
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        persisted?;
+        Ok(view)
+    }
+
+    /// Un-adopt: drop the task record and its binding, leaving the worktree,
+    /// branch, and every file untouched (spec §5.6/§7). Legal on adopted tasks
+    /// in any non-terminal state.
+    fn task_release(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let active = self.tasks.get(&task_id).ok_or("unknown task_id")?;
+        if !active.adopted {
+            return Err("task.release: only adopted tasks can be released".to_string());
+        }
+        if active.task.state.is_terminal() {
+            return Err(format!(
+                "task.release: task is {} — use task.delete to clear it off the board",
+                state_str(&active.task.state)
+            ));
+        }
+        if let Some(store) = &self.task_store {
+            store
+                .delete(&task_id)
+                .map_err(|e| format!("task store: {e}"))?;
+        }
+        let mut active = self.tasks.remove(&task_id).expect("checked above");
+        active.end_session();
+        let project_id = self.task_project.remove(&task_id);
+        self.task_created_at.remove(&task_id);
+        if let Some(pid) = project_id {
+            self.invalidate_external_scan(&pid);
+        }
+        Ok(json!({ "ok": true }))
     }
 
     // --- multi-stage plan surface ----------------------------------------------
@@ -2040,6 +2331,7 @@ impl AppState {
             "effort": active.model_choice.effort,
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
+            "adopted": active.adopted,
             "stages": active
                 .stages
                 .iter()
@@ -2277,6 +2569,33 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 
 fn err(e: OrchestratorError) -> String {
     e.to_string()
+}
+
+/// What happens to the worktree + branch after a user-approved merge lands
+/// (spec §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeCleanup {
+    /// Remove the worktree + branch — today's unconditional behavior.
+    Prune,
+    /// Merge into the base but keep the worktree and branch alive.
+    Keep,
+    /// Merge, then drop the task record entirely (un-adopt): the worktree and
+    /// branch survive and resurface as an external card.
+    Release,
+}
+
+/// Parse the optional `cleanup` param. Absent → `Prune` (today's behavior).
+/// `"release"` is only meaningful for adopted tasks.
+fn merge_cleanup_from(params: &Value, adopted: bool) -> Result<MergeCleanup, String> {
+    match params.get("cleanup").and_then(Value::as_str) {
+        None | Some("prune") => Ok(MergeCleanup::Prune),
+        Some("keep") => Ok(MergeCleanup::Keep),
+        Some("release") if adopted => Ok(MergeCleanup::Release),
+        Some("release") => Err("cleanup: \"release\" is only valid for adopted tasks".to_string()),
+        Some(other) => Err(format!(
+            "invalid cleanup: {other:?} (expected prune|keep|release)"
+        )),
+    }
 }
 
 /// Dispatch one decrypted request frame. `stream.start` and `term.attach` are
@@ -4101,6 +4420,18 @@ mod tests {
         assert_eq!(persisted[2].state, TaskState::Abandoned);
         assert!(dir.path().join("user-wt-task-1").exists());
         assert!(dir.path().join("user-wt-task-2").exists());
+
+        // A parked adopted task has no project mapping (§5.8) — task.release is
+        // its escape hatch, and it works with no project resolution at all.
+        let released = state.handle(req("task.release", json!({ "task_id": "task-1" })));
+        assert_eq!(released["ok"], true, "{released:?}");
+        assert_eq!(released["result"]["ok"], true);
+        let got = state.handle(req("task.get", json!({ "task_id": "task-1" })));
+        assert_eq!(got["ok"], false, "released task is gone from the board");
+        assert!(
+            dir.path().join("user-wt-task-1").exists(),
+            "files untouched"
+        );
     }
 
     #[test]
@@ -4894,5 +5225,605 @@ mod tests {
         assert!(added["project_id"].as_str().unwrap().starts_with("proj-"));
         let listed = state.dispatch("project.list", &json!({})).unwrap();
         assert_eq!(listed["projects"].as_array().unwrap().len(), 1);
+    }
+
+    /// Add a git worktree Build did not create, at `dir/name` on `branch`, cut
+    /// from `repo`'s current HEAD — the raw material of adoption tests.
+    fn add_external_worktree(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        name: &str,
+        branch: &str,
+    ) -> PathBuf {
+        let path = dir.join(name);
+        assert!(Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "worktree",
+                "add",
+                path.to_str().unwrap(),
+                "-b",
+                branch,
+            ])
+            .status()
+            .unwrap()
+            .success());
+        path
+    }
+
+    #[test]
+    fn task_list_carries_external_worktrees() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        std::fs::write(ext_path.join("dirty.txt"), "dirty\n").unwrap();
+
+        let list = state.handle(req("task.list", json!({})));
+        let externals = list["result"]["external_worktrees"].as_array().unwrap();
+        assert_eq!(externals.len(), 1, "{externals:?}");
+        let entry = &externals[0];
+        assert_eq!(entry["branch"], "hotfix/thing");
+        assert_eq!(entry["dirty_files"], 1);
+        assert_eq!(entry["adoptable"], true);
+        assert!(entry["diffstat"]["files_changed"].as_u64().unwrap() >= 1);
+        assert!(!entry["head_subject"].as_str().unwrap().is_empty());
+
+        // A native task's worktree never appears as external.
+        let dispatched = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "native work", "kind": "quick" }),
+        ));
+        assert_eq!(dispatched["result"]["state"], "review");
+        let list2 = state.handle(req("task.list", json!({})));
+        let externals2 = list2["result"]["external_worktrees"].as_array().unwrap();
+        assert_eq!(
+            externals2.len(),
+            1,
+            "still just the user worktree: {externals2:?}"
+        );
+    }
+
+    #[test]
+    fn external_scan_is_cached() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let list = state.handle(req("task.list", json!({})));
+        assert_eq!(
+            list["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // A worktree that appears after the first scan is not picked up on the
+        // very next poll — the cache is younger than EXTERNAL_SCAN_INTERVAL.
+        add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list2 = state.handle(req("task.list", json!({})));
+        assert_eq!(
+            list2["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "cache not yet stale"
+        );
+
+        // Invalidating the cache exposes it on the next poll.
+        state.invalidate_external_scan(&project_id);
+        let list3 = state.handle(req("task.list", json!({})));
+        assert_eq!(
+            list3["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn worktree_diff_browses_without_adopting() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        std::fs::write(ext_path.join("dirty.txt"), "dirty\n").unwrap();
+
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let diff = state.handle(req(
+            "worktree.diff",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(diff["ok"], true, "{diff:?}");
+        assert!(diff["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("dirty.txt"));
+        assert_eq!(diff["result"]["dirty_files"], 1);
+
+        // Browsing never mints a task.
+        let after = state.handle(req("task.list", json!({})));
+        assert_eq!(after["result"]["tasks"].as_array().unwrap().len(), 0);
+
+        // Unknown id is a clean, exactly-worded error.
+        let unknown = state.handle(req(
+            "worktree.diff",
+            json!({ "project_id": project_id, "worktree_id": "wt-deadbeef0000" }),
+        ));
+        assert_eq!(unknown["ok"], false);
+        assert_eq!(unknown["error"], "unknown worktree_id: wt-deadbeef0000");
+
+        // A raw path is rejected the same way — worktree_id is server-resolved.
+        let raw_path = state.handle(req(
+            "worktree.diff",
+            json!({ "project_id": project_id, "worktree_id": ext_path.to_string_lossy() }),
+        ));
+        assert_eq!(raw_path["ok"], false);
+        assert!(raw_path["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown worktree_id:"));
+    }
+
+    #[test]
+    fn adopt_mints_a_review_task_and_removes_the_card() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+        let project_id = state.projects[0].id.clone();
+
+        add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["state"], "review");
+        assert_eq!(adopted["result"]["adopted"], true);
+        assert_eq!(adopted["result"]["goal"], "hotfix/thing");
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        let list2 = state.handle(req("task.list", json!({})));
+        assert_eq!(
+            list2["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(list2["result"]["tasks"].as_array().unwrap().len(), 1);
+
+        let persisted = crate::store::TaskStore::new(&tasks_dir)
+            .load_all()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == task_id)
+            .expect("record persisted");
+        assert!(persisted.adopted);
+
+        // Double-adopt of the same id — now bound to a task — is unknown.
+        let dup = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(dup["ok"], false);
+        assert!(dup["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown worktree_id:"));
+    }
+
+    #[test]
+    fn adopt_then_request_changes_simulates_like_any_build() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        let changed = state.handle(req(
+            "task.request_changes",
+            json!({ "task_id": task_id, "comments": "polish it" }),
+        ));
+        assert_eq!(changed["ok"], true, "{changed:?}");
+        assert_eq!(changed["result"]["state"], "review");
+        assert!(ext_path.join("result.txt").exists());
+    }
+
+    #[test]
+    fn release_drops_the_record_and_keeps_the_files() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+        let project_id = state.projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        let released = state.handle(req("task.release", json!({ "task_id": task_id })));
+        assert_eq!(released["ok"], true, "{released:?}");
+        assert_eq!(released["result"]["ok"], true);
+
+        let list2 = state.handle(req("task.list", json!({})));
+        assert_eq!(list2["result"]["tasks"].as_array().unwrap().len(), 0);
+        // The card resurfaces once the cache is invalidated (release does that).
+        assert_eq!(
+            list2["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(!tasks_dir.join(format!("{task_id}.json")).exists());
+        assert!(ext_path.exists(), "worktree kept");
+        let branch_kept = Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "rev-parse",
+                "--verify",
+                "hotfix/thing",
+            ])
+            .status()
+            .unwrap();
+        assert!(branch_kept.success(), "branch kept");
+
+        // Release on a native (never-adopted) task.
+        let native = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "native", "kind": "quick" }),
+        ));
+        let native_id = native["result"]["task_id"].as_str().unwrap().to_string();
+        let native_release = state.handle(req("task.release", json!({ "task_id": native_id })));
+        assert_eq!(native_release["ok"], false);
+        assert_eq!(
+            native_release["error"],
+            "task.release: only adopted tasks can be released"
+        );
+
+        // Release on an unknown task.
+        let unknown = state.handle(req("task.release", json!({ "task_id": "task-999" })));
+        assert_eq!(unknown["ok"], false);
+        assert_eq!(unknown["error"], "unknown task_id");
+
+        // Release on an adopted task that has since gone terminal.
+        let ext_path2 = add_external_worktree(&repo, dir.path(), "user-wt-2", "hotfix/second");
+        let ext_path2_canonical = std::fs::canonicalize(&ext_path2).unwrap();
+        // Force past the scan cache so the just-added worktree is visible now.
+        state.invalidate_external_scan(&project_id);
+        let list3 = state.handle(req("task.list", json!({})));
+        let worktree_id2 = list3["result"]["external_worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["path"] == ext_path2_canonical.display().to_string())
+            .expect("second worktree listed")["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted2 = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id2 }),
+        ));
+        let task_id2 = adopted2["result"]["task_id"].as_str().unwrap().to_string();
+        let merged2 = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id2, "action": "merge", "cleanup": "keep" }),
+        ));
+        assert_eq!(merged2["result"]["state"], "merged");
+        let terminal_release = state.handle(req("task.release", json!({ "task_id": task_id2 })));
+        assert_eq!(terminal_release["ok"], false);
+        assert_eq!(
+            terminal_release["error"],
+            "task.release: task is merged — use task.delete to clear it off the board"
+        );
+    }
+
+    #[test]
+    fn approve_merge_cleanup_keep_keeps_the_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        // Default (absent cleanup) still prunes — the backward-compat pin.
+        let native = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "prune me", "kind": "quick" }),
+        ));
+        let native_id = native["result"]["task_id"].as_str().unwrap().to_string();
+        let worktree_path = state.tasks[&native_id].worktree.path.clone();
+        let branch = state.tasks[&native_id].worktree.branch.clone();
+        let merged = state.handle(req("task.approve_merge", json!({ "task_id": native_id })));
+        assert_eq!(merged["result"]["state"], "merged");
+        assert!(!worktree_path.exists(), "pruned by default");
+        let branch_gone = Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "rev-parse",
+                "--verify",
+                &branch,
+            ])
+            .status()
+            .unwrap();
+        assert!(!branch_gone.success(), "branch pruned by default");
+
+        // cleanup: "keep" preserves both worktree and branch.
+        let quick = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "keep me", "kind": "quick" }),
+        ));
+        let quick_id = quick["result"]["task_id"].as_str().unwrap().to_string();
+        let worktree_path2 = state.tasks[&quick_id].worktree.path.clone();
+        let branch2 = state.tasks[&quick_id].worktree.branch.clone();
+        let merged2 = state.handle(req(
+            "task.approve_merge",
+            json!({ "task_id": quick_id, "cleanup": "keep" }),
+        ));
+        assert_eq!(merged2["ok"], true, "{merged2:?}");
+        assert_eq!(merged2["result"]["state"], "merged");
+        assert!(worktree_path2.exists(), "kept");
+        let branch_kept = Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "rev-parse",
+                "--verify",
+                &branch2,
+            ])
+            .status()
+            .unwrap();
+        assert!(branch_kept.success(), "branch kept");
+    }
+
+    #[test]
+    fn approve_merge_cleanup_release_unadopts_after_merge() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/release-me");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        // "release" on a native task is refused.
+        let native = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "native", "kind": "quick" }),
+        ));
+        let native_id = native["result"]["task_id"].as_str().unwrap().to_string();
+        let native_release_attempt = state.handle(req(
+            "task.approve_merge",
+            json!({ "task_id": native_id, "cleanup": "release" }),
+        ));
+        assert_eq!(native_release_attempt["ok"], false);
+        assert_eq!(
+            native_release_attempt["error"],
+            "cleanup: \"release\" is only valid for adopted tasks"
+        );
+
+        let merged = state.handle(req(
+            "task.approve_merge",
+            json!({ "task_id": task_id, "cleanup": "release" }),
+        ));
+        assert_eq!(merged["ok"], true, "{merged:?}");
+        assert_eq!(merged["result"]["state"], "merged");
+
+        // The record is gone from the board.
+        let list2 = state.handle(req("task.list", json!({})));
+        assert!(list2["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["task_id"] != task_id));
+        // The worktree + branch survive and the card resurfaces as external.
+        assert!(ext_path.exists());
+        let ext_canonical = std::fs::canonicalize(&ext_path).unwrap();
+        let externals = list2["result"]["external_worktrees"].as_array().unwrap();
+        assert!(externals
+            .iter()
+            .any(|w| w["path"] == ext_canonical.display().to_string()));
+    }
+
+    #[test]
+    fn git_action_cleanup_rules() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        let quick = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "git actions", "kind": "quick" }),
+        ));
+        let task_id = quick["result"]["task_id"].as_str().unwrap().to_string();
+
+        // commit with a cleanup param errors.
+        let bad = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "commit", "cleanup": "keep" }),
+        ));
+        assert_eq!(bad["ok"], false);
+        assert_eq!(bad["error"], "cleanup only applies to merge actions");
+
+        // Invalid cleanup value.
+        let invalid = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "merge", "cleanup": "bogus" }),
+        ));
+        assert_eq!(invalid["ok"], false);
+        assert_eq!(
+            invalid["error"],
+            "invalid cleanup: \"bogus\" (expected prune|keep|release)"
+        );
+
+        // "release" on a native task.
+        let native_release = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "merge", "cleanup": "release" }),
+        ));
+        assert_eq!(native_release["ok"], false);
+        assert_eq!(
+            native_release["error"],
+            "cleanup: \"release\" is only valid for adopted tasks"
+        );
+
+        // merge + keep works.
+        let worktree_path = state.tasks[&task_id].worktree.path.clone();
+        let ok = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "merge", "cleanup": "keep" }),
+        ));
+        assert_eq!(ok["ok"], true, "{ok:?}");
+        assert_eq!(ok["result"]["state"], "merged");
+        assert!(worktree_path.exists());
+    }
+
+    #[test]
+    fn task_delete_never_prunes_an_adopted_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/keep-on-delete");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        let merged = state.handle(req(
+            "task.git_action",
+            json!({ "task_id": task_id, "action": "merge", "cleanup": "keep" }),
+        ));
+        assert_eq!(merged["result"]["state"], "merged");
+
+        let deleted = state.handle(req("task.delete", json!({ "task_id": task_id })));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert!(ext_path.exists(), "adopted worktree survives delete");
+
+        // The native counterpart still prunes on delete.
+        let native = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "native delete", "kind": "quick" }),
+        ));
+        let native_id = native["result"]["task_id"].as_str().unwrap().to_string();
+        let native_worktree = state.tasks[&native_id].worktree.path.clone();
+        state.handle(req("task.approve_merge", json!({ "task_id": native_id })));
+        state.handle(req("task.delete", json!({ "task_id": native_id })));
+        assert!(
+            !native_worktree.exists(),
+            "native worktree pruned on delete"
+        );
     }
 }

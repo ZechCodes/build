@@ -273,6 +273,18 @@ impl TermSession {
     }
 }
 
+/// The retained screen of a task's agent PTY stream. Created on first
+/// `agent.attach`, retained until the task record is removed (reaper), so the
+/// tab can show the last screen between sessions.
+struct AgentScreen {
+    screen: TermScreen,
+    /// The [`ActiveTask`] session generation this screen's pump is consuming.
+    /// 0 = no pump has ever run.
+    pumped_generation: u64,
+    /// Whether a live pump is currently feeding this screen.
+    live: bool,
+}
+
 /// One registered project: a git repo, its base branch, and the orchestrator that
 /// drives tasks on it. Each project gets its own worktrees subdir and orchestrator
 /// so tasks on different repos never interact.
@@ -399,8 +411,16 @@ pub struct AppState {
     streams: HashMap<String, StreamState>,
     /// Live user terminals, keyed by `term_id` (`term-<n>`).
     terms: HashMap<String, TermSession>,
+    /// Retained agent screens, keyed by task id (pushed as `agent:<task_id>`).
+    agent_screens: HashMap<String, AgentScreen>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
+    /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
+    /// hooks (`ensure_agent_pumps` at the `finish_mutation` tail) can spawn
+    /// pump tasks that need the `Arc`. Dispatch paths that run in tests
+    /// without an Arc simply skip pump spawning (they assert on state, not
+    /// pushes).
+    self_handle: Option<std::sync::Weak<Mutex<AppState>>>,
     next_id: u64,
     next_stream: u64,
     next_project: u64,
@@ -446,7 +466,9 @@ impl AppState {
             task_stat_cache: HashMap::new(),
             streams: HashMap::new(),
             terms: HashMap::new(),
+            agent_screens: HashMap::new(),
             next_term: 1,
+            self_handle: None,
             next_id: 1,
             next_stream: 1,
             next_project: 1,
@@ -745,6 +767,9 @@ impl AppState {
         // Prompt terminal closure: an abandon/delete/merge-prune just changed
         // what resolves, so orphaned terminals close now, not at the next sweep.
         self.reap_orphaned_terminals();
+        // And prompt pump start: this mutation may have spawned a session an
+        // attached Agent tab is waiting on.
+        self.ensure_agent_pumps();
         (view, persisted)
     }
 
@@ -918,9 +943,12 @@ impl AppState {
     }
 
     /// Share this state so the relay handler and the done-socket listener both
-    /// drive the same tasks.
+    /// drive the same tasks. Stashes a weak self-handle so `&mut self` hooks
+    /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
-        Arc::new(Mutex::new(self))
+        let state = Arc::new(Mutex::new(self));
+        state.lock().unwrap().self_handle = Some(Arc::downgrade(&state));
+        state
     }
 
     /// The relay's frame handler over a shared state. `stream.start`/`term.attach`
@@ -1162,6 +1190,13 @@ impl AppState {
         if let Some(task_id) = term_id.strip_prefix("agent:") {
             let active = self.tasks.get(task_id).ok_or("unknown term_id")?;
             let live = active.resize_session(size).map_err(err)?;
+            if live {
+                // Keep the retained agent screen in step with the live PTY; a
+                // dead resize touches nothing (the last screen stays intact).
+                if let Some(agent) = self.agent_screens.get_mut(task_id) {
+                    agent.screen.set_size(cols, rows);
+                }
+            }
             return Ok(json!({ "ok": true, "live": live }));
         }
         let term = self.terms.get_mut(&term_id).ok_or("unknown term_id")?;
@@ -1176,6 +1211,12 @@ impl AppState {
     fn drop_session(&mut self, session_id: &str) {
         for term in self.terms.values_mut() {
             term.screen
+                .attached
+                .retain(|snd| snd.session_id() != session_id);
+        }
+        for agent in self.agent_screens.values_mut() {
+            agent
+                .screen
                 .attached
                 .retain(|snd| snd.session_id() != session_id);
         }
@@ -1201,7 +1242,48 @@ impl AppState {
             term.session.kill_and_reap();
             term.screen.push_closed(term_id, "reaped");
         }
+        // Retained agent screens live exactly as long as their task record.
+        let AppState {
+            agent_screens,
+            tasks,
+            ..
+        } = self;
+        agent_screens.retain(|task_id, _| tasks.contains_key(task_id));
         orphaned
+    }
+
+    /// Start an agent pump for every attached agent screen whose task has a
+    /// live session that is not being pumped yet — a viewer staring at the
+    /// Agent tab must see a session that starts *after* they attached (approve
+    /// plan → build session spawns). Runs at the `finish_mutation` tail via
+    /// the weak self-handle; without a handle or a runtime (sync unit tests)
+    /// pump spawning is skipped.
+    fn ensure_agent_pumps(&mut self) {
+        let Some(state_arc) = self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let mut pumps = Vec::new();
+        for (task_id, agent) in &mut self.agent_screens {
+            if agent.screen.attached.is_empty() {
+                continue;
+            }
+            let Some(active) = self.tasks.get(task_id) else {
+                continue;
+            };
+            if let Some((generation, rx)) = active.subscribe_with_generation() {
+                if generation != agent.pumped_generation {
+                    agent.pumped_generation = generation;
+                    agent.live = true;
+                    pumps.push((task_id.clone(), generation, rx));
+                }
+            }
+        }
+        for (task_id, generation, rx) in pumps {
+            spawn_agent_pump(Arc::clone(&state_arc), task_id, generation, rx);
+        }
     }
 
     /// Whether a terminal's scope still maps to a live surface. The check is
@@ -2020,6 +2102,9 @@ impl AppState {
                 self.invalidate_external_scan(&pid);
             }
         }
+        // The record (and possibly the worktree) is gone: close its terminals
+        // and drop its retained agent screen now, not at the next sweep.
+        self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
     }
 
@@ -2220,6 +2305,9 @@ impl AppState {
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
         }
+        // Released = the task record is gone (the worktree resurfaces as
+        // external): its task-scope terminals and agent screen go with it.
+        self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
     }
 
@@ -3006,6 +3094,7 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         "stream.start" => stream_start(state, &params),
         "term.create" => term_create(state, &params),
         "term.attach" => term_attach(state, &sender, &params),
+        "agent.attach" => agent_attach(state, &sender, &params),
         _ => state.lock().unwrap().dispatch(&method, &params),
     };
     match result {
@@ -3091,6 +3180,164 @@ fn term_attach(
         "cols": term.screen.cols,
         "rows": term.screen.rows,
     }))
+}
+
+/// Attach this client to a task's agent screen: get-or-create the retained
+/// screen, start a pump when a live session isn't being pumped yet, register
+/// the sender, and return the current snapshot + cursor + `live`.
+/// **Never errors because no session is running** — `live: false` with the
+/// last (or blank) snapshot is the contract; only an unknown task errors (the
+/// SPA falls back to its quiet state).
+fn agent_attach(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    params: &Value,
+) -> Result<Value, String> {
+    let task_id = require_str(params, "task_id")?;
+    // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
+    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
+    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
+
+    let mut guard = state.lock().unwrap();
+    let s = &mut *guard;
+    let Some(active) = s.tasks.get(&task_id) else {
+        return Err("unknown task_id".to_string());
+    };
+    let live_session = active.subscribe_with_generation();
+
+    let agent = s
+        .agent_screens
+        .entry(task_id.clone())
+        .or_insert_with(|| AgentScreen {
+            screen: TermScreen::new(cols, rows),
+            pumped_generation: 0,
+            live: false,
+        });
+
+    let mut pump = None;
+    if let Some((generation, rx)) = live_session {
+        if generation != agent.pumped_generation {
+            agent.pumped_generation = generation;
+            agent.live = true;
+            pump = Some((generation, rx));
+        }
+        // Mid-session resize is allowed — it is a full PTY on the user's
+        // machine; TUIs repaint. With no session live the retained last
+        // screen is left untouched.
+        if agent.screen.cols != cols || agent.screen.rows != rows {
+            agent.screen.set_size(cols, rows);
+            let _ = active.resize_session(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+    }
+
+    agent.screen.register(sender);
+    let response = json!({
+        "term_id": format!("agent:{task_id}"),
+        "live": agent.live,
+        "snapshot": agent.screen.snapshot(),
+        "cursor": agent.screen.total,
+        "cols": agent.screen.cols,
+        "rows": agent.screen.rows,
+    });
+    drop(guard);
+
+    if let Some((generation, rx)) = pump {
+        spawn_agent_pump(Arc::clone(state), task_id, generation, rx);
+    }
+    Ok(response)
+}
+
+/// Pump one agent session's PTY stream into the task's retained screen — the
+/// same coalescing loop as user terminals, keyed `agent:<task_id>`, with two
+/// differences. Start-of-session: reset the parser to a blank screen of the
+/// current grid and push `term.reset` (clients wipe; the new session starts
+/// clean) — `total` is NEVER reset, cursor monotonicity is what client dedupe
+/// rides on. Session end (`Closed`): the screen is RETAINED as the tab's
+/// "last screen" (`live = false`, `term.closed{reason:"agent_session_ended"}`)
+/// instead of removed. A newer generation's pump supersedes this one — the
+/// generation filter makes the stale task return.
+fn spawn_agent_pump(
+    state: Arc<Mutex<AppState>>,
+    task_id: String,
+    generation: u64,
+    mut rx: broadcast::Receiver<Vec<u8>>,
+) {
+    tokio::spawn(async move {
+        let term_id = format!("agent:{task_id}");
+        {
+            let mut s = state.lock().unwrap();
+            let Some(agent) = s
+                .agent_screens
+                .get_mut(&task_id)
+                .filter(|a| a.pumped_generation == generation)
+            else {
+                return;
+            };
+            agent.screen.parser = vt100::Parser::new(agent.screen.rows, agent.screen.cols, 2000);
+            agent.screen.pending.clear();
+            let payload = json!({
+                "type": "term.reset",
+                "term_id": term_id,
+                "data": agent.screen.snapshot(),
+                "cursor": agent.screen.total,
+            });
+            agent
+                .screen
+                .attached
+                .retain(|snd| snd.push(payload.clone()));
+        }
+        let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                recv = rx.recv() => match recv {
+                    Ok(chunk) => {
+                        let mut s = state.lock().unwrap();
+                        let Some(agent) = s
+                            .agent_screens
+                            .get_mut(&task_id)
+                            .filter(|a| a.pumped_generation == generation)
+                        else {
+                            return;
+                        };
+                        agent.screen.process(&chunk);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // The phase ended / harness exited: retain the screen.
+                        let mut s = state.lock().unwrap();
+                        let Some(agent) = s
+                            .agent_screens
+                            .get_mut(&task_id)
+                            .filter(|a| a.pumped_generation == generation)
+                        else {
+                            return;
+                        };
+                        agent.live = false;
+                        agent.screen.flush(&term_id);
+                        agent.screen.push_closed(&term_id, "agent_session_ended");
+                        return;
+                    }
+                },
+                _ = flush.tick() => {
+                    let mut s = state.lock().unwrap();
+                    let Some(agent) = s
+                        .agent_screens
+                        .get_mut(&task_id)
+                        .filter(|a| a.pumped_generation == generation)
+                    else {
+                        return;
+                    };
+                    agent.screen.flush(&term_id);
+                }
+            }
+        }
+    });
 }
 
 /// Pump one terminal's PTY output into its screen model, coalescing bytes and
@@ -5844,6 +6091,284 @@ mod tests {
         );
         assert_eq!(res["ok"], true, "{res:?}");
         assert_eq!(res["result"]["live"], false);
+    }
+
+    /// Dispatch a task through a side orchestrator whose warm harness both
+    /// drains stdin (so prompt writes never block) and emits a heartbeat line
+    /// (so live streaming is observable), then register it in the shared state.
+    fn insert_live_task(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        side_root: std::path::PathBuf,
+        task_id: &str,
+    ) {
+        let side = Orchestrator::new(
+            repo.to_path_buf(),
+            side_root,
+            Agent::Warm(
+                HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("(while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null"),
+            ),
+            Templates::default(),
+        );
+        let active = side
+            .dispatch(
+                crate::task::TaskId::new(task_id),
+                "live agent",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        let mut s = state.lock().unwrap();
+        let project_id = s.projects[0].id.clone();
+        s.task_project.insert(task_id.to_string(), project_id);
+        s.tasks.insert(task_id.to_string(), active);
+    }
+
+    #[tokio::test]
+    async fn agent_attach_streams_the_live_session_and_retains_the_last_screen() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_live_task(&state, &repo, dir.path().join("wt-side"), "task-9");
+
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        let res = handler(
+            sender,
+            req(
+                "agent.attach",
+                json!({ "task_id": "task-9", "cols": 100, "rows": 30 }),
+            ),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["term_id"], "agent:task-9");
+        assert_eq!(res["result"]["live"], true);
+        assert_eq!(res["result"]["cols"], 100);
+        assert_eq!(res["result"]["rows"], 30);
+
+        // The pump announces the session start with a reset, then streams live
+        // output under the reserved agent id.
+        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
+            output_text(seen, "agent:task-9").contains("agent-beat")
+        })
+        .await;
+        assert_eq!(
+            seen[0]["type"], "term.reset",
+            "start-of-session reset first: {seen:?}"
+        );
+
+        // A live resize through term.resize reshapes the agent screen too.
+        let resized = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.resize",
+                json!({ "term_id": "agent:task-9", "cols": 90, "rows": 28 }),
+            ),
+        );
+        assert_eq!(resized["result"]["live"], true, "{resized:?}");
+        {
+            let s = state.lock().unwrap();
+            assert_eq!(s.agent_screens["task-9"].screen.cols, 90);
+            assert_eq!(s.agent_screens["task-9"].screen.rows, 28);
+        }
+
+        // The phase ends: clients hear agent_session_ended and the screen is
+        // RETAINED — the next attach shows the last screen, quietly not-live.
+        state
+            .lock()
+            .unwrap()
+            .tasks
+            .get_mut("task-9")
+            .unwrap()
+            .end_session();
+        wait_for_push(&mut pushes, &key, |p| {
+            p["type"] == "term.closed"
+                && p["term_id"] == "agent:task-9"
+                && p["reason"] == "agent_session_ended"
+        })
+        .await;
+
+        let res = handler(
+            SessionSender::detached("s2"),
+            req("agent.attach", json!({ "task_id": "task-9" })),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["live"], false);
+        let snap = String::from_utf8_lossy(
+            &b64decode(res["result"]["snapshot"].as_str().unwrap()).unwrap(),
+        )
+        .into_owned();
+        assert!(
+            snap.contains("agent-beat"),
+            "last screen retained: {snap:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_attach_is_quiet_with_no_session_and_errors_on_unknown_tasks() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        // A recovered task with no live session (e.g. after a daemon restart).
+        let idle = ActiveTask::reattach(
+            crate::task::Task::new(crate::task::TaskId::new("task-9"), "quiet", TaskKind::Quick),
+            crate::worktree::Worktree {
+                name: "wt".into(),
+                path: repo.clone(),
+                branch: "build/quiet".into(),
+                base_branch: "main".into(),
+            },
+            ".build/plan.md".into(),
+            None,
+            Default::default(),
+            None,
+            vec![],
+            None,
+            None,
+            false,
+            vec![],
+            false,
+            false,
+        );
+        state.lock().unwrap().tasks.insert("task-9".into(), idle);
+
+        // Attach must NOT error: live:false, a blank screen at the agent PTY's
+        // default grid (120×40), cursor 0.
+        let (sender, _pushes, _key) = SessionSender::observable("s-dead");
+        let res = handler(sender, req("agent.attach", json!({ "task_id": "task-9" })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["live"], false);
+        assert_eq!(res["result"]["cols"], 120);
+        assert_eq!(res["result"]["rows"], 40);
+        assert_eq!(res["result"]["cursor"], 0);
+        assert!(b64decode(res["result"]["snapshot"].as_str().unwrap()).is_ok());
+
+        // Only an unknown task errors.
+        let res = handler(
+            SessionSender::detached("s1"),
+            req("agent.attach", json!({ "task_id": "task-99" })),
+        );
+        assert_eq!(res["error"], "unknown task_id");
+
+        // A close frame detaches the session's sender from the agent screen.
+        let close = Frame {
+            session_id: "s-dead".into(),
+            message_id: String::new(),
+            frame_type: "close".into(),
+            sender: "relay".into(),
+            created_at: String::new(),
+            payload: Value::Null,
+        };
+        dispatch_frame(&state, SessionSender::detached("s-dead"), close);
+        assert!(state.lock().unwrap().agent_screens["task-9"]
+            .screen
+            .attached
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_starting_after_attach_reaches_the_attached_viewer() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        // The viewer attaches while the task has no session at all.
+        let idle = ActiveTask::reattach(
+            crate::task::Task::new(crate::task::TaskId::new("task-9"), "quiet", TaskKind::Quick),
+            crate::worktree::Worktree {
+                name: "wt".into(),
+                path: repo.clone(),
+                branch: "build/quiet".into(),
+                base_branch: "main".into(),
+            },
+            ".build/plan.md".into(),
+            None,
+            Default::default(),
+            None,
+            vec![],
+            None,
+            None,
+            false,
+            vec![],
+            false,
+            false,
+        );
+        {
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.task_project.insert("task-9".into(), project_id);
+            s.tasks.insert("task-9".into(), idle);
+        }
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        let res = handler(sender, req("agent.attach", json!({ "task_id": "task-9" })));
+        assert_eq!(res["result"]["live"], false, "{res:?}");
+
+        // A session spawns (approve → build). The next mutation's
+        // finish_mutation tail must start a pump for the attached viewer —
+        // through the Weak self-handle set by shared().
+        insert_live_task(&state, &repo, dir.path().join("wt-side"), "task-9");
+        let res = handler(
+            SessionSender::detached("s1"),
+            req(
+                "task.set_auto_advance",
+                json!({ "task_id": "task-9", "enabled": false }),
+            ),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+
+        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
+            output_text(seen, "agent:task-9").contains("agent-beat")
+        })
+        .await;
+        assert_eq!(seen[0]["type"], "term.reset", "{seen:?}");
+        let s = state.lock().unwrap();
+        assert!(s.agent_screens["task-9"].live);
+        assert_eq!(s.agent_screens["task-9"].pumped_generation, 1);
+    }
+
+    #[tokio::test]
+    async fn task_delete_prompt_closes_terminals_and_drops_the_agent_screen() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let call = |method: &str, params: Value| {
+            handler(SessionSender::detached("s1"), req(method, params))
+        };
+
+        let dispatched = call(
+            "task.dispatch",
+            json!({ "goal": "delete me", "kind": "quick" }),
+        );
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let created = call("term.create", json!({ "task_id": task_id }));
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        let attached = call("agent.attach", json!({ "task_id": task_id }));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        let pid = state.lock().unwrap().terms[&term_id].session.pid().unwrap();
+
+        // Keep the worktree through the merge so only the delete closes things.
+        let merged = call(
+            "task.approve_merge",
+            json!({ "task_id": task_id, "cleanup": "keep" }),
+        );
+        assert_eq!(merged["result"]["state"], "merged", "{merged:?}");
+        assert!(state.lock().unwrap().terms.contains_key(&term_id));
+
+        let deleted = call("task.delete", json!({ "task_id": task_id }));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        let s = state.lock().unwrap();
+        assert!(
+            !s.terms.contains_key(&term_id),
+            "delete prompt-closes the task's terminals"
+        );
+        assert!(
+            !s.agent_screens.contains_key(&task_id),
+            "delete drops the retained agent screen"
+        );
+        drop(s);
+        assert!(process_reaped(pid));
     }
 
     #[tokio::test]

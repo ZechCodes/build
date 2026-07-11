@@ -1300,10 +1300,17 @@ impl Orchestrator {
         worktree_path: &Path,
         message: &str,
     ) -> Result<(), OrchestratorError> {
-        self.git(worktree_path, &["add", "-A"])?;
-        // Only commit if something is staged.
-        let status = self.git(worktree_path, &["status", "--porcelain"])?;
-        if !status.trim().is_empty() {
+        // The scaffolded MCP config is machine-local plumbing (absolute binary
+        // path, per-task identity): committing it would merge it into the base
+        // branch and add/add-conflict against every other branch's copy.
+        self.git(
+            worktree_path,
+            &["add", "-A", "--", ".", ":(exclude).build/mcp.json"],
+        )?;
+        // Only commit if something is staged (the MCP config alone must not
+        // produce a commit).
+        let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
+        if !staged.trim().is_empty() {
             self.git(worktree_path, &["commit", "-m", message])?;
         }
         Ok(())
@@ -1344,9 +1351,17 @@ impl Orchestrator {
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
         let out = Command::new("git").args(args).current_dir(dir).output()?;
         if !out.status.success() {
+            // git splits its story across streams (a conflicting merge reports
+            // "CONFLICT …" on stdout); surface both so the user sees why.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect();
             return Err(OrchestratorError::Git(format!(
                 "git {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                detail.join("\n")
             )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -2331,6 +2346,102 @@ mod tests {
             r.find_branch("user/abandon-me", git2::BranchType::Local)
                 .is_err(),
             "branch pruned"
+        );
+    }
+
+    /// Run git in `dir`, asserting success.
+    fn run_git(dir: &Path, args: &[&str]) {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?} failed in {dir:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commits_exclude_the_scaffolded_mcp_config() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-mcp", "user/mcp-exclude");
+        std::fs::write(external.path.join("work.txt"), "user work\n").unwrap();
+
+        let mut t = orch
+            .adopt(TaskId::new("adm1"), &external, "main", Default::default())
+            .unwrap();
+        // approve_merge's implicit commit_all sweeps the worktree; the scaffolded
+        // machine-local MCP config must never ride along into base.
+        orch.approve_merge(&mut t).unwrap();
+
+        let tracked = Command::new("git")
+            .args(["ls-tree", "-r", "--name-only", "main"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let tracked = String::from_utf8_lossy(&tracked.stdout).into_owned();
+        assert!(tracked.contains("work.txt"), "{tracked}");
+        assert!(
+            !tracked.contains(".build/mcp.json"),
+            "machine-local MCP config merged into base: {tracked}"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopted_merge_succeeds_when_base_already_tracks_a_task_mcp_config() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        // The external branch forks first; base then gains a committed
+        // .build/mcp.json (what earlier native-task merges used to leave behind).
+        let external = user_worktree(&dir, &repo, "wt-old-fork", "user/older-fork");
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-m", "polluted base"]);
+        std::fs::write(external.path.join("feature.txt"), "work\n").unwrap();
+
+        let mut t = orch
+            .adopt(TaskId::new("adm2"), &external, "main", Default::default())
+            .unwrap();
+        orch.approve_merge(&mut t)
+            .expect("adopted merge must not add/add-conflict on the MCP config");
+        assert_eq!(t.task.state, TaskState::Merged);
+    }
+
+    #[tokio::test]
+    async fn merge_conflict_reports_the_conflict_and_leaves_base_clean() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-conflict", "user/conflicting");
+        // Same path, different content on both sides of the fork.
+        std::fs::write(repo.join("shared.txt"), "base version\n").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-m", "base edit"]);
+        std::fs::write(external.path.join("shared.txt"), "external version\n").unwrap();
+
+        let mut t = orch
+            .adopt(TaskId::new("adc1"), &external, "main", Default::default())
+            .unwrap();
+        let err = orch
+            .approve_merge(&mut t)
+            .expect_err("conflicting merge must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CONFLICT") || msg.contains("shared.txt"),
+            "the conflict detail must reach the user, got: {msg}"
+        );
+        // The failed merge was aborted: the primary checkout is clean again.
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&status.stdout).trim(),
+            "",
+            "primary checkout left dirty after failed merge"
         );
     }
 

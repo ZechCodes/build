@@ -166,6 +166,42 @@ async function main() {
   const runAllMerged = await call("task.approve_merge", { task_id: r.task_id });
   check("run-all task merges", runAllMerged.state === "merged");
 
+  // External worktree adoption: list → read-only browse → adopt → merge with
+  // cleanup=keep. Conditional: runs only when the environment pre-created an
+  // external worktree in the project repo (the local harness does this via
+  // podman exec); a vanilla stack skips it without failing.
+  const withExternals = await call("task.list");
+  const external = (withExternals.external_worktrees || []).find((w) => w.adoptable);
+  if (external) {
+    check("external worktree is listed", true, `${external.branch} (${external.worktree_id})`);
+    const browse = await call("worktree.diff", {
+      project_id: external.project_id,
+      worktree_id: external.worktree_id,
+    });
+    check("worktree browse shows the dirty diff", browse.patch.length > 0, browse.stat && `+${browse.stat.insertions}`);
+    const afterBrowse = await call("task.list");
+    check(
+      "browsing does not adopt",
+      (afterBrowse.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
+    );
+
+    const adopted = await call("task.adopt", {
+      project_id: external.project_id,
+      worktree_id: external.worktree_id,
+    });
+    check("adopt mints a review task", adopted.state === "review" && adopted.adopted === true, `state=${adopted.state}`);
+    const afterAdopt = await call("task.list");
+    check(
+      "adopted worktree leaves the external list",
+      !(afterAdopt.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
+    );
+
+    const adoptedMerged = await call("task.approve_merge", { task_id: adopted.task_id, cleanup: "keep" });
+    check("adopted task merges with cleanup=keep", adoptedMerged.state === "merged", `state=${adoptedMerged.state}`);
+  } else {
+    console.log("· adoption checks skipped (no external worktree in the project repo)");
+  }
+
   // Quick task: dispatch → review → merge (no plan phase).
   const q = await call("task.dispatch", { goal: "Quick fix typo", kind: "quick" });
   check("quick task skips planning (review)", q.state === "review", `state=${q.state}`);

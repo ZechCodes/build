@@ -119,6 +119,19 @@ pub fn diff_against_merge_base(
 
 /// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
 /// working directory and index (untracked included).
+/// The scaffolded per-task MCP config: machine-local plumbing, never the
+/// user's work — excluded from every review surface.
+const MCP_CONFIG_PATH: &str = ".build/mcp.json";
+
+fn delta_path(delta: &git2::DiffDelta) -> String {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 fn diff_tree_to_dirty_workdir(
     repo: &git2::Repository,
     old_tree: &git2::Tree,
@@ -129,37 +142,40 @@ fn diff_tree_to_dirty_workdir(
         .show_untracked_content(true);
     let diff = repo.diff_tree_to_workdir_with_index(Some(old_tree), Some(&mut opts))?;
 
-    let files = diff
+    let files: Vec<ChangedFile> = diff
         .deltas()
-        .map(|delta| {
-            let path = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            ChangedFile {
-                path,
-                status: map_status(delta.status()),
-            }
+        .map(|delta| ChangedFile {
+            path: delta_path(&delta),
+            status: map_status(delta.status()),
         })
+        .filter(|file| file.path != MCP_CONFIG_PATH)
         .collect();
 
-    let stats = diff.stats()?;
-    let stat = DiffStat {
-        files_changed: stats.files_changed(),
-        insertions: stats.insertions(),
-        deletions: stats.deletions(),
-    };
-
+    // Stats are counted while printing (instead of `diff.stats()`) so the
+    // excluded MCP config contributes to neither the patch nor the numbers.
+    let mut insertions = 0;
+    let mut deletions = 0;
     let mut patch = String::new();
-    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        if delta_path(&delta) == MCP_CONFIG_PATH {
+            return true;
+        }
+        match line.origin() {
+            '+' => insertions += 1,
+            '-' => deletions += 1,
+            _ => {}
+        }
         if matches!(line.origin(), '+' | '-' | ' ') {
             patch.push(line.origin());
         }
         patch.push_str(&String::from_utf8_lossy(line.content()));
         true
     })?;
+    let stat = DiffStat {
+        files_changed: files.len(),
+        insertions,
+        deletions,
+    };
 
     Ok(WorktreeDiff { stat, files, patch })
 }
@@ -290,6 +306,24 @@ mod tests {
         // The patch is the full review surface.
         assert!(diff.patch().contains("new.txt"));
         assert!(diff.patch().contains("+hello"));
+    }
+
+    #[test]
+    fn dirty_diff_excludes_the_scaffolded_mcp_config() {
+        let (_dir, repo) = init_repo();
+        // Adoption scaffolds the machine-local MCP config into the worktree; it
+        // is plumbing, not the user's work, and must never reach the review
+        // surface.
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{\"mcpServers\":{}}\n").unwrap();
+        std::fs::write(repo.join("visible.txt"), "real work\n").unwrap();
+
+        let diff = diff_against_base(&repo, "main").unwrap();
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"visible.txt"), "{paths:?}");
+        assert!(!paths.contains(&".build/mcp.json"), "{paths:?}");
+        assert_eq!(diff.stat().files_changed, 1, "{:?}", diff.stat());
+        assert!(!diff.patch().contains("mcp.json"));
     }
 
     #[test]

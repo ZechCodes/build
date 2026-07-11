@@ -138,6 +138,10 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// How long a task's `task.list` diffstat is served from cache before the next
+/// poll recomputes it (same reasoning as the external-worktree scan interval).
+const TASK_STAT_TTL: Duration = Duration::from_secs(10);
+
 /// One project's cached external-worktree scan.
 struct ExternalScanCache {
     scanned_at: std::time::Instant,
@@ -233,6 +237,11 @@ pub struct AppState {
     task_store: Option<TaskStore>,
     /// task id → its RFC 3339 creation time, carried across saves (and restarts).
     task_created_at: HashMap<String, String>,
+    /// task id → its RFC 3339 last-mutation time (stamped on every mutation).
+    task_updated_at: HashMap<String, String>,
+    /// task id → cached `task.list` diffstat, so the poll surface never runs
+    /// per-task git work more than once per TTL window.
+    task_stat_cache: HashMap<String, (std::time::Instant, Value)>,
     streams: HashMap<String, StreamState>,
     term: Option<TermSession>,
     next_id: u64,
@@ -276,6 +285,8 @@ impl AppState {
             tasks: HashMap::new(),
             task_store: None,
             task_created_at: HashMap::new(),
+            task_updated_at: HashMap::new(),
+            task_stat_cache: HashMap::new(),
             streams: HashMap::new(),
             term: None,
             next_id: 1,
@@ -491,6 +502,8 @@ impl AppState {
         }
         self.task_created_at
             .insert(task_id.clone(), record.created_at);
+        self.task_updated_at
+            .insert(task_id.clone(), record.updated_at);
         if state_changed {
             self.persist_task(&task_id, &active)?;
         }
@@ -511,6 +524,7 @@ impl AppState {
             .entry(task_id.to_string())
             .or_insert_with(|| now.clone())
             .clone();
+        let updated_at = self.task_updated_at.get(task_id).cloned().unwrap_or(now);
         let project_path = self
             .task_project
             .get(task_id)
@@ -541,7 +555,7 @@ impl AppState {
             adopted: active.adopted,
             pending_continuation: active.pending_continuation,
             created_at,
-            updated_at: now,
+            updated_at,
         };
         self.task_store
             .as_ref()
@@ -558,6 +572,14 @@ impl AppState {
         task_id: String,
         active: ActiveTask,
     ) -> (Value, Result<(), String>) {
+        // Stamp times before building the view so the response carries them,
+        // and drop the cached diffstat — the mutation likely changed the tree.
+        let now = now_rfc3339();
+        self.task_created_at
+            .entry(task_id.clone())
+            .or_insert_with(|| now.clone());
+        self.task_updated_at.insert(task_id.clone(), now);
+        self.task_stat_cache.remove(&task_id);
         let view = self.task_view(&task_id, &active);
         let persisted = self.persist_task(&task_id, &active);
         self.push_notify_if_needed(&task_id, &active.task.state);
@@ -1585,6 +1607,8 @@ impl AppState {
                 self.tasks.remove(task_id);
                 self.task_project.remove(task_id);
                 self.task_created_at.remove(task_id);
+                self.task_updated_at.remove(task_id);
+                self.task_stat_cache.remove(task_id);
                 self.invalidate_external_scan(project_id);
             }
         }
@@ -1707,6 +1731,8 @@ impl AppState {
 
         self.task_project.remove(&task_id);
         self.task_created_at.remove(&task_id);
+        self.task_updated_at.remove(&task_id);
+        self.task_stat_cache.remove(&task_id);
 
         // If the worktree outlived the task (an adopted card deleted with its
         // files kept, or a native prune that failed), it is now unbound and must
@@ -1770,10 +1796,18 @@ impl AppState {
     }
 
     fn task_list(&mut self) -> Value {
-        let tasks: Vec<Value> = self
-            .tasks
-            .iter()
-            .map(|(id, active)| self.task_view(id, active))
+        let ids: Vec<String> = self.tasks.keys().cloned().collect();
+        let tasks: Vec<Value> = ids
+            .into_iter()
+            .map(|id| {
+                let stat = self.task_stat(&id);
+                let active = self.tasks.get(&id).expect("listed above");
+                let mut view = self.task_view(&id, active);
+                view.as_object_mut()
+                    .expect("task_view returns an object")
+                    .insert("stat".to_string(), stat);
+                view
+            })
             .collect();
         let external_worktrees = self.external_worktrees_json();
         json!({ "tasks": tasks, "external_worktrees": external_worktrees })
@@ -1905,6 +1939,8 @@ impl AppState {
         active.end_session();
         let project_id = self.task_project.remove(&task_id);
         self.task_created_at.remove(&task_id);
+        self.task_updated_at.remove(&task_id);
+        self.task_stat_cache.remove(&task_id);
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
         }
@@ -2354,12 +2390,47 @@ impl AppState {
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
+            "created_at": self.task_created_at.get(task_id),
+            "updated_at": self.task_updated_at.get(task_id),
             "stages": active
                 .stages
                 .iter()
                 .map(|stage| stage_json(active, stage))
                 .collect::<Vec<_>>(),
         })
+    }
+
+    /// A task's live diffstat for the `task.list` poll surface, cached for
+    /// [`TASK_STAT_TTL`] so polling never repeats per-task git work. Terminal
+    /// tasks (worktree pruned or about to be) report null.
+    fn task_stat(&mut self, task_id: &str) -> Value {
+        let Some(active) = self.tasks.get(task_id) else {
+            return Value::Null;
+        };
+        if active.task.state.is_terminal() || !active.worktree.path.exists() {
+            return Value::Null;
+        }
+        if let Some((computed_at, stat)) = self.task_stat_cache.get(task_id) {
+            if computed_at.elapsed() < TASK_STAT_TTL {
+                return stat.clone();
+            }
+        }
+        let stat =
+            crate::diff::diff_against_base(&active.worktree.path, &active.worktree.base_branch)
+                .map(|diff| {
+                    let s = diff.stat();
+                    json!({
+                        "files_changed": s.files_changed,
+                        "insertions": s.insertions,
+                        "deletions": s.deletions,
+                    })
+                })
+                .unwrap_or(Value::Null);
+        self.task_stat_cache.insert(
+            task_id.to_string(),
+            (std::time::Instant::now(), stat.clone()),
+        );
+        stat
     }
 
     fn take(&mut self, task_id: &str) -> Result<ActiveTask, String> {
@@ -2929,6 +3000,57 @@ mod tests {
             created_at: "t".into(),
             payload: json!({ "method": method, "id": "1", "params": params }),
         }
+    }
+
+    #[test]
+    fn task_views_carry_timestamps_and_a_cached_diffstat() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        // A quick task builds and lands in review with committed work.
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick change", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+        assert!(res["result"]["created_at"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+        assert!(res["result"]["updated_at"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+
+        let entry = |res: &Value| {
+            res["result"]["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["task_id"] == json!(task_id.clone()))
+                .unwrap()
+                .clone()
+        };
+
+        // task.list carries the live diffstat for a reviewable task…
+        let t = entry(&state.handle(req("task.list", json!({}))));
+        assert!(t["stat"]["files_changed"].as_u64().unwrap() >= 1, "{t:?}");
+        assert!(t["stat"]["insertions"].as_u64().unwrap() >= 1);
+
+        // …served from cache on the next poll (identical, no per-poll git churn).
+        let t2 = entry(&state.handle(req("task.list", json!({}))));
+        assert_eq!(t["stat"], t2["stat"]);
+
+        // A merged task has no worktree left: stat null, timestamps remain.
+        state.handle(req("task.approve_merge", json!({ "task_id": task_id })));
+        let t3 = entry(&state.handle(req("task.list", json!({}))));
+        assert!(t3["stat"].is_null(), "{t3:?}");
+        assert!(t3["updated_at"].as_str().is_some_and(|s| !s.is_empty()));
     }
 
     #[test]

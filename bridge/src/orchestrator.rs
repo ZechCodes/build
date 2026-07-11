@@ -419,6 +419,18 @@ impl Orchestrator {
                 "cannot adopt a worktree with the base branch {base_branch:?} checked out"
             )));
         }
+        // The branch name is an EXTERNAL, untrusted string (parsed verbatim from
+        // `git worktree list --porcelain`), and it is later handed to `git merge`
+        // and `git push` as a bare argv element. A name beginning with `-` would
+        // be read by git as an option (`--exec=…` → arbitrary code execution), so
+        // refuse to adopt it. Native branches are always `build/<slug>` and can
+        // never trip this.
+        if branch.starts_with('-') {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
+                 option — rename the branch first"
+            )));
+        }
 
         self.commit_all_with_message(&external.path, "Checkpoint: adopted by Build")?;
 
@@ -1092,7 +1104,10 @@ impl Orchestrator {
         self.commit_all(&active.worktree.path, &active.task.goal)?;
         self.git(
             &active.worktree.path,
-            &["push", "-u", "origin", &active.worktree.branch],
+            // `--` stops option parsing so an option-shaped branch name can never
+            // be read by git as a flag (defense in depth alongside the adopt-time
+            // guard in `adopt`).
+            &["push", "-u", "origin", "--", &active.worktree.branch],
         )?;
         Ok(())
     }
@@ -1310,7 +1325,9 @@ impl Orchestrator {
                  check out {base_branch:?} (or commit/stash your work) and approve again"
             )));
         }
-        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", branch]) {
+        // `--` stops option parsing so an option-shaped branch name can never be
+        // read by git as a flag (defense in depth alongside the adopt-time guard).
+        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", "--", branch]) {
             // A conflict leaves the primary checkout wedged mid-merge; abort it so
             // the checkout returns to a clean base and later merges aren't poisoned.
             // Best-effort — the merge failure is the error we surface either way.
@@ -2204,6 +2221,15 @@ mod tests {
         assert_eq!(
             refusal(&external, "rf2"),
             "cannot adopt a worktree with the base branch \"main\" checked out"
+        );
+
+        // An option-shaped branch name (untrusted, straight out of `git worktree
+        // list`) would be read by `git merge`/`git push` as a flag — refuse it.
+        external.branch = Some("--exec=/tmp/pwn.sh".into());
+        assert_eq!(
+            refusal(&external, "rf3"),
+            "cannot adopt a worktree whose branch name \"--exec=/tmp/pwn.sh\" looks like a \
+             command-line option — rename the branch first"
         );
     }
 

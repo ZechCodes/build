@@ -217,6 +217,10 @@ pub struct AppState {
     projects: Vec<Project>,
     /// task id → the project it was dispatched to (routes approve/diff/merge/done).
     task_project: HashMap<String, String>,
+    /// task id → its project's repo path, retained even when the project is not
+    /// registered (a parked repo-missing task has no `task_project` entry, yet its
+    /// record must keep the real path so a restored repo can un-park it).
+    task_project_path: HashMap<String, String>,
     worktrees_root: std::path::PathBuf,
     /// Where cloned repos land and the directory browser starts; user-configurable.
     projects_dir: std::path::PathBuf,
@@ -263,6 +267,7 @@ impl AppState {
         let mut state = AppState {
             projects: Vec::new(),
             task_project: HashMap::new(),
+            task_project_path: HashMap::new(),
             worktrees_root: worktrees_root.into(),
             projects_dir: default_projects_dir(),
             config_path: None,
@@ -425,6 +430,11 @@ impl AppState {
 
         // Project ids are re-minted each boot, so resolve by repo path — and
         // re-register the project if the config lost it but the repo survives.
+        // Retain the record's path unconditionally: a parked task gets no
+        // `task_project` entry, and without this fallback `persist_task` would
+        // overwrite `project_path` with "" and orphan the task forever.
+        self.task_project_path
+            .insert(task_id.clone(), record.project_path.clone());
         let repo_path = std::path::PathBuf::from(&record.project_path);
         if repo_path.exists() {
             let project_id = self.add_project(repo_path, record.base_branch);
@@ -506,6 +516,7 @@ impl AppState {
             .get(task_id)
             .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
             .map(|p| p.repo_path.display().to_string())
+            .or_else(|| self.task_project_path.get(task_id).cloned())
             .unwrap_or_default();
         let record = PersistedTask {
             id: task_id.to_string(),
@@ -1696,6 +1707,17 @@ impl AppState {
 
         self.task_project.remove(&task_id);
         self.task_created_at.remove(&task_id);
+
+        // If the worktree outlived the task (an adopted card deleted with its
+        // files kept, or a native prune that failed), it is now unbound and must
+        // resurface as an external card on the next poll — but the scan cache
+        // still excludes the then-bound path. Invalidate so the board refreshes
+        // immediately instead of after the ~10s scan cadence (spec §5.7).
+        if worktree.path.exists() {
+            if let Some(pid) = project_id {
+                self.invalidate_external_scan(&pid);
+            }
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -2587,12 +2609,22 @@ enum MergeCleanup {
 /// Parse the optional `cleanup` param. Absent → `Prune` (today's behavior).
 /// `"release"` is only meaningful for adopted tasks.
 fn merge_cleanup_from(params: &Value, adopted: bool) -> Result<MergeCleanup, String> {
-    match params.get("cleanup").and_then(Value::as_str) {
-        None | Some("prune") => Ok(MergeCleanup::Prune),
-        Some("keep") => Ok(MergeCleanup::Keep),
-        Some("release") if adopted => Ok(MergeCleanup::Release),
-        Some("release") => Err("cleanup: \"release\" is only valid for adopted tasks".to_string()),
-        Some(other) => Err(format!(
+    // Distinguish "absent" (→ Prune, today's default) from "present but not a
+    // string" — a non-string value must fail fast, never silently collapse to the
+    // destructive Prune default (on an adopted task Prune deletes files Build did
+    // not create).
+    let cleanup = match params.get("cleanup") {
+        None | Some(Value::Null) => return Ok(MergeCleanup::Prune),
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| format!("invalid cleanup: {value} (expected prune|keep|release)"))?,
+    };
+    match cleanup {
+        "prune" => Ok(MergeCleanup::Prune),
+        "keep" => Ok(MergeCleanup::Keep),
+        "release" if adopted => Ok(MergeCleanup::Release),
+        "release" => Err("cleanup: \"release\" is only valid for adopted tasks".to_string()),
+        other => Err(format!(
             "invalid cleanup: {other:?} (expected prune|keep|release)"
         )),
     }
@@ -4413,6 +4445,13 @@ mod tests {
             persisted[0].adopted,
             "the adopted flag survives the parking"
         );
+        // The real repo path survives the parking write — without it a restored
+        // repo could never un-park the task (it would read project_path "").
+        assert_eq!(
+            persisted[0].project_path,
+            missing_repo.display().to_string(),
+            "parking must not erase the project path"
+        );
         assert_eq!(
             persisted[1].state,
             TaskState::Interrupted(crate::task::Phase::Build)
@@ -5456,6 +5495,51 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_kept_adopted_task_resurfaces_the_worktree_immediately() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let adopted = state.handle(req(
+            "task.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        let task_id = adopted["result"]["task_id"].as_str().unwrap().to_string();
+
+        // Merge & keep: the worktree survives, the task lands Merged (terminal).
+        let merged = state.handle(req(
+            "task.approve_merge",
+            json!({ "task_id": task_id, "cleanup": "keep" }),
+        ));
+        assert_eq!(merged["ok"], true, "{merged:?}");
+
+        // Deleting the (now unbound-once-deleted) card must resurface the kept
+        // worktree as external on the VERY NEXT poll, not after the scan cadence.
+        let deleted = state.handle(req("task.delete", json!({ "task_id": task_id })));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        let list2 = state.handle(req("task.list", json!({})));
+        let externals = list2["result"]["external_worktrees"].as_array().unwrap();
+        assert_eq!(
+            externals.len(),
+            1,
+            "kept worktree is external again: {externals:?}"
+        );
+        assert_eq!(externals[0]["branch"], "hotfix/thing");
+    }
+
+    #[test]
     fn adopt_then_request_changes_simulates_like_any_build() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(
@@ -5593,6 +5677,34 @@ mod tests {
             terminal_release["error"],
             "task.release: task is merged — use task.delete to clear it off the board"
         );
+    }
+
+    #[test]
+    fn merge_cleanup_rejects_non_string_values_instead_of_pruning() {
+        // Absent / null → Prune (backward-compat default).
+        assert!(matches!(
+            merge_cleanup_from(&json!({}), true),
+            Ok(MergeCleanup::Prune)
+        ));
+        assert!(matches!(
+            merge_cleanup_from(&json!({ "cleanup": null }), true),
+            Ok(MergeCleanup::Prune)
+        ));
+        // A present-but-non-string value must fail fast — never silently collapse
+        // to the destructive Prune default (spec: a mis-typed client must error).
+        for bad in [
+            json!(true),
+            json!(3),
+            json!({ "mode": "keep" }),
+            json!(["keep"]),
+        ] {
+            let params = json!({ "cleanup": bad });
+            let err = merge_cleanup_from(&params, true).unwrap_err();
+            assert!(
+                err.starts_with("invalid cleanup:"),
+                "non-string cleanup must be rejected, got: {err}"
+            );
+        }
     }
 
     #[test]

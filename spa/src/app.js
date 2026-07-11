@@ -7,6 +7,7 @@ import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
 import { renderWorktree } from "./views/worktree.js";
+import { sidebarRouteChanged } from "./views/sidebar.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -68,6 +69,7 @@ export function render() {
     App.poll = null;
   }
   setActiveNav(App.route.name);
+  sidebarRouteChanged(); // keep the rail's active row tracking the route
   if (App.route.name === "board") renderBoard();
   else if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();

@@ -11,12 +11,18 @@ import { openAppSession, adoptSession, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { openAddDevice } from "../sheets/addDevice.js";
+import { startFeed, stopFeed } from "../core/taskFeed.js";
+import { initSidebar } from "./sidebar.js";
 
 // Hide the main nav tabs while gating — the gate screens are self-contained.
 function setGate(on) {
   App.gated = on;
+  document.body.classList.toggle("gated", on);
   document.querySelectorAll("nav .tab").forEach((tab) => (tab.style.display = on ? "none" : ""));
-  if (on) $("#devpick").hidden = true;
+  if (on) {
+    $("#devpick").hidden = true;
+    stopFeed(); // no session to poll — the sidebar is hidden while gated
+  }
 }
 
 async function enterApp() {
@@ -37,6 +43,8 @@ async function enterApp() {
   setGate(false);
   paintDevicePicker();
   setConn('<span class="dot"></span>connected');
+  startFeed();
+  initSidebar();
   render(); // the hash route survives the gate, so deep links land where they point
 }
 

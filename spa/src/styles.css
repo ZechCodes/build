@@ -268,3 +268,54 @@ body.offline #root #adddev { opacity: 1; pointer-events: auto; }
   .comment-pop { max-width:calc(100vw - 16px); }
   .splitmenu { right:auto; left:0; }
 }
+
+/* ---- project sidebar (every page) ---- */
+#shell { display:flex; align-items:flex-start; }
+#sidebar { flex:0 0 272px; width:272px; position:sticky; top:0; align-self:stretch;
+  height:calc(100vh - 49px); overflow-y:auto; background:var(--panel);
+  border-right:1px solid var(--line); padding:16px 12px 40px; }
+body.sidebar-collapsed #sidebar { display:none; }
+body.gated #sidebar, body.gated #nav-side { display:none !important; }
+#shell main { flex:1; min-width:0; }
+.side-head { display:flex; align-items:center; margin:2px 6px 10px; }
+.side-head .side-actions { margin-left:auto; display:flex; gap:2px; }
+.iconbtn { font:inherit; font-size:14px; line-height:1; color:var(--dim); background:none;
+  border:none; border-radius:6px; padding:4px 7px; cursor:pointer; }
+.iconbtn:hover { background:var(--line2); color:var(--ink2); }
+.sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
+  text-transform:uppercase; }
+.sproj { margin-bottom:6px; }
+.sproj-head { display:flex; align-items:center; gap:7px; padding:6px 6px; border-radius:8px;
+  cursor:pointer; font-size:13.5px; font-weight:600; }
+.sproj-head:hover { background:var(--line2); }
+.sproj-head .chev { color:var(--dim); font-size:10px; width:10px; }
+.sproj-head .sicon { color:var(--ink2); }
+.sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sbadge { margin-left:auto; }
+.sproj-body { padding:0 0 6px 14px; }
+.ssec { margin:8px 0 2px; }
+.ssec .sseclabel { margin:0 6px 3px; }
+.srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
+  font-size:13px; color:var(--ink2); cursor:pointer; }
+.srow:hover { background:var(--line2); }
+.srow.active { background:var(--accent-soft); color:var(--accent); }
+.srow .sicon { flex:0 0 14px; text-align:center; font-size:11px; color:var(--dim); }
+.srow.attn .sicon { color:var(--accent); }
+.srow.done .sicon { color:var(--green); }
+.srow .stitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.srow .sstat { font-size:11.5px; flex:none; }
+.sstat .add { color:var(--green); font-style:normal; }
+.sstat .del { color:var(--red); font-style:normal; }
+.srow .sstate, .srow .sage { font-size:11.5px; color:var(--dim); font-family:var(--mono); flex:none; }
+.srow .warn { color:var(--amber); font-size:11px; }
+.swt-line .stitle { font-family:var(--mono); font-size:12px; }
+.swt-dirty { color:var(--amber); font-size:11px; }
+.swt-list { padding-left:14px; }
+.swt-item .stitle { font-size:12px; }
+.sempty { font-size:12.5px; margin:8px 6px; }
+.addmenu { display:flex; flex-direction:column; gap:8px; margin:14px 0; }
+.addmenu .btn { text-align:left; }
+@media (max-width: 900px) {
+  #sidebar { position:fixed; left:0; top:49px; bottom:0; height:auto; z-index:40;
+    box-shadow:8px 0 24px rgba(0,0,0,.08); width:min(86vw, 300px); }
+}

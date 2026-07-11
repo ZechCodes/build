@@ -1,0 +1,136 @@
+// Sidebar wiring: renders the project rail on every page, keeps expand /
+// collapse state, and routes clicks. Data arrives via the shared task feed.
+
+import { $ } from "../dom.js";
+import { App, go } from "../app.js";
+import { buildSidebarModel, sidebarHtml } from "../core/sidebar.js";
+import { subscribeFeed, refreshFeed } from "../core/taskFeed.js";
+import { setBadge } from "./shared.js";
+import { openBrowser } from "../sheets/browser.js";
+import { openClone } from "../sheets/clone.js";
+import { openNewRepo } from "../sheets/newRepo.js";
+
+const COLLAPSED_KEY = "build.sidebar.collapsed";
+const CLOSED_KEY = "build.sidebar.closedProjects";
+
+const closedProjects = new Set(JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"));
+const wtOpen = new Set(); // per-session: which projects' worktree lists are unfolded
+let lastFeed = null;
+
+function persistClosed() {
+  localStorage.setItem(CLOSED_KEY, JSON.stringify([...closedProjects]));
+}
+
+export function setSidebarCollapsed(on) {
+  document.body.classList.toggle("sidebar-collapsed", on);
+  localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
+}
+
+function activeTaskId() {
+  return App.route.name === "task" ? App.route.id : null;
+}
+
+function draw() {
+  if (!lastFeed) return;
+  const aside = $("#sidebar");
+  if (!aside) return;
+  const model = buildSidebarModel({
+    projects: lastFeed.projects,
+    tasks: lastFeed.tasks,
+    externalWorktrees: lastFeed.externalWorktrees,
+    readIds: App.readIds,
+    nowMs: Date.now(),
+  });
+  const scroll = aside.scrollTop;
+  aside.innerHTML = sidebarHtml(model, { closed: closedProjects, wtOpen, activeTaskId: activeTaskId() });
+  aside.scrollTop = scroll;
+  setBadge(lastFeed.tasks);
+
+  $("#side-collapse").onclick = () => setSidebarCollapsed(true);
+  $("#side-add").onclick = openAddProjectMenu;
+  aside.querySelectorAll(".sproj-head").forEach((h) => {
+    h.onclick = () => {
+      const pid = h.dataset.pid;
+      closedProjects.has(pid) ? closedProjects.delete(pid) : closedProjects.add(pid);
+      persistClosed();
+      draw();
+    };
+  });
+  aside.querySelectorAll(".srow[data-task]").forEach((r) => {
+    r.onclick = () => go({ name: "task", id: r.dataset.task, tab: r.dataset.tab });
+  });
+  aside.querySelectorAll(".srow[data-wtline]").forEach((r) => {
+    r.onclick = () => {
+      const pid = r.dataset.wtline;
+      wtOpen.has(pid) ? wtOpen.delete(pid) : wtOpen.add(pid);
+      draw();
+    };
+  });
+  aside.querySelectorAll(".srow[data-wt]").forEach((r) => {
+    r.onclick = () => go({ name: "worktree", projectId: r.dataset.project, worktreeId: r.dataset.wt });
+  });
+}
+
+/** The + menu: the three existing add flows, reused as-is. */
+function openAddProjectMenu() {
+  const done = () => {
+    $("#scrim").classList.remove("show");
+    refreshFeed();
+  };
+  $("#sheet").innerHTML = `
+    <h3>Add a project</h3>
+    <div class="sub">Point Build at a repo on this device — agents work in worktrees beside it.</div>
+    <div class="addmenu">
+      <button class="btn" id="ap-browse">Browse for an existing repo…</button>
+      <button class="btn" id="ap-clone">Clone a remote…</button>
+      <button class="btn" id="ap-new">Create a new repo…</button>
+    </div>
+    <div class="row"><button class="btn" id="ap-cancel" style="margin-left:auto">Cancel</button></div>
+    <div class="adderr" id="berr"></div>`;
+  $("#scrim").classList.add("show");
+  $("#ap-cancel").onclick = () => $("#scrim").classList.remove("show");
+  $("#ap-browse").onclick = () =>
+    openBrowser({
+      title: "Browse for a git repo",
+      gitOnly: true,
+      onChoose: async (path) => {
+        try {
+          await App.call("project.add", { path });
+          done();
+        } catch (e) {
+          const err = $("#berr");
+          if (err) err.textContent = e.message;
+        }
+      },
+    });
+  $("#ap-clone").onclick = () => openClone(done);
+  $("#ap-new").onclick = () => openNewRepo(done);
+}
+
+let mounted = false;
+
+/** Mount once: subscribe to the feed and wire the nav toggle. Re-entrant —
+ *  a reconnect calls this again and just repaints. */
+export function initSidebar() {
+  if (mounted) {
+    draw();
+    return;
+  }
+  mounted = true;
+  setSidebarCollapsed(
+    localStorage.getItem(COLLAPSED_KEY) === "1" ||
+      (localStorage.getItem(COLLAPSED_KEY) === null && window.innerWidth < 900)
+  );
+  const navToggle = $("#nav-side");
+  if (navToggle)
+    navToggle.onclick = () => setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+  subscribeFeed((feed) => {
+    lastFeed = feed;
+    draw();
+  });
+}
+
+/** Re-render on route changes so the active row tracks navigation. */
+export function sidebarRouteChanged() {
+  draw();
+}

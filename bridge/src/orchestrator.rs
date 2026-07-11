@@ -131,6 +131,12 @@ pub struct ActiveTask {
     pub auto_advance: bool,
     /// Persisted per-stage plan comments (flat; each carries its stage_id).
     pub comments: Vec<StageComment>,
+    /// True for a task minted around a pre-existing (user-created) worktree.
+    /// Gates pruning (spec §0.5), release, and boot-recovery parking.
+    pub adopted: bool,
+    /// One-shot continuation flag (spec §0.7): set at adoption, consumed by the
+    /// first session spawn afterwards.
+    pub pending_continuation: bool,
     /// The warm PTY session for the current phase (None before dispatch/after end).
     session: Option<PtySession>,
 }
@@ -152,6 +158,8 @@ impl ActiveTask {
         revising_stage_id: Option<String>,
         auto_advance: bool,
         comments: Vec<StageComment>,
+        adopted: bool,
+        pending_continuation: bool,
     ) -> Self {
         ActiveTask {
             task,
@@ -165,6 +173,8 @@ impl ActiveTask {
             revising_stage_id,
             auto_advance,
             comments,
+            adopted,
+            pending_continuation,
             session: None,
         }
     }
@@ -343,6 +353,8 @@ impl Orchestrator {
             revising_stage_id: None,
             auto_advance: false,
             comments: Vec::new(),
+            adopted: false,
+            pending_continuation: false,
             session: None,
         };
 
@@ -1710,6 +1722,8 @@ mod tests {
             None,
             false,
             Vec::new(),
+            false,
+            false,
         );
         assert_eq!(
             revived.task.state,
@@ -1756,6 +1770,8 @@ mod tests {
             None,
             false,
             Vec::new(),
+            false,
+            false,
         );
         orch.resume(&mut revived).unwrap();
         assert_eq!(revived.task.state, TaskState::Planning);
@@ -2622,6 +2638,8 @@ mod tests {
             t.revising_stage_id.clone(),
             t.auto_advance,
             t.comments.clone(),
+            false,
+            false,
         )
     }
 
@@ -3028,6 +3046,8 @@ mod tests {
             None,
             false,
             comments,
+            false,
+            false,
         )
     }
 
@@ -3115,6 +3135,8 @@ mod tests {
             Some("first".into()),
             true,
             vec![comment_on("c-1", "first", CommentState::Open)],
+            false,
+            false,
         );
         assert_eq!(active.stages.len(), 1);
         assert_eq!(active.current_stage_id.as_deref(), Some("first"));

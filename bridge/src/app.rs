@@ -335,6 +335,8 @@ impl AppState {
             record.revising_stage_id,
             record.auto_advance,
             record.comments,
+            record.adopted,
+            record.pending_continuation,
         );
 
         let mut state_changed = false;
@@ -441,6 +443,8 @@ impl AppState {
             revising_stage_id: active.revising_stage_id.clone(),
             auto_advance: active.auto_advance,
             comments: active.comments.clone(),
+            adopted: active.adopted,
+            pending_continuation: active.pending_continuation,
             created_at,
             updated_at: now,
         };
@@ -3184,6 +3188,8 @@ mod tests {
                 revising_stage_id: None,
                 auto_advance: false,
                 comments: Vec::new(),
+                adopted: false,
+                pending_continuation: false,
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -3250,6 +3256,8 @@ mod tests {
                 revising_stage_id: None,
                 auto_advance: false,
                 comments: Vec::new(),
+                adopted: false,
+                pending_continuation: false,
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -3735,6 +3743,8 @@ mod tests {
                 revising_stage_id: None,
                 auto_advance: false,
                 comments: Vec::new(),
+                adopted: false,
+                pending_continuation: false,
                 created_at: "2026-07-01T10:00:00Z".into(),
                 updated_at: "2026-07-01T10:00:00Z".into(),
             })
@@ -3802,6 +3812,8 @@ mod tests {
                 revising_stage_id: None,
                 auto_advance: false,
                 comments: Vec::new(),
+                adopted: false,
+                pending_continuation: false,
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })
@@ -3868,6 +3880,8 @@ mod tests {
                 revising_stage_id: None,
                 auto_advance: false,
                 comments: Vec::new(),
+                adopted: false,
+                pending_continuation: false,
                 created_at: "2026-07-01T09:00:00Z".into(),
                 updated_at: "2026-07-01T09:00:00Z".into(),
             })
@@ -4012,6 +4026,8 @@ mod tests {
                 None,
                 false,
                 Vec::new(),
+                false,
+                false,
             );
             state.task_project.insert(id.into(), project_id.clone());
             state.tasks.insert(id.into(), active);

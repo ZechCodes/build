@@ -89,6 +89,14 @@ pub struct PersistedTask {
     /// Persisted per-stage plan comments (flat; each carries its `stage_id`).
     #[serde(default)]
     pub comments: Vec<StageComment>,
+    /// True for a task minted around a pre-existing (user-created) worktree.
+    /// Defaulted so task files written before adoption existed load as native.
+    #[serde(default)]
+    pub adopted: bool,
+    /// Adoption's one-shot harness-continuation flag; consumed by the first
+    /// session spawn after adoption, persisted so a restart in between keeps it.
+    #[serde(default)]
+    pub pending_continuation: bool,
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
@@ -320,6 +328,40 @@ mod tests {
         assert_eq!(loaded, vec![rec]);
     }
 
+    /// Adoption's pinned legacy rule (spec §4): any task file written before
+    /// worktree adoption existed has neither key and must load as a native
+    /// task — `adopted: false`, `pending_continuation: false`.
+    #[test]
+    fn pre_adoption_task_files_load_as_native() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut legacy = serde_json::to_value(record("task-1", TaskState::Review)).unwrap();
+        let map = legacy.as_object_mut().unwrap();
+        map.remove("adopted");
+        map.remove("pending_continuation");
+        std::fs::write(
+            dir.path().join("task-1.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let store = TaskStore::new(dir.path());
+        let loaded = store.load_all().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(!loaded[0].adopted);
+        assert!(!loaded[0].pending_continuation);
+    }
+
+    /// An adopted record round-trips both adoption flags.
+    #[test]
+    fn adopted_record_round_trips_both_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        let mut rec = record("task-1", TaskState::Review);
+        rec.adopted = true;
+        rec.pending_continuation = true;
+        store.save(&rec).unwrap();
+        assert_eq!(store.load_all().unwrap(), vec![rec]);
+    }
+
     #[test]
     fn delete_removes_the_record_and_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
@@ -355,6 +397,8 @@ mod tests {
             revising_stage_id: None,
             auto_advance: false,
             comments: Vec::new(),
+            adopted: false,
+            pending_continuation: false,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
         }

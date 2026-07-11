@@ -49,6 +49,25 @@ export async function renderWorktree() {
     $("#back").onclick = () => go({ name: "board" });
   };
 
+  const stopPolling = () => {
+    if (App.poll) {
+      clearInterval(App.poll);
+      App.poll = null;
+    }
+  };
+  const startPolling = () => {
+    if (!App.poll) App.poll = setInterval(paint, 1600);
+  };
+  // Once adoption has succeeded this worktree is bound to a task, so worktree.diff
+  // (and the poll) will report "unknown worktree_id" — that is the EXPECTED
+  // post-adoption state, not "the worktree vanished". Hand off to the freshly
+  // minted task (which now holds any merge_failed reason) instead of wiping the
+  // view with the "no longer available" empty state.
+  const handoffToTask = () => {
+    stopPolling();
+    go({ name: "task", id: adopting.adoptedTaskId(), tab: "diff" });
+  };
+
   const shell = (meta) => {
     const uncommitted = meta.dirty_files ? ` · ${meta.dirty_files} uncommitted` : "";
     root.innerHTML = `
@@ -136,15 +155,28 @@ export async function renderWorktree() {
         const btn = $("#wrequest");
         btn.disabled = true;
         btn.textContent = "requesting…";
+        // Suspend the poll: this action adopts the worktree (binding it to a task),
+        // after which the poll's worktree.diff would resolve to "unknown
+        // worktree_id" and race us to renderNotFound.
+        stopPolling();
         const notes = assembleDiffNotes(diffComments, $("#wgeneral") ? $("#wgeneral").value : "");
         try {
           await adopting.taskCall("task.request_changes", { comments: notes });
           hideCommentPop();
           go({ name: "task", id: adopting.adoptedTaskId(), tab: "diff" });
         } catch (e) {
+          if (adopting.adoptedTaskId()) {
+            // Adoption succeeded but the follow-up failed: the task now owns this
+            // worktree and its error — hand off to it rather than stranding the
+            // user on a route the poll is about to blank.
+            hideCommentPop();
+            handoffToTask();
+            return;
+          }
           btn.disabled = false;
           btn.textContent = "Request Changes";
           showError("error: " + e.message.slice(0, 80));
+          startPolling();
         }
       };
       return;
@@ -171,11 +203,19 @@ export async function renderWorktree() {
       options: WORKTREE_MERGE_OPTIONS,
       run: async (optionId) => {
         const { action, cleanup } = MERGE_RPC[optionId];
+        stopPolling(); // adoption binds the worktree; the poll must not race us
         try {
           await adopting.taskCall("task.git_action", { action, cleanup });
           go({ name: "board" });
         } catch (e) {
+          if (adopting.adoptedTaskId()) {
+            // Adopted, then the merge failed (a conflict is the common case for a
+            // stale external worktree): hand off to the task holding merge_failed.
+            handoffToTask();
+            return;
+          }
           showError("error: " + e.message.slice(0, 80));
+          startPolling();
           throw e;
         }
       },
@@ -184,13 +224,19 @@ export async function renderWorktree() {
       if (!window.confirm("Delete this worktree and its branch? This removes files Build did not create.")) return;
       abandon.disabled = true;
       abandon.textContent = "abandoning…";
+      stopPolling(); // adoption binds the worktree; the poll must not race us
       try {
         await adopting.taskCall("task.abandon", {});
         go({ name: "board" });
       } catch (e) {
+        if (adopting.adoptedTaskId()) {
+          handoffToTask();
+          return;
+        }
         abandon.disabled = false;
         abandon.textContent = "Abandon & delete";
         showError("error: " + e.message.slice(0, 80));
+        startPolling();
       }
     };
   };
@@ -239,15 +285,24 @@ export async function renderWorktree() {
 
   const paint = async () => {
     if (App.offline) return;
+    // Adopted already? The worktree lives on as a task now — never poll it (the
+    // diff would 404) — hand off so its outcome/error is where the user can see it.
+    if (adopting.adoptedTaskId()) {
+      handoffToTask();
+      return;
+    }
     let res;
     try {
       res = await App.call("worktree.diff", { project_id: projectId, worktree_id: worktreeId });
     } catch (e) {
       if (String(e && e.message).includes("unknown worktree_id")) {
-        renderNotFound();
-        if (App.poll) {
-          clearInterval(App.poll);
-          App.poll = null;
+        // Bound to a task since the last poll → hand off; otherwise it was
+        // genuinely removed and the not-found state is correct.
+        if (adopting.adoptedTaskId()) {
+          handoffToTask();
+        } else {
+          stopPolling();
+          renderNotFound();
         }
       }
       return; // transient — the poll retries
@@ -259,17 +314,22 @@ export async function renderWorktree() {
       dirty_files: res.dirty_files,
       adoptable: res.adoptable,
     };
-    const shellKey = `${meta.branch}|${meta.adoptable}|${meta.dirty_files}|${meta.head_subject}|${meta.path}`;
-    if (shellState === null || shellState.key !== shellKey) {
-      shell(meta);
-      shellState = { ...meta, key: shellKey };
-      diffKey = null; // shell wiped #tabbody — force a body repaint below
-    }
     const files = filterNoiseFiles(parseDiff(res.patch));
     const key = String(res.adoptable) + " " + res.patch;
     const general = $("#wgeneral");
     const busy =
       diffComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
+    // The shell rebuild wipes #tabbody (the in-progress general comment + its
+    // focus live only there), so it obeys the SAME freeze-while-commenting
+    // discipline as the body repaint below — never rebuild while the reviewer is
+    // mid-comment, even though churny fields (dirty_files, head_subject) move as
+    // the user edits their own live checkout.
+    const shellKey = `${meta.branch}|${meta.adoptable}|${meta.dirty_files}|${meta.head_subject}|${meta.path}`;
+    if (!busy && (shellState === null || shellState.key !== shellKey)) {
+      shell(meta);
+      shellState = { ...meta, key: shellKey };
+      diffKey = null; // shell wiped #tabbody — force a body repaint below
+    }
     if ($("#wdiff-feedback") && (key === diffKey || busy)) {
       updateActions();
       return;

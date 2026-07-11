@@ -139,6 +139,10 @@ pub struct ActiveTask {
     /// One-shot continuation flag (spec §0.7): set at adoption, consumed by the
     /// first session spawn afterwards.
     pub pending_continuation: bool,
+    /// Counts session spawns for this task (1-based; 0 = never spawned). The
+    /// agent-screen pump keys off it so a viewer attached across a phase boundary
+    /// gets exactly one pump per session, never a duplicate for the same one.
+    pub session_generation: u64,
     /// The warm PTY session for the current phase (None before dispatch/after end).
     session: Option<PtySession>,
 }
@@ -177,6 +181,7 @@ impl ActiveTask {
             comments,
             adopted,
             pending_continuation,
+            session_generation: 0,
             session: None,
         }
     }
@@ -235,12 +240,47 @@ impl ActiveTask {
         self.session.as_ref().map(|s| s.subscribe())
     }
 
+    /// The live session's generation + a fresh subscription, if one is warm.
+    /// The agent-screen pump records the generation so the same session is
+    /// never pumped twice (the existing [`subscribe`](Self::subscribe) stays
+    /// for the idle monitor).
+    pub fn subscribe_with_generation(
+        &self,
+    ) -> Option<(u64, tokio::sync::broadcast::Receiver<Vec<u8>>)> {
+        self.session
+            .as_ref()
+            .map(|s| (self.session_generation, s.subscribe()))
+    }
+
     /// Write raw bytes (attached-terminal keystrokes) to the warm session.
     pub fn write_input(&self, bytes: &[u8]) -> Result<(), OrchestratorError> {
         if let Some(session) = &self.session {
             session.write_input(bytes)?;
         }
         Ok(())
+    }
+
+    /// Like [`write_input`](Self::write_input) but a dead session is an error —
+    /// the agent-tab contract surfaces "no active agent session" to the typer
+    /// instead of silently swallowing keystrokes.
+    pub fn write_input_strict(&self, bytes: &[u8]) -> Result<(), String> {
+        match &self.session {
+            Some(session) => session.write_input(bytes).map_err(|e| e.to_string()),
+            None => Err("no active agent session".to_string()),
+        }
+    }
+
+    /// Resize the live session's PTY, returning whether one was live. A dead
+    /// session is a no-op `false` — the retained last agent screen must never
+    /// be garbled by a dead resize.
+    pub fn resize_session(&self, size: PtySize) -> Result<bool, OrchestratorError> {
+        match &self.session {
+            Some(session) => {
+                session.resize(size)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// Whether the phase's harness process has exited (crashed or finished without
@@ -381,6 +421,7 @@ impl Orchestrator {
             comments: Vec::new(),
             adopted: false,
             pending_continuation: false,
+            session_generation: 0,
             session: None,
         };
 
@@ -461,6 +502,7 @@ impl Orchestrator {
             comments: Vec::new(),
             adopted: true,
             pending_continuation: true,
+            session_generation: 0,
             session: None,
         })
     }
@@ -1239,6 +1281,7 @@ impl Orchestrator {
                 PtySession::spawn(&spec, Some(active.worktree.path.clone()), self.pty_size)?
             }
         };
+        active.session_generation += 1;
         active.session = Some(session);
         Ok(())
     }
@@ -3645,6 +3688,85 @@ mod tests {
         assert_eq!(active.revising_stage_id.as_deref(), Some("first"));
         assert!(active.auto_advance);
         assert_eq!(active.comments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_generation_counts_spawns_and_strict_io_needs_a_live_session() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut active = orch
+            .dispatch(
+                TaskId::new("g1"),
+                "track generations",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+
+        // The first spawn is generation 1, and the warm session is subscribable
+        // together with its generation.
+        assert_eq!(active.session_generation, 1);
+        let (generation, _rx) = active
+            .subscribe_with_generation()
+            .expect("a warm session after dispatch");
+        assert_eq!(generation, 1);
+
+        // Strict input reaches the live PTY; resize reports a live session.
+        active.write_input_strict(b"hello\r").unwrap();
+        let size = PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        assert!(active.resize_session(size).unwrap(), "live session resizes");
+
+        // With the session ended, strict input errors and resize is a not-live
+        // no-op — the generation is left where it was.
+        active.end_session();
+        assert!(active.subscribe_with_generation().is_none());
+        assert_eq!(
+            active.write_input_strict(b"hello\r").unwrap_err(),
+            "no active agent session"
+        );
+        assert!(!active.resize_session(size).unwrap());
+        assert_eq!(active.session_generation, 1);
+
+        // The next spawn (plan approval) is generation 2.
+        active.task.apply(TaskEvent::PlanReady).unwrap();
+        orch.approve_plan(&mut active, None).unwrap();
+        assert_eq!(active.session_generation, 2);
+        let (generation, _rx) = active
+            .subscribe_with_generation()
+            .expect("a warm session after approval");
+        assert_eq!(generation, 2);
+    }
+
+    #[test]
+    fn reattach_starts_at_generation_zero() {
+        let active = ActiveTask::reattach(
+            Task::new(TaskId::new("t"), "goal", TaskKind::Standard),
+            Worktree {
+                name: "wt".into(),
+                path: PathBuf::from("/nonexistent"),
+                branch: "build/wt".into(),
+                base_branch: "main".into(),
+            },
+            DEFAULT_PLAN_PATH.into(),
+            None,
+            Default::default(),
+            None,
+            vec![],
+            None,
+            None,
+            false,
+            vec![],
+            false,
+            false,
+        );
+        assert_eq!(active.session_generation, 0);
+        assert!(active.subscribe_with_generation().is_none());
     }
 
     #[tokio::test]

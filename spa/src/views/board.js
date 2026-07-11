@@ -4,11 +4,12 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { STATE_LABEL, chipClass, payloadFor, setBadge } from "./shared.js";
+import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
 
 export async function renderBoard() {
   const root = $("#root");
-  const draw = (tasks) => {
+  const draw = (tasks, externalWorktrees) => {
     const byBucket = { attn: [], work: [], done: [] };
     for (const t of tasks) {
       if (t.state === "merged" || t.state === "abandoned") byBucket.done.push(t);
@@ -27,20 +28,32 @@ export async function renderBoard() {
       items.length
         ? `<div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((t) => card(t, quiet)).join("")}</div>`
         : "";
+    const externalBucket = externalWorktrees.length
+      ? `<div class="bucket"><h2>OTHER WORKTREES <span class="n">${externalWorktrees.length}</span></h2>${externalWorktrees.map((w) => externalWorktreeCard(w)).join("")}</div>`
+      : "";
+    const anyContent = byBucket.attn.length || byBucket.work.length || byBucket.done.length || externalWorktrees.length;
     root.innerHTML = `
       <div class="board-head"><div><h1>Board</h1><p>What needs you — and what doesn't.</p></div>
         <button class="btn primary" id="newtask" style="margin-left:auto">+ New task</button></div>
-      ${byBucket.attn.length || byBucket.work.length || byBucket.done.length ? "" : '<div class="empty">No tasks yet — start one with “New task”.</div>'}
+      ${anyContent ? "" : '<div class="empty">No tasks yet — start one with “New task”.</div>'}
       ${bucket("NEEDS YOU", byBucket.attn, false)}
       ${bucket("WORKING", byBucket.work, true)}
-      ${bucket("DONE", byBucket.done, true)}`;
+      ${bucket("DONE", byBucket.done, true)}
+      ${externalBucket}`;
     $("#newtask").onclick = openNewTask;
-    root.querySelectorAll(".card").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
-    setBadge(tasks);
+    // Task cards route to the task view; external worktree cards (data-wt, no
+    // data-id) route to the read-only browse view — keep the wiring separate so
+    // task clicks stay untouched.
+    root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
+    root
+      .querySelectorAll(".card[data-wt]")
+      .forEach((c) => (c.onclick = () => go({ name: "worktree", projectId: c.dataset.project, worktreeId: c.dataset.wt })));
+    setBadge(tasks); // external worktrees never count toward the attention badge
   };
   const load = async () => {
     try {
-      draw((await App.call("task.list")).tasks);
+      const res = await App.call("task.list");
+      draw(res.tasks, res.external_worktrees || []);
     } catch {
       /* offline / transient — the poll retries */
     }

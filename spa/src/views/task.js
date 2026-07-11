@@ -5,6 +5,8 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
+import { diffFilesHtml } from "../core/diffRender.js";
+import { mountSplitButton } from "../core/splitButton.js";
 import { assemblePlanNotes, assembleDiffNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
@@ -14,6 +16,35 @@ import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js"
 import { watchSelection } from "../selectWatch.js";
 import { toggleTerminal } from "../terminal/drawer.js";
 import { renderStagesTab } from "./stages.js";
+
+// The diff-tab git split button: each option id maps to a task.git_action call.
+// cleanup is omitted for commit/push (the bridge rejects cleanup on non-merges).
+const GIT_ACTION_RPC = {
+  merge_prune: { action: "merge", cleanup: "prune" },
+  merge_keep: { action: "merge", cleanup: "keep" },
+  merge_release: { action: "merge", cleanup: "release" },
+  merge_push: { action: "merge_push", cleanup: "prune" },
+  commit: { action: "commit" },
+  push: { action: "push" },
+};
+
+// The diff-tab merge option set. Adopted tasks add "Merge & release" (un-adopt
+// after merge, keeping the user's worktree). Descriptions carry the raw base
+// branch — the split button escapes them.
+function diffMergeOptions(adopted, base) {
+  const options = [
+    { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: `commit, merge into ${base}, remove the worktree + branch`, busyLabel: "merging…" },
+    { id: "merge_keep", menuLabel: "Merge & keep worktree", description: `merge into ${base}, keep the worktree and branch`, busyLabel: "merging…" },
+  ];
+  if (adopted)
+    options.push({ id: "merge_release", menuLabel: "Merge & release", description: `merge into ${base}, then un-adopt — keep the worktree and branch, drop the task`, busyLabel: "merging…" });
+  options.push(
+    { id: "merge_push", menuLabel: "Merge & push", description: `merge, then push ${base} to origin`, busyLabel: "merging & pushing…" },
+    { id: "commit", menuLabel: "Commit", description: "commit the work, stay on the branch", busyLabel: "committing…" },
+    { id: "push", menuLabel: "Push", description: "commit, then push this branch to origin", busyLabel: "pushing…" },
+  );
+  return options;
+}
 
 export async function renderTask() {
   const root = $("#root");
@@ -26,7 +57,7 @@ export async function renderTask() {
       <div class="thead"><h1>${esc(m.goal || "")}</h1>
         <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span>
           <span id="termToggle" role="button" style="cursor:pointer">terminal <span class="kbd">\`</span></span></div></div>
-      <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>
+      <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>${m.adopted ? "<span>·</span><span>adopted</span>" : ""}
         <span class="taskactions" id="taskactions"></span></div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div class="tabs"><div class="t ${tab === "plan" ? "active" : ""}" data-tab="plan">Plan</div>
@@ -70,8 +101,10 @@ export async function renderTask() {
     }
   };
 
-  // Removal actions, mapped 1:1 to the bridge RPCs by the task's state: Abandon
-  // (task.abandon) for a live task, Delete (task.delete) for a terminal one.
+  // Removal actions, mapped to the bridge RPCs by the task's state: Delete
+  // (task.delete) for a terminal task; for a live task an Abandon (task.abandon)
+  // button — and for a live *adopted* task a split button whose default is the
+  // non-destructive Release (task.release, keeps the user's files).
   const wireActions = (m) => {
     const el = $("#taskactions");
     if (!el) return;
@@ -93,27 +126,45 @@ export async function renderTask() {
           showBanner(localError);
         }
       };
-    } else if (canAbandon(state)) {
-      el.innerHTML = `<button class="btn mini" id="abandonTask">Abandon</button>`;
-      $("#abandonTask").onclick = async () => {
-        if (!window.confirm("Abandon this task? Its worktree and branch are removed; the task stays as history.")) return;
-        localError = null; // a fresh action clears any stale local error
-        const btn = $("#abandonTask");
-        btn.disabled = true;
-        btn.textContent = "abandoning…";
+      return;
+    }
+    if (!canAbandon(state)) {
+      el.innerHTML = "";
+      return;
+    }
+    const options = m.adopted
+      ? [
+          { id: "release", label: "Release", description: "un-adopt: drop the task, keep the worktree, branch, and all files", busyLabel: "releasing…" },
+          { id: "abandon_delete", label: "Abandon & delete", description: "delete the worktree and branch; the task stays as history", busyLabel: "abandoning…", danger: true },
+        ]
+      : [{ id: "abandon_delete", label: "Abandon", description: "delete the worktree and branch; the task stays as history", busyLabel: "abandoning…" }];
+    const run = async (optionId) => {
+      localError = null; // a fresh action clears any stale local error
+      if (optionId === "release") {
         try {
-          await App.call("task.abandon", { task_id: id });
-          paint();
+          await App.call("task.release", { task_id: id });
+          go({ name: "board" });
         } catch (e) {
-          btn.disabled = false;
-          btn.textContent = "Abandon";
           localError = "error: " + e.message.slice(0, 80);
           showBanner(localError);
+          throw e;
         }
-      };
-    } else {
-      el.innerHTML = "";
-    }
+        return;
+      }
+      const confirmText = m.adopted
+        ? "Delete this adopted worktree and its branch? This removes files Build did not create. The task stays as history."
+        : "Abandon this task? Its worktree and branch are removed; the task stays as history.";
+      if (!window.confirm(confirmText)) throw new Error("cancelled");
+      try {
+        await App.call("task.abandon", { task_id: id });
+        paint();
+      } catch (e) {
+        localError = "error: " + e.message.slice(0, 80);
+        showBanner(localError);
+        throw e;
+      }
+    };
+    mountSplitButton(el, { options, run });
   };
 
   loadModelCatalog(); // warm the selector catalog before plan_review needs it
@@ -337,20 +388,7 @@ export async function renderTask() {
     const totalIns = files.reduce((a, f) => a + f.add, 0),
       totalDel = files.reduce((a, f) => a + f.del, 0);
     const body = $("#tabbody");
-    const fileHtml = files
-      .map(
-        (f) => `
-      <div class="file" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span></div>
-        <table>${f.rows
-          .map((r) =>
-            r.t === "hunk"
-              ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${esc(r.text)}</td></tr>`
-              : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${esc(r.text)}</td></tr>`,
-          )
-          .join("")}</table></div>`,
-      )
-      .join("");
+    const fileHtml = diffFilesHtml(files);
     body.innerHTML = `
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
         ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
@@ -471,20 +509,10 @@ export async function renderTask() {
     } else if (lastDiffState === "review") {
       // A recent git-action result (Committed./Pushed./error) outlives the poll.
       hint.textContent = diffMsg || "Select code or click a line number to comment, or finish the worktree.";
-      // GitHub-style split button: primary runs the default (merge), the caret
-      // opens the full menu. Every action commits first; push is explicit.
-      actions.innerHTML = `
-        <div class="splitbtn">
-          <button class="btn primary" id="gitprimary" data-action="merge">Merge</button>
-          <button class="btn primary caret" id="gitcaret" title="More actions">▾</button>
-          <div class="splitmenu" id="gitmenu" hidden>
-            <div class="mi" data-action="commit"><span class="mt">Commit</span><span class="md">commit the work, stay on the branch</span></div>
-            <div class="mi" data-action="merge"><span class="mt">Merge</span><span class="md">commit, then merge into ${esc((last && last.base_branch) || "main")}</span></div>
-            <div class="mi" data-action="merge_push"><span class="mt">Merge &amp; push</span><span class="md">merge, then push ${esc((last && last.base_branch) || "main")} to origin</span></div>
-            <div class="mi" data-action="push"><span class="mt">Push</span><span class="md">commit, then push this branch to origin</span></div>
-          </div>
-        </div>`;
-      const labels = { commit: "committing…", merge: "merging…", merge_push: "merging & pushing…", push: "pushing…" };
+      // GitHub-style split button: primary runs the default (Merge & clean up),
+      // the caret opens the full menu. Every action commits first; push is
+      // explicit. Adopted tasks add "Merge & release".
+      const base = (last && last.base_branch) || "main";
       const flash = (msg) => {
         diffMsg = msg;
         setTimeout(() => {
@@ -492,13 +520,13 @@ export async function renderTask() {
           updateDiffActions();
         }, 6000);
       };
-      const run = async (action, btn) => {
-        btn.disabled = true;
+      const run = async (optionId) => {
+        const { action, cleanup } = GIT_ACTION_RPC[optionId];
         diffMsg = "";
-        const originalLabel = btn.textContent;
-        btn.textContent = labels[action] || "working…";
+        const params = { task_id: id, action };
+        if (cleanup) params.cleanup = cleanup;
         try {
-          await App.call("task.git_action", { task_id: id, action });
+          await App.call("task.git_action", params);
           if (action === "merge" || action === "merge_push") {
             go({ name: "board" });
           } else {
@@ -507,35 +535,13 @@ export async function renderTask() {
             paint();
           }
         } catch (e) {
-          btn.disabled = false;
-          btn.textContent = originalLabel;
           const reason = mergeFailureReason(e.message);
           flash(reason ? "merge failed: " + reason.slice(0, 70) : "error: " + e.message.slice(0, 70));
-          updateDiffActions();
+          if (hint) hint.textContent = diffMsg;
+          throw e; // let the split button restore the primary button
         }
       };
-      $("#gitprimary").onclick = (e) => run(e.currentTarget.dataset.action, e.currentTarget);
-      const menu = $("#gitmenu");
-      $("#gitcaret").onclick = (e) => {
-        e.stopPropagation();
-        menu.hidden = !menu.hidden;
-        if (!menu.hidden) {
-          const close = (ev) => {
-            if (!$(".splitbtn")?.contains(ev.target)) {
-              menu.hidden = true;
-              document.removeEventListener("pointerdown", close);
-            }
-          };
-          setTimeout(() => document.addEventListener("pointerdown", close), 0);
-        }
-      };
-      menu.querySelectorAll(".mi").forEach(
-        (mi) =>
-          (mi.onclick = () => {
-            menu.hidden = true;
-            run(mi.dataset.action, $("#gitprimary"));
-          }),
-      );
+      mountSplitButton(actions, { options: diffMergeOptions(last && last.adopted, base), run });
     } else if (lastDiffState === "building") {
       hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
       actions.innerHTML = "";

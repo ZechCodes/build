@@ -97,12 +97,37 @@ pub fn diff_against_base(
 ) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let base_tree = repo.revparse_single(base_branch)?.peel_to_tree()?;
+    diff_tree_to_dirty_workdir(&repo, &base_tree)
+}
 
+/// The worktree's total delta from its fork point with `base_branch`: the
+/// merge-base tree vs the working directory *and* index, untracked included —
+/// committed, staged, unstaged, and new files together. This is the browse/
+/// review surface for external worktrees, which may long predate the base tip;
+/// `diff_against_base` (base-tip-anchored) remains the task-diff surface.
+pub fn diff_against_merge_base(
+    worktree_path: &Path,
+    base_branch: &str,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+    let head_commit = repo.head()?.peel_to_commit()?;
+    let merge_base_id = repo.merge_base(base_commit.id(), head_commit.id())?;
+    let merge_base_tree = repo.find_commit(merge_base_id)?.tree()?;
+    diff_tree_to_dirty_workdir(&repo, &merge_base_tree)
+}
+
+/// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
+/// working directory and index (untracked included).
+fn diff_tree_to_dirty_workdir(
+    repo: &git2::Repository,
+    old_tree: &git2::Tree,
+) -> Result<WorktreeDiff, DiffError> {
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    let diff = repo.diff_tree_to_workdir_with_index(Some(old_tree), Some(&mut opts))?;
 
     let files = diff
         .deltas()
@@ -306,6 +331,93 @@ mod tests {
         let strayed = diff_against_base(&repo, "main").unwrap();
         assert!(strayed.touched_outside_plan_scope());
         assert_eq!(strayed.paths_outside(PLAN_SCOPE_PREFIX), vec!["src.rs"]);
+    }
+
+    #[test]
+    fn merge_base_diff_sees_committed_staged_unstaged_and_untracked() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["checkout", "-b", "build/x"]);
+        std::fs::write(repo.join("committed.txt"), "committed\n").unwrap();
+        git(&["add", "committed.txt"]);
+        git(&["commit", "-m", "committed"]);
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(&["add", "staged.txt"]);
+        std::fs::write(repo.join("README.md"), "# project\nline\nmodified\n").unwrap();
+        std::fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
+
+        let diff = diff_against_merge_base(&repo, "main").unwrap();
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"committed.txt"), "got {paths:?}");
+        assert!(paths.contains(&"staged.txt"), "got {paths:?}");
+        assert!(paths.contains(&"README.md"), "got {paths:?}");
+        assert!(paths.contains(&"untracked.txt"), "got {paths:?}");
+        assert!(diff.patch().contains("+untracked"));
+    }
+
+    #[test]
+    fn merge_base_diff_ignores_base_movement() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["checkout", "-b", "build/x"]);
+        std::fs::write(repo.join("feature.rs"), "fn main() {}\n").unwrap();
+        git(&["add", "feature.rs"]);
+        git(&["commit", "-m", "feature"]);
+
+        // Advance main with an unrelated commit after the branch forked.
+        git(&["checkout", "main"]);
+        std::fs::write(repo.join("upstream.txt"), "upstream\n").unwrap();
+        git(&["add", "upstream.txt"]);
+        git(&["commit", "-m", "upstream"]);
+        git(&["checkout", "build/x"]);
+
+        let diff = diff_against_merge_base(&repo, "main").unwrap();
+        assert_eq!(diff.files().len(), 1);
+        assert_eq!(diff.files()[0].path, "feature.rs");
+    }
+
+    #[test]
+    fn merge_base_diff_on_detached_head_works() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        let head_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git(&["checkout", "--detach", &head_sha]);
+        std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
+
+        let diff = diff_against_merge_base(&repo, "main").unwrap();
+        let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"dirty.txt"), "got {paths:?}");
     }
 
     #[tokio::test]

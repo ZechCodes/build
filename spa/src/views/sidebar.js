@@ -30,6 +30,10 @@ function activeTaskId() {
   return App.route.name === "task" ? App.route.id : null;
 }
 
+function activeProjectId() {
+  return App.route.name === "project" ? App.route.projectId : null;
+}
+
 function draw() {
   if (!lastFeed) return;
   const aside = $("#sidebar");
@@ -42,18 +46,32 @@ function draw() {
     nowMs: Date.now(),
   });
   const scroll = aside.scrollTop;
-  aside.innerHTML = sidebarHtml(model, { closed: closedProjects, wtOpen, activeTaskId: activeTaskId() });
+  aside.innerHTML = sidebarHtml(model, {
+    closed: closedProjects,
+    wtOpen,
+    activeTaskId: activeTaskId(),
+    activeProjectId: activeProjectId(),
+  });
   aside.scrollTop = scroll;
   setBadge(lastFeed.tasks);
 
   $("#side-collapse").onclick = () => setSidebarCollapsed(true);
   $("#side-add").onclick = openAddProjectMenu;
-  aside.querySelectorAll(".sproj-head").forEach((h) => {
-    h.onclick = () => {
-      const pid = h.dataset.pid;
+  // The chevron toggles; the name navigates to the project page and expands it.
+  aside.querySelectorAll("[data-chev]").forEach((b) => {
+    b.onclick = () => {
+      const pid = b.dataset.chev;
       closedProjects.has(pid) ? closedProjects.delete(pid) : closedProjects.add(pid);
       persistClosed();
       draw();
+    };
+  });
+  aside.querySelectorAll("[data-open]").forEach((el) => {
+    el.onclick = () => {
+      const pid = el.dataset.open;
+      closedProjects.delete(pid);
+      persistClosed();
+      go({ name: "project", projectId: pid });
     };
   });
   aside.querySelectorAll(".srow[data-task]").forEach((r) => {

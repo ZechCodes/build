@@ -7,6 +7,7 @@ import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
 import { renderWorktree } from "./views/worktree.js";
+import { renderProject } from "./views/project.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -74,5 +75,6 @@ export function render() {
   else if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();
   else if (App.route.name === "worktree") renderWorktree();
+  else if (App.route.name === "project") renderProject();
   else renderTask();
 }

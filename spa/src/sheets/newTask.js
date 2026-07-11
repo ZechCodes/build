@@ -5,7 +5,7 @@ import { esc } from "../core/text.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 
-export async function openNewTask() {
+export async function openNewTask({ projectId } = {}) {
   $("#sheet").innerHTML = `
     <h3>New task</h3><div class="sub">Describe a goal. Build plans it, you review, an agent ships it.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
@@ -30,6 +30,7 @@ export async function openNewTask() {
     select.innerHTML = projects.length
       ? projects.map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} · ${esc(p.base_branch)}</option>`).join("")
       : '<option value="">(no projects — add one in Settings)</option>';
+    if (projectId && projects.some((p) => p.project_id === projectId)) select.value = projectId;
   } catch {
     select.innerHTML = '<option value="">(could not load projects)</option>';
   }

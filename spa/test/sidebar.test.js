@@ -123,6 +123,20 @@ describe("projectHtml", () => {
     expect(projectHtml(model(), u)).toContain('class="srow attn active"');
   });
 
+  it("splits the header into a chevron toggle and a name that opens the project", () => {
+    const html = projectHtml(model(), ui());
+    expect(html).toContain('data-chev="p1"');
+    expect(html).toContain('data-open="p1"');
+    expect(html).toContain("sfolder"); // folder icon, not a box glyph
+    expect(html).not.toContain("▣");
+  });
+
+  it("highlights the project whose page is open", () => {
+    const u = ui();
+    u.activeProjectId = "p1";
+    expect(projectHtml(model(), u)).toContain("sproj-head active");
+  });
+
   it("blocked tasks in needs-you carry the warning icon", () => {
     const m = model({ needsYou: [task({ task_id: "a", state: "blocked" })] });
     expect(projectHtml(m, ui())).toContain("▲");

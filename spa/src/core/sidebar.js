@@ -75,13 +75,19 @@ function worktreeLine(m, open) {
     <span class="sicon">⌥</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
 }
 
-/** One project's block. `ui`: { closed:Set, wtOpen:Set, activeTaskId } */
+/** An outline folder, sized for the rail (the mock's project glyph). */
+const FOLDER_ICON = `<svg class="sfolder" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.5 1.75h6.9a1 1 0 0 1 1 1v6.75a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1V4.25z"/></svg>`;
+
+/** One project's block. `ui`: { closed:Set, wtOpen:Set, activeTaskId, activeProjectId } */
 export function projectHtml(m, ui) {
   const open = !ui.closed.has(m.project_id);
   const badge = m.unread ? `<span class="badge sbadge">${m.unread}</span>` : "";
-  const head = `<div class="sproj-head" data-pid="${esc(m.project_id)}">
-    <span class="chev">${open ? "▾" : "▸"}</span><span class="sicon">▣</span>
-    <span class="sproj-name mono">${esc(m.name)}</span>${badge}</div>`;
+  // Two distinct targets: the chevron expands/collapses; the name opens the
+  // project page (and the wiring expands the project as it navigates).
+  const head = `<div class="sproj-head ${ui.activeProjectId === m.project_id ? "active" : ""}">
+    <button class="chevbtn" data-chev="${esc(m.project_id)}" title="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>
+    <span class="sproj-open" data-open="${esc(m.project_id)}" title="Open project">${FOLDER_ICON}<span class="sproj-name mono">${esc(m.name)}</span></span>
+    ${badge}</div>`;
   if (!open) return `<div class="sproj">${head}</div>`;
 
   const active = (t) => (t.task_id === ui.activeTaskId ? "active" : "");

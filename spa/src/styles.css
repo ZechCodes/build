@@ -285,11 +285,17 @@ body.gated #sidebar, body.gated #nav-side { display:none !important; }
 .sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }
 .sproj { margin-bottom:6px; }
-.sproj-head { display:flex; align-items:center; gap:7px; padding:6px 6px; border-radius:8px;
-  cursor:pointer; font-size:13.5px; font-weight:600; }
-.sproj-head:hover { background:var(--line2); }
-.sproj-head .chev { color:var(--dim); font-size:10px; width:10px; }
-.sproj-head .sicon { color:var(--ink2); }
+.sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;
+  font-size:13.5px; font-weight:600; }
+.sproj-head.active { background:var(--accent-soft); }
+.sproj-head.active .sproj-name { color:var(--accent); }
+.chevbtn { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:6px; width:26px; height:26px; flex:none; cursor:pointer; display:grid; place-items:center; }
+.chevbtn:hover { background:var(--line2); color:var(--ink2); }
+.sproj-open { display:flex; align-items:center; gap:7px; flex:1; min-width:0; cursor:pointer;
+  padding:4px 6px; border-radius:6px; }
+.sproj-open:hover { background:var(--line2); }
+.sfolder { color:var(--ink2); flex:none; }
 .sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sbadge { margin-left:auto; }
 .sproj-body { padding:0 0 6px 14px; }
@@ -319,3 +325,8 @@ body.gated #sidebar, body.gated #nav-side { display:none !important; }
   #sidebar { position:fixed; left:0; top:49px; bottom:0; height:auto; z-index:40;
     box-shadow:8px 0 24px rgba(0,0,0,.08); width:min(86vw, 300px); }
 }
+/* project page header */
+.crumb { font-size:12.5px; margin-bottom:2px; }
+.crumb a { color:var(--ink2); text-decoration:none; }
+.crumb a:hover { color:var(--accent); }
+.projmeta { color:var(--dim); font-size:12px; }

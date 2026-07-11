@@ -160,8 +160,8 @@ export async function renderWorktree() {
     }
     hint.textContent = "Comment on the diff to request changes, or finish the worktree.";
     const mergeHost = document.createElement("span");
-    const abandon = document.createElement("button");
-    abandon.className = "btn danger";
+    const abandon = document.createElement("button"); // quiet (plain) — the confirm guards it
+    abandon.className = "btn";
     abandon.id = "wabandon";
     abandon.textContent = "Abandon & delete";
     actions.innerHTML = "";

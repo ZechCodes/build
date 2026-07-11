@@ -234,6 +234,9 @@ async fn serve() {
         Duration::from_secs(idle_threshold),
         Duration::from_secs(5),
     );
+    // Close keyed terminals whose scope vanished out-of-band (e.g. a user
+    // rm -rf'ing an external worktree); mutation-driven closure happens inline.
+    AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     let handler = AppState::handler(app);
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't

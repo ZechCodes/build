@@ -81,7 +81,10 @@ pub struct PtySession {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
-    output_tx: broadcast::Sender<Vec<u8>>,
+    /// The output broadcast sender, dropped by the reader thread at PTY EOF so
+    /// every subscriber observes `Closed` when the child exits — even while the
+    /// session itself is still held (the keyed-terminal pumps key off this).
+    output_tx: Arc<Mutex<Option<broadcast::Sender<Vec<u8>>>>>,
     last_activity: Arc<Mutex<Instant>>,
     submit: SubmitKey,
     /// The child's exit code, cached the first time it is observed. `try_wait`
@@ -128,13 +131,16 @@ impl PtySession {
             .take_writer()
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        let (output_tx, _) = broadcast::channel(1024);
+        let (sender, _) = broadcast::channel(1024);
+        let output_tx = Arc::new(Mutex::new(Some(sender.clone())));
         let last_activity = Arc::new(Mutex::new(Instant::now()));
 
         // Blocking reader pump: forward chunks and stamp activity. A dropped
-        // receiver is fine (broadcast lag/closed is not fatal to the pump).
+        // receiver is fine (broadcast lag/closed is not fatal to the pump). At
+        // EOF the thread drops BOTH senders (the slot's and its own), so every
+        // subscriber sees `Closed` the moment the child exits.
         {
-            let output_tx = output_tx.clone();
+            let output_slot = Arc::clone(&output_tx);
             let last_activity = Arc::clone(&last_activity);
             std::thread::spawn(move || {
                 let mut reader = reader;
@@ -144,10 +150,11 @@ impl PtySession {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             *last_activity.lock().unwrap() = Instant::now();
-                            let _ = output_tx.send(buf[..n].to_vec());
+                            let _ = sender.send(buf[..n].to_vec());
                         }
                     }
                 }
+                output_slot.lock().unwrap().take();
             });
         }
 
@@ -163,9 +170,17 @@ impl PtySession {
     }
 
     /// Subscribe to the raw output stream. Each subscriber sees every chunk from
-    /// the moment it subscribes.
+    /// the moment it subscribes, and observes `Closed` once the PTY hits EOF.
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
-        self.output_tx.subscribe()
+        match self.output_tx.lock().unwrap().as_ref() {
+            Some(tx) => tx.subscribe(),
+            None => {
+                // The PTY already hit EOF: hand back an already-closed stream.
+                let (tx, rx) = broadcast::channel(1);
+                drop(tx);
+                rx
+            }
+        }
     }
 
     /// Write a prompt and submit it (per the harness's `SubmitKey`).
@@ -383,6 +398,34 @@ mod tests {
         // Repeated polls keep returning it even though try_wait reaps only once.
         assert_eq!(session.exit_code(), Some(3));
         assert!(session.has_exited());
+    }
+
+    #[tokio::test]
+    async fn subscribers_observe_closed_when_the_child_exits() {
+        // The keyed-terminal pump contract (worktree surfaces §2.4): a shell
+        // exiting on its own must end every subscription with `Closed`, even
+        // though the PtySession itself is still held in a map.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("printf hi");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "EOF must close the broadcast");
+
+        // A subscription taken after EOF is closed from the start.
+        let mut late = session.subscribe();
+        assert!(matches!(
+            late.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
     }
 
     #[tokio::test]

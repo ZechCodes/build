@@ -57,11 +57,82 @@ struct StreamState {
     complete: bool,
 }
 
-/// A live terminal session: a real PTY, an authoritative server-side screen model
-/// (`vt100`), and the clients currently attached for live output. The screen model
-/// is what makes reconnect a *snapshot* (current screen) rather than a byte replay.
-struct TermSession {
-    session: PtySession,
+/// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
+/// resolved server-side ONLY (spec §1): ids map to roots through the bridge's own
+/// records — a client-supplied filesystem path is never a scope root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TermScope {
+    Task {
+        task_id: String,
+    },
+    ExternalWorktree {
+        project_id: String,
+        worktree_id: String,
+    },
+    Primary {
+        project_id: String,
+    },
+}
+
+impl TermScope {
+    /// Parse the inline scope params: `task_id` wins, then
+    /// `project_id`+`worktree_id`, then `project_id` alone.
+    fn parse(params: &Value) -> Result<TermScope, String> {
+        let field = |key: &str| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        if let Some(task_id) = field("task_id") {
+            return Ok(TermScope::Task { task_id });
+        }
+        let Some(project_id) = field("project_id") else {
+            return Err("missing scope: task_id or project_id required".to_string());
+        };
+        match field("worktree_id") {
+            Some(worktree_id) => Ok(TermScope::ExternalWorktree {
+                project_id,
+                worktree_id,
+            }),
+            None => Ok(TermScope::Primary { project_id }),
+        }
+    }
+
+    /// Resolve to the scope's canonical root directory, server-side only.
+    /// `&mut AppState` because the external-worktree arm may refresh the scan
+    /// cache; it never accepts a raw path and never canonicalizes client input.
+    fn resolve_root(&self, state: &mut AppState) -> Result<std::path::PathBuf, String> {
+        match self {
+            TermScope::Task { task_id } => {
+                let active = state.tasks.get(task_id).ok_or("unknown task_id")?;
+                let root = active.worktree.path.clone();
+                if !root.exists() {
+                    return Err("worktree no longer exists".to_string());
+                }
+                Ok(root)
+            }
+            TermScope::ExternalWorktree {
+                project_id,
+                worktree_id,
+            } => Ok(state
+                .resolve_external_worktree(project_id, worktree_id)?
+                .path),
+            TermScope::Primary { project_id } => state
+                .projects
+                .iter()
+                .find(|p| &p.id == project_id)
+                .map(|p| p.repo_path.clone())
+                .ok_or_else(|| "unknown project_id".to_string()),
+        }
+    }
+}
+
+/// Authoritative server-side screen: vt100 model + attach list + coalescing
+/// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. Shared
+/// by user terminals and the retained agent screens.
+struct TermScreen {
     parser: vt100::Parser,
     attached: Vec<SessionSender>,
     /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
@@ -79,11 +150,101 @@ const TERM_FLUSH_MS: u64 = 10;
 /// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
 /// and bounds per-frame size. The vt100 model makes this lossless for the screen.
 const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
+/// At most this many user terminals daemon-wide, all scopes combined. Agent
+/// screens don't count (at most one per task, bounded by tasks).
+const MAX_USER_TERMINALS: usize = 16;
+
+impl TermScreen {
+    fn new(cols: u16, rows: u16) -> TermScreen {
+        TermScreen {
+            parser: vt100::Parser::new(rows, cols, 2000),
+            attached: Vec::new(),
+            pending: Vec::new(),
+            total: 0,
+            cols,
+            rows,
+        }
+    }
+
+    /// The current screen serialized as escape sequences — write it to a fresh
+    /// terminal and the screen is reproduced.
+    fn snapshot(&self) -> String {
+        b64encode(&self.parser.screen().contents_formatted())
+    }
+
+    fn set_size(&mut self, cols: u16, rows: u16) {
+        self.parser.set_size(rows, cols);
+        self.cols = cols;
+        self.rows = rows;
+    }
+
+    /// Feed PTY bytes: advance the screen model, the cursor, and the pending
+    /// coalescing buffer.
+    fn process(&mut self, chunk: &[u8]) {
+        self.parser.process(chunk);
+        self.total += chunk.len() as u64;
+        self.pending.extend_from_slice(chunk);
+    }
+
+    /// Register a client for live output, dropping any prior sender with the
+    /// same session id first (a reconnect on the same id).
+    fn register(&mut self, sender: &SessionSender) {
+        self.attached
+            .retain(|snd| snd.session_id() != sender.session_id());
+        self.attached.push(sender.clone());
+    }
+
+    /// Flush pending bytes as one keyed push to every attached client — raw
+    /// output, or a screen snapshot when the backlog crosses the collapse
+    /// threshold. Senders whose connection is gone are dropped.
+    fn flush(&mut self, term_id: &str) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let cursor = self.total;
+        let payload = if self.pending.len() > TERM_SNAPSHOT_THRESHOLD {
+            // Too much at once — skip the backlog, send the screen.
+            json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": cursor })
+        } else {
+            json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": cursor })
+        };
+        self.pending.clear();
+        self.attached.retain(|snd| snd.push(payload.clone()));
+    }
+
+    /// Tell every attached client this terminal ended, and why.
+    fn push_closed(&self, term_id: &str, reason: &str) {
+        let payload = json!({ "type": "term.closed", "term_id": term_id, "reason": reason });
+        for snd in &self.attached {
+            snd.push(payload.clone());
+        }
+    }
+}
+
+/// A live keyed terminal: a real PTY spawned in its scope's root, plus the
+/// authoritative screen model that makes reconnect a *snapshot* (current
+/// screen) rather than a byte replay.
+struct TermSession {
+    term_id: String,
+    scope: TermScope,
+    /// The scope's root directory, resolved server-side at create time.
+    scope_root: std::path::PathBuf,
+    created_at: String,
+    session: PtySession,
+    screen: TermScreen,
+}
 
 impl TermSession {
-    /// Spawn an interactive shell in a PTY, returning the session and a receiver
-    /// for its output (subscribed immediately so no early bytes are missed).
-    fn spawn(cols: u16, rows: u16) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
+    /// Spawn an interactive shell in a PTY at the scope root, returning the
+    /// session and a receiver for its output (subscribed immediately so no
+    /// early bytes are missed).
+    fn spawn(
+        term_id: String,
+        scope: TermScope,
+        scope_root: std::path::PathBuf,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
         let spec = HarnessSpec::new("bash")
             .arg("--norc")
             .arg("-i")
@@ -95,27 +256,20 @@ impl TermSession {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let session = PtySession::spawn(&spec, None, size).map_err(|e| e.to_string())?;
+        let session =
+            PtySession::spawn(&spec, Some(scope_root.clone()), size).map_err(|e| e.to_string())?;
         let rx = session.subscribe();
-        let parser = vt100::Parser::new(rows, cols, 2000);
         Ok((
             TermSession {
+                term_id,
+                scope,
+                scope_root,
+                created_at: now_rfc3339(),
                 session,
-                parser,
-                attached: Vec::new(),
-                pending: Vec::new(),
-                total: 0,
-                cols,
-                rows,
+                screen: TermScreen::new(cols, rows),
             },
             rx,
         ))
-    }
-
-    /// The current screen serialized as escape sequences — write it to a fresh
-    /// terminal and the screen is reproduced.
-    fn snapshot(&self) -> String {
-        b64encode(&self.parser.screen().contents_formatted())
     }
 }
 
@@ -243,7 +397,10 @@ pub struct AppState {
     /// per-task git work more than once per TTL window.
     task_stat_cache: HashMap<String, (std::time::Instant, Value)>,
     streams: HashMap<String, StreamState>,
-    term: Option<TermSession>,
+    /// Live user terminals, keyed by `term_id` (`term-<n>`).
+    terms: HashMap<String, TermSession>,
+    /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
+    next_term: u64,
     next_id: u64,
     next_stream: u64,
     next_project: u64,
@@ -288,7 +445,8 @@ impl AppState {
             task_updated_at: HashMap::new(),
             task_stat_cache: HashMap::new(),
             streams: HashMap::new(),
-            term: None,
+            terms: HashMap::new(),
+            next_term: 1,
             next_id: 1,
             next_stream: 1,
             next_project: 1,
@@ -584,6 +742,9 @@ impl AppState {
         let persisted = self.persist_task(&task_id, &active);
         self.push_notify_if_needed(&task_id, &active.task.state);
         self.tasks.insert(task_id, active);
+        // Prompt terminal closure: an abandon/delete/merge-prune just changed
+        // what resolves, so orphaned terminals close now, not at the next sweep.
+        self.reap_orphaned_terminals();
         (view, persisted)
     }
 
@@ -918,45 +1079,160 @@ impl AppState {
             "task.delete" => self.task_delete(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
+            "term.list" => self.term_list(params),
+            "term.close" => self.term_close(params),
             "term.input" => self.term_input(params),
             "term.resize" => self.term_resize(params),
             other => Err(format!("unknown method: {other}")),
         }
     }
 
-    /// Write client keystrokes (base64) to the terminal's PTY.
+    /// The user terminals whose scope matches the request, ordered by numeric
+    /// id suffix. Agent screens never appear here. An unknown scope id still
+    /// errors (the SPA treats an error as "no terminals").
+    fn term_list(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = TermScope::parse(params)?;
+        scope.resolve_root(self)?;
+        let mut terminals: Vec<(u64, Value)> = self
+            .terms
+            .values()
+            .filter(|t| t.scope == scope)
+            .map(|t| {
+                (
+                    term_id_suffix(&t.term_id),
+                    json!({
+                        "term_id": t.term_id,
+                        "cols": t.screen.cols,
+                        "rows": t.screen.rows,
+                        "created_at": t.created_at,
+                    }),
+                )
+            })
+            .collect();
+        terminals.sort_by_key(|(suffix, _)| *suffix);
+        let terminals: Vec<Value> = terminals.into_iter().map(|(_, entry)| entry).collect();
+        Ok(json!({ "terminals": terminals }))
+    }
+
+    /// Close a user terminal: remove it, kill AND reap its shell (the existing
+    /// zombie-prevention contract), and tell every attached client.
+    fn term_close(&mut self, params: &Value) -> Result<Value, String> {
+        let term_id = require_str(params, "term_id")?;
+        if term_id.starts_with("agent:") {
+            // Agent PTY lifetime belongs to the orchestrator, not the tab's ×.
+            return Err("cannot close an agent terminal".to_string());
+        }
+        let term = self.terms.remove(&term_id).ok_or("unknown term_id")?;
+        term.session.kill_and_reap();
+        term.screen.push_closed(&term_id, "closed");
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Write client keystrokes (base64) to a terminal's PTY, by id. `agent:`
+    /// ids route to the task's live session — input is allowed by design (the
+    /// agent PTY is a full terminal on the user's machine; the terminal is the
+    /// basement), and a dead session surfaces "no active agent session".
     fn term_input(&mut self, params: &Value) -> Result<Value, String> {
+        let term_id = require_str(params, "term_id")?;
         let data = b64decode(&require_str(params, "data")?)?;
-        let term = self.term.as_ref().ok_or("no terminal session")?;
+        if let Some(task_id) = term_id.strip_prefix("agent:") {
+            let active = self.tasks.get(task_id).ok_or("unknown term_id")?;
+            active.write_input_strict(&data)?;
+            return Ok(json!({ "ok": true }));
+        }
+        let term = self.terms.get(&term_id).ok_or("unknown term_id")?;
         term.session.write_input(&data).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": true }))
     }
 
-    /// Resize the terminal's PTY and screen model.
+    /// Resize a terminal's PTY and screen model, by id. For `agent:` ids the
+    /// resize only applies while a session is live (`live: true`); a dead
+    /// resize is a no-op `live: false` so the retained last screen is never
+    /// garbled.
     fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
+        let term_id = require_str(params, "term_id")?;
         let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
         let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-        let term = self.term.as_mut().ok_or("no terminal session")?;
-        term.session
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
-        term.parser.set_size(rows, cols);
-        term.cols = cols;
-        term.rows = rows;
-        Ok(json!({ "ok": true }))
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        if let Some(task_id) = term_id.strip_prefix("agent:") {
+            let active = self.tasks.get(task_id).ok_or("unknown term_id")?;
+            let live = active.resize_session(size).map_err(err)?;
+            return Ok(json!({ "ok": true, "live": live }));
+        }
+        let term = self.terms.get_mut(&term_id).ok_or("unknown term_id")?;
+        term.session.resize(size).map_err(|e| e.to_string())?;
+        term.screen.set_size(cols, rows);
+        Ok(json!({ "ok": true, "live": true }))
     }
 
-    /// A session ended: detach it from the terminal so the pump stops encrypting
-    /// (and serializing) output frames into a session the relay will just drop.
+    /// A session ended: detach it from every terminal so the pumps stop
+    /// encrypting (and serializing) output frames into a session the relay
+    /// will just drop.
     fn drop_session(&mut self, session_id: &str) {
-        if let Some(term) = self.term.as_mut() {
-            term.attached.retain(|snd| snd.session_id() != session_id);
+        for term in self.terms.values_mut() {
+            term.screen
+                .attached
+                .retain(|snd| snd.session_id() != session_id);
         }
+    }
+
+    /// Close every user terminal whose scope no longer resolves (spec §2.6.3):
+    /// its task record is gone, its project is unregistered, or its worktree
+    /// vanished from disk. Every close kills AND reaps. Returns the closed ids.
+    /// Called at the tail of `finish_mutation` (prompt closure right after
+    /// abandon/delete/merge-prune) and by the periodic reaper loop (out-of-band
+    /// disappearance, e.g. a user `rm -rf`ing an external worktree).
+    fn reap_orphaned_terminals(&mut self) -> Vec<String> {
+        let orphaned: Vec<String> = self
+            .terms
+            .values()
+            .filter(|term| !self.term_scope_resolves(term))
+            .map(|term| term.term_id.clone())
+            .collect();
+        for term_id in &orphaned {
+            let Some(term) = self.terms.remove(term_id) else {
+                continue;
+            };
+            term.session.kill_and_reap();
+            term.screen.push_closed(term_id, "reaped");
+        }
+        orphaned
+    }
+
+    /// Whether a terminal's scope still maps to a live surface. The check is
+    /// cheap: a map lookup and/or one `Path::exists` over ≤ 16 entries.
+    fn term_scope_resolves(&self, term: &TermSession) -> bool {
+        match &term.scope {
+            // A merged task with cleanup=keep keeps its worktree → terminals stay.
+            TermScope::Task { task_id } => {
+                self.tasks.contains_key(task_id) && term.scope_root.exists()
+            }
+            // An adopted worktree's path survives adoption — its terminal lives on.
+            TermScope::ExternalWorktree { .. } => term.scope_root.exists(),
+            TermScope::Primary { project_id } => {
+                self.projects.iter().any(|p| &p.id == project_id) && term.scope_root.exists()
+            }
+        }
+    }
+
+    /// Periodically close terminals whose scope vanished out-of-band (nothing
+    /// went through `finish_mutation` — e.g. the user deleted an external
+    /// worktree by hand). Runs beside `spawn_idle_monitor`.
+    pub fn spawn_terminal_reaper(state: Arc<Mutex<AppState>>, interval: Duration) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let reaped = state.lock().unwrap().reap_orphaned_terminals();
+                for term_id in reaped {
+                    eprintln!("terminal reaper: closed {term_id} (scope gone)");
+                }
+            }
+        });
     }
 
     /// Demote every working task whose harness has crashed/exited or gone quiet
@@ -2728,6 +3004,7 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
 
     let result = match method.as_str() {
         "stream.start" => stream_start(state, &params),
+        "term.create" => term_create(state, &params),
         "term.attach" => term_attach(state, &sender, &params),
         _ => state.lock().unwrap().dispatch(&method, &params),
     };
@@ -2737,69 +3014,97 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
     }
 }
 
-/// Attach this client to the terminal: create the session on first attach (and
-/// start the output pump), register the caller's [`SessionSender`] for live
-/// output, and return the current **screen snapshot** + cursor. Reconnect is just
-/// another attach — a new session re-registers and gets a fresh snapshot.
+/// The numeric suffix of a minted `term-<n>` id — the `term.list` sort key.
+fn term_id_suffix(term_id: &str) -> u64 {
+    term_id
+        .strip_prefix("term-")
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// Create a keyed terminal: parse + resolve the scope server-side (never a
+/// client path), enforce the cap, spawn `bash` in the scope root, and start
+/// its pump immediately — the screen model accumulates even before the first
+/// attach.
+fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+    let scope = TermScope::parse(params)?;
+
+    let (term_id, rx) = {
+        let mut s = state.lock().unwrap();
+        let scope_root = scope.resolve_root(&mut s)?;
+        if s.terms.len() >= MAX_USER_TERMINALS {
+            return Err(format!(
+                "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
+            ));
+        }
+        let term_id = format!("term-{}", s.next_term);
+        s.next_term += 1;
+        let (term, rx) = TermSession::spawn(term_id.clone(), scope, scope_root, cols, rows)?;
+        s.terms.insert(term_id.clone(), term);
+        (term_id, rx)
+    };
+    spawn_term_pump(Arc::clone(state), term_id.clone(), rx);
+    Ok(json!({ "term_id": term_id, "cols": cols, "rows": rows }))
+}
+
+/// Attach this client to an existing keyed terminal: register the caller's
+/// [`SessionSender`] for live output and return the current **screen
+/// snapshot** + cursor. Reconnect is just another attach — a new session
+/// re-registers and gets a fresh snapshot. Creation is `term.create`'s job;
+/// `agent:` ids belong to `agent.attach`.
 fn term_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
 ) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    if term_id.starts_with("agent:") {
+        return Err("use agent.attach".to_string());
+    }
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-
-    let mut s = state.lock().unwrap();
-    let mut new_output_rx = None;
-    if s.term.is_none() {
-        let (term, rx) = TermSession::spawn(cols, rows)?;
-        s.term = Some(term);
-        new_output_rx = Some(rx);
-    }
 
     // Snapshot the screen and register this client atomically under the lock, so
     // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
     // dupe across a reconnect.
-    let term = s.term.as_mut().expect("term created above");
+    let mut s = state.lock().unwrap();
+    let term = s.terms.get_mut(&term_id).ok_or("unknown term_id")?;
 
     // Match the PTY + screen model to this client's viewport, or TUIs (which draw
     // to the reported size) render to the wrong width and garble.
-    if term.cols != cols || term.rows != rows {
+    if term.screen.cols != cols || term.screen.rows != rows {
         let _ = term.session.resize(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         });
-        term.parser.set_size(rows, cols);
-        term.cols = cols;
-        term.rows = rows;
+        term.screen.set_size(cols, rows);
     }
-    // Drop any prior sender for this same session id (a reconnect on the same id).
-    term.attached
-        .retain(|snd| snd.session_id() != sender.session_id());
-    term.attached.push(sender.clone());
-    let response = json!({
-        "snapshot": term.snapshot(),
-        "cursor": term.total,
-        "cols": term.cols,
-        "rows": term.rows,
-    });
-    drop(s);
-
-    // First attach starts the pump that feeds the screen model and fans output out
-    // to every attached client.
-    if let Some(rx) = new_output_rx {
-        spawn_term_pump(Arc::clone(state), rx);
-    }
-    Ok(response)
+    term.screen.register(sender);
+    Ok(json!({
+        "term_id": term.term_id,
+        "snapshot": term.screen.snapshot(),
+        "cursor": term.screen.total,
+        "cols": term.screen.cols,
+        "rows": term.screen.rows,
+    }))
 }
 
-/// Pump PTY output into the screen model, coalescing bytes and flushing one frame
-/// per ~`TERM_FLUSH_MS` to every attached client. A huge burst collapses to a
-/// screen snapshot so frame size/rate stay bounded and control frames (the
-/// liveness ping) are never head-of-line-blocked behind megabytes of output.
-fn spawn_term_pump(state: Arc<Mutex<AppState>>, mut rx: broadcast::Receiver<Vec<u8>>) {
+/// Pump one terminal's PTY output into its screen model, coalescing bytes and
+/// flushing one keyed frame per ~`TERM_FLUSH_MS` to every attached client. A
+/// huge burst collapses to a screen snapshot so frame size/rate stay bounded
+/// and control frames (the liveness ping) are never head-of-line-blocked
+/// behind megabytes of output. One pump task per terminal: flush timing stays
+/// independent (one flooding terminal never delays another's flush) and the
+/// task terminates naturally on PTY EOF.
+fn spawn_term_pump(
+    state: Arc<Mutex<AppState>>,
+    term_id: String,
+    mut rx: broadcast::Receiver<Vec<u8>>,
+) {
     tokio::spawn(async move {
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2810,27 +3115,25 @@ fn spawn_term_pump(state: Arc<Mutex<AppState>>, mut rx: broadcast::Receiver<Vec<
                     // bytes for the next flush.
                     Ok(chunk) => {
                         let mut s = state.lock().unwrap();
-                        let Some(term) = s.term.as_mut() else { return; };
-                        term.parser.process(&chunk);
-                        term.total += chunk.len() as u64;
-                        term.pending.extend_from_slice(&chunk);
+                        // Closed under the pump (term.close / reaper): done.
+                        let Some(term) = s.terms.get_mut(&term_id) else { return; };
+                        term.screen.process(&chunk);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => return, // PTY closed
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // PTY EOF — the shell exited on its own. Reap the exit
+                        // status (no zombies) and tell every attached client.
+                        let mut s = state.lock().unwrap();
+                        let Some(term) = s.terms.remove(&term_id) else { return; };
+                        term.session.kill_and_reap();
+                        term.screen.push_closed(&term_id, "exited");
+                        return;
+                    }
                 },
                 _ = flush.tick() => {
                     let mut s = state.lock().unwrap();
-                    let Some(term) = s.term.as_mut() else { return; };
-                    if term.pending.is_empty() { continue; }
-                    let cursor = term.total;
-                    let payload = if term.pending.len() > TERM_SNAPSHOT_THRESHOLD {
-                        // Too much at once — skip the backlog, send the screen.
-                        json!({ "type": "term.reset", "data": term.snapshot(), "cursor": cursor })
-                    } else {
-                        json!({ "type": "term.output", "data": b64encode(&term.pending), "cursor": cursor })
-                    };
-                    term.pending.clear();
-                    term.attached.retain(|snd| snd.push(payload.clone()));
+                    let Some(term) = s.terms.get_mut(&term_id) else { return; };
+                    term.screen.flush(&term_id);
                 }
             }
         }
@@ -5132,34 +5435,197 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn terminal_snapshot_reflects_input_across_reattach() {
-        let (dir, repo) = init_repo();
-        let handler = AppState::new(
-            repo,
-            dir.path().join("wt"),
+    /// Shared state + handler for the keyed-terminal tests: the handler drives
+    /// the RPC surface while the state handle lets tests inspect internals.
+    fn shared_state_and_handler(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler) {
+        let state = AppState::new(
+            repo.to_path_buf(),
+            dir.join("wt"),
             "main",
             true,
             "/tmp/test-mcp.sock",
         )
-        .into_handler();
-        let call = |sid: &str, method: &str, params: Value| {
-            handler(SessionSender::detached(sid), req(method, params))
-        };
+        .shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        (state, handler)
+    }
 
-        // First attach: spawns the shell + the output pump.
-        let a = call("s1", "term.attach", json!({ "cols": 80, "rows": 24 }));
+    /// Poll an observable sender's captured pushes until the decrypted history
+    /// satisfies `pred` (returning everything seen), or panic after 10 s.
+    async fn wait_for_pushes(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        session_key: &str,
+        pred: impl Fn(&[Value]) -> bool,
+    ) -> Vec<Value> {
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            while let Ok(message) = rx.try_recv() {
+                seen.push(SessionSender::decrypt_push(session_key, &message));
+            }
+            if pred(&seen) {
+                return seen;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for a matching push; saw: {seen:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Wait until one push matches `pred`.
+    async fn wait_for_push(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        session_key: &str,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Vec<Value> {
+        wait_for_pushes(rx, session_key, |seen| seen.iter().any(&pred)).await
+    }
+
+    /// The concatenated bytes of every `term.output` push for `term_id`.
+    fn output_text(pushes: &[Value], term_id: &str) -> String {
+        let mut bytes = Vec::new();
+        for p in pushes {
+            if p["type"] == "term.output" && p["term_id"] == term_id {
+                bytes.extend_from_slice(&b64decode(p["data"].as_str().unwrap()).unwrap());
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// True once `pid` is fully gone from the process table (killed AND reaped —
+    /// a zombie still shows up in `ps` with state Z).
+    fn process_reaped(pid: u32) -> bool {
+        let out = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty()
+    }
+
+    #[tokio::test]
+    async fn keyed_terminal_create_attach_io_close_roundtrip() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        // Create in the primary scope: bash starts in the repo root and the
+        // pump runs before any attach.
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "cols": 80, "rows": 24 }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["term_id"], "term-1");
+        assert_eq!(created["result"]["cols"], 80);
+        assert_eq!(created["result"]["rows"], 24);
+
+        // Listed under its scope, with metadata.
+        let listed = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "project_id": project_id })),
+        );
+        let terminals = listed["result"]["terminals"].as_array().unwrap();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0]["term_id"], "term-1");
+        assert!(terminals[0]["created_at"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+
+        // Attach with an observable sender, then type a command: the echo comes
+        // back as keyed term.output pushes.
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        let attached = handler(
+            sender,
+            req(
+                "term.attach",
+                json!({ "term_id": "term-1", "cols": 80, "rows": 24 }),
+            ),
+        );
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        assert_eq!(attached["result"]["term_id"], "term-1");
+        assert!(attached["result"]["snapshot"].is_string());
+        assert!(attached["result"]["cursor"].is_u64());
+
+        let input = b64encode(b"echo keyed-term-ok\r");
+        let wrote = handler(
+            SessionSender::detached("s1"),
+            req("term.input", json!({ "term_id": "term-1", "data": input })),
+        );
+        assert_eq!(wrote["ok"], true, "{wrote:?}");
+        wait_for_pushes(&mut pushes, &key, |seen| {
+            output_text(seen, "term-1").contains("keyed-term-ok")
+        })
+        .await;
+
+        // Close: the PTY is killed AND reaped, the entry is gone, and every
+        // attached client hears term.closed{reason:"closed"}.
+        let pid = state.lock().unwrap().terms["term-1"].session.pid().unwrap();
+        let closed = handler(
+            SessionSender::detached("s1"),
+            req("term.close", json!({ "term_id": "term-1" })),
+        );
+        assert_eq!(closed["ok"], true, "{closed:?}");
+        let seen = wait_for_push(&mut pushes, &key, |p| {
+            p["type"] == "term.closed" && p["term_id"] == "term-1" && p["reason"] == "closed"
+        })
+        .await;
+        assert!(!seen.is_empty());
+        assert!(state.lock().unwrap().terms.is_empty());
+        assert!(process_reaped(pid), "the shell must be killed and reaped");
+
+        let relisted = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "project_id": project_id })),
+        );
+        assert_eq!(relisted["result"]["terminals"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn keyed_terminal_snapshot_reflects_input_across_reattach() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let created = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        let a = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.attach",
+                json!({ "term_id": term_id, "cols": 80, "rows": 24 }),
+            ),
+        );
         assert_eq!(a["ok"], true);
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Send a command (the PTY echoes it and runs it).
         let input = b64encode(b"echo build-terminal-ok\n");
-        call("s1", "term.input", json!({ "data": input }));
+        handler(
+            SessionSender::detached("s1"),
+            req("term.input", json!({ "term_id": term_id, "data": input })),
+        );
         tokio::time::sleep(Duration::from_millis(700)).await;
 
         // Reconnect = a fresh attach. The screen snapshot (vt100 model) must reflect
         // the prior output — that's snapshot-based resync, not byte replay.
-        let b = call("s2", "term.attach", json!({ "cols": 80, "rows": 24 }));
+        let b = handler(
+            SessionSender::detached("s2"),
+            req(
+                "term.attach",
+                json!({ "term_id": term_id, "cols": 80, "rows": 24 }),
+            ),
+        );
         let snap =
             String::from_utf8_lossy(&b64decode(b["result"]["snapshot"].as_str().unwrap()).unwrap())
                 .into_owned();
@@ -5168,6 +5634,341 @@ mod tests {
             "reattach snapshot should reflect prior output; got: {snap:?}"
         );
         assert!(b["result"]["cursor"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn term_list_filters_by_scope_and_orders_numerically() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        // A task-scope terminal and two primary-scope terminals, with a minted
+        // suffix jump so numeric ordering differs from lexicographic.
+        let dispatched = handler(
+            SessionSender::detached("s1"),
+            req(
+                "task.dispatch",
+                json!({ "goal": "scope filter", "kind": "quick" }),
+            ),
+        );
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let first = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(first["result"]["term_id"], "term-1");
+        let task_term = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "task_id": task_id })),
+        );
+        assert_eq!(task_term["result"]["term_id"], "term-2");
+        state.lock().unwrap().next_term = 10;
+        let tenth = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(tenth["result"]["term_id"], "term-10");
+
+        let primary = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "project_id": project_id })),
+        );
+        let ids: Vec<&str> = primary["result"]["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["term_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["term-1", "term-10"],
+            "scope-filtered, numeric order"
+        );
+
+        let task_scoped = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "task_id": task_id })),
+        );
+        let ids: Vec<&str> = task_scoped["result"]["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["term_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["term-2"]);
+
+        // Unknown-scope ids still error (the SPA treats an error as "no terminals").
+        let unknown = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "project_id": "proj-99" })),
+        );
+        assert_eq!(unknown["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn term_create_enforces_the_daemon_wide_cap() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        for _ in 0..MAX_USER_TERMINALS {
+            let created = handler(
+                SessionSender::detached("s1"),
+                req("term.create", json!({ "project_id": project_id })),
+            );
+            assert_eq!(created["ok"], true, "{created:?}");
+        }
+        let over = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(over["ok"], false);
+        assert_eq!(
+            over["error"],
+            "terminal limit reached (16 open terminals) — close one first"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyed_term_rpcs_reject_unknown_missing_and_agent_ids() {
+        let (dir, repo) = init_repo();
+        let (_state, handler) = shared_state_and_handler(&repo, dir.path());
+        let call = |method: &str, params: Value| {
+            handler(SessionSender::detached("s1"), req(method, params))
+        };
+
+        // The legacy un-keyed path is gone: no term_id is an error everywhere.
+        for method in ["term.attach", "term.input", "term.resize", "term.close"] {
+            let res = call(
+                method,
+                json!({ "data": b64encode(b"x"), "cols": 80, "rows": 24 }),
+            );
+            assert_eq!(res["ok"], false, "{method} without term_id must fail");
+            assert_eq!(res["error"], "missing required param: term_id", "{method}");
+        }
+
+        // Unknown ids.
+        let res = call("term.attach", json!({ "term_id": "term-99" }));
+        assert_eq!(res["error"], "unknown term_id");
+        let res = call("term.close", json!({ "term_id": "term-99" }));
+        assert_eq!(res["error"], "unknown term_id");
+        let res = call(
+            "term.input",
+            json!({ "term_id": "term-99", "data": b64encode(b"x") }),
+        );
+        assert_eq!(res["error"], "unknown term_id");
+        let res = call(
+            "term.resize",
+            json!({ "term_id": "term-99", "cols": 80, "rows": 24 }),
+        );
+        assert_eq!(res["error"], "unknown term_id");
+
+        // Agent ids: attach/close are gated to the agent surface; an unknown
+        // task behind an agent id is still "unknown term_id".
+        let res = call("term.attach", json!({ "term_id": "agent:task-1" }));
+        assert_eq!(res["error"], "use agent.attach");
+        let res = call("term.close", json!({ "term_id": "agent:task-1" }));
+        assert_eq!(res["error"], "cannot close an agent terminal");
+        let res = call(
+            "term.input",
+            json!({ "term_id": "agent:task-99", "data": b64encode(b"x") }),
+        );
+        assert_eq!(res["error"], "unknown term_id");
+    }
+
+    #[tokio::test]
+    async fn term_input_and_resize_route_to_the_agent_session_by_id() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        // A task whose warm harness stays alive and drains stdin — the live
+        // agent-session case.
+        let side = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("wt-side"),
+            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null")),
+            Templates::default(),
+        );
+        let active = side
+            .dispatch(
+                crate::task::TaskId::new("task-9"),
+                "live agent",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        {
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.task_project.insert("task-9".into(), project_id);
+            s.tasks.insert("task-9".into(), active);
+        }
+        let call = |method: &str, params: Value| {
+            handler(SessionSender::detached("s1"), req(method, params))
+        };
+
+        // Live: input drains into the PTY, resize reports live.
+        let res = call(
+            "term.input",
+            json!({ "term_id": "agent:task-9", "data": b64encode(b"hi\r") }),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        let res = call(
+            "term.resize",
+            json!({ "term_id": "agent:task-9", "cols": 100, "rows": 30 }),
+        );
+        assert_eq!(res["result"]["live"], true, "{res:?}");
+
+        // Dead: input errors with the contract message, resize is a no-op that
+        // reports not-live (never garbling the retained last screen).
+        state
+            .lock()
+            .unwrap()
+            .tasks
+            .get_mut("task-9")
+            .unwrap()
+            .end_session();
+        let res = call(
+            "term.input",
+            json!({ "term_id": "agent:task-9", "data": b64encode(b"hi\r") }),
+        );
+        assert_eq!(res["error"], "no active agent session");
+        let res = call(
+            "term.resize",
+            json!({ "term_id": "agent:task-9", "cols": 100, "rows": 30 }),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["live"], false);
+    }
+
+    #[tokio::test]
+    async fn reaper_closes_terminals_whose_scope_vanished_out_of_band() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        handler(SessionSender::detached("s1"), req("task.list", json!({})));
+        let worktree_id = {
+            let mut s = state.lock().unwrap();
+            let externals = s.external_worktrees_json();
+            externals[0]["worktree_id"].as_str().unwrap().to_string()
+        };
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "worktree_id": worktree_id }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        handler(sender, req("term.attach", json!({ "term_id": term_id })));
+        let pid = state.lock().unwrap().terms[&term_id].session.pid().unwrap();
+
+        // Nothing to reap while the worktree exists.
+        assert!(state.lock().unwrap().reap_orphaned_terminals().is_empty());
+
+        // The user rm -rf's the external worktree: the reaper closes its
+        // terminal, reaps the shell, and tells the attached clients.
+        std::fs::remove_dir_all(&ext_path).unwrap();
+        let reaped = state.lock().unwrap().reap_orphaned_terminals();
+        assert_eq!(reaped, vec![term_id.clone()]);
+        wait_for_push(&mut pushes, &key, |p| {
+            p["type"] == "term.closed" && p["term_id"] == term_id && p["reason"] == "reaped"
+        })
+        .await;
+        assert!(state.lock().unwrap().terms.is_empty());
+        assert!(process_reaped(pid));
+    }
+
+    #[tokio::test]
+    async fn task_mutations_reap_task_scope_terminals() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let call = |method: &str, params: Value| {
+            handler(SessionSender::detached("s1"), req(method, params))
+        };
+
+        // Abandon prunes the worktree → its terminal is reaped via the
+        // finish_mutation tail, with no reaper loop involved.
+        let dispatched = call(
+            "task.dispatch",
+            json!({ "goal": "reap me", "kind": "quick" }),
+        );
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let created = call("term.create", json!({ "task_id": task_id }));
+        let doomed_term = created["result"]["term_id"].as_str().unwrap().to_string();
+        let pid = state.lock().unwrap().terms[&doomed_term]
+            .session
+            .pid()
+            .unwrap();
+        call("task.abandon", json!({ "task_id": task_id }));
+        assert!(
+            !state.lock().unwrap().terms.contains_key(&doomed_term),
+            "abandon prunes the worktree, so its terminal closes"
+        );
+        assert!(process_reaped(pid));
+
+        // A merge with cleanup=keep keeps the worktree → the terminal survives.
+        let dispatched = call(
+            "task.dispatch",
+            json!({ "goal": "keep me", "kind": "quick" }),
+        );
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let created = call("term.create", json!({ "task_id": task_id }));
+        let kept_term = created["result"]["term_id"].as_str().unwrap().to_string();
+        let merged = call(
+            "task.approve_merge",
+            json!({ "task_id": task_id, "cleanup": "keep" }),
+        );
+        assert_eq!(merged["result"]["state"], "merged", "{merged:?}");
+        assert!(
+            state.lock().unwrap().terms.contains_key(&kept_term),
+            "cleanup=keep keeps the worktree, so its terminal survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn pump_eof_reaps_the_terminal_and_pushes_exited() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        let pid = state.lock().unwrap().terms["term-1"].session.pid().unwrap();
+
+        // The user types `exit`: the shell ends on its own (PTY EOF).
+        handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.input",
+                json!({ "term_id": "term-1", "data": b64encode(b"exit\r") }),
+            ),
+        );
+        wait_for_push(&mut pushes, &key, |p| {
+            p["type"] == "term.closed" && p["term_id"] == "term-1" && p["reason"] == "exited"
+        })
+        .await;
+        assert!(state.lock().unwrap().terms.is_empty());
+        assert!(process_reaped(pid), "an exited shell must still be reaped");
     }
 
     #[tokio::test]
@@ -5222,22 +6023,20 @@ mod tests {
     #[tokio::test]
     async fn a_close_frame_detaches_the_sessions_terminal_sender() {
         let (dir, repo) = init_repo();
-        let state = AppState::new(
-            repo,
-            dir.path().join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .shared();
-        {
-            let mut s = state.lock().unwrap();
-            let (term, _rx) = TermSession::spawn(80, 24).unwrap();
-            s.term = Some(term);
-            let term = s.term.as_mut().unwrap();
-            term.attached.push(SessionSender::detached("s-live"));
-            term.attached.push(SessionSender::detached("s-dead"));
-        }
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        handler(
+            SessionSender::detached("s-live"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        handler(
+            SessionSender::detached("s-live"),
+            req("term.attach", json!({ "term_id": "term-1" })),
+        );
+        handler(
+            SessionSender::detached("s-dead"),
+            req("term.attach", json!({ "term_id": "term-1" })),
+        );
 
         let close = Frame {
             session_id: "s-dead".into(),
@@ -5251,10 +6050,8 @@ mod tests {
         assert_eq!(response["ok"], true);
 
         let s = state.lock().unwrap();
-        let attached: Vec<&str> = s
-            .term
-            .as_ref()
-            .unwrap()
+        let attached: Vec<&str> = s.terms["term-1"]
+            .screen
             .attached
             .iter()
             .map(SessionSender::session_id)
@@ -5264,6 +6061,113 @@ mod tests {
             vec!["s-live"],
             "only the closed session's sender is dropped"
         );
+    }
+
+    #[test]
+    fn term_scope_parses_the_wire_table() {
+        // task_id wins even when project_id is also present.
+        assert_eq!(
+            TermScope::parse(&json!({ "task_id": "task-1", "project_id": "proj-1" })).unwrap(),
+            TermScope::Task {
+                task_id: "task-1".into()
+            }
+        );
+        assert_eq!(
+            TermScope::parse(&json!({ "project_id": "proj-1", "worktree_id": "wt-abc" })).unwrap(),
+            TermScope::ExternalWorktree {
+                project_id: "proj-1".into(),
+                worktree_id: "wt-abc".into()
+            }
+        );
+        assert_eq!(
+            TermScope::parse(&json!({ "project_id": "proj-1" })).unwrap(),
+            TermScope::Primary {
+                project_id: "proj-1".into()
+            }
+        );
+        let missing = "missing scope: task_id or project_id required";
+        assert_eq!(TermScope::parse(&json!({})).unwrap_err(), missing);
+        // A worktree_id without its project is not a scope.
+        assert_eq!(
+            TermScope::parse(&json!({ "worktree_id": "wt-abc" })).unwrap_err(),
+            missing
+        );
+    }
+
+    #[test]
+    fn term_scope_resolves_roots_from_server_records_only() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.projects[0].id.clone();
+
+        // Primary → the registered repo path.
+        let root = TermScope::Primary {
+            project_id: project_id.clone(),
+        }
+        .resolve_root(&mut state)
+        .unwrap();
+        assert_eq!(root, std::fs::canonicalize(&repo).unwrap());
+        assert_eq!(
+            TermScope::Primary {
+                project_id: "proj-99".into()
+            }
+            .resolve_root(&mut state)
+            .unwrap_err(),
+            "unknown project_id"
+        );
+
+        // Task → the task's worktree path, which must still exist on disk.
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "scope me", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        let scope = TermScope::Task {
+            task_id: task_id.clone(),
+        };
+        let worktree_path = state.tasks[&task_id].worktree.path.clone();
+        assert_eq!(scope.resolve_root(&mut state).unwrap(), worktree_path);
+        assert_eq!(
+            TermScope::Task {
+                task_id: "task-99".into()
+            }
+            .resolve_root(&mut state)
+            .unwrap_err(),
+            "unknown task_id"
+        );
+        std::fs::remove_dir_all(&worktree_path).unwrap();
+        assert_eq!(
+            scope.resolve_root(&mut state).unwrap_err(),
+            "worktree no longer exists"
+        );
+
+        // External → resolved through the discovery scan; ids never raw paths.
+        let ext_path = add_external_worktree(&repo, dir.path(), "user-wt", "hotfix/thing");
+        let list = state.handle(req("task.list", json!({})));
+        let worktree_id = list["result"]["external_worktrees"][0]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let root = TermScope::ExternalWorktree {
+            project_id: project_id.clone(),
+            worktree_id,
+        }
+        .resolve_root(&mut state)
+        .unwrap();
+        assert_eq!(root, std::fs::canonicalize(&ext_path).unwrap());
+        let unknown = TermScope::ExternalWorktree {
+            project_id,
+            worktree_id: "wt-nope".into(),
+        }
+        .resolve_root(&mut state)
+        .unwrap_err();
+        assert!(unknown.contains("unknown worktree_id"), "{unknown}");
     }
 
     #[test]

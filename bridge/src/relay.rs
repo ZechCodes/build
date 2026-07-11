@@ -85,6 +85,41 @@ impl SessionSender {
         }
     }
 
+    /// Test-only: a sender with a real session key and a captured channel, so
+    /// tests can decrypt every pushed frame (`term.output`, `term.closed`, …)
+    /// with [`decrypt_push`](Self::decrypt_push).
+    #[cfg(test)]
+    pub fn observable(
+        session_id: impl Into<String>,
+    ) -> (Self, mpsc::UnboundedReceiver<Message>, String) {
+        let (out, rx) = mpsc::unbounded_channel();
+        let session_key = transport::generate_session_key();
+        (
+            SessionSender {
+                session_id: session_id.into(),
+                session_key: session_key.clone(),
+                out,
+            },
+            rx,
+            session_key,
+        )
+    }
+
+    /// Test-only: decode one captured [`Self::observable`] message back to the
+    /// pushed inner payload.
+    #[cfg(test)]
+    pub fn decrypt_push(session_key: &str, message: &Message) -> Value {
+        let Message::Text(text) = message else {
+            panic!("pushes are text frames, got {message:?}");
+        };
+        let outer: Value = serde_json::from_str(text).expect("push is JSON");
+        let envelope: Envelope =
+            serde_json::from_value(outer["envelope"].clone()).expect("push carries an envelope");
+        transport::decrypt_envelope(session_key, &envelope)
+            .expect("push decrypts with the session key")
+            .payload
+    }
+
     /// Encrypt `payload` as an inner frame and send it to the client as an
     /// `e2ee_envelope`. Returns false once the connection is gone (so the app can
     /// drop the stale sender).

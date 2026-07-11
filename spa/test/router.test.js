@@ -8,6 +8,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/settings")).toEqual({ name: "settings" });
     expect(routeFromHash("#/task/t-123/diff")).toEqual({ name: "task", id: "t-123", tab: "diff" });
     expect(routeFromHash("#/task/t-123")).toEqual({ name: "task", id: "t-123", tab: "plan" });
+    expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc" });
   });
 
   it("defaults unknown or empty hashes to the board", () => {
@@ -15,6 +16,12 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#")).toEqual({ name: "board" });
     expect(routeFromHash("#/nope")).toEqual({ name: "board" });
     expect(routeFromHash("#/task")).toEqual({ name: "board" });
+    expect(routeFromHash("#/worktree")).toEqual({ name: "board" });
+    expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "board" });
+  });
+
+  it("decodes worktree route segments", () => {
+    expect(routeFromHash("#/worktree/a%20b/wt-1")).toEqual({ name: "worktree", projectId: "a b", worktreeId: "wt-1" });
   });
 
   it("decodes task ids", () => {
@@ -30,6 +37,8 @@ describe("hashFromRoute", () => {
       { name: "settings" },
       { name: "task", id: "t-9", tab: "diff" },
       { name: "task", id: "a b", tab: "plan" },
+      { name: "worktree", projectId: "proj-1", worktreeId: "wt-abc" },
+      { name: "worktree", projectId: "a b", worktreeId: "wt x" },
     ]) {
       expect(routeFromHash(hashFromRoute(route))).toEqual(route);
     }

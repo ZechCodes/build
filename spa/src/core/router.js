@@ -1,4 +1,5 @@
-// Hash routes: #/board, #/notifications, #/settings, #/task/<id>/<tab>.
+// Hash routes: #/board, #/notifications, #/settings, #/task/<id>/<tab>,
+// #/worktree/<projectId>/<worktreeId> (read-only external-worktree browse).
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
 export function routeFromHash(hash) {
@@ -15,6 +16,9 @@ export function routeFromHash(hash) {
         id: decodeURIComponent(parts[1]),
         tab: parts[2] === "diff" ? "diff" : "plan",
       };
+    case "worktree":
+      if (!parts[1] || !parts[2]) return { name: "board" };
+      return { name: "worktree", projectId: decodeURIComponent(parts[1]), worktreeId: decodeURIComponent(parts[2]) };
     default:
       return { name: "board" };
   }
@@ -22,6 +26,8 @@ export function routeFromHash(hash) {
 
 export function hashFromRoute(route) {
   if (route.name === "task") return `#/task/${encodeURIComponent(route.id)}/${route.tab || "plan"}`;
+  if (route.name === "worktree")
+    return `#/worktree/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.worktreeId)}`;
   if (route.name === "notifications") return "#/notifications";
   if (route.name === "settings") return "#/settings";
   return "#/board";

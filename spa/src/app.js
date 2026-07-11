@@ -7,6 +7,7 @@ import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
 import { renderWorktree } from "./views/worktree.js";
+import { renderMain } from "./views/mainWorktree.js";
 import { renderProject } from "./views/project.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
 
@@ -17,6 +18,7 @@ export const App = {
   session: null, // { call, deviceId, close }
   route: { name: "board" },
   poll: null,
+  viewDispose: null, // the current view's teardown (terminal panes, observers)
   readIds: new Set(),
   offline: false,
   gated: true, // gate screens own #root until a session is live
@@ -69,12 +71,24 @@ export function render() {
     clearInterval(App.poll);
     App.poll = null;
   }
+  // Tear down the outgoing view's client-side resources (terminal panes, their
+  // ResizeObservers + window listeners) before the next view claims #root. The
+  // server PTYs persist — dispose never closes them.
+  if (App.viewDispose) {
+    try {
+      App.viewDispose();
+    } catch {
+      /* a broken teardown must not block navigation */
+    }
+    App.viewDispose = null;
+  }
   setActiveNav(App.route.name);
   sidebarRouteChanged(); // keep the rail's active row tracking the route
   if (App.route.name === "board") renderBoard();
   else if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();
   else if (App.route.name === "worktree") renderWorktree();
+  else if (App.route.name === "main") renderMain();
   else if (App.route.name === "project") renderProject();
   else renderTask();
 }

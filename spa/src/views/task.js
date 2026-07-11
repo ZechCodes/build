@@ -15,6 +15,9 @@ import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/t
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { renderStagesTab } from "./stages.js";
+import { mountTabShell } from "../core/tabshell.js";
+import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
+import { terminalManager } from "../terminal/manager.js";
 
 // The diff-tab git split button: each option id maps to a task.git_action call.
 // cleanup is omitted for commit/push (the bridge rejects cleanup on non-merges).
@@ -49,6 +52,31 @@ export async function renderTask() {
   const root = $("#root");
   const id = App.route.id;
   let tab = App.route.tab || "plan";
+
+  // The unified tab shell: Plan + Diff (existing work tabs, content untouched),
+  // Files, Agent, then one tab per open user terminal, then `+`. Terminals are
+  // scoped to this task's worktree ({task_id}). Files/Agent/terminal tabs are
+  // fetch-/push-driven — the 1.6 s poll never wipes their bodies (§7.2).
+  const terminals = terminalTabsController({ task_id: id });
+  let shellCtl = null; // tab-row controller (mountTabShell)
+  let aux = null; // the mounted files/terminal/agent pane controller
+
+  const isAuxTab = (tabId) => tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
+  const defaultTab = () => (last && (last.state === "created" || last.state === "planning" || last.state === "plan_review") ? "plan" : "diff");
+  const staticTabs = () => [
+    { id: "plan", label: "Plan" },
+    { id: "diff", label: "Diff" },
+    { id: "files", label: "Files" },
+    { id: "agent", label: "Agent" },
+    ...terminals.tabs(),
+  ];
+  const disposeAux = () => {
+    if (aux) {
+      aux.dispose();
+      aux = null;
+    }
+  };
+
   const shell = (t) => {
     const m = t || {};
     root.innerHTML = `
@@ -58,23 +86,113 @@ export async function renderTask() {
       <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>${m.adopted ? "<span>·</span><span>adopted</span>" : ""}
         <span class="taskactions" id="taskactions"></span></div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
-      <div class="tabs"><div class="t ${tab === "plan" ? "active" : ""}" data-tab="plan">Plan</div>
-        <div class="t ${tab === "diff" ? "active" : ""}" data-tab="diff">Diff</div></div>
+      <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
     $("#back").onclick = () => go({ name: "board" });
     wireActions(m);
     showBanner(bannerText(localError, m.last_error));
-    root.querySelectorAll(".tabs .t").forEach(
-      (e) =>
-        (e.onclick = () => {
-          tab = e.dataset.tab;
-          App.route.tab = tab;
-          history.replaceState(null, "", `#/task/${encodeURIComponent(id)}/${tab}`);
-          root.querySelectorAll(".tabs .t").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
-          paint();
-        }),
-    );
+    shellCtl = mountTabShell($("#tabrow"), {
+      tabs: staticTabs(),
+      active: tab,
+      onSelect: (tabId) => selectTab(tabId),
+      onClose: (tabId) => closeTerminal(tabId),
+      onNewTerminal: () => newTerminal(),
+    });
+    // A full shell rebuild (state/goal changed) wiped #tabbody — re-mount an aux
+    // tab so the poll's early-return leaves a live pane in place.
+    if (isAuxTab(tab)) mountAux(tab);
   };
+
+  // Switch the active tab: plan/diff repaint through the poll machinery; the
+  // aux tabs (files/agent/terminals) mount their own bodies and are never polled.
+  const selectTab = (tabId) => {
+    tab = tabId;
+    App.route.tab = tabId;
+    history.replaceState(null, "", `#/task/${encodeURIComponent(id)}/${tabId}`);
+    if (shellCtl) shellCtl.setActive(tabId);
+    disposeAux();
+    if (tabId === "plan" || tabId === "diff") {
+      planKey = null;
+      diffKey = null;
+      paint();
+    } else {
+      mountAux(tabId);
+    }
+  };
+
+  const mountAux = (tabId) => {
+    disposeAux();
+    const body = $("#tabbody");
+    if (!body) return;
+    if (tabId === "agent") {
+      aux = mountAgentTab(body);
+      return;
+    }
+    aux = mountAuxTab(body, tabId, {
+      scope: { task_id: id },
+      callRpc: (method, params) => App.call(method, params),
+      onExit: () => {
+        terminals.drop(tabId);
+        if (shellCtl) shellCtl.setTabs(staticTabs());
+        selectTab(defaultTab());
+      },
+    });
+  };
+
+  // The Agent tab: the live agent PTY (a full terminal on the user's machine —
+  // input allowed). A dead/absent session shows a quiet "no active agent session"
+  // chip over the retained last screen; an unknown task shows the chip alone. The
+  // tab never breaks the rest of the view.
+  const mountAgentTab = (body) => {
+    body.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
+    const chip = body.querySelector("#agentIdle");
+    const setIdle = (on) => {
+      if (!chip) return;
+      chip.textContent = on ? "no active agent session" : "";
+      chip.hidden = !on;
+    };
+    let pane = null;
+    let disposed = false;
+    mountAgentPane(body.querySelector("#agentpane"), id, {
+      onLive: (live) => setIdle(!live),
+      onExit: (reason) => {
+        if (reason === "agent_session_ended") setIdle(true);
+      },
+    }).then(
+      (p) => (disposed ? p.dispose() : (pane = p)),
+      () => setIdle(true), // unknown task or attach failure — chip alone, view intact
+    );
+    return {
+      dispose() {
+        disposed = true;
+        if (pane) pane.dispose();
+        terminalManager().detach(`agent:${id}`);
+      },
+    };
+  };
+
+  const newTerminal = async () => {
+    let termId;
+    try {
+      termId = await terminals.create();
+    } catch (e) {
+      showBanner("error: " + e.message.slice(0, 80));
+      return;
+    }
+    if (shellCtl) shellCtl.setTabs(staticTabs());
+    selectTab(termId);
+  };
+
+  const closeTerminal = async (termId) => {
+    try {
+      await terminals.close(termId);
+    } catch {
+      /* the reaper/close raced us — drop the tab regardless */
+    }
+    if (shellCtl) shellCtl.setTabs(staticTabs());
+    if (tab === termId) selectTab(defaultTab());
+  };
+
   let last = null;
 
   // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
@@ -317,10 +435,8 @@ export async function renderTask() {
             phint.textContent = "error: " + e.message.slice(0, 50);
             return;
           }
-          App.route.tab = "diff";
-          tab = "diff";
           planKey = null;
-          paint();
+          selectTab("diff");
         };
       }
     };
@@ -563,6 +679,9 @@ export async function renderTask() {
     // local RPC error (Abandon/Delete failure) wins over the polled last_error so
     // the poll can't wipe it before the user has read it.
     showBanner(bannerText(localError, t.last_error));
+    // Files, Agent, and terminal tabs are fetch-/push-driven and own their own
+    // bodies — the poll only keeps the shell + banner current for them (§7.2).
+    if (tab !== "plan" && tab !== "diff") return;
     const body = $("#tabbody");
     if (tab === "plan") {
       // Multi-stage task (stages non-empty) → the stage board flow. Legacy
@@ -610,6 +729,10 @@ export async function renderTask() {
       renderDiffTab(t, files);
     }
   };
+  // Tear down any mounted terminal/agent pane when navigating away.
+  App.viewDispose = () => disposeAux();
+
+  await terminals.load();
   shell(null);
   await paint();
   App.poll = setInterval(paint, 1600);

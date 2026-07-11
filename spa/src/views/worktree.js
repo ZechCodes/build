@@ -14,6 +14,8 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
+import { mountTabShell } from "../core/tabshell.js";
+import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
 
 // The adopted-task merge set for the browse view: prune / keep / release only
 // (no commit/push/merge_push here — those belong to a task already in review).
@@ -33,6 +35,7 @@ export async function renderWorktree() {
   const projectId = App.route.projectId;
   const worktreeId = App.route.worktreeId;
   const adopting = createAdoptingCall((method, params) => App.call(method, params), projectId, worktreeId);
+  const scope = { project_id: projectId, worktree_id: worktreeId };
 
   // Review-comment state, preserved across the 1.6s poll (same discipline as the
   // task diff tab). Comments only accrue on an adoptable worktree.
@@ -41,6 +44,74 @@ export async function renderWorktree() {
     diffKey = null,
     diffSelDispose = null,
     shellState = null;
+
+  // The unified tab shell: Diff (the entire existing review content, untouched),
+  // Files, then user terminal tabs with `+`. Default tab: diff. Scope:
+  // { project_id, worktree_id }.
+  let tab = App.route.tab || "diff";
+  const terminals = terminalTabsController(scope);
+  let shellCtl = null;
+  let aux = null;
+  const isAuxTab = (tabId) => tabId === "files" || /^term-/.test(tabId);
+  const staticTabs = () => [{ id: "diff", label: "Diff" }, { id: "files", label: "Files" }, ...terminals.tabs()];
+  const disposeAux = () => {
+    if (aux) {
+      aux.dispose();
+      aux = null;
+    }
+  };
+
+  const selectTab = (tabId) => {
+    tab = tabId;
+    App.route.tab = tabId;
+    history.replaceState(null, "", `#/worktree/${encodeURIComponent(projectId)}/${encodeURIComponent(worktreeId)}/${tabId}`);
+    if (shellCtl) shellCtl.setActive(tabId);
+    disposeAux();
+    if (tabId === "diff") {
+      diffKey = null;
+      shellState = null; // force a shell rebuild + body repaint on the next paint
+      paint();
+    } else {
+      mountAux(tabId);
+    }
+  };
+
+  const mountAux = (tabId) => {
+    disposeAux();
+    const body = $("#tabbody");
+    if (!body) return;
+    aux = mountAuxTab(body, tabId, {
+      scope,
+      callRpc: (method, params) => App.call(method, params),
+      onExit: () => {
+        terminals.drop(tabId);
+        if (shellCtl) shellCtl.setTabs(staticTabs());
+        selectTab("diff");
+      },
+    });
+  };
+
+  const newTerminal = async () => {
+    let termId;
+    try {
+      termId = await terminals.create();
+    } catch (e) {
+      showError("cannot open a terminal: " + e.message.slice(0, 80));
+      return;
+    }
+    if (shellCtl) shellCtl.setTabs(staticTabs());
+    selectTab(termId);
+  };
+
+  const closeTerminal = async (termId) => {
+    try {
+      await terminals.close(termId);
+    } catch {
+      /* raced with the reaper — drop the tab regardless */
+    }
+    if (shellCtl) shellCtl.setTabs(staticTabs());
+    if (tab === termId) selectTab("diff");
+  };
 
   const renderNotFound = () => {
     root.innerHTML = `
@@ -77,8 +148,19 @@ export async function renderWorktree() {
       <div class="tmeta"><span>${esc(meta.head_subject || "")}</span><span>·</span><span>${esc(meta.path || "")}</span>${uncommitted ? `<span>·</span><span>${esc(meta.dirty_files + " uncommitted")}</span>` : ""}</div>
       <div class="tis">Read-only — acting on this worktree adopts it as a task.</div>
       <div class="task-error" id="wtError" role="alert" hidden></div>
+      <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
     $("#back").onclick = () => go({ name: "board" });
+    shellCtl = mountTabShell($("#tabrow"), {
+      tabs: staticTabs(),
+      active: tab,
+      onSelect: (tabId) => selectTab(tabId),
+      onClose: (tabId) => closeTerminal(tabId),
+      onNewTerminal: () => newTerminal(),
+    });
+    // A shell rebuild wiped #tabbody — re-mount an aux tab so the poll's
+    // early-return leaves a live Files/terminal pane in place.
+    if (isAuxTab(tab)) mountAux(tab);
   };
 
   const showError = (message) => {
@@ -325,11 +407,18 @@ export async function renderWorktree() {
     // mid-comment, even though churny fields (dirty_files, head_subject) move as
     // the user edits their own live checkout.
     const shellKey = `${meta.branch}|${meta.adoptable}|${meta.dirty_files}|${meta.head_subject}|${meta.path}`;
-    if (!busy && (shellState === null || shellState.key !== shellKey)) {
+    // Rebuild the header on first paint always; afterward only while the Diff tab
+    // is active — an aux tab (Files/terminal) owns #tabbody and must not be wiped
+    // by a churny header refresh (dirty_files/head_subject move as the user edits
+    // their own live checkout). Switching back to Diff resets shellState.
+    if (!busy && (shellState === null || (tab === "diff" && shellState.key !== shellKey))) {
       shell(meta);
       shellState = { ...meta, key: shellKey };
       diffKey = null; // shell wiped #tabbody — force a body repaint below
     }
+    // Files and terminal tabs are fetch-/push-driven — the poll keeps only the
+    // header current (and watches for the worktree vanishing) for them.
+    if (tab !== "diff") return;
     if ($("#wdiff-feedback") && (key === diffKey || busy)) {
       updateActions();
       return;
@@ -341,6 +430,10 @@ export async function renderWorktree() {
     renderBody(meta, files);
   };
 
+  // Tear down any mounted terminal/files pane when navigating away.
+  App.viewDispose = () => disposeAux();
+
+  await terminals.load();
   await paint();
   App.poll = setInterval(paint, 1600);
 }

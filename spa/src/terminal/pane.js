@@ -3,6 +3,8 @@
 // the client-side view ONLY. It never closes the server PTY — terminals persist
 // across tab switches and reloads; an explicit close is term.close (the tab's ×).
 
+import { createTouchScroll, createWheelQuantizer } from "./touchScroll.js";
+
 let ghosttyReady = null; // module-level: boot ghostty-web (wasm inlined) once per page.
 function loadGhostty() {
   if (!ghosttyReady) ghosttyReady = import("ghostty-web").then(async (m) => { await m.init(); return m; });
@@ -23,6 +25,32 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit })
   host.innerHTML = "";
   const term = new Terminal({ fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
   term.open(host);
+
+  // ghostty-web registers only mouse/wheel listeners on the host, so on touch
+  // devices a drag does nothing. Translate one-finger drags into synthetic
+  // pixel-mode wheel events at the host — ghostty's own handleWheel then scrolls
+  // scrollback on the normal screen and emits arrow keys on the alternate screen.
+  // touch-action:none set here (not CSS) so it travels with every mount site.
+  host.style.touchAction = "none";
+  const touchScroll = createTouchScroll({
+    dispatchWheel: createWheelQuantizer({
+      isAltScreen: () => term.buffer.active.type === "alternate",
+      // Same fallback as ghostty's own pixel→line conversion when metrics are absent.
+      getCellHeight: () => term.renderer?.getMetrics?.()?.height ?? 20,
+      emit: (deltaY) => host.dispatchEvent(new WheelEvent("wheel", {
+        deltaY, deltaMode: WheelEvent.DOM_DELTA_PIXEL, bubbles: true, cancelable: true,
+      })),
+    }),
+    requestFrame: (cb) => window.requestAnimationFrame(cb),
+    cancelFrame: (id) => window.cancelAnimationFrame(id),
+  });
+  host.addEventListener("touchstart", touchScroll.onTouchStart, { passive: true });
+  host.addEventListener("touchmove", touchScroll.onTouchMove, { passive: false });
+  // Capture: after a scroll drag, onTouchEnd stops propagation before ghostty's
+  // canvas touchend handler focuses the textarea (which would pop the keyboard).
+  host.addEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
+  host.addEventListener("touchcancel", touchScroll.onTouchCancel);
+
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   fitAddon.fit();
@@ -69,6 +97,11 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit })
       resizeObserver.disconnect();
       window.removeEventListener("resize", fit);
       host.removeEventListener("focusin", claim);
+      host.removeEventListener("touchstart", touchScroll.onTouchStart);
+      host.removeEventListener("touchmove", touchScroll.onTouchMove);
+      host.removeEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
+      host.removeEventListener("touchcancel", touchScroll.onTouchCancel);
+      touchScroll.dispose();
       try { term.dispose?.(); } catch { /* ignore */ }
       host.innerHTML = "";
     },

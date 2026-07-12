@@ -89,6 +89,23 @@ fn provision() {
 }
 
 async fn serve() {
+    // launchd starts agents with a bare PATH, so user-installed tools — the
+    // `claude` harness, everything a terminal expects — don't resolve. Adopt
+    // the login shell's PATH up front (the terminal-emulator trick), before
+    // any PTY or harness spawns. BRIDGE_PATH_FROM_SHELL=0 disables.
+    if std::env::var("BRIDGE_PATH_FROM_SHELL").as_deref() != Ok("0") {
+        let shell = build_bridge::app::resolve_term_shell();
+        match build_bridge::app::capture_login_path(&shell, Duration::from_secs(5)) {
+            Some(path) => {
+                std::env::set_var("PATH", &path);
+                eprintln!("PATH adopted from login shell ({shell})");
+            }
+            None => {
+                eprintln!("could not read PATH from login shell ({shell}); keeping inherited PATH")
+            }
+        }
+    }
+
     // Production-by-default: with no environment at all this connects to
     // getbuild.ing and keeps all state under ~/.build. Dev stacks override.
     let cfg = bridge_config();

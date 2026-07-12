@@ -238,22 +238,82 @@ struct TermSession {
     screen: TermScreen,
 }
 
+/// The shell user terminals run: `BRIDGE_TERM_SHELL` override → the daemon
+/// env's `SHELL` → the account's passwd shell → bash. Terminals are windows
+/// onto the user's machine — they get the user's own shell and rc files, not
+/// a sanitized bash.
+pub fn resolve_term_shell() -> String {
+    for var in ["BRIDGE_TERM_SHELL", "SHELL"] {
+        if let Ok(shell) = std::env::var(var) {
+            if !shell.trim().is_empty() {
+                return shell;
+            }
+        }
+    }
+    passwd_shell().unwrap_or_else(|| "/bin/bash".to_string())
+}
+
+/// The account's login shell from the passwd database.
+fn passwd_shell() -> Option<String> {
+    // SAFETY: getpwuid returns a pointer to static storage owned by libc; we
+    // only read pw_shell out of it, on this thread, immediately.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() {
+            return None;
+        }
+        let shell = (*pw).pw_shell;
+        if shell.is_null() {
+            return None;
+        }
+        let shell = std::ffi::CStr::from_ptr(shell)
+            .to_string_lossy()
+            .into_owned();
+        (!shell.trim().is_empty()).then_some(shell)
+    }
+}
+
+/// Ask a login shell what PATH looks like — the terminal-emulator trick.
+/// launchd starts agents with a bare PATH, so user-installed tools (the
+/// `claude` harness included) don't resolve until we adopt the login PATH.
+/// Bounded by `timeout`; a hung rc file just means we keep the inherited PATH.
+pub fn capture_login_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let shell = shell.to_string();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(out)) if out.status.success() => {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            path.contains('/').then_some(path)
+        }
+        _ => None,
+    }
+}
+
 impl TermSession {
-    /// Spawn an interactive shell in a PTY at the scope root, returning the
-    /// session and a receiver for its output (subscribed immediately so no
-    /// early bytes are missed).
+    /// Spawn the user's interactive login shell in a PTY at the scope root,
+    /// returning the session and a receiver for its output (subscribed
+    /// immediately so no early bytes are missed).
     fn spawn(
+        shell: &str,
         term_id: String,
         scope: TermScope,
         scope_root: std::path::PathBuf,
         cols: u16,
         rows: u16,
     ) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
-        let spec = HarnessSpec::new("bash")
-            .arg("--norc")
+        // -i -l: interactive login shell — rc files, the user's PATH, the
+        // user's prompt. This is their machine, shown honestly.
+        let spec = HarnessSpec::new(shell)
             .arg("-i")
-            .env("TERM", "xterm-256color")
-            .env("PS1", "build$ ");
+            .arg("-l")
+            .env("TERM", "xterm-256color");
         let size = PtySize {
             rows,
             cols,
@@ -420,6 +480,8 @@ pub struct AppState {
     /// task id → cached `task.list` diffstat, so the poll surface never runs
     /// per-task git work more than once per TTL window.
     task_stat_cache: HashMap<String, (std::time::Instant, Value)>,
+    /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
+    term_shell: String,
     streams: HashMap<String, StreamState>,
     /// Live user terminals, keyed by `term_id` (`term-<n>`).
     terms: HashMap<String, TermSession>,
@@ -476,6 +538,7 @@ impl AppState {
             task_created_at: HashMap::new(),
             task_updated_at: HashMap::new(),
             task_stat_cache: HashMap::new(),
+            term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             terms: HashMap::new(),
             agent_screens: HashMap::new(),
@@ -3362,7 +3425,9 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         }
         let term_id = format!("term-{}", s.next_term);
         s.next_term += 1;
-        let (term, rx) = TermSession::spawn(term_id.clone(), scope, scope_root, cols, rows)?;
+        let shell = s.term_shell.clone();
+        let (term, rx) =
+            TermSession::spawn(&shell, term_id.clone(), scope, scope_root, cols, rows)?;
         s.terms.insert(term_id.clone(), term);
         (term_id, rx)
     };
@@ -3771,6 +3836,30 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-m", "initial"]);
         (dir, repo)
+    }
+
+    #[test]
+    fn resolve_term_shell_yields_an_absolute_shell_path() {
+        // Whatever the source (override, $SHELL, passwd, fallback), the result
+        // must be an executable path, never empty.
+        let shell = resolve_term_shell();
+        assert!(shell.starts_with('/'), "{shell}");
+    }
+
+    #[test]
+    fn capture_login_path_returns_the_shells_path() {
+        let path = capture_login_path("/bin/bash", Duration::from_secs(10))
+            .expect("bash must yield a PATH");
+        assert!(path.contains('/'), "{path}");
+        assert!(path.contains("bin"), "{path}");
+    }
+
+    #[test]
+    fn capture_login_path_survives_a_missing_shell() {
+        assert_eq!(
+            capture_login_path("/nonexistent-shell-for-test", Duration::from_secs(5)),
+            None
+        );
     }
 
     fn req(method: &str, params: Value) -> Frame {
@@ -5920,14 +6009,17 @@ mod tests {
         repo: &std::path::Path,
         dir: &std::path::Path,
     ) -> (Arc<Mutex<AppState>>, FrameHandler) {
-        let state = AppState::new(
+        let mut app = AppState::new(
             repo.to_path_buf(),
             dir.join("wt"),
             "main",
             true,
             "/tmp/test-mcp.sock",
-        )
-        .shared();
+        );
+        // Deterministic terminals for tests: plain bash regardless of the dev
+        // machine's login shell (production resolves the user's own shell).
+        app.term_shell = "/bin/bash".into();
+        let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler)
     }

@@ -96,6 +96,7 @@ dependencies = [
  "dryoc",
  "futures-util",
  "git2",
+ "libc",
  "notify",
  "portable-pty",
  "rcgen",

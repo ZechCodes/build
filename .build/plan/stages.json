@@ -1,0 +1,8 @@
+[
+  {
+    "id": "terminal-touch-scroll",
+    "title": "Touch scrolling for terminal panes",
+    "path": ".build/plan/01-terminal-touch-scroll.md",
+    "summary": "ghostty-web registers only mouse/wheel listeners, so touch drags do nothing on mobile. Add a pure, TDD'd gesture module (spa/src/terminal/touchScroll.js) that translates one-finger drags and flicks into synthetic pixel-mode WheelEvents (with slop so taps still focus, and rAF momentum), wire it into mountTerminalPane with touch-action:none on the host, and let ghostty's own wheel handler do the rest (scrollback scroll on the normal screen, arrow keys on the alternate screen). Off-the-shelf options were surveyed and ruled out: upstream ghostty-web has no touch scrolling even in its latest prerelease, and gesture libraries are unmaintained or don't cover the terminal-specific glue (tap-to-focus preservation, alt-screen arrow keys, wheel synthesis)."
+  }
+]

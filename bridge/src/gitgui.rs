@@ -245,6 +245,17 @@ fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
     if status.is_ignored() {
         return None;
     }
+    // Unmerged entries carry CONFLICTED alone (no INDEX_*/WT_* bits), so they
+    // must be classified before the changed-bits check or they vanish from
+    // the staging surface entirely.
+    if status.is_conflicted() {
+        return Some(json!({
+            "path": path,
+            "staged": "none",
+            "index_status": "U",
+            "worktree_status": "U",
+        }));
+    }
     let index_changed = status.intersects(
         git2::Status::INDEX_NEW
             | git2::Status::INDEX_MODIFIED
@@ -510,5 +521,15 @@ mod tests {
 
         assert!(file_status_json("clean.txt", git2::Status::CURRENT).is_none());
         assert!(file_status_json("ignored.txt", git2::Status::IGNORED).is_none());
+    }
+
+    #[test]
+    fn conflicted_entries_surface_as_u_instead_of_vanishing() {
+        // libgit2 reports unmerged entries with CONFLICTED alone — no INDEX_*
+        // or WT_* bits — so they must not fall through the changed-bits check.
+        let conflicted = file_status_json("f.txt", git2::Status::CONFLICTED).unwrap();
+        assert_eq!(conflicted["staged"], "none");
+        assert_eq!(conflicted["index_status"], "U");
+        assert_eq!(conflicted["worktree_status"], "U");
     }
 }

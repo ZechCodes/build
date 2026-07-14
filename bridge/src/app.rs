@@ -8770,6 +8770,43 @@ mod tests {
     }
 
     #[test]
+    fn git_status_surfaces_merge_conflicts_as_u_entries() {
+        let (dir, repo) = init_repo();
+        // A real content conflict: two branches editing the same line.
+        git_in_dir(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("README.md"), "# side\n").unwrap();
+        git_in_dir(&repo, &["add", "README.md"]);
+        git_in_dir(&repo, &["commit", "-q", "-m", "side edit"]);
+        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("README.md"), "# main\n").unwrap();
+        git_in_dir(&repo, &["add", "README.md"]);
+        git_in_dir(&repo, &["commit", "-q", "-m", "main edit"]);
+        let merge = Command::new("git")
+            .args(["merge", "side"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge must conflict");
+        // A clean untracked file must still classify as before.
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+
+        let conflicted = file_entry(&res["result"], "README.md");
+        assert_eq!(conflicted["index_status"], "U");
+        assert_eq!(conflicted["worktree_status"], "U");
+        assert_eq!(conflicted["staged"], "none");
+
+        let untracked = file_entry(&res["result"], "loose.txt");
+        assert_eq!(untracked["staged"], "none");
+        assert_eq!(untracked["index_status"], "?");
+        assert_eq!(untracked["worktree_status"], "?");
+    }
+
+    #[test]
     fn git_status_on_an_unborn_head_has_a_null_head() {
         let (dir, repo) = init_unborn_repo();
         let mut state = git_gui_state(&dir, &repo);

@@ -830,12 +830,21 @@ Preview rules by response `mime` (+ `truncated`):
   dispatch added in `app.js` `render()`.
 - Header: `← <project name>` back to the project page; `<h1>` = branch name;
   meta line = escaped repo path; chip `MAIN`.
-- **Changes tab:** `project.diff { project_id }` → the exact read-only
-  rendering the worktree view uses (`parseDiff` + `filterNoiseFiles` +
-  `diffFilesHtml`, diffbar totals) with NO comment/adopt affordances (the
-  primary checkout is the user's own live checkout — review actions live on
-  task/worktree surfaces). Poll 1.6 s with the standard key-diff freeze
-  (`key = patch`).
+- **Changes tab:** the git surface (`core/gitPane.js` + `core/gitRender.js`) —
+  commit history (`git.log`/`git.show`) plus per-file staging
+  (`git.stage`/`git.unstage`) and a commit-message box (`git.commit`) for the
+  user's OWN work. The same pane mounts on both the primary checkout
+  (`{ project_id }`) and task worktrees (task view's `Changes` tab, between
+  Diff and Files, `{ task_id }`). It still carries NO review/comment
+  affordances — review lives on the Diff tab — and a commit never advances a
+  task past any gate. Task scope adds agent-commit options to the commit
+  split button: "Ask agent to commit" (the exact canned `AGENT_COMMIT_MESSAGE`
+  through the existing `task.message` verb, offered only in the messageable
+  states) and "Commit all (Build message)" (the existing
+  `task.git_action { action: "commit" }` verb) — no new bridge surface for
+  either. Poll 1.6 s with the standard key-diff freeze (key = HEAD + status
+  patch + per-file stage states + visible commits; also frozen while a commit
+  message is being drafted).
 - Files + terminals: scope `{ project_id: projectId }`.
 
 ### 7.6 External-worktree view (`views/worktree.js`)

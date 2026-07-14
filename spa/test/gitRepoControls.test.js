@@ -1,0 +1,355 @@
+import { describe, it, expect } from "vitest";
+import {
+  supportsRepoManagement,
+  syncChipState,
+  showBranchControl,
+  toolbarControlsDisabled,
+  pullSplitOptions,
+  pushSplitOptions,
+  stashSplitOptions,
+  syncActionRpc,
+  resolveInlineConfirm,
+  repoStateBanner,
+  pollRenderFrozen,
+} from "../src/core/gitPane.js";
+import {
+  gitToolbarHtml,
+  gitStateBannerHtml,
+  branchMenuHtml,
+  uncommittedHtml,
+} from "../src/core/gitRender.js";
+
+// ---- decision helpers --------------------------------------------------
+
+describe("supportsRepoManagement", () => {
+  it("is true only when the additive repo_state field is present", () => {
+    expect(supportsRepoManagement({ repo_state: "clean" })).toBe(true);
+    expect(supportsRepoManagement({ repo_state: "merging" })).toBe(true);
+  });
+
+  it("is false for an older bridge that omits repo_state", () => {
+    expect(supportsRepoManagement({ branch: "main" })).toBe(false);
+    expect(supportsRepoManagement({})).toBe(false);
+    expect(supportsRepoManagement(null)).toBe(false);
+    expect(supportsRepoManagement({ repo_state: 3 })).toBe(false);
+  });
+});
+
+describe("syncChipState", () => {
+  it("returns ahead/behind counts when an upstream is tracked", () => {
+    expect(syncChipState({ repo_state: "clean", upstream: "origin/main", ahead: 2, behind: 1 })).toEqual({ ahead: 2, behind: 1 });
+  });
+
+  it("hides chips when there is no upstream", () => {
+    expect(syncChipState({ repo_state: "clean", upstream: null, ahead: null, behind: null })).toBeNull();
+  });
+
+  it("hides chips when the additive fields are absent (older bridge)", () => {
+    expect(syncChipState({ branch: "main" })).toBeNull();
+    expect(syncChipState({ repo_state: "clean", upstream: "origin/main" })).toBeNull();
+  });
+});
+
+describe("showBranchControl", () => {
+  it("shows the interactive branch control only in project (main-worktree) scope", () => {
+    expect(showBranchControl({ project_id: "p1" })).toBe(true);
+  });
+
+  it("shows static branch text for task scope", () => {
+    expect(showBranchControl({ task_id: "t1" })).toBe(false);
+    expect(showBranchControl({ project_id: "p1", task_id: "t1" })).toBe(false);
+  });
+});
+
+describe("toolbarControlsDisabled", () => {
+  it("disables every toolbar verb while an action is in flight", () => {
+    expect(toolbarControlsDisabled(1)).toBe(true);
+    expect(toolbarControlsDisabled(2)).toBe(true);
+  });
+
+  it("enables them when nothing is in flight", () => {
+    expect(toolbarControlsDisabled(0)).toBe(false);
+  });
+});
+
+describe("pullSplitOptions", () => {
+  it("leads with the fast-forward primary then merge and rebase", () => {
+    expect(pullSplitOptions().map((o) => o.id)).toEqual(["pull", "pull_merge", "pull_rebase"]);
+    expect(pullSplitOptions()[0].label).toBe("Pull");
+  });
+});
+
+describe("pushSplitOptions", () => {
+  it("leads with Push then a danger-styled force-push", () => {
+    const options = pushSplitOptions();
+    expect(options.map((o) => o.id)).toEqual(["push", "force_push"]);
+    expect(options[0].label).toBe("Push");
+    expect(options.find((o) => o.id === "force_push").danger).toBe(true);
+  });
+});
+
+describe("stashSplitOptions", () => {
+  it("badges the pop option with the stash count only when positive", () => {
+    expect(stashSplitOptions(0).map((o) => o.id)).toEqual(["stash", "stash_pop"]);
+    expect(stashSplitOptions(0)[1].menuLabel).toBe("Pop stash");
+    expect(stashSplitOptions(3)[1].menuLabel).toBe("Pop stash (3)");
+    expect(stashSplitOptions(undefined)[1].menuLabel).toBe("Pop stash");
+  });
+});
+
+describe("syncActionRpc", () => {
+  it.each([
+    ["fetch", "git.fetch", {}],
+    ["pull", "git.pull", {}],
+    ["pull_merge", "git.pull", { mode: "merge" }],
+    ["pull_rebase", "git.pull", { mode: "rebase" }],
+    ["push", "git.push", {}],
+    ["force_push", "git.push", { force: true }],
+    ["stash", "git.stash", {}],
+    ["stash_pop", "git.stash_pop", {}],
+  ])("maps %s to its RPC", (optionId, method, params) => {
+    expect(syncActionRpc(optionId)).toEqual({ method, params });
+  });
+
+  it("returns a fresh params object each call (no shared mutation)", () => {
+    const a = syncActionRpc("pull_merge");
+    a.params.mode = "tampered";
+    expect(syncActionRpc("pull_merge").params.mode).toBe("merge");
+  });
+
+  it("throws on an unknown action", () => {
+    expect(() => syncActionRpc("nope")).toThrow();
+  });
+});
+
+describe("resolveInlineConfirm", () => {
+  it("arms on the first touch of a control", () => {
+    expect(resolveInlineConfirm(null, "discard:a.js")).toEqual({ fire: false, pending: "discard:a.js" });
+  });
+
+  it("fires on a second touch of the same control and disarms", () => {
+    expect(resolveInlineConfirm("discard:a.js", "discard:a.js")).toEqual({ fire: true, pending: null });
+  });
+
+  it("re-arms on a different control rather than firing the old one", () => {
+    expect(resolveInlineConfirm("discard:a.js", "abort")).toEqual({ fire: false, pending: "abort" });
+  });
+});
+
+describe("repoStateBanner", () => {
+  it("describes a merge and offers abort", () => {
+    expect(repoStateBanner("merging")).toEqual({ message: expect.stringContaining("Merge in progress"), abortable: true });
+  });
+
+  it("describes a rebase and offers abort", () => {
+    expect(repoStateBanner("rebasing")).toEqual({ message: expect.stringContaining("Rebase in progress"), abortable: true });
+  });
+
+  it("warns on an unusual state without offering abort (merge_abort would reject)", () => {
+    const banner = repoStateBanner("other");
+    expect(banner.abortable).toBe(false);
+    expect(banner.message.length).toBeGreaterThan(0);
+  });
+
+  it("returns null for a clean repo and for an absent field", () => {
+    expect(repoStateBanner("clean")).toBeNull();
+    expect(repoStateBanner(undefined)).toBeNull();
+  });
+});
+
+describe("pollRenderFrozen — interaction freeze", () => {
+  it("freezes a rendered pane while a confirm is armed or a branch menu is open", () => {
+    expect(pollRenderFrozen({ paneRendered: true, keyUnchanged: false, draftActive: false, actionInFlight: false, interactionActive: true })).toBe(true);
+  });
+
+  it("does not freeze the first paint on interaction alone", () => {
+    expect(pollRenderFrozen({ paneRendered: false, keyUnchanged: false, draftActive: false, actionInFlight: false, interactionActive: true })).toBe(false);
+  });
+
+  it("still repaints when nothing is interactive", () => {
+    expect(pollRenderFrozen({ paneRendered: true, keyUnchanged: false, draftActive: false, actionInFlight: false, interactionActive: false })).toBe(false);
+  });
+});
+
+// ---- markup builders ---------------------------------------------------
+
+const cleanStatus = (overrides = {}) => ({
+  branch: "main",
+  repo_state: "clean",
+  upstream: "origin/main",
+  ahead: 1,
+  behind: 2,
+  stash_count: 0,
+  ...overrides,
+});
+
+describe("gitToolbarHtml", () => {
+  it("renders an interactive branch button in main scope", () => {
+    const html = gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 });
+    expect(html).toContain("gtbranchbtn");
+    expect(html).toContain("main");
+    expect(html).not.toContain("gtbranchlabel");
+  });
+
+  it("renders the branch as static text in task scope", () => {
+    const html = gitToolbarHtml({ branch: "feat/x", showBranchControl: false, chips: null, stashCount: 0 });
+    expect(html).toContain("gtbranchlabel");
+    expect(html).not.toContain("gtbranchbtn");
+  });
+
+  it("renders fetch and the pull/push/stash split-button hosts", () => {
+    const html = gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 });
+    expect(html).toContain("gtfetch");
+    expect(html).toContain('class="gtpull"');
+    expect(html).toContain('class="gtpush"');
+    expect(html).toContain('class="gtstash"');
+  });
+
+  it("renders ahead/behind chips only when chip data is supplied", () => {
+    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: { ahead: 3, behind: 4 }, stashCount: 0 })).toContain("↑3");
+    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: { ahead: 3, behind: 4 }, stashCount: 0 })).toContain("↓4");
+    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 })).not.toContain("gtchips");
+  });
+
+  it("escapes a malicious branch name in both button and label forms", () => {
+    const evil = '"><img src=x onerror=alert(1)>';
+    expect(gitToolbarHtml({ branch: evil, showBranchControl: true, chips: null, stashCount: 0 })).not.toContain("<img");
+    expect(gitToolbarHtml({ branch: evil, showBranchControl: false, chips: null, stashCount: 0 })).not.toContain("<img");
+  });
+
+  it("attaches the branch menu markup when the menu is open", () => {
+    const html = gitToolbarHtml({
+      branch: "main", showBranchControl: true, chips: null, stashCount: 0,
+      branchMenuHtml: '<div class="gtbranch-menu">MENU</div>',
+    });
+    expect(html).toContain("gtbranch-menu");
+  });
+});
+
+describe("gitStateBannerHtml", () => {
+  it("is empty for a clean repo", () => {
+    expect(gitStateBannerHtml({ repoState: "clean" })).toBe("");
+    expect(gitStateBannerHtml({ repoState: undefined })).toBe("");
+  });
+
+  it("shows a merge banner with an abort button", () => {
+    const html = gitStateBannerHtml({ repoState: "merging" });
+    expect(html).toContain("gitstate");
+    expect(html).toContain("Merge in progress");
+    expect(html).toContain("gitabort");
+  });
+
+  it("shows the armed abort label when confirming", () => {
+    const html = gitStateBannerHtml({ repoState: "rebasing", pendingConfirm: "abort" });
+    expect(html).toContain("armed");
+    expect(html).toContain("Confirm");
+  });
+
+  it("omits the abort button for an unusual state (abort would reject)", () => {
+    const html = gitStateBannerHtml({ repoState: "other" });
+    expect(html).toContain("gitstate");
+    expect(html).not.toContain("gitabort");
+  });
+});
+
+describe("branchMenuHtml", () => {
+  const payload = {
+    current: "main",
+    branches: [
+      { name: "main", is_current: true, upstream: "origin/main", ahead: 0, behind: 0, head_subject: "init", head_time: 1 },
+      { name: "feat/login", is_current: false, upstream: null, ahead: 3, behind: 1, head_subject: "wip", head_time: 2 },
+    ],
+  };
+
+  it("shows a loading placeholder before the list arrives", () => {
+    expect(branchMenuHtml(null)).toContain("loading");
+  });
+
+  it("marks the current branch and lists the others with a delete affordance", () => {
+    const html = branchMenuHtml(payload);
+    expect(html).toContain("gtbranch-item current");
+    expect(html).toContain('data-branch="feat/login"');
+    expect(html).toContain("gtbranch-del");
+  });
+
+  it("never offers a delete affordance for the current branch", () => {
+    const html = branchMenuHtml(payload);
+    const currentRow = html.slice(html.indexOf("gtbranch-item current"), html.indexOf('data-branch="feat/login"'));
+    expect(currentRow).not.toContain("gtbranch-del");
+  });
+
+  it("renders per-branch ahead/behind chips only when the branch tracks an upstream", () => {
+    const html = branchMenuHtml(payload);
+    // feat/login tracks nothing → no chips even though ahead/behind are numbers
+    const featRow = html.slice(html.indexOf('data-branch="feat/login"'));
+    expect(featRow).not.toContain("gtbranch-chips");
+  });
+
+  it("shows the armed delete label when a delete is pending", () => {
+    const html = branchMenuHtml(payload, { pendingConfirm: "branch_delete:feat/login" });
+    expect(html).toContain("Delete?");
+  });
+
+  it("offers a force delete only after a non-force delete failed", () => {
+    const plain = branchMenuHtml(payload);
+    expect(plain).not.toContain("force delete");
+    const forced = branchMenuHtml(payload, { forceDeleteOffered: ["feat/login"] });
+    expect(forced).toContain("force delete");
+    expect(forced).toContain('data-force="1"');
+  });
+
+  it("includes a new-branch input and create button", () => {
+    const html = branchMenuHtml(payload);
+    expect(html).toContain("gtbranch-newinput");
+    expect(html).toContain("gtbranch-create");
+  });
+
+  it("escapes a malicious branch name", () => {
+    const evil = { current: "main", branches: [{ name: '<img src=x onerror=alert(1)>', is_current: false, upstream: null, ahead: 0, behind: 0 }] };
+    const html = branchMenuHtml(evil);
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+});
+
+describe("uncommittedHtml — per-file discard", () => {
+  const status = (overrides = {}) => ({
+    branch: "main",
+    head: "f".repeat(40),
+    files: [{ path: "a.js", staged: "none", index_status: "M", worktree_status: "M" }],
+    stat: { files_changed: 1, insertions: 1, deletions: 0 },
+    patch: "",
+    ...overrides,
+  });
+
+  it("omits the discard affordance by default (older bridge / no repo controls)", () => {
+    expect(uncommittedHtml(status())).not.toContain("gitdiscard");
+  });
+
+  it("renders a per-file discard button when repo controls are enabled", () => {
+    const html = uncommittedHtml(status(), { repoControls: true });
+    expect(html).toContain("gitdiscard");
+    expect(html).toContain('data-path="a.js"');
+  });
+
+  it("shows the armed confirm label for the pending path only", () => {
+    const html = uncommittedHtml(
+      status({ files: [
+        { path: "a.js", staged: "none", index_status: "M", worktree_status: "M" },
+        { path: "b.js", staged: "none", index_status: "M", worktree_status: "M" },
+      ] }),
+      { repoControls: true, pendingConfirm: "discard:a.js" },
+    );
+    expect(html).toContain("Discard changes?");
+    // exactly one armed button
+    expect((html.match(/gitdiscard[^"]*armed/g) || []).length).toBe(1);
+  });
+
+  it("escapes the path in the discard button data attribute", () => {
+    const html = uncommittedHtml(
+      status({ files: [{ path: '"><img src=x>', staged: "none", index_status: "?", worktree_status: "?" }], patch: "" }),
+      { repoControls: true },
+    );
+    expect(html).not.toContain("<img");
+  });
+});

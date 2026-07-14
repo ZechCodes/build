@@ -26,11 +26,21 @@ function fileBadge(file) {
 const statSummary = (stat) =>
   `<span class="gitstat">${stat.files_changed} files <span class="a">+${stat.insertions}</span> <span class="d">−${stat.deletions}</span></span>`;
 
+/** The per-file discard affordance (repo-controls scope only): a small danger
+ *  button that arms to a "Discard changes?" inline confirm when its path is the
+ *  pending one. Absent entirely on an older bridge (repoControls false). */
+function discardButtonHtml(path, pendingConfirm) {
+  const armed = pendingConfirm === `discard:${path}`;
+  return `<button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-path="${esc(path)}">${armed ? "Discard changes?" : "discard"}</button>`;
+}
+
 /** The uncommitted-changes block for a git.status payload: per-file stage rows
  *  (.toggle-wrapped native checkbox + path + .fb badge) with the file's diff
  *  rows beneath, a truncation notice when the patch was capped, and the
- *  commit-message box + actions host. Empty status → placeholder, no box. */
-export function uncommittedHtml(status) {
+ *  commit-message box + actions host. Empty status → placeholder, no box.
+ *  `repoControls` adds the per-file discard affordance; `pendingConfirm` arms
+ *  the matching path's confirm. */
+export function uncommittedHtml(status, { repoControls = false, pendingConfirm = null } = {}) {
   const files = status.files || [];
   const stat = status.stat || { files_changed: 0, insertions: 0, deletions: 0 };
   if (!files.length)
@@ -46,7 +56,8 @@ export function uncommittedHtml(status) {
       return `<div class="file gitfile"><div class="fhead">
         <label class="toggle"><input type="checkbox" class="stagebox" data-path="${esc(f.path)}"${checked}></label>
         <span>${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
-        ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}</div>
+        ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}
+        ${repoControls ? discardButtonHtml(f.path, pendingConfirm) : ""}</div>
         ${diffFile ? `<table>${diffRowsHtml(diffFile.rows)}</table>` : ""}</div>`;
     })
     .join("");
@@ -103,4 +114,94 @@ export function historyHtml(log, { expandedHash = null, expandedDetail = null, n
     <div class="gitsec-head">History</div>
     ${commits.length ? `<div class="clist">${rows}</div>` : '<div class="empty">No commits yet.</div>'}
     ${log.more ? '<div class="cmore"><button class="btn mini gitmore">Show more</button></div>' : ""}</div>`;
+}
+
+/** The repo-management toolbar: branch control (an interactive button in main
+ *  scope, static text in a session), a sync cluster (Fetch + ahead/behind chips
+ *  + Pull/Push split-button hosts the controller mounts into), and a Stash
+ *  split-button host. `chips` is { ahead, behind } or null (no upstream / older
+ *  bridge → hidden). `branchMenuHtml` is the pre-rendered open branch menu, or
+ *  "" when closed. Every git-derived string is escaped. */
+export function gitToolbarHtml({ branch, showBranchControl, chips, branchMenuHtml: branchMenu = "" }) {
+  const branchControl = showBranchControl
+    ? `<button class="btn mini gtbranchbtn" title="Switch branch">⑂ ${esc(branch || "(detached)")} ▾</button>${branchMenu}`
+    : `<span class="gtbranchlabel">⑂ ${esc(branch || "(detached)")}</span>`;
+  const chipsHtml = chips
+    ? `<span class="gtchips"><span class="gtahead" title="ahead of upstream">↑${esc(chips.ahead)}</span> <span class="gtbehind" title="behind upstream">↓${esc(chips.behind)}</span></span>`
+    : "";
+  return `<div class="gittoolbar">
+    <div class="gtbranch">${branchControl}</div>
+    <div class="gtsync">
+      <button class="btn mini gtfetch" title="Fetch --prune">Fetch</button>
+      ${chipsHtml}
+      <div class="gtpull"></div>
+      <div class="gtpush"></div>
+    </div>
+    <div class="gtstash"></div>
+  </div>`;
+}
+
+// The banner copy + abort affordance for a non-clean repo. Kept here (markup)
+// while repoStateBanner in gitPane owns the decision (message + abortable).
+const REPO_STATE_MESSAGE = {
+  merging: "Merge in progress — resolve conflicts, then commit.",
+  rebasing: "Rebase in progress — resolve conflicts, then continue.",
+  other: "Repository is in an unusual state.",
+};
+
+/** The state banner shown while the repo is mid-merge/rebase (or otherwise
+ *  non-clean): the situation plus an inline-confirm Abort for the abortable
+ *  states. Empty string when clean or when the field is absent (older bridge). */
+export function gitStateBannerHtml({ repoState, pendingConfirm = null } = {}) {
+  const message = REPO_STATE_MESSAGE[repoState];
+  if (!message) return "";
+  const abortable = repoState === "merging" || repoState === "rebasing";
+  const armed = pendingConfirm === "abort";
+  const abort = abortable
+    ? `<button class="btn mini danger gitabort${armed ? " armed" : ""}">${armed ? "Confirm abort?" : "Abort"}</button>`
+    : "";
+  return `<div class="gitstate"><span class="gitstate-msg">${esc(message)}</span>${abort}</div>`;
+}
+
+/** One branch row's ahead/behind chips — shown only when the branch tracks an
+ *  upstream and both counts are numbers. */
+function branchChipsHtml(branch) {
+  if (!branch.upstream || !Number.isFinite(Number(branch.ahead)) || !Number.isFinite(Number(branch.behind))) return "";
+  return `<span class="gtbranch-chips">↑${esc(branch.ahead)} ↓${esc(branch.behind)}</span>`;
+}
+
+/** One branch row's delete affordance: hidden for the current branch, a plain
+ *  inline-confirm delete otherwise, upgraded to a force-delete (still confirmed)
+ *  once a non-force delete has failed for that branch. */
+function branchDeleteHtml(branch, pendingConfirm, forceDeleteOffered) {
+  if (branch.is_current) return "";
+  if (forceDeleteOffered.includes(branch.name)) {
+    const armed = pendingConfirm === `branch_delete_force:${branch.name}`;
+    return `<button class="gtbranch-del force${armed ? " armed" : ""}" data-branch="${esc(branch.name)}" data-force="1">${armed ? "Force delete?" : "force delete"}</button>`;
+  }
+  const armed = pendingConfirm === `branch_delete:${branch.name}`;
+  return `<button class="gtbranch-del${armed ? " armed" : ""}" data-branch="${esc(branch.name)}">${armed ? "Delete?" : "delete"}</button>`;
+}
+
+/** The branch dropdown for a git.branches payload: the current branch marked,
+ *  each with optional ahead/behind chips and a delete affordance, plus a
+ *  new-branch input + Create row. `null` payload → a loading placeholder. */
+export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffered = [] } = {}) {
+  if (!payload) return '<div class="gtbranch-menu"><div class="gtbranch-loading">loading…</div></div>';
+  const branches = payload.branches || [];
+  const rows = branches
+    .map(
+      (b) => `<div class="gtbranch-item${b.is_current ? " current" : ""}" data-branch="${esc(b.name)}">
+        <span class="gtbranch-name">${esc(b.name)}</span>
+        ${branchChipsHtml(b)}
+        ${branchDeleteHtml(b, pendingConfirm, forceDeleteOffered)}</div>`,
+    )
+    .join("");
+  return `<div class="gtbranch-menu">
+    ${rows || '<div class="gtbranch-empty">no branches</div>'}
+    <div class="gtbranch-newrow">
+      <input class="gtbranch-newinput" type="text" placeholder="new branch name" />
+      <button class="btn mini gtbranch-create">Create</button>
+    </div>
+  </div>`;
 }

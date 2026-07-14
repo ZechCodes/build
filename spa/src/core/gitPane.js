@@ -6,10 +6,123 @@
 // unit tests; mountGitPane is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
-import { uncommittedHtml, historyHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
+import { uncommittedHtml, historyHtml, gitToolbarHtml, gitStateBannerHtml, branchMenuHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import { mountSplitButton } from "./splitButton.js";
 
 export const GIT_PANE_POLL_MS = 1600;
+
+// ---- repo-management decision helpers (v2) -----------------------------
+// Pure, exported, and load-bearing in the controller below. Every one tolerates
+// the additive git.status fields being ABSENT on an older bridge.
+
+/** The v2 repo-management surface (toolbar/banner/discard) only exists once the
+ *  bridge reports repo_state — an older bridge omits it, and every new control
+ *  degrades to hidden rather than rendering NaN/undefined text. */
+export function supportsRepoManagement(status) {
+  return Boolean(status && typeof status.repo_state === "string");
+}
+
+/** The ahead/behind chip data, or null when there is nothing meaningful to show:
+ *  an older bridge (no repo_state), a detached/upstream-less branch (null
+ *  upstream), or non-numeric counts. */
+export function syncChipState(status) {
+  if (!supportsRepoManagement(status)) return null;
+  if (typeof status.upstream !== "string" || !status.upstream) return null;
+  const ahead = Number(status.ahead);
+  const behind = Number(status.behind);
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null;
+  return { ahead, behind };
+}
+
+/** Branch switching is main-worktree (project scope) only — a task worktree's
+ *  branch is owned by the task lifecycle, so sessions show it as static text. */
+export function showBranchControl(scope) {
+  return Boolean(scope && scope.project_id && !scope.task_id);
+}
+
+/** Every toolbar verb is disabled while any action RPC is in flight (the same
+ *  freeze that suppresses poll repaints), so a mid-action repaint never revives
+ *  a live button to double-fire. */
+export function toolbarControlsDisabled(inFlightCount) {
+  return inFlightCount > 0;
+}
+
+/** Pull split button: fast-forward primary, then merge / rebase in the menu. */
+export function pullSplitOptions() {
+  return [
+    { id: "pull", label: "Pull", description: "fast-forward only", busyLabel: "Pulling…" },
+    { id: "pull_merge", menuLabel: "Pull (merge)", description: "merge the upstream changes", busyLabel: "Pulling…" },
+    { id: "pull_rebase", menuLabel: "Pull (rebase)", description: "rebase onto the upstream", busyLabel: "Pulling…" },
+  ];
+}
+
+/** Push split button: plain push, then a danger-styled force-push-with-lease
+ *  (never a bare --force) gated behind an inline confirm in the controller. */
+export function pushSplitOptions() {
+  return [
+    { id: "push", label: "Push", description: "push to the upstream", busyLabel: "Pushing…" },
+    { id: "force_push", menuLabel: "Force push (with lease)", description: "overwrite remote history — safely", busyLabel: "Force pushing…", danger: true },
+  ];
+}
+
+/** Stash split button: stash everything (incl. untracked), then pop — the pop
+ *  option carries the stash count as a badge only when there is a stash. */
+export function stashSplitOptions(stashCount = 0) {
+  const count = Number(stashCount) || 0;
+  return [
+    { id: "stash", label: "Stash", description: "stash all changes, including untracked", busyLabel: "Stashing…" },
+    { id: "stash_pop", menuLabel: count > 0 ? `Pop stash (${count})` : "Pop stash", description: "apply and drop the latest stash", busyLabel: "Popping…" },
+  ];
+}
+
+// The one place option ids become wire calls. Fresh params per call so a caller
+// can never mutate the shared template.
+const SYNC_RPC = {
+  fetch: { method: "git.fetch", params: {} },
+  pull: { method: "git.pull", params: {} },
+  pull_merge: { method: "git.pull", params: { mode: "merge" } },
+  pull_rebase: { method: "git.pull", params: { mode: "rebase" } },
+  push: { method: "git.push", params: {} },
+  force_push: { method: "git.push", params: { force: true } },
+  stash: { method: "git.stash", params: {} },
+  stash_pop: { method: "git.stash_pop", params: {} },
+};
+
+/** Map a sync/stash option id onto its RPC { method, params }. Throws on an
+ *  unknown id (fail fast — a typo must not silently no-op). */
+export function syncActionRpc(optionId) {
+  const entry = SYNC_RPC[optionId];
+  if (!entry) throw new Error(`unknown sync action ${optionId}`);
+  return { method: entry.method, params: { ...entry.params } };
+}
+
+/** The inline two-click confirm machine shared by every destructive verb
+ *  (discard, force push, branch delete, merge abort): a first touch arms the
+ *  control (returns its key as the new pending); a second touch of the SAME
+ *  control fires and disarms; touching a different control re-arms that one. */
+export function resolveInlineConfirm(pending, key) {
+  if (pending === key) return { fire: true, pending: null };
+  return { fire: false, pending: key };
+}
+
+// The destructive sync-menu options that require the inline confirm before they
+// fire (the primary Pull/Push/Stash/Pop actions fire immediately).
+const SYNC_CONFIRM_OPTIONS = new Set(["force_push"]);
+
+/** True when a sync option must be confirmed once before it runs. */
+export function syncActionNeedsConfirm(optionId) {
+  return SYNC_CONFIRM_OPTIONS.has(optionId);
+}
+
+/** The state banner for a non-clean repo, or null when clean/absent. `abortable`
+ *  gates the Abort button: only merging/rebasing can be aborted (merge_abort
+ *  rejects on any other state, so offering it there would only produce errors). */
+export function repoStateBanner(repoState) {
+  if (repoState === "merging") return { message: "Merge in progress — resolve conflicts, then commit.", abortable: true };
+  if (repoState === "rebasing") return { message: "Rebase in progress — resolve conflicts, then continue.", abortable: true };
+  if (repoState === "other") return { message: "Repository is in an unusual state.", abortable: false };
+  return null;
+}
 
 /** The repaint-freeze key for one poll's payloads: HEAD + branch + the status
  *  patch + every file's stage state + the visible commit page. Unchanged key →
@@ -82,10 +195,11 @@ export function isPermanentGitScopeError(message) {
 /** The poll's repaint-freeze decision: any in-flight action RPC suppresses the
  *  repaint outright (a repaint would remount the busy split button enabled and
  *  recreate checkboxes mid-RPC); otherwise a rendered pane is left alone while
- *  the key is unchanged or a commit draft is active. */
-export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, actionInFlight }) {
+ *  the key is unchanged, a commit draft is active, or an interaction is live
+ *  (an armed inline confirm or an open branch menu a repaint would clobber). */
+export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, actionInFlight, interactionActive = false }) {
   if (actionInFlight) return true;
-  return Boolean(paneRendered && (keyUnchanged || draftActive));
+  return Boolean(paneRendered && (keyUnchanged || draftActive || interactionActive));
 }
 
 /** The commit split-button option list: the plain Commit action first (primary),

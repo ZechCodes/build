@@ -845,6 +845,22 @@ Preview rules by response `mime` (+ `truncated`):
   either. Poll 1.6 s with the standard key-diff freeze (key = HEAD + status
   patch + per-file stage states + visible commits; also frozen while a commit
   message is being drafted).
+- **Repo controls (Changes tab, both scopes):** a `.gittoolbar` above the file
+  list surfaces the everyday repo verbs so review never needs a terminal —
+  Fetch, a Pull split button (fast-forward primary; merge / rebase in the menu),
+  a Push split button (force-push-with-lease behind the menu), ahead/behind
+  chips from `git.status`, and a Stash split button (Stash / Pop, with the
+  stash count badged). Branch switching (list, checkout, create, delete via
+  `git.branches`/`git.checkout`/`git.branch_delete`) lives on the branch button
+  and is **main-worktree only** — a task worktree's branch is owned by the task
+  lifecycle, so sessions show the branch as static text. A `.gitstate` banner
+  appears when the repo is mid-merge/rebase, with an Abort (`git.merge_abort`).
+  Each uncommitted file gains a discard affordance (`git.discard`). Every
+  destructive verb (discard, force push, branch delete, abort) is a two-click
+  inline confirm — never a browser dialog — and every control routes through the
+  same in-flight freeze as staging/commit. All new `git.status` fields
+  (`repo_state`, `upstream`, `ahead`/`behind`, `stash_count`) degrade to hidden
+  when an older bridge omits them.
 - Files + terminals: scope `{ project_id: projectId }`.
 
 ### 7.6 External-worktree view (`views/worktree.js`)

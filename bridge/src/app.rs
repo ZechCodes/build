@@ -2512,6 +2512,7 @@ impl AppState {
                     .ok_or_else(|| "unknown project_id".to_string())?;
                 Ok(GitScope {
                     repo_path: project.repo_path.clone(),
+                    project_id: Some(project.id.clone()),
                     task: None,
                 })
             }
@@ -2522,6 +2523,7 @@ impl AppState {
                     .ok_or_else(|| "unknown task_id".to_string())?;
                 Ok(GitScope {
                     repo_path: active.worktree.path.clone(),
+                    project_id: None,
                     task: Some(GitScopeTask {
                         task_id: task_id.to_string(),
                         base_branch: active.worktree.base_branch.clone(),
@@ -2592,6 +2594,14 @@ impl AppState {
             self.task_stat_cache.remove(&task.task_id);
             self.task_updated_at
                 .insert(task.task_id.clone(), now_rfc3339());
+        }
+        // Same freshness discipline for project scope: the commit changed the
+        // uncommitted-diff summary the board rides along, so drop the cached
+        // one instead of serving it stale for up to PRIMARY_SUMMARY_TTL.
+        if let Some(project_id) = &scope.project_id {
+            if let Some(project) = self.projects.iter_mut().find(|p| &p.id == project_id) {
+                project.primary_summary = None;
+            }
         }
         let status = crate::gitgui::status_payload(&scope.repo_path)?;
         Ok(json!({
@@ -3418,6 +3428,9 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 /// and `git.commit` needs to invalidate afterwards.
 struct GitScope {
     repo_path: std::path::PathBuf,
+    /// Set for project scope: the project whose primary checkout this is,
+    /// so mutations can invalidate its cached `primary_changes` summary.
+    project_id: Option<String>,
     task: Option<GitScopeTask>,
 }
 
@@ -9084,6 +9097,43 @@ mod tests {
         ));
         assert_eq!(nothing["ok"], false, "{nothing:?}");
         assert_eq!(nothing["error"], "nothing staged to commit");
+    }
+
+    #[test]
+    fn git_commit_on_a_project_scope_refreshes_the_primary_changes_cache() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
+
+        let entry = |res: &Value| {
+            res["result"]["primary_changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["project_id"] == json!(project_id.clone()))
+                .unwrap()
+                .clone()
+        };
+
+        // Warm the primary-summary cache with the uncommitted file visible.
+        let before = entry(&state.handle(req("task.list", json!({}))));
+        assert!(before["files_changed"].as_u64().unwrap() >= 1, "{before:?}");
+
+        state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["dirty.txt"] }),
+        ));
+        let committed = state.handle(req(
+            "git.commit",
+            json!({ "project_id": project_id, "message": "commit dirty" }),
+        ));
+        assert_eq!(committed["ok"], true, "{committed:?}");
+
+        // The very next board poll reflects the commit — the cache was
+        // invalidated instead of serving the pre-commit stat for up to 10s.
+        let after = entry(&state.handle(req("task.list", json!({}))));
+        assert_eq!(after["files_changed"], 0, "{after:?}");
     }
 
     #[test]

@@ -1,15 +1,15 @@
 // The primary-checkout "main" surface: a project's own live checkout as a
-// worktree-backed surface. Tabs: Changes (uncommitted delta vs HEAD, read-only —
-// the primary checkout is the user's own working tree, so no review actions),
-// Files, and user terminal tabs with `+`. Scope: { project_id }.
+// worktree-backed surface. Tabs: Changes (the git surface — commit history
+// plus per-file staging and commit for the user's own work; review actions
+// still live on task/worktree surfaces), Files, and user terminal tabs with
+// `+`. Scope: { project_id }.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { parseDiff, filterNoiseFiles } from "../core/diff.js";
-import { diffFilesHtml } from "../core/diffRender.js";
 import { App, go } from "../app.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
+import { mountGitPane } from "../core/gitPane.js";
 
 export async function renderMain() {
   const root = $("#root");
@@ -20,20 +20,13 @@ export async function renderMain() {
   let tab = App.route.tab || "changes";
   let projectName = projectId;
   let shellCtl = null; // tab-row controller
-  let aux = null; // current files/terminal pane controller
-  let changesKey = null; // patch-keyed freeze for the Changes poll
+  let aux = null; // current changes/files/terminal pane controller
   let meta = { branch: "", path: "" };
 
   const disposeAux = () => {
     if (aux) {
       aux.dispose();
       aux = null;
-    }
-  };
-  const stopPoll = () => {
-    if (App.poll) {
-      clearInterval(App.poll);
-      App.poll = null;
     }
   };
 
@@ -67,12 +60,19 @@ export async function renderMain() {
     history.replaceState(null, "", `#/main/${encodeURIComponent(projectId)}/${id}`);
     if (shellCtl) shellCtl.setActive(id);
     disposeAux();
-    stopPoll();
-    changesKey = null;
     const body = $("#tabbody");
     if (id === "changes") {
-      paintChanges();
-      App.poll = setInterval(paintChanges, 1600);
+      // The git pane owns its own poll; refreshHeader rides its git.status
+      // responses so the branch/path header stays live while it runs.
+      aux = mountGitPane(body, {
+        scope,
+        callRpc: (method, params) =>
+          App.call(method, params).then((res) => {
+            if (method === "git.status") refreshHeader(res);
+            return res;
+          }),
+        agentCommitOptions: [],
+      });
     } else {
       aux = mountAuxTab(body, id, {
         scope,
@@ -109,33 +109,15 @@ export async function renderMain() {
     if (tab === termId) selectTab("changes");
   };
 
-  const paintChanges = async () => {
-    if (App.offline) return;
-    let res;
-    try {
-      res = await App.call("project.diff", { project_id: projectId });
-    } catch {
-      return; // transient — the poll retries
-    }
-    const nextMeta = { branch: res.branch, path: res.path };
-    if (nextMeta.branch !== meta.branch || nextMeta.path !== meta.path) {
-      meta = nextMeta;
-      const h1 = root.querySelector(".thead h1");
-      if (h1) h1.textContent = meta.branch || "(detached)";
-      const metaEl = root.querySelector(".tmeta span");
-      if (metaEl) metaEl.textContent = meta.path || "";
-    }
-    if (tab !== "changes") return;
-    const key = res.patch || "";
-    if (changesKey === key && $("#mainchanges")) return;
-    changesKey = key;
-    const files = filterNoiseFiles(parseDiff(res.patch));
-    const totalIns = files.reduce((a, f) => a + f.add, 0),
-      totalDel = files.reduce((a, f) => a + f.del, 0);
-    $("#tabbody").innerHTML = `
-      <div id="mainchanges">
-        <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span></div>
-        ${files.length ? diffFilesHtml(files) : '<div class="empty">No uncommitted changes.</div>'}</div>`;
+  // Keep the header's branch/path current from the git pane's status responses.
+  const refreshHeader = (status) => {
+    const nextMeta = { branch: status.branch, path: status.path };
+    if (nextMeta.branch === meta.branch && nextMeta.path === meta.path) return;
+    meta = nextMeta;
+    const h1 = root.querySelector(".thead h1");
+    if (h1) h1.textContent = meta.branch || "(detached)";
+    const metaEl = root.querySelector(".tmeta span");
+    if (metaEl) metaEl.textContent = meta.path || "";
   };
 
   // Fetch the project name for the back link (best-effort; falls back to the id).

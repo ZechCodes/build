@@ -18,6 +18,7 @@ import { watchSelection } from "../selectWatch.js";
 import { renderStagesTab } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
+import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { terminalManager } from "../terminal/manager.js";
 
 // The diff-tab git split button: each option id maps to a task.git_action call.
@@ -62,11 +63,12 @@ export async function renderTask() {
   let shellCtl = null; // tab-row controller (mountTabShell)
   let aux = null; // the mounted files/terminal/agent pane controller
 
-  const isAuxTab = (tabId) => tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
+  const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
   const defaultTab = () => (last && (last.state === "created" || last.state === "planning" || last.state === "plan_review") ? "plan" : "diff");
   const staticTabs = () => [
     { id: "plan", label: "Plan" },
     { id: "diff", label: "Diff" },
+    { id: "changes", label: "Changes" },
     { id: "files", label: "Files" },
     { id: "agent", label: "Agent" },
     ...terminals.tabs(),
@@ -127,6 +129,18 @@ export async function renderTask() {
     if (!body) return;
     if (tabId === "agent") {
       aux = mountAgentTab(body);
+      return;
+    }
+    if (tabId === "changes") {
+      // The git surface for the user's own work in this task's worktree. The
+      // pane owns its own 1.6s poll; the task poll never repaints aux tabs, so
+      // the two never double up. A state change rebuilds the shell, which
+      // remounts this pane with options matching the new state.
+      aux = mountGitPane(body, {
+        scope: { task_id: id },
+        callRpc: (method, params) => App.call(method, params),
+        agentCommitOptions: last ? taskAgentCommitOptions(last.state, last.goal) : [],
+      });
       return;
     }
     aux = mountAuxTab(body, tabId, {
@@ -684,8 +698,11 @@ export async function renderTask() {
     } catch {
       return;
     }
-    if (!last || last.state !== t.state || last.goal !== t.goal) shell(t);
+    // Update `last` BEFORE any shell rebuild: shell() remounts aux tabs (the
+    // Changes git pane builds its commit options from last.state/last.goal).
+    const needShell = !last || last.state !== t.state || last.goal !== t.goal;
     last = t;
+    if (needShell) shell(t);
     // Keep the error banner in sync even when the state is unchanged — a merge
     // failure leaves the task in review, so the shell won't re-render. A held
     // local RPC error (Abandon/Delete failure) wins over the polled last_error so

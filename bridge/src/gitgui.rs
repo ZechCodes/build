@@ -279,8 +279,6 @@ fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
     } else {
         let index_status = if status.contains(git2::Status::INDEX_NEW) {
             "A"
-        } else if status.contains(git2::Status::INDEX_RENAMED) {
-            "R"
         } else if status.contains(git2::Status::INDEX_DELETED) {
             "D"
         } else if index_changed {
@@ -319,10 +317,13 @@ pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
     let repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());
+    // Rename detection stays OFF: a staged rename decomposes into a plain
+    // D (old path) + A (new path) pair, matching the patch (which has no
+    // rename detection) and keeping stage/unstage per-path symmetric. With
+    // renames on, git2 reports one "R" entry under the OLD path only — the
+    // new path never surfaces and unstaging the row half-unstages the rename.
     let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true);
+    opts.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
     let mut files: Vec<Value> = statuses
         .iter()

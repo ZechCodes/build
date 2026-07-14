@@ -8807,6 +8807,40 @@ mod tests {
     }
 
     #[test]
+    fn git_status_decomposes_a_staged_rename_into_delete_plus_add() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        git_in_dir(&repo, &["mv", "README.md", "RENAMED.md"]);
+
+        // Both sides of the rename appear, matching the patch (which has no
+        // rename detection): a staged delete at the old path, a staged add at
+        // the new one. index_status "R" never occurs.
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let old = file_entry(&res["result"], "README.md");
+        assert_eq!(old["index_status"], "D");
+        assert_eq!(old["staged"], "full");
+        let new = file_entry(&res["result"], "RENAMED.md");
+        assert_eq!(new["index_status"], "A");
+        assert_eq!(new["staged"], "full");
+
+        // Unstaging both paths fully restores the index: the old path is back
+        // (its only change is the worktree deletion), the new path untracked.
+        let unstaged = state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["README.md", "RENAMED.md"] }),
+        ));
+        assert_eq!(unstaged["ok"], true, "{unstaged:?}");
+        let old = file_entry(&unstaged["result"], "README.md");
+        assert_eq!(old["staged"], "none");
+        assert_eq!(old["worktree_status"], "D");
+        let new = file_entry(&unstaged["result"], "RENAMED.md");
+        assert_eq!(new["staged"], "none");
+        assert_eq!(new["index_status"], "?");
+    }
+
+    #[test]
     fn git_status_on_an_unborn_head_has_a_null_head() {
         let (dir, repo) = init_unborn_repo();
         let mut state = git_gui_state(&dir, &repo);

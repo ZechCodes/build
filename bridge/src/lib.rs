@@ -15,6 +15,7 @@ pub mod app;
 pub mod backoff;
 pub mod config;
 pub mod diff;
+pub mod gitgui;
 pub mod identity;
 pub mod mcp;
 pub mod models;

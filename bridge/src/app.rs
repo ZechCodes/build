@@ -1152,6 +1152,12 @@ impl AppState {
             "fs.tree" => self.fs_tree(params),
             "fs.read" => self.fs_read(params),
             "project.diff" => self.project_diff(params),
+            "git.log" => self.git_log(params),
+            "git.show" => self.git_show(params),
+            "git.status" => self.git_status(params),
+            "git.stage" => self.git_stage(params),
+            "git.unstage" => self.git_unstage(params),
+            "git.commit" => self.git_commit(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.project_list()),
@@ -2490,6 +2496,112 @@ impl AppState {
         }))
     }
 
+    /// Resolve the shared `git.*` scope: exactly one of `project_id` (the
+    /// project's primary checkout) or `task_id` (the task's worktree). The
+    /// repo path always comes from server state — a client can never name a
+    /// filesystem path directly.
+    fn resolve_git_scope(&self, params: &Value) -> Result<GitScope, String> {
+        let project_id = params.get("project_id").and_then(Value::as_str);
+        let task_id = params.get("task_id").and_then(Value::as_str);
+        match (project_id, task_id) {
+            (Some(project_id), None) => {
+                let project = self
+                    .projects
+                    .iter()
+                    .find(|p| p.id == project_id)
+                    .ok_or_else(|| "unknown project_id".to_string())?;
+                Ok(GitScope {
+                    repo_path: project.repo_path.clone(),
+                    task: None,
+                })
+            }
+            (None, Some(task_id)) => {
+                let active = self
+                    .tasks
+                    .get(task_id)
+                    .ok_or_else(|| "unknown task_id".to_string())?;
+                Ok(GitScope {
+                    repo_path: active.worktree.path.clone(),
+                    task: Some(GitScopeTask {
+                        task_id: task_id.to_string(),
+                        base_branch: active.worktree.base_branch.clone(),
+                    }),
+                })
+            }
+            _ => Err("provide exactly one of project_id or task_id".to_string()),
+        }
+    }
+
+    /// `git.log` — one page of commit history for the scoped checkout. Task
+    /// scope additionally marks each commit as ahead of (unreachable from)
+    /// the base branch.
+    fn git_log(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let limit = params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(30)
+            .clamp(1, 200) as usize;
+        let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let mark_ahead_of = scope.task.as_ref().map(|task| task.base_branch.clone());
+        crate::gitgui::log_page(&scope.repo_path, mark_ahead_of.as_deref(), limit, skip)
+    }
+
+    /// `git.show` — one commit's metadata, stat, and capped patch. The hash
+    /// param is a strict object-id prefix, never a general revspec.
+    fn git_show(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let hash = require_str(params, "hash")?;
+        crate::gitgui::show_commit(&scope.repo_path, &hash)
+    }
+
+    /// `git.status` — branch/head plus per-file staging tri-state and the
+    /// uncommitted patch for the scoped checkout.
+    fn git_status(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.stage` — stage the given repo-relative paths, answering with the
+    /// fresh status payload so the UI repaints without waiting for a poll.
+    fn git_stage(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let paths = require_path_list(params)?;
+        crate::gitgui::stage_paths(&scope.repo_path, &paths)?;
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.unstage` — the inverse of `git.stage`, same response shape.
+    fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let paths = require_path_list(params)?;
+        crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.commit` — commit exactly what is staged with the user's message.
+    /// On a task scope the commit changes the tree the board summarizes, so
+    /// the cached diffstat is dropped and the task's updated-at stamped; the
+    /// task record itself is untouched (no lifecycle transition — a commit
+    /// never advances a task past any gate).
+    fn git_commit(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let message = require_str(params, "message")?;
+        let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
+        if let Some(task) = &scope.task {
+            self.task_stat_cache.remove(&task.task_id);
+            self.task_updated_at
+                .insert(task.task_id.clone(), now_rfc3339());
+        }
+        let status = crate::gitgui::status_payload(&scope.repo_path)?;
+        Ok(json!({
+            "hash": commit["hash"],
+            "short": commit["short"],
+            "subject": commit["subject"],
+            "status": status,
+        }))
+    }
+
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
     /// never adopts.
     fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -3299,6 +3411,39 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("missing required param: {key}"))
+}
+
+/// A resolved `git.*` scope: the repository directory the RPC operates on,
+/// plus — for task scope — what `git.log` needs to mark commits ahead of base
+/// and `git.commit` needs to invalidate afterwards.
+struct GitScope {
+    repo_path: std::path::PathBuf,
+    task: Option<GitScopeTask>,
+}
+
+struct GitScopeTask {
+    task_id: String,
+    base_branch: String,
+}
+
+/// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
+/// array of repo-relative strings.
+fn require_path_list(params: &Value) -> Result<Vec<String>, String> {
+    let paths = params
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "missing required param: paths".to_string())?;
+    if paths.is_empty() {
+        return Err("paths must not be empty".to_string());
+    }
+    paths
+        .iter()
+        .map(|path| {
+            path.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "paths must be an array of strings".to_string())
+        })
+        .collect()
 }
 
 /// Resolve a client-supplied relative `path` under a worktree-backed `root`,
@@ -8284,5 +8429,570 @@ mod tests {
         let list2 = state.handle(req("task.list", json!({})));
         let summary2 = entry(&list2);
         assert_eq!(summary, summary2, "served from cache, not recomputed");
+    }
+
+    // ---- git.* (browser git GUI) -------------------------------------------
+
+    /// Run a git command inside `dir`, asserting success (fixture plumbing).
+    fn git_in_dir(dir: &std::path::Path, args: &[&str]) {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// A repo initialized on `main` but with no commits yet (unborn HEAD).
+    fn init_unborn_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_in_dir(&repo, &["init", "-b", "main"]);
+        git_in_dir(&repo, &["config", "user.email", "t@build.ing"]);
+        git_in_dir(&repo, &["config", "user.name", "T"]);
+        (dir, repo)
+    }
+
+    fn git_gui_state(dir: &tempfile::TempDir, repo: &std::path::Path) -> AppState {
+        AppState::new(
+            repo.to_path_buf(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+    }
+
+    /// The `files` entry for `path` in a git.status-shaped payload.
+    fn file_entry<'a>(status: &'a Value, path: &str) -> &'a Value {
+        status["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == json!(path))
+            .unwrap_or_else(|| panic!("no {path} in {status:?}"))
+    }
+
+    fn has_file_entry(status: &Value, path: &str) -> bool {
+        status["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == json!(path))
+    }
+
+    #[test]
+    fn git_rpcs_require_exactly_one_scope() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let neither = state.handle(req("git.status", json!({})));
+        assert_eq!(neither["ok"], false);
+        assert_eq!(
+            neither["error"],
+            "provide exactly one of project_id or task_id"
+        );
+
+        let both = state.handle(req(
+            "git.status",
+            json!({ "project_id": project_id, "task_id": "task-1" }),
+        ));
+        assert_eq!(both["ok"], false);
+        assert_eq!(
+            both["error"],
+            "provide exactly one of project_id or task_id"
+        );
+
+        let unknown_project = state.handle(req("git.log", json!({ "project_id": "proj-99" })));
+        assert_eq!(unknown_project["ok"], false);
+        assert_eq!(unknown_project["error"], "unknown project_id");
+
+        let unknown_task = state.handle(req("git.log", json!({ "task_id": "task-99" })));
+        assert_eq!(unknown_task["ok"], false);
+        assert_eq!(unknown_task["error"], "unknown task_id");
+    }
+
+    #[test]
+    fn git_log_pages_newest_first() {
+        let (dir, repo) = init_repo();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git_in_dir(&repo, &["add", "a.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "second"]);
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        git_in_dir(&repo, &["add", "b.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "third"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Default page: everything, newest first, no more pages.
+        let res = state.handle(req("git.log", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["branch"], "main");
+        assert_eq!(res["result"]["more"], false);
+        let commits = res["result"]["commits"].as_array().unwrap();
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0]["subject"], "third");
+        assert_eq!(commits[1]["subject"], "second");
+        assert_eq!(commits[2]["subject"], "initial");
+        let hash = commits[0]["hash"].as_str().unwrap();
+        assert_eq!(hash.len(), 40);
+        assert_eq!(commits[0]["short"], hash[..7]);
+        assert_eq!(commits[0]["author"], "T");
+        assert_eq!(commits[0]["email"], "t@build.ing");
+        assert!(commits[0]["time"].as_i64().unwrap() > 0);
+        // Project scope never carries the task-only ahead marker.
+        assert!(commits[0].get("ahead_of_base").is_none());
+
+        // limit pages, and `more` says another page exists.
+        let page = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 2 }),
+        ));
+        assert_eq!(page["result"]["commits"].as_array().unwrap().len(), 2);
+        assert_eq!(page["result"]["more"], true);
+
+        // skip advances into the tail page.
+        let tail = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 2, "skip": 2 }),
+        ));
+        let tail_commits = tail["result"]["commits"].as_array().unwrap();
+        assert_eq!(tail_commits.len(), 1);
+        assert_eq!(tail_commits[0]["subject"], "initial");
+        assert_eq!(tail["result"]["more"], false);
+
+        // limit clamps into 1..=200 rather than erroring.
+        let clamped = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 0 }),
+        ));
+        assert_eq!(clamped["result"]["commits"].as_array().unwrap().len(), 1);
+        assert_eq!(clamped["result"]["more"], true);
+    }
+
+    #[test]
+    fn git_log_on_an_unborn_head_reports_the_branch_and_no_commits() {
+        let (dir, repo) = init_unborn_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.log", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["branch"], "main");
+        assert_eq!(res["result"]["commits"].as_array().unwrap().len(), 0);
+        assert_eq!(res["result"]["more"], false);
+    }
+
+    #[test]
+    fn git_log_marks_task_commits_ahead_of_base() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick change", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        let worktree = state.tasks.get(&task_id).unwrap().worktree.path.clone();
+
+        // A commit on the task branch that main cannot reach.
+        std::fs::write(worktree.join("ahead.txt"), "ahead\n").unwrap();
+        git_in_dir(&worktree, &["add", "ahead.txt"]);
+        git_in_dir(&worktree, &["commit", "-m", "ahead work"]);
+
+        let log = state.handle(req("git.log", json!({ "task_id": task_id })));
+        assert_eq!(log["ok"], true, "{log:?}");
+        let commits = log["result"]["commits"].as_array().unwrap();
+        let ahead = commits
+            .iter()
+            .find(|c| c["subject"] == "ahead work")
+            .unwrap();
+        assert_eq!(ahead["ahead_of_base"], true);
+        let base = commits.iter().find(|c| c["subject"] == "initial").unwrap();
+        assert_eq!(base["ahead_of_base"], false);
+    }
+
+    #[test]
+    fn git_show_shapes_a_commit_and_its_root_parent() {
+        let (dir, repo) = init_repo();
+        std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+        git_in_dir(&repo, &["add", "a.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let log = state.handle(req("git.log", json!({ "project_id": project_id })));
+        let commits = log["result"]["commits"].as_array().unwrap().clone();
+        let top_hash = commits[0]["hash"].as_str().unwrap().to_string();
+        let root_hash = commits[1]["hash"].as_str().unwrap().to_string();
+
+        let shown = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": top_hash }),
+        ));
+        assert_eq!(shown["ok"], true, "{shown:?}");
+        assert_eq!(shown["result"]["hash"], top_hash.as_str());
+        assert_eq!(shown["result"]["short"], top_hash[..7]);
+        assert_eq!(shown["result"]["subject"], "subject line");
+        assert_eq!(shown["result"]["body"], "body text");
+        assert_eq!(shown["result"]["author"], "T");
+        assert_eq!(shown["result"]["email"], "t@build.ing");
+        assert!(shown["result"]["time"].as_i64().unwrap() > 0);
+        assert_eq!(shown["result"]["stat"]["files_changed"], 1);
+        assert_eq!(shown["result"]["stat"]["insertions"], 1);
+        assert_eq!(shown["result"]["stat"]["deletions"], 0);
+        assert!(shown["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("+hello"));
+        assert_eq!(shown["result"]["truncated"], false);
+
+        // A short (7-char) prefix resolves to the same commit.
+        let by_prefix = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": top_hash[..7] }),
+        ));
+        assert_eq!(by_prefix["result"]["hash"], top_hash.as_str());
+
+        // The root commit diffs against the empty tree.
+        let root = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": root_hash }),
+        ));
+        assert_eq!(root["ok"], true, "{root:?}");
+        assert!(root["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("+# project"));
+    }
+
+    #[test]
+    fn git_show_rejects_malformed_and_unknown_hashes() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        for bad in ["HEAD", "abc", "ABCDEF12", "main", "deadbeef^", ""] {
+            let res = state.handle(req(
+                "git.show",
+                json!({ "project_id": project_id, "hash": bad }),
+            ));
+            assert_eq!(res["ok"], false, "hash {bad:?} must be rejected: {res:?}");
+        }
+
+        let unknown = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": "ffffffffff" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+    }
+
+    #[test]
+    fn git_show_truncates_an_oversized_patch() {
+        let (dir, repo) = init_repo();
+        let line_count = 80_000; // ~1.36 MiB of "+…" patch lines, over the 1 MiB cap
+        let big: String = "0123456789abcdef\n".repeat(line_count);
+        std::fs::write(repo.join("big.txt"), &big).unwrap();
+        git_in_dir(&repo, &["add", "big.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "big"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let log = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 1 }),
+        ));
+        let hash = log["result"]["commits"][0]["hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let shown = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": hash }),
+        ));
+        assert_eq!(shown["ok"], true, "{shown:?}");
+        assert_eq!(shown["result"]["truncated"], true);
+        assert!(shown["result"]["patch"].as_str().unwrap().len() <= 1_048_576);
+        // The stat stays exact even though the patch degraded.
+        assert_eq!(shown["result"]["stat"]["insertions"], line_count);
+    }
+
+    #[test]
+    fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // full: a new file, staged, with no further worktree edits.
+        std::fs::write(repo.join("full.txt"), "staged\n").unwrap();
+        git_in_dir(&repo, &["add", "full.txt"]);
+        // partial: staged edits AND later worktree edits on the same path.
+        std::fs::write(repo.join("README.md"), "# project\nstaged edit\n").unwrap();
+        git_in_dir(&repo, &["add", "README.md"]);
+        std::fs::write(
+            repo.join("README.md"),
+            "# project\nstaged edit\nunstaged edit\n",
+        )
+        .unwrap();
+        // none: untracked.
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+        // Machine-local scaffolding never surfaces.
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{}\n").unwrap();
+
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let status = &res["result"];
+        assert_eq!(status["branch"], "main");
+        assert!(status["path"].as_str().unwrap().contains("repo"));
+        assert_eq!(status["head"].as_str().unwrap().len(), 40);
+
+        let full = file_entry(status, "full.txt");
+        assert_eq!(full["staged"], "full");
+        assert_eq!(full["index_status"], "A");
+        let partial = file_entry(status, "README.md");
+        assert_eq!(partial["staged"], "partial");
+        assert_eq!(partial["index_status"], "M");
+        assert_eq!(partial["worktree_status"], "M");
+        let untracked = file_entry(status, "loose.txt");
+        assert_eq!(untracked["staged"], "none");
+        assert_eq!(untracked["index_status"], "?");
+        assert_eq!(untracked["worktree_status"], "?");
+        assert!(!has_file_entry(status, ".build/mcp.json"));
+
+        assert_eq!(status["stat"]["files_changed"], 3);
+        let patch = status["patch"].as_str().unwrap();
+        assert!(patch.contains("+loose"));
+        assert!(!patch.contains("mcp.json"));
+        assert_eq!(status["truncated"], false);
+    }
+
+    #[test]
+    fn git_status_on_an_unborn_head_has_a_null_head() {
+        let (dir, repo) = init_unborn_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("first.txt"), "hello\n").unwrap();
+
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["branch"], "main");
+        assert!(res["result"]["head"].is_null());
+        let untracked = file_entry(&res["result"], "first.txt");
+        assert_eq!(untracked["staged"], "none");
+        assert_eq!(untracked["index_status"], "?");
+        assert!(res["result"]["patch"].as_str().unwrap().contains("+hello"));
+    }
+
+    #[test]
+    fn git_stage_and_unstage_round_trip_through_status() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("work.txt"), "work\n").unwrap();
+
+        let staged = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["work.txt"] }),
+        ));
+        assert_eq!(staged["ok"], true, "{staged:?}");
+        // The response IS the fresh status payload.
+        let entry = file_entry(&staged["result"], "work.txt");
+        assert_eq!(entry["staged"], "full");
+        assert_eq!(entry["index_status"], "A");
+
+        let unstaged = state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["work.txt"] }),
+        ));
+        assert_eq!(unstaged["ok"], true, "{unstaged:?}");
+        let entry = file_entry(&unstaged["result"], "work.txt");
+        assert_eq!(entry["staged"], "none");
+        assert_eq!(entry["index_status"], "?");
+    }
+
+    #[test]
+    fn git_stage_rejects_paths_that_escape_the_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("ok.txt"), "ok\n").unwrap();
+
+        for bad in ["../../../etc/passwd", "/etc/passwd", "./ok.txt", ""] {
+            let res = state.handle(req(
+                "git.stage",
+                json!({ "project_id": project_id, "paths": ["ok.txt", bad] }),
+            ));
+            assert_eq!(res["ok"], false, "path {bad:?} must be rejected: {res:?}");
+        }
+        // One bad path failed the whole request: nothing got staged.
+        let status = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(file_entry(&status["result"], "ok.txt")["staged"], "none");
+
+        // paths is required and must be a non-empty array of strings.
+        let missing = state.handle(req("git.stage", json!({ "project_id": project_id })));
+        assert_eq!(missing["ok"], false);
+        let empty = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": [] }),
+        ));
+        assert_eq!(empty["ok"], false);
+    }
+
+    #[test]
+    fn git_stage_silently_drops_the_mcp_config() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{}\n").unwrap();
+
+        // The list collapses to empty → a successful no-op.
+        let res = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": [".build/mcp.json"] }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert!(!has_file_entry(&res["result"], ".build/mcp.json"));
+    }
+
+    #[test]
+    fn git_unstage_works_on_an_unborn_head() {
+        let (dir, repo) = init_unborn_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("first.txt"), "hello\n").unwrap();
+        let staged = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["first.txt"] }),
+        ));
+        assert_eq!(file_entry(&staged["result"], "first.txt")["staged"], "full");
+
+        // No HEAD to reset to — the index entry is dropped instead.
+        let unstaged = state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["first.txt"] }),
+        ));
+        assert_eq!(unstaged["ok"], true, "{unstaged:?}");
+        let entry = file_entry(&unstaged["result"], "first.txt");
+        assert_eq!(entry["staged"], "none");
+        assert_eq!(entry["index_status"], "?");
+    }
+
+    #[test]
+    fn git_commit_commits_only_what_is_staged() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        std::fs::write(repo.join("README.md"), "# project\nunstaged edit\n").unwrap();
+        state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["staged.txt"] }),
+        ));
+
+        let res = state.handle(req(
+            "git.commit",
+            json!({ "project_id": project_id, "message": "add staged file" }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["hash"].as_str().unwrap().len(), 40);
+        assert_eq!(res["result"]["subject"], "add staged file");
+        let hash = res["result"]["hash"].as_str().unwrap();
+        assert_eq!(res["result"]["short"], hash[..7]);
+
+        // The unstaged edit survived, uncommitted; the staged file is gone
+        // from status.
+        let status = &res["result"]["status"];
+        assert!(!has_file_entry(status, "staged.txt"), "{status:?}");
+        assert_eq!(file_entry(status, "README.md")["staged"], "none");
+        assert_eq!(status["head"], json!(hash));
+
+        // And the commit is on top of the log.
+        let log = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 1 }),
+        ));
+        assert_eq!(log["result"]["commits"][0]["subject"], "add staged file");
+    }
+
+    #[test]
+    fn git_commit_rejects_empty_messages_and_an_empty_stage() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["staged.txt"] }),
+        ));
+
+        for empty in ["", "   \n\t"] {
+            let res = state.handle(req(
+                "git.commit",
+                json!({ "project_id": project_id, "message": empty }),
+            ));
+            assert_eq!(res["ok"], false, "{res:?}");
+            assert_eq!(res["error"], "commit message must not be empty");
+        }
+
+        // Drain the stage, then a commit has nothing to do.
+        state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["staged.txt"] }),
+        ));
+        let nothing = state.handle(req(
+            "git.commit",
+            json!({ "project_id": project_id, "message": "msg" }),
+        ));
+        assert_eq!(nothing["ok"], false, "{nothing:?}");
+        assert_eq!(nothing["error"], "nothing staged to commit");
+    }
+
+    #[test]
+    fn git_commit_on_a_task_scope_refreshes_the_diffstat_cache() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick change", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        let worktree = state.tasks.get(&task_id).unwrap().worktree.path.clone();
+
+        let entry = |res: &Value| {
+            res["result"]["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["task_id"] == json!(task_id.clone()))
+                .unwrap()
+                .clone()
+        };
+
+        // Warm the diffstat cache.
+        let before = entry(&state.handle(req("task.list", json!({}))));
+        let before_changed = before["stat"]["files_changed"].as_u64().unwrap();
+
+        // Stage and commit two new files through the git GUI verbs.
+        std::fs::write(worktree.join("one.txt"), "one\n").unwrap();
+        std::fs::write(worktree.join("two.txt"), "two\n").unwrap();
+        state.handle(req(
+            "git.stage",
+            json!({ "task_id": task_id, "paths": ["one.txt", "two.txt"] }),
+        ));
+        let committed = state.handle(req(
+            "git.commit",
+            json!({ "task_id": task_id, "message": "user commit" }),
+        ));
+        assert_eq!(committed["ok"], true, "{committed:?}");
+
+        // The cached stat was dropped, so the very next poll sees the commit
+        // (TASK_STAT_TTL alone would have served the stale stat for 10s).
+        let after = entry(&state.handle(req("task.list", json!({}))));
+        let after_changed = after["stat"]["files_changed"].as_u64().unwrap();
+        assert_eq!(after_changed, before_changed + 2, "{after:?}");
     }
 }

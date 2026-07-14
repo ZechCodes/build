@@ -97,7 +97,7 @@ pub fn diff_against_base(
 ) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
     let base_tree = repo.revparse_single(base_branch)?.peel_to_tree()?;
-    diff_tree_to_dirty_workdir(&repo, &base_tree)
+    diff_tree_to_dirty_workdir(&repo, Some(&base_tree))
 }
 
 /// The worktree's total delta from its fork point with `base_branch`: the
@@ -114,14 +114,14 @@ pub fn diff_against_merge_base(
     let head_commit = repo.head()?.peel_to_commit()?;
     let merge_base_id = repo.merge_base(base_commit.id(), head_commit.id())?;
     let merge_base_tree = repo.find_commit(merge_base_id)?.tree()?;
-    diff_tree_to_dirty_workdir(&repo, &merge_base_tree)
+    diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
 }
 
 /// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
 /// working directory and index (untracked included).
 /// The scaffolded per-task MCP config: machine-local plumbing, never the
 /// user's work — excluded from every review surface.
-const MCP_CONFIG_PATH: &str = ".build/mcp.json";
+pub(crate) const MCP_CONFIG_PATH: &str = ".build/mcp.json";
 
 fn delta_path(delta: &git2::DiffDelta) -> String {
     delta
@@ -134,13 +134,13 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
 
 fn diff_tree_to_dirty_workdir(
     repo: &git2::Repository,
-    old_tree: &git2::Tree,
+    old_tree: Option<&git2::Tree>,
 ) -> Result<WorktreeDiff, DiffError> {
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
-    let diff = repo.diff_tree_to_workdir_with_index(Some(old_tree), Some(&mut opts))?;
+    let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
 
     let files: Vec<ChangedFile> = diff
         .deltas()
@@ -258,7 +258,27 @@ fn notify_to_git(err: notify::Error) -> DiffError {
 pub fn diff_against_head(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(repo_path)?;
     let head_tree = repo.head()?.peel_to_tree()?;
-    diff_tree_to_dirty_workdir(&repo, &head_tree)
+    diff_tree_to_dirty_workdir(&repo, Some(&head_tree))
+}
+
+/// Like [`diff_against_head`], but an unborn HEAD (a repo with no commits yet)
+/// diffs against the empty tree instead of failing — the git-GUI status
+/// surface must keep working in a brand-new repository.
+pub fn diff_uncommitted(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = match repo.head() {
+        Ok(head) => Some(head.peel_to_tree()?),
+        Err(e)
+            if matches!(
+                e.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
+    diff_tree_to_dirty_workdir(&repo, head_tree.as_ref())
 }
 
 #[cfg(test)]

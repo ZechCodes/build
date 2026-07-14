@@ -256,6 +256,12 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   let inFlightActions = 0; // commit/stage/unstage RPCs currently awaited
   const stagingPaths = new Set(); // paths whose stage/unstage RPC is in flight
   let scopeErrorShown = null; // the terminal scope error currently rendered
+  const branchControl = showBranchControl(scope); // interactive branch menu?
+  let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort/delete)
+  let branchMenuOpen = false; // the branch dropdown is showing
+  let branchList = null; // the last git.branches payload (null until fetched)
+  const forceDeleteOffered = []; // branches whose non-force delete failed → offer force
+  let newBranchDraft = ""; // the in-progress "new branch" name (survives repaints)
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -284,7 +290,19 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       more: pagedMore ?? lastLog.more,
     };
     const expandedDetail = expandedHash ? showCache.get(expandedHash) || null : null;
-    container.innerHTML = `<div class="gitpane">${uncommittedHtml(lastStatus)}${historyHtml(mergedLog, { expandedHash, expandedDetail })}</div>`;
+    const repoControls = supportsRepoManagement(lastStatus);
+    const toolbar = repoControls
+      ? gitToolbarHtml({
+          branch: lastStatus.branch,
+          showBranchControl: branchControl,
+          chips: syncChipState(lastStatus),
+          branchMenuHtml: branchMenuOpen
+            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered })
+            : "",
+        })
+      : "";
+    const banner = repoControls ? gitStateBannerHtml({ repoState: lastStatus.repo_state, pendingConfirm }) : "";
+    container.innerHTML = `<div class="gitpane">${toolbar}${banner}${uncommittedHtml(lastStatus, { repoControls, pendingConfirm })}${historyHtml(mergedLog, { expandedHash, expandedDetail })}</div>`;
     const freshBox = messageBox();
     if (freshBox) {
       freshBox.value = draft;
@@ -313,13 +331,44 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         if (primaryButton) primaryButton.disabled = true;
       }
     }
+    mountToolbarControls();
+    // Every toolbar verb stays disabled through an in-flight action (a repaint
+    // mid-action must not resurrect a live button to double-fire); the action
+    // wrapper re-enables them once the RPC settles.
+    if (toolbarControlsDisabled(inFlightActions)) disableToolbarControls();
+    const newBranchInput = container.querySelector(".gtbranch-newinput");
+    if (newBranchInput) newBranchInput.oninput = () => (newBranchDraft = newBranchInput.value);
+    if (newBranchInput && newBranchDraft) newBranchInput.value = newBranchDraft;
     container.onclick = handleClick;
     container.onchange = handleChange;
   };
 
+  /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host
+   *  is absent unless the repo-management toolbar rendered (older bridge → no
+   *  hosts, nothing to mount). */
+  const mountToolbarControls = () => {
+    const pullHost = container.querySelector(".gtpull");
+    if (pullHost) mountSplitButton(pullHost, { options: pullSplitOptions(), run: runSyncOption });
+    const pushHost = container.querySelector(".gtpush");
+    if (pushHost) mountSplitButton(pushHost, { options: pushSplitOptions(), run: runSyncOption });
+    const stashHost = container.querySelector(".gtstash");
+    if (stashHost)
+      mountSplitButton(stashHost, { options: stashSplitOptions(lastStatus && lastStatus.stash_count), run: runSyncOption });
+  };
+
+  const toolbarButtons = () => [
+    ...container.querySelectorAll(".gtfetch, .gtbranchbtn, .gtbranch-create"),
+    ...container.querySelectorAll(".gtsync .btn.primary, .gtstash .btn.primary"),
+  ];
+  const disableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = true));
+  const reenableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = false));
+
   const paintFrom = (status, log) => {
     lastStatus = status;
     if (log) lastLog = log;
+    // A content refresh clears any stale armed confirm (the file/state it named
+    // may be gone) — matching "any repaint resets the pending confirm".
+    pendingConfirm = null;
     renderedKey = gitPollKey(lastStatus, lastLog);
     render();
   };
@@ -491,12 +540,253 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     render();
   };
 
+  // ---- repo-management actions (v2 toolbar / banner / discard / branch) ----
+
+  /** Run a repo-management mutation under the shared in-flight guard: poll
+   *  repaints freeze and every toolbar verb stays disabled while awaited, then
+   *  the controls re-enable once the RPC settles. Mirrors runCommitOption. */
+  const runGuarded = async (work) => {
+    inFlightActions += 1;
+    disableToolbarControls();
+    try {
+      return await work();
+    } finally {
+      inFlightActions -= 1;
+      if (!disposed && inFlightActions === 0) reenableToolbarControls();
+    }
+  };
+
+  /** Apply a status-returning mutation's result: HEAD/paging reset + repaint,
+   *  then pull the fresh log in (a sync/checkout can rewrite history). */
+  const applyStatusResult = async (status, successHint) => {
+    if (disposed) return;
+    lastHead = status.head;
+    extraCommits = [];
+    pagedMore = null;
+    if (successHint !== undefined) setHint(successHint);
+    else setHint("");
+    paintFrom(status);
+    try {
+      const log = await callRpc("git.log", { ...scope });
+      if (!disposed) paintFrom(lastStatus, log);
+    } catch {
+      /* the poll catches the log up */
+    }
+  };
+
+  /** Fetch / Pull / Push / Stash / Pop. force_push is gated behind one inline
+   *  confirm; the rest fire immediately. Errors set the hint and re-throw so a
+   *  split button restores itself. */
+  const runSyncOption = async (optionId) => {
+    setHint("");
+    if (syncActionNeedsConfirm(optionId)) {
+      const decision = resolveInlineConfirm(pendingConfirm, optionId);
+      pendingConfirm = decision.pending;
+      if (!decision.fire) {
+        setHint("Force push (with lease) — click Force push again to confirm.");
+        throw new Error("confirm required");
+      }
+    }
+    const { method, params } = syncActionRpc(optionId);
+    return runGuarded(async () => {
+      let status;
+      try {
+        status = await callRpc(method, { ...scope, ...params });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        throw e; // let the split button restore itself
+      }
+      await applyStatusResult(status);
+    });
+  };
+
+  const runFetch = () =>
+    runGuarded(async () => {
+      let status;
+      try {
+        status = await callRpc("git.fetch", { ...scope });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        return;
+      }
+      await applyStatusResult(status);
+    });
+
+  const runDiscard = (path) =>
+    runGuarded(async () => {
+      let status;
+      try {
+        status = await callRpc("git.discard", { ...scope, paths: [path] });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        return;
+      }
+      await applyStatusResult(status);
+    });
+
+  const runAbort = () =>
+    runGuarded(async () => {
+      let status;
+      try {
+        status = await callRpc("git.merge_abort", { ...scope });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        return;
+      }
+      await applyStatusResult(status);
+    });
+
+  const resetBranchMenu = () => {
+    branchMenuOpen = false;
+    branchList = null;
+    newBranchDraft = "";
+    forceDeleteOffered.length = 0;
+    pendingConfirm = null;
+  };
+
+  const closeBranchMenu = () => {
+    resetBranchMenu();
+    render();
+  };
+
+  /** Open the branch dropdown and load git.branches (project scope only). A
+   *  second click on the branch button closes it. */
+  const toggleBranchMenu = async () => {
+    if (branchMenuOpen) {
+      closeBranchMenu();
+      return;
+    }
+    branchMenuOpen = true;
+    branchList = null;
+    pendingConfirm = null;
+    render(); // the loading placeholder shows immediately
+    let payload;
+    try {
+      payload = await callRpc("git.branches", { project_id: scope.project_id });
+    } catch (e) {
+      if (!disposed) actionError(e);
+      branchMenuOpen = false;
+      render();
+      return;
+    }
+    if (disposed || !branchMenuOpen) return;
+    branchList = payload;
+    render();
+  };
+
+  const checkoutBranch = (branch, create = false) =>
+    runGuarded(async () => {
+      let status;
+      try {
+        status = await callRpc("git.checkout", { project_id: scope.project_id, branch, create });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        return;
+      }
+      resetBranchMenu();
+      await applyStatusResult(status, create ? `Created ${branch}.` : `Switched to ${branch}.`);
+    });
+
+  const createBranch = () => {
+    const name = (newBranchDraft || "").trim();
+    if (!name) {
+      setHint("Enter a branch name first.");
+      return undefined;
+    }
+    return checkoutBranch(name, true);
+  };
+
+  const deleteBranch = (branch, force) =>
+    runGuarded(async () => {
+      let payload;
+      try {
+        payload = await callRpc("git.branch_delete", { project_id: scope.project_id, branch, force });
+      } catch (e) {
+        if (!disposed) {
+          actionError(e);
+          // Offer a force delete only after a non-force delete has failed.
+          if (!force && !forceDeleteOffered.includes(branch)) forceDeleteOffered.push(branch);
+          pendingConfirm = null;
+          render();
+        }
+        return;
+      }
+      if (disposed) return;
+      branchList = payload; // git.branch_delete returns the fresh branches list
+      const offered = forceDeleteOffered.indexOf(branch);
+      if (offered >= 0) forceDeleteOffered.splice(offered, 1);
+      pendingConfirm = null;
+      setHint(`Deleted ${branch}.`);
+      render(); // the menu stays open, now without the deleted branch
+    });
+
+  /** The inline-confirm gate for a destructive click: a first click arms and
+   *  repaints the armed label; a second on the same control fires `action`. */
+  const confirmThen = (key, action) => {
+    if (inFlightActions > 0) return;
+    const decision = resolveInlineConfirm(pendingConfirm, key);
+    pendingConfirm = decision.pending;
+    if (decision.fire) action();
+    else render();
+  };
+
   const handleClick = (event) => {
-    if (event.target.closest(".gitmore")) {
+    const target = event.target;
+    if (target.closest(".gtfetch")) {
+      runFetch();
+      return;
+    }
+    // The Pull/Push/Stash split buttons wire their own behavior (including the
+    // force-push inline confirm inside runSyncOption). Their menu-item clicks
+    // bubble here, so bail before the "disarm on any other click" fallthrough —
+    // otherwise a click would clear the very confirm it just armed.
+    if (target.closest(".gtsync") || target.closest(".gtstash")) return;
+    if (target.closest(".gtbranchbtn")) {
+      toggleBranchMenu();
+      return;
+    }
+    if (branchMenuOpen) {
+      if (target.closest(".gtbranch-create")) {
+        createBranch();
+        return;
+      }
+      const deleteButton = target.closest(".gtbranch-del");
+      if (deleteButton) {
+        const branch = deleteButton.dataset.branch;
+        const force = deleteButton.dataset.force === "1";
+        confirmThen(`${force ? "branch_delete_force" : "branch_delete"}:${branch}`, () => deleteBranch(branch, force));
+        return;
+      }
+      const item = target.closest(".gtbranch-item");
+      if (item) {
+        // Branch rows are <div>s, so (unlike the disabled toolbar buttons) they
+        // stay clickable during an in-flight action — guard the checkout here.
+        if (inFlightActions === 0) checkoutBranch(item.dataset.branch);
+        return;
+      }
+      if (target.closest(".gtbranch-menu")) return; // a click on the input keeps the menu open
+      closeBranchMenu(); // any other click dismisses the menu, then falls through
+    }
+    const abortButton = target.closest(".gitabort");
+    if (abortButton) {
+      confirmThen("abort", runAbort);
+      return;
+    }
+    const discardButton = target.closest(".gitdiscard");
+    if (discardButton) {
+      confirmThen(`discard:${discardButton.dataset.path}`, () => runDiscard(discardButton.dataset.path));
+      return;
+    }
+    // Any other click disarms a stale confirm before doing its own job.
+    if (pendingConfirm) {
+      pendingConfirm = null;
+      render();
+    }
+    if (target.closest(".gitmore")) {
       showMore();
       return;
     }
-    const row = event.target.closest(".crow");
+    const row = target.closest(".crow");
     if (row && container.contains(row)) toggleExpanded(row.dataset.hash);
   };
 
@@ -535,14 +825,16 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     lastLog = log;
     const key = gitPollKey(status, log);
     const rendered = container.querySelector(".gitpane .gitsec");
-    // Freeze while unchanged, while the user is drafting a commit message, or
-    // while any action RPC is in flight (a repaint would clobber busy state).
+    // Freeze while unchanged, while the user is drafting a commit message, while
+    // any action RPC is in flight, or while an interaction is live (an armed
+    // confirm or an open branch menu a repaint would clobber).
     if (
       pollRenderFrozen({
         paneRendered: Boolean(rendered),
         keyUnchanged: key === renderedKey,
         draftActive: draftBusy(),
         actionInFlight: inFlightActions > 0,
+        interactionActive: Boolean(pendingConfirm) || branchMenuOpen || Boolean(newBranchDraft),
       })
     )
       return;

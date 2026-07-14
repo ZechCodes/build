@@ -1180,6 +1180,7 @@ impl AppState {
             "task.send_notes" => self.task_send_notes(params),
             "task.request_changes" => self.task_request_changes(params),
             "task.resume" => self.task_resume(params),
+            "task.message" => self.task_message(params),
             "task.approve_merge" => self.task_approve_merge(params),
             "task.git_action" => self.task_git_action(params),
             "task.abandon" => self.task_abandon(params),
@@ -2024,6 +2025,39 @@ impl AppState {
 
     /// Re-dispatch a phase the daemon's death interrupted: a fresh session picks
     /// the surviving worktree back up.
+    /// A freeform message to the task's agent — redirects a live session or
+    /// resumes a parked one, riding the harness's own conversation when a
+    /// transcript exists (see `Orchestrator::message`).
+    fn task_message(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let message = require_str(params, "message")?;
+        let project_id = self.project_of(&task_id)?;
+        let mut active = self.take(&task_id)?;
+        let outcome = (|| -> Result<(), String> {
+            self.orch_for(&project_id)?
+                .message(&mut active, &message)
+                .map_err(err)?;
+            if self.qa_agent {
+                match active.task.state {
+                    TaskState::Planning if active.revising_stage_id.is_some() => {
+                        self.simulate_stage_revise(&project_id, &mut active)?
+                    }
+                    TaskState::Planning => self.simulate_plan(&project_id, &mut active)?,
+                    TaskState::Building if active.is_multi_stage() => {
+                        self.qa_drive_stage_chain(&project_id, &mut active)?
+                    }
+                    TaskState::Building => self.simulate_build(&project_id, &mut active)?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        })();
+        let (view, persisted) = self.finish_mutation(task_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
     fn task_resume(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let project_id = self.project_of(&task_id)?;
@@ -3922,6 +3956,41 @@ mod tests {
         let t3 = entry(&state.handle(req("task.list", json!({}))));
         assert!(t3["stat"].is_null(), "{t3:?}");
         assert!(t3["updated_at"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn task_message_rejects_gates_and_unknown_tasks() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo.clone(),
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+
+        // At a review gate the structured verbs own the conversation.
+        let gated = state.handle(req(
+            "task.message",
+            json!({ "task_id": task_id, "message": "hi" }),
+        ));
+        assert_eq!(gated["ok"], false);
+        assert!(
+            gated["error"].as_str().unwrap().contains("review gate"),
+            "{gated:?}"
+        );
+
+        let unknown = state.handle(req(
+            "task.message",
+            json!({ "task_id": "nope", "message": "hi" }),
+        ));
+        assert_eq!(unknown["ok"], false);
     }
 
     #[test]

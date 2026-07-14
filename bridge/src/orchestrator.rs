@@ -975,11 +975,66 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Reply to a blocked/failed/idle card with a human follow-up; resume the phase.
-    pub fn reply(&self, active: &mut ActiveTask, message: &str) -> Result<(), OrchestratorError> {
-        active.task.apply(TaskEvent::Reply)?;
+    /// A freeform human message to the task's agent. Live sessions (planning /
+    /// building) are redirected: the session ends and a fresh one continues the
+    /// harness's own conversation (`--continue`) with the message as its next
+    /// turn — or, with no transcript to continue, a message-template session
+    /// with full task context. Parked states (blocked / failed / idle /
+    /// interrupted) resume their phase the same way. Review gates are refused:
+    /// they have structured verbs (send notes / request changes), and a side
+    /// channel there would bypass the batched-review contract.
+    pub fn message(&self, active: &mut ActiveTask, message: &str) -> Result<(), OrchestratorError> {
+        if message.trim().is_empty() {
+            return Err(OrchestratorError::Gate("message must not be empty".into()));
+        }
+        // A stage awaiting validation cannot be redirected (the same invariant
+        // as request_changes): only a validate report may move it.
+        if active.is_multi_stage() {
+            if let Some(stage_id) = active.current_stage_id.clone() {
+                let stage = active.stage(&stage_id).map_err(OrchestratorError::Gate)?;
+                if matches!(stage.state, StageState::Built | StageState::Validating) {
+                    return Err(OrchestratorError::Gate(format!(
+                        "stage {stage_id} is awaiting validation; wait for the \
+                         verdict before messaging the agent"
+                    )));
+                }
+            }
+        }
+        use crate::task::TaskState as S;
+        let event = match active.task.state {
+            S::Planning | S::Building => None,
+            S::Blocked(_) | S::Failed(_) | S::IdleUnreported(_) | S::Interrupted(_) => {
+                Some(TaskEvent::Reply)
+            }
+            S::PlanReview | S::Review => {
+                return Err(OrchestratorError::Gate(
+                    "the task is at a review gate — use send notes / request changes there".into(),
+                ))
+            }
+            S::Created | S::Merged | S::Abandoned => {
+                return Err(OrchestratorError::Gate(
+                    "no agent session to message".into(),
+                ))
+            }
+        };
+        if let Some(event) = event {
+            // Pure legality first — the caller persists the task even on Err.
+            crate::task::transition(&active.task.state, active.task.kind, event)?;
+        }
+        // With a transcript the message IS the next conversation turn; without
+        // one, a fresh session gets it wrapped in full task context.
+        let prompt = if (self.transcript_probe)(&active.worktree.path) {
+            message.to_string()
+        } else {
+            self.render(&self.templates.message, active, message)
+        };
+        if let Some(event) = event {
+            active.task.apply(event)?;
+        }
         active.last_error = None;
-        self.prompt_warm_session(active, message)?;
+        self.end_session(active);
+        active.pending_continuation = true;
+        self.spawn_session(active, &prompt)?;
         Ok(())
     }
 
@@ -1283,17 +1338,6 @@ impl Orchestrator {
         };
         active.session_generation += 1;
         active.session = Some(session);
-        Ok(())
-    }
-
-    fn prompt_warm_session(
-        &self,
-        active: &ActiveTask,
-        prompt: &str,
-    ) -> Result<(), OrchestratorError> {
-        if let Some(session) = &active.session {
-            session.write_prompt(prompt)?;
-        }
         Ok(())
     }
 
@@ -1749,8 +1793,121 @@ mod tests {
         assert!(matches!(t.task.state, TaskState::Blocked(_)));
         assert_eq!(t.last_summary.as_deref(), Some("summary"));
 
-        orch.reply(&mut t, "use the staging credentials").unwrap();
+        orch.message(&mut t, "use the staging credentials").unwrap();
         assert_eq!(t.task.state, TaskState::Building);
+        assert!(t.subscribe().is_some(), "a fresh session carries the reply");
+    }
+
+    /// A one-shot agent that records every spawn's prompt and continue flag.
+    fn prompt_spy_agent(log: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>) -> Agent {
+        Agent::OneShot(std::sync::Arc::new(
+            move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                log.lock()
+                    .unwrap()
+                    .push((prompt.to_string(), options.continue_session));
+                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn message_continues_the_agents_conversation_when_a_transcript_exists() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_spy_agent(log.clone()),
+            Templates::default(),
+        )
+        .with_transcript_probe(std::sync::Arc::new(|_| true));
+
+        let mut t = orch
+            .dispatch(
+                TaskId::new("m1"),
+                "do work",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        orch.message(&mut t, "also bump the version").unwrap();
+
+        assert_eq!(
+            t.task.state,
+            TaskState::Building,
+            "redirect keeps the phase"
+        );
+        let recorded = log.lock().unwrap();
+        let (prompt, continued) = recorded.last().unwrap();
+        assert!(
+            *continued,
+            "the message rides the harness's own conversation"
+        );
+        assert_eq!(
+            prompt, "also bump the version",
+            "with --continue the message IS the next turn, unwrapped"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_wraps_in_task_context_without_a_transcript() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_spy_agent(log.clone()),
+            Templates::default(),
+        ); // default probe: never a transcript
+
+        let mut t = orch
+            .dispatch(
+                TaskId::new("m2"),
+                "polish the readme",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        orch.message(&mut t, "keep the badge table").unwrap();
+
+        let recorded = log.lock().unwrap();
+        let (prompt, continued) = recorded.last().unwrap();
+        assert!(!continued);
+        assert!(prompt.contains("keep the badge table"), "{prompt}");
+        assert!(
+            prompt.contains("polish the readme"),
+            "a cold session needs the goal for context: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_is_refused_at_gates_terminals_and_when_empty() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(
+                TaskId::new("m3"),
+                "gate test",
+                TaskKind::Quick,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+
+        let err = orch.message(&mut t, "   ").unwrap_err().to_string();
+        assert!(err.contains("empty"), "{err}");
+
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.task.state, TaskState::Review);
+        let err = orch.message(&mut t, "hello").unwrap_err().to_string();
+        assert!(err.contains("review gate"), "{err}");
+
+        orch.approve_merge(&mut t).unwrap();
+        let err = orch.message(&mut t, "hello").unwrap_err().to_string();
+        assert!(err.contains("no agent"), "{err}");
     }
 
     #[tokio::test]
@@ -2762,6 +2919,23 @@ mod tests {
         assert_eq!(t.task.state, TaskState::PlanReview, "waits for approval");
         assert_eq!(t.stage("second").unwrap().state, StageState::Planned);
         assert!(t.auto_advance, "run-all stays armed while waiting");
+    }
+
+    #[tokio::test]
+    async fn message_waits_for_a_stage_validation_verdict() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "mv1");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+
+        // Only a validate report may move a Validating stage — a redirect here
+        // would orphan the verdict, exactly like request_changes.
+        let err = orch.message(&mut t, "hurry up").unwrap_err().to_string();
+        assert!(err.contains("awaiting validation"), "{err}");
     }
 
     #[tokio::test]

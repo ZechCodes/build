@@ -156,6 +156,7 @@ pub struct Templates {
     pub fix_stage: String,
     pub review_changes: String,
     pub validate: String,
+    pub message: String,
 }
 
 impl Default for Templates {
@@ -169,9 +170,27 @@ impl Default for Templates {
             fix_stage: FIX_STAGE.to_string(),
             review_changes: REVIEW_CHANGES.to_string(),
             validate: VALIDATE.to_string(),
+            message: MESSAGE.to_string(),
         }
     }
 }
+
+/// Fallback for a freeform reviewer message when the harness has no prior
+/// conversation to `--continue` in this worktree: a fresh session gets the
+/// message wrapped in enough context to act on it.
+const MESSAGE: &str = "\
+Continue your work on this task, in this worktree.
+
+Goal: {goal}
+
+A message from the reviewer:
+
+{comments}
+
+Honor the message, then carry the task to completion and report via the `done`
+tool exactly as your original instructions described (same phase, honest
+status). If the message asks something you cannot resolve from this worktree,
+call `done` with status=\"blocked\" and put the question in the summary.";
 
 /// The substitution variables a template can reference.
 #[derive(Debug, Default, Clone)]

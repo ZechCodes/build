@@ -12,6 +12,7 @@ import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
 import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/taskActions.js";
+import { openMessageAgent } from "../sheets/message.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { renderStagesTab } from "./stages.js";
@@ -84,7 +85,7 @@ export async function renderTask() {
       <div class="thead"><h1>${esc(m.goal || "")}</h1>
         <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span></div></div>
       <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>${m.adopted ? "<span>·</span><span>adopted</span>" : ""}
-        <span class="taskactions" id="taskactions"></span></div>
+        <span id="msgaction"></span><span class="taskactions" id="taskactions"></span></div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
@@ -224,6 +225,17 @@ export async function renderTask() {
     const el = $("#taskactions");
     if (!el) return;
     const state = m && m.state;
+    // Freeform channel to the agent: live sessions redirect, parked ones
+    // resume. Gates keep their structured verbs, so no button there.
+    const msgEl = $("#msgaction");
+    if (msgEl) {
+      const messageable = ["planning", "building", "blocked", "failed", "idle_unreported", "interrupted"];
+      msgEl.innerHTML = messageable.includes(state)
+        ? '<button class="btn mini" id="msgagent">Message agent</button>'
+        : "";
+      const msgBtn = $("#msgagent");
+      if (msgBtn) msgBtn.onclick = () => openMessageAgent(m, paint);
+    }
     if (canDelete(state)) {
       el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
       $("#deleteTask").onclick = async () => {

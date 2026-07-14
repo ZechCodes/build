@@ -46,6 +46,24 @@ export function gitDraftKey(scope) {
 // the pane is disposed and remounted on every tab switch and shell rebuild.
 const commitDraftStash = new Map();
 
+/** The draft a fresh render should show: a live box is the freshest truth (even
+ *  when deliberately cleared); only a remount with no box falls back to the stash. */
+export function resolveCommitDraft(liveBoxValue, stash, draftKey) {
+  return liveBoxValue !== null ? liveBoxValue : stash.get(draftKey) || "";
+}
+
+/** Mirror a draft into the stash: non-empty persists, emptied frees the slot. */
+export function syncCommitDraft(stash, draftKey, draft) {
+  if (draft) stash.set(draftKey, draft);
+  else stash.delete(draftKey);
+}
+
+/** Every commit variant leaves the tree committed, so all of them retire the
+ *  scope's draft on success — including the bridge-side auto commit. */
+export function commitVariantClearsDraft(optionId) {
+  return optionId === "commit" || optionId === "agent_commit" || optionId === "auto_commit";
+}
+
 // The bridge's terminal git-scope rejections: a pane polling with one of these
 // will never recover, so it must show the error instead of "loading..." forever.
 const PERMANENT_GIT_SCOPE_ERRORS = [
@@ -144,7 +162,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const box = messageBox();
     // A live box is the freshest draft; otherwise (first paint after a
     // dispose/remount) the module-level stash restores what was typed.
-    const draft = box ? box.value : commitDraftStash.get(draftKey) || "";
+    const draft = resolveCommitDraft(box ? box.value : null, commitDraftStash, draftKey);
     const hadFocus = box && document.activeElement === box;
     const mergedLog = {
       ...lastLog,
@@ -158,11 +176,10 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       freshBox.value = draft;
       // Every keystroke lands in the stash so tab switches and view-shell
       // rebuilds (which remount the pane from scratch) restore the draft.
-      freshBox.oninput = () => commitDraftStash.set(draftKey, freshBox.value);
+      freshBox.oninput = () => syncCommitDraft(commitDraftStash, draftKey, freshBox.value);
       if (hadFocus) freshBox.focus();
     }
-    if (draft) commitDraftStash.set(draftKey, draft);
-    else commitDraftStash.delete(draftKey);
+    syncCommitDraft(commitDraftStash, draftKey, draft);
     // `indeterminate` is a property, not an attribute — set it after mount.
     const filesByPath = new Map((lastStatus.files || []).map((f) => [f.path, f]));
     container.querySelectorAll(".stagebox").forEach((checkbox) => {
@@ -249,7 +266,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         throw e;
       }
       if (disposed) return;
-      clearCommitDraft();
+      if (commitVariantClearsDraft(optionId)) clearCommitDraft();
       lastHead = result.status.head;
       extraCommits = [];
       pagedMore = null;
@@ -270,7 +287,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         throw e;
       }
       if (disposed) return;
-      clearCommitDraft();
+      if (commitVariantClearsDraft(optionId)) clearCommitDraft();
       setHint("Asked the agent to commit.");
       render(); // remount the split button so it re-enables
       return;
@@ -283,6 +300,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         throw e;
       }
       if (disposed) return;
+      if (commitVariantClearsDraft(optionId)) clearCommitDraft();
       await forceRefresh();
       return;
     }

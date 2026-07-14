@@ -4,6 +4,9 @@ import {
   commitSplitOptions,
   taskAgentCommitOptions,
   gitDraftKey,
+  resolveCommitDraft,
+  syncCommitDraft,
+  commitVariantClearsDraft,
   isPermanentGitScopeError,
   pollRenderFrozen,
 } from "../src/core/gitPane.js";
@@ -81,6 +84,53 @@ describe("gitDraftKey", () => {
 
   it("never collides across scope kinds sharing an id", () => {
     expect(gitDraftKey({ task_id: "x" })).not.toBe(gitDraftKey({ project_id: "x" }));
+  });
+});
+
+describe("resolveCommitDraft", () => {
+  it("restores the stashed draft when no live box exists (remount after dispose)", () => {
+    const stash = new Map([["task:t1", "wip: half a message"]]);
+    expect(resolveCommitDraft(null, stash, "task:t1")).toBe("wip: half a message");
+  });
+
+  it("prefers the live box over the stash — even a deliberately cleared box", () => {
+    const stash = new Map([["task:t1", "stale stash"]]);
+    expect(resolveCommitDraft("fresh typing", stash, "task:t1")).toBe("fresh typing");
+    expect(resolveCommitDraft("", stash, "task:t1")).toBe("");
+  });
+
+  it("yields an empty draft when neither box nor stash has anything", () => {
+    expect(resolveCommitDraft(null, new Map(), "project:p1")).toBe("");
+  });
+});
+
+describe("syncCommitDraft", () => {
+  it("stores a non-empty draft under the scope key", () => {
+    const stash = new Map();
+    syncCommitDraft(stash, "task:t1", "wip");
+    expect(stash.get("task:t1")).toBe("wip");
+  });
+
+  it("deletes the slot when the draft is emptied", () => {
+    const stash = new Map([["task:t1", "wip"]]);
+    syncCommitDraft(stash, "task:t1", "");
+    expect(stash.has("task:t1")).toBe(false);
+  });
+
+  it("round-trips through resolveCommitDraft across a remount", () => {
+    const stash = new Map();
+    syncCommitDraft(stash, "task:t1", "typed before the shell rebuild");
+    expect(resolveCommitDraft(null, stash, "task:t1")).toBe("typed before the shell rebuild");
+  });
+});
+
+describe("commitVariantClearsDraft", () => {
+  it.each(["commit", "agent_commit", "auto_commit"])("clears the draft after %s succeeds", (variant) => {
+    expect(commitVariantClearsDraft(variant)).toBe(true);
+  });
+
+  it("leaves the draft alone for unknown option ids", () => {
+    expect(commitVariantClearsDraft("something_else")).toBe(false);
   });
 });
 

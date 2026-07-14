@@ -388,8 +388,12 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
 
 /// Validate and filter a stage/unstage path list: every path must pass the
 /// lexical worktree fence (one bad path fails the whole request, before any
-/// git call), and the machine-local MCP config is silently dropped.
-fn stageable_paths(paths: &[String]) -> Result<Vec<&str>, String> {
+/// git call), and the machine-local MCP config is silently dropped (compared
+/// against the raw path, before any pathspec decoration). Each surviving
+/// path becomes a `:(literal)` pathspec so git never applies glob semantics
+/// to a client-supplied string — a path like `*` is lexically valid but must
+/// only ever match a file actually named `*`.
+fn stageable_paths(paths: &[String]) -> Result<Vec<String>, String> {
     for path in paths {
         if !crate::task::is_worktree_contained_path(path) {
             return Err(format!("path escapes the worktree: {path}"));
@@ -397,8 +401,8 @@ fn stageable_paths(paths: &[String]) -> Result<Vec<&str>, String> {
     }
     Ok(paths
         .iter()
-        .map(String::as_str)
-        .filter(|path| *path != crate::diff::MCP_CONFIG_PATH)
+        .filter(|path| path.as_str() != crate::diff::MCP_CONFIG_PATH)
+        .map(|path| format!(":(literal){path}"))
         .collect())
 }
 
@@ -432,7 +436,7 @@ pub fn stage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let mut args = vec!["add", "--"];
-    args.extend(surviving);
+    args.extend(surviving.iter().map(String::as_str));
     run_git(repo_path, &args).map(|_| ())
 }
 
@@ -453,7 +457,7 @@ pub fn unstage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     } else {
         vec!["rm", "-f", "-r", "-q", "--cached", "--"]
     };
-    args.extend(surviving);
+    args.extend(surviving.iter().map(String::as_str));
     run_git(repo_path, &args).map(|_| ())
 }
 
@@ -515,7 +519,10 @@ mod tests {
     #[test]
     fn stageable_paths_fences_and_filters() {
         let mixed: Vec<String> = vec!["src/a.rs".into(), ".build/mcp.json".into()];
-        assert_eq!(stageable_paths(&mixed).unwrap(), vec!["src/a.rs"]);
+        // Survivors come out as :(literal) pathspecs — glob-proof; the MCP
+        // config filter compares against the raw path, before decoration.
+        assert_eq!(stageable_paths(&mixed).unwrap(), vec![":(literal)src/a.rs"]);
+        assert_eq!(stageable_paths(&["*".into()]).unwrap(), vec![":(literal)*"]);
 
         assert!(stageable_paths(&["../evil".into()]).is_err());
         assert!(stageable_paths(&["/etc/passwd".into()]).is_err());

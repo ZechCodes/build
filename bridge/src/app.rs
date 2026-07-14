@@ -8961,6 +8961,54 @@ mod tests {
     }
 
     #[test]
+    fn git_stage_treats_paths_as_literals_never_globs() {
+        // A file literally named "*" alongside an innocent bystander: staging
+        // "*" must stage only that file, never glob-expand.
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("*"), "star\n").unwrap();
+        std::fs::write(repo.join("bystander.txt"), "hi\n").unwrap();
+
+        let staged = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["*"] }),
+        ));
+        assert_eq!(staged["ok"], true, "{staged:?}");
+        assert_eq!(file_entry(&staged["result"], "*")["staged"], "full");
+        assert_eq!(
+            file_entry(&staged["result"], "bystander.txt")["staged"],
+            "none"
+        );
+
+        // Unstage is literal too.
+        let unstaged = state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["*"] }),
+        ));
+        assert_eq!(unstaged["ok"], true, "{unstaged:?}");
+        assert_eq!(file_entry(&unstaged["result"], "*")["staged"], "none");
+
+        // Without a file actually named "*", the request errors instead of
+        // matching everything.
+        let (dir2, repo2) = init_repo();
+        let mut state2 = git_gui_state(&dir2, &repo2);
+        let project_id2 = state2.projects[0].id.clone();
+        std::fs::write(repo2.join("bystander.txt"), "hi\n").unwrap();
+
+        let res = state2.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id2, "paths": ["*"] }),
+        ));
+        assert_eq!(res["ok"], false, "{res:?}");
+        let status = state2.handle(req("git.status", json!({ "project_id": project_id2 })));
+        assert_eq!(
+            file_entry(&status["result"], "bystander.txt")["staged"],
+            "none"
+        );
+    }
+
+    #[test]
     fn git_stage_silently_drops_the_mcp_config() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);

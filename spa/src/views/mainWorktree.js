@@ -22,6 +22,7 @@ export async function renderMain() {
   let shellCtl = null; // tab-row controller
   let aux = null; // current changes/files/terminal pane controller
   let meta = { branch: "", path: "" };
+  let viewDisposed = false; // set on navigation — stale RPC responses must not touch #root
 
   const disposeAux = () => {
     if (aux) {
@@ -110,7 +111,10 @@ export async function renderMain() {
   };
 
   // Keep the header's branch/path current from the git pane's status responses.
+  // Guarded against disposal: a git.status response resolving after navigation
+  // must not overwrite the next view's header (#root now belongs to it).
   const refreshHeader = (status) => {
+    if (viewDisposed) return;
     const nextMeta = { branch: status.branch, path: status.path };
     if (nextMeta.branch === meta.branch && nextMeta.path === meta.path) return;
     meta = nextMeta;
@@ -130,7 +134,10 @@ export async function renderMain() {
   }
 
   // Tear down the active terminal/files pane when the user navigates away.
-  App.viewDispose = () => disposeAux();
+  App.viewDispose = () => {
+    viewDisposed = true;
+    disposeAux();
+  };
 
   shell();
   await terminals.load();

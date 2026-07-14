@@ -395,7 +395,10 @@ pub fn stage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
 
 /// `git.unstage`: `git reset -q HEAD -- <paths…>`, or — when HEAD is unborn
 /// and there is nothing to reset to — drop the index entries with
-/// `git rm -r -q --cached -- <paths…>`.
+/// `git rm -f -r -q --cached -- <paths…>`. The `-f` is required whenever the
+/// staged copy differs from the worktree copy (on an unborn HEAD "differs
+/// from HEAD" is always true), and is safe: `--cached` never touches the
+/// worktree file.
 pub fn unstage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     let surviving = stageable_paths(paths)?;
     if surviving.is_empty() {
@@ -405,7 +408,7 @@ pub fn unstage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     let mut args = if head_commit_id(&repo)?.is_some() {
         vec!["reset", "-q", "HEAD", "--"]
     } else {
-        vec!["rm", "-r", "-q", "--cached", "--"]
+        vec!["rm", "-f", "-r", "-q", "--cached", "--"]
     };
     args.extend(surviving);
     run_git(repo_path, &args).map(|_| ())

@@ -8882,6 +8882,35 @@ mod tests {
     }
 
     #[test]
+    fn git_unstage_on_an_unborn_head_survives_a_post_stage_edit() {
+        let (dir, repo) = init_unborn_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("first.txt"), "v1\n").unwrap();
+        state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "paths": ["first.txt"] }),
+        ));
+        // Edit after staging: the staged copy now differs from the worktree
+        // copy, which `git rm --cached` refuses without -f.
+        std::fs::write(repo.join("first.txt"), "v2\n").unwrap();
+
+        let unstaged = state.handle(req(
+            "git.unstage",
+            json!({ "project_id": project_id, "paths": ["first.txt"] }),
+        ));
+        assert_eq!(unstaged["ok"], true, "{unstaged:?}");
+        let entry = file_entry(&unstaged["result"], "first.txt");
+        assert_eq!(entry["staged"], "none");
+        assert_eq!(entry["index_status"], "?");
+        // --cached never touches the worktree file: the edit survives.
+        assert_eq!(
+            std::fs::read_to_string(repo.join("first.txt")).unwrap(),
+            "v2\n"
+        );
+    }
+
+    #[test]
     fn git_commit_commits_only_what_is_staged() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);

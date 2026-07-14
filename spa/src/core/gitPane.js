@@ -5,6 +5,7 @@
 // split button. The pure helpers (poll key, option lists) are exported for
 // unit tests; mountGitPane is the only DOM-touching entry point.
 
+import { esc } from "./text.js";
 import { uncommittedHtml, historyHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import { mountSplitButton } from "./splitButton.js";
 
@@ -13,12 +14,60 @@ export const GIT_PANE_POLL_MS = 1600;
 /** The repaint-freeze key for one poll's payloads: HEAD + branch + the status
  *  patch + every file's stage state + the visible commit page. Unchanged key →
  *  the poll leaves the DOM (and the user's checkbox focus) alone. */
-export function gitPollKey(status, log) {
+export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   const files = (status.files || [])
-    .map((f) => [f.path, f.staged, f.index_status, f.worktree_status].join(""))
-    .join("");
+    .map((f) => [f.path, f.staged, f.index_status, f.worktree_status].join("\x01"))
+    .join("\x02");
   const commits = ((log && log.commits) || []).map((c) => c.hash).join(",");
-  return [status.branch, status.head, status.truncated, status.patch, files, commits, Boolean(log && log.more)].join("");
+  // A coarse minute bucket: relative commit ages re-render at most once a
+  // minute even when the repo itself is untouched.
+  const minuteBucket = Math.floor(nowSeconds / 60);
+  return [
+    status.branch,
+    status.head,
+    status.truncated,
+    Boolean(status.files_truncated),
+    status.patch,
+    files,
+    commits,
+    Boolean(log && log.more),
+    minuteBucket,
+  ].join("\x03");
+}
+
+/** The stash key for a scope's in-progress commit-message draft: drafts live in
+ *  a module-level Map so tab switches and view-shell rebuilds (which remount the
+ *  pane from scratch) restore them transparently. */
+export function gitDraftKey(scope) {
+  return scope.task_id ? `task:${scope.task_id}` : `project:${scope.project_id || ""}`;
+}
+
+// scope draft key -> the commit message typed so far. Module-level on purpose:
+// the pane is disposed and remounted on every tab switch and shell rebuild.
+const commitDraftStash = new Map();
+
+// The bridge's terminal git-scope rejections: a pane polling with one of these
+// will never recover, so it must show the error instead of "loading..." forever.
+const PERMANENT_GIT_SCOPE_ERRORS = [
+  "unknown project_id",
+  "unknown task_id",
+  "provide exactly one of project_id or task_id",
+];
+
+/** True only for the bridge's permanent scope errors — every other poll failure
+ *  stays silent/transient and the poll retries. */
+export function isPermanentGitScopeError(message) {
+  const text = String(message || "");
+  return PERMANENT_GIT_SCOPE_ERRORS.some((known) => text.includes(known));
+}
+
+/** The poll's repaint-freeze decision: any in-flight action RPC suppresses the
+ *  repaint outright (a repaint would remount the busy split button enabled and
+ *  recreate checkboxes mid-RPC); otherwise a rendered pane is left alone while
+ *  the key is unchanged or a commit draft is active. */
+export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, actionInFlight }) {
+  if (actionInFlight) return true;
+  return Boolean(paneRendered && (keyUnchanged || draftActive));
 }
 
 /** The commit split-button option list: the plain Commit action first (primary),
@@ -71,6 +120,10 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   let expandedHash = null; // survives repaints
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
+  const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
+  let inFlightActions = 0; // commit/stage/unstage RPCs currently awaited
+  const stagingPaths = new Set(); // paths whose stage/unstage RPC is in flight
+  let scopeErrorShown = null; // the terminal scope error currently rendered
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -89,7 +142,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   const render = () => {
     if (disposed || !lastStatus || !lastLog) return;
     const box = messageBox();
-    const draft = box ? box.value : "";
+    // A live box is the freshest draft; otherwise (first paint after a
+    // dispose/remount) the module-level stash restores what was typed.
+    const draft = box ? box.value : commitDraftStash.get(draftKey) || "";
     const hadFocus = box && document.activeElement === box;
     const mergedLog = {
       ...lastLog,
@@ -101,17 +156,32 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const freshBox = messageBox();
     if (freshBox) {
       freshBox.value = draft;
+      // Every keystroke lands in the stash so tab switches and view-shell
+      // rebuilds (which remount the pane from scratch) restore the draft.
+      freshBox.oninput = () => commitDraftStash.set(draftKey, freshBox.value);
       if (hadFocus) freshBox.focus();
     }
+    if (draft) commitDraftStash.set(draftKey, draft);
+    else commitDraftStash.delete(draftKey);
     // `indeterminate` is a property, not an attribute — set it after mount.
     const filesByPath = new Map((lastStatus.files || []).map((f) => [f.path, f]));
     container.querySelectorAll(".stagebox").forEach((checkbox) => {
       const file = filesByPath.get(checkbox.dataset.path);
       if (file && file.staged === "partial") checkbox.indeterminate = true;
+      // A repaint must not recreate an enabled checkbox mid-stage-RPC.
+      if (stagingPaths.has(checkbox.dataset.path)) checkbox.disabled = true;
     });
     setHint(hint);
     const actionsHost = container.querySelector(".gitcommit-actions");
-    if (actionsHost) mountSplitButton(actionsHost, { options: commitSplitOptions(agentCommitOptions), run: runCommitOption });
+    if (actionsHost) {
+      mountSplitButton(actionsHost, { options: commitSplitOptions(agentCommitOptions), run: runCommitOption });
+      // A repaint during an in-flight action must not resurrect an enabled
+      // commit button (double-fire) — remount it disabled until the RPC settles.
+      if (inFlightActions > 0) {
+        const primaryButton = actionsHost.querySelector(".btn.primary:not(.caret)");
+        if (primaryButton) primaryButton.disabled = true;
+      }
+    }
     container.onclick = handleClick;
     container.onchange = handleChange;
   };
@@ -139,7 +209,30 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     paintFrom(status, log);
   };
 
+  /** Drop the scope's draft everywhere it lives: the stash and the live box. */
+  const clearCommitDraft = () => {
+    commitDraftStash.delete(draftKey);
+    const box = messageBox();
+    if (box) box.value = "";
+  };
+
+  /** Run a commit variant with the in-flight guard: while any action RPC is
+   *  awaited, poll repaints are suppressed and remounted buttons stay disabled.
+   *  Once settled, a button remounted disabled mid-action is re-enabled. */
   const runCommitOption = async (optionId) => {
+    inFlightActions += 1;
+    try {
+      return await performCommitOption(optionId);
+    } finally {
+      inFlightActions -= 1;
+      if (!disposed && inFlightActions === 0) {
+        const primaryButton = container.querySelector(".gitcommit-actions .btn.primary:not(.caret)");
+        if (primaryButton) primaryButton.disabled = false;
+      }
+    }
+  };
+
+  const performCommitOption = async (optionId) => {
     setHint("");
     if (optionId === "commit") {
       const box = messageBox();
@@ -156,7 +249,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         throw e;
       }
       if (disposed) return;
-      if (box) box.value = "";
+      clearCommitDraft();
       lastHead = result.status.head;
       extraCommits = [];
       pagedMore = null;
@@ -177,6 +270,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         throw e;
       }
       if (disposed) return;
+      clearCommitDraft();
       setHint("Asked the agent to commit.");
       render(); // remount the split button so it re-enables
       return;
@@ -195,21 +289,33 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     throw new Error(`unknown commit option ${optionId}`);
   };
 
+  const stageboxFor = (path) =>
+    [...container.querySelectorAll(".stagebox")].find((box) => box.dataset.path === path) || null;
+
   const toggleStaged = async (checkbox) => {
     const path = checkbox.dataset.path;
     const method = checkbox.checked ? "git.stage" : "git.unstage";
     checkbox.disabled = true;
-    let status;
+    stagingPaths.add(path); // a repaint mid-RPC recreates the box disabled
+    inFlightActions += 1;
+    let status = null;
     try {
       status = await callRpc(method, { ...scope, paths: [path] });
     } catch (e) {
-      if (disposed) return;
-      checkbox.disabled = false;
-      checkbox.checked = !checkbox.checked;
-      actionError(e);
-      return;
+      if (!disposed) actionError(e);
+    } finally {
+      stagingPaths.delete(path);
+      inFlightActions -= 1;
     }
     if (disposed) return;
+    if (!status) {
+      // Roll back: a repaint mid-RPC repainted the box from the pre-action
+      // status (already correct); the original node needs its check flipped.
+      const attached = stageboxFor(path);
+      if (attached === checkbox) checkbox.checked = !checkbox.checked;
+      if (attached) attached.disabled = false;
+      return;
+    }
     lastHead = status.head;
     setHint("");
     paintFrom(status); // the stage RPCs return the full status payload
@@ -266,15 +372,28 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     if (event.target.classList && event.target.classList.contains("stagebox")) toggleStaged(event.target);
   };
 
+  /** A permanent scope rejection replaces the pane body (there is nothing to
+   *  retry: the task/project this scope named no longer resolves). */
+  const renderScopeError = (message) => {
+    if (scopeErrorShown === message) return;
+    scopeErrorShown = message;
+    container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
+  };
+
   const poll = async () => {
     if (disposed) return;
     let status, log;
     try {
       [status, log] = await Promise.all([callRpc("git.status", { ...scope }), callRpc("git.log", { ...scope })]);
-    } catch {
-      return; // transient — the poll retries silently
+    } catch (e) {
+      // Permanent scope errors (pruned task, removed project) never recover —
+      // surface them instead of "loading…" forever; everything else is
+      // transient and the poll retries silently.
+      if (!disposed && isPermanentGitScopeError(e && e.message)) renderScopeError((e && e.message) || "error");
+      return;
     }
     if (disposed) return;
+    scopeErrorShown = null; // recovered — the next render paints normally
     if (lastHead !== undefined && status.head !== lastHead) {
       extraCommits = []; // HEAD moved — the paged-in history is stale
       pagedMore = null;
@@ -284,8 +403,17 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     lastLog = log;
     const key = gitPollKey(status, log);
     const rendered = container.querySelector(".gitpane .gitsec");
-    // Freeze while unchanged, or while the user is drafting a commit message.
-    if (rendered && (key === renderedKey || draftBusy())) return;
+    // Freeze while unchanged, while the user is drafting a commit message, or
+    // while any action RPC is in flight (a repaint would clobber busy state).
+    if (
+      pollRenderFrozen({
+        paneRendered: Boolean(rendered),
+        keyUnchanged: key === renderedKey,
+        draftActive: draftBusy(),
+        actionInFlight: inFlightActions > 0,
+      })
+    )
+      return;
     renderedKey = key;
     render();
   };

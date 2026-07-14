@@ -25,6 +25,15 @@ pub const GIT_SHOW_MAX_PATCH_BYTES: usize = 1_048_576;
 /// 8 MiB WS frame cap and reset the connection on every poll.
 pub const GIT_STATUS_MAX_FILES: usize = 2_000;
 
+/// Cap on the commit `subject` display string (git.log rides the 1.6 s poll,
+/// and git places no limit on message size). Truncated at a UTF-8 boundary;
+/// silent — no wire flag for display strings.
+pub const GIT_SUBJECT_MAX_BYTES: usize = 512;
+
+/// Cap on the commit `body` display string of `git.show`, same rationale as
+/// [`GIT_SUBJECT_MAX_BYTES`].
+pub const GIT_BODY_MAX_BYTES: usize = 65_536;
+
 fn open_repo(repo_path: &Path) -> Result<git2::Repository, String> {
     git2::Repository::open(repo_path).map_err(|e| format!("cannot open repository: {e}"))
 }
@@ -72,10 +81,14 @@ fn head_commit_id(repo: &git2::Repository) -> Result<Option<git2::Oid>, String> 
 /// The wire summary shared by `git.log` entries and `git.show`/`git.commit`.
 fn commit_summary_json(commit: &git2::Commit) -> Value {
     let hash = commit.id().to_string();
+    let (subject, _) = truncate_at_utf8_boundary(
+        commit.summary().unwrap_or("").to_string(),
+        GIT_SUBJECT_MAX_BYTES,
+    );
     json!({
         "short": hash[..7],
         "hash": hash,
-        "subject": commit.summary().unwrap_or("").to_string(),
+        "subject": subject,
         "author": commit.author().name().unwrap_or("").to_string(),
         "email": commit.author().email().unwrap_or("").to_string(),
         "time": commit.time().seconds(),
@@ -239,7 +252,9 @@ pub fn show_commit(repo_path: &Path, hash: &str) -> Result<Value, String> {
     let (stat, patch) = tree_diff_patch(&repo, parent_tree.as_ref(), &commit_tree)?;
     let (patch, truncated) = truncate_at_utf8_boundary(patch, GIT_SHOW_MAX_PATCH_BYTES);
     let mut result = commit_summary_json(&commit);
-    result["body"] = json!(commit.body().unwrap_or("").to_string());
+    let (body, _) =
+        truncate_at_utf8_boundary(commit.body().unwrap_or("").to_string(), GIT_BODY_MAX_BYTES);
+    result["body"] = json!(body);
     result["stat"] = stat;
     result["patch"] = json!(patch);
     result["truncated"] = json!(truncated);

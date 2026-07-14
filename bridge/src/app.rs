@@ -8720,6 +8720,40 @@ mod tests {
     }
 
     #[test]
+    fn git_log_and_show_cap_oversized_commit_messages() {
+        let (dir, repo) = init_repo();
+        // A prompt-injected agent can craft a multi-MB message with one
+        // `git commit -F`; the display strings must degrade, not ride the
+        // poll past the relay frame cap.
+        let subject = "s".repeat(1_048_576);
+        let body = "b".repeat(2 * 1_048_576);
+        let msg_file = dir.path().join("msg.txt");
+        std::fs::write(&msg_file, format!("{subject}\n\n{body}")).unwrap();
+        std::fs::write(repo.join("x.txt"), "x\n").unwrap();
+        git_in_dir(&repo, &["add", "x.txt"]);
+        git_in_dir(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let log = state.handle(req(
+            "git.log",
+            json!({ "project_id": project_id, "limit": 1 }),
+        ));
+        assert_eq!(log["ok"], true, "{log:?}");
+        let entry = &log["result"]["commits"][0];
+        assert_eq!(entry["subject"].as_str().unwrap().len(), 512);
+        let hash = entry["hash"].as_str().unwrap().to_string();
+
+        let shown = state.handle(req(
+            "git.show",
+            json!({ "project_id": project_id, "hash": hash }),
+        ));
+        assert_eq!(shown["ok"], true, "{shown:?}");
+        assert_eq!(shown["result"]["subject"].as_str().unwrap().len(), 512);
+        assert_eq!(shown["result"]["body"].as_str().unwrap().len(), 65_536);
+    }
+
+    #[test]
     fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);

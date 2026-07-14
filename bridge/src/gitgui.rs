@@ -18,6 +18,13 @@ use serde_json::{json, Value};
 /// degrade (truncate + flag) instead of resetting the connection.
 pub const GIT_SHOW_MAX_PATCH_BYTES: usize = 1_048_576;
 
+/// Cap on the `files` array of the status payload — same relay-frame
+/// rationale as [`GIT_SHOW_MAX_PATCH_BYTES`]: a huge untracked tree (say a
+/// fresh checkout with no .gitignore and a node_modules/) must degrade to
+/// the first N entries plus a `files_truncated` flag, not blow past the
+/// 8 MiB WS frame cap and reset the connection on every poll.
+pub const GIT_STATUS_MAX_FILES: usize = 2_000;
+
 fn open_repo(repo_path: &Path) -> Result<git2::Repository, String> {
     git2::Repository::open(repo_path).map_err(|e| format!("cannot open repository: {e}"))
 }
@@ -314,6 +321,12 @@ fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
 /// `git.stage`/`git.unstage` and the `status` field of `git.commit`, so the
 /// UI repaints straight from the mutation's response.
 pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
+    status_payload_with_file_cap(repo_path, GIT_STATUS_MAX_FILES)
+}
+
+/// [`status_payload`] with the `files` cap injectable, so tests exercise the
+/// truncation path without a 2 000-file fixture.
+fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Value, String> {
     let repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());
@@ -336,6 +349,8 @@ pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
         })
         .collect();
     files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    let files_truncated = files.len() > max_files;
+    files.truncate(max_files);
     let diff = crate::diff::diff_uncommitted(repo_path).map_err(|e| e.to_string())?;
     let stat = diff.stat();
     let (patch, truncated) =
@@ -345,6 +360,7 @@ pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
         "path": repo_path.display().to_string(),
         "head": head,
         "files": files,
+        "files_truncated": files_truncated,
         "stat": {
             "files_changed": stat.files_changed,
             "insertions": stat.insertions,
@@ -522,6 +538,30 @@ mod tests {
 
         assert!(file_status_json("clean.txt", git2::Status::CURRENT).is_none());
         assert!(file_status_json("ignored.txt", git2::Status::IGNORED).is_none());
+    }
+
+    #[test]
+    fn status_files_list_is_capped_with_a_truncation_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        for i in 0..8 {
+            std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n").unwrap();
+        }
+
+        // Over the cap: first N by path, flagged; stat/patch stay exact.
+        let capped = status_payload_with_file_cap(dir.path(), 5).unwrap();
+        let files = capped["files"].as_array().unwrap();
+        assert_eq!(files.len(), 5);
+        assert_eq!(capped["files_truncated"], true);
+        assert_eq!(files[0]["path"], "f00.txt");
+        assert_eq!(files[4]["path"], "f04.txt");
+        assert_eq!(capped["stat"]["files_changed"], 8);
+        assert!(capped["patch"].as_str().unwrap().contains("+x"));
+
+        // At the cap exactly: everything fits, no flag.
+        let uncapped = status_payload_with_file_cap(dir.path(), 8).unwrap();
+        assert_eq!(uncapped["files"].as_array().unwrap().len(), 8);
+        assert_eq!(uncapped["files_truncated"], false);
     }
 
     #[test]

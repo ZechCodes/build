@@ -8767,6 +8767,7 @@ mod tests {
         assert!(patch.contains("+loose"));
         assert!(!patch.contains("mcp.json"));
         assert_eq!(status["truncated"], false);
+        assert_eq!(status["files_truncated"], false);
     }
 
     #[test]

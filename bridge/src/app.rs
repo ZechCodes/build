@@ -1158,6 +1158,16 @@ impl AppState {
             "git.stage" => self.git_stage(params),
             "git.unstage" => self.git_unstage(params),
             "git.commit" => self.git_commit(params),
+            "git.fetch" => self.git_fetch(params),
+            "git.pull" => self.git_pull(params),
+            "git.push" => self.git_push(params),
+            "git.branches" => self.git_branches(params),
+            "git.checkout" => self.git_checkout(params),
+            "git.branch_delete" => self.git_branch_delete(params),
+            "git.stash" => self.git_stash(params),
+            "git.stash_pop" => self.git_stash_pop(params),
+            "git.discard" => self.git_discard(params),
+            "git.merge_abort" => self.git_merge_abort(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.project_list()),
@@ -2590,19 +2600,7 @@ impl AppState {
         let scope = self.resolve_git_scope(params)?;
         let message = require_str(params, "message")?;
         let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
-        if let Some(task) = &scope.task {
-            self.task_stat_cache.remove(&task.task_id);
-            self.task_updated_at
-                .insert(task.task_id.clone(), now_rfc3339());
-        }
-        // Same freshness discipline for project scope: the commit changed the
-        // uncommitted-diff summary the board rides along, so drop the cached
-        // one instead of serving it stale for up to PRIMARY_SUMMARY_TTL.
-        if let Some(project_id) = &scope.project_id {
-            if let Some(project) = self.projects.iter_mut().find(|p| &p.id == project_id) {
-                project.primary_summary = None;
-            }
-        }
+        self.invalidate_git_scope_caches(&scope);
         let status = crate::gitgui::status_payload(&scope.repo_path)?;
         Ok(json!({
             "hash": commit["hash"],
@@ -2610,6 +2608,144 @@ impl AppState {
             "subject": commit["subject"],
             "status": status,
         }))
+    }
+
+    /// Drop the cached board summaries a scoped git mutation just invalidated —
+    /// the task's diffstat + updated-at for task scope, the project's primary
+    /// uncommitted-changes summary for project scope — so the next `task.list`
+    /// / project poll recomputes instead of serving a stale summary for up to
+    /// its TTL.
+    fn invalidate_git_scope_caches(&mut self, scope: &GitScope) {
+        if let Some(task) = &scope.task {
+            self.task_stat_cache.remove(&task.task_id);
+            self.task_updated_at
+                .insert(task.task_id.clone(), now_rfc3339());
+        }
+        if let Some(project_id) = &scope.project_id {
+            if let Some(project) = self.projects.iter_mut().find(|p| &p.id == project_id) {
+                project.primary_summary = None;
+            }
+        }
+    }
+
+    /// Resolve a **project-scope-only** git RPC (branch operations): a task
+    /// worktree's branch is owned by the task lifecycle, so a `task_id` is
+    /// refused outright. Returns the project id (for cache invalidation) and
+    /// its primary-checkout path.
+    fn resolve_project_repo(&self, params: &Value) -> Result<(String, std::path::PathBuf), String> {
+        if params.get("task_id").is_some() {
+            return Err("branch operations are project-scope only".to_string());
+        }
+        let project_id = require_str(params, "project_id")?;
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "unknown project_id".to_string())?;
+        Ok((project.id.clone(), project.repo_path.clone()))
+    }
+
+    /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
+    fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        crate::gitgui::fetch(&scope.repo_path)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.pull` — integrate the upstream in the requested mode (ff/merge/
+    /// rebase), then the fresh status payload. Git's own errors pass through.
+    fn git_pull(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let mode = params.get("mode").and_then(Value::as_str).unwrap_or("ff");
+        crate::gitgui::pull(&scope.repo_path, mode)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.push` — push the current branch (setting the upstream on first
+    /// push), then the fresh status payload. `force` uses `--force-with-lease`.
+    fn git_push(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let force = params
+            .get("force")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        crate::gitgui::push(&scope.repo_path, force)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.branches` (project scope only) — the local branch list.
+    fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
+        let (_project_id, repo_path) = self.resolve_project_repo(params)?;
+        crate::gitgui::branch_list(&repo_path)
+    }
+
+    /// `git.checkout` (project scope only) — switch to (or create) a branch,
+    /// then the fresh status payload.
+    fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
+        let (project_id, repo_path) = self.resolve_project_repo(params)?;
+        let branch = require_str(params, "branch")?;
+        let create = params
+            .get("create")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        crate::gitgui::checkout(&repo_path, &branch, create)?;
+        // A branch switch swaps the whole primary tree, so the cached
+        // uncommitted-changes summary is stale.
+        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+            project.primary_summary = None;
+        }
+        crate::gitgui::status_payload(&repo_path)
+    }
+
+    /// `git.branch_delete` (project scope only) — delete a local branch, then
+    /// the fresh branch list.
+    fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
+        let (_project_id, repo_path) = self.resolve_project_repo(params)?;
+        let branch = require_str(params, "branch")?;
+        let force = params
+            .get("force")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        crate::gitgui::branch_delete(&repo_path, &branch, force)?;
+        crate::gitgui::branch_list(&repo_path)
+    }
+
+    /// `git.stash` — `git stash push -u`, then the fresh status payload.
+    fn git_stash(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        crate::gitgui::stash_push(&scope.repo_path)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.stash_pop` — `git stash pop`, then the fresh status payload.
+    fn git_stash_pop(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        crate::gitgui::stash_pop(&scope.repo_path)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.discard` (**destructive**) — revert the given paths to HEAD
+    /// (untracked ones are deleted), then the fresh status payload.
+    fn git_discard(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        let paths = require_path_list(params)?;
+        crate::gitgui::discard_paths(&scope.repo_path, &paths)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
+    }
+
+    /// `git.merge_abort` — abort the in-progress merge or rebase, then the
+    /// fresh status payload.
+    fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        crate::gitgui::merge_abort(&scope.repo_path)?;
+        self.invalidate_git_scope_caches(&scope);
+        crate::gitgui::status_payload(&scope.repo_path)
     }
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
@@ -3467,7 +3603,10 @@ fn require_path_list(params: &Value) -> Result<Vec<String>, String> {
 /// Normal, so the lexical fence alone cannot catch it). `path` empty means
 /// the scope root itself. Returns the joined (not canonicalized) path — safe
 /// to use for further fs calls once containment is established.
-fn fenced_scope_path(root: &std::path::Path, path: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn fenced_scope_path(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
     if !path.is_empty() && !crate::task::is_worktree_contained_path(path) {
         return Err("path escapes the worktree".to_string());
     }
@@ -9227,5 +9366,508 @@ mod tests {
         let after = entry(&state.handle(req("task.list", json!({}))));
         let after_changed = after["stat"]["files_changed"].as_u64().unwrap();
         assert_eq!(after_changed, before_changed + 2, "{after:?}");
+    }
+
+    // ---- git GUI v2: repo management (fetch/pull/push, branches, stash,
+    // discard, merge-abort) ------------------------------------------------
+
+    /// Run git without asserting success — for setting up conflict/rebase
+    /// states whose whole point is a non-zero exit.
+    fn git_try(dir: &std::path::Path, args: &[&str]) {
+        let _ = Command::new("git").args(args).current_dir(dir).status();
+    }
+
+    /// A working repo wired to a bare "origin" it already tracks (main →
+    /// origin/main, ahead 0 / behind 0).
+    fn init_repo_with_origin() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let (dir, repo) = init_repo();
+        let origin = dir.path().join("origin.git");
+        git_in_dir(
+            dir.path(),
+            &[
+                "clone",
+                "--bare",
+                repo.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        git_in_dir(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git_in_dir(&repo, &["fetch", "origin"]);
+        git_in_dir(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
+        (dir, repo, origin)
+    }
+
+    /// A second working checkout of `origin`, standing in for another dev.
+    fn clone_working(origin: &std::path::Path, dest: &std::path::Path) {
+        git_in_dir(
+            dest.parent().unwrap(),
+            &["clone", origin.to_str().unwrap(), dest.to_str().unwrap()],
+        );
+        git_in_dir(dest, &["config", "user.email", "o@build.ing"]);
+        git_in_dir(dest, &["config", "user.name", "O"]);
+    }
+
+    #[test]
+    fn git_status_carries_the_repo_management_fields() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let result = &res["result"];
+        assert_eq!(result["repo_state"], "clean");
+        // No remote configured → upstream/ahead/behind are null, not NaN.
+        assert!(result["upstream"].is_null());
+        assert!(result["ahead"].is_null());
+        assert!(result["behind"].is_null());
+        assert_eq!(result["stash_count"], 0);
+    }
+
+    #[test]
+    fn git_fetch_pull_push_round_trip_through_a_bare_origin() {
+        let (dir, repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Another dev pushes a commit to origin.
+        std::fs::write(other.join("remote.txt"), "remote\n").unwrap();
+        git_in_dir(&other, &["add", "remote.txt"]);
+        git_in_dir(&other, &["commit", "-m", "remote work"]);
+        git_in_dir(&other, &["push", "origin", "main"]);
+
+        // git.fetch updates the tracking ref: we are now behind by one.
+        let fetched = state.handle(req("git.fetch", json!({ "project_id": project_id })));
+        assert_eq!(fetched["ok"], true, "{fetched:?}");
+        assert_eq!(fetched["result"]["upstream"], "origin/main");
+        assert_eq!(fetched["result"]["behind"], 1);
+        assert_eq!(fetched["result"]["ahead"], 0);
+
+        // git.pull (ff) fast-forwards the branch onto the remote commit.
+        let pulled = state.handle(req("git.pull", json!({ "project_id": project_id })));
+        assert_eq!(pulled["ok"], true, "{pulled:?}");
+        assert_eq!(pulled["result"]["behind"], 0);
+        assert!(repo.join("remote.txt").exists());
+
+        // A local commit, then git.push publishes it to origin.
+        std::fs::write(repo.join("local.txt"), "local\n").unwrap();
+        git_in_dir(&repo, &["add", "local.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "local work"]);
+        let ahead = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(ahead["result"]["ahead"], 1);
+
+        let pushed = state.handle(req("git.push", json!({ "project_id": project_id })));
+        assert_eq!(pushed["ok"], true, "{pushed:?}");
+        assert_eq!(pushed["result"]["ahead"], 0);
+        assert_eq!(pushed["result"]["behind"], 0);
+
+        // The other checkout can now fetch our commit — proof it reached origin.
+        git_in_dir(&other, &["fetch", "origin"]);
+        let log = Command::new("git")
+            .args(["log", "--oneline", "origin/main"])
+            .current_dir(&other)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("local work"));
+    }
+
+    #[test]
+    fn git_push_sets_the_upstream_on_the_first_push() {
+        let (dir, repo) = init_repo();
+        let origin = dir.path().join("origin.git");
+        git_in_dir(
+            dir.path(),
+            &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
+        );
+        git_in_dir(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // No upstream yet.
+        let before = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert!(before["result"]["upstream"].is_null());
+
+        let pushed = state.handle(req("git.push", json!({ "project_id": project_id })));
+        assert_eq!(pushed["ok"], true, "{pushed:?}");
+        assert_eq!(pushed["result"]["upstream"], "origin/main");
+        assert_eq!(pushed["result"]["ahead"], 0);
+    }
+
+    #[test]
+    fn git_push_force_uses_force_with_lease_after_a_rewrite() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Publish a commit, then rewrite it so local diverges from origin.
+        std::fs::write(repo.join("x.txt"), "one\n").unwrap();
+        git_in_dir(&repo, &["add", "x.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "first"]);
+        assert_eq!(
+            state.handle(req("git.push", json!({ "project_id": project_id })))["ok"],
+            true
+        );
+        std::fs::write(repo.join("x.txt"), "two\n").unwrap();
+        git_in_dir(&repo, &["commit", "-a", "--amend", "-m", "rewritten"]);
+
+        // A plain push is rejected (non-fast-forward); force-with-lease wins.
+        let plain = state.handle(req("git.push", json!({ "project_id": project_id })));
+        assert_eq!(plain["ok"], false, "{plain:?}");
+        let forced = state.handle(req(
+            "git.push",
+            json!({ "project_id": project_id, "force": true }),
+        ));
+        assert_eq!(forced["ok"], true, "{forced:?}");
+    }
+
+    #[test]
+    fn git_push_refuses_a_detached_head() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        git_in_dir(&repo, &["checkout", "--detach", "HEAD"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.push", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert_eq!(res["error"], "cannot push a detached HEAD");
+    }
+
+    #[test]
+    fn git_pull_ff_only_refuses_divergent_history() {
+        let (dir, repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::write(other.join("theirs.txt"), "theirs\n").unwrap();
+        git_in_dir(&other, &["add", "theirs.txt"]);
+        git_in_dir(&other, &["commit", "-m", "theirs"]);
+        git_in_dir(&other, &["push", "origin", "main"]);
+
+        std::fs::write(repo.join("mine.txt"), "mine\n").unwrap();
+        git_in_dir(&repo, &["add", "mine.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "mine"]);
+
+        assert_eq!(
+            state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
+            true
+        );
+        let pulled = state.handle(req("git.pull", json!({ "project_id": project_id })));
+        assert_eq!(pulled["ok"], false, "{pulled:?}");
+        assert!(
+            pulled["error"].as_str().unwrap().contains("fast-forward")
+                || pulled["error"].as_str().unwrap().contains("fast forward"),
+            "{pulled:?}"
+        );
+    }
+
+    #[test]
+    fn git_pull_conflict_leaves_a_visible_merging_state() {
+        let (dir, repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Both sides edit README differently; the other side lands first.
+        std::fs::write(other.join("README.md"), "# theirs\n").unwrap();
+        git_in_dir(&other, &["commit", "-am", "theirs"]);
+        git_in_dir(&other, &["push", "origin", "main"]);
+        std::fs::write(repo.join("README.md"), "# mine\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "mine"]);
+        assert_eq!(
+            state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
+            true
+        );
+
+        let pulled = state.handle(req(
+            "git.pull",
+            json!({ "project_id": project_id, "mode": "merge" }),
+        ));
+        assert_eq!(pulled["ok"], false, "{pulled:?}");
+
+        // The conflict is legible in the very next status: merging + a U file.
+        let status = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(status["result"]["repo_state"], "merging");
+        let readme = file_entry(&status["result"], "README.md");
+        assert_eq!(readme["index_status"], "U");
+        assert_eq!(readme["worktree_status"], "U");
+    }
+
+    #[test]
+    fn git_branches_lists_locals_current_first() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "feature-a"]);
+        git_in_dir(&repo, &["branch", "feature-b"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["current"], "main");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        assert_eq!(branches.len(), 3);
+        // Current branch sorts first.
+        assert_eq!(branches[0]["name"], "main");
+        assert_eq!(branches[0]["is_current"], true);
+        assert_eq!(branches[0]["ahead"], 0);
+        assert_eq!(branches[0]["behind"], 0);
+        assert!(branches[0]["upstream"].is_null());
+        assert!(branches.iter().any(|b| b["name"] == "feature-a"));
+    }
+
+    #[test]
+    fn git_checkout_switches_creates_and_validates() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Create a new branch and land on it.
+        let created = state.handle(req(
+            "git.checkout",
+            json!({ "project_id": project_id, "branch": "feature-x", "create": true }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["branch"], "feature-x");
+
+        // Switch back to an existing branch.
+        let switched = state.handle(req(
+            "git.checkout",
+            json!({ "project_id": project_id, "branch": "main" }),
+        ));
+        assert_eq!(switched["result"]["branch"], "main");
+
+        // Invalid ref names are refused before any git call.
+        for bad in ["--force", "bad name", "has..dots", ""] {
+            let res = state.handle(req(
+                "git.checkout",
+                json!({ "project_id": project_id, "branch": bad, "create": true }),
+            ));
+            assert_eq!(res["ok"], false, "{bad:?} -> {res:?}");
+            assert!(
+                res["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("invalid branch name"),
+                "{res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_checkout_refuses_while_a_merge_is_in_progress() {
+        let (dir, repo) = init_repo();
+        // Manufacture a conflicting merge so the repo is left mid-merge.
+        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "topic"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_try(&repo, &["merge", "topic"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req(
+            "git.checkout",
+            json!({ "project_id": project_id, "branch": "topic" }),
+        ));
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert_eq!(res["error"], "finish or abort the in-progress merge first");
+    }
+
+    #[test]
+    fn git_branch_delete_removes_and_force_deletes() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "merged-branch"]);
+        // An unmerged branch: a commit main cannot reach.
+        git_in_dir(&repo, &["checkout", "-b", "unmerged"]);
+        std::fs::write(repo.join("u.txt"), "u\n").unwrap();
+        git_in_dir(&repo, &["add", "u.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "unmerged work"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Deleting the current branch is git's error, passed through.
+        let current = state.handle(req(
+            "git.branch_delete",
+            json!({ "project_id": project_id, "branch": "main" }),
+        ));
+        assert_eq!(current["ok"], false, "{current:?}");
+
+        // A merged branch deletes with -d and the fresh list comes back.
+        let ok = state.handle(req(
+            "git.branch_delete",
+            json!({ "project_id": project_id, "branch": "merged-branch" }),
+        ));
+        assert_eq!(ok["ok"], true, "{ok:?}");
+        assert!(!ok["result"]["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["name"] == "merged-branch"));
+
+        // An unmerged branch refuses -d, then yields to force (-D).
+        let refused = state.handle(req(
+            "git.branch_delete",
+            json!({ "project_id": project_id, "branch": "unmerged" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let forced = state.handle(req(
+            "git.branch_delete",
+            json!({ "project_id": project_id, "branch": "unmerged", "force": true }),
+        ));
+        assert_eq!(forced["ok"], true, "{forced:?}");
+    }
+
+    #[test]
+    fn git_stash_and_pop_round_trip() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::write(repo.join("README.md"), "# edited\n").unwrap();
+        std::fs::write(repo.join("fresh.txt"), "fresh\n").unwrap();
+
+        // Stash includes the untracked file (-u), leaving a clean tree.
+        let stashed = state.handle(req("git.stash", json!({ "project_id": project_id })));
+        assert_eq!(stashed["ok"], true, "{stashed:?}");
+        assert_eq!(stashed["result"]["stash_count"], 1);
+        assert!(stashed["result"]["files"].as_array().unwrap().is_empty());
+        assert!(!repo.join("fresh.txt").exists());
+
+        // Pop restores both, and the stash stack is empty again.
+        let popped = state.handle(req("git.stash_pop", json!({ "project_id": project_id })));
+        assert_eq!(popped["ok"], true, "{popped:?}");
+        assert_eq!(popped["result"]["stash_count"], 0);
+        assert!(repo.join("fresh.txt").exists());
+
+        // Popping an empty stack is git's error, passed through.
+        let empty = state.handle(req("git.stash_pop", json!({ "project_id": project_id })));
+        assert_eq!(empty["ok"], false, "{empty:?}");
+    }
+
+    #[test]
+    fn git_discard_reverts_tracked_and_deletes_untracked() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // A tracked edit (staged) and a fresh untracked file.
+        std::fs::write(repo.join("README.md"), "# tampered\n").unwrap();
+        git_in_dir(&repo, &["add", "README.md"]);
+        std::fs::write(repo.join("junk.txt"), "junk\n").unwrap();
+
+        let res = state.handle(req(
+            "git.discard",
+            json!({ "project_id": project_id, "paths": ["README.md", "junk.txt"] }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+
+        // Tracked file is back to its committed content, in both index and tree.
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "# project\n"
+        );
+        assert!(!has_file_entry(&res["result"], "README.md"));
+        // Untracked file is gone from disk.
+        assert!(!repo.join("junk.txt").exists());
+        assert!(!has_file_entry(&res["result"], "junk.txt"));
+    }
+
+    #[test]
+    fn git_discard_rejects_traversal_and_symlink_escapes() {
+        let (dir, repo) = init_repo();
+        // A secret outside the worktree, and an untracked symlink pointing at it.
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, "top secret\n").unwrap();
+        std::os::unix::fs::symlink(&secret, repo.join("leak")).unwrap();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        // Lexical traversal is refused before any git call.
+        let traversal = state.handle(req(
+            "git.discard",
+            json!({ "project_id": project_id, "paths": ["../secret.txt"] }),
+        ));
+        assert_eq!(traversal["ok"], false, "{traversal:?}");
+
+        // The symlink's components look Normal, so only the canonical fence
+        // catches it — and the outside secret must survive.
+        let symlink = state.handle(req(
+            "git.discard",
+            json!({ "project_id": project_id, "paths": ["leak"] }),
+        ));
+        assert_eq!(symlink["ok"], false, "{symlink:?}");
+        assert!(
+            secret.exists(),
+            "the fence must not delete outside the worktree"
+        );
+    }
+
+    #[test]
+    fn git_merge_abort_handles_each_repo_state() {
+        // Clean: nothing to abort.
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let clean = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
+        assert_eq!(clean["ok"], false, "{clean:?}");
+        assert_eq!(clean["error"], "no merge or rebase in progress");
+
+        // Merging: abort returns to a clean state.
+        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "topic"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_try(&repo, &["merge", "topic"]);
+        let aborted = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
+        assert_eq!(aborted["ok"], true, "{aborted:?}");
+        assert_eq!(aborted["result"]["repo_state"], "clean");
+
+        // Rebasing: a conflicting rebase leaves a rebasing state to abort.
+        git_in_dir(&repo, &["checkout", "topic"]);
+        git_try(&repo, &["rebase", "main"]);
+        let status = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(status["result"]["repo_state"], "rebasing");
+        let rebase_aborted =
+            state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
+        assert_eq!(rebase_aborted["ok"], true, "{rebase_aborted:?}");
+        assert_eq!(rebase_aborted["result"]["repo_state"], "clean");
+    }
+
+    #[test]
+    fn branch_ops_reject_a_task_scope() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let dispatched = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick change", "kind": "quick" }),
+        ));
+        let task_id = dispatched["result"]["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        for method in ["git.branches", "git.checkout", "git.branch_delete"] {
+            let res = state.handle(req(method, json!({ "task_id": task_id, "branch": "main" })));
+            assert_eq!(res["ok"], false, "{method} -> {res:?}");
+            assert_eq!(
+                res["error"], "branch operations are project-scope only",
+                "{method}"
+            );
+        }
     }
 }

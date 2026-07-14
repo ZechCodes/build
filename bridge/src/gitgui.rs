@@ -9,9 +9,19 @@
 //! index through these verbs.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+
+/// Hard wall-clock cap on any network git subprocess (fetch/pull/push). The
+/// global AppState mutex is held for the whole RPC, so a hung network op would
+/// freeze every poll; on expiry the child is killed and the op returns an
+/// error. Paired with `GIT_TERMINAL_PROMPT=0`, which makes git fail fast on a
+/// credential prompt instead of blocking on stdin.
+pub const GIT_NETWORK_TIMEOUT_SECS: u64 = 60;
 
 /// Cap on the `patch` field of `git.show` / `git.status`, mirroring
 /// `FS_READ_MAX_BYTES`: relay WS frames cap at 8 MiB, so a huge commit must
@@ -261,6 +271,26 @@ pub fn show_commit(repo_path: &Path, hash: &str) -> Result<Value, String> {
     Ok(result)
 }
 
+/// Whether a status carries any staged (index-side) change — the shared
+/// predicate behind the staging tri-state and the discard tracked/untracked
+/// split, so both agree on what "already in the index" means.
+fn has_index_change(status: git2::Status) -> bool {
+    status.intersects(
+        git2::Status::INDEX_NEW
+            | git2::Status::INDEX_MODIFIED
+            | git2::Status::INDEX_DELETED
+            | git2::Status::INDEX_RENAMED
+            | git2::Status::INDEX_TYPECHANGE,
+    )
+}
+
+/// An untracked path: present in the working tree, absent from the index
+/// (never `git add`ed). This is the set `git.discard` deletes outright rather
+/// than restoring from HEAD.
+fn is_untracked_status(status: git2::Status) -> bool {
+    status.contains(git2::Status::WT_NEW) && !has_index_change(status)
+}
+
 /// Per-file staging tri-state + index/worktree letters for one statuses entry.
 /// `None` for entries that carry no reportable change (e.g. ignored).
 fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
@@ -278,13 +308,7 @@ fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
             "worktree_status": "U",
         }));
     }
-    let index_changed = status.intersects(
-        git2::Status::INDEX_NEW
-            | git2::Status::INDEX_MODIFIED
-            | git2::Status::INDEX_DELETED
-            | git2::Status::INDEX_RENAMED
-            | git2::Status::INDEX_TYPECHANGE,
-    );
+    let index_changed = has_index_change(status);
     let worktree_changed = status.intersects(
         git2::Status::WT_NEW
             | git2::Status::WT_MODIFIED
@@ -339,33 +363,99 @@ pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
     status_payload_with_file_cap(repo_path, GIT_STATUS_MAX_FILES)
 }
 
+/// The `git2` repository state collapsed to the wire vocabulary the SPA banner
+/// keys on: any rebase flavor is "rebasing", a merge is "merging", a bisect /
+/// cherry-pick / revert / mailbox-apply is "other", and only a truly idle repo
+/// is "clean".
+fn repo_state_label(repo: &git2::Repository) -> &'static str {
+    match repo.state() {
+        git2::RepositoryState::Clean => "clean",
+        git2::RepositoryState::Merge => "merging",
+        git2::RepositoryState::Rebase
+        | git2::RepositoryState::RebaseInteractive
+        | git2::RepositoryState::RebaseMerge => "rebasing",
+        _ => "other",
+    }
+}
+
+/// The current branch's upstream (as `origin/main`-style shorthand) plus its
+/// ahead/behind counts against that upstream. All three are `None` when HEAD
+/// is unborn, detached, or has no configured upstream — the SPA renders the
+/// sync chips only when they are present.
+fn upstream_status(repo: &git2::Repository) -> (Option<String>, Option<u64>, Option<u64>) {
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(_) => return (None, None, None),
+    };
+    if !head.is_branch() {
+        return (None, None, None);
+    }
+    let local_oid = match head.target() {
+        Some(oid) => oid,
+        None => return (None, None, None),
+    };
+    let local = git2::Branch::wrap(head);
+    let upstream = match local.upstream() {
+        Ok(upstream) => upstream,
+        Err(_) => return (None, None, None),
+    };
+    let name = upstream.name().ok().flatten().map(str::to_string);
+    let upstream_oid = match upstream.get().target() {
+        Some(oid) => oid,
+        None => return (name, None, None),
+    };
+    match repo.graph_ahead_behind(local_oid, upstream_oid) {
+        Ok((ahead, behind)) => (name, Some(ahead as u64), Some(behind as u64)),
+        Err(_) => (name, None, None),
+    }
+}
+
+/// The number of entries on the stash stack. Takes `&mut` because
+/// `stash_foreach` mutates the repository's stash iterator state.
+fn count_stashes(repo: &mut git2::Repository) -> Result<u64, String> {
+    let mut count = 0u64;
+    repo.stash_foreach(|_, _, _| {
+        count += 1;
+        true
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
 /// [`status_payload`] with the `files` cap injectable, so tests exercise the
 /// truncation path without a 2 000-file fixture.
 fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Value, String> {
-    let repo = open_repo(repo_path)?;
+    let mut repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());
+    let repo_state = repo_state_label(&repo);
+    let (upstream, ahead, behind) = upstream_status(&repo);
     // Rename detection stays OFF: a staged rename decomposes into a plain
     // D (old path) + A (new path) pair, matching the patch (which has no
     // rename detection) and keeping stage/unstage per-path symmetric. With
     // renames on, git2 reports one "R" entry under the OLD path only — the
     // new path never surfaces and unstaging the row half-unstages the rename.
-    let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
-    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
-    let mut files: Vec<Value> = statuses
-        .iter()
-        .filter_map(|entry| {
-            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
-            if path == crate::diff::MCP_CONFIG_PATH {
-                return None;
-            }
-            file_status_json(&path, entry.status())
-        })
-        .collect();
-    files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-    let files_truncated = files.len() > max_files;
-    files.truncate(max_files);
+    // Scoped so the immutable statuses borrow ends before the &mut stash walk.
+    let (files, files_truncated) = {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true).recurse_untracked_dirs(true);
+        let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+        let mut files: Vec<Value> = statuses
+            .iter()
+            .filter_map(|entry| {
+                let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+                if path == crate::diff::MCP_CONFIG_PATH {
+                    return None;
+                }
+                file_status_json(&path, entry.status())
+            })
+            .collect();
+        files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        let files_truncated = files.len() > max_files;
+        files.truncate(max_files);
+        (files, files_truncated)
+    };
+    let stash_count = count_stashes(&mut repo)?;
     let diff = crate::diff::diff_uncommitted(repo_path).map_err(|e| e.to_string())?;
     let stat = diff.stat();
     let (patch, truncated) =
@@ -374,6 +464,11 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
         "branch": branch,
         "path": repo_path.display().to_string(),
         "head": head,
+        "repo_state": repo_state,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "stash_count": stash_count,
         "files": files,
         "files_truncated": files_truncated,
         "stat": {
@@ -481,6 +576,302 @@ pub fn commit_staged(repo_path: &Path, message: &str) -> Result<Value, String> {
         .peel_to_commit()
         .map_err(|e| e.to_string())?;
     Ok(commit_summary_json(&head))
+}
+
+/// Run a prepared command with a hard wall-clock cap, draining stdout/stderr
+/// on threads so a chatty child can never dead-lock on a full pipe while we
+/// poll. On expiry the child is killed and `<op> timed out after <n>s` is
+/// returned; a non-zero exit joins stderr+stdout into the error, matching
+/// [`run_git`]. `op_label` names the operation for both messages.
+fn run_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    op_label: &str,
+) -> Result<String, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not run {op_label}: {e}"))?;
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("could not wait for {op_label}: {e}"))?
+        {
+            Some(status) => break status,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{op_label} timed out after {}s", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    let stdout = String::from_utf8_lossy(&stdout_reader.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
+    if !status.success() {
+        return Err(format!(
+            "{op_label} failed: {}",
+            format!("{} {}", stderr.trim(), stdout.trim()).trim()
+        ));
+    }
+    Ok(stdout)
+}
+
+/// Run a network git subcommand (fetch/pull/push) with `GIT_TERMINAL_PROMPT=0`
+/// (fail fast on a credential prompt, never block on stdin) under the
+/// [`GIT_NETWORK_TIMEOUT_SECS`] wall-clock cap.
+fn run_git_network(repo_path: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let op_label = format!("git {}", args.first().unwrap_or(&""));
+    run_with_timeout(
+        command,
+        Duration::from_secs(GIT_NETWORK_TIMEOUT_SECS),
+        &op_label,
+    )
+}
+
+/// `git.fetch`: `git fetch --prune`. Safe in every scope — it only updates
+/// remote-tracking refs, never the working tree.
+pub fn fetch(repo_path: &Path) -> Result<(), String> {
+    run_git_network(repo_path, &["fetch", "--prune"]).map(|_| ())
+}
+
+/// `git.pull` mode → the matching git flag. Unknown modes fail fast rather
+/// than silently defaulting.
+fn pull_flag(mode: &str) -> Result<&'static str, String> {
+    match mode {
+        "ff" => Ok("--ff-only"),
+        "merge" => Ok("--no-rebase"),
+        "rebase" => Ok("--rebase"),
+        other => Err(format!("unknown pull mode: {other}")),
+    }
+}
+
+/// `git.pull`: `git pull` in the requested integration mode. Git's own message
+/// passes through verbatim on failure (ff-only refusal, conflict); a conflicted
+/// pull deliberately leaves the repo in a merging/rebasing state, which the
+/// next `git.status` surfaces.
+pub fn pull(repo_path: &Path, mode: &str) -> Result<(), String> {
+    let flag = pull_flag(mode)?;
+    run_git_network(repo_path, &["pull", flag]).map(|_| ())
+}
+
+/// `git.push`: `git push` (or `git push -u origin -- <branch>` when the branch
+/// has no upstream yet). `force` upgrades to `--force-with-lease` — never a
+/// bare `--force`. A detached HEAD has no branch to push and is refused.
+pub fn push(repo_path: &Path, force: bool) -> Result<(), String> {
+    let repo = open_repo(repo_path)?;
+    if repo
+        .head_detached()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+    {
+        return Err("cannot push a detached HEAD".to_string());
+    }
+    let branch = current_branch(&repo)?;
+    let (upstream, _, _) = upstream_status(&repo);
+    drop(repo);
+    let mut args: Vec<String> = vec!["push".to_string()];
+    if force {
+        args.push("--force-with-lease".to_string());
+    }
+    if upstream.is_none() {
+        args.push("-u".to_string());
+        args.push("origin".to_string());
+        args.push("--".to_string());
+        args.push(branch);
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git_network(repo_path, &arg_refs).map(|_| ())
+}
+
+/// One local branch's wire summary for [`branch_list`].
+fn branch_entry_json(repo: &git2::Repository, branch: &git2::Branch) -> Result<Value, String> {
+    let name = branch
+        .name()
+        .map_err(|e| e.to_string())?
+        .unwrap_or("")
+        .to_string();
+    let commit = branch.get().peel_to_commit().map_err(|e| e.to_string())?;
+    let (subject, _) = truncate_at_utf8_boundary(
+        commit.summary().unwrap_or("").to_string(),
+        GIT_SUBJECT_MAX_BYTES,
+    );
+    let (upstream, ahead, behind) = match branch.upstream() {
+        Ok(upstream) => {
+            let up_name = upstream.name().ok().flatten().map(str::to_string);
+            let (ahead, behind) = match upstream.get().target() {
+                Some(up_oid) => repo
+                    .graph_ahead_behind(commit.id(), up_oid)
+                    .map_err(|e| e.to_string())?,
+                None => (0, 0),
+            };
+            (up_name, ahead as u64, behind as u64)
+        }
+        Err(_) => (None, 0, 0),
+    };
+    Ok(json!({
+        "name": name,
+        "is_current": branch.is_head(),
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "head_subject": subject,
+        "head_time": commit.time().seconds(),
+    }))
+}
+
+/// `git.branches`: local branches only, current first then by most-recent head
+/// commit time. Pure git2 reads — no working-tree mutation.
+pub fn branch_list(repo_path: &Path) -> Result<Value, String> {
+    let repo = open_repo(repo_path)?;
+    let current = current_branch(&repo)?;
+    let mut branches = Vec::new();
+    for item in repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| e.to_string())?
+    {
+        let (branch, _) = item.map_err(|e| e.to_string())?;
+        branches.push(branch_entry_json(&repo, &branch)?);
+    }
+    branches.sort_by(|a, b| {
+        let a_current = a["is_current"].as_bool().unwrap_or(false);
+        let b_current = b["is_current"].as_bool().unwrap_or(false);
+        b_current.cmp(&a_current).then_with(|| {
+            let a_time = a["head_time"].as_i64().unwrap_or(0);
+            let b_time = b["head_time"].as_i64().unwrap_or(0);
+            b_time.cmp(&a_time)
+        })
+    });
+    Ok(json!({ "current": current, "branches": branches }))
+}
+
+/// Reject a client-supplied branch name before it reaches an argv slot: an
+/// explicit leading-dash guard (so it can never be read as a flag even where
+/// git accepts no `--`, e.g. `git switch`) plus `git check-ref-format
+/// --branch`, git's own ref-name grammar.
+fn validate_branch_name(repo_path: &Path, branch: &str) -> Result<(), String> {
+    if branch.is_empty() || branch.starts_with('-') {
+        return Err(format!("invalid branch name: {branch}"));
+    }
+    run_git(repo_path, &["check-ref-format", "--branch", branch])
+        .map_err(|_| format!("invalid branch name: {branch}"))?;
+    Ok(())
+}
+
+/// `git.checkout`: `git switch <branch>` (or `git switch -c <branch>` to
+/// create). The name is validated first; the tree may be dirty (git carries
+/// the changes or refuses on conflict — either way its message passes through),
+/// but an in-progress merge/rebase is refused so the user resolves it first.
+pub fn checkout(repo_path: &Path, branch: &str, create: bool) -> Result<(), String> {
+    validate_branch_name(repo_path, branch)?;
+    let repo = open_repo(repo_path)?;
+    if repo_state_label(&repo) != "clean" {
+        return Err("finish or abort the in-progress merge first".to_string());
+    }
+    drop(repo);
+    let args: Vec<&str> = if create {
+        vec!["switch", "-c", branch]
+    } else {
+        vec!["switch", branch]
+    };
+    run_git(repo_path, &args).map(|_| ())
+}
+
+/// `git.branch_delete`: `git branch -d -- <branch>` (`-D` to force). Deleting
+/// the current branch is git's error to raise, and passes through.
+pub fn branch_delete(repo_path: &Path, branch: &str, force: bool) -> Result<(), String> {
+    validate_branch_name(repo_path, branch)?;
+    let flag = if force { "-D" } else { "-d" };
+    run_git(repo_path, &["branch", flag, "--", branch]).map(|_| ())
+}
+
+/// `git.stash`: `git stash push -u` — include untracked files so the working
+/// tree comes back truly clean. An empty tree is git's "No local changes"
+/// error, passed through.
+pub fn stash_push(repo_path: &Path) -> Result<(), String> {
+    run_git(repo_path, &["stash", "push", "-u"]).map(|_| ())
+}
+
+/// `git.stash_pop`: `git stash pop`. A pop conflict is git's error (and leaves
+/// the repo in a merging state the next status surfaces).
+pub fn stash_pop(repo_path: &Path) -> Result<(), String> {
+    run_git(repo_path, &["stash", "pop"]).map(|_| ())
+}
+
+/// `git.merge_abort`: `git merge --abort` while merging, `git rebase --abort`
+/// while rebasing; anything else has nothing to abort.
+pub fn merge_abort(repo_path: &Path) -> Result<(), String> {
+    let repo = open_repo(repo_path)?;
+    let state = repo_state_label(&repo);
+    drop(repo);
+    match state {
+        "merging" => run_git(repo_path, &["merge", "--abort"]).map(|_| ()),
+        "rebasing" => run_git(repo_path, &["rebase", "--abort"]).map(|_| ()),
+        _ => Err("no merge or rebase in progress".to_string()),
+    }
+}
+
+/// `git.discard` (**destructive**): revert each path to HEAD. Tracked paths go
+/// through `git restore --staged --worktree --source=HEAD` (reverting both the
+/// index and the working copy); untracked paths are unlinked directly — but
+/// only after the two-layer [`crate::app::fenced_scope_path`] guard
+/// (lexical + canonical containment), since a symlinked path whose components
+/// all look Normal could otherwise resolve outside the worktree. The scaffolded
+/// `.build/mcp.json` is silently skipped.
+pub fn discard_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        if !crate::task::is_worktree_contained_path(path) {
+            return Err(format!("path escapes the worktree: {path}"));
+        }
+    }
+    let repo = open_repo(repo_path)?;
+    let mut tracked: Vec<String> = Vec::new();
+    let mut untracked: Vec<&String> = Vec::new();
+    for path in paths {
+        if path.as_str() == crate::diff::MCP_CONFIG_PATH {
+            continue;
+        }
+        match repo.status_file(Path::new(path)) {
+            Ok(status) if is_untracked_status(status) => untracked.push(path),
+            _ => tracked.push(format!(":(literal){path}")),
+        }
+    }
+    drop(repo);
+    // Untracked deletions first: each is fenced (lexical + canonical) before
+    // the unlink, so a traversal or symlink escape can never reach outside.
+    for path in untracked {
+        let target = crate::app::fenced_scope_path(repo_path, path)?;
+        std::fs::remove_file(&target).map_err(|e| format!("cannot delete {path}: {e}"))?;
+    }
+    if !tracked.is_empty() {
+        let mut args = vec!["restore", "--staged", "--worktree", "--source=HEAD", "--"];
+        args.extend(tracked.iter().map(String::as_str));
+        run_git(repo_path, &args)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -594,5 +985,52 @@ mod tests {
         assert_eq!(conflicted["staged"], "none");
         assert_eq!(conflicted["index_status"], "U");
         assert_eq!(conflicted["worktree_status"], "U");
+    }
+
+    #[test]
+    fn untracked_classification_splits_index_from_worktree() {
+        // A pristine new file is untracked; once it is in the index (even with
+        // a further worktree edit) it is tracked, and a plain worktree edit of
+        // a committed file is tracked.
+        assert!(is_untracked_status(git2::Status::WT_NEW));
+        assert!(!is_untracked_status(
+            git2::Status::WT_NEW | git2::Status::INDEX_NEW
+        ));
+        assert!(!is_untracked_status(git2::Status::WT_MODIFIED));
+        assert!(!is_untracked_status(git2::Status::INDEX_MODIFIED));
+    }
+
+    #[test]
+    fn pull_flag_maps_modes_and_rejects_unknown() {
+        assert_eq!(pull_flag("ff").unwrap(), "--ff-only");
+        assert_eq!(pull_flag("merge").unwrap(), "--no-rebase");
+        assert_eq!(pull_flag("rebase").unwrap(), "--rebase");
+        assert!(pull_flag("octopus").is_err());
+    }
+
+    #[test]
+    fn run_with_timeout_kills_a_child_that_overruns() {
+        // A `sleep 5` under a 200 ms cap must be killed and reported, not
+        // waited out — this is the network-op backstop's core mechanism.
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        let started = Instant::now();
+        let result = run_with_timeout(command, Duration::from_millis(200), "git fetch");
+        let elapsed = started.elapsed();
+        let error = result.unwrap_err();
+        assert!(error.contains("timed out after"), "{error}");
+        assert!(error.starts_with("git fetch"), "{error}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "killed promptly: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn run_with_timeout_returns_stdout_on_a_fast_success() {
+        let mut command = Command::new("echo");
+        command.arg("hello");
+        let out = run_with_timeout(command, Duration::from_secs(5), "echo").unwrap();
+        assert_eq!(out.trim(), "hello");
     }
 }

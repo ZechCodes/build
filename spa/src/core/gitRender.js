@@ -14,11 +14,13 @@ export const AGENT_COMMIT_MESSAGE =
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the stat above is exact</div>';
 
-/** Map a git.status file entry onto the diff surface's .fb badge vocabulary. */
+/** Map a git.status file entry onto the diff surface's .fb badge vocabulary.
+ *  Conflicted entries ("U") reuse the DEL styling under a CONFLICT label. */
 function fileBadge(file) {
-  if (file.index_status === "D" || file.worktree_status === "D") return "DEL";
-  if (file.index_status === "?" || file.index_status === "A" || file.worktree_status === "A") return "ADD";
-  return "EDIT";
+  if (file.index_status === "U" || file.worktree_status === "U") return { cls: "DEL", label: "CONFLICT" };
+  if (file.index_status === "D" || file.worktree_status === "D") return { cls: "DEL", label: "DEL" };
+  if (file.index_status === "?" || file.index_status === "A" || file.worktree_status === "A") return { cls: "ADD", label: "ADD" };
+  return { cls: "EDIT", label: "EDIT" };
 }
 
 const statSummary = (stat) =>
@@ -33,7 +35,8 @@ export function uncommittedHtml(status) {
   const stat = status.stat || { files_changed: 0, insertions: 0, deletions: 0 };
   if (!files.length)
     return `<div class="gitsec"><div class="gitsec-head">Uncommitted changes</div>
-      <div class="empty">No uncommitted changes.</div></div>`;
+      <div class="empty">No uncommitted changes.</div>
+      <div class="actionbar"><span class="hint githint"></span></div></div>`;
   const diffByPath = new Map(filterNoiseFiles(parseDiff(status.patch)).map((f) => [f.path, f]));
   const rows = files
     .map((f) => {
@@ -42,7 +45,7 @@ export function uncommittedHtml(status) {
       const diffFile = diffByPath.get(f.path);
       return `<div class="file gitfile"><div class="fhead">
         <label class="toggle"><input type="checkbox" class="stagebox" data-path="${esc(f.path)}"${checked}></label>
-        <span>${esc(f.path)}</span><span class="fb ${badge}">${badge}</span>
+        <span>${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
         ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}</div>
         ${diffFile ? `<table>${diffRowsHtml(diffFile.rows)}</table>` : ""}</div>`;
     })
@@ -50,6 +53,7 @@ export function uncommittedHtml(status) {
   return `<div class="gitsec">
     <div class="gitsec-head">Uncommitted changes ${statSummary(stat)}</div>
     ${rows}
+    ${status.files_truncated ? `<div class="ftrunc">file list truncated — ${files.length} shown</div>` : ""}
     ${status.truncated ? TRUNCATED_NOTICE : ""}
     <div class="gitcommit">
       <textarea class="gitmsg" placeholder="Commit message…"></textarea>

@@ -69,6 +69,18 @@ describe("uncommittedHtml", () => {
     expect(html).toContain('class="fb DEL"');
   });
 
+  it("badges conflicted files CONFLICT with the DEL styling", () => {
+    const html = uncommittedHtml(
+      status({ files: [{ path: "f.txt", staged: "none", index_status: "U", worktree_status: "U" }] }),
+    );
+    expect(html).toContain('class="fb DEL">CONFLICT<');
+  });
+
+  it("shows a quiet notice when the file list was truncated", () => {
+    expect(uncommittedHtml(status({ files_truncated: true }))).toContain("file list truncated — 3 shown");
+    expect(uncommittedHtml(status())).not.toContain("file list truncated");
+  });
+
   it("renders each file's diff rows beneath its stage row", () => {
     const html = uncommittedHtml(status());
     expect(html).toContain('<td class="code">new line</td>');
@@ -112,6 +124,11 @@ describe("uncommittedHtml", () => {
     const html = uncommittedHtml(status({ files: [], patch: "", stat: { files_changed: 0, insertions: 0, deletions: 0 } }));
     expect(html).toContain("No uncommitted changes.");
     expect(html).not.toContain('class="gitmsg"');
+  });
+
+  it("keeps a hint host in the pane even when the tree is clean", () => {
+    const html = uncommittedHtml(status({ files: [], patch: "", stat: { files_changed: 0, insertions: 0, deletions: 0 } }));
+    expect(html).toContain('class="hint githint"');
   });
 });
 

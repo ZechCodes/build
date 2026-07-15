@@ -141,8 +141,11 @@ export function repoStateBanner(repoState) {
 }
 
 /** The repaint-freeze key for one poll's payloads: HEAD + branch + the status
- *  patch + every file's stage state + the visible commit page. Unchanged key →
- *  the poll leaves the DOM (and the user's checkbox focus) alone. */
+ *  patch + every file's stage state + the visible commit page, PLUS the additive
+ *  v2 sync fields (repo_state/upstream/ahead/behind/stash_count) so an
+ *  out-of-band ref move — a terminal `git fetch` shifting `behind` with no local
+ *  HEAD/file change — still repaints the toolbar chips and state banner.
+ *  Unchanged key → the poll leaves the DOM (and the user's checkbox focus) alone. */
 export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
   const files = (status.files || [])
     .map((f) => [f.path, f.staged, f.index_status, f.worktree_status].join("\x01"))
@@ -160,6 +163,11 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
     files,
     commits,
     Boolean(log && log.more),
+    status.repo_state,
+    status.upstream,
+    status.ahead,
+    status.behind,
+    status.stash_count,
     minuteBucket,
   ].join("\x03");
 }

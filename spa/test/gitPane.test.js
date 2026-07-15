@@ -66,6 +66,18 @@ describe("gitPollKey", () => {
     expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ files_truncated: true }), log(), NOW));
   });
 
+  it.each([
+    ["repo_state", { repo_state: "clean" }, { repo_state: "merging" }],
+    ["upstream", { upstream: "origin/main" }, { upstream: "origin/dev" }],
+    ["ahead", { ahead: 0 }, { ahead: 3 }],
+    ["behind", { behind: 0 }, { behind: 3 }],
+    ["stash_count", { stash_count: 0 }, { stash_count: 2 }],
+  ])("changes when the additive sync field %s changes", (_field, before, after) => {
+    // An out-of-band ref move (a terminal `git fetch` shifting `behind`) must
+    // repaint the toolbar chips even when HEAD/files/patch are untouched.
+    expect(gitPollKey(status(before), log(), NOW)).not.toBe(gitPollKey(status(after), log(), NOW));
+  });
+
   it("stays stable within a minute but rolls over across minute buckets", () => {
     const minuteStart = Math.floor(NOW / 60) * 60;
     expect(gitPollKey(status(), log(), minuteStart)).toBe(gitPollKey(status(), log(), minuteStart + 30));

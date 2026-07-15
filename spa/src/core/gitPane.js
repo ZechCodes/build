@@ -80,11 +80,19 @@ export function pullSplitOptions() {
 }
 
 /** Push split button: plain push, then a danger-styled force-push-with-lease
- *  (never a bare --force) gated behind an inline confirm in the controller. */
-export function pushSplitOptions() {
+ *  (never a bare --force) gated behind an inline confirm in the controller. When
+ *  `armed`, the force-push item reads "Confirm force push?" so the pending
+ *  two-click confirm is VISIBLE in the menu (S2a) — not just a transient hint. */
+export function pushSplitOptions(armed = false) {
   return [
     { id: "push", label: "Push", description: "push to the upstream", busyLabel: "Pushing…" },
-    { id: "force_push", menuLabel: "Force push (with lease)", description: "overwrite remote history — safely", busyLabel: "Force pushing…", danger: true },
+    {
+      id: "force_push",
+      menuLabel: armed ? "Confirm force push?" : "Force push (with lease)",
+      description: "overwrite remote history — safely",
+      busyLabel: "Force pushing…",
+      danger: true,
+    },
   ];
 }
 
@@ -126,6 +134,19 @@ export function syncActionRpc(optionId) {
 export function resolveInlineConfirm(pending, key) {
   if (pending === key) return { fire: true, pending: null };
   return { fire: false, pending: key };
+}
+
+/** How long an armed inline confirm stays live before the poll auto-disarms it.
+ *  A destructive verb (force push / discard / abort / branch delete) armed and
+ *  then abandoned must not stay one click from firing indefinitely. */
+export const INLINE_CONFIRM_TTL_MS = 10000;
+
+/** True when an armed confirm (stamped at `armedAt`) has aged past the TTL, so
+ *  the poll should disarm it and repaint. `armedAt` null/undefined → nothing is
+ *  armed → never expired. */
+export function confirmExpired(armedAt, now, ttlMs = INLINE_CONFIRM_TTL_MS) {
+  if (armedAt === null || armedAt === undefined) return false;
+  return now - armedAt >= ttlMs;
 }
 
 // The destructive sync-menu options that require the inline confirm before they
@@ -305,6 +326,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   let scopeErrorShown = null; // the terminal scope error currently rendered
   const branchControl = showBranchControl(scope); // interactive branch menu?
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort/delete)
+  let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let branchMenuOpen = false; // the branch dropdown is showing
   let branchList = null; // the last git.branches payload (null until fetched)
   const forceDeleteOffered = []; // branches whose non-force delete failed → offer force
@@ -323,6 +345,29 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     if (el) el.textContent = hint;
   };
   const actionError = (e) => setHint("error: " + ((e && e.message) || "error").slice(0, 70));
+
+  // ---- the ONE inline-confirm arm/disarm path (force push / discard / abort /
+  // branch delete). Every armed confirm is stamped so the poll can auto-expire
+  // it, and any other action disarms it — no verb keeps its own bookkeeping.
+  const clearConfirm = () => {
+    pendingConfirm = null;
+    armedAt = null;
+  };
+  /** Arm `key` (first touch) or fire it (second touch of the same key). Returns
+   *  true only on fire; stamps armedAt when it arms so the poll can expire it. */
+  const armConfirm = (key) => {
+    const decision = resolveInlineConfirm(pendingConfirm, key);
+    pendingConfirm = decision.pending;
+    armedAt = decision.fire ? null : Date.now();
+    return decision.fire;
+  };
+  /** Disarm any pending confirm; returns whether one was actually cleared so the
+   *  caller can decide to repaint. */
+  const disarmConfirm = () => {
+    if (pendingConfirm === null) return false;
+    clearConfirm();
+    return true;
+  };
 
   const render = () => {
     if (disposed || !lastStatus || !lastLog) return;
@@ -397,7 +442,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const pullHost = container.querySelector(".gtpull");
     if (pullHost) mountSplitButton(pullHost, { options: pullSplitOptions(), run: runSyncOption });
     const pushHost = container.querySelector(".gtpush");
-    if (pushHost) mountSplitButton(pushHost, { options: pushSplitOptions(), run: runSyncOption });
+    // Arming force push re-renders with the armed label so the menu item reads
+    // "Confirm force push?" — the pending two-click confirm is visible (S2a).
+    if (pushHost) mountSplitButton(pushHost, { options: pushSplitOptions(pendingConfirm === "force_push"), run: runSyncOption });
     const stashHost = container.querySelector(".gtstash");
     if (stashHost)
       mountSplitButton(stashHost, { options: stashSplitOptions(lastStatus && lastStatus.stash_count), run: runSyncOption });
@@ -430,7 +477,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     if (log) lastLog = log;
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
-    pendingConfirm = null;
+    clearConfirm();
     renderedKey = gitPollKey(lastStatus, lastLog);
     render();
   };
@@ -604,8 +651,15 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
    *  repaints freeze and every toolbar verb stays disabled while awaited, then
    *  the controls re-enable once the RPC settles. Mirrors runCommitOption. */
   const runGuarded = async (work) => {
+    // Attempting ANY guarded action disarms a pending confirm at entry — success
+    // or failure (S2b). A firing confirm already cleared itself in armConfirm, so
+    // this only bites a *stale* arm from a different verb (e.g. an abandoned
+    // force-push arm when the user clicks Fetch), preventing a later single click
+    // from firing it without a fresh confirm.
+    const disarmed = disarmConfirm();
     inFlightActions += 1;
     disableToolbarControls();
+    if (disarmed) render(); // repaint so the armed force-push label reverts
     try {
       return await work();
     } finally {
@@ -637,10 +691,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   const runSyncOption = async (optionId) => {
     setHint("");
     if (syncActionNeedsConfirm(optionId)) {
-      const decision = resolveInlineConfirm(pendingConfirm, optionId);
-      pendingConfirm = decision.pending;
-      if (!decision.fire) {
+      if (!armConfirm(optionId)) {
         setHint("Force push (with lease) — click Force push again to confirm.");
+        render(); // re-render with the armed label so the confirm is visible (S2a)
         throw new Error("confirm required");
       }
     }
@@ -698,7 +751,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     branchList = null;
     newBranchDraft = "";
     forceDeleteOffered.length = 0;
-    pendingConfirm = null;
+    clearConfirm();
   };
 
   const closeBranchMenu = () => {
@@ -715,7 +768,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     }
     branchMenuOpen = true;
     branchList = null;
-    pendingConfirm = null;
+    clearConfirm();
     render(); // the loading placeholder shows immediately
     let payload;
     try {
@@ -763,7 +816,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
           actionError(e);
           // Offer a force delete only after a non-force delete has failed.
           if (!force && !forceDeleteOffered.includes(branch)) forceDeleteOffered.push(branch);
-          pendingConfirm = null;
+          clearConfirm();
           render();
         }
         return;
@@ -772,7 +825,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       branchList = payload; // git.branch_delete returns the fresh branches list
       const offered = forceDeleteOffered.indexOf(branch);
       if (offered >= 0) forceDeleteOffered.splice(offered, 1);
-      pendingConfirm = null;
+      clearConfirm();
       setHint(`Deleted ${branch}.`);
       render(); // the menu stays open, now without the deleted branch
     });
@@ -781,9 +834,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
    *  repaints the armed label; a second on the same control fires `action`. */
   const confirmThen = (key, action) => {
     if (inFlightActions > 0) return;
-    const decision = resolveInlineConfirm(pendingConfirm, key);
-    pendingConfirm = decision.pending;
-    if (decision.fire) action();
+    if (armConfirm(key)) action();
     else render();
   };
 
@@ -835,10 +886,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       return;
     }
     // Any other click disarms a stale confirm before doing its own job.
-    if (pendingConfirm) {
-      pendingConfirm = null;
-      render();
-    }
+    if (disarmConfirm()) render();
     if (target.closest(".gitmore")) {
       showMore();
       return;
@@ -880,12 +928,19 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     lastHead = status.head;
     lastStatus = status;
     lastLog = log;
+    // An abandoned confirm auto-expires: past the TTL the poll disarms it and
+    // forces a repaint (S2c), so a destructive verb never stays one click from
+    // firing — and the interactionActive freeze it caused is released too.
+    const expired = confirmExpired(armedAt, Date.now());
+    if (expired) clearConfirm();
     const key = gitPollKey(status, log);
     const rendered = container.querySelector(".gitpane .gitsec");
     // Freeze while unchanged, while the user is drafting a commit message, while
     // any action RPC is in flight, or while an interaction is live (an armed
-    // confirm or an open branch menu a repaint would clobber).
+    // confirm or an open branch menu a repaint would clobber). A just-expired
+    // confirm bypasses the freeze so its armed label actually clears.
     if (
+      !expired &&
       pollRenderFrozen({
         paneRendered: Boolean(rendered),
         keyUnchanged: key === renderedKey,

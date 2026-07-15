@@ -11,6 +11,8 @@ import {
   stashSplitOptions,
   syncActionRpc,
   resolveInlineConfirm,
+  confirmExpired,
+  INLINE_CONFIRM_TTL_MS,
   repoStateBanner,
   pollRenderFrozen,
 } from "../src/core/gitPane.js";
@@ -110,6 +112,38 @@ describe("pushSplitOptions", () => {
     expect(options.map((o) => o.id)).toEqual(["push", "force_push"]);
     expect(options[0].label).toBe("Push");
     expect(options.find((o) => o.id === "force_push").danger).toBe(true);
+  });
+
+  it("labels the force-push item plainly when disarmed", () => {
+    expect(pushSplitOptions(false).find((o) => o.id === "force_push").menuLabel).toBe("Force push (with lease)");
+    expect(pushSplitOptions().find((o) => o.id === "force_push").menuLabel).toBe("Force push (with lease)");
+  });
+
+  it("makes the arming VISIBLE — the force-push item reads a confirm prompt when armed (S2a)", () => {
+    const armed = pushSplitOptions(true).find((o) => o.id === "force_push");
+    expect(armed.menuLabel).toBe("Confirm force push?");
+    expect(armed.danger).toBe(true);
+  });
+});
+
+describe("confirmExpired", () => {
+  it("has a 10-second inline-confirm TTL", () => {
+    expect(INLINE_CONFIRM_TTL_MS).toBe(10000);
+  });
+
+  it("is never expired when nothing is armed", () => {
+    expect(confirmExpired(null, 999999)).toBe(false);
+    expect(confirmExpired(undefined, 999999)).toBe(false);
+  });
+
+  it("holds the arm within the TTL window", () => {
+    expect(confirmExpired(1000, 1000)).toBe(false);
+    expect(confirmExpired(1000, 1000 + INLINE_CONFIRM_TTL_MS - 1)).toBe(false);
+  });
+
+  it("expires the arm at or past the TTL (the poll disarms + repaints) (S2c)", () => {
+    expect(confirmExpired(1000, 1000 + INLINE_CONFIRM_TTL_MS)).toBe(true);
+    expect(confirmExpired(1000, 1000 + INLINE_CONFIRM_TTL_MS + 1)).toBe(true);
   });
 });
 

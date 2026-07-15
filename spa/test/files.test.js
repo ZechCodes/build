@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { previewModeFor, previewHasSourceToggle, decodeBase64Text, filesTreeHtml } from "../src/views/files.js";
+import { previewModeFor, previewHasSourceToggle, decodeBase64Text, filesTreeHtml, sourcePreviewHtml } from "../src/views/files.js";
 import { esc } from "../src/core/text.js";
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
@@ -90,5 +90,27 @@ describe("decodeBase64Text", () => {
     const escaped = esc(source);
     expect(escaped).not.toContain("<img");
     expect(escaped).toContain("&lt;img");
+  });
+});
+
+describe("sourcePreviewHtml", () => {
+  it("syntax-highlights source by the file's extension inside a <pre class=fsrc>", () => {
+    const html = sourcePreviewHtml("bridge/src/app.rs", "fn main() { let x = 1; }");
+    expect(html).toContain('<pre class="fsrc"><code>');
+    expect(html).toContain('class="token');
+    expect(html).toContain("</code></pre>");
+  });
+
+  it("escapes source of an unknown extension and never emits a live tag", () => {
+    const html = sourcePreviewHtml("notes.unknownext", "<img src=x onerror=alert(1)>");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+    expect(html).not.toContain("token");
+  });
+
+  it("keeps a hostile payload inert even under a real grammar", () => {
+    const html = sourcePreviewHtml("evil.js", `<script>alert(1)</script>`);
+    expect(html).not.toContain("<script>");
+    expect(/<(?!\/?(span|pre|code)\b)[a-zA-Z]/.test(html)).toBe(false);
   });
 });

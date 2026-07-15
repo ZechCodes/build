@@ -81,10 +81,15 @@ describe("uncommittedHtml", () => {
     expect(uncommittedHtml(status())).not.toContain("file list truncated");
   });
 
-  it("renders each file's diff rows beneath its stage row", () => {
+  it("renders each file's diff rows beneath its stage row (syntax-highlighted)", () => {
     const html = uncommittedHtml(status());
-    expect(html).toContain('<td class="code">new line</td>');
-    expect(html).toContain('<td class="code">py line</td>');
+    // Code cells are now Prism-highlighted, so the text may be split across
+    // token spans (e.g. "new" is a JS keyword); assert the content survives and
+    // still lives in a td.code cell rather than pinning the exact inner markup.
+    const stripped = html.replace(/<[^>]+>/g, "");
+    expect(stripped).toContain("new line");
+    expect(stripped).toContain("py line");
+    expect(html).toContain('<td class="code">');
   });
 
   it("filters noise paths out of the rendered patch", () => {

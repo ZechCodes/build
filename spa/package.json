@@ -15,7 +15,8 @@
     "@build/secure-transport": "file:../../build-secure-transport/js",
     "@fontsource/inter": "^5.2.8",
     "ghostty-web": "^0.4.0",
-    "libsodium-wrappers": "^0.7.15"
+    "libsodium-wrappers": "^0.7.15",
+    "prismjs": "^1.30.0"
   },
   "devDependencies": {
     "vite": "^8.1.2",

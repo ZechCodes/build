@@ -10,6 +10,7 @@
 
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
+import { highlightCode, langForPath } from "../core/highlight.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -66,13 +67,21 @@ export function filesTreeHtml(dir, entries) {
   return crumb + (up + rows || '<div class="empty">Empty directory.</div>');
 }
 
-/** Render the preview body HTML for a fs.read response + a source-override flag. */
-function previewBodyHtml(file, showSource) {
+/** Pure: the syntax-highlighted source view for a file. Code is highlighted by
+ *  the path's extension (langForPath) and, for an unknown extension, falls back
+ *  to escaped plain text — highlightCode never emits a live tag either way. */
+export function sourcePreviewHtml(path, text) {
+  return `<pre class="fsrc"><code>${highlightCode(text, langForPath(path))}</code></pre>`;
+}
+
+/** Render the preview body HTML for a fs.read response + a source-override flag.
+ *  `path` selects the syntax-highlighting grammar for the source branch. */
+function previewBodyHtml(path, file, showSource) {
   const mode = previewModeFor(file.mime, file.truncated);
   const truncNotice = file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
   if (showSource || mode === "source") {
     if (mode === "binary" || mode === "toolarge") return sizePlaceholder(mode, file.size);
-    return `<pre class="fsrc"><code>${esc(decodeBase64Text(file.content_b64))}</code></pre>${truncNotice}`;
+    return `${sourcePreviewHtml(path, decodeBase64Text(file.content_b64))}${truncNotice}`;
   }
   if (mode === "markdown") return `<div class="plan">${renderMarkdown(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
@@ -141,7 +150,7 @@ export function renderFilesTab(body, { scope, callRpc }) {
       : "";
     previewEl.innerHTML = `
       <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${toggle}</div>
-      <div class="fpbody">${previewBodyHtml(file, sourceOverride)}</div>`;
+      <div class="fpbody">${previewBodyHtml(path, file, sourceOverride)}</div>`;
     const toggleBtn = previewEl.querySelector("#fsrctoggle");
     if (toggleBtn)
       toggleBtn.onclick = () => {

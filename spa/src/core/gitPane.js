@@ -47,6 +47,29 @@ export function toolbarControlsDisabled(inFlightCount) {
   return inFlightCount > 0;
 }
 
+/** The re-enable decision for the shared settle path: only once the LAST
+ *  in-flight action settles do the controls come back (a nested/overlapping
+ *  action must not revive a live button early). */
+export function actionSettleReenables(inFlightCount) {
+  return inFlightCount === 0;
+}
+
+/** The controls one settled action re-enables — every toolbar verb PLUS the
+ *  commit primary. This is the single source S1 unifies on: a toolbar action's
+ *  repaint disables the commit button (render() disables it while any action is
+ *  in flight), so the SAME settle that re-enables the toolbar must also re-enable
+ *  Commit, or a Fetch/Push leaves it stuck disabled. */
+export function settleReenableSelectors() {
+  return [
+    ".gtfetch",
+    ".gtbranchbtn",
+    ".gtbranch-create",
+    ".gtsync .btn.primary",
+    ".gtstash .btn.primary",
+    ".gitcommit-actions .btn.primary:not(.caret)",
+  ];
+}
+
 /** Pull split button: fast-forward primary, then merge / rebase in the menu. */
 export function pullSplitOptions() {
   return [
@@ -385,7 +408,22 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     ...container.querySelectorAll(".gtsync .btn.primary, .gtstash .btn.primary"),
   ];
   const disableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = true));
-  const reenableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = false));
+
+  /** The ONE settle re-enable, shared by every action wrapper: revive every
+   *  toolbar verb AND the commit primary from a single selector list, so no
+   *  action can settle leaving another action's button stuck disabled (S1). */
+  const reenableAllControls = () =>
+    settleReenableSelectors().forEach((selector) =>
+      container.querySelectorAll(selector).forEach((button) => (button.disabled = false)),
+    );
+
+  /** The ONE settle path: decrement the in-flight counter and, once the last
+   *  action settles, re-enable everything. Every action wrapper funnels through
+   *  this so their bookkeeping can never diverge. */
+  const settleInFlight = () => {
+    inFlightActions -= 1;
+    if (!disposed && actionSettleReenables(inFlightActions)) reenableAllControls();
+  };
 
   const paintFrom = (status, log) => {
     lastStatus = status;
@@ -428,11 +466,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     try {
       return await performCommitOption(optionId);
     } finally {
-      inFlightActions -= 1;
-      if (!disposed && inFlightActions === 0) {
-        const primaryButton = container.querySelector(".gitcommit-actions .btn.primary:not(.caret)");
-        if (primaryButton) primaryButton.disabled = false;
-      }
+      settleInFlight();
     }
   };
 
@@ -510,7 +544,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       if (!disposed) actionError(e);
     } finally {
       stagingPaths.delete(path);
-      inFlightActions -= 1;
+      settleInFlight();
     }
     if (disposed) return;
     if (!status) {
@@ -575,8 +609,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     try {
       return await work();
     } finally {
-      inFlightActions -= 1;
-      if (!disposed && inFlightActions === 0) reenableToolbarControls();
+      settleInFlight();
     }
   };
 

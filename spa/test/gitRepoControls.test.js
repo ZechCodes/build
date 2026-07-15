@@ -4,6 +4,8 @@ import {
   syncChipState,
   showBranchControl,
   toolbarControlsDisabled,
+  actionSettleReenables,
+  settleReenableSelectors,
   pullSplitOptions,
   pushSplitOptions,
   stashSplitOptions,
@@ -69,6 +71,29 @@ describe("toolbarControlsDisabled", () => {
 
   it("enables them when nothing is in flight", () => {
     expect(toolbarControlsDisabled(0)).toBe(false);
+  });
+});
+
+describe("actionSettleReenables", () => {
+  it("re-enables controls only once the last in-flight action settles", () => {
+    expect(actionSettleReenables(0)).toBe(true);
+    expect(actionSettleReenables(1)).toBe(false);
+    expect(actionSettleReenables(2)).toBe(false);
+  });
+});
+
+describe("settleReenableSelectors", () => {
+  it("covers every toolbar verb", () => {
+    const selectors = settleReenableSelectors();
+    for (const sel of [".gtfetch", ".gtbranchbtn", ".gtbranch-create", ".gtsync .btn.primary", ".gtstash .btn.primary"])
+      expect(selectors).toContain(sel);
+  });
+
+  it("also re-enables the commit primary — a toolbar action's repaint disables it, so its settle must revive it (S1)", () => {
+    // The whole S1 bug: runGuarded settled without ever re-enabling the commit
+    // button. The unified settle list MUST include it, or a Fetch/Push leaves
+    // Commit stuck disabled.
+    expect(settleReenableSelectors()).toContain(".gitcommit-actions .btn.primary:not(.caret)");
   });
 });
 

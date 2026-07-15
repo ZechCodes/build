@@ -15,7 +15,7 @@ import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/t
 import { openMessageAgent } from "../sheets/message.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
-import { renderStagesTab } from "./stages.js";
+import { renderStagesTab, stageActionBusy } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
@@ -345,7 +345,7 @@ export async function renderTask() {
     }
     const key = t.state + " " + JSON.stringify(stagesData) + " " + selectedStageId + " " + (stageDoc ? stageDoc.contents.length : 0);
     const noteBox = $("#stage-general") || $("#fixnote");
-    const busy = hasCommentPop() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));
+    const busy = hasCommentPop() || stageActionBusy() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));
     const rendered = $("#stagelist") || $("#stagedoc");
     if (rendered && (key === stagesKey || busy)) return;
     stagesKey = key;

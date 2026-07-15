@@ -16,14 +16,32 @@ import { mountSplitButton } from "../core/splitButton.js";
 // Task states with no more work to run — the run-all control is hidden on them.
 const TERMINAL_TASK_STATES = new Set(["merged", "abandoned"]);
 
+// True while a board-level bulk action (Run all / Approve all) is mid-sequence.
+// The task poll consults this (stageActionBusy) and skips its rebuild so it never
+// remounts a fresh, enabled button under an in-flight multi-RPC loop — which would
+// reset the button to look un-pressed and invite a second, conflicting run.
+let bulkActionInFlight = false;
+
+/** Whether a stage-board bulk action is mid-flight (task.js freezes its rebuild
+ *  while true, the same discipline as an open comment popover). */
+export function stageActionBusy() {
+  return bulkActionInFlight;
+}
+
 /** Pure: which run-all control the stage board shows for a given board.
  *  "stop" when auto-advance is already on; "run" (the split button) when the
  *  task is live and at least one stage is not yet validated; "none" otherwise
  *  (nothing left to run, or a terminal task). Load-bearing in renderStageList. */
 export function runAllControlKind({ autoAdvance, stages, taskState }) {
   if (autoAdvance) return "stop";
-  const hasRunnable = !TERMINAL_TASK_STATES.has(taskState) && (stages || []).some((s) => s.state !== "validated_passed");
-  return hasRunnable ? "run" : "none";
+  if (TERMINAL_TASK_STATES.has(taskState)) return "none";
+  // The earliest stage that has not passed gates everything behind it. Run-all
+  // only starts it if it is approvable/dispatchable (planned/approved) or already
+  // in flight; a validated_failed gate needs a manual fix (the fix bar), and
+  // offering "run" there would arm auto-advance yet dispatch nothing.
+  const blocking = (stages || []).find((s) => s.state !== "validated_passed");
+  if (!blocking || blocking.state === "validated_failed") return "none";
+  return "run";
 }
 
 // The split-button options for the "run" control (options[0] is the default
@@ -212,8 +230,13 @@ function renderStageList(ctx) {
   const approveAll = body.querySelector("#approveall");
   if (approveAll) {
     bindAction(approveAll, "approving…", body.querySelector("#stageshint"), async () => {
-      for (const s of stages.filter((x) => x.state === "planned")) {
-        await callRpc("task.stage_approve", { task_id: taskId, stage_id: s.id });
+      bulkActionInFlight = true;
+      try {
+        for (const s of stages.filter((x) => x.state === "planned")) {
+          await callRpc("task.stage_approve", { task_id: taskId, stage_id: s.id });
+        }
+      } finally {
+        bulkActionInFlight = false;
       }
       repaint();
     });
@@ -240,6 +263,7 @@ function wireRunAllControl(ctx, host, hint) {
     mountSplitButton(host, {
       options: RUN_ALL_OPTIONS,
       run: async (optionId) => {
+        bulkActionInFlight = true;
         try {
           if (optionId === "run_all") {
             for (const s of stages.filter((x) => x.state === "planned")) {
@@ -247,11 +271,13 @@ function wireRunAllControl(ctx, host, hint) {
             }
           }
           await callRpc("task.set_auto_advance", { task_id: taskId, enabled: true });
-          repaint();
         } catch (e) {
+          bulkActionInFlight = false;
           if (hint) hint.textContent = "error: " + e.message.slice(0, 60);
           throw e; // let the split button restore itself for a retry
         }
+        bulkActionInFlight = false; // cleared before repaint so the rebuild isn't frozen
+        repaint();
       },
     });
     return;

@@ -108,6 +108,28 @@ describe("runAllControlKind", () => {
   it("shows nothing when there are no stages", () => {
     expect(runAllControlKind({ autoAdvance: false, stages: [], taskState: "plan_review" })).toBe("none");
   });
+
+  it("shows nothing when the earliest unfinished stage failed validation (needs a fix, not run-all)", () => {
+    // Run-all would approve trailing stages and arm auto-advance, but the bridge
+    // kickstart never dispatches a validated_failed stage — a silent no-op. The
+    // failed stage's own fix bar is the path forward.
+    const failedThenPlanned = [
+      { id: "a", state: "validated_failed" },
+      { id: "b", state: "planned" },
+    ];
+    expect(runAllControlKind({ autoAdvance: false, stages: failedThenPlanned, taskState: "building" })).toBe("none");
+  });
+
+  it("still shows the run control when a passed stage precedes a runnable one, even if a later stage failed", () => {
+    // The earliest unfinished stage is 'planned' (dispatchable); the failed one
+    // sits behind it and run-all correctly starts the runnable stage.
+    const runnableBeforeFailure = [
+      { id: "a", state: "validated_passed" },
+      { id: "b", state: "planned" },
+      { id: "c", state: "validated_failed" },
+    ];
+    expect(runAllControlKind({ autoAdvance: false, stages: runnableBeforeFailure, taskState: "building" })).toBe("run");
+  });
 });
 
 describe("stageChipClass", () => {

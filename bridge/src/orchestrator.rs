@@ -1365,6 +1365,15 @@ impl Orchestrator {
     ) -> Result<(), OrchestratorError> {
         let build_dir = worktree.path.join(".build");
         std::fs::create_dir_all(&build_dir)?;
+        // A hard guard so the AGENT's own commits can never capture mcp.json: the
+        // build templates now instruct the agent to commit its work, and a routine
+        // `git add -A` would otherwise stage this machine-local config (absolute
+        // exe path, per-task identity) into the branch — leaking the local path
+        // into base history and add/add-conflicting against every other task's
+        // copy. Build's own sweep already excludes it via pathspec; this ignore
+        // closes the agent path too. `.build/plan/*` stays committable (the
+        // gitignore itself rides Build's sweep, so the rule persists on-branch).
+        std::fs::write(build_dir.join(".gitignore"), "mcp.json\n")?;
         // Absolute path to this binary so the harness can spawn it regardless of PATH.
         let exe = std::env::current_exe()
             .ok()
@@ -1398,11 +1407,12 @@ impl Orchestrator {
     ) -> Result<(), OrchestratorError> {
         // The scaffolded MCP config is machine-local plumbing (absolute binary
         // path, per-task identity): committing it would merge it into the base
-        // branch and add/add-conflict against every other branch's copy.
-        self.git(
-            worktree_path,
-            &["add", "-A", "--", ".", ":(exclude).build/mcp.json"],
-        )?;
+        // branch and add/add-conflict against every other branch's copy. It is
+        // kept out of every commit by `.build/.gitignore` (written at scaffold
+        // time), which `git add -A` honors silently — and which also guards the
+        // agent's own commits. (A `:(exclude)` pathspec here would instead ERROR,
+        // since it names an ignored path explicitly.)
+        self.git(worktree_path, &["add", "-A", "--", "."])?;
         // Only commit if something is staged (the MCP config alone must not
         // produce a commit).
         let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
@@ -2599,6 +2609,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_git_add_all_cannot_commit_the_scaffolded_mcp_config() {
+        // The build templates now tell the agent to commit its own work. A stage
+        // agent that runs `git add -A && git commit` must NOT capture the
+        // machine-local .build/mcp.json — the scaffolded .build/.gitignore is the
+        // hard guard (Build's sweep pathspec only protects Build's own commits).
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = orch
+            .dispatch(
+                TaskId::new("gi1"),
+                "Add a greeting",
+                TaskKind::Standard,
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        assert!(t.worktree.path.join(".build/mcp.json").exists());
+        assert!(t.worktree.path.join(".build/.gitignore").exists());
+
+        // The agent implements work and commits everything the way a harness does.
+        std::fs::write(t.worktree.path.join("greeting.txt"), "hi\n").unwrap();
+        run_git(&t.worktree.path, &["add", "-A"]);
+        run_git(&t.worktree.path, &["commit", "-m", "feat: add greeting"]);
+
+        let tracked = Command::new("git")
+            .args(["ls-files"])
+            .current_dir(&t.worktree.path)
+            .output()
+            .unwrap();
+        let tracked = String::from_utf8_lossy(&tracked.stdout).into_owned();
+        assert!(tracked.contains("greeting.txt"), "{tracked}");
+        assert!(
+            !tracked.contains(".build/mcp.json"),
+            "agent git add -A committed the machine-local MCP config: {tracked}"
+        );
+
+        t.end_session();
+    }
+
+    #[tokio::test]
     async fn adopted_merge_succeeds_when_base_already_tracks_a_task_mcp_config() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
@@ -2848,13 +2898,11 @@ mod tests {
         orch.approve_stage(&mut t, "second").unwrap();
         orch.dispatch_stage(&mut t, "first", None).unwrap();
 
-        // The agent commits its own work (staging everything but the machine-
-        // local mcp config, exactly as it is told never to touch `.build/`).
+        // The agent commits its own work the way a real harness does — a plain
+        // `git add -A`; the scaffolded `.build/.gitignore` keeps the machine-local
+        // mcp config out without the agent needing to know about it.
         std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
-        run_git(
-            &t.worktree.path,
-            &["add", "-A", "--", ".", ":(exclude).build/mcp.json"],
-        );
+        run_git(&t.worktree.path, &["add", "-A"]);
         run_git(
             &t.worktree.path,
             &["commit", "-m", "Add the first greeting module"],

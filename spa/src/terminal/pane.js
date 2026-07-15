@@ -19,8 +19,12 @@ function loadGhostty() {
  *   input  — (data) => promise (term.input)
  *   resize — (cols, rows) => promise (term.resize)
  *   onExit — (reason) => void: tab-level reaction (close the tab / show a quiet chip).
+ *   onInputError — (err) => void (optional): a rejected input RPC. Defaults to a
+ *            no-op (user terminals swallow it). The agent pane passes a handler
+ *            so a keystroke into a dead session surfaces "no active agent
+ *            session" instead of silently doing nothing.
  */
-export async function mountTerminalPane(host, { attach, input, resize, onExit }) {
+export async function mountTerminalPane(host, { attach, input, resize, onExit, onInputError }) {
   const { Terminal, FitAddon } = await loadGhostty();
   host.innerHTML = "";
   const term = new Terminal({ fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
@@ -67,7 +71,11 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit })
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
   };
 
-  term.onData((data) => input(data).catch(() => {}));
+  // A rejected input RPC on a live session is unexpected; on a DEAD session it
+  // means the keystroke hit an ended agent — surface it (onInputError) rather
+  // than swallow, so the caller can show the idle state. No handler → swallow
+  // (a user terminal's transient failures self-heal on the next re-attach).
+  term.onData((data) => input(data).catch((err) => onInputError && onInputError(err)));
   // A resize RPC that the bridge rejects on a healthy connection leaves the PTY
   // grid diverged from the rendering, so don't swallow it silently — log it
   // (disconnect/timeout failures still self-heal on the next reconnect's re-attach).

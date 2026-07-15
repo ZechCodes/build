@@ -4,20 +4,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // attach rejection (no ghostty/wasm in node), and the manager is a test double.
 const fakeManager = {
   attachTerminal: vi.fn(),
+  attachAgent: vi.fn(async () => ({ live: true, snapshot: "", cursor: 0 })),
   input: vi.fn(async () => {}),
   resize: vi.fn(async () => {}),
   detach: vi.fn(),
 };
+// Capture the last opts the pane was mounted with, so a test can drive the
+// pane's callbacks (onInputError) without a real ghostty terminal.
+const paneSpy = vi.hoisted(() => ({ lastOpts: null }));
 vi.mock("../src/terminal/manager.js", () => ({ terminalManager: () => fakeManager }));
 vi.mock("../src/terminal/pane.js", () => ({
-  mountTerminalPane: async (host, { attach }) => {
-    await attach({ cols: 80, rows: 24, onSnapshot: () => {}, onOutput: () => {}, onClosed: () => {} });
+  mountTerminalPane: async (host, opts) => {
+    paneSpy.lastOpts = opts;
+    await opts.attach({ cols: 80, rows: 24, onSnapshot: () => {}, onOutput: () => {}, onClosed: () => {} });
     return { dispose: vi.fn() };
   },
 }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab: vi.fn() }));
 
-import { mountAuxTab } from "../src/core/surfaceTabs.js";
+import { mountAuxTab, mountAgentPane } from "../src/core/surfaceTabs.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -29,6 +34,7 @@ function fakeHost() {
 beforeEach(() => {
   fakeManager.attachTerminal.mockReset();
   fakeManager.detach.mockReset();
+  paneSpy.lastOpts = null;
 });
 
 describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not blank)", () => {
@@ -61,5 +67,24 @@ describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not
     rejectAttach(new Error("unknown term_id"));
     await tick();
     expect(exits).toEqual([]);
+  });
+});
+
+describe("mountAgentPane surfaces a dropped input error (S3, pairs with B1)", () => {
+  it("provides an onInputError so a rejected keystroke is not swallowed", async () => {
+    const host = fakeHost();
+    mountAgentPane(host, "task-1", { onLive: () => {}, onExit: () => {} });
+    await tick();
+    expect(typeof paneSpy.lastOpts.onInputError).toBe("function");
+  });
+
+  it("routes an input RPC rejection to onExit('agent_session_ended') so the idle chip shows", async () => {
+    const host = fakeHost();
+    const exits = [];
+    mountAgentPane(host, "task-1", { onLive: () => {}, onExit: (r) => exits.push(r) });
+    await tick();
+    // a keystroke hitting a dead session: term.input rejected → onInputError fires
+    paneSpy.lastOpts.onInputError(new Error("no active agent session"));
+    expect(exits).toEqual(["agent_session_ended"]);
   });
 });

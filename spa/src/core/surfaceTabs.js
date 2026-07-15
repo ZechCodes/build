@@ -74,6 +74,11 @@ export function mountAgentPane(host, taskId, { onLive, onExit }) {
     input: (data) => manager.input(termId, data),
     resize: (cols, rows) => manager.resize(termId, cols, rows),
     onExit,
+    // A keystroke rejected by the bridge means the session is gone — surface it
+    // as the idle state (the same reason a live session's close reports), so the
+    // "no active agent session" chip shows instead of the input silently
+    // vanishing. Non-destructive: a new session's first frame clears it (B1).
+    onInputError: () => onExit && onExit("agent_session_ended"),
   });
 }
 

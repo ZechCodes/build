@@ -15,6 +15,7 @@ import {
   INLINE_CONFIRM_TTL_MS,
   repoStateBanner,
   pollRenderFrozen,
+  outsidePressDismisses,
 } from "../src/core/gitPane.js";
 import {
   gitToolbarHtml,
@@ -242,6 +243,24 @@ describe("pollRenderFrozen — interaction freeze", () => {
 
   it("still repaints when nothing is interactive", () => {
     expect(pollRenderFrozen({ paneRendered: true, keyUnchanged: false, draftActive: false, actionInFlight: false, interactionActive: false })).toBe(false);
+  });
+});
+
+describe("outsidePressDismisses", () => {
+  it("never dismisses a press that lands inside the pane", () => {
+    expect(outsidePressDismisses({ inside: true, branchMenuOpen: true, hasPendingConfirm: true })).toBe(false);
+  });
+
+  it("dismisses an outside press while the branch menu is open (S5)", () => {
+    expect(outsidePressDismisses({ inside: false, branchMenuOpen: true, hasPendingConfirm: false })).toBe(true);
+  });
+
+  it("dismisses an outside press while a confirm is armed — un-wedging the freeze (S5)", () => {
+    expect(outsidePressDismisses({ inside: false, branchMenuOpen: false, hasPendingConfirm: true })).toBe(true);
+  });
+
+  it("ignores an outside press when nothing is armed or open", () => {
+    expect(outsidePressDismisses({ inside: false, branchMenuOpen: false, hasPendingConfirm: false })).toBe(false);
   });
 });
 

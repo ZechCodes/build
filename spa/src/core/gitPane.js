@@ -270,6 +270,16 @@ export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, acti
   return Boolean(paneRendered && (keyUnchanged || draftActive || interactionActive));
 }
 
+/** Whether a document-level pointerdown should dismiss the pane's live
+ *  interaction: a press OUTSIDE the pane closes an open branch menu or disarms a
+ *  pending confirm (an inside press never does — the pane's own handlers own
+ *  it). Without this, an abandoned menu/confirm freezes the poll indefinitely
+ *  (S5), since interactionActive stays true until a click inside disarms it. */
+export function outsidePressDismisses({ inside, branchMenuOpen, hasPendingConfirm }) {
+  if (inside) return false;
+  return Boolean(branchMenuOpen || hasPendingConfirm);
+}
+
 /** The commit split-button option list: the plain Commit action first (primary),
  *  then whatever agent options the mounting view offers (task scope only). */
 export function commitSplitOptions(agentCommitOptions = []) {
@@ -954,6 +964,19 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     render();
   };
 
+  // A press anywhere outside the pane dismisses a live interaction (open branch
+  // menu / armed confirm), mirroring splitButton's own outside-close. Without it
+  // an abandoned menu/confirm keeps interactionActive true and freezes the poll
+  // until the user clicks back inside (S5). Removed on dispose.
+  const onOutsidePointerDown = (event) => {
+    if (!outsidePressDismisses({ inside: container.contains(event.target), branchMenuOpen, hasPendingConfirm: pendingConfirm !== null }))
+      return;
+    if (branchMenuOpen) resetBranchMenu();
+    else clearConfirm();
+    render();
+  };
+  document.addEventListener("pointerdown", onOutsidePointerDown);
+
   poll();
   const timer = setInterval(poll, GIT_PANE_POLL_MS);
 
@@ -961,6 +984,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     dispose() {
       disposed = true;
       clearInterval(timer);
+      document.removeEventListener("pointerdown", onOutsidePointerDown);
       container.onclick = null;
       container.onchange = null;
     },

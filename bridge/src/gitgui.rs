@@ -363,19 +363,49 @@ pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
     status_payload_with_file_cap(repo_path, GIT_STATUS_MAX_FILES)
 }
 
-/// The `git2` repository state collapsed to the wire vocabulary the SPA banner
-/// keys on: any rebase flavor is "rebasing", a merge is "merging", a bisect /
-/// cherry-pick / revert / mailbox-apply is "other", and only a truly idle repo
-/// is "clean".
-fn repo_state_label(repo: &git2::Repository) -> &'static str {
-    match repo.state() {
+/// Map a raw [`git2::RepositoryState`] to the wire vocabulary the SPA banner
+/// keys on, before the working-tree conflict check: any rebase flavor is
+/// "rebasing", a merge is "merging", a cherry-pick / revert / bisect maps to
+/// its own label, a mailbox-apply (and anything future) is "other", and an
+/// idle repo is "clean".
+fn map_repository_state(state: git2::RepositoryState) -> &'static str {
+    match state {
         git2::RepositoryState::Clean => "clean",
         git2::RepositoryState::Merge => "merging",
         git2::RepositoryState::Rebase
         | git2::RepositoryState::RebaseInteractive
         | git2::RepositoryState::RebaseMerge => "rebasing",
+        git2::RepositoryState::CherryPick | git2::RepositoryState::CherryPickSequence => {
+            "cherry-picking"
+        }
+        git2::RepositoryState::Revert | git2::RepositoryState::RevertSequence => "reverting",
+        git2::RepositoryState::Bisect => "bisecting",
         _ => "other",
     }
+}
+
+/// Whether the index carries any unmerged (CONFLICTED) entry — the signal that
+/// a repo whose [`git2::RepositoryState`] reports Clean is nonetheless
+/// mid-conflict. The canonical case is a `git stash pop` that conflicts: it
+/// leaves UU entries but no MERGE_HEAD, so `repo.state()` stays Clean.
+fn has_conflicted_entry(repo: &git2::Repository) -> Result<bool, String> {
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(false);
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    Ok(statuses.iter().any(|entry| entry.status().is_conflicted()))
+}
+
+/// The repo's operational state on the wire. It is the raw
+/// [`git2::RepositoryState`] mapping, except a repo that maps to "clean" but
+/// has any unmerged index entry reports "conflicted". The conflict check runs
+/// only after the mapping resolves to "clean", so a merging/rebasing repo keeps
+/// its own label rather than being flattened to "conflicted".
+fn repo_state_label(repo: &git2::Repository) -> Result<&'static str, String> {
+    let label = map_repository_state(repo.state());
+    if label == "clean" && has_conflicted_entry(repo)? {
+        return Ok("conflicted");
+    }
+    Ok(label)
 }
 
 /// The current branch's upstream (as `origin/main`-style shorthand) plus its
@@ -428,7 +458,7 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
     let mut repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());
-    let repo_state = repo_state_label(&repo);
+    let repo_state = repo_state_label(&repo)?;
     let (upstream, ahead, behind) = upstream_status(&repo);
     // Rename detection stays OFF: a staged rename decomposes into a plain
     // D (old path) + A (new path) pair, matching the patch (which has no
@@ -781,17 +811,36 @@ fn validate_branch_name(repo_path: &Path, branch: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The reason `git.checkout` refuses to switch branches away from a non-clean
+/// state, naming the actual in-progress operation so the message matches what
+/// the user must finish or abort. A "conflicted" working tree has no operation
+/// to abort — the unmerged files themselves must be resolved.
+fn checkout_refusal_message(state: &str) -> String {
+    match state {
+        "merging" => "finish or abort the in-progress merge first",
+        "rebasing" => "finish or abort the in-progress rebase first",
+        "cherry-picking" => "finish or abort the in-progress cherry-pick first",
+        "reverting" => "finish or abort the in-progress revert first",
+        "bisecting" => "finish or abort the in-progress bisect first",
+        "conflicted" => "resolve the conflicted files first",
+        _ => "finish or abort the in-progress operation first",
+    }
+    .to_string()
+}
+
 /// `git.checkout`: `git switch <branch>` (or `git switch -c <branch>` to
 /// create). The name is validated first; the tree may be dirty (git carries
 /// the changes or refuses on conflict — either way its message passes through),
-/// but an in-progress merge/rebase is refused so the user resolves it first.
+/// but any in-progress operation (merge/rebase/cherry-pick/revert/bisect) or a
+/// conflicted working tree is refused so the user resolves it first.
 pub fn checkout(repo_path: &Path, branch: &str, create: bool) -> Result<(), String> {
     validate_branch_name(repo_path, branch)?;
     let repo = open_repo(repo_path)?;
-    if repo_state_label(&repo) != "clean" {
-        return Err("finish or abort the in-progress merge first".to_string());
-    }
+    let state = repo_state_label(&repo)?;
     drop(repo);
+    if state != "clean" {
+        return Err(checkout_refusal_message(state));
+    }
     let args: Vec<&str> = if create {
         vec!["switch", "-c", branch]
     } else {
@@ -815,22 +864,29 @@ pub fn stash_push(repo_path: &Path) -> Result<(), String> {
     run_git(repo_path, &["stash", "push", "-u"]).map(|_| ())
 }
 
-/// `git.stash_pop`: `git stash pop`. A pop conflict is git's error (and leaves
-/// the repo in a merging state the next status surfaces).
+/// `git.stash_pop`: `git stash pop`. A pop conflict is git's error; it leaves
+/// unmerged (UU) index entries but no MERGE_HEAD, so `repo.state()` stays Clean
+/// and the next status surfaces repo_state "conflicted" (not "merging").
 pub fn stash_pop(repo_path: &Path) -> Result<(), String> {
     run_git(repo_path, &["stash", "pop"]).map(|_| ())
 }
 
-/// `git.merge_abort`: `git merge --abort` while merging, `git rebase --abort`
-/// while rebasing; anything else has nothing to abort.
+/// `git.merge_abort`: abort whatever operation is in progress with the matching
+/// git command — `git merge --abort` while merging, `git rebase --abort` while
+/// rebasing, `git cherry-pick --abort` / `git revert --abort` for those, and
+/// `git bisect reset` while bisecting. A conflicted-but-idle tree (a stash-pop
+/// conflict) or a clean/"other" repo has no operation to abort.
 pub fn merge_abort(repo_path: &Path) -> Result<(), String> {
     let repo = open_repo(repo_path)?;
-    let state = repo_state_label(&repo);
+    let state = repo_state_label(&repo)?;
     drop(repo);
     match state {
         "merging" => run_git(repo_path, &["merge", "--abort"]).map(|_| ()),
         "rebasing" => run_git(repo_path, &["rebase", "--abort"]).map(|_| ()),
-        _ => Err("no merge or rebase in progress".to_string()),
+        "cherry-picking" => run_git(repo_path, &["cherry-pick", "--abort"]).map(|_| ()),
+        "reverting" => run_git(repo_path, &["revert", "--abort"]).map(|_| ()),
+        "bisecting" => run_git(repo_path, &["bisect", "reset"]).map(|_| ()),
+        _ => Err("no abortable operation in progress".to_string()),
     }
 }
 
@@ -1032,5 +1088,193 @@ mod tests {
         command.arg("hello");
         let out = run_with_timeout(command, Duration::from_secs(5), "echo").unwrap();
         assert_eq!(out.trim(), "hello");
+    }
+
+    // --- git-state fixtures --------------------------------------------------
+
+    /// Run a git subcommand in a test repo with a deterministic identity and no
+    /// user/system config bleed-through. Returns the raw output; some setups
+    /// (a conflicting merge/cherry-pick/pop) exit non-zero on purpose.
+    fn git_run(dir: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap()
+    }
+
+    /// [`git_run`] that asserts the subcommand succeeded.
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let out = git_run(dir, args);
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn write(dir: &Path, name: &str, contents: &str) {
+        std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    /// A repo with one commit of `f.txt` == "base\n" on branch `main`.
+    fn init_repo(dir: &Path) {
+        git_ok(dir, &["init", "-q"]);
+        write(dir, "f.txt", "base\n");
+        git_ok(dir, &["add", "."]);
+        git_ok(dir, &["commit", "-q", "-m", "base"]);
+        git_ok(dir, &["branch", "-m", "main"]);
+    }
+
+    /// `main` and `feature` each rewrite `f.txt`'s only line differently, so
+    /// merging or cherry-picking one onto the other conflicts. HEAD is `main`.
+    fn init_diverged(dir: &Path) {
+        init_repo(dir);
+        git_ok(dir, &["checkout", "-q", "-b", "feature"]);
+        write(dir, "f.txt", "feature\n");
+        git_ok(dir, &["commit", "-q", "-am", "feature"]);
+        git_ok(dir, &["checkout", "-q", "main"]);
+        write(dir, "f.txt", "mainline\n");
+        git_ok(dir, &["commit", "-q", "-am", "mainline"]);
+    }
+
+    fn repo_state(dir: &Path) -> String {
+        status_payload(dir)
+            .unwrap()
+            .get("repo_state")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn merging_state_maps_and_merge_abort_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_diverged(dir.path());
+        assert!(!git_run(dir.path(), &["merge", "feature"]).status.success());
+        assert_eq!(repo_state(dir.path()), "merging");
+        merge_abort(dir.path()).unwrap();
+        assert_eq!(repo_state(dir.path()), "clean");
+    }
+
+    #[test]
+    fn cherry_pick_conflict_maps_and_merge_abort_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_diverged(dir.path());
+        assert!(!git_run(dir.path(), &["cherry-pick", "feature"])
+            .status
+            .success());
+        assert_eq!(repo_state(dir.path()), "cherry-picking");
+        merge_abort(dir.path()).unwrap();
+        assert_eq!(repo_state(dir.path()), "clean");
+    }
+
+    #[test]
+    fn revert_conflict_maps_and_merge_abort_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        write(dir.path(), "f.txt", "second\n");
+        git_ok(dir.path(), &["commit", "-q", "-am", "second"]);
+        write(dir.path(), "f.txt", "third\n");
+        git_ok(dir.path(), &["commit", "-q", "-am", "third"]);
+        // Reverting the base->second commit tries to restore "base", but the
+        // line is now "third" — a conflict, so the repo enters Revert state.
+        assert!(!git_run(dir.path(), &["revert", "--no-edit", "HEAD~1"])
+            .status
+            .success());
+        assert_eq!(repo_state(dir.path()), "reverting");
+        merge_abort(dir.path()).unwrap();
+        assert_eq!(repo_state(dir.path()), "clean");
+    }
+
+    #[test]
+    fn bisect_maps_and_merge_abort_resets_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let first = String::from_utf8_lossy(&git_run(dir.path(), &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        for i in 0..4 {
+            write(dir.path(), "f.txt", &format!("v{i}\n"));
+            git_ok(dir.path(), &["commit", "-q", "-am", &format!("v{i}")]);
+        }
+        git_ok(dir.path(), &["bisect", "start"]);
+        git_ok(dir.path(), &["bisect", "bad", "HEAD"]);
+        git_ok(dir.path(), &["bisect", "good", &first]);
+        assert_eq!(repo_state(dir.path()), "bisecting");
+        merge_abort(dir.path()).unwrap();
+        assert_eq!(repo_state(dir.path()), "clean");
+    }
+
+    #[test]
+    fn stash_pop_conflict_is_conflicted_not_merging_and_has_no_abort() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        // Stash a change to f.txt, then commit a different change to the same
+        // line, so the pop's three-way merge conflicts.
+        write(dir.path(), "f.txt", "stashed\n");
+        git_ok(dir.path(), &["stash", "push", "-q"]);
+        write(dir.path(), "f.txt", "current\n");
+        git_ok(dir.path(), &["commit", "-q", "-am", "current"]);
+        assert!(!git_run(dir.path(), &["stash", "pop"]).status.success());
+
+        // repo.state() is Clean here (no MERGE_HEAD), but the UU entry makes it
+        // "conflicted" — the banner must surface it.
+        assert_eq!(repo_state(dir.path()), "conflicted");
+        // Nothing git-abortable: merge_abort refuses rather than lying.
+        let err = merge_abort(dir.path()).unwrap_err();
+        assert!(err.contains("no abortable operation"), "{err}");
+    }
+
+    #[test]
+    fn checkout_refused_mid_cherry_pick_names_the_cherry_pick() {
+        let dir = tempfile::tempdir().unwrap();
+        init_diverged(dir.path());
+        assert!(!git_run(dir.path(), &["cherry-pick", "feature"])
+            .status
+            .success());
+        let err = checkout(dir.path(), "feature", false).unwrap_err();
+        assert!(err.contains("cherry-pick"), "{err}");
+        assert!(!err.contains("merge"), "must not name the wrong op: {err}");
+    }
+
+    #[test]
+    fn checkout_refusal_message_names_each_operation() {
+        assert!(checkout_refusal_message("merging").contains("merge"));
+        assert!(checkout_refusal_message("rebasing").contains("rebase"));
+        assert!(checkout_refusal_message("cherry-picking").contains("cherry-pick"));
+        assert!(checkout_refusal_message("reverting").contains("revert"));
+        assert!(checkout_refusal_message("bisecting").contains("bisect"));
+        // A conflicted tree has no operation to abort — the files are resolved.
+        let conflicted = checkout_refusal_message("conflicted");
+        assert!(conflicted.contains("resolve"), "{conflicted}");
+        assert!(conflicted.contains("conflict"), "{conflicted}");
+        // "other" falls back without naming a specific verb.
+        assert!(checkout_refusal_message("other").contains("in-progress"));
+    }
+
+    #[test]
+    fn map_repository_state_covers_every_flavor() {
+        use git2::RepositoryState::*;
+        assert_eq!(map_repository_state(Clean), "clean");
+        assert_eq!(map_repository_state(Merge), "merging");
+        assert_eq!(map_repository_state(Rebase), "rebasing");
+        assert_eq!(map_repository_state(RebaseInteractive), "rebasing");
+        assert_eq!(map_repository_state(RebaseMerge), "rebasing");
+        assert_eq!(map_repository_state(CherryPick), "cherry-picking");
+        assert_eq!(map_repository_state(CherryPickSequence), "cherry-picking");
+        assert_eq!(map_repository_state(Revert), "reverting");
+        assert_eq!(map_repository_state(RevertSequence), "reverting");
+        assert_eq!(map_repository_state(Bisect), "bisecting");
+        assert_eq!(map_repository_state(ApplyMailbox), "other");
+        assert_eq!(map_repository_state(ApplyMailboxOrRebase), "other");
     }
 }

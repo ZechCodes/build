@@ -2739,8 +2739,8 @@ impl AppState {
         crate::gitgui::status_payload(&scope.repo_path)
     }
 
-    /// `git.merge_abort` — abort the in-progress merge or rebase, then the
-    /// fresh status payload.
+    /// `git.merge_abort` — abort whatever operation is in progress (merge,
+    /// rebase, cherry-pick, revert, or bisect), then the fresh status payload.
     fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
         let scope = self.resolve_git_scope(params)?;
         crate::gitgui::merge_abort(&scope.repo_path)?;
@@ -9823,7 +9823,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let clean = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
         assert_eq!(clean["ok"], false, "{clean:?}");
-        assert_eq!(clean["error"], "no merge or rebase in progress");
+        assert_eq!(clean["error"], "no abortable operation in progress");
 
         // Merging: abort returns to a clean state.
         git_in_dir(&repo, &["checkout", "-b", "topic"]);

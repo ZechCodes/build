@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { STAGE_LABEL, stageChipClass, stageBoardHtml } from "../src/views/stages.js";
+import { STAGE_LABEL, stageChipClass, stageBoardHtml, runAllControlKind } from "../src/views/stages.js";
 
 const WIRE_STATES = ["planned", "approved", "building", "built", "validating", "validated_passed", "validated_failed"];
 
@@ -50,6 +50,63 @@ describe("stageBoardHtml", () => {
   it("renders no review banner outside the review gate", () => {
     const html = stageBoardHtml({ state: "plan_review" }, { stages: validatedStages, auto_advance: false });
     expect(html).not.toContain("stage-validation");
+  });
+
+  it("mounts a #runall host div (not a passive checkbox) for the run-all control", () => {
+    const html = stageBoardHtml({ state: "plan_review" }, { stages: validatedStages, auto_advance: false });
+    expect(html).toContain('id="runall"');
+    expect(html).toContain('class="runall"');
+    // the old passive checkbox is gone — the control is mounted by the wiring
+    expect(html).not.toContain('type="checkbox" id="runall"');
+  });
+});
+
+describe("runAllControlKind", () => {
+  const planned = [
+    { id: "a", state: "planned" },
+    { id: "b", state: "planned" },
+  ];
+  const someApproved = [
+    { id: "a", state: "approved" },
+    { id: "b", state: "planned" },
+  ];
+  const midRun = [
+    { id: "a", state: "validated_passed" },
+    { id: "b", state: "building" },
+  ];
+  const allDone = [
+    { id: "a", state: "validated_passed" },
+    { id: "b", state: "validated_passed" },
+  ];
+
+  it("shows the run split-button on a fresh all-planned board", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: planned, taskState: "plan_review" })).toBe("run");
+  });
+
+  it("shows the run control when some stages are already approved", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: someApproved, taskState: "plan_review" })).toBe("run");
+  });
+
+  it("still shows the run control mid-run (unfinished stages remain)", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: midRun, taskState: "building" })).toBe("run");
+  });
+
+  it("shows the stop control whenever auto-advance is already on", () => {
+    expect(runAllControlKind({ autoAdvance: true, stages: planned, taskState: "plan_review" })).toBe("stop");
+    expect(runAllControlKind({ autoAdvance: true, stages: allDone, taskState: "review" })).toBe("stop");
+  });
+
+  it("shows nothing once every stage has validated (nothing left to run)", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: allDone, taskState: "review" })).toBe("none");
+  });
+
+  it("shows nothing on a terminal task", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: planned, taskState: "merged" })).toBe("none");
+    expect(runAllControlKind({ autoAdvance: false, stages: planned, taskState: "abandoned" })).toBe("none");
+  });
+
+  it("shows nothing when there are no stages", () => {
+    expect(runAllControlKind({ autoAdvance: false, stages: [], taskState: "plan_review" })).toBe("none");
   });
 });
 

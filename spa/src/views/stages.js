@@ -11,6 +11,37 @@ import { slugifyHeading, buildHeadingPath } from "../core/anchors.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { watchSelection } from "../selectWatch.js";
 import { showCommentPop, hideCommentPop } from "../commentPop.js";
+import { mountSplitButton } from "../core/splitButton.js";
+
+// Task states with no more work to run — the run-all control is hidden on them.
+const TERMINAL_TASK_STATES = new Set(["merged", "abandoned"]);
+
+/** Pure: which run-all control the stage board shows for a given board.
+ *  "stop" when auto-advance is already on; "run" (the split button) when the
+ *  task is live and at least one stage is not yet validated; "none" otherwise
+ *  (nothing left to run, or a terminal task). Load-bearing in renderStageList. */
+export function runAllControlKind({ autoAdvance, stages, taskState }) {
+  if (autoAdvance) return "stop";
+  const hasRunnable = !TERMINAL_TASK_STATES.has(taskState) && (stages || []).some((s) => s.state !== "validated_passed");
+  return hasRunnable ? "run" : "none";
+}
+
+// The split-button options for the "run" control (options[0] is the default
+// action). Named here so the wiring and any test read the exact copy.
+const RUN_ALL_OPTIONS = [
+  {
+    id: "run_all",
+    label: "Run all",
+    busyLabel: "Starting…",
+    description: "Approve remaining stages and run them all, auto-advancing between each.",
+  },
+  {
+    id: "arm_only",
+    menuLabel: "Auto-advance only",
+    busyLabel: "Starting…",
+    description: "Advance automatically, but approve and start each stage yourself.",
+  },
+];
 
 export const STAGE_LABEL = {
   planned: "PLANNED",
@@ -164,7 +195,7 @@ export function stageBoardHtml(task, stagesData) {
   return `
     ${reviewBanner}
     <div class="stagehead">
-      <label class="runall"><input type="checkbox" id="runall"${stagesData.auto_advance ? " checked" : ""}/> Run all (auto-advance)</label>
+      <div class="runall" id="runall"></div>
       ${allPlanned ? `<button class="btn mini" id="approveall">Approve all</button>` : ""}
       <span class="hint" id="stageshint"></span>
     </div>
@@ -177,18 +208,7 @@ function renderStageList(ctx) {
   const stages = stagesData.stages || [];
   body.innerHTML = stageBoardHtml(task, stagesData);
 
-  const runall = body.querySelector("#runall");
-  runall.onchange = async () => {
-    runall.disabled = true;
-    try {
-      await callRpc("task.set_auto_advance", { task_id: taskId, enabled: runall.checked });
-      repaint();
-    } catch (e) {
-      runall.disabled = false;
-      runall.checked = !runall.checked;
-      body.querySelector("#stageshint").textContent = "error: " + e.message.slice(0, 60);
-    }
-  };
+  wireRunAllControl(ctx, body.querySelector("#runall"), body.querySelector("#stageshint"));
   const approveAll = body.querySelector("#approveall");
   if (approveAll) {
     bindAction(approveAll, "approving…", body.querySelector("#stageshint"), async () => {
@@ -201,6 +221,48 @@ function renderStageList(ctx) {
   body.querySelectorAll(".stagerow").forEach((row) => {
     row.onclick = () => onSelectStage(row.dataset.stage);
   });
+}
+
+// Mount the run-all control into its host. "run": a split button whose primary
+// (run_all) approves every planned stage then turns on auto-advance — the
+// bridge's enable-kickstart dispatches stage 1 now that it is Approved — and
+// whose menu (arm_only) turns on auto-advance only (the old passive semantics).
+// "stop": a plain button that turns auto-advance off. "none": nothing. Errors go
+// to the shared hint; the split button restores itself on a rejected run.
+function wireRunAllControl(ctx, host, hint) {
+  const { task, stagesData, callRpc, repaint } = ctx;
+  if (!host) return;
+  const taskId = task.task_id;
+  const stages = stagesData.stages || [];
+  const kind = runAllControlKind({ autoAdvance: stagesData.auto_advance, stages, taskState: task.state });
+
+  if (kind === "run") {
+    mountSplitButton(host, {
+      options: RUN_ALL_OPTIONS,
+      run: async (optionId) => {
+        try {
+          if (optionId === "run_all") {
+            for (const s of stages.filter((x) => x.state === "planned")) {
+              await callRpc("task.stage_approve", { task_id: taskId, stage_id: s.id });
+            }
+          }
+          await callRpc("task.set_auto_advance", { task_id: taskId, enabled: true });
+          repaint();
+        } catch (e) {
+          if (hint) hint.textContent = "error: " + e.message.slice(0, 60);
+          throw e; // let the split button restore itself for a retry
+        }
+      },
+    });
+    return;
+  }
+  if (kind === "stop") {
+    host.innerHTML = `<button class="btn mini" id="stopadvance">Stop auto-advance</button>`;
+    bindAction(host.querySelector("#stopadvance"), "stopping…", hint, async () => {
+      await callRpc("task.set_auto_advance", { task_id: taskId, enabled: false });
+      repaint();
+    });
+  }
 }
 
 function renderStageDoc(ctx, stage) {

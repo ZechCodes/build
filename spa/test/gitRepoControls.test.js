@@ -137,12 +137,27 @@ describe("resolveInlineConfirm", () => {
 });
 
 describe("repoStateBanner", () => {
-  it("describes a merge and offers abort", () => {
-    expect(repoStateBanner("merging")).toEqual({ message: expect.stringContaining("Merge in progress"), abortable: true });
+  it.each([
+    ["merging", "Merge in progress"],
+    ["rebasing", "Rebase in progress"],
+    ["cherry-picking", "Cherry-pick in progress"],
+    ["reverting", "Revert in progress"],
+    ["bisecting", "Bisect in progress"],
+  ])("describes %s and offers abort", (state, opening) => {
+    expect(repoStateBanner(state)).toEqual({ message: expect.stringContaining(opening), abortable: true });
   });
 
-  it("describes a rebase and offers abort", () => {
-    expect(repoStateBanner("rebasing")).toEqual({ message: expect.stringContaining("Rebase in progress"), abortable: true });
+  it("names the operation-specific opening for every abortable state", () => {
+    // Each in-progress op gets its own noun — not a generic 'operation in progress'.
+    expect(repoStateBanner("cherry-picking").message).toBe("Cherry-pick in progress — resolve conflicts, then continue.");
+    expect(repoStateBanner("reverting").message).toBe("Revert in progress — resolve conflicts, then continue.");
+    expect(repoStateBanner("bisecting").message).toBe("Bisect in progress — resolve conflicts, then continue.");
+  });
+
+  it("surfaces a stash-pop-style conflict without offering abort (merge_abort would reject)", () => {
+    const banner = repoStateBanner("conflicted");
+    expect(banner.abortable).toBe(false);
+    expect(banner.message).toContain("Conflicts in the working tree");
   });
 
   it("warns on an unusual state without offering abort (merge_abort would reject)", () => {
@@ -227,28 +242,50 @@ describe("gitToolbarHtml", () => {
 });
 
 describe("gitStateBannerHtml", () => {
-  it("is empty for a clean repo", () => {
-    expect(gitStateBannerHtml({ repoState: "clean" })).toBe("");
-    expect(gitStateBannerHtml({ repoState: undefined })).toBe("");
+  // gitStateBannerHtml is now a pure renderer for the decision object that
+  // repoStateBanner produces — it owns no copy of its own. The controller feeds
+  // it repoStateBanner(status.repo_state); these tests exercise that same chain.
+  it("is empty when there is no banner (clean repo / absent field)", () => {
+    expect(gitStateBannerHtml(repoStateBanner("clean"))).toBe("");
+    expect(gitStateBannerHtml(repoStateBanner(undefined))).toBe("");
+    expect(gitStateBannerHtml(null)).toBe("");
   });
 
-  it("shows a merge banner with an abort button", () => {
-    const html = gitStateBannerHtml({ repoState: "merging" });
-    expect(html).toContain("gitstate");
-    expect(html).toContain("Merge in progress");
+  it("renders whatever message the decision carries (no second copy to drift)", () => {
+    // The load-bearing guarantee: change repoStateBanner's copy and the rendered
+    // banner changes with it, because gitStateBannerHtml has no map of its own.
+    for (const state of ["merging", "rebasing", "cherry-picking", "reverting", "bisecting"]) {
+      const banner = repoStateBanner(state);
+      const html = gitStateBannerHtml(banner);
+      expect(html).toContain("gitstate");
+      expect(html).toContain(banner.message);
+      expect(html).toContain("gitabort");
+    }
+  });
+
+  it("renders a cherry-pick banner end-to-end (previously collapsed to 'other')", () => {
+    const html = gitStateBannerHtml(repoStateBanner("cherry-picking"));
+    expect(html).toContain("Cherry-pick in progress");
     expect(html).toContain("gitabort");
   });
 
+  it("renders an ad-hoc decision object verbatim", () => {
+    const html = gitStateBannerHtml({ message: "custom banner copy", abortable: false });
+    expect(html).toContain("custom banner copy");
+    expect(html).not.toContain("gitabort");
+  });
+
   it("shows the armed abort label when confirming", () => {
-    const html = gitStateBannerHtml({ repoState: "rebasing", pendingConfirm: "abort" });
+    const html = gitStateBannerHtml(repoStateBanner("rebasing"), { pendingConfirm: "abort" });
     expect(html).toContain("armed");
     expect(html).toContain("Confirm");
   });
 
-  it("omits the abort button for an unusual state (abort would reject)", () => {
-    const html = gitStateBannerHtml({ repoState: "other" });
-    expect(html).toContain("gitstate");
-    expect(html).not.toContain("gitabort");
+  it("omits the abort button for a non-abortable state (abort would reject)", () => {
+    expect(gitStateBannerHtml(repoStateBanner("conflicted"))).not.toContain("gitabort");
+    const other = gitStateBannerHtml(repoStateBanner("other"));
+    expect(other).toContain("gitstate");
+    expect(other).not.toContain("gitabort");
   });
 });
 

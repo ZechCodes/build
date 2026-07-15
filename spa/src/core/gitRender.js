@@ -141,26 +141,17 @@ export function gitToolbarHtml({ branch, showBranchControl, chips, branchMenuHtm
   </div>`;
 }
 
-// The banner copy + abort affordance for a non-clean repo. Kept here (markup)
-// while repoStateBanner in gitPane owns the decision (message + abortable).
-const REPO_STATE_MESSAGE = {
-  merging: "Merge in progress — resolve conflicts, then commit.",
-  rebasing: "Rebase in progress — resolve conflicts, then continue.",
-  other: "Repository is in an unusual state.",
-};
-
-/** The state banner shown while the repo is mid-merge/rebase (or otherwise
- *  non-clean): the situation plus an inline-confirm Abort for the abortable
- *  states. Empty string when clean or when the field is absent (older bridge). */
-export function gitStateBannerHtml({ repoState, pendingConfirm = null } = {}) {
-  const message = REPO_STATE_MESSAGE[repoState];
-  if (!message) return "";
-  const abortable = repoState === "merging" || repoState === "rebasing";
+/** Render a repo-state banner decision (repoStateBanner's { message, abortable }
+ *  from gitPane — the single source of the copy) as markup: the situation plus
+ *  an inline-confirm Abort for the abortable states. Empty string when the
+ *  decision is null (clean repo, or an older bridge that omits repo_state). */
+export function gitStateBannerHtml(banner, { pendingConfirm = null } = {}) {
+  if (!banner) return "";
   const armed = pendingConfirm === "abort";
-  const abort = abortable
+  const abort = banner.abortable
     ? `<button class="btn mini danger gitabort${armed ? " armed" : ""}">${armed ? "Confirm abort?" : "Abort"}</button>`
     : "";
-  return `<div class="gitstate"><span class="gitstate-msg">${esc(message)}</span>${abort}</div>`;
+  return `<div class="gitstate"><span class="gitstate-msg">${esc(banner.message)}</span>${abort}</div>`;
 }
 
 /** One branch row's ahead/behind chips — shown only when the branch tracks an

@@ -114,12 +114,28 @@ export function syncActionNeedsConfirm(optionId) {
   return SYNC_CONFIRM_OPTIONS.has(optionId);
 }
 
-/** The state banner for a non-clean repo, or null when clean/absent. `abortable`
- *  gates the Abort button: only merging/rebasing can be aborted (merge_abort
- *  rejects on any other state, so offering it there would only produce errors). */
+// The operation label for every abortable in-progress state (each maps to a
+// state-appropriate `git … --abort` on the bridge). Kept as the single copy of
+// the noun so the banner reads "<Op> in progress …" without a per-state string.
+const REPO_STATE_OP_LABEL = {
+  merging: "Merge",
+  rebasing: "Rebase",
+  "cherry-picking": "Cherry-pick",
+  reverting: "Revert",
+  bisecting: "Bisect",
+};
+
+/** The state banner decision for a non-clean repo, or null when clean/absent.
+ *  This is the SINGLE source of the banner copy + `abortable` flag; gitRender's
+ *  gitStateBannerHtml only renders what this returns. `abortable` gates the
+ *  Abort button: only the in-progress ops (merge/rebase/cherry-pick/revert/
+ *  bisect) can be aborted — merge_abort rejects "conflicted"/"other"/"clean",
+ *  so offering Abort there would only produce errors. */
 export function repoStateBanner(repoState) {
-  if (repoState === "merging") return { message: "Merge in progress — resolve conflicts, then commit.", abortable: true };
-  if (repoState === "rebasing") return { message: "Rebase in progress — resolve conflicts, then continue.", abortable: true };
+  const op = REPO_STATE_OP_LABEL[repoState];
+  if (op) return { message: `${op} in progress — resolve conflicts, then continue.`, abortable: true };
+  if (repoState === "conflicted")
+    return { message: "Conflicts in the working tree — resolve them, then commit (or discard the files).", abortable: false };
   if (repoState === "other") return { message: "Repository is in an unusual state.", abortable: false };
   return null;
 }
@@ -301,7 +317,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
             : "",
         })
       : "";
-    const banner = repoControls ? gitStateBannerHtml({ repoState: lastStatus.repo_state, pendingConfirm }) : "";
+    const banner = repoControls ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm }) : "";
     container.innerHTML = `<div class="gitpane">${toolbar}${banner}${uncommittedHtml(lastStatus, { repoControls, pendingConfirm })}${historyHtml(mergedLog, { expandedHash, expandedDetail })}</div>`;
     const freshBox = messageBox();
     if (freshBox) {

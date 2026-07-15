@@ -757,10 +757,19 @@ fn on_done(&self, active: &mut ActiveTask, report: DoneReport) -> Result<(), Orc
    - `(Build | Revise, Completed)` when `active.is_multi_stage()` and the
      current stage's state is `Building` (a stage build or fix session):
      - stage: `BuildDone` (→ `Built`);
-     - `self.commit_all(&active.worktree.path, &format!("{} — stage {}", active.task.goal, stage.id))`
-       — actually reuse `commit_all(path, goal)` with goal string
-       `"{goal} — stage {stage_id}"` so the commit message is
-       `Build: <goal> — stage <stage_id>`;
+     - the agent authors the stage's commits: the `build`/`fix_stage` templates
+       instruct it to commit each logically-grouped piece as a small, atomic,
+       self-messaged commit (never touching `.build/`) before it calls `done`,
+       so the history is agent-authored and the commit count may exceed the
+       stage count. Build then runs a safety-net sweep,
+       `commit_all_with_message(path, "Build: stage {stage_id} — checkpoint (swept by Build)")`.
+       Because the sweep is a **no-op on a clean tree**, a fully-committing agent
+       produces ZERO Build commits; otherwise Build sweeps whatever the agent
+       left (and the first stage's plan docs) with that honest message. Do NOT
+       trust the agent / do NOT remove the sweep: it GUARANTEES a committed
+       boundary before the validation gate's `git diff {stage_start_sha}` and
+       before the next stage captures HEAD as its `start_sha`. The subject still
+       contains `stage {stage_id}`;
      - stage: `StartValidation` (→ `Validating`);
      - spawn the validation session: render `validate` with `stage_*` vars,
        `next_stage_path` = the next manifest stage's `path` or `""`,

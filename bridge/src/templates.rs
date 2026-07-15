@@ -48,6 +48,12 @@ Execute the implementation plan at {plan_path}. The goal is:
 
 Make all changes in this worktree (branched from {base_branch}). Follow the plan.
 
+As you complete each logically-grouped piece of this work, commit it with git
+as a small, atomic commit whose message clearly and specifically describes that
+change. Prefer several focused commits over one large one. Never stage or commit
+anything under `.build/` — Build manages that directory. Ensure every code
+change is committed before you call `done`.
+
 When the work is complete, call the `done` tool with phase=\"build\",
 status=\"completed\", and a short markdown summary for the reviewer: a one-line
 outcome, then a few `-` bullets of the key changes (use `backticks` for paths and
@@ -66,6 +72,12 @@ later stages will be built by other agents afterwards, so implement this stage
 only. Notes from the previous stage's validation:
 
 {prior_notes}
+
+As you complete each logically-grouped piece of this work, commit it with git
+as a small, atomic commit whose message clearly and specifically describes that
+change. Prefer several focused commits over one large one. Never stage or commit
+anything under `.build/` — Build manages that directory. Ensure every code
+change is committed before you call `done`.
 
 When this stage's work is complete, call the `done` tool with phase=\"build\",
 status=\"completed\", and a short markdown summary for the reviewer: a one-line
@@ -109,7 +121,15 @@ Reviewer note (may be empty):
 
 Address every finding in this worktree — the stage's earlier work is your
 starting point (`git diff {stage_start_sha}` shows everything this stage has
-changed so far). Implement this stage only. When done, call the `done` tool with
+changed so far). Implement this stage only.
+
+As you complete each logically-grouped piece of this work, commit it with git
+as a small, atomic commit whose message clearly and specifically describes that
+change. Prefer several focused commits over one large one. Never stage or commit
+anything under `.build/` — Build manages that directory. Ensure every code
+change is committed before you call `done`.
+
+When done, call the `done` tool with
 phase=\"build\", status=\"completed\", and a short markdown summary of what changed
 (a one-line outcome, then `-` bullets). If you get stuck, call `done` with
 status=\"blocked\" or status=\"failed\" and say, in the same markdown format, what is
@@ -334,6 +354,29 @@ mod tests {
         assert!(t.build_stage.contains("{stage_path}"));
         assert!(t.build_stage.contains("{prior_notes}"));
         assert!(t.build_stage.contains("phase=\"build\""));
+    }
+
+    #[test]
+    fn build_templates_instruct_atomic_agent_commits() {
+        // The agent authors the atomic, self-messaged commits; Build's sweep is
+        // only a no-op-on-clean safety net. Every build-phase template must ask
+        // for atomic commits, forbid touching `.build/`, and require everything
+        // committed before `done`.
+        let t = Templates::default();
+        for tmpl in [&t.build, &t.build_stage, &t.fix_stage] {
+            assert!(
+                tmpl.contains("atomic commit"),
+                "template must ask for atomic commits: {tmpl}"
+            );
+            assert!(
+                tmpl.contains("`.build/`"),
+                "template must forbid committing under `.build/`: {tmpl}"
+            );
+            assert!(
+                tmpl.contains("before you call `done`"),
+                "template must require committing before done: {tmpl}"
+            );
+        }
     }
 
     #[test]

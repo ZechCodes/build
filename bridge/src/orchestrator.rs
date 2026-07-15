@@ -627,8 +627,17 @@ impl Orchestrator {
             }
         }
         apply_stage_event(&mut active.stages[index], StageEvent::BuildDone)?;
-        let commit_goal = format!("{} — stage {stage_id}", active.task.goal);
-        self.commit_all(&active.worktree.path, &commit_goal)?;
+        // The agent authors the stage's atomic, self-messaged commits (see the
+        // build/fix_stage templates). This is only a safety net: a no-op on a
+        // clean tree, so a fully-committing agent produces ZERO Build commits;
+        // otherwise it sweeps whatever the agent left (and the first stage's
+        // plan docs) with an honest message. It stays load-bearing regardless —
+        // it GUARANTEES a committed boundary before the validation gate's
+        // `git diff {stage_start_sha}` and before the next stage captures HEAD.
+        self.commit_all_with_message(
+            &active.worktree.path,
+            &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
+        )?;
         apply_stage_event(&mut active.stages[index], StageEvent::StartValidation)?;
         self.end_session(active);
         let prompt = self.render_stage(&self.templates.validate, active, index, "");
@@ -2810,6 +2819,99 @@ mod tests {
         assert_eq!(t.task.state, TaskState::Merged);
         assert!(repo.join("first.txt").exists());
         assert!(repo.join("second.txt").exists());
+    }
+
+    /// Working-tree entries other than the machine-local `.build/mcp.json`,
+    /// which is always untracked (Build excludes it from every sweep).
+    fn dirty_paths_excluding_mcp(worktree: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(worktree)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| !line.contains(".build/mcp.json"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stage_agent_commits_are_kept_without_a_build_sweep_commit() {
+        // When the agent authors its own atomic commits and leaves a clean
+        // tree, Build's safety-net sweep is a no-op: HEAD stays the agent's
+        // commit, so the history is entirely agent-authored.
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "ms-commit");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+
+        // The agent commits its own work (staging everything but the machine-
+        // local mcp config, exactly as it is told never to touch `.build/`).
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        run_git(
+            &t.worktree.path,
+            &["add", "-A", "--", ".", ":(exclude).build/mcp.json"],
+        );
+        run_git(
+            &t.worktree.path,
+            &["commit", "-m", "Add the first greeting module"],
+        );
+        let agent_head = worktree_head(&t.worktree.path);
+
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        assert_eq!(
+            worktree_head(&t.worktree.path),
+            agent_head,
+            "Build must append no sweep commit over a clean tree"
+        );
+        assert_eq!(
+            last_commit_subject(&t.worktree.path),
+            "Add the first greeting module",
+            "HEAD is the agent's own message"
+        );
+        assert!(
+            dirty_paths_excluding_mcp(&t.worktree.path).is_empty(),
+            "tree clean after done"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_sweeps_uncommitted_stage_work_with_an_honest_checkpoint_message() {
+        // When the agent leaves work uncommitted, Build's fallback sweep still
+        // guarantees a committed boundary before validation — with an honest
+        // "swept by Build" checkpoint message that still names the stage.
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let mut t = two_stage_task(&orch, "ms-sweep");
+        orch.approve_stage(&mut t, "first").unwrap();
+        orch.approve_stage(&mut t, "second").unwrap();
+        orch.dispatch_stage(&mut t, "first", None).unwrap();
+
+        std::fs::write(t.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_done(&mut t, done(DonePhase::Build, DoneStatus::Completed, None))
+            .unwrap();
+
+        assert_eq!(t.stage("first").unwrap().state, StageState::Validating);
+        let subject = last_commit_subject(&t.worktree.path);
+        assert!(
+            subject.contains("stage first"),
+            "checkpoint subject names the stage: {subject:?}"
+        );
+        assert!(
+            subject.contains("checkpoint") && subject.contains("swept by Build"),
+            "honest safety-net subject: {subject:?}"
+        );
+        assert!(
+            dirty_paths_excluding_mcp(&t.worktree.path).is_empty(),
+            "tree clean after the fallback sweep"
+        );
+        assert!(t.worktree.path.join("first.txt").exists());
     }
 
     #[tokio::test]

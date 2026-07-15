@@ -1348,10 +1348,12 @@ impl AppState {
         orphaned
     }
 
-    /// Start an agent pump for every attached agent screen whose task has a
-    /// live session that is not being pumped yet — a viewer staring at the
-    /// Agent tab must see a session that starts *after* they attached (approve
-    /// plan → build session spawns). Runs at the `finish_mutation` tail via
+    /// Proactively capture every task's agent PTY into a retained screen from
+    /// the moment its session spawns — independent of any client attach. The
+    /// server-side screen model must exist for the life of the task (spec: the
+    /// Agent tab shows the running-or-last agent even for an unattended,
+    /// overnight run), so an unattended session's broadcast output is never
+    /// dropped for want of a subscriber. Runs at the `finish_mutation` tail via
     /// the weak self-handle; without a handle or a runtime (sync unit tests)
     /// pump spawning is skipped.
     fn ensure_agent_pumps(&mut self) {
@@ -1362,19 +1364,31 @@ impl AppState {
             return;
         }
         let mut pumps = Vec::new();
-        for (task_id, agent) in &mut self.agent_screens {
-            if agent.screen.attached.is_empty() {
-                continue;
-            }
-            let Some(active) = self.tasks.get(task_id) else {
+        let AppState {
+            tasks,
+            agent_screens,
+            ..
+        } = self;
+        // Every task with a live session gets a screen + a running pump from
+        // session spawn — get-or-create at the agent PTY's default grid
+        // (120×40, matching agent_attach). The generation guard (set under the
+        // lock, before spawning) means a screen is never double-pumped, so the
+        // proactive pump here and agent_attach's own pump-start stay idempotent.
+        for (task_id, active) in tasks.iter() {
+            let Some((generation, rx)) = active.subscribe_with_generation() else {
                 continue;
             };
-            if let Some((generation, rx)) = active.subscribe_with_generation() {
-                if generation != agent.pumped_generation {
-                    agent.pumped_generation = generation;
-                    agent.live = true;
-                    pumps.push((task_id.clone(), generation, rx));
-                }
+            let agent = agent_screens
+                .entry(task_id.clone())
+                .or_insert_with(|| AgentScreen {
+                    screen: TermScreen::new(120, 40),
+                    pumped_generation: 0,
+                    live: false,
+                });
+            if generation != agent.pumped_generation {
+                agent.pumped_generation = generation;
+                agent.live = true;
+                pumps.push((task_id.clone(), generation, rx));
             }
         }
         for (task_id, generation, rx) in pumps {
@@ -7013,6 +7027,173 @@ mod tests {
         assert_eq!(seen[0]["type"], "term.reset", "{seen:?}");
         let s = state.lock().unwrap();
         assert!(s.agent_screens["task-9"].live);
+        assert_eq!(s.agent_screens["task-9"].pumped_generation, 1);
+    }
+
+    /// Poll a task's retained agent screen until its decoded snapshot satisfies
+    /// `pred`, returning the decoded text, or panic after 10 s. Reads the
+    /// server-side screen model directly — no client attach required.
+    async fn wait_for_agent_screen(
+        state: &Arc<Mutex<AppState>>,
+        task_id: &str,
+        pred: impl Fn(&str) -> bool,
+    ) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = {
+                let s = state.lock().unwrap();
+                s.agent_screens.get(task_id).map(|agent| {
+                    String::from_utf8_lossy(&b64decode(&agent.screen.snapshot()).unwrap())
+                        .into_owned()
+                })
+            };
+            if let Some(text) = &text {
+                if pred(text) {
+                    return text.clone();
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the agent screen; saw: {text:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn unattended_session_accumulates_its_agent_screen_without_any_attach() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        // A build session spawns and emits output; NO client ever attaches.
+        insert_live_task(&state, &repo, dir.path().join("wt-side"), "task-9");
+        // Any mutation reaches the finish_mutation tail, whose ensure_agent_pumps
+        // must proactively create + pump the agent screen for the live session.
+        let res = handler(
+            SessionSender::detached("s1"),
+            req(
+                "task.set_auto_advance",
+                json!({ "task_id": "task-9", "enabled": false }),
+            ),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+
+        // The screen accumulates the unattended session's output on its own.
+        let text = wait_for_agent_screen(&state, "task-9", |t| t.contains("agent-beat")).await;
+        assert!(text.contains("agent-beat"), "captured unattended: {text:?}");
+        {
+            let s = state.lock().unwrap();
+            assert!(s.agent_screens["task-9"].live, "screen marked live");
+            assert_eq!(s.agent_screens["task-9"].pumped_generation, 1);
+        }
+
+        // A late attach returns the already-populated screen, live.
+        let res = handler(
+            SessionSender::detached("s2"),
+            req("agent.attach", json!({ "task_id": "task-9" })),
+        );
+        assert_eq!(res["result"]["live"], true, "{res:?}");
+        let snap = String::from_utf8_lossy(
+            &b64decode(res["result"]["snapshot"].as_str().unwrap()).unwrap(),
+        )
+        .into_owned();
+        assert!(
+            snap.contains("agent-beat"),
+            "late attach non-empty: {snap:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unattended_session_end_retains_the_final_screen_for_a_later_attach() {
+        // The overnight scenario: a session runs and ends with no client ever
+        // attached; opening the Agent tab afterwards shows the retained last
+        // screen, quietly not-live.
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        insert_live_task(&state, &repo, dir.path().join("wt-side"), "task-9");
+        let res = handler(
+            SessionSender::detached("s1"),
+            req(
+                "task.set_auto_advance",
+                json!({ "task_id": "task-9", "enabled": false }),
+            ),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        wait_for_agent_screen(&state, "task-9", |t| t.contains("agent-beat")).await;
+
+        // The session ends (harness exits). The task record survives, so the
+        // screen is retained — not removed — with live flipped to false.
+        state
+            .lock()
+            .unwrap()
+            .tasks
+            .get_mut("task-9")
+            .unwrap()
+            .end_session();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if !state.lock().unwrap().agent_screens["task-9"].live {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "screen never went not-live"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let res = handler(
+            SessionSender::detached("s2"),
+            req("agent.attach", json!({ "task_id": "task-9" })),
+        );
+        assert_eq!(res["result"]["live"], false, "{res:?}");
+        let snap = String::from_utf8_lossy(
+            &b64decode(res["result"]["snapshot"].as_str().unwrap()).unwrap(),
+        )
+        .into_owned();
+        assert!(
+            snap.contains("agent-beat"),
+            "retained final screen non-empty: {snap:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn attaching_a_proactively_pumped_session_does_not_double_pump() {
+        // The generation guard makes the proactive pump and an attach's own
+        // pump-start idempotent: attaching mid-stream must NOT spawn a second
+        // pump (which would re-reset the parser and race on the same screen).
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+
+        insert_live_task(&state, &repo, dir.path().join("wt-side"), "task-9");
+        let res = handler(
+            SessionSender::detached("s1"),
+            req(
+                "task.set_auto_advance",
+                json!({ "task_id": "task-9", "enabled": false }),
+            ),
+        );
+        assert_eq!(res["ok"], true, "{res:?}");
+        wait_for_agent_screen(&state, "task-9", |t| t.contains("agent-beat")).await;
+
+        // Attach an observable client to the already-pumped screen. Its own
+        // start-of-session reset already fired (before attach, to nobody), so a
+        // correctly-guarded attach streams only further term.output — never a
+        // fresh term.reset, which would betray a second pump.
+        let (sender, mut pushes, key) = SessionSender::observable("s2");
+        let res = handler(sender, req("agent.attach", json!({ "task_id": "task-9" })));
+        assert_eq!(res["result"]["live"], true, "{res:?}");
+
+        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
+            output_text(seen, "agent:task-9").contains("agent-beat")
+        })
+        .await;
+        assert!(
+            seen.iter().all(|p| p["type"] != "term.reset"),
+            "attach must not re-reset an already-pumped screen: {seen:?}"
+        );
+        let s = state.lock().unwrap();
         assert_eq!(s.agent_screens["task-9"].pumped_generation, 1);
     }
 

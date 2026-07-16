@@ -1996,8 +1996,10 @@ impl AppState {
         }
         let mut active = self.take(&task_id)?;
         let outcome = (|| -> Result<(), String> {
+            // PERIPHERY: the fused approve-and-build; the split's plan gate is
+            // `Orchestrator::approve_plan(&mut ActivePlan)`.
             self.orch_for(&project_id)?
-                .approve_plan(&mut active, model_override)
+                .approve_task_plan(&mut active, model_override)
                 .map_err(err)?;
             if self.qa_agent {
                 self.simulate_build(&project_id, &mut active)?;

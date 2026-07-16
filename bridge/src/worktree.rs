@@ -4,12 +4,17 @@
 //! a working directory cut from the project's base branch, so parallel tasks on
 //! the same repo never touch each other. On abandon the worktree is removed but
 //! the branch is kept (abandoning stays reversible-ish); merge decides for itself.
+//! Disposable planning worktrees (Plan/Run split) use the same manager with the
+//! `plan/<slug>` branch namespace instead.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// The branch-name prefix for every task branch: `build/<slug>`.
+/// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
+
+/// The branch-name prefix for disposable planning worktrees: `plan/<slug>`.
+pub const PLAN_BRANCH_PREFIX: &str = "plan";
 
 /// Things that can go wrong managing a worktree.
 #[derive(Debug, thiserror::Error)]
@@ -66,21 +71,37 @@ pub fn slugify(goal: &str) -> String {
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
+    /// Branch namespace for created worktrees (`<prefix>/<slug>`): `build` for
+    /// run worktrees, `plan` for disposable planning worktrees. Removal never
+    /// re-derives the branch (the [`Worktree`] carries it), so one manager can
+    /// tear down another prefix's worktree.
+    branch_prefix: String,
 }
 
 impl WorktreeManager {
     /// `repo_path` is the project git repo; `worktrees_root` is where task
-    /// worktrees are materialized (one subdirectory per task slug).
+    /// worktrees are materialized (one subdirectory per task slug). Branches
+    /// are cut in the `build/` namespace unless overridden with
+    /// [`with_branch_prefix`](Self::with_branch_prefix).
     pub fn new(repo_path: impl Into<PathBuf>, worktrees_root: impl Into<PathBuf>) -> Self {
         WorktreeManager {
             repo_path: repo_path.into(),
             worktrees_root: worktrees_root.into(),
+            branch_prefix: BRANCH_PREFIX.to_string(),
         }
     }
 
-    /// Create `build/<slug>` from `base_branch` and add a worktree for it. The name
-    /// is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching the same goal — or
-    /// leftover branches/worktrees from prior tasks — never collides.
+    /// Cut branches in a different namespace (`<prefix>/<slug>`). Planning
+    /// worktrees use `plan/` so they never collide with run branches of the
+    /// same slug.
+    pub fn with_branch_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.branch_prefix = prefix.into();
+        self
+    }
+
+    /// Create `<prefix>/<slug>` from `base_branch` and add a worktree for it. The
+    /// name is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching the same
+    /// goal — or leftover branches/worktrees from prior tasks — never collides.
     pub fn create(&self, slug: &str, base_branch: &str) -> Result<Worktree, WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
@@ -92,7 +113,7 @@ impl WorktreeManager {
             name = format!("{slug}-{n}");
             n += 1;
         }
-        let branch = branch_name(&name);
+        let branch = self.branch_name(&name);
 
         // Cut the task branch from the tip of the base branch.
         repo.branch(&branch, &base_commit, false)?;
@@ -115,10 +136,15 @@ impl WorktreeManager {
     /// Whether a candidate name is already in use as a branch, a registered
     /// worktree, or an on-disk directory.
     fn name_taken(&self, repo: &git2::Repository, name: &str) -> bool {
-        repo.find_branch(&branch_name(name), git2::BranchType::Local)
+        repo.find_branch(&self.branch_name(name), git2::BranchType::Local)
             .is_ok()
             || repo.find_worktree(name).is_ok()
             || self.worktrees_root.join(name).exists()
+    }
+
+    /// Build the branch name for a slug in this manager's namespace.
+    fn branch_name(&self, slug: &str) -> String {
+        format!("{}/{}", self.branch_prefix, slug)
     }
 
     /// Remove the worktree's working directory and prune git's record of it. When
@@ -142,11 +168,6 @@ impl WorktreeManager {
         }
         Ok(())
     }
-}
-
-/// Build the task branch name for a slug: `build/<slug>`.
-fn branch_name(slug: &str) -> String {
-    format!("{BRANCH_PREFIX}/{slug}")
 }
 
 /// One git worktree of the project repo that Build did not create (or no longer
@@ -472,6 +493,35 @@ mod tests {
         assert_eq!(slugify(""), "task");
         assert!(slugify(&"x".repeat(200)).len() <= 50);
         assert!(!slugify("trailing punctuation...").ends_with('-'));
+    }
+
+    #[test]
+    fn branch_prefix_override_cuts_branches_in_that_namespace() {
+        let (dir, repo) = init_repo();
+        let plan_mgr = WorktreeManager::new(&repo, dir.path().join("worktrees"))
+            .with_branch_prefix(PLAN_BRANCH_PREFIX);
+
+        let plan_wt = plan_mgr.create("fix-typo", "main").unwrap();
+        assert_eq!(plan_wt.branch, "plan/fix-typo");
+        assert!(plan_wt.path.join("README.md").exists());
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(r
+            .find_branch("plan/fix-typo", git2::BranchType::Local)
+            .is_ok());
+
+        // A build-prefix worktree of the same slug shares the name/dir space,
+        // so it disambiguates instead of colliding with the plan worktree.
+        let build_mgr = manager(&dir, &repo);
+        let build_wt = build_mgr.create("fix-typo", "main").unwrap();
+        assert_eq!(build_wt.name, "fix-typo-2");
+        assert_eq!(build_wt.branch, "build/fix-typo-2");
+
+        // Teardown works across prefixes (remove never re-derives the branch).
+        plan_mgr.remove(&plan_wt, /* keep_branch */ false).unwrap();
+        assert!(!plan_wt.path.exists());
+        assert!(r
+            .find_branch("plan/fix-typo", git2::BranchType::Local)
+            .is_err());
     }
 
     #[test]

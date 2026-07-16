@@ -253,31 +253,72 @@ pub fn render(template: &str, vars: &Vars) -> String {
 /// Render the `{comments}` block for a `revise_stage` prompt from a stage's
 /// open comments, in insertion order. Pure — the orchestrator filters to
 /// `Open` comments for one stage before calling this.
+///
+/// The `crate::task::StageComment` overload is the fused-spine caller; the
+/// plan/run split's canonical comments live on the plan
+/// ([`assemble_plan_stage_comments`]). Both delegate to the same renderer so
+/// the on-wire prompt shape is single-sourced across the cutover.
 pub fn assemble_stage_comments(comments: &[StageComment]) -> String {
     comments
         .iter()
         .enumerate()
-        .map(|(index, comment)| render_one_stage_comment(index + 1, comment))
+        .map(|(index, comment)| {
+            render_one_stage_comment(
+                index + 1,
+                &comment.id,
+                comment
+                    .anchor
+                    .as_ref()
+                    .map(|anchor| (anchor.heading_path.as_slice(), anchor.snippet.as_str())),
+                &comment.body,
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-fn render_one_stage_comment(number: usize, comment: &StageComment) -> String {
-    let heading = match &comment.anchor {
-        Some(anchor) if anchor.heading_path.is_empty() => format!(
+/// The plan/run split twin of [`assemble_stage_comments`]: render one stage's
+/// open plan comments (`crate::plan::StageComment`) for a `revise_stage` prompt.
+pub fn assemble_plan_stage_comments(comments: &[crate::plan::StageComment]) -> String {
+    comments
+        .iter()
+        .enumerate()
+        .map(|(index, comment)| {
+            render_one_stage_comment(
+                index + 1,
+                &comment.id,
+                comment
+                    .anchor
+                    .as_ref()
+                    .map(|anchor| (anchor.heading_path.as_slice(), anchor.snippet.as_str())),
+                &comment.body,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Render one numbered stage comment from its primitive fields — the shared
+/// core both comment-type overloads call, so the prompt shape never forks.
+fn render_one_stage_comment(
+    number: usize,
+    id: &str,
+    anchor: Option<(&[String], &str)>,
+    body: &str,
+) -> String {
+    let heading = match anchor {
+        Some(([], snippet)) => format!(
             "{number}. [{id}] On the passage: \"{snippet}\"",
-            id = comment.id,
-            snippet = collapse_whitespace(&anchor.snippet),
+            snippet = collapse_whitespace(snippet),
         ),
-        Some(anchor) => format!(
+        Some((heading_path, snippet)) => format!(
             "{number}. [{id}] Under \"{heading_path}\", on the passage: \"{snippet}\"",
-            id = comment.id,
-            heading_path = anchor.heading_path.join(" > "),
-            snippet = collapse_whitespace(&anchor.snippet),
+            heading_path = heading_path.join(" > "),
+            snippet = collapse_whitespace(snippet),
         ),
-        None => format!("{number}. [{id}] (general)", id = comment.id),
+        None => format!("{number}. [{id}] (general)"),
     };
-    format!("{heading}\n   Comment: {body}", body = comment.body)
+    format!("{heading}\n   Comment: {body}")
 }
 
 /// Collapse every run of whitespace to a single space and trim the ends.

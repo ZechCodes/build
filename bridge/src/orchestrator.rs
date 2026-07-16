@@ -1,23 +1,43 @@
 //! The task-spine: where lifecycle, worktrees, PTY sessions, `done` reports, and
-//! the diff come together.
+//! the diff come together — now split across the two entities of the plan/run
+//! model.
 //!
 //! The orchestrator owns project-level configuration (the repo, where worktrees
 //! go, the harness adapter, the prompt templates) and drives the split's two
-//! entities through their lifecycles: an [`ActivePlan`] (project-scoped, authored
-//! in a disposable `plan/<slug>` worktree, canonical docs in the store) and an
-//! [`ActiveRun`] (worktree-scoped, one implementation attempt on a `build/<slug>`
-//! branch). The caller owns each active entity and hands it back by `&mut` for
-//! each transition, so the orchestrator never hides state.
+//! entities through their lifecycles:
+//!
+//! - An [`ActivePlan`] (project-scoped) is authored in a disposable `plan/<slug>`
+//!   worktree; its canonical docs live in the store. Its seams: `dispatch_plan`,
+//!   `on_plan_done`, the plan-review gates (`approve_plan`, `send_plan_notes`,
+//!   the per-stage `approve_plan_stage` / `send_plan_stage_notes`), and the
+//!   interaction verbs (`message_plan` / `resume_plan` / `abandon_plan`).
+//! - An [`ActiveRun`] (worktree-scoped) is one implementation attempt on a
+//!   `build/<slug>` branch. Its seams: `dispatch_run`, `on_run_done` (build +
+//!   validation, plus the sequential stage gate `dispatch_run_stage` /
+//!   `fix_run_stage`), `run_diff`, the interaction verbs (`message_run` /
+//!   `resume_run` / `run_request_changes`), the git finishers
+//!   (`run_approve_merge` / `run_commit` / `run_push` / `run_merge_and_push`),
+//!   `abandon_run`, and `adopt_run` (a quick run minted around a pre-existing
+//!   worktree, `plan_id` `None`). A quick task is a run with `plan_id = None`.
+//!
+//! The caller owns each active entity and hands it back by `&mut` for each
+//! transition, so the orchestrator never hides state. The cross-entity seams —
+//! the sequential stage gate (`dispatch_run_stage` consults the plan's
+//! stage-doc states) and the mid-run stage-doc write-back
+//! (`send_run_stage_notes` / `consume_run_stage_revision`) — take the other
+//! entity's read-only view or `&mut` handle as a parameter rather than reaching
+//! into any app-level map.
 //!
 //! The two pipes from the scope are both here: Build → agent is `write_prompt`
 //! into the warm PTY; agent → Build is [`on_plan_done`](Orchestrator::on_plan_done)
 //! / [`on_run_done`](Orchestrator::on_run_done), the typed events the MCP server
 //! forwards (the caller routes each report by owner lookup).
 //!
-//! PERIPHERY: the fused [`ActiveTask`] spine (`dispatch`/`on_done`/
-//! `approve_task_plan`, stage flows, message/resume, adopt, merge ops) is still
-//! what `app.rs` speaks; the periphery stage moves those callers onto the split
-//! seams and retires the fused path together with `task.rs`.
+//! TRANSITIONAL: the fused [`ActiveTask`] spine (`dispatch` / `on_done` /
+//! `approve_task_plan`, its stage flows, `message`/`resume`, `adopt`, the merge
+//! ops) is still what `app.rs` speaks. Every one of those has a split-entity
+//! equivalent above now; the fused path — and `task.rs` — retire when the
+//! app-layer handlers move onto the seams above (the app.rs rework stage).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,7 +55,8 @@ use crate::plan::{
 use crate::pty::{HarnessSpec, PtyError, PtySession};
 use crate::run::{
     run_transition, IllegalRunTransition, IllegalStageProgressTransition, Run, RunEvent, RunId,
-    StageProgress, StageProgressEvent, StageProgressState, ValidationReport as RunValidationReport,
+    RunState, StageProgress, StageProgressEvent, StageProgressState,
+    ValidationReport as RunValidationReport,
 };
 use crate::store::{PersistedPlan, PersistedRun, Store, StoreError};
 use crate::task::{
@@ -1058,6 +1079,211 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Approve one stage's doc: `Planned` → `Approved`. Pure bookkeeping, no
+    /// session — the plan-side successor of the fused `approve_stage`. Legal on
+    /// any non-terminal plan (an `Approved` plan keeps taking per-stage
+    /// approvals: that is how a run's later stages get their gate opened while
+    /// an earlier one is already building).
+    pub fn approve_plan_stage(
+        &self,
+        active: &mut ActivePlan,
+        stage_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        if active.plan.state.is_terminal() {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot approve a stage on a terminal plan (state {:?})",
+                active.plan.state
+            )));
+        }
+        let index = active
+            .stage_doc_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        active.stages[index].state =
+            stage_doc_transition(&active.stages[index].state, StageDocEvent::Approve)?;
+        Ok(())
+    }
+
+    /// Send a stage's open comments to a fresh plan-revision session (the
+    /// per-stage successor of `send_plan_notes`): the persisted open comments
+    /// ARE the payload, rendered server-side. The plan re-plans against them in
+    /// its disposable worktree — kept warm through the loop, or re-created with
+    /// the canonical docs materialized when it was torn down/vanished — and
+    /// `revising_stage_id` routes the resulting `done(revise)` through
+    /// [`consume_plan_stage_revision`](Self::consume_plan_stage_revision).
+    pub fn send_plan_stage_notes(
+        &self,
+        active: &mut ActivePlan,
+        store: &Store,
+        stage_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        let index = active
+            .stage_doc_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        // Pure legality first — nothing is spawned for an illegal revise.
+        plan_transition(&active.plan.state, PlanEvent::SendNotes)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
+        let open: Vec<PlanStageComment> = active
+            .open_comments_for(stage_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        if open.is_empty() {
+            return Err(OrchestratorError::Gate(format!(
+                "no open comments on stage {stage_id}"
+            )));
+        }
+        self.ensure_planning_worktree(active, store)?;
+        active.plan.apply(PlanEvent::SendNotes)?;
+        active.revising_stage_id = Some(stage_id.to_string());
+        active.last_error = None;
+        active.session.end();
+        let comments = templates::assemble_plan_stage_comments(&open);
+        let prompt = self.render_plan_stage(&self.templates.revise_stage, active, index, &comments);
+        self.spawn_plan_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// A freeform human message to the plan's agent (the plan-side `message`).
+    /// A live `Drafting` session is redirected; parked states (blocked / failed
+    /// / idle / interrupted) resume drafting with the message as the steer. The
+    /// review gate is refused — `PlanReview` has the structured send-notes verb,
+    /// and a side channel there would bypass the batched-review contract. Plans
+    /// always start cold (no harness continuation), so the message is always
+    /// wrapped in the message template with full plan context.
+    pub fn message_plan(
+        &self,
+        active: &mut ActivePlan,
+        store: &Store,
+        message: &str,
+    ) -> Result<(), OrchestratorError> {
+        if message.trim().is_empty() {
+            return Err(OrchestratorError::Gate("message must not be empty".into()));
+        }
+        use crate::plan::PlanState as S;
+        let event = match active.plan.state {
+            S::Drafting => None,
+            S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(PlanEvent::Reply),
+            S::PlanReview => {
+                return Err(OrchestratorError::Gate(
+                    "the plan is at the review gate — use send notes there".into(),
+                ))
+            }
+            S::Created | S::Approved | S::Abandoned => {
+                return Err(OrchestratorError::Gate(
+                    "no plan agent session to message".into(),
+                ))
+            }
+        };
+        // Pure legality first — the caller persists the plan even on Err.
+        if let Some(event) = event {
+            plan_transition(&active.plan.state, event)?;
+        }
+        // An interrupted plan lost its worktree; re-create it (docs
+        // materialized) before the session can run.
+        self.ensure_planning_worktree(active, store)?;
+        let prompt = self.render_plan(&self.templates.message, active, message);
+        if let Some(event) = event {
+            active.plan.apply(event)?;
+        }
+        active.last_error = None;
+        active.session.end();
+        self.spawn_plan_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Re-dispatch an interrupted plan phase in a fresh session (the plan-side
+    /// `resume`). The plan machine has a single working phase, so the only
+    /// routing is whether a per-stage revision was in flight
+    /// (`revising_stage_id` → `revise_stage` with the stage's open comments) or
+    /// a full (re-)plan. The prompt is routed BEFORE the `Reply` transition
+    /// commits, so a routing failure never strands the plan out of its
+    /// interrupted state (the caller persists it even on Err).
+    pub fn resume_plan(
+        &self,
+        active: &mut ActivePlan,
+        store: &Store,
+    ) -> Result<(), OrchestratorError> {
+        plan_transition(&active.plan.state, PlanEvent::Reply)?;
+        self.ensure_planning_worktree(active, store)?;
+        let prompt = match active.revising_stage_id.clone() {
+            Some(stage_id) => {
+                let index = active
+                    .stage_doc_index(&stage_id)
+                    .map_err(OrchestratorError::Gate)?;
+                let open: Vec<PlanStageComment> = active
+                    .open_comments_for(&stage_id)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                let comments = templates::assemble_plan_stage_comments(&open);
+                self.render_plan_stage(&self.templates.revise_stage, active, index, &comments)
+            }
+            None => self.render_plan(&self.templates.plan, active, ""),
+        };
+        active.plan.apply(PlanEvent::Reply)?;
+        active.last_error = None;
+        active.session.end();
+        self.spawn_plan_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Abandon a plan from any non-terminal state: kill the plan agent, mark the
+    /// plan `Abandoned`, and tear down its disposable planning worktree (branch
+    /// included). Teardown is best-effort — a leftover worktree is logged, never
+    /// a reason to fail the abandon; the store docs are canonical and survive
+    /// either way.
+    pub fn abandon_plan(&self, active: &mut ActivePlan) -> Result<(), OrchestratorError> {
+        active.plan.apply(PlanEvent::Abandon)?;
+        active.session.end();
+        if let Some(worktree) = &active.worktree {
+            if let Err(cleanup) = self.worktrees.remove(worktree, /* keep_branch */ false) {
+                eprintln!(
+                    "abandon plan {}: worktree/branch cleanup failed: {cleanup}",
+                    active.plan.id.0
+                );
+            }
+        }
+        active.worktree = None;
+        Ok(())
+    }
+
+    /// Render a stage-scoped template for a plan (the plan-side twin of
+    /// [`render_run_stage`](Self::render_run_stage)): the stage doc's own fields
+    /// plus the next stage's doc path. The run-side variables (start sha,
+    /// validation findings, prior-stage notes) are all empty — they belong to a
+    /// run's execution progress, not a plan's doc review.
+    fn render_plan_stage(
+        &self,
+        template: &str,
+        active: &ActivePlan,
+        index: usize,
+        comments: &str,
+    ) -> String {
+        let doc = &active.stages[index];
+        let next_stage_path = active
+            .stages
+            .get(index + 1)
+            .map(|next| next.path.as_str())
+            .unwrap_or("");
+        templates::render(
+            template,
+            &Vars {
+                goal: &active.plan.goal,
+                plan_path: &active.plan_path,
+                comments,
+                base_branch: &active.base_branch,
+                stage_id: &doc.id,
+                stage_title: &doc.title,
+                stage_path: &doc.path,
+                stage_summary: &doc.summary,
+                next_stage_path,
+                stage_start_sha: "",
+                findings: "",
+                prior_notes: "",
+            },
+        )
+    }
+
     // ---- Run seams (Plan/Run split) ----------------------------------------
 
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
@@ -1223,6 +1449,18 @@ impl Orchestrator {
                 // any in-flight build session smuggle manifest/doc edits.
                 return Err(OrchestratorError::Gate(
                     "a run session reported phase=plan; plan reports belong to plans".to_string(),
+                ));
+            }
+            // A mid-run stage-doc revision does not advance the build: its
+            // `done` is a store write-back to the plan, not a build report.
+            // Routing it here would let `on_run_stage_session_done` commit and
+            // validate as if the stage were built — reject and point the caller
+            // at the cross-entity consumer.
+            (DonePhase::Revise, DoneStatus::Completed) if active.revising_stage_id.is_some() => {
+                return Err(OrchestratorError::Gate(
+                    "this run has a stage-doc revision in flight; route the report to \
+                     consume_run_stage_revision (it writes the revision back to the plan store)"
+                        .to_string(),
                 ));
             }
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed)
@@ -1417,6 +1655,567 @@ impl Orchestrator {
                 &active.worktree.base_branch,
             )?),
         }
+    }
+
+    /// Dispatch one stage's build in a fresh cold session from the between-
+    /// stages gate — the run-side successor of the fused `dispatch_stage`. The
+    /// sequential gate lives here and is deliberately cross-entity without any
+    /// map lookup: the caller passes the owning plan's stage docs, so the run
+    /// checks (1) the plan marks THIS stage `Approved`, and (2) every earlier
+    /// stage passed validation ON THIS RUN (its `StageProgress` is
+    /// `Validated{passed:true}`). Only then does it capture `start_sha` and
+    /// spawn.
+    pub fn dispatch_run_stage(
+        &self,
+        active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
+        stage_id: &str,
+        model_override: Option<ModelChoice>,
+    ) -> Result<(), OrchestratorError> {
+        let doc_index = plan_stage_docs
+            .iter()
+            .position(|doc| doc.id == stage_id)
+            .ok_or_else(|| {
+                OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
+            })?;
+        // Run coarse-state legality first (Dispatch is legal from StageGate; the
+        // very first stage comes through `dispatch_run` instead) — nothing is
+        // spawned for an illegal dispatch.
+        run_transition(&active.run.state, RunEvent::Dispatch)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot dispatch a stage: {e}")))?;
+        // Plan-side gate: the human approved this stage's doc.
+        if plan_stage_docs[doc_index].state != StageDocState::Approved {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} is not approved (plan doc state {:?})",
+                plan_stage_docs[doc_index].state
+            )));
+        }
+        // Sequential gate: every earlier stage must have passed validation on
+        // this run (the run consults its own progress, keyed by the plan's ids).
+        if let Some(unvalidated) = plan_stage_docs[..doc_index].iter().find(|doc| {
+            active
+                .stage_progress(&doc.id)
+                .map(|progress| progress.state)
+                != Some(StageProgressState::Validated { passed: true })
+        }) {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {} has not passed validation yet",
+                unvalidated.id
+            )));
+        }
+
+        active.run.apply(RunEvent::Dispatch)?;
+        let start_sha = self
+            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        // A fresh next stage has no progress record yet; create one (`Building`,
+        // pinned to the current HEAD). A record already present keeps its
+        // `start_sha` so the stage diff always covers all of its work.
+        match active.stage_progress_index(stage_id) {
+            Some(existing) => {
+                if active.stages[existing].start_sha.is_none() {
+                    active.stages[existing].start_sha = Some(start_sha);
+                }
+            }
+            None => {
+                let mut progress = StageProgress::dispatched(stage_id);
+                progress.start_sha = Some(start_sha);
+                active.stages.push(progress);
+            }
+        }
+        active.current_stage_id = Some(stage_id.to_string());
+        if let Some(choice) = model_override {
+            active.model_choice = choice;
+        }
+        active.last_error = None;
+        active.session.end();
+        let prompt = self.render_run_stage(
+            &self.templates.build_stage,
+            active,
+            plan_stage_docs,
+            doc_index,
+            "",
+        );
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Send a validation-failed stage back to a fresh fix session (the run-side
+    /// `fix_stage`). The stored validation findings drive the prompt; `note` is
+    /// the reviewer's optional steer. The stage's `start_sha` is kept across the
+    /// fix re-dispatch so its diff still covers all of the stage's work.
+    pub fn fix_run_stage(
+        &self,
+        active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
+        stage_id: &str,
+        note: &str,
+    ) -> Result<(), OrchestratorError> {
+        let doc_index = plan_stage_docs
+            .iter()
+            .position(|doc| doc.id == stage_id)
+            .ok_or_else(|| {
+                OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
+            })?;
+        run_transition(&active.run.state, RunEvent::Dispatch)
+            .map_err(|e| OrchestratorError::Gate(format!("cannot fix a stage: {e}")))?;
+        let progress_index = active.stage_progress_index(stage_id).ok_or_else(|| {
+            OrchestratorError::Gate(format!("stage {stage_id} has no progress to fix"))
+        })?;
+        if active.stages[progress_index].state != (StageProgressState::Validated { passed: false })
+        {
+            return Err(OrchestratorError::Gate(format!(
+                "stage {stage_id} has no failed validation to fix (state {:?})",
+                active.stages[progress_index].state
+            )));
+        }
+
+        active.run.apply(RunEvent::Dispatch)?;
+        // Validated{passed:false} → Building, keeping start_sha and the stored
+        // findings the fix prompt consumes.
+        active.stages[progress_index].apply(StageProgressEvent::Dispatch)?;
+        active.current_stage_id = Some(stage_id.to_string());
+        active.last_error = None;
+        active.session.end();
+        let prompt = self.render_run_stage(
+            &self.templates.fix_stage,
+            active,
+            plan_stage_docs,
+            doc_index,
+            note,
+        );
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Submit a batch of diff comments: address them in a fresh build session
+    /// (the run-side `request_changes`). Valid both from `Review` (agent done)
+    /// and `Building` (agent still running). A stage awaiting its validation
+    /// verdict is refused — only a `validate` report may move it, so redirecting
+    /// it here would hang the run.
+    pub fn run_request_changes(
+        &self,
+        active: &mut ActiveRun,
+        comments: &str,
+    ) -> Result<(), OrchestratorError> {
+        if let Some(stage_id) = active.current_stage_id.clone() {
+            if let Some(progress) = active.stage_progress(&stage_id) {
+                if matches!(
+                    progress.state,
+                    StageProgressState::Built | StageProgressState::Validating
+                ) {
+                    return Err(OrchestratorError::Gate(format!(
+                        "stage {stage_id} is awaiting validation; wait for the verdict \
+                         before requesting changes"
+                    )));
+                }
+            }
+        }
+        active.run.apply(RunEvent::RequestChanges)?;
+        active.last_error = None;
+        active.session.end();
+        let prompt = self.render_run(&self.templates.review_changes, active, comments);
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// A freeform human message to the run's agent (the run-side `message`). A
+    /// live `Building` session is redirected; parked states (blocked / failed /
+    /// idle / interrupted) resume building. Review gates (`Review`, `StageGate`)
+    /// are refused — they have structured verbs. Like the fused path, a live
+    /// session with an existing harness transcript continues that conversation
+    /// (`--continue`) with the message as its next turn; otherwise a fresh
+    /// session gets it wrapped in full run context. A stage awaiting its
+    /// validation verdict is refused (the same invariant as `run_request_changes`).
+    pub fn message_run(
+        &self,
+        active: &mut ActiveRun,
+        message: &str,
+    ) -> Result<(), OrchestratorError> {
+        if message.trim().is_empty() {
+            return Err(OrchestratorError::Gate("message must not be empty".into()));
+        }
+        if let Some(stage_id) = active.current_stage_id.clone() {
+            if let Some(progress) = active.stage_progress(&stage_id) {
+                if matches!(
+                    progress.state,
+                    StageProgressState::Built | StageProgressState::Validating
+                ) {
+                    return Err(OrchestratorError::Gate(format!(
+                        "stage {stage_id} is awaiting validation; wait for the \
+                         verdict before messaging the agent"
+                    )));
+                }
+            }
+        }
+        use crate::run::RunState as S;
+        let event = match active.run.state {
+            S::Building => None,
+            S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(RunEvent::Reply),
+            S::Review | S::StageGate => {
+                return Err(OrchestratorError::Gate(
+                    "the run is at a review gate — use request changes / dispatch a stage there"
+                        .into(),
+                ))
+            }
+            S::Created | S::Merged | S::Abandoned | S::Archived => {
+                return Err(OrchestratorError::Gate(
+                    "no agent session to message".into(),
+                ))
+            }
+        };
+        if let Some(event) = event {
+            // Pure legality first — the caller persists the run even on Err.
+            run_transition(&active.run.state, event)?;
+        }
+        let prompt = if (self.transcript_probe)(&active.worktree.path) {
+            message.to_string()
+        } else {
+            self.render_run(&self.templates.message, active, message)
+        };
+        if let Some(event) = event {
+            active.run.apply(event)?;
+        }
+        active.last_error = None;
+        active.session.end();
+        active.pending_continuation = true;
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Re-dispatch an interrupted build phase in a fresh session (the run-side
+    /// `resume`). `plan_stage_docs` (the caller's join by `plan_id`; empty for a
+    /// quick/single-plan run) routes a multi-stage run by its current stage's
+    /// persisted progress. The prompt is routed BEFORE the `Reply` transition
+    /// commits, so a routing failure never strands the run out of its
+    /// interrupted state.
+    pub fn resume_run(
+        &self,
+        active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
+    ) -> Result<(), OrchestratorError> {
+        run_transition(&active.run.state, RunEvent::Reply)?;
+        let prompt = if plan_stage_docs.is_empty() {
+            self.render_run(&self.templates.build, active, "")
+        } else {
+            self.resume_run_stage_prompt(active, plan_stage_docs)?
+        };
+        active.run.apply(RunEvent::Reply)?;
+        active.last_error = None;
+        active.session.end();
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// An interrupted multi-stage build phase, routed by the current stage's
+    /// persisted progress: `Building` respawns the build session (or `fix_stage`
+    /// when a failed validation report shows that is what died); `Built` /
+    /// `Validating` respawn the validation pass (a `Built` stage is forced to
+    /// `Validating` first). A `Validated` current stage means the interrupted
+    /// session was a post-review change request, whose comments were not
+    /// persisted — it cannot be resumed blindly.
+    fn resume_run_stage_prompt(
+        &self,
+        active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
+    ) -> Result<String, OrchestratorError> {
+        let stage_id = active.current_stage_id.clone().ok_or_else(|| {
+            OrchestratorError::Gate(
+                "multi-stage run is building but has no current stage".to_string(),
+            )
+        })?;
+        let doc_index = plan_stage_docs
+            .iter()
+            .position(|doc| doc.id == stage_id)
+            .ok_or_else(|| {
+                OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
+            })?;
+        let progress_index = active.stage_progress_index(&stage_id).ok_or_else(|| {
+            OrchestratorError::Gate(format!("no progress record for stage {stage_id}"))
+        })?;
+        match active.stages[progress_index].state {
+            StageProgressState::Building => {
+                let died_in_fix_session = active.stages[progress_index]
+                    .validation
+                    .as_ref()
+                    .is_some_and(|report| !report.passed);
+                let template = if died_in_fix_session {
+                    &self.templates.fix_stage
+                } else {
+                    &self.templates.build_stage
+                };
+                Ok(self.render_run_stage(template, active, plan_stage_docs, doc_index, ""))
+            }
+            StageProgressState::Built => {
+                active.stages[progress_index].apply(StageProgressEvent::StartValidation)?;
+                Ok(self.render_run_stage(&self.templates.validate, active, plan_stage_docs, doc_index, ""))
+            }
+            StageProgressState::Validating => Ok(self.render_run_stage(
+                &self.templates.validate,
+                active,
+                plan_stage_docs,
+                doc_index,
+                "",
+            )),
+            StageProgressState::Validated { passed: true } => {
+                Err(OrchestratorError::Gate(format!(
+                    "stage {stage_id} already passed validation — the interrupted session was a \
+                     post-review change request; re-send the diff comments with Request Changes, \
+                     or approve the merge"
+                )))
+            }
+            StageProgressState::Validated { passed: false } => {
+                Err(OrchestratorError::Gate(format!(
+                    "stage {stage_id} failed validation — dispatch a fix session instead of resuming"
+                )))
+            }
+        }
+    }
+
+    /// Mint a quick run around an existing external worktree (the run-side
+    /// `adopt`; `plan_id` is `None`). No agent session is spawned — the run
+    /// lands in `Review` (there is work to review). Order matches the fused
+    /// path: checkpoint FIRST (pre-Build work stays its own legible commit),
+    /// then scaffold `.build/mcp.json` (left uncommitted). Any error aborts with
+    /// nothing persisted — the caller only persists on `Ok`.
+    pub fn adopt_run(
+        &self,
+        id: RunId,
+        external: &ExternalWorktree,
+        base_branch: &str,
+        model_choice: ModelChoice,
+    ) -> Result<ActiveRun, OrchestratorError> {
+        let Some(branch) = external.branch.clone() else {
+            return Err(OrchestratorError::Gate(
+                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
+            ));
+        };
+        if branch == base_branch {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
+            )));
+        }
+        // The branch name is an EXTERNAL, untrusted string handed to `git merge`
+        // / `git push` as a bare argv element later; a leading `-` would be read
+        // as an option (arbitrary code execution). Native branches are always
+        // `build/<slug>` and can never trip this.
+        if branch.starts_with('-') {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
+                 option — rename the branch first"
+            )));
+        }
+
+        self.commit_all_with_message(&external.path, "Checkpoint: adopted by Build")?;
+
+        let worktree = Worktree {
+            name: external.name.clone(),
+            path: external.path.clone(),
+            branch: branch.clone(),
+            base_branch: base_branch.to_string(),
+        };
+        self.scaffold_build_dir(&worktree, &id.0)?;
+
+        let goal = derive_adoption_goal(&branch, &external.head_subject);
+        let mut run = Run::new(id, None, goal);
+        run.apply(RunEvent::Dispatch)?;
+        run.apply(RunEvent::BuildReady)?;
+
+        Ok(ActiveRun {
+            run,
+            worktree,
+            // Adopted runs baseline their review diff on the merge-base — there
+            // is no materialization commit to pin.
+            base_sha: None,
+            plan_path: DEFAULT_PLAN_PATH.to_string(),
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            adopted: true,
+            pending_continuation: true,
+            model_choice,
+            last_summary: None,
+            last_error: None,
+            session: SessionSlot::default(),
+        })
+    }
+
+    /// Approve the run's diff and merge (the run-side `approve_merge`). Merge
+    /// honesty (contract): the git work runs FIRST — only if commit + merge
+    /// succeed does the run become `Merged`; a git failure keeps it in `Review`
+    /// with a `merge_failed:` reason. Worktree cleanup is deliberately left to
+    /// the caller (after it persists the `Merged` verdict), collapsing the
+    /// crash window to a self-healing one.
+    pub fn run_approve_merge(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
+        // Reject up front if the run isn't at a review gate (pure legality).
+        run_transition(&active.run.state, RunEvent::ApproveMerge)?;
+        self.commit_all(&active.worktree.path, &active.run.goal)
+            .map_err(as_merge_failure)?;
+        self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)
+            .map_err(as_merge_failure)?;
+        active.run.apply(RunEvent::ApproveMerge)?;
+        active.last_error = None;
+        active.session.end();
+        Ok(())
+    }
+
+    /// Commit any outstanding work on the run branch (the implicit commit step
+    /// every finish action shares). Keeps the worktree; no lifecycle change.
+    pub fn run_commit(&self, active: &ActiveRun) -> Result<(), OrchestratorError> {
+        self.commit_all(&active.worktree.path, &active.run.goal)
+    }
+
+    /// Commit, then push the run branch to its `origin`. Keeps the worktree, so
+    /// the agent can keep working / the user can open a PR.
+    pub fn run_push(&self, active: &ActiveRun) -> Result<(), OrchestratorError> {
+        self.commit_all(&active.worktree.path, &active.run.goal)?;
+        self.git(
+            &active.worktree.path,
+            // `--` stops option parsing so an option-shaped branch name can
+            // never be read as a flag (defense in depth alongside `adopt_run`).
+            &["push", "-u", "origin", "--", &active.worktree.branch],
+        )?;
+        Ok(())
+    }
+
+    /// Approve & merge (as [`run_approve_merge`](Self::run_approve_merge)) and
+    /// then push the updated base branch to `origin`.
+    pub fn run_merge_and_push(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
+        let base = active.worktree.base_branch.clone();
+        self.run_approve_merge(active)?;
+        self.git(&self.repo_path, &["push", "origin", &base])?;
+        Ok(())
+    }
+
+    /// Abandon a run from any non-terminal state: kill the harness, mark the run
+    /// `Abandoned`, and remove its worktree. Per the run entity's contract the
+    /// BRANCH is kept — a run's work survives an abandon so it can be
+    /// re-attempted — unlike the fused path, which pruned both. Cleanup is
+    /// best-effort: a leftover worktree is logged, never a reason to fail the
+    /// abandon (the lifecycle verdict is what must persist).
+    pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
+        active.run.apply(RunEvent::Abandon)?;
+        active.session.end();
+        if let Err(cleanup) = self
+            .worktrees
+            .remove(&active.worktree, /* keep_branch */ true)
+        {
+            eprintln!(
+                "abandon run {}: run abandoned but worktree cleanup failed: {cleanup}",
+                active.worktree.name
+            );
+        }
+        Ok(())
+    }
+
+    /// Mid-run stage-doc revision (spec seam #3): re-plan one stage's doc from
+    /// the plan's open comments, but run the revision session in the RUN's
+    /// worktree (that is where the docs are materialized and where the diff /
+    /// PTY live). Only legal at the between-stages gate, where the upcoming
+    /// stage's doc is under review. The run's coarse state is untouched — the
+    /// revision is a plan-doc operation that merely borrows the run's worktree;
+    /// `revising_stage_id` marks it so the resulting `done(revise)` is routed to
+    /// [`consume_run_stage_revision`](Self::consume_run_stage_revision) (a store
+    /// write-back) rather than through [`on_run_done`](Self::on_run_done).
+    pub fn send_run_stage_notes(
+        &self,
+        active: &mut ActiveRun,
+        plan: &ActivePlan,
+        stage_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        if active.run.state != RunState::StageGate {
+            return Err(OrchestratorError::Gate(format!(
+                "stage-doc revisions run from the stage gate (run is {:?})",
+                active.run.state
+            )));
+        }
+        let doc_index = plan
+            .stage_doc_index(stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        let open: Vec<PlanStageComment> = plan
+            .open_comments_for(stage_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        if open.is_empty() {
+            return Err(OrchestratorError::Gate(format!(
+                "no open comments on stage {stage_id}"
+            )));
+        }
+        active.revising_stage_id = Some(stage_id.to_string());
+        active.last_error = None;
+        active.session.end();
+        let comments = templates::assemble_plan_stage_comments(&open);
+        let prompt = self.render_run_stage(
+            &self.templates.revise_stage,
+            active,
+            &plan.stages,
+            doc_index,
+            &comments,
+        );
+        self.spawn_run_session(active, &prompt)?;
+        Ok(())
+    }
+
+    /// Consume a mid-run stage-doc revision's `done(revise)`: ingest the revised
+    /// docs from the run's worktree back into the canonical store (fail-fast —
+    /// the revision is never accepted with unpersisted docs), reset the plan's
+    /// stage-doc state (a revised doc's approval is stale), and land the agent's
+    /// per-comment resolutions on the plan's comments. Cross-entity by design:
+    /// the caller hands both the run (whose worktree holds the docs) and the
+    /// owning plan (whose store id, doc state, and comments are updated). The
+    /// run's coarse state is untouched.
+    pub fn consume_run_stage_revision(
+        &self,
+        active: &mut ActiveRun,
+        plan: &mut ActivePlan,
+        store: &Store,
+        report: &DoneReport,
+    ) -> Result<(), OrchestratorError> {
+        let stage_id = active.revising_stage_id.clone().ok_or_else(|| {
+            OrchestratorError::Gate(
+                "revise report for a run with no stage revision in flight".to_string(),
+            )
+        })?;
+        let index = plan
+            .stage_doc_index(&stage_id)
+            .map_err(OrchestratorError::Gate)?;
+        // Probe the doc transition before any mutation.
+        stage_doc_transition(&plan.stages[index].state, StageDocEvent::Revised)?;
+        if let Err(ingest_error) =
+            store.ingest_plan_docs(&plan.plan.id.0, &active.worktree.path, &plan.plan_path)
+        {
+            active.last_error = Some(format!("stage revision not persisted: {ingest_error}"));
+            return Err(OrchestratorError::Store(ingest_error));
+        }
+        plan.stages[index].state =
+            stage_doc_transition(&plan.stages[index].state, StageDocEvent::Revised)?;
+        if let Some(resolutions) = &report.outputs.comment_resolutions {
+            for resolution in resolutions {
+                let matching = plan.comments.iter_mut().find(|c| {
+                    c.id == resolution.comment_id
+                        && c.stage_id == stage_id
+                        && c.state == PlanCommentState::Open
+                });
+                match matching {
+                    Some(comment) => {
+                        comment.state = PlanCommentState::Addressed;
+                        comment.agent_reply = Some(resolution.response.clone());
+                    }
+                    None => eprintln!(
+                        "run stage revision for {stage_id}: unknown or non-open comment {:?}; \
+                         skipping",
+                        resolution.comment_id
+                    ),
+                }
+            }
+        }
+        active.revising_stage_id = None;
+        active.last_summary = Some(report.summary.clone());
+        active.last_error = None;
+        Ok(())
     }
 
     // ---- PERIPHERY: fused-task spine (dies with task.rs) -------------------
@@ -6336,5 +7135,678 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run.run.state, RunState::Review);
+    }
+
+    // ---- Plan/Run split: stage flows, interaction verbs, git finishers ----
+
+    /// Drive a two-stage planned run through its first stage (build + a passing
+    /// validation), leaving it parked at the between-stages gate with stage one
+    /// `Validated{passed:true}`.
+    fn run_past_first_stage(
+        orch: &Orchestrator,
+        store: &Store,
+        plan: &ActivePlan,
+        id: &str,
+    ) -> ActiveRun {
+        let mut run = dispatch_planned_run(orch, store, plan, id);
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        orch.on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", "notes"))
+            .unwrap();
+        assert_eq!(run.run.state, RunState::StageGate);
+        run
+    }
+
+    #[tokio::test]
+    async fn approve_plan_stage_approves_a_doc_and_rejects_on_terminal() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
+
+        // An approved plan keeps taking per-stage approvals (that is how a run's
+        // later stages get gated while an earlier one builds).
+        orch.approve_plan(&mut plan).unwrap();
+        orch.approve_plan_stage(&mut plan, "second").unwrap();
+        assert_eq!(plan.stages[1].state, StageDocState::Approved);
+        assert_eq!(plan.stages[0].state, StageDocState::Planned);
+
+        // Double-approve is rejected by the pure doc-state machine.
+        let err = orch
+            .approve_plan_stage(&mut plan, "second")
+            .expect_err("double approve is illegal");
+        assert!(matches!(err, OrchestratorError::StageDoc(_)), "{err}");
+
+        // Unknown stage id → a gate error, not a panic.
+        assert!(matches!(
+            orch.approve_plan_stage(&mut plan, "ghost"),
+            Err(OrchestratorError::Gate(_))
+        ));
+
+        // A terminal plan takes no approvals.
+        orch.abandon_plan(&mut plan).unwrap();
+        let err = orch
+            .approve_plan_stage(&mut plan, "first")
+            .expect_err("no approvals on a terminal plan");
+        assert!(err.to_string().contains("terminal"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let store = split_store(&dir);
+        let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
+        plan.stages[0].state = StageDocState::Approved;
+        plan.comments = vec![
+            plan_comment("c-1", "first", PlanCommentState::Open),
+            plan_comment("c-2", "second", PlanCommentState::Open),
+        ];
+
+        orch.send_plan_stage_notes(&mut plan, &store, "first")
+            .unwrap();
+        assert_eq!(plan.plan.state, PlanState::Drafting);
+        assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
+        assert!(plan.session.subscribe().is_some(), "revise session is warm");
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains("[c-1]"),
+            "the open comment is the payload: {prompt}"
+        );
+        assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
+
+        // The agent revises the doc and reports done → back to PlanReview, the
+        // stage approval reset, the comment resolved, the store copy updated.
+        std::fs::write(
+            plan_worktree_path(&plan).join(".build/plan/01-first.md"),
+            "# Stage: First (revised)\n",
+        )
+        .unwrap();
+        orch.on_plan_done(
+            &mut plan,
+            &store,
+            DoneReport {
+                phase: DonePhase::Revise,
+                status: DoneStatus::Completed,
+                summary: "revised".into(),
+                outputs: DoneOutputs {
+                    comment_resolutions: Some(vec![crate::mcp::CommentResolution {
+                        comment_id: "c-1".into(),
+                        response: "done".into(),
+                    }]),
+                    ..DoneOutputs::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.plan.state, PlanState::PlanReview);
+        assert_eq!(plan.stages[0].state, StageDocState::Planned);
+        assert_eq!(plan.revising_stage_id, None);
+        assert_eq!(
+            plan.comments.iter().find(|c| c.id == "c-1").unwrap().state,
+            PlanCommentState::Addressed
+        );
+        assert_eq!(
+            store
+                .read_plan_doc("plan-1", ".build/plan/01-first.md")
+                .as_deref(),
+            Some("# Stage: First (revised)\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_plan_stage_notes_gates_on_plan_state_and_open_comments() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
+
+        // No open comments on the stage.
+        let err = orch
+            .send_plan_stage_notes(&mut plan, &store, "first")
+            .expect_err("no open comments");
+        assert!(err.to_string().contains("no open comments"), "{err}");
+        assert_eq!(plan.plan.state, PlanState::PlanReview);
+
+        // Not at the review gate (approved) → the transition is rejected.
+        orch.approve_plan(&mut plan).unwrap();
+        plan.comments = vec![plan_comment("c-1", "first", PlanCommentState::Open)];
+        let err = orch
+            .send_plan_stage_notes(&mut plan, &store, "first")
+            .expect_err("an approved plan is past the review gate");
+        assert!(err.to_string().contains("cannot send stage notes"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn message_plan_redirects_drafting_resumes_parked_and_refuses_gates() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        // Empty message is refused before any state is touched.
+        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        assert!(orch
+            .message_plan(&mut plan, &store, "   ")
+            .unwrap_err()
+            .to_string()
+            .contains("empty"));
+
+        // Drafting → a live redirect (no state change), fresh session.
+        orch.message_plan(&mut plan, &store, "focus on error paths")
+            .unwrap();
+        assert_eq!(plan.plan.state, PlanState::Drafting);
+        assert!(plan.session.subscribe().is_some());
+
+        // A blocked plan resumes drafting on reply.
+        orch.on_plan_done(
+            &mut plan,
+            &store,
+            done(DonePhase::Plan, DoneStatus::Blocked, None),
+        )
+        .unwrap();
+        assert_eq!(plan.plan.state, PlanState::Blocked);
+        orch.message_plan(&mut plan, &store, "here is the missing detail")
+            .unwrap();
+        assert_eq!(plan.plan.state, PlanState::Drafting);
+
+        // The review gate refuses a side-channel message.
+        let mut in_review = plan_in_review(&orch, &store, "plan-2");
+        let err = orch
+            .message_plan(&mut in_review, &store, "sneak past the gate")
+            .expect_err("review gate has send-notes");
+        assert!(err.to_string().contains("review gate"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn resume_plan_redispatches_an_interrupted_plan_recreating_its_worktree() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        // A plan interrupted mid-draft: its store docs survive, its worktree is
+        // gone (simulate the loss by tearing it down after reattach).
+        let mut plan = plan_in_review(&orch, &store, "plan-1");
+        // Move it back to a working phase then interrupt it.
+        orch.send_plan_notes(&mut plan, &store, "revise").unwrap();
+        plan.plan.apply(crate::plan::PlanEvent::Interrupt).unwrap();
+        // Drop the worktree from disk to prove resume re-creates one.
+        let stale = plan.worktree.take().unwrap();
+        orch.discard_worktree(&stale);
+        assert!(!stale.path.exists());
+
+        orch.resume_plan(&mut plan, &store).unwrap();
+        assert_eq!(plan.plan.state, PlanState::Drafting);
+        let worktree = plan
+            .worktree
+            .as_ref()
+            .expect("resume re-created a worktree");
+        assert!(
+            worktree.path.join(".build/plan.md").exists(),
+            "docs materialized"
+        );
+        assert!(
+            plan.session.subscribe().is_some(),
+            "a fresh plan session is warm"
+        );
+    }
+
+    #[tokio::test]
+    async fn abandon_plan_tears_down_the_worktree_and_keeps_the_store_docs() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = plan_in_review(&orch, &store, "plan-1");
+        let worktree = plan.worktree.clone().unwrap();
+
+        orch.abandon_plan(&mut plan).unwrap();
+        assert_eq!(plan.plan.state, PlanState::Abandoned);
+        assert_eq!(plan.worktree, None);
+        assert!(!worktree.path.exists(), "the disposable worktree is gone");
+        assert_eq!(
+            store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
+            Some("# Plan v1\n"),
+            "canonical docs survive an abandon"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_stage_enforces_the_sequential_gate_and_pins_start_sha() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let store = split_store(&dir);
+        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
+
+        // The next stage's doc is not approved yet → refused.
+        let err = orch
+            .dispatch_run_stage(&mut run, &plan.stages, "second", None)
+            .expect_err("an unapproved stage cannot dispatch");
+        assert!(err.to_string().contains("not approved"), "{err}");
+        assert_eq!(
+            run.run.state,
+            RunState::StageGate,
+            "no state change on refusal"
+        );
+
+        // Approve it → the sequential gate opens (stage one validated).
+        orch.approve_plan_stage(&mut plan, "second").unwrap();
+        orch.dispatch_run_stage(&mut run, &plan.stages, "second", None)
+            .unwrap();
+        assert_eq!(run.run.state, RunState::Building);
+        assert_eq!(run.current_stage_id.as_deref(), Some("second"));
+        let second = run.stage_progress("second").unwrap();
+        assert_eq!(second.state, StageProgressState::Building);
+        assert_eq!(
+            second.start_sha.as_deref(),
+            Some(worktree_head(&run.worktree.path).as_str()),
+            "the stage diff pins to HEAD at dispatch"
+        );
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains(".build/plan/02-second.md"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_stage_rejects_a_stage_whose_predecessor_has_not_validated() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        // Stage one fails validation → the run parks at the gate, stage one
+        // `Validated{passed:false}`.
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        orch.on_run_done(&mut run, &plan.stages, done_validate(false, "- nope", ""))
+            .unwrap();
+        assert_eq!(run.run.state, RunState::StageGate);
+
+        orch.approve_plan_stage(&mut plan, "second").unwrap();
+        let err = orch
+            .dispatch_run_stage(&mut run, &plan.stages, "second", None)
+            .expect_err("stage one has not passed validation");
+        assert!(
+            err.to_string().contains("has not passed validation"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fix_run_stage_respawns_with_findings_and_keeps_the_start_sha() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let store = split_store(&dir);
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done_validate(false, "- migration missing", ""),
+        )
+        .unwrap();
+        let start_before = run.stage_progress("first").unwrap().start_sha.clone();
+
+        orch.fix_run_stage(&mut run, &plan.stages, "first", "add the migration")
+            .unwrap();
+        assert_eq!(run.run.state, RunState::Building);
+        let first = run.stage_progress("first").unwrap();
+        assert_eq!(first.state, StageProgressState::Building);
+        assert_eq!(
+            first.start_sha, start_before,
+            "the fix keeps the stage's start sha"
+        );
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains("- migration missing"),
+            "findings drive the fix: {prompt}"
+        );
+        assert!(
+            prompt.contains("add the migration"),
+            "the note is the steer: {prompt}"
+        );
+
+        // Nothing to fix on a stage without a failed validation.
+        let err = orch
+            .fix_run_stage(&mut run, &plan.stages, "second", "")
+            .expect_err("second has no progress to fix");
+        assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn run_request_changes_respawns_from_review_and_is_gated_while_validating() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        // Quick run at review → a change request respawns building.
+        let mut quick = dispatch_quick_run(&orch, &store, "run-q", "quick work");
+        orch.on_run_done(
+            &mut quick,
+            &[],
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(quick.run.state, RunState::Review);
+        orch.run_request_changes(&mut quick, "tweak it").unwrap();
+        assert_eq!(quick.run.state, RunState::Building);
+
+        // A stage awaiting its validation verdict must not be redirected.
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(
+            run.stage_progress("first").unwrap().state,
+            StageProgressState::Validating
+        );
+        let err = orch
+            .run_request_changes(&mut run, "no")
+            .expect_err("cannot redirect a validating stage");
+        assert!(err.to_string().contains("awaiting validation"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn message_run_redirects_building_continues_and_refuses_gates() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_spy_agent(log.clone()),
+            Templates::default(),
+        )
+        .with_transcript_probe(std::sync::Arc::new(|_| true));
+        let store = split_store(&dir);
+
+        let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        assert!(orch
+            .message_run(&mut run, "  ")
+            .unwrap_err()
+            .to_string()
+            .contains("empty"));
+
+        // Building → live redirect that rides the harness's own conversation.
+        orch.message_run(&mut run, "also handle the empty case")
+            .unwrap();
+        assert_eq!(run.run.state, RunState::Building);
+        let (prompt, continued) = log.lock().unwrap().last().unwrap().clone();
+        assert!(continued, "the message continues the conversation");
+        assert_eq!(prompt, "also handle the empty case");
+
+        // The review gate refuses a message (request-changes is the verb there).
+        orch.on_run_done(
+            &mut run,
+            &[],
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        let err = orch
+            .message_run(&mut run, "sneak past")
+            .expect_err("review gate refuses messages");
+        assert!(err.to_string().contains("review gate"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn resume_run_redispatches_quick_and_multi_stage_builds() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        // Quick run interrupted mid-build → resumes the whole-run build.
+        let mut quick = dispatch_quick_run(&orch, &store, "run-q", "quick work");
+        quick.run.apply(crate::run::RunEvent::Interrupt).unwrap();
+        orch.resume_run(&mut quick, &[]).unwrap();
+        assert_eq!(quick.run.state, RunState::Building);
+        assert!(quick.session.subscribe().is_some());
+
+        // Multi-stage run interrupted mid stage-build → resumes THAT stage.
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let orch2 = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees2"),
+            prompt_recording_agent(log.clone()),
+            Templates::default(),
+        );
+        let plan = approved_multi_stage_plan(&orch2, &store, "plan-1", 2);
+        let mut run = dispatch_planned_run(&orch2, &store, &plan, "run-1");
+        run.run.apply(crate::run::RunEvent::Interrupt).unwrap();
+        orch2.resume_run(&mut run, &plan.stages).unwrap();
+        assert_eq!(run.run.state, RunState::Building);
+        let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(
+            prompt.contains(".build/plan/01-first.md"),
+            "resumes stage one: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopt_run_lands_in_review_as_a_plan_less_quick_run() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
+        std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
+
+        let run = orch
+            .adopt_run(RunId::new("run-ad"), &external, "main", Default::default())
+            .unwrap();
+        assert_eq!(run.run.state, RunState::Review);
+        assert_eq!(run.run.plan_id, None, "an adopted run has no plan");
+        assert_eq!(run.run.goal, "user/thing");
+        assert_eq!(
+            run.base_sha, None,
+            "adopted runs baseline on the merge-base"
+        );
+        assert!(run.adopted);
+        assert!(run.pending_continuation);
+        assert!(
+            run.session.subscribe().is_none(),
+            "adoption spawns no session"
+        );
+        assert_eq!(
+            last_commit_subject(&external.path),
+            "Checkpoint: adopted by Build"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_finishers_commit_merge_and_report_conflicts() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        let to_review = |id: &str, file: &str, contents: &str| {
+            let mut run = dispatch_quick_run(&orch, &store, id, "same file");
+            std::fs::write(run.worktree.path.join(file), contents).unwrap();
+            orch.on_run_done(
+                &mut run,
+                &[],
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .unwrap();
+            assert_eq!(run.run.state, RunState::Review);
+            run
+        };
+
+        // Both runs branch from the same base tip and touch the same file.
+        let mut first = to_review("run-1", "result.txt", "first\n");
+        let mut second = to_review("run-2", "result.txt", "second\n");
+
+        // Commit keeps the worktree and makes an honest commit.
+        orch.run_commit(&first).unwrap();
+        assert_eq!(
+            last_commit_subject(&first.worktree.path),
+            "Build: same file"
+        );
+
+        // Approve & merge → Merged, base branch tracks the file, worktree kept
+        // until the caller prunes.
+        orch.run_approve_merge(&mut first).unwrap();
+        assert_eq!(first.run.state, RunState::Merged);
+        assert!(repo.join("result.txt").exists());
+        assert!(
+            first.worktree.path.exists(),
+            "merge leaves cleanup to the caller"
+        );
+
+        // The second run now conflicts: it reports merge_failed and stays in review.
+        let err = orch
+            .run_approve_merge(&mut second)
+            .expect_err("the second write conflicts");
+        assert!(err.to_string().starts_with("merge_failed:"), "{err}");
+        assert_eq!(second.run.state, RunState::Review);
+        assert!(
+            !repo.join(".git/MERGE_HEAD").exists(),
+            "a failed merge is aborted"
+        );
+    }
+
+    #[tokio::test]
+    async fn abandon_run_removes_the_worktree_but_keeps_the_branch() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        let branch = run.worktree.branch.clone();
+        let path = run.worktree.path.clone();
+
+        orch.abandon_run(&mut run).unwrap();
+        assert_eq!(run.run.state, RunState::Abandoned);
+        assert!(!path.exists(), "the worktree is removed");
+        // The branch survives — a run's work outlives an abandon so it can be
+        // re-attempted (the run entity's documented contract).
+        let branches = Command::new("git")
+            .args(["branch", "--list", &branch])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).contains(&branch),
+            "the branch is kept on abandon"
+        );
+    }
+
+    #[tokio::test]
+    async fn mid_run_stage_revision_writes_back_to_the_plan_store() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        // The upcoming stage's doc was approved; a reviewer left a comment.
+        plan.stages[1].state = StageDocState::Approved;
+        plan.comments = vec![plan_comment("c-1", "second", PlanCommentState::Open)];
+        let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
+
+        // The revision runs in the RUN's worktree; the run's coarse state is
+        // untouched (it merely lends its worktree).
+        orch.send_run_stage_notes(&mut run, &plan, "second")
+            .unwrap();
+        assert_eq!(run.run.state, RunState::StageGate);
+        assert_eq!(run.revising_stage_id.as_deref(), Some("second"));
+        assert!(run.session.subscribe().is_some());
+
+        // While a revision is in flight, a revise report must NOT go through
+        // on_run_done — it is a store write-back, not a build report.
+        let revise = DoneReport {
+            phase: DonePhase::Revise,
+            status: DoneStatus::Completed,
+            summary: "revised".into(),
+            outputs: DoneOutputs {
+                comment_resolutions: Some(vec![crate::mcp::CommentResolution {
+                    comment_id: "c-1".into(),
+                    response: "reworked the section".into(),
+                }]),
+                ..DoneOutputs::default()
+            },
+        };
+        let guard = orch
+            .on_run_done(&mut run, &plan.stages, revise.clone())
+            .expect_err("on_run_done rejects a revision in flight");
+        assert!(
+            guard.to_string().contains("consume_run_stage_revision"),
+            "{guard}"
+        );
+
+        // The agent revised the doc in the run's worktree; consuming ingests it
+        // back to the plan store, resets the stale approval, resolves the comment.
+        std::fs::write(
+            run.worktree.path.join(".build/plan/02-second.md"),
+            "# Stage: Second (reworked)\n",
+        )
+        .unwrap();
+        orch.consume_run_stage_revision(&mut run, &mut plan, &store, &revise)
+            .unwrap();
+        assert_eq!(run.revising_stage_id, None);
+        assert_eq!(
+            run.run.state,
+            RunState::StageGate,
+            "the build did not advance"
+        );
+        assert_eq!(
+            plan.stages[1].state,
+            StageDocState::Planned,
+            "a revised doc resets its stale approval"
+        );
+        assert_eq!(plan.comments[0].state, PlanCommentState::Addressed);
+        assert_eq!(
+            store
+                .read_plan_doc("plan-1", ".build/plan/02-second.md")
+                .as_deref(),
+            Some("# Stage: Second (reworked)\n"),
+            "the revision reached the canonical store copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_run_stage_notes_is_only_legal_at_the_stage_gate() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        plan.comments = vec![plan_comment("c-1", "first", PlanCommentState::Open)];
+        // A run still building its first stage is not at the gate.
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        let err = orch
+            .send_run_stage_notes(&mut run, &plan, "first")
+            .expect_err("not at the stage gate");
+        assert!(err.to_string().contains("stage gate"), "{err}");
     }
 }

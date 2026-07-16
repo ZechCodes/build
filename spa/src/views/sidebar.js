@@ -36,7 +36,7 @@ function activeProjectId() {
 
 function draw() {
   if (!lastFeed) return;
-  const aside = $("#sidebar");
+  const aside = $("#sidebar-rail");
   if (!aside) return;
   const model = buildSidebarModel({
     projects: lastFeed.projects,
@@ -56,7 +56,6 @@ function draw() {
   aside.scrollTop = scroll;
   setBadge(lastFeed.tasks);
 
-  $("#side-collapse").onclick = () => setSidebarCollapsed(true);
   $("#side-add").onclick = openAddProjectMenu;
   // The chevron toggles; the name navigates to the project page and expands it.
   aside.querySelectorAll("[data-chev]").forEach((b) => {
@@ -131,8 +130,8 @@ function openAddProjectMenu() {
 
 let mounted = false;
 
-/** Mount once: subscribe to the feed and wire the nav toggle. Re-entrant —
- *  a reconnect calls this again and just repaints. */
+/** Mount once: subscribe to the feed and wire the collapse/reopen toggles.
+ *  Re-entrant — a reconnect calls this again and just repaints. */
 export function initSidebar() {
   if (mounted) {
     draw();
@@ -143,9 +142,8 @@ export function initSidebar() {
     localStorage.getItem(COLLAPSED_KEY) === "1" ||
       (localStorage.getItem(COLLAPSED_KEY) === null && window.innerWidth < 900)
   );
-  const navToggle = $("#nav-side");
-  if (navToggle)
-    navToggle.onclick = () => setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+  $("#side-collapse").onclick = () => setSidebarCollapsed(true);
+  $("#side-open").onclick = () => setSidebarCollapsed(false);
   subscribeFeed((feed) => {
     lastFeed = feed;
     draw();

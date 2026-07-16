@@ -62,8 +62,11 @@ export function initRouter() {
 }
 
 export function setActiveNav(name) {
-  const target = { board: "#nav-board", notifications: "#nav-notif", settings: "#nav-settings" }[name] || "#nav-board";
-  ["#nav-board", "#nav-notif", "#nav-settings"].forEach((s) => $(s).classList.toggle("active", s === target));
+  const target = { notifications: "#nav-notif", settings: "#nav-account" }[name] || null;
+  ["#nav-notif", "#nav-account"].forEach((s) => {
+    const row = $(s);
+    if (row) row.classList.toggle("active", s === target);
+  });
 }
 
 export function render() {

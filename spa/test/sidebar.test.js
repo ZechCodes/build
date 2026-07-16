@@ -169,7 +169,8 @@ describe("sidebarHtml", () => {
   it("renders the header actions and an empty state", () => {
     const html = sidebarHtml([], ui());
     expect(html).toContain('id="side-add"');
-    expect(html).toContain('id="side-collapse"');
+    // the collapse toggle lives in the static shell (index.html), not the rail
+    expect(html).not.toContain('id="side-collapse"');
     expect(html).toContain("No projects yet");
   });
 });

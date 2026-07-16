@@ -148,7 +148,6 @@ export function sidebarHtml(model, ui) {
   return `<div class="side-head"><span class="sseclabel">Projects</span>
     <span class="side-actions">
       <button class="iconbtn" id="side-add" title="Add a project">+</button>
-      <button class="iconbtn" id="side-collapse" title="Collapse sidebar">◫</button>
     </span></div>
   <div class="side-projects">${projects || '<div class="dim sempty">No projects yet — add one.</div>'}</div>`;
 }

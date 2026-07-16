@@ -14,11 +14,11 @@ import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { initSidebar } from "./sidebar.js";
 
-// Hide the main nav tabs while gating — the gate screens are self-contained.
+// The gate screens are self-contained — body.gated hides the sidebar (and its
+// reopen toggle) via CSS while they own #root.
 function setGate(on) {
   App.gated = on;
   document.body.classList.toggle("gated", on);
-  document.querySelectorAll("nav .tab").forEach((tab) => (tab.style.display = on ? "none" : ""));
   if (on) {
     $("#devpick").hidden = true;
     stopFeed(); // no session to poll — the sidebar is hidden while gated

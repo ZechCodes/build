@@ -23,9 +23,8 @@ if (location.pathname.startsWith("/app")) {
 initRouter();
 initDevicePicker();
 
-$("#nav-board").onclick = () => go({ name: "board" });
 $("#nav-notif").onclick = () => go({ name: "notifications" });
-$("#nav-settings").onclick = () => go({ name: "settings" });
+$("#nav-account").onclick = () => go({ name: "settings" });
 $("#scrim").onclick = (e) => {
   if (e.target === $("#scrim")) $("#scrim").classList.remove("show");
 };

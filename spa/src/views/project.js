@@ -51,7 +51,6 @@ export async function renderProject() {
     const anyContent = mine.length || worktrees.length || primary;
     root.innerHTML = `
       <div class="board-head"><div>
-          <div class="crumb"><a href="#/board">← Board</a></div>
           <h1>${esc(project ? project.name : projectId)}</h1>
           <p class="mono projmeta">${esc(project ? project.path : "")}${project ? ` · ${esc(project.base_branch)}` : ""}</p></div>
         <button class="btn primary" id="newtask" style="margin-left:auto">+ New task</button></div>

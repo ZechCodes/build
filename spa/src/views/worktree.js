@@ -113,11 +113,13 @@ export async function renderWorktree() {
     if (tab === termId) selectTab("diff");
   };
 
+  const goHome = () => go({ name: "project", projectId });
+
   const renderNotFound = () => {
     root.innerHTML = `
-      <div class="back" id="back">← Board</div>
+      <div class="back" id="back">← Project</div>
       <div class="empty">This worktree is no longer available — it may have been adopted or removed.</div>`;
-    $("#back").onclick = () => go({ name: "board" });
+    $("#back").onclick = () => goHome();
   };
 
   const stopPolling = () => {
@@ -288,7 +290,7 @@ export async function renderWorktree() {
         stopPolling(); // adoption binds the worktree; the poll must not race us
         try {
           await adopting.taskCall("task.git_action", { action, cleanup });
-          go({ name: "board" });
+          goHome();
         } catch (e) {
           if (adopting.adoptedTaskId()) {
             // Adopted, then the merge failed (a conflict is the common case for a
@@ -309,7 +311,7 @@ export async function renderWorktree() {
       stopPolling(); // adoption binds the worktree; the poll must not race us
       try {
         await adopting.taskCall("task.abandon", {});
-        go({ name: "board" });
+        goHome();
       } catch (e) {
         if (adopting.adoptedTaskId()) {
           handoffToTask();

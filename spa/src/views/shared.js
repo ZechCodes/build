@@ -37,6 +37,7 @@ export function attnTasks(tasks) {
 export function setBadge(tasks) {
   const unread = attnTasks(tasks).filter((t) => !App.readIds.has(t.task_id)).length;
   const badge = $("#notif");
+  if (!badge) return;
   badge.style.display = unread ? "inline-block" : "none";
   badge.textContent = unread;
 }

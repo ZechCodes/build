@@ -91,7 +91,7 @@ export async function renderTask() {
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
-    $("#back").onclick = () => go({ name: "board" });
+    $("#back").onclick = () => goHome();
     wireActions(m);
     showBanner(bannerText(localError, m.last_error));
     shellCtl = mountTabShell($("#tabrow"), {
@@ -210,6 +210,10 @@ export async function renderTask() {
 
   let last = null;
 
+  // Leaving the task lands on its project page (nothing links to the board).
+  const goHome = () =>
+    go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "board" });
+
   // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
   // last_error for these, so without holding it here the 1.6s poll would call
   // showBanner(t.last_error) and clear the message within ~0–1.6s — too fast to
@@ -259,7 +263,7 @@ export async function renderTask() {
         btn.textContent = "deleting…";
         try {
           await App.call("task.delete", { task_id: id });
-          go({ name: "board" });
+          goHome();
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Delete";
@@ -284,7 +288,7 @@ export async function renderTask() {
       if (optionId === "release") {
         try {
           await App.call("task.release", { task_id: id });
-          go({ name: "board" });
+          goHome();
         } catch (e) {
           localError = "error: " + e.message.slice(0, 80);
           showBanner(localError);
@@ -667,7 +671,7 @@ export async function renderTask() {
         try {
           await App.call("task.git_action", params);
           if (action === "merge" || action === "merge_push") {
-            go({ name: "board" });
+            goHome();
           } else {
             flash(action === "commit" ? "Committed." : "Pushed " + ((last && last.branch) || "branch") + ".");
             diffKey = null;

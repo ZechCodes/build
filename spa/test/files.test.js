@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { previewModeFor, previewHasSourceToggle, decodeBase64Text, filesTreeHtml, sourcePreviewHtml } from "../src/views/files.js";
+import {
+  previewModeFor,
+  previewHasSourceToggle,
+  decodeBase64Text,
+  filesTreeHtml,
+  sourcePreviewHtml,
+  previewPlaceholderHtml,
+} from "../src/views/files.js";
 import { esc } from "../src/core/text.js";
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
@@ -112,5 +119,22 @@ describe("sourcePreviewHtml", () => {
     const html = sourcePreviewHtml("evil.js", `<script>alert(1)</script>`);
     expect(html).not.toContain("<script>");
     expect(/<(?!\/?(span|pre|code)\b)[a-zA-Z]/.test(html)).toBe(false);
+  });
+});
+
+describe("previewPlaceholderHtml", () => {
+  it("renders idle and error messages as a quiet centered line", () => {
+    expect(previewPlaceholderHtml("idle", "Select a file to preview.")).toBe(
+      '<div class="fpidle">Select a file to preview.</div>',
+    );
+    expect(previewPlaceholderHtml("error", "cannot read: nope")).toContain("cannot read: nope");
+  });
+
+  it("escapes placeholder messages (error text carries repo-derived paths)", () => {
+    expect(previewPlaceholderHtml("error", "<img src=x>")).not.toContain("<img");
+  });
+
+  it("renders loading as a throbber", () => {
+    expect(previewPlaceholderHtml("loading")).toContain('class="throbber"');
   });
 });

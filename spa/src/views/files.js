@@ -93,6 +93,13 @@ function previewBodyHtml(path, file, showSource) {
 const sizePlaceholder = (mode, size) =>
   `<div class="fbinary">${mode === "toolarge" ? "file too large to preview" : "binary file"} · ${Number(size) || 0} bytes</div>`;
 
+/** Pure: the preview pane's container-less placeholder states. `idle` and
+ *  `error` center a quiet message; `loading` centers a throbber. */
+export function previewPlaceholderHtml(kind, message = "") {
+  if (kind === "loading") return `<div class="throbber" role="status" aria-label="loading"></div>`;
+  return `<div class="fpidle">${esc(message)}</div>`;
+}
+
 /**
  * renderFilesTab(body, { scope, callRpc }) — mount the browser into `body`.
  * `scope` is the plain server-resolved scope object ({task_id} / {project_id[,
@@ -101,9 +108,16 @@ const sizePlaceholder = (mode, size) =>
  * fetches only on navigation/selection.
  */
 export function renderFilesTab(body, { scope, callRpc }) {
-  body.innerHTML = `<div class="files"><div class="ftree" id="ftree"></div><div class="fpreview" id="fpreview"><div class="empty">Select a file to preview.</div></div></div>`;
+  body.innerHTML = `<div class="files"><div class="ftree" id="ftree"></div><div class="fpreview idle" id="fpreview"></div></div>`;
   const treeEl = body.querySelector("#ftree");
   const previewEl = body.querySelector("#fpreview");
+  // The placeholder states render container-less (no panel box), centered in
+  // the preview area; only a loaded file gets the bordered panel back.
+  const showPlaceholder = (kind, message) => {
+    previewEl.classList.add("idle");
+    previewEl.innerHTML = previewPlaceholderHtml(kind, message);
+  };
+  showPlaceholder("idle", "Select a file to preview.");
 
   let dir = ""; // current directory, relative to the scope root
   let sourceOverride = false; // per-selected-file "view source" toggle
@@ -131,18 +145,19 @@ export function renderFilesTab(body, { scope, callRpc }) {
     treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
     if (row) row.classList.add("sel");
     sourceOverride = false;
-    previewEl.innerHTML = '<div class="empty">loading…</div>';
+    showPlaceholder("loading");
     let file;
     try {
       file = await callRpc("fs.read", { ...scope, path });
     } catch (e) {
-      previewEl.innerHTML = `<div class="empty">cannot read: ${esc((e && e.message) || "error")}</div>`;
+      showPlaceholder("error", `cannot read: ${(e && e.message) || "error"}`);
       return;
     }
     renderPreview(path, file);
   };
 
   const renderPreview = (path, file) => {
+    previewEl.classList.remove("idle");
     const mode = previewModeFor(file.mime, file.truncated);
     const canToggle = previewHasSourceToggle(mode);
     const toggle = canToggle

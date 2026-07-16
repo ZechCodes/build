@@ -423,11 +423,18 @@ body.sidebar-collapsed #side-open { display:block; }
 .crumb a:hover { color:var(--accent); }
 .projmeta { color:var(--dim); font-size:12px; }
 /* ---- Files tab (worktree browser) ---- */
-.files { display:flex; gap:16px; align-items:flex-start; }
+.files { display:flex; gap:16px; align-items:stretch; height:100%; }
 .ftree { flex:0 0 300px; max-width:44vw; border:1px solid var(--line); border-radius:10px;
-  padding:8px; background:var(--panel); max-height:70vh; overflow:auto; }
+  padding:8px; background:var(--panel); overflow:auto; }
 .fpreview { flex:1; min-width:0; border:1px solid var(--line); border-radius:10px;
-  background:var(--panel); overflow:hidden; }
+  background:var(--panel); overflow:hidden; display:flex; flex-direction:column; }
+/* placeholder states (nothing selected / loading / error): no panel box,
+   message or throbber centered in the preview area */
+.fpreview.idle { border:none; background:none; align-items:center; justify-content:center; }
+.fpidle { color:var(--dim); font-size:13px; }
+.throbber { width:22px; height:22px; border-radius:50%; border:2px solid var(--line);
+  border-top-color:var(--accent); animation:throb .8s linear infinite; }
+@keyframes throb { to { transform:rotate(360deg); } }
 .fcrumb { font-size:11.5px; color:var(--dim); padding:4px 8px 8px; border-bottom:1px solid var(--line);
   margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow { display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:6px; font-size:13px;
@@ -441,7 +448,7 @@ body.sidebar-collapsed #side-open { display:block; }
   font-size:12px; }
 .fppath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .fpsize { color:var(--dim); flex:none; }
-.fpbody { padding:14px; overflow:auto; max-height:70vh; }
+.fpbody { padding:14px; overflow:auto; flex:1; min-height:0; }
 .fpbody .plan { max-width:none; border:none; padding:0; background:none; }
 .fsrc { margin:0; overflow:auto; }
 .fsrc code { font-family:var(--mono); font-size:12.5px; white-space:pre; }
@@ -460,6 +467,7 @@ body.sidebar-collapsed #side-open { display:block; }
 /* ---- sidebar main (primary checkout) row ---- */
 .smain-line .stitle { font-family:var(--mono); font-size:12px; }
 @media (max-width: 900px) {
-  .files { flex-direction:column; }
+  .files { flex-direction:column; height:auto; min-height:100%; }
   .ftree { flex:none; width:100%; max-width:none; max-height:40vh; }
+  .fpreview { min-height:200px; }
 }

@@ -113,6 +113,91 @@ Two entities replace the fused task.
 - Any change to the E2EE transport, relay, pairing, or terminal surfaces.
 - SDK harness integration.
 
+## Implementation decisions (locked after subsystem mapping)
+
+### Domain modules
+
+- New `bridge/src/plan.rs`: `PlanState` (`Created, Drafting, PlanReview, Approved,
+  Blocked, Failed, IdleUnreported, Interrupted, Abandoned`), `PlanEvent` (`Dispatch,
+  PlanReady, SendNotes, Approve, Blocked, Failed, WentIdle, Interrupt, Reply, Abandon`),
+  pure `plan_transition`. Plan-side stage doc state (`Planned/Approved` + `Revised`
+  staleness rule), `StageComment`, `CommentAnchor`, manifest types, and the
+  `is_worktree_contained_path` fence move here. A plan's coarse state stays `Approved`
+  once approved; mid-run doc churn is carried by per-stage doc states only.
+- New `bridge/src/run.rs`: `RunState` (`Created, Building, StageGate, Review, Blocked,
+  Failed, IdleUnreported, Interrupted, Merged, Abandoned, Archived`), `RunEvent`
+  (`Dispatch, BuildReady, RequestChanges, ApproveMerge, Blocked, Failed, WentIdle,
+  Interrupt, Reply, Abandon, Archive, ValidationPassed{last_stage}, ValidationFailed`),
+  pure `run_transition`. `StageGate` replaces the fused machine's reuse of `PlanReview`
+  as the between-stages gate. Run-side per-stage progress: `StageProgress { stage_id,
+  state: Building/Built/Validating/Validated{passed}, start_sha, validation }`.
+  No `Phase` parameter anywhere — each machine has exactly one working phase.
+- `task.rs` shrinks to the legacy deserialization shapes the migration needs, then dies.
+
+### Identity & session routing
+
+- Ids: `plan-<uuid>` / `run-<uuid>`. The MCP CLI stays `mcp --task <id>` (opaque);
+  the daemon routes each done report by owner lookup (plans map, then runs map).
+  `scaffold_build_dir` writes the owning entity's id and runs for both worktree kinds.
+- `DonePhase` stays `plan/build/revise/validate`. Owner kind disambiguates plan-side
+  vs run-side `revise`; within a run, `revising_stage_id` bookkeeping disambiguates
+  stage-revision (store write-back) from post-review changes, as today.
+
+### Store layout & migration
+
+- `store_dir/plans/<plan_id>/record.json` + `store_dir/plans/<plan_id>/docs/…` (docs
+  keep the worktree-relative `.build/plan.md` / `.build/plan/*` layout so
+  ingest/materialize are straight copies). `store_dir/runs/<run_id>.json`. Same
+  atomic-write + fsync discipline as today.
+- `ingest_plan_docs` (worktree → store) is **fail-fast** — an ingest error fails the
+  `done` handling; the plan never advances with unpersisted docs. `materialize_plan_docs`
+  (store → worktree) is the reverse copy; run-dispatch commits the result.
+- Migration on boot, before recovery: each legacy `<task_id>.json` becomes a plan record
+  (reusing the task id as plan id; docs from the `plans/<task_id>/` snapshot) and/or a
+  run record. Standard task never past planning → plan only. Quick task → run only
+  (`plan_id: None`). Past planning → plan (`Approved`) + run (state mapped 1:1;
+  fused multi-stage `PlanReview` with any stage progress → `StageGate`). Terminal
+  fused states map to terminal run states with the plan kept. Idempotent: successful
+  migration renames the legacy file to `<task_id>.json.migrated` (kept, ignored by the
+  loader); presence of new-format records short-circuits.
+
+### Worktrees & diffs
+
+- Planning worktrees: branch prefix `plan/<slug>`, created at plan dispatch, **kept warm
+  through the notes/revision loop** (the scope doc's warm-session property), torn down
+  (worktree + branch) on `Approve` or `Abandon`. Ingest is transactional at every
+  plan/revise `done`, so teardown never loses docs. A vanished planning worktree never
+  archives a plan — recovery marks the plan `Interrupted`; the next revision dispatch
+  re-creates a worktree materialized from the store.
+- Run worktrees: branch prefix `build/<slug>` as today. Dispatch order: create worktree →
+  scaffold → materialize plan docs → commit ("plan: <goal>") → record that commit as the
+  run's `base_sha` → spawn build session. The run's review diff baselines on `base_sha`
+  (falls back to merge-base for quick/adopted runs), keeping materialized docs out of
+  review noise while still surfacing any build-agent edits to them.
+- Planning worktree paths join the bound-paths exclusion set so they never surface as
+  adoptable external worktrees; the archive sweep iterates **runs only**.
+
+### Wire protocol (clean cutover; SPA ships in the same branch)
+
+- `plan.create/get/list/doc/stages/stage_doc/approve/send_notes/stage_approve/
+  stage_send_notes/comment_add/comment_delete/message/abandon/delete` — plan-scoped,
+  keyed by `plan_id`; doc reads come from the canonical store.
+- `run.create` (`plan_id` optional; quick runs pass `goal` directly; rejected while the
+  plan already has an active run — single-active-writer), `run.get/diff/request_changes/
+  stage_dispatch/stage_fix/set_auto_advance/git_action/message/abandon/delete/adopt/
+  release`.
+- `board.list` replaces `task.list`: `{ plans: [plan_view], runs: [run_view],
+  external_worktrees, primary_changes }`. `run_view` carries `plan_id`; stage progress
+  (run) and stage docs/comments (plan) are joined client-side by `plan_id` + stage id.
+- `task.approve_merge` and `task.resume` are confirmed dead wire (no SPA references);
+  their behavior folds into `run.git_action` / `run.message` recovery paths.
+
+### Model assignment for the build
+
+Fable: domain core (plan.rs/run.rs), store + migration, orchestrator core seams
+(dispatch/ingest/materialize/on_done routing/single-active-writer). Opus: orchestrator
+periphery, app.rs handlers + recovery + QA sims, templates/diff wiring, all SPA work.
+
 ## Invariants to hold through the refactor
 
 - The `done` tool remains the single MCP tool; phase semantics unchanged for agents.

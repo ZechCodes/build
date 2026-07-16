@@ -87,6 +87,10 @@ export function render() {
   }
   setActiveNav(App.route.name);
   sidebarRouteChanged(); // keep the rail's active row tracking the route
+  // Worktree-backed surfaces (task/worktree/main) are full-height tab shells;
+  // every other view keeps the centered reading column.
+  const surfaceRoutes = ["task", "worktree", "main"];
+  $("#root").classList.toggle("surface", surfaceRoutes.includes(App.route.name));
   if (App.route.name === "board") renderBoard();
   else if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();

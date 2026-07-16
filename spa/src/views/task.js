@@ -80,18 +80,22 @@ export async function renderTask() {
     }
   };
 
+  // The tab bar IS the top of the view; the task's identity lives in the
+  // sidebar. The bar's right cluster keeps the state chip (goal on hover) and
+  // the header actions.
   const shell = (t) => {
     const m = t || {};
     root.innerHTML = `
-      <div class="back" id="back">← Board</div>
-      <div class="thead"><h1>${esc(m.goal || "")}</h1>
-        <div class="right"><span class="chip ${chipClass(m.state)}">${STATE_LABEL[m.state] || m.state || ""}</span></div></div>
-      <div class="tmeta"><span>${esc(m.project || "")}</span><span>·</span><span>${esc(m.branch || "")}</span><span>·</span><span>${esc(m.harness || "")}</span>${m.adopted ? "<span>·</span><span>adopted</span>" : ""}
-        <span id="msgaction"></span><span class="taskactions" id="taskactions"></span></div>
+      <div class="surface-bar">
+        <div class="tabrow" id="tabrow"></div>
+        <div class="surface-meta">
+          <span id="msgaction"></span>
+          <span class="chip ${chipClass(m.state)}" title="${esc(m.goal || "")}">${STATE_LABEL[m.state] || m.state || ""}</span>
+          <span class="taskactions" id="taskactions"></span>
+        </div>
+      </div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
-      <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
-    $("#back").onclick = () => goHome();
     wireActions(m);
     showBanner(bannerText(localError, m.last_error));
     shellCtl = mountTabShell($("#tabrow"), {
@@ -115,6 +119,8 @@ export async function renderTask() {
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
     if (tabId === "plan" || tabId === "diff") {
+      const body = $("#tabbody");
+      if (body) body.classList.remove("bare");
       planKey = null;
       diffKey = null;
       paint();
@@ -127,6 +133,8 @@ export async function renderTask() {
     disposeAux();
     const body = $("#tabbody");
     if (!body) return;
+    // Terminal-ish tabs go edge-to-edge; content tabs keep the body padding.
+    body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
     if (tabId === "agent") {
       aux = mountAgentTab(body);
       return;

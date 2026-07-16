@@ -5,7 +5,7 @@
 // worktree's branch, subject, path, and diff is UNTRUSTED and escaped.
 
 import { $ } from "../dom.js";
-import { esc, humanAge } from "../core/text.js";
+import { esc } from "../core/text.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
 import { assembleDiffNotes } from "../core/notes.js";
@@ -68,6 +68,8 @@ export async function renderWorktree() {
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
     if (tabId === "diff") {
+      const body = $("#tabbody");
+      if (body) body.classList.remove("bare");
       diffKey = null;
       shellState = null; // force a shell rebuild + body repaint on the next paint
       paint();
@@ -80,6 +82,8 @@ export async function renderWorktree() {
     disposeAux();
     const body = $("#tabbody");
     if (!body) return;
+    // Terminal tabs go edge-to-edge; the Files browser keeps the body padding.
+    body.classList.toggle("bare", /^term-/.test(tabId));
     aux = mountAuxTab(body, tabId, {
       scope,
       callRpc: (method, params) => App.call(method, params),
@@ -141,18 +145,19 @@ export async function renderWorktree() {
     go({ name: "task", id: adopting.adoptedTaskId(), tab: "diff" });
   };
 
+  // The tab bar is the top of the view; the worktree's identity (branch) rides
+  // the bar's right cluster, path on hover.
   const shell = (meta) => {
-    const uncommitted = meta.dirty_files ? ` · ${meta.dirty_files} uncommitted` : "";
     root.innerHTML = `
-      <div class="back" id="back">← Board</div>
-      <div class="thead"><h1>${esc(meta.branch || "(detached)")}</h1>
-        <div class="right"><span class="chip">WORKTREE</span></div></div>
-      <div class="tmeta"><span>${esc(meta.head_subject || "")}</span><span>·</span><span>${esc(meta.path || "")}</span>${uncommitted ? `<span>·</span><span>${esc(meta.dirty_files + " uncommitted")}</span>` : ""}</div>
-      <div class="tis">Read-only — acting on this worktree adopts it as a task.</div>
+      <div class="surface-bar">
+        <div class="tabrow" id="tabrow"></div>
+        <div class="surface-meta">
+          <span class="mono dim" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
+          <span class="chip" title="Read-only — acting on this worktree adopts it as a task.">WORKTREE</span>
+        </div>
+      </div>
       <div class="task-error" id="wtError" role="alert" hidden></div>
-      <div class="tabrow" id="tabrow"></div>
       <div id="tabbody"></div>`;
-    $("#back").onclick = () => go({ name: "board" });
     shellCtl = mountTabShell($("#tabrow"), {
       tabs: staticTabs(),
       active: tab,
@@ -405,10 +410,10 @@ export async function renderWorktree() {
       diffComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
     // The shell rebuild wipes #tabbody (the in-progress general comment + its
     // focus live only there), so it obeys the SAME freeze-while-commenting
-    // discipline as the body repaint below — never rebuild while the reviewer is
-    // mid-comment, even though churny fields (dirty_files, head_subject) move as
-    // the user edits their own live checkout.
-    const shellKey = `${meta.branch}|${meta.adoptable}|${meta.dirty_files}|${meta.head_subject}|${meta.path}`;
+    // discipline as the body repaint below — never rebuild while the reviewer
+    // is mid-comment. Only the fields the bar actually shows are keyed; the
+    // churny ones (dirty_files, head_subject) no longer render anywhere.
+    const shellKey = `${meta.branch}|${meta.adoptable}|${meta.path}`;
     // Rebuild the header on first paint always; afterward only while the Diff tab
     // is active — an aux tab (Files/terminal) owns #tabbody and must not be wiped
     // by a churny header refresh (dirty_files/head_subject move as the user edits

@@ -6,7 +6,7 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App, go } from "../app.js";
+import { App } from "../app.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
@@ -37,15 +37,18 @@ export async function renderMain() {
     ...terminals.tabs(),
   ];
 
+  // The tab bar is the top of the view; the checkout's branch rides the bar's
+  // right cluster (path on hover) and stays live via refreshHeader.
   const shell = () => {
     root.innerHTML = `
-      <div class="back" id="back">← ${esc(projectName)}</div>
-      <div class="thead"><h1>${esc(meta.branch || "(detached)")}</h1>
-        <div class="right"><span class="chip">MAIN</span></div></div>
-      <div class="tmeta"><span>${esc(meta.path || "")}</span></div>
-      <div class="tabrow" id="tabrow"></div>
+      <div class="surface-bar">
+        <div class="tabrow" id="tabrow"></div>
+        <div class="surface-meta">
+          <span class="mono dim" id="mainbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
+          <span class="chip" title="${esc(projectName)}">MAIN</span>
+        </div>
+      </div>
       <div id="tabbody"></div>`;
-    $("#back").onclick = () => go({ name: "project", projectId });
     shellCtl = mountTabShell($("#tabrow"), {
       tabs: staticTabs(),
       active: tab,
@@ -62,6 +65,8 @@ export async function renderMain() {
     if (shellCtl) shellCtl.setActive(id);
     disposeAux();
     const body = $("#tabbody");
+    // Terminal tabs go edge-to-edge; Changes/Files keep the body padding.
+    body.classList.toggle("bare", /^term-/.test(id));
     if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status
       // responses so the branch/path header stays live while it runs.
@@ -118,10 +123,11 @@ export async function renderMain() {
     const nextMeta = { branch: status.branch, path: status.path };
     if (nextMeta.branch === meta.branch && nextMeta.path === meta.path) return;
     meta = nextMeta;
-    const h1 = root.querySelector(".thead h1");
-    if (h1) h1.textContent = meta.branch || "(detached)";
-    const metaEl = root.querySelector(".tmeta span");
-    if (metaEl) metaEl.textContent = meta.path || "";
+    const branchEl = root.querySelector("#mainbranch");
+    if (branchEl) {
+      branchEl.textContent = meta.branch || "(detached)";
+      branchEl.title = meta.path || "";
+    }
   };
 
   // Fetch the project name for the back link (best-effort; falls back to the id).

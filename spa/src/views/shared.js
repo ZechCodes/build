@@ -11,6 +11,7 @@ export const STATE_LABEL = {
   created: "CREATED",
   merged: "MERGED",
   abandoned: "ABANDONED",
+  archived: "ARCHIVED",
   blocked: "BLOCKED",
   failed: "FAILED",
 };
@@ -29,9 +30,12 @@ export function payloadFor(task) {
   return "";
 }
 
+/** Terminal display states (the board's DONE bucket; never running/needs-you). */
+export const TERMINAL_STATES = new Set(["merged", "abandoned", "archived"]);
+
 /** Tasks that are waiting on the user (the board's "NEEDS YOU" bucket). */
 export function attnTasks(tasks) {
-  return tasks.filter((t) => t.needs_attention && t.state !== "merged" && t.state !== "abandoned");
+  return tasks.filter((t) => t.needs_attention && !TERMINAL_STATES.has(t.state));
 }
 
 export function setBadge(tasks) {

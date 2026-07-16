@@ -4,9 +4,9 @@
 // `merge_failed:` error prefix) are unit-testable in isolation.
 
 // Terminal *display* states the bridge's task.delete accepts (merged/abandoned/
-// failed). A failed task is recoverable by replying, but it can also be cleared
-// off the board, so Delete is the removal affordance we show for it.
-const DELETABLE = new Set(["merged", "abandoned", "failed"]);
+// archived/failed). A failed task is recoverable by replying, but it can also be
+// cleared off the board, so Delete is the removal affordance we show for it.
+const DELETABLE = new Set(["merged", "abandoned", "archived", "failed"]);
 
 /** Whether task.delete is valid for this state (terminal on the board). */
 export function canDelete(state) {

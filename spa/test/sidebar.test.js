@@ -37,6 +37,14 @@ describe("buildSidebarModel", () => {
     expect(p2.running.map((t) => t.task_id)).toEqual(["elsewhere"]);
   });
 
+  it("archived tasks are terminal — done-recently, never running or needs-you", () => {
+    const tasks = [task({ task_id: "x", state: "archived", needs_attention: false, updated_at: iso(5) })];
+    const [p1] = buildSidebarModel({ projects, tasks, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
+    expect(p1.doneRecently.map((t) => t.task_id)).toEqual(["x"]);
+    expect(p1.running).toEqual([]);
+    expect(p1.unread).toBe(0);
+  });
+
   it("unread counts needs-you tasks not yet read", () => {
     const tasks = [
       task({ task_id: "a" }),

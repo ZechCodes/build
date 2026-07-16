@@ -35,7 +35,10 @@ export async function renderTask() {
   let aux = null; // the mounted files/terminal/agent pane controller
 
   const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
-  const defaultTab = () => (last && (last.state === "created" || last.state === "planning" || last.state === "plan_review") ? "plan" : "changes");
+  // Plan-side states open on the plan; archived opens there too — the preserved
+  // plan docs are all that remains of a worktree the user deleted.
+  const PLAN_FIRST_STATES = ["created", "planning", "plan_review", "archived"];
+  const defaultTab = () => (last && PLAN_FIRST_STATES.includes(last.state) ? "plan" : "changes");
   const staticTabs = () => [
     { id: "plan", label: "Plan" },
     { id: "changes", label: "Changes" },

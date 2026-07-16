@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../src/core/taskActions.js";
 
 describe("task removal actions match the bridge contract", () => {
-  it("delete is offered only for terminal states (merged/abandoned/failed)", () => {
-    for (const s of ["merged", "abandoned", "failed"]) expect(canDelete(s)).toBe(true);
+  it("delete is offered only for terminal states (merged/abandoned/archived/failed)", () => {
+    for (const s of ["merged", "abandoned", "archived", "failed"]) expect(canDelete(s)).toBe(true);
     for (const s of ["planning", "building", "plan_review", "review", "blocked", "idle_unreported", "interrupted", "created"])
       expect(canDelete(s)).toBe(false);
   });
@@ -11,7 +11,7 @@ describe("task removal actions match the bridge contract", () => {
   it("abandon is offered for every live, non-deletable state", () => {
     for (const s of ["planning", "building", "plan_review", "review", "blocked", "idle_unreported", "interrupted", "created"])
       expect(canAbandon(s)).toBe(true);
-    for (const s of ["merged", "abandoned", "failed"]) expect(canAbandon(s)).toBe(false);
+    for (const s of ["merged", "abandoned", "archived", "failed"]) expect(canAbandon(s)).toBe(false);
   });
 
   it("delete and abandon are mutually exclusive (exactly one removal action)", () => {

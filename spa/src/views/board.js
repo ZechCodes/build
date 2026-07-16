@@ -3,7 +3,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
-import { STATE_LABEL, chipClass, payloadFor, setBadge } from "./shared.js";
+import { STATE_LABEL, TERMINAL_STATES, chipClass, payloadFor, setBadge } from "./shared.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
 
@@ -12,7 +12,7 @@ export async function renderBoard() {
   const draw = (tasks, externalWorktrees) => {
     const byBucket = { attn: [], work: [], done: [] };
     for (const t of tasks) {
-      if (t.state === "merged" || t.state === "abandoned") byBucket.done.push(t);
+      if (TERMINAL_STATES.has(t.state)) byBucket.done.push(t);
       else if (t.needs_attention) byBucket.attn.push(t);
       else byBucket.work.push(t);
     }

@@ -5,7 +5,7 @@
 import { esc, humanAge } from "./text.js";
 
 /** Truncation is CSS's job (ellipsis); classification is ours. */
-const TERMINAL = new Set(["merged", "abandoned"]);
+const TERMINAL = new Set(["merged", "abandoned", "archived"]);
 const DONE_RECENTLY_CAP = 3;
 const DONE_RECENTLY_WINDOW_MS = 7 * 24 * 3600 * 1000;
 
@@ -52,7 +52,9 @@ const statHtml = (stat) =>
     : "";
 
 function taskRow(t, { icon, right, cls = "" }) {
-  const tab = t.state === "plan_review" ? "plan" : "changes";
+  // Plan-side and archived rows land on the plan (an archived task's worktree
+  // is gone — the preserved plan is what's left); everything else on Changes.
+  const tab = t.state === "plan_review" || t.state === "archived" ? "plan" : "changes";
   return `<div class="srow ${cls}" data-task="${esc(t.task_id)}" data-tab="${tab}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(t.goal)}</span>${right}</div>`;
 }

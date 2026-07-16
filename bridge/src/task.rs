@@ -79,12 +79,19 @@ pub enum TaskState {
     Merged,
     /// Abandoned; worktree removed, branch kept. Terminal.
     Abandoned,
+    /// The worktree disappeared out from under the task (the user deleted it
+    /// themselves). The task is kept as quiet read-only history — its plan
+    /// docs survive in the store's snapshot. Terminal.
+    Archived,
 }
 
 impl TaskState {
     /// Terminal states accept no further events.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskState::Merged | TaskState::Abandoned)
+        matches!(
+            self,
+            TaskState::Merged | TaskState::Abandoned | TaskState::Archived
+        )
     }
 
     /// States that belong in the board's "Needs you" bucket (UI brief §4.1):
@@ -141,6 +148,9 @@ pub enum TaskEvent {
     Reply,
     /// Abandon the task from any non-terminal state.
     Abandon,
+    /// The task's worktree disappeared from disk (deleted by the user outside
+    /// Build). Raised by the archive sweep, never by a human action.
+    Archive,
     /// The validation agent reported done(phase=validate, completed, passed=true).
     /// `last_stage` = the validated stage is the manifest's final stage.
     ValidationPassed { last_stage: bool },
@@ -238,6 +248,10 @@ pub fn transition(
 
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
+
+        // Archive (the worktree vanished from disk) likewise — the user deleted
+        // the files themselves, so the task retires to quiet history.
+        (s, E::Archive) if !s.is_terminal() => Ok(Archived),
 
         // Terminal states and every other pairing are rejected.
         _ => illegal(),
@@ -731,6 +745,48 @@ mod tests {
         assert!(TaskState::Interrupted(Phase::Build).needs_attention());
         assert!(!TaskState::Interrupted(Phase::Build).is_working());
         assert!(!TaskState::Interrupted(Phase::Build).is_terminal());
+    }
+
+    #[test]
+    fn archive_from_any_nonterminal_state() {
+        for setup in [
+            vec![],
+            vec![TaskEvent::Dispatch],
+            vec![TaskEvent::Dispatch, TaskEvent::PlanReady],
+            vec![
+                TaskEvent::Dispatch,
+                TaskEvent::PlanReady,
+                TaskEvent::ApprovePlan,
+            ],
+            vec![
+                TaskEvent::Dispatch,
+                TaskEvent::PlanReady,
+                TaskEvent::ApprovePlan,
+                TaskEvent::BuildReady,
+            ],
+            vec![TaskEvent::Dispatch, TaskEvent::Blocked],
+        ] {
+            let mut t = task(TaskKind::Standard);
+            for e in setup {
+                t.apply(e).expect("setup transition legal");
+            }
+            assert!(!t.state.is_terminal());
+            t.apply(TaskEvent::Archive)
+                .expect("archive should be legal");
+            assert_eq!(t.state, TaskState::Archived);
+        }
+    }
+
+    #[test]
+    fn archived_is_terminal_quiet_history() {
+        assert!(TaskState::Archived.is_terminal());
+        assert!(!TaskState::Archived.needs_attention());
+        assert!(!TaskState::Archived.is_working());
+        let mut t = task(TaskKind::Standard);
+        t.apply(TaskEvent::Archive).expect("archive legal");
+        assert!(t.apply(TaskEvent::Reply).is_err());
+        assert!(t.apply(TaskEvent::Abandon).is_err());
+        assert!(t.apply(TaskEvent::Archive).is_err());
     }
 
     #[test]

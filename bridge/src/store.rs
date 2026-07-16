@@ -171,9 +171,10 @@ impl TaskStore {
     }
 
     /// Delete a task's persisted record (and any leftover `.tmp` from an interrupted
-    /// write). Removing a record that isn't there is not an error — delete is only
-    /// ever called for a terminal task the board wants gone, and idempotency keeps a
-    /// double-delete or a never-persisted task from failing the RPC.
+    /// write), plus its plan snapshot. Removing a record that isn't there is not an
+    /// error — delete is only ever called for a terminal task the board wants gone,
+    /// and idempotency keeps a double-delete or a never-persisted task from failing
+    /// the RPC.
     pub fn delete(&self, task_id: &str) -> Result<(), TaskStoreError> {
         for path in [
             self.path_for(task_id),
@@ -185,8 +186,80 @@ impl TaskStore {
                 Err(e) => return Err(TaskStoreError::Io(e)),
             }
         }
+        match std::fs::remove_dir_all(self.plan_snapshot_dir(task_id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(TaskStoreError::Io(e)),
+        }
         Ok(())
     }
+
+    /// Where a task's plan-doc snapshot lives.
+    fn plan_snapshot_dir(&self, task_id: &str) -> PathBuf {
+        self.dir.join("plans").join(task_id)
+    }
+
+    /// Mirror the worktree's plan docs into the store — the single plan file
+    /// (`plan_path`, worktree-relative) and the whole multi-stage plan dir
+    /// (`.build/plan/`) — so a task whose worktree the user deletes keeps its
+    /// plans readable as archived history. Missing sources are quiet no-ops; a
+    /// re-snapshot overwrites with the latest contents.
+    pub fn snapshot_plan_docs(
+        &self,
+        task_id: &str,
+        worktree_path: &Path,
+        plan_path: &str,
+    ) -> Result<(), TaskStoreError> {
+        let snapshot_root = self.plan_snapshot_dir(task_id);
+        if snapshot_relative_path_escapes(plan_path) {
+            return Ok(()); // the callers fence plan_path already; never mirror an escapee
+        }
+        let plan_source = worktree_path.join(plan_path);
+        if plan_source.is_file() {
+            let dest = snapshot_root.join(plan_path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&plan_source, &dest)?;
+        }
+        let stage_dir = worktree_path.join(".build/plan");
+        if stage_dir.is_dir() {
+            let dest_dir = snapshot_root.join(".build/plan");
+            std::fs::create_dir_all(&dest_dir)?;
+            for entry in std::fs::read_dir(&stage_dir)? {
+                let source = entry?.path();
+                if !source.is_file() {
+                    continue; // stage docs are a flat dir of markdown files
+                }
+                let Some(name) = source.file_name() else {
+                    continue;
+                };
+                std::fs::copy(&source, dest_dir.join(name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read one plan doc from a task's snapshot by its worktree-relative path.
+    /// None when never snapshotted (or the path tries to escape the snapshot).
+    pub fn read_plan_snapshot(&self, task_id: &str, rel_path: &str) -> Option<String> {
+        if snapshot_relative_path_escapes(rel_path) {
+            return None;
+        }
+        std::fs::read_to_string(self.plan_snapshot_dir(task_id).join(rel_path)).ok()
+    }
+}
+
+/// A snapshot path must stay inside the task's snapshot dir: plain relative
+/// components only — no roots, no prefixes, no `..`.
+fn snapshot_relative_path_escapes(rel_path: &str) -> bool {
+    let path = Path::new(rel_path);
+    path.components().any(|c| {
+        !matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
 }
 
 /// Only `*.json` files are task records; `.tmp` leftovers from an interrupted
@@ -374,6 +447,95 @@ mod tests {
         // Deleting again (or a task that never persisted) is not an error.
         store.delete("task-1").unwrap();
         store.delete("never-existed").unwrap();
+    }
+
+    #[test]
+    fn plan_snapshot_mirrors_plan_doc_and_stage_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join(".build/plan")).unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "# the plan").unwrap();
+        std::fs::write(worktree.join(".build/plan/01-first.md"), "stage one").unwrap();
+        std::fs::write(worktree.join(".build/plan/02-second.md"), "stage two").unwrap();
+
+        store
+            .snapshot_plan_docs("task-1", &worktree, ".build/plan.md")
+            .unwrap();
+        assert_eq!(
+            store
+                .read_plan_snapshot("task-1", ".build/plan.md")
+                .as_deref(),
+            Some("# the plan")
+        );
+        assert_eq!(
+            store
+                .read_plan_snapshot("task-1", ".build/plan/01-first.md")
+                .as_deref(),
+            Some("stage one")
+        );
+        assert_eq!(
+            store
+                .read_plan_snapshot("task-1", ".build/plan/02-second.md")
+                .as_deref(),
+            Some("stage two")
+        );
+    }
+
+    #[test]
+    fn plan_snapshot_tracks_updates_and_tolerates_missing_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        let worktree = dir.path().join("wt");
+        // Nothing to snapshot yet (no worktree at all) — a quiet no-op.
+        store
+            .snapshot_plan_docs("task-1", &worktree, ".build/plan.md")
+            .unwrap();
+        assert_eq!(store.read_plan_snapshot("task-1", ".build/plan.md"), None);
+
+        std::fs::create_dir_all(worktree.join(".build")).unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "v1").unwrap();
+        store
+            .snapshot_plan_docs("task-1", &worktree, ".build/plan.md")
+            .unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "v2 revised").unwrap();
+        store
+            .snapshot_plan_docs("task-1", &worktree, ".build/plan.md")
+            .unwrap();
+        assert_eq!(
+            store
+                .read_plan_snapshot("task-1", ".build/plan.md")
+                .as_deref(),
+            Some("v2 revised"),
+            "a re-snapshot overwrites with the latest contents"
+        );
+    }
+
+    #[test]
+    fn plan_snapshot_read_refuses_traversal_and_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        assert_eq!(
+            store.read_plan_snapshot("task-1", "../task-2/plan.md"),
+            None
+        );
+        assert_eq!(store.read_plan_snapshot("task-1", "/etc/hostname"), None);
+    }
+
+    #[test]
+    fn delete_removes_the_plan_snapshot_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(dir.path().join("tasks"));
+        store.save(&record("task-1", TaskState::Merged)).unwrap();
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join(".build")).unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "# plan").unwrap();
+        store
+            .snapshot_plan_docs("task-1", &worktree, ".build/plan.md")
+            .unwrap();
+
+        store.delete("task-1").unwrap();
+        assert_eq!(store.read_plan_snapshot("task-1", ".build/plan.md"), None);
     }
 
     fn record(id: &str, state: TaskState) -> PersistedTask {

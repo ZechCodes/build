@@ -812,11 +812,21 @@ impl AppState {
             created_at,
             updated_at,
         };
-        self.task_store
-            .as_ref()
-            .expect("checked above")
+        let store = self.task_store.as_ref().expect("checked above");
+        store
             .save(&record)
-            .map_err(|e| format!("task store: {e}"))
+            .map_err(|e| format!("task store: {e}"))?;
+        // Mirror the plan docs beside the record (best-effort): if the user
+        // later deletes the worktree themselves, the archived task keeps its
+        // plans readable from this snapshot.
+        if active.worktree.path.exists() {
+            if let Err(e) =
+                store.snapshot_plan_docs(task_id, &active.worktree.path, &active.plan_path)
+            {
+                eprintln!("plan snapshot {task_id}: {e}");
+            }
+        }
+        Ok(())
     }
 
     /// The shared tail of every task mutation: compute the response view, persist
@@ -2268,11 +2278,11 @@ impl AppState {
         let state = active.task.state.clone();
         if !matches!(
             state,
-            TaskState::Merged | TaskState::Abandoned | TaskState::Failed(_)
+            TaskState::Merged | TaskState::Abandoned | TaskState::Archived | TaskState::Failed(_)
         ) {
             return Err(format!(
                 "task.delete: task is {} — only terminal tasks \
-                 (merged/abandoned/failed) can be deleted",
+                 (merged/abandoned/archived/failed) can be deleted",
                 state_str(&state)
             ));
         }
@@ -2365,8 +2375,15 @@ impl AppState {
             ));
         }
         let path = active.worktree.path.join(&active.plan_path);
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| format!("plan not available: {e}"))?;
+        // A deleted worktree (archived task) falls back to the store snapshot.
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(e) => self
+                .task_store
+                .as_ref()
+                .and_then(|store| store.read_plan_snapshot(&task_id, &active.plan_path))
+                .ok_or_else(|| format!("plan not available: {e}"))?,
+        };
         Ok(json!({ "plan_path": active.plan_path, "contents": contents }))
     }
 
@@ -2376,7 +2393,74 @@ impl AppState {
         Ok(self.task_view(&task_id, active))
     }
 
+    /// A worktree the user deletes must disappear from Build (they knew what
+    /// they were doing). Any live task whose worktree directory is gone retires
+    /// to Archived: session ended, notifications cleared (archived never needs
+    /// attention), git's stale worktree record pruned — but the task record and
+    /// its plan-doc snapshot stay as quiet history. `Created` is exempt: its
+    /// worktree may legitimately not exist yet.
+    fn archive_tasks_with_deleted_worktrees(&mut self) {
+        let doomed: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, active)| {
+                !active.task.state.is_terminal()
+                    && !matches!(active.task.state, TaskState::Created)
+                    && !active.worktree.path.exists()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for task_id in doomed {
+            let Ok(mut active) = self.take(&task_id) else {
+                continue;
+            };
+            match active.task.apply(TaskEvent::Archive) {
+                Ok(_) => {
+                    active.end_session();
+                    self.prune_worktree_records(&task_id);
+                    eprintln!(
+                        "archived {task_id}: its worktree {} was deleted outside Build",
+                        active.worktree.path.display()
+                    );
+                }
+                Err(e) => eprintln!("archive {task_id}: {e}"),
+            }
+            let (_, persisted) = self.finish_mutation(task_id.clone(), active);
+            if let Err(e) = persisted {
+                eprintln!("archive {task_id}: {e}");
+            }
+        }
+    }
+
+    /// Best-effort `git worktree prune` in the task's project repo, so the
+    /// deleted worktree also vanishes from git's bookkeeping (and from any
+    /// `git worktree list` the user runs).
+    fn prune_worktree_records(&mut self, task_id: &str) {
+        let Some(repo_path) = self
+            .task_project
+            .get(task_id)
+            .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
+            .map(|p| p.repo_path.clone())
+        else {
+            return;
+        };
+        match std::process::Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(&repo_path)
+            .output()
+        {
+            Ok(out) if !out.status.success() => eprintln!(
+                "git worktree prune {}: {}",
+                repo_path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => eprintln!("git worktree prune {}: {e}", repo_path.display()),
+            Ok(_) => {}
+        }
+    }
+
     fn task_list(&mut self) -> Value {
+        self.archive_tasks_with_deleted_worktrees();
         let ids: Vec<String> = self.tasks.keys().cloned().collect();
         let tasks: Vec<Value> = ids
             .into_iter()
@@ -2917,8 +3001,15 @@ impl AppState {
             ));
         }
         let path = active.worktree.path.join(&stage.path);
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| format!("stage doc not available: {e}"))?;
+        // A deleted worktree (archived task) falls back to the store snapshot.
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(e) => self
+                .task_store
+                .as_ref()
+                .and_then(|store| store.read_plan_snapshot(&task_id, &stage.path))
+                .ok_or_else(|| format!("stage doc not available: {e}"))?,
+        };
         Ok(json!({ "stage_id": stage.id, "path": stage.path, "contents": contents }))
     }
 
@@ -4138,6 +4229,7 @@ pub fn state_str(state: &TaskState) -> String {
         TaskState::Interrupted(_) => "interrupted".into(),
         TaskState::Merged => "merged".into(),
         TaskState::Abandoned => "abandoned".into(),
+        TaskState::Archived => "archived".into(),
     }
 }
 
@@ -4267,6 +4359,125 @@ mod tests {
         let t3 = entry(&state.handle(req("task.list", json!({}))));
         assert!(t3["stat"].is_null(), "{t3:?}");
         assert!(t3["updated_at"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn deleting_a_worktree_archives_the_task_and_keeps_its_plans() {
+        let (dir, repo) = init_repo();
+        let tasks_dir = dir.path().join("tasks");
+        let task_id;
+        let worktree_path;
+        let doc_before;
+        {
+            let mut state = AppState::new(
+                repo.clone(),
+                dir.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_task_store(&tasks_dir)
+            .unwrap();
+            let res = state.handle(req("task.dispatch", json!({ "goal": "doomed worktree" })));
+            task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+            assert_eq!(res["result"]["state"], "plan_review");
+            let doc = state.handle(req(
+                "task.stage_doc",
+                json!({ "task_id": task_id, "stage_id": "first-half" }),
+            ));
+            doc_before = doc["result"]["contents"].as_str().unwrap().to_string();
+
+            // The user deletes the worktree out from under Build.
+            worktree_path = state.tasks.get(&task_id).unwrap().worktree.path.clone();
+            std::fs::remove_dir_all(&worktree_path).unwrap();
+
+            // The next poll retires the task to quiet archived history — no
+            // lingering "needs you" card or badge.
+            let list = state.handle(req("task.list", json!({})));
+            let entry = list["result"]["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["task_id"] == json!(task_id.clone()))
+                .unwrap()
+                .clone();
+            assert_eq!(entry["state"], "archived", "{entry:?}");
+            assert_eq!(entry["needs_attention"], false, "{entry:?}");
+
+            // git's bookkeeping forgets the deleted worktree too.
+            let out = std::process::Command::new("git")
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            let listing = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(
+                !listing.contains(&worktree_path.display().to_string()),
+                "stale worktree record survived the archive: {listing}"
+            );
+
+            // The plan docs survive via the store's snapshot.
+            let doc = state.handle(req(
+                "task.stage_doc",
+                json!({ "task_id": task_id, "stage_id": "first-half" }),
+            ));
+            assert_eq!(doc["ok"], true, "{doc:?}");
+            assert_eq!(doc["result"]["contents"].as_str().unwrap(), doc_before);
+        } // daemon dies
+
+        // Archived state and the snapshot survive a restart…
+        let mut reloaded = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(&tasks_dir)
+        .unwrap();
+        let got = reloaded.handle(req("task.get", json!({ "task_id": task_id })));
+        assert_eq!(got["result"]["state"], "archived", "{got:?}");
+        let doc = reloaded.handle(req(
+            "task.stage_doc",
+            json!({ "task_id": task_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(doc["ok"], true, "{doc:?}");
+        assert_eq!(doc["result"]["contents"].as_str().unwrap(), doc_before);
+
+        // …and an archived task can be cleared off the board.
+        let deleted = reloaded.handle(req("task.delete", json!({ "task_id": task_id })));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+    }
+
+    #[test]
+    fn archive_sweep_works_without_a_task_store() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let res = state.handle(req(
+            "task.dispatch",
+            json!({ "goal": "quick and doomed", "kind": "quick" }),
+        ));
+        let task_id = res["result"]["task_id"].as_str().unwrap().to_string();
+        assert_eq!(res["result"]["state"], "review");
+
+        let worktree_path = state.tasks.get(&task_id).unwrap().worktree.path.clone();
+        std::fs::remove_dir_all(&worktree_path).unwrap();
+
+        let list = state.handle(req("task.list", json!({})));
+        let entry = list["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["task_id"] == json!(task_id.clone()))
+            .unwrap()
+            .clone();
+        assert_eq!(entry["state"], "archived", "{entry:?}");
     }
 
     #[test]

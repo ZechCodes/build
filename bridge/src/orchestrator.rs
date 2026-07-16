@@ -1020,7 +1020,7 @@ impl Orchestrator {
                     "the task is at a review gate — use send notes / request changes there".into(),
                 ))
             }
-            S::Created | S::Merged | S::Abandoned => {
+            S::Created | S::Merged | S::Abandoned | S::Archived => {
                 return Err(OrchestratorError::Gate(
                     "no agent session to message".into(),
                 ))

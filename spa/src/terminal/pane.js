@@ -4,6 +4,7 @@
 // across tab switches and reloads; an explicit close is term.close (the tab's ×).
 
 import { createTouchScroll, createWheelQuantizer } from "./touchScroll.js";
+import { createWheelReporter } from "./mouseWheel.js";
 
 let ghosttyReady = null; // module-level: boot ghostty-web (wasm inlined) once per page.
 function loadGhostty() {
@@ -29,6 +30,20 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
   host.innerHTML = "";
   const term = new Terminal({ fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
   term.open(host);
+
+  // A PTY app that tracks the mouse (Claude Code: DECSET 1000 + SGR 1006) gets
+  // real scroll reports; without this, ghostty's alt-screen fallback turns the
+  // wheel into arrow keys, which such apps reject ("use PgUp/PgDn to scroll").
+  const wheelReporter = createWheelReporter({
+    hasMouseTracking: () => term.hasMouseTracking?.() ?? false,
+    isSgr: () => term.getMode?.(1006) ?? false,
+    getCellSize: () => {
+      const metrics = term.renderer?.getMetrics?.();
+      return { width: metrics?.width ?? 9, height: metrics?.height ?? 20 };
+    },
+    send: (data) => input(data).catch(() => {}), // a dead session drops scrolls quietly
+  });
+  term.attachCustomWheelEventHandler?.((event) => wheelReporter(event, host.getBoundingClientRect()));
 
   // ghostty-web registers only mouse/wheel listeners on the host, so on touch
   // devices a drag does nothing. Translate one-finger drags into synthetic

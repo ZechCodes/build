@@ -4,7 +4,7 @@ import {
   uncommittedHtml,
   commitRowHtml,
   commitDetailHtml,
-  historyHtml,
+  changesRailHtml,
 } from "../src/core/gitRender.js";
 
 const NOW = 1_750_000_000; // fixed clock for relative-time assertions
@@ -159,8 +159,9 @@ describe("commitRowHtml", () => {
     expect(commitRowHtml(commit(), { nowSeconds: NOW })).not.toContain("ahead");
   });
 
-  it("marks the expanded row", () => {
-    expect(commitRowHtml(commit(), { expanded: true, nowSeconds: NOW })).toContain("expanded");
+  it("marks the selected row", () => {
+    expect(commitRowHtml(commit(), { selected: true, nowSeconds: NOW })).toContain("sel");
+    expect(commitRowHtml(commit(), { nowSeconds: NOW })).not.toContain("sel");
   });
 });
 
@@ -205,40 +206,54 @@ describe("commitDetailHtml", () => {
   });
 });
 
-describe("historyHtml", () => {
+describe("changesRailHtml", () => {
   const log = (overrides = {}) => ({
     branch: "main",
     commits: [commit(), commit({ hash: "c".repeat(40), short: "ccccccc", subject: "older" })],
     more: false,
     ...overrides,
   });
+  const rail = (overrides = {}) =>
+    changesRailHtml({ review: null, status: status(), log: log(), selected: "uncommitted", nowSeconds: NOW, ...overrides });
 
-  it("renders a row per commit", () => {
-    const html = historyHtml(log(), { nowSeconds: NOW });
+  it("renders a commit row per log entry under a History head", () => {
+    const html = rail();
     expect(html).toContain(`data-hash="${"a".repeat(40)}"`);
     expect(html).toContain(`data-hash="${"c".repeat(40)}"`);
+    expect(html).toContain("History");
+  });
+
+  it("always offers the Uncommitted entry, with the dirty file count", () => {
+    expect(rail()).toContain('data-sel="uncommitted"');
+    expect(rail()).toContain("3 files");
+    expect(rail({ status: status({ files: [] }) })).toContain("clean");
+  });
+
+  it("offers the review entry only when a review context exists, showing the base", () => {
+    expect(rail()).not.toContain('data-sel="review"');
+    const html = rail({ review: { base: "main" }, selected: "review" });
+    expect(html).toContain('data-sel="review"');
+    expect(html).toContain("All changes");
+    expect(html).toContain("vs main");
+  });
+
+  it("escapes the review base branch", () => {
+    const html = rail({ review: { base: '<img src=x>' } });
+    expect(html).not.toContain("<img");
+  });
+
+  it("marks exactly the selected entry", () => {
+    const html = rail({ selected: "a".repeat(40) });
+    expect(html).toContain('crow sel"');
+    expect(html.match(/rrow sel/g)).toBeNull();
   });
 
   it("shows the Show more affordance only when another page exists", () => {
-    expect(historyHtml(log({ more: true }), { nowSeconds: NOW })).toContain('class="btn mini gitmore"');
-    expect(historyHtml(log(), { nowSeconds: NOW })).not.toContain("gitmore");
-  });
-
-  it("inlines the cached detail under the expanded row", () => {
-    const detail = {
-      hash: "a".repeat(40), short: "aaaaaaa", subject: "fix the widget", body: "", author: "Zech",
-      email: "z@example.com", time: NOW, stat: { files_changed: 0, insertions: 0, deletions: 0 }, patch: "", truncated: false,
-    };
-    const html = historyHtml(log(), { expandedHash: "a".repeat(40), expandedDetail: detail, nowSeconds: NOW });
-    expect(html).toContain('class="cdetail"');
-  });
-
-  it("shows a loading placeholder while the expanded detail is in flight", () => {
-    const html = historyHtml(log(), { expandedHash: "a".repeat(40), expandedDetail: null, nowSeconds: NOW });
-    expect(html).toContain("cdetail-loading");
+    expect(rail({ log: log({ more: true }) })).toContain('class="btn mini gitmore"');
+    expect(rail()).not.toContain("gitmore");
   });
 
   it("renders the empty state for a repo with no commits", () => {
-    expect(historyHtml(log({ commits: [] }), { nowSeconds: NOW })).toContain("No commits yet.");
+    expect(rail({ log: log({ commits: [] }) })).toContain("No commits yet.");
   });
 });

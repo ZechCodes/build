@@ -1,17 +1,16 @@
-// The task view: plan tab (select-to-comment review) + diff tab (line comments,
-// request-changes, and the git split button), live-polled every 1.6s.
+// The task view: plan tab (select-to-comment review) + the Changes tab, where
+// the review diff lives as the commit rail's "All changes" entry (taskReview
+// plug inside the git pane). Live-polled every 1.6s.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
-import { parseDiff, filterNoiseFiles } from "../core/diff.js";
-import { diffFilesHtml } from "../core/diffRender.js";
 import { mountSplitButton } from "../core/splitButton.js";
-import { assemblePlanNotes, assembleDiffNotes } from "../core/notes.js";
+import { assemblePlanNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 import { STATE_LABEL, chipClass } from "./shared.js";
-import { canDelete, canAbandon, mergeFailureReason, bannerText } from "../core/taskActions.js";
+import { canDelete, canAbandon, bannerText } from "../core/taskActions.js";
 import { openMessageAgent } from "../sheets/message.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
@@ -19,36 +18,8 @@ import { renderStagesTab, stageActionBusy } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
+import { createTaskReview } from "./taskReview.js";
 import { terminalManager } from "../terminal/manager.js";
-
-// The diff-tab git split button: each option id maps to a task.git_action call.
-// cleanup is omitted for commit/push (the bridge rejects cleanup on non-merges).
-const GIT_ACTION_RPC = {
-  merge_prune: { action: "merge", cleanup: "prune" },
-  merge_keep: { action: "merge", cleanup: "keep" },
-  merge_release: { action: "merge", cleanup: "release" },
-  merge_push: { action: "merge_push", cleanup: "prune" },
-  commit: { action: "commit" },
-  push: { action: "push" },
-};
-
-// The diff-tab merge option set. Adopted tasks add "Merge & release" (un-adopt
-// after merge, keeping the user's worktree). Descriptions carry the raw base
-// branch — the split button escapes them.
-function diffMergeOptions(adopted, base) {
-  const options = [
-    { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: `commit, merge into ${base}, remove the worktree + branch`, busyLabel: "merging…" },
-    { id: "merge_keep", menuLabel: "Merge & keep worktree", description: `merge into ${base}, keep the worktree and branch`, busyLabel: "merging…" },
-  ];
-  if (adopted)
-    options.push({ id: "merge_release", menuLabel: "Merge & release", description: `merge into ${base}, then un-adopt — keep the worktree and branch, drop the task`, busyLabel: "merging…" });
-  options.push(
-    { id: "merge_push", menuLabel: "Merge & push", description: `merge, then push ${base} to origin`, busyLabel: "merging & pushing…" },
-    { id: "commit", menuLabel: "Commit", description: "commit the work, stay on the branch", busyLabel: "committing…" },
-    { id: "push", menuLabel: "Push", description: "commit, then push this branch to origin", busyLabel: "pushing…" },
-  );
-  return options;
-}
 
 export async function renderTask() {
   const root = $("#root");
@@ -64,10 +35,9 @@ export async function renderTask() {
   let aux = null; // the mounted files/terminal/agent pane controller
 
   const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
-  const defaultTab = () => (last && (last.state === "created" || last.state === "planning" || last.state === "plan_review") ? "plan" : "diff");
+  const defaultTab = () => (last && (last.state === "created" || last.state === "planning" || last.state === "plan_review") ? "plan" : "changes");
   const staticTabs = () => [
     { id: "plan", label: "Plan" },
-    { id: "diff", label: "Diff" },
     { id: "changes", label: "Changes" },
     { id: "files", label: "Files" },
     { id: "agent", label: "Agent" },
@@ -118,11 +88,10 @@ export async function renderTask() {
     history.replaceState(null, "", `#/task/${encodeURIComponent(id)}/${tabId}`);
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
-    if (tabId === "plan" || tabId === "diff") {
+    if (tabId === "plan") {
       const body = $("#tabbody");
       if (body) body.classList.remove("bare");
       planKey = null;
-      diffKey = null;
       paint();
     } else {
       mountAux(tabId);
@@ -140,14 +109,21 @@ export async function renderTask() {
       return;
     }
     if (tabId === "changes") {
-      // The git surface for the user's own work in this task's worktree. The
-      // pane owns its own 1.6s poll; the task poll never repaints aux tabs, so
-      // the two never double up. A state change rebuilds the shell, which
-      // remounts this pane with options matching the new state.
+      // The git surface for this task's worktree: the commit rail on the left,
+      // and the review diff ("All changes", the taskReview plug), staging, or
+      // a commit's detail on the right. The pane owns its own 1.6s poll; the
+      // task poll never repaints aux tabs, so the two never double up. A state
+      // change rebuilds the shell, which remounts this pane with options
+      // matching the new state.
       aux = mountGitPane(body, {
         scope: { task_id: id },
         callRpc: (method, params) => App.call(method, params),
         agentCommitOptions: last ? taskAgentCommitOptions(last.state, last.goal) : [],
+        review: {
+          getBase: () => (last && last.base_branch) || "main",
+          mount: (host) => reviewPlug.mount(host),
+          unmount: () => reviewPlug.unmount(),
+        },
       });
       return;
     }
@@ -221,6 +197,18 @@ export async function renderTask() {
   // Leaving the task lands on its project page (nothing links to the board).
   const goHome = () =>
     go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "board" });
+
+  // The review surface (the Changes rail's "All changes" entry). ONE instance
+  // for the view's whole life, so pending review comments survive tab switches
+  // and shell rebuilds; the git pane mounts/unmounts it as the rail selection
+  // moves.
+  const reviewPlug = createTaskReview({
+    taskId: id,
+    callRpc: (method, params) => App.call(method, params),
+    getTask: () => last,
+    isOffline: () => App.offline,
+    onMerged: () => goHome(),
+  });
 
   // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
   // last_error for these, so without holding it here the 1.6s poll would call
@@ -323,8 +311,7 @@ export async function renderTask() {
   loadModelCatalog(); // warm the selector catalog before plan_review needs it
   // Selection watchers are document-level; dispose the previous render's before
   // wiring new ones or the 1.6s poll accumulates listeners.
-  let planSelDispose = null,
-    diffSelDispose = null;
+  let planSelDispose = null;
   // Plan-review feedback state, preserved across the 1.6s poll.
   const planComments = []; // { id, snippet, comment }
   let cid = 0,
@@ -474,7 +461,7 @@ export async function renderTask() {
             return;
           }
           planKey = null;
-          selectTab("diff");
+          selectTab("changes");
         };
       }
     };
@@ -519,189 +506,6 @@ export async function renderTask() {
     refreshFeedback();
   }
 
-  // Diff-review feedback state, preserved across the live-updating diff poll.
-  const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
-  let dcid = 0,
-    diffKey = null,
-    lastDiffState = null,
-    diffMsg = "";
-
-  // The <tr> (with a line number) containing a selection/click node.
-  const rowOf = (node, table) => {
-    let element = node && node.nodeType === 3 ? node.parentElement : node;
-    while (element && element !== table && element.tagName !== "TR") element = element.parentElement;
-    return element && element.tagName === "TR" && element.dataset.ln ? element : null;
-  };
-
-  function renderDiffTab(t, files) {
-    const editable = t.state === "review" || t.state === "building";
-    const working = t.state === "building";
-    const totalIns = files.reduce((a, f) => a + f.add, 0),
-      totalDel = files.reduce((a, f) => a + f.del, 0);
-    const body = $("#tabbody");
-    const fileHtml = diffFilesHtml(files);
-    body.innerHTML = `
-      <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
-        ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
-      ${files.length ? fileHtml : '<div class="empty">No file changes yet.</div>'}
-      ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
-        <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
-      <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
-
-    if (editable) {
-      // Range selections (mouse drag or touch handles) → comment on the span.
-      if (diffSelDispose) diffSelDispose();
-      diffSelDispose = watchSelection(body, (sel) => {
-        const fileEl = rowOf(sel.anchorNode, body)?.closest(".file");
-        if (!fileEl) return;
-        const file = fileEl.dataset.file,
-          table = fileEl.querySelector("table");
-        const startRow = rowOf(sel.anchorNode, table),
-          endRow = rowOf(sel.focusNode, table);
-        if (!startRow && !endRow) return;
-        let a = +(startRow || endRow).dataset.ln,
-          b = +(endRow || startRow).dataset.ln;
-        if (a > b) [a, b] = [b, a];
-        const text = sel.toString();
-        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addDiffComment(file, a, b, text, comment));
-      });
-      // A plain tap/click on a line comments that line — the touch-first path.
-      // (#tabbody persists across the 1.6s repaint: single-assignment handler,
-      // never addEventListener, or handlers accumulate.)
-      body.onclick = (e) => {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
-        const fileEl = e.target.closest(".file");
-        const tr = e.target.closest("tr[data-ln]");
-        if (!fileEl || !tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
-        const ln = +tr.dataset.ln,
-          snippet = tr.querySelector(".code").textContent;
-        showCommentPop(tr.getBoundingClientRect(), (comment) => addDiffComment(fileEl.dataset.file, ln, ln, snippet, comment));
-      };
-      $("#dgeneral").oninput = updateDiffActions;
-    }
-    applyDiffHighlights();
-    refreshDiffFeedback();
-  }
-
-  function applyDiffHighlights() {
-    const body = $("#tabbody");
-    if (!body) return;
-    body.querySelectorAll("tr.dhl").forEach((r) => r.classList.remove("dhl"));
-    diffComments.forEach((c) => {
-      const fileEl = Array.from(body.querySelectorAll(".file")).find((element) => element.dataset.file === c.file);
-      if (!fileEl) return;
-      fileEl.querySelectorAll("tr[data-ln]").forEach((tr) => {
-        const ln = +tr.dataset.ln;
-        if (ln >= c.lnA && ln <= c.lnB) tr.classList.add("dhl");
-      });
-    });
-  }
-  const addDiffComment = (file, lnA, lnB, snippet, comment) => {
-    const idc = ++dcid;
-    diffComments.push({ id: idc, file, lnA: lnA || lnB, lnB: lnB || lnA, snippet: snippet.trim().slice(0, 400), comment });
-    window.getSelection().removeAllRanges();
-    applyDiffHighlights();
-    refreshDiffFeedback();
-  };
-  const removeDiffComment = (idc) => {
-    const i = diffComments.findIndex((c) => c.id === idc);
-    if (i >= 0) diffComments.splice(i, 1);
-    applyDiffHighlights();
-    refreshDiffFeedback();
-  };
-  function refreshDiffFeedback() {
-    const list = $("#difflist");
-    if (list) {
-      list.innerHTML = diffComments
-        .map((c) => {
-          const location = c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
-          return `<div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
-            <span class="psnip">${esc(c.file)}${esc(location)} · ${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 90))}</span>
-            <span class="pctext">${esc(c.comment)}</span></div>`;
-        })
-        .join("");
-      list.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeDiffComment(+x.dataset.id)));
-    }
-    updateDiffActions();
-  }
-  function updateDiffActions() {
-    const actions = $("#diffactions"),
-      hint = $("#diffhint");
-    if (!actions) return;
-    const general = $("#dgeneral") ? $("#dgeneral").value.trim() : "";
-    if (diffComments.length || general) {
-      hint.textContent = "Your comments will be sent to the coding agent to make changes.";
-      actions.innerHTML = `<button class="btn" id="clearrc">Clear</button><button class="btn primary" id="requestChanges">Request Changes</button>`;
-      $("#clearrc").onclick = () => {
-        diffComments.length = 0;
-        if ($("#dgeneral")) $("#dgeneral").value = "";
-        applyDiffHighlights();
-        refreshDiffFeedback();
-      };
-      $("#requestChanges").onclick = async () => {
-        const btn = $("#requestChanges");
-        btn.disabled = true;
-        btn.textContent = "requesting…";
-        const notes = assembleDiffNotes(diffComments, $("#dgeneral") ? $("#dgeneral").value : "");
-        try {
-          await App.call("task.request_changes", { task_id: id, comments: notes });
-          diffComments.length = 0;
-          if ($("#dgeneral")) $("#dgeneral").value = "";
-          diffKey = null;
-          hideCommentPop();
-          paint();
-        } catch (e) {
-          btn.disabled = false;
-          btn.textContent = "Request Changes";
-          hint.textContent = "error: " + e.message.slice(0, 50);
-        }
-      };
-    } else if (lastDiffState === "review") {
-      // A recent git-action result (Committed./Pushed./error) outlives the poll.
-      hint.textContent = diffMsg || "Select code or click a line number to comment, or finish the worktree.";
-      // GitHub-style split button: primary runs the default (Merge & clean up),
-      // the caret opens the full menu. Every action commits first; push is
-      // explicit. Adopted tasks add "Merge & release".
-      const base = (last && last.base_branch) || "main";
-      const flash = (msg) => {
-        diffMsg = msg;
-        setTimeout(() => {
-          diffMsg = "";
-          updateDiffActions();
-        }, 6000);
-      };
-      const run = async (optionId) => {
-        const { action, cleanup } = GIT_ACTION_RPC[optionId];
-        diffMsg = "";
-        const params = { task_id: id, action };
-        if (cleanup) params.cleanup = cleanup;
-        try {
-          await App.call("task.git_action", params);
-          if (action === "merge" || action === "merge_push") {
-            goHome();
-          } else {
-            flash(action === "commit" ? "Committed." : "Pushed " + ((last && last.branch) || "branch") + ".");
-            diffKey = null;
-            paint();
-          }
-        } catch (e) {
-          const reason = mergeFailureReason(e.message);
-          flash(reason ? "merge failed: " + reason.slice(0, 70) : "error: " + e.message.slice(0, 70));
-          if (hint) hint.textContent = diffMsg;
-          throw e; // let the split button restore the primary button
-        }
-      };
-      mountSplitButton(actions, { options: diffMergeOptions(last && last.adopted, base), run });
-    } else if (lastDiffState === "building") {
-      hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
-      actions.innerHTML = "";
-    } else {
-      hint.textContent = "";
-      actions.innerHTML = "";
-    }
-  }
-
   const paint = async () => {
     if (App.offline) return; // freeze the view; resume() restarts the flow
     let t;
@@ -720,55 +524,34 @@ export async function renderTask() {
     // local RPC error (Abandon/Delete failure) wins over the polled last_error so
     // the poll can't wipe it before the user has read it.
     showBanner(bannerText(localError, t.last_error));
-    // Files, Agent, and terminal tabs are fetch-/push-driven and own their own
-    // bodies — the poll only keeps the shell + banner current for them (§7.2).
-    if (tab !== "plan" && tab !== "diff") return;
+    // Changes, Files, Agent, and terminal tabs are fetch-/push-driven and own
+    // their own bodies — the poll only keeps the shell + banner current for
+    // them (§7.2). The review diff polls inside its taskReview plug.
+    if (tab !== "plan") return;
     const body = $("#tabbody");
-    if (tab === "plan") {
-      // Multi-stage task (stages non-empty) → the stage board flow. Legacy
-      // single-plan tasks (stages empty) keep the original single-doc flow below.
-      if (t.stages && t.stages.length) {
-        await paintStages(t);
-        return;
-      }
-      if (t.state === "planning" || t.state === "created") {
-        body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
-        planKey = "drafting";
-        planComments.length = 0;
-        return;
-      }
-      let plan = "";
-      try {
-        plan = (await App.call("task.plan", { task_id: id })).contents;
-      } catch {
-        /* plan not readable yet */
-      }
-      const key = t.state + " " + plan;
-      // Skip rebuild when nothing changed, so comments / typed text / selection survive the poll.
-      if (planKey === key && $("#planbody")) return;
-      planKey = key;
-      renderPlanTab(t, plan);
-    } else {
-      let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
-      try {
-        diff = await App.call("task.diff", { task_id: id });
-      } catch {
-        /* diff not readable yet */
-      }
-      const files = filterNoiseFiles(parseDiff(diff.patch));
-      lastDiffState = t.state;
-      const key = t.state + " " + diff.patch;
-      const general = $("#dgeneral");
-      // Freeze the diff while the user is actively commenting (pending comments,
-      // open popover, or text in the general box) so anchors/selection survive.
-      const busy = diffComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
-      if ($("#diff-feedback") && (key === diffKey || busy)) {
-        updateDiffActions();
-        return;
-      }
-      diffKey = key;
-      renderDiffTab(t, files);
+    // Multi-stage task (stages non-empty) → the stage board flow. Legacy
+    // single-plan tasks (stages empty) keep the original single-doc flow below.
+    if (t.stages && t.stages.length) {
+      await paintStages(t);
+      return;
     }
+    if (t.state === "planning" || t.state === "created") {
+      body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
+      planKey = "drafting";
+      planComments.length = 0;
+      return;
+    }
+    let plan = "";
+    try {
+      plan = (await App.call("task.plan", { task_id: id })).contents;
+    } catch {
+      /* plan not readable yet */
+    }
+    const key = t.state + " " + plan;
+    // Skip rebuild when nothing changed, so comments / typed text / selection survive the poll.
+    if (planKey === key && $("#planbody")) return;
+    planKey = key;
+    renderPlanTab(t, plan);
   };
   // Tear down any mounted terminal/agent pane when navigating away.
   App.viewDispose = () => disposeAux();

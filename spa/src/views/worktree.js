@@ -142,7 +142,7 @@ export async function renderWorktree() {
   // view with the "no longer available" empty state.
   const handoffToTask = () => {
     stopPolling();
-    go({ name: "task", id: adopting.adoptedTaskId(), tab: "diff" });
+    go({ name: "task", id: adopting.adoptedTaskId(), tab: "changes" });
   };
 
   // The tab bar is the top of the view; the worktree's identity (branch) rides
@@ -215,7 +215,7 @@ export async function renderWorktree() {
     if (list) {
       list.innerHTML = diffComments
         .map((c) => {
-          const location = c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
+          const location = c.lnA === 0 && c.lnB === 0 ? "" : c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
           return `<div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
             <span class="psnip">${esc(c.file)}${esc(location)} · ${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 90))}</span>
             <span class="pctext">${esc(c.comment)}</span></div>`;
@@ -252,7 +252,7 @@ export async function renderWorktree() {
         try {
           await adopting.taskCall("task.request_changes", { comments: notes });
           hideCommentPop();
-          go({ name: "task", id: adopting.adoptedTaskId(), tab: "diff" });
+          go({ name: "task", id: adopting.adoptedTaskId(), tab: "changes" });
         } catch (e) {
           if (adopting.adoptedTaskId()) {
             // Adoption succeeded but the follow-up failed: the task now owns this
@@ -337,7 +337,7 @@ export async function renderWorktree() {
     const editable = !!meta.adoptable;
     body.innerHTML = `
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span></div>
-      ${files.length ? diffFilesHtml(files) : '<div class="empty">No file changes yet.</div>'}
+      ${files.length ? diffFilesHtml(files, { commentable: editable }) : '<div class="empty">No file changes yet.</div>'}
       ${editable ? `<div class="plan-feedback" id="wdiff-feedback"><div id="wdifflist"></div>
         <textarea id="wgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="wdiffhint"></span><div class="right" id="wdiffactions"></div></div>`;
@@ -356,18 +356,44 @@ export async function renderWorktree() {
         if (a > b) [a, b] = [b, a];
         showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addComment(file, a, b, sel.toString(), comment));
       });
-      body.onclick = (e) => {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
-        const fileEl = e.target.closest(".file");
-        const tr = e.target.closest("tr[data-ln]");
-        if (!fileEl || !tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
-        const ln = +tr.dataset.ln,
-          snippet = tr.querySelector(".code").textContent;
-        showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment));
-      };
       $("#wgeneral").oninput = updateActions;
     }
+    // One delegated handler: diff folding always (capped body expands, the
+    // filename bar toggles collapse), commenting only when adoptable.
+    body.onclick = (e) => {
+      const commentButton = e.target.closest(".fcmt");
+      if (commentButton) {
+        const fileEl = commentButton.closest(".file");
+        if (fileEl)
+          showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
+            addComment(fileEl.dataset.file, 0, 0, "(entire file)", comment),
+          );
+        return;
+      }
+      const fhead = e.target.closest(".fhead");
+      if (fhead && !e.target.closest("button, input, label")) {
+        const file = fhead.closest(".file");
+        if (file) {
+          file.classList.toggle("collapsed");
+          file.classList.remove("capped");
+        }
+        return;
+      }
+      const capped = e.target.closest(".file.capped");
+      if (capped) {
+        capped.classList.remove("capped");
+        return;
+      }
+      if (!editable) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
+      const fileEl = e.target.closest(".file");
+      const tr = e.target.closest("tr[data-ln]");
+      if (!fileEl || !tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
+      const ln = +tr.dataset.ln,
+        snippet = tr.querySelector(".code").textContent;
+      showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment));
+    };
     applyHighlights();
     refreshFeedback();
   };

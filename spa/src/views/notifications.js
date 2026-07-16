@@ -10,13 +10,13 @@ function notifEvent(t) {
   if (t.state === "plan_review")
     return { icon: "✦", tone: "", title: "Plan ready to review", sub: payloadFor(t) || "A planning agent finished drafting the plan.", action: "Review plan", tab: "plan", primary: true };
   if (t.state === "review")
-    return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", tab: "diff", primary: true };
+    return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", tab: "changes", primary: true };
   if (t.state === "blocked")
-    return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", tab: "diff", primary: false };
+    return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", tab: "changes", primary: false };
   if (t.state === "failed")
-    return { icon: "▲", tone: "warn", title: "Build failed", sub: t.summary || "The build did not complete.", action: "View task", tab: "diff", primary: false };
+    return { icon: "▲", tone: "warn", title: "Build failed", sub: t.summary || "The build did not complete.", action: "View task", tab: "changes", primary: false };
   if (t.state === "merged")
-    return { icon: "✓", tone: "muted", title: "Merge complete", branch: `${t.branch} → ${t.base_branch || "main"}`, action: "View task", tab: "diff", primary: false };
+    return { icon: "✓", tone: "muted", title: "Merge complete", branch: `${t.branch} → ${t.base_branch || "main"}`, action: "View task", tab: "changes", primary: false };
   return null;
 }
 

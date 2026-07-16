@@ -54,7 +54,7 @@ export function uncommittedHtml(status, { repoControls = false, pendingConfirm =
       const badge = fileBadge(f);
       const checked = f.staged === "full" ? " checked" : "";
       const diffFile = diffByPath.get(f.path);
-      return `<div class="file gitfile"><div class="fhead">
+      return `<div class="file gitfile capped"><div class="fhead">
         <label class="toggle"><input type="checkbox" class="stagebox" data-path="${esc(f.path)}"${checked}></label>
         <span>${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
         ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}
@@ -73,15 +73,14 @@ export function uncommittedHtml(status, { repoControls = false, pendingConfirm =
     </div></div>`;
 }
 
-/** One commit-history row: short hash (mono), subject, author, relative age.
- *  Task-scope commits ahead of the base branch carry the `ahead` class. */
-export function commitRowHtml(commit, { expanded = false, nowSeconds = Date.now() / 1000 } = {}) {
-  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", expanded ? "expanded" : ""].filter(Boolean).join(" ");
+/** One commit rail row: subject over short hash · author · relative age.
+ *  Task-scope commits ahead of the base branch carry the `ahead` class; the
+ *  rail's current selection carries `sel`. */
+export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now() / 1000 } = {}) {
+  const classes = ["crow", commit.ahead_of_base ? "ahead" : "", selected ? "sel" : ""].filter(Boolean).join(" ");
   return `<div class="${classes}" data-hash="${esc(commit.hash)}">
-    <span class="chash">${esc(commit.short)}</span>
     <span class="csubject">${esc(commit.subject)}</span>
-    <span class="cauthor">${esc(commit.author)}</span>
-    <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></div>`;
+    <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }
 
 /** The expanded commit detail for a git.show payload: subject, body, stat line,
@@ -98,22 +97,29 @@ export function commitDetailHtml(show) {
     ${diffFilesHtml(files)}</div>`;
 }
 
-/** The commit-history section for a git.log payload (plus any paged-in extra
- *  commits merged by the caller). The expanded row inlines its cached git.show
- *  detail, or a loading placeholder while the fetch is in flight. */
-export function historyHtml(log, { expandedHash = null, expandedDetail = null, nowSeconds = Date.now() / 1000 } = {}) {
-  const commits = log.commits || [];
-  const rows = commits
-    .map((c) => {
-      const expanded = c.hash === expandedHash;
-      let row = commitRowHtml(c, { expanded, nowSeconds });
-      if (expanded) row += expandedDetail ? commitDetailHtml(expandedDetail) : '<div class="cdetail cdetail-loading">loading…</div>';
-      return row;
-    })
+/** The Changes tab's left rail: the pinned selections (the review "All
+ *  changes" entry when the surface has one, then "Uncommitted"), and the
+ *  commit history (plus any paged-in extra commits merged by the caller) with
+ *  its Show more affordance. `selected` is "review" | "uncommitted" | a commit
+ *  hash. `review` is { base } or null. */
+export function changesRailHtml({ review = null, status, log, selected, nowSeconds = Date.now() / 1000 }) {
+  const rrow = (sel, title, sub) =>
+    `<div class="${["rrow", selected === sel ? "sel" : ""].filter(Boolean).join(" ")}" data-sel="${sel}">
+      <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
+  const reviewRow = review ? rrow("review", "All changes", `vs ${esc(review.base || "main")}`) : "";
+  const fileCount = (status.files || []).length;
+  const uncommittedRow = rrow(
+    "uncommitted",
+    "Uncommitted",
+    fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : "clean",
+  );
+  const commits = (log.commits || [])
+    .map((c) => commitRowHtml(c, { selected: selected === c.hash, nowSeconds }))
     .join("");
-  return `<div class="gitsec">
-    <div class="gitsec-head">History</div>
-    ${commits.length ? `<div class="clist">${rows}</div>` : '<div class="empty">No commits yet.</div>'}
+  return `<div class="crail">
+    ${reviewRow}${uncommittedRow}
+    <div class="rhead">History</div>
+    ${commits || '<div class="empty">No commits yet.</div>'}
     ${log.more ? '<div class="cmore"><button class="btn mini gitmore">Show more</button></div>' : ""}</div>`;
 }
 

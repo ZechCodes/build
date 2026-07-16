@@ -1,12 +1,22 @@
-// DOM-light controller for the git surface (the Changes tab): owns a 1.6s
-// git.status + git.log poll with a keyed freeze, per-file stage/unstage
-// checkboxes (repainted from the RPC's returned status), commit-row expansion
-// (git.show, cached per hash), "Show more" paging via skip, and the commit
-// split button. The pure helpers (poll key, option lists) are exported for
-// unit tests; mountGitPane is the only DOM-touching entry point.
+// DOM-light controller for the git surface (the Changes tab): a two-column
+// view — a left rail (the surface's review entry, Uncommitted, then commit
+// history with "Show more" paging) driving a right detail pane (the review
+// diff via a view-supplied plug, the staging/commit surface, or one commit's
+// full message + diff via git.show, cached per hash). Owns a 1.6s git.status
+// + git.log poll with a keyed freeze and the commit split button. The pure
+// helpers (poll key, option lists) are exported for unit tests; mountGitPane
+// is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
-import { uncommittedHtml, historyHtml, gitToolbarHtml, gitStateBannerHtml, branchMenuHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
+import {
+  uncommittedHtml,
+  commitDetailHtml,
+  changesRailHtml,
+  gitToolbarHtml,
+  gitStateBannerHtml,
+  branchMenuHtml,
+  AGENT_COMMIT_MESSAGE,
+} from "./gitRender.js";
 import { mountSplitButton } from "./splitButton.js";
 
 export const GIT_PANE_POLL_MS = 1600;
@@ -317,8 +327,11 @@ export function taskAgentCommitOptions(state, goal) {
 /** Mount the git pane into `container`. Returns { dispose }. `scope` is exactly
  *  one of { project_id } / { task_id }; `callRpc(method, params)` is the RPC
  *  channel; `agentCommitOptions` (task scope) appends to the commit button;
- *  `onNavigate` is reserved for future cross-surface links. */
-export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [], onNavigate = null } = {}) {
+ *  `review` (task/worktree surfaces) plugs the surface's review diff in as the
+ *  rail's pinned "All changes" entry: { getBase(), mount(host), unmount() } —
+ *  the plug owns the detail pane's DOM while selected (this pane never
+ *  repaints over it); `onNavigate` is reserved for future cross-surface links. */
+export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [], review = null, onNavigate = null } = {}) {
   void onNavigate; // accepted per the pane contract; no link targets yet
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
@@ -327,7 +340,8 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   let lastHead; // undefined until the first poll lands
   let extraCommits = []; // "Show more" pages beyond the poll's first page
   let pagedMore = null; // the last fetched page's `more` (null → use lastLog.more)
-  let expandedHash = null; // survives repaints
+  let selected = review ? "review" : "uncommitted"; // rail selection, survives repaints
+  let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
@@ -351,8 +365,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   };
   const setHint = (text) => {
     hint = text || "";
-    const el = container.querySelector(".githint");
-    if (el) el.textContent = hint;
+    container.querySelectorAll(".githint").forEach((el) => (el.textContent = hint));
   };
   const actionError = (e) => setHint("error: " + ((e && e.message) || "error").slice(0, 70));
 
@@ -379,32 +392,30 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     return true;
   };
 
-  const render = () => {
-    if (disposed || !lastStatus || !lastLog) return;
+  // The persistent skeleton: toolbar/banner/rail/detail update independently so
+  // a poll repaint never clobbers the review plug's DOM in the detail host.
+  const paintSkeleton = () => {
+    container.innerHTML = `<div class="gitpane">
+      <div class="gp-toolbar"></div>
+      <div class="gp-banner"></div>
+      <div class="changes2">
+        <aside class="crail-host"></aside>
+        <section class="cdetail-host"></section>
+      </div></div>`;
+    container.onclick = handleClick;
+    container.onchange = handleChange;
+  };
+
+  const defaultSelection = () => (review ? "review" : "uncommitted");
+
+  const renderUncommittedDetail = (detailHost) => {
     const box = messageBox();
     // A live box is the freshest draft; otherwise (first paint after a
     // dispose/remount) the module-level stash restores what was typed.
     const draft = resolveCommitDraft(box ? box.value : null, commitDraftStash, draftKey);
     const hadFocus = box && document.activeElement === box;
-    const mergedLog = {
-      ...lastLog,
-      commits: [...(lastLog.commits || []), ...extraCommits],
-      more: pagedMore ?? lastLog.more,
-    };
-    const expandedDetail = expandedHash ? showCache.get(expandedHash) || null : null;
     const repoControls = supportsRepoManagement(lastStatus);
-    const toolbar = repoControls
-      ? gitToolbarHtml({
-          branch: lastStatus.branch,
-          showBranchControl: branchControl,
-          chips: syncChipState(lastStatus),
-          branchMenuHtml: branchMenuOpen
-            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered })
-            : "",
-        })
-      : "";
-    const banner = repoControls ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm }) : "";
-    container.innerHTML = `<div class="gitpane">${toolbar}${banner}${uncommittedHtml(lastStatus, { repoControls, pendingConfirm })}${historyHtml(mergedLog, { expandedHash, expandedDetail })}</div>`;
+    detailHost.innerHTML = uncommittedHtml(lastStatus, { repoControls, pendingConfirm });
     const freshBox = messageBox();
     if (freshBox) {
       freshBox.value = draft;
@@ -416,14 +427,13 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     syncCommitDraft(commitDraftStash, draftKey, draft);
     // `indeterminate` is a property, not an attribute — set it after mount.
     const filesByPath = new Map((lastStatus.files || []).map((f) => [f.path, f]));
-    container.querySelectorAll(".stagebox").forEach((checkbox) => {
+    detailHost.querySelectorAll(".stagebox").forEach((checkbox) => {
       const file = filesByPath.get(checkbox.dataset.path);
       if (file && file.staged === "partial") checkbox.indeterminate = true;
       // A repaint must not recreate an enabled checkbox mid-stage-RPC.
       if (stagingPaths.has(checkbox.dataset.path)) checkbox.disabled = true;
     });
-    setHint(hint);
-    const actionsHost = container.querySelector(".gitcommit-actions");
+    const actionsHost = detailHost.querySelector(".gitcommit-actions");
     if (actionsHost) {
       mountSplitButton(actionsHost, { options: commitSplitOptions(agentCommitOptions), run: runCommitOption });
       // A repaint during an in-flight action must not resurrect an enabled
@@ -433,6 +443,57 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         if (primaryButton) primaryButton.disabled = true;
       }
     }
+  };
+
+  const render = () => {
+    if (disposed || !lastStatus || !lastLog) return;
+    if (!container.querySelector(".changes2")) paintSkeleton();
+    const repoControls = supportsRepoManagement(lastStatus);
+    container.querySelector(".gp-toolbar").innerHTML = repoControls
+      ? gitToolbarHtml({
+          branch: lastStatus.branch,
+          showBranchControl: branchControl,
+          chips: syncChipState(lastStatus),
+          branchMenuHtml: branchMenuOpen
+            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered })
+            : "",
+        })
+      : "";
+    container.querySelector(".gp-banner").innerHTML = repoControls
+      ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm })
+      : "";
+    const mergedLog = {
+      ...lastLog,
+      commits: [...(lastLog.commits || []), ...extraCommits],
+      more: pagedMore ?? lastLog.more,
+    };
+    container.querySelector(".crail-host").innerHTML = changesRailHtml({
+      review: review ? { base: review.getBase() } : null,
+      status: lastStatus,
+      log: mergedLog,
+      selected,
+    });
+    const detailHost = container.querySelector(".cdetail-host");
+    if (selected === "review") {
+      // The plug owns the detail DOM — mount once, then leave it alone.
+      if (!reviewMounted) {
+        detailHost.innerHTML = "";
+        review.mount(detailHost);
+        reviewMounted = true;
+      }
+    } else {
+      if (reviewMounted) {
+        review.unmount();
+        reviewMounted = false;
+      }
+      if (selected === "uncommitted") {
+        renderUncommittedDetail(detailHost);
+      } else {
+        const detail = showCache.get(selected);
+        detailHost.innerHTML = detail ? commitDetailHtml(detail) : '<div class="empty cdetail-loading">loading…</div>';
+      }
+    }
+    setHint(hint);
     mountToolbarControls();
     // Every toolbar verb stays disabled through an in-flight action (a repaint
     // mid-action must not resurrect a live button to double-fire); the action
@@ -441,8 +502,6 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const newBranchInput = container.querySelector(".gtbranch-newinput");
     if (newBranchInput) newBranchInput.oninput = () => (newBranchDraft = newBranchInput.value);
     if (newBranchInput && newBranchDraft) newBranchInput.value = newBranchDraft;
-    container.onclick = handleClick;
-    container.onchange = handleChange;
   };
 
   /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host
@@ -617,27 +676,31 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     paintFrom(status); // the stage RPCs return the full status payload
   };
 
-  const toggleExpanded = async (hash) => {
-    if (expandedHash === hash) {
-      expandedHash = null;
-      render();
-      return;
-    }
-    expandedHash = hash;
-    render(); // cached detail paints now; otherwise the loading placeholder
-    if (showCache.has(hash)) return;
+  /** Switch the rail selection. A commit selection paints its cached detail
+   *  immediately (or a loading placeholder while git.show is in flight). */
+  const selectRail = (sel) => {
+    if (selected === sel) return;
+    selected = sel;
+    clearConfirm();
+    render();
+    if (sel !== "review" && sel !== "uncommitted" && !showCache.has(sel)) fetchShow(sel);
+  };
+
+  const fetchShow = async (hash) => {
     let show;
     try {
       show = await callRpc("git.show", { ...scope, hash });
     } catch (e) {
       if (disposed) return;
-      if (expandedHash === hash) expandedHash = null;
       actionError(e);
-      render();
+      if (selected === hash) {
+        selected = defaultSelection();
+        render();
+      }
       return;
     }
     showCache.set(show.hash, show);
-    if (!disposed && expandedHash === hash) render();
+    if (!disposed && selected === hash) render();
   };
 
   const showMore = async () => {
@@ -895,14 +958,41 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       confirmThen(`discard:${discardButton.dataset.path}`, () => runDiscard(discardButton.dataset.path));
       return;
     }
+    // Rail selection: the pinned entries and the commit rows. selectRail
+    // clears any armed confirm itself.
+    const railRow = target.closest(".rrow[data-sel]");
+    if (railRow) {
+      selectRail(railRow.dataset.sel);
+      return;
+    }
+    const commitRow = target.closest(".crow[data-hash]");
+    if (commitRow) {
+      selectRail(commitRow.dataset.hash);
+      return;
+    }
+    // Diff folding, shared by every detail (uncommitted, commit, review plug):
+    // the filename bar toggles a full collapse; a click on a capped body
+    // expands it. Controls in the bar (stagebox/discard/✎) keep their jobs.
+    const fhead = target.closest(".fhead");
+    if (fhead && !target.closest("button, input, label")) {
+      const file = fhead.closest(".file");
+      if (file) {
+        file.classList.toggle("collapsed");
+        file.classList.remove("capped");
+        return;
+      }
+    }
+    const cappedFile = target.closest(".file.capped");
+    if (cappedFile) {
+      cappedFile.classList.remove("capped");
+      return;
+    }
     // Any other click disarms a stale confirm before doing its own job.
     if (disarmConfirm()) render();
     if (target.closest(".gitmore")) {
       showMore();
       return;
     }
-    const row = target.closest(".crow");
-    if (row && container.contains(row)) toggleExpanded(row.dataset.hash);
   };
 
   const handleChange = (event) => {
@@ -914,6 +1004,10 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   const renderScopeError = (message) => {
     if (scopeErrorShown === message) return;
     scopeErrorShown = message;
+    if (reviewMounted) {
+      review.unmount(); // its host is about to be wiped with the skeleton
+      reviewMounted = false;
+    }
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
   };
 
@@ -944,7 +1038,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const expired = confirmExpired(armedAt, Date.now());
     if (expired) clearConfirm();
     const key = gitPollKey(status, log);
-    const rendered = container.querySelector(".gitpane .gitsec");
+    const rendered = container.querySelector(".gitpane .changes2");
     // Freeze while unchanged, while the user is drafting a commit message, while
     // any action RPC is in flight, or while an interaction is live (an armed
     // confirm or an open branch menu a repaint would clobber). A just-expired
@@ -985,6 +1079,10 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       disposed = true;
       clearInterval(timer);
       document.removeEventListener("pointerdown", onOutsidePointerDown);
+      if (reviewMounted) {
+        review.unmount(); // stop the plug's poll; the view may remount it later
+        reviewMounted = false;
+      }
       container.onclick = null;
       container.onchange = null;
     },

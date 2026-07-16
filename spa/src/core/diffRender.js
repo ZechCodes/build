@@ -26,14 +26,20 @@ export function diffRowsHtml(rows, lang = null) {
 /** HTML for parsed diff files (core/diff.js parseDiff output). The path is
  *  escaped; code cells are syntax-highlighted by the file's extension. The
  *  table sits inside a .dscroll box so the code scrolls horizontally while the
- *  .fhead header stays fixed. */
-export function diffFilesHtml(files) {
+ *  .fhead header stays fixed.
+ *
+ *  Folding contract (wired by the mounting view): every file starts `capped`
+ *  (max-height + fade); a click on the capped body expands it, a click on the
+ *  .fhead toggles `collapsed` (header only). `commentable` adds the
+ *  whole-file comment control to the header. */
+export function diffFilesHtml(files, { commentable = false } = {}) {
+  const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   return files
     .map((f) => {
       const lang = langForPath(f.path);
       return `
-      <div class="file" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span></div>
+      <div class="file capped" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
+        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${commentButton}</div>
         <div class="dscroll"><table>${diffRowsHtml(f.rows, lang)}</table></div></div>`;
     })
     .join("");

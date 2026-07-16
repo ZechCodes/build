@@ -46,3 +46,14 @@ describe("assembleDiffNotes", () => {
     );
   });
 });
+
+describe("file-level diff comments", () => {
+  it("labels a 0-line span as a whole-file comment", () => {
+    const out = assembleDiffNotes(
+      [{ file: "src/a.js", lnA: 0, lnB: 0, snippet: "(entire file)", comment: "split this up" }],
+      "",
+    );
+    expect(out).toContain("src/a.js (whole file)");
+    expect(out).toContain("split this up");
+  });
+});

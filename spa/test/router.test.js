@@ -6,7 +6,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/board")).toEqual({ name: "board" });
     expect(routeFromHash("#/notifications")).toEqual({ name: "notifications" });
     expect(routeFromHash("#/settings")).toEqual({ name: "settings" });
-    expect(routeFromHash("#/task/t-123/diff")).toEqual({ name: "task", id: "t-123", tab: "diff" });
+    expect(routeFromHash("#/task/t-123/changes")).toEqual({ name: "task", id: "t-123", tab: "changes" });
     expect(routeFromHash("#/task/t-123")).toEqual({ name: "task", id: "t-123", tab: "plan" });
     expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "diff" });
     expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1" });
@@ -14,7 +14,8 @@ describe("routeFromHash", () => {
 
   it("parses the task tab vocabulary and falls back to plan on unknown", () => {
     expect(routeFromHash("#/task/t/plan").tab).toBe("plan");
-    expect(routeFromHash("#/task/t/diff").tab).toBe("diff");
+    expect(routeFromHash("#/task/t/changes").tab).toBe("changes");
+    expect(routeFromHash("#/task/t/diff").tab).toBe("changes"); // legacy links land on Changes
     expect(routeFromHash("#/task/t/files").tab).toBe("files");
     expect(routeFromHash("#/task/t/agent").tab).toBe("agent");
     expect(routeFromHash("#/task/t/term-3").tab).toBe("term-3");
@@ -64,7 +65,7 @@ describe("hashFromRoute", () => {
       { name: "board" },
       { name: "notifications" },
       { name: "settings" },
-      { name: "task", id: "t-9", tab: "diff" },
+      { name: "task", id: "t-9", tab: "changes" },
       { name: "task", id: "a b", tab: "plan" },
       { name: "task", id: "t-9", tab: "files" },
       { name: "task", id: "t-9", tab: "agent" },

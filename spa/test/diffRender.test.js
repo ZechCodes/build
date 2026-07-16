@@ -19,7 +19,7 @@ const files = [
 describe("diffFilesHtml", () => {
   it("renders a file block with the diff stat and rows", () => {
     const html = diffFilesHtml(files);
-    expect(html).toContain('class="file"');
+    expect(html).toContain('class="file capped"');
     expect(html).toContain('class="fb EDIT"');
     expect(html).toContain('<span class="a">+1</span>');
     expect(html).toContain('<span class="d">−1</span>');
@@ -76,5 +76,21 @@ describe("diffRowsHtml", () => {
     expect(html).toContain('<tr class="del" data-ln="1"><td class="ln">1</td><td class="ln"></td><td class="code">');
     expect(html).toContain('class="token');
     expect(html).not.toContain("<old>");
+  });
+});
+
+describe("diff folding + file comments", () => {
+  const files = [
+    { path: "src/a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] },
+  ];
+
+  it("renders every file capped by default (click-to-expand)", () => {
+    expect(diffFilesHtml(files)).toContain('class="file capped"');
+  });
+
+  it("adds a file-level comment control only when commentable", () => {
+    expect(diffFilesHtml(files)).not.toContain("fcmt");
+    const html = diffFilesHtml(files, { commentable: true });
+    expect(html).toContain('class="fcmt"');
   });
 });

@@ -8,9 +8,12 @@ const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
 
 // Each surface has its own valid tab vocabulary; an unknown/absent segment
 // falls back to that surface's default tab. Terminal tabs (`term-<n>`) are valid
-// on every worktree-backed surface.
-const taskTab = (seg) =>
-  seg === "diff" || seg === "files" || seg === "agent" || isTermTab(seg) ? seg : "plan";
+// on every worktree-backed surface. The task Diff tab merged into Changes —
+// legacy #/task/<id>/diff links land on the changes tab.
+const taskTab = (seg) => {
+  if (seg === "diff") return "changes";
+  return seg === "changes" || seg === "files" || seg === "agent" || isTermTab(seg) ? seg : "plan";
+};
 const worktreeTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "diff");
 const mainTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "changes");
 

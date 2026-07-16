@@ -182,7 +182,7 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
 .file td.ln:hover { color:var(--accent); }
 .file ::selection { background:#c7d2fe; }
 tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !important; color:#92400e; }
-/* ---- git pane (Changes tab: history + staging + commit) ---- */
+/* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
 .gitpane .gitsec { margin-bottom:26px; }
 .gitsec-head { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:10px; align-items:center; }
 .gitstat { font-family:var(--mono); font-size:11px; letter-spacing:0; text-transform:none; }
@@ -190,21 +190,46 @@ tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !
 .gitfile .fhead .toggle { margin:0; }
 .gitcommit { max-width:780px; }
 .gitmsg { min-height:64px; }
-.clist { background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden; }
-.crow { display:flex; align-items:center; gap:10px; padding:8px 13px; border-top:1px solid var(--line2); font-size:13px; cursor:pointer; }
-.crow:first-child { border-top:0; }
+.changes2 { display:flex; gap:18px; align-items:flex-start; }
+.crail-host { flex:0 0 280px; max-width:40vw; position:sticky; top:0; }
+.cdetail-host { flex:1; min-width:0; }
+.crail { background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden; }
+.crail .rhead { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
+  text-transform:uppercase; padding:10px 13px 4px; border-top:1px solid var(--line2); }
+.crail .empty { padding:6px 13px 10px; }
+.crail .rrow { display:flex; align-items:baseline; gap:8px; padding:9px 13px; font-size:13px;
+  cursor:pointer; border-top:1px solid var(--line2); }
+.crail .rrow:first-child { border-top:0; }
+.crail .rrow .rtitle { font-weight:600; }
+.crail .rrow .rsub { margin-left:auto; font-size:11px; color:var(--dim); }
+.crail .rrow:hover { background:var(--line2); }
+.crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); }
+.crail .rrow.sel .rtitle { color:var(--accent); }
+.crow { display:flex; flex-direction:column; gap:1px; padding:7px 13px; border-top:1px solid var(--line2);
+  font-size:12.5px; cursor:pointer; }
 .crow:hover { background:var(--line2); }
-.crow .chash { font-family:var(--mono); font-size:12px; color:var(--dim); flex:none; }
+.crow .chash { font-family:var(--mono); font-size:11px; color:var(--dim); }
 .crow.ahead .chash { color:var(--accent); font-weight:600; }
-.crow .csubject { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.crow .cauthor { color:var(--ink2); font-size:12px; flex:none; }
-.crow .cage { color:var(--dim); font-size:11.5px; font-family:var(--mono); flex:none; }
-.cdetail { border-top:1px solid var(--line2); padding:12px 13px; background:#fcfcfd; cursor:default; }
+.crow.sel .csubject { color:var(--accent); }
+.crow .csubject { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.crow .cmeta { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cdetail { cursor:default; }
 .cdetail.cdetail-loading { color:var(--dim); font-size:12.5px; }
-.cdetail .csub { font-weight:650; font-size:13.5px; }
+.cdetail .csub { font-weight:650; font-size:15px; }
 .cdetail .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2); white-space:pre-wrap; margin:8px 0 0; }
-.cdetail .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 12px; }
-.cmore { margin-top:10px; }
+.cdetail .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 14px; }
+.cmore { padding:8px 13px 10px; }
+/* diff folding: capped (default) shows a peek with a fade; collapsed hides the
+   body; expanded (neither class) shows everything */
+.file.capped { position:relative; }
+.file.capped .dscroll { max-height:300px; overflow-y:hidden; cursor:pointer; }
+.file.capped::after { content:""; position:absolute; left:0; right:0; bottom:0; height:44px;
+  background:linear-gradient(transparent, var(--panel)); pointer-events:none; }
+.file .fhead { cursor:pointer; }
+.file.collapsed .dscroll { display:none; }
+.fcmt { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
+.fcmt:hover { background:var(--accent-soft); color:var(--accent); }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
 .splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }
@@ -344,6 +369,8 @@ body.offline #root #adddev { opacity: 1; pointer-events: auto; }
   .comment-pop { max-width:calc(100vw - 16px); }
   .splitmenu { right:auto; left:0; }
   .crow .cauthor { display:none; }
+  .changes2 { flex-direction:column; }
+  .crail-host { flex:none; width:100%; max-width:none; position:static; }
 }
 
 /* ---- project sidebar (every page) ---- */

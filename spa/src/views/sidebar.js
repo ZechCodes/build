@@ -34,8 +34,33 @@ function activePlanId() {
   return App.route.name === "plan" ? App.route.id : null;
 }
 
+/** The project that owns whatever surface the route shows — the project page
+ *  itself, the main/worktree surfaces (project in the route), or a plan/run
+ *  surface (owner resolved through the feed) — so the rail always shows where
+ *  you are, not just which leaf row. */
 function activeProjectId() {
-  return App.route.name === "project" ? App.route.projectId : null;
+  const route = App.route;
+  if (route.name === "project" || route.name === "main" || route.name === "worktree") {
+    return route.projectId || null;
+  }
+  if (!lastFeed) return null;
+  if (route.name === "plan") {
+    const plan = (lastFeed.plans || []).find((p) => p.plan_id === route.id);
+    return plan ? plan.project_id : null;
+  }
+  if (route.name === "task") {
+    const run = (lastFeed.runs || []).find((r) => r.run_id === route.id);
+    return run ? run.project_id : null;
+  }
+  return null;
+}
+
+function activeMainProjectId() {
+  return App.route.name === "main" ? App.route.projectId : null;
+}
+
+function activeWorktreeId() {
+  return App.route.name === "worktree" ? App.route.worktreeId : null;
 }
 
 function draw() {
@@ -58,6 +83,8 @@ function draw() {
     activeRunId: activeRunId(),
     activePlanId: activePlanId(),
     activeProjectId: activeProjectId(),
+    activeMainProjectId: activeMainProjectId(),
+    activeWorktreeId: activeWorktreeId(),
   });
   aside.scrollTop = scroll;
   setBadge(lastFeed.runs, lastFeed.plans);

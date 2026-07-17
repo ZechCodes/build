@@ -211,6 +211,28 @@ describe("projectHtml", () => {
     expect(projectHtml(model(), u)).toContain("sproj-head active");
   });
 
+  it("the main-checkout row highlights when its surface is the route", () => {
+    const m = model({ primary: { branch: "main", files_changed: 0, insertions: 0, deletions: 0 } });
+    const off = projectHtml(m, ui());
+    expect(off).not.toContain("smain-line active");
+    const u = ui();
+    u.activeMainProjectId = "p1";
+    expect(projectHtml(m, u)).toContain("smain-line active");
+  });
+
+  it("an open worktree row highlights when its surface is the route", () => {
+    const u = ui();
+    u.wtOpen = new Set(["p1"]);
+    u.activeWorktreeId = "w1";
+    const html = projectHtml(model(), u);
+    expect(html).toContain("swt-item active");
+    // The collapsed summary line takes the highlight instead when the list is closed.
+    u.wtOpen = new Set();
+    const closed = projectHtml(model(), u);
+    expect(closed).not.toContain("swt-item active");
+    expect(closed).toContain("swt-line active");
+  });
+
   it("blocked runs in needs-you carry the warning icon", () => {
     const m = model({ needsYou: [run({ run_id: "a", state: "blocked" })] });
     expect(projectHtml(m, ui())).toContain("▲");

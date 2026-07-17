@@ -106,30 +106,35 @@ function section(label, rowsHtml) {
 
 // The primary-checkout "main" row: branch + a dirty count when the working tree
 // has uncommitted changes. Links to #/main/<projectId> (wired by the view).
-function mainLine(m) {
+function mainLine(m, ui) {
   if (!m.primary) return "";
   const dirty = m.primary.files_changed
     ? ` <span class="swt-dirty">· ${m.primary.files_changed} uncommitted</span>`
     : "";
-  return `<div class="srow smain-line" data-main="${esc(m.project_id)}">
+  const active = ui.activeMainProjectId === m.project_id ? "active" : "";
+  return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}">
     <span class="sicon">⌂</span><span class="stitle mono">main <span class="dim">${esc(m.primary.branch)}</span>${dirty}</span></div>`;
 }
 
-function worktreeLine(m, open) {
+function worktreeLine(m, open, ui) {
   if (!m.worktrees.length) return "";
   const label = `${m.worktrees.length} worktree${m.worktrees.length === 1 ? "" : "s"}`;
   const dirty = m.uncommitted ? ` <span class="swt-dirty">· ${m.uncommitted} uncommitted</span>` : "";
+  const activeInProject = m.worktrees.some((w) => w.worktree_id === ui.activeWorktreeId);
   const list = open
     ? `<div class="swt-list">${m.worktrees
         .map(
-          (w) => `<div class="srow swt-item" data-wt="${esc(w.worktree_id)}" data-project="${esc(w.project_id)}">
+          (w) => `<div class="srow swt-item ${w.worktree_id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.worktree_id)}" data-project="${esc(w.project_id)}">
       <span class="sicon">⌥</span><span class="stitle mono">${esc(w.branch || "(detached)")}</span>${
         (w.dirty_files || 0) > 0 ? '<span class="swt-dirty">●</span>' : ""
       }</div>`
         )
         .join("")}</div>`
     : "";
-  return `<div class="srow swt-line" data-wtline="${esc(m.project_id)}">
+  // A collapsed list still shows where you are: the summary line takes the
+  // highlight when it hides the active worktree.
+  const lineActive = activeInProject && !open ? "active" : "";
+  return `<div class="srow swt-line ${lineActive}" data-wtline="${esc(m.project_id)}">
     <span class="sicon">⌥</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
 }
 
@@ -200,7 +205,7 @@ export function projectHtml(m, ui) {
     ${section("Needs you", needs)}${section("Running", running)}
     ${section("Plans", planNeeds + planReady + planDrafting)}
     ${section("Done recently", done + plansDone)}
-    ${mainLine(m)}${worktreeLine(m, ui.wtOpen.has(m.project_id))}</div></div>`;
+    ${mainLine(m, ui)}${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
 }
 
 /** The whole rail. */

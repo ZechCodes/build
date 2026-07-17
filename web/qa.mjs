@@ -3,10 +3,11 @@
 // Relay-direct topology: dummy-login to the api, mint a gateway token, and
 // authenticate straight to the relay's /ws/client (the node gateway is retired).
 // Runs the real browser-client logic + transport binding against a live relay +
-// bridge. Exercises the task lifecycle (multi-stage standard + quick): stage
-// board, structured comments + revision, the per-stage validation gate,
-// run-all auto-advance, diff inspection, merge results, error handling, and
-// parallel tasks.
+// bridge. Exercises the Plan/Run split lifecycle: author a project-scoped plan,
+// comment + revise its stage docs, approve it, spin up a worktree-scoped run
+// (materializing the plan), walk the per-stage validation gate, run-all
+// auto-advance, diff inspection, git merge, external-worktree adoption, quick
+// runs, error handling, and parallel runs.
 //
 // Prereqs: skriftapp on API_URL (dummy auth enabled), the Rust relay on
 // RELAY_URL, and a paired bridge with BRIDGE_QA_AGENT=1 connected to it.
@@ -84,13 +85,13 @@ async function main() {
   const pong = await call("ping");
   check("ping round-trips over E2EE", pong.pong === true);
 
-  // Standard task: dispatch → multi-stage plan → comment/revise → per-stage
-  // approve/dispatch behind the validation gate → diff → merge.
-  const t = await call("task.dispatch", { goal: "Add a greeting banner" });
-  check("dispatch reaches plan_review", t.state === "plan_review", `state=${t.state}`);
-  check("dispatch returns a build/ branch", /^build\//.test(t.branch), t.branch);
+  // Standard flow: author a plan → comment/revise its stage docs → approve →
+  // create a run (materializes the plan, auto-runs stage 1 to the gate) →
+  // walk the per-stage gate → diff → merge.
+  const plan = await call("plan.create", { goal: "Add a greeting banner" });
+  check("plan.create reaches plan_review", plan.state === "plan_review", `state=${plan.state}`);
 
-  const board = await call("task.stages", { task_id: t.task_id });
+  const board = await call("plan.stages", { plan_id: plan.plan_id });
   check("plan arrives as multiple stages", board.stages.length === 2, `${board.stages.length} stages`);
   check(
     "stages start planned",
@@ -99,58 +100,67 @@ async function main() {
   );
   const [first, second] = board.stages;
 
+  // task.plan is retired: a plan's single-doc notes verb (plan.send_notes) now
+  // rejects multi-stage plans, which must revise through per-stage comments.
   let legacyPlanErrored = false;
   try {
-    await call("task.plan", { task_id: t.task_id });
+    await call("plan.send_notes", { plan_id: plan.plan_id, comments: "rework this" });
   } catch (e) {
     legacyPlanErrored = /multi-stage/.test(e.message);
   }
-  check("legacy task.plan is retired for multi-stage tasks", legacyPlanErrored);
+  check("legacy single-doc plan.send_notes is retired for multi-stage plans", legacyPlanErrored);
 
-  const doc = await call("task.stage_doc", { task_id: t.task_id, stage_id: first.id });
+  const doc = await call("plan.stage_doc", { plan_id: plan.plan_id, stage_id: first.id });
   check("stage doc mentions the goal", doc.contents.includes("Add a greeting banner"));
 
   // Structured comment → batched send → the revision resolves it.
-  const added = await call("task.comment_add", {
-    task_id: t.task_id,
+  const added = await call("plan.comment_add", {
+    plan_id: plan.plan_id,
     stage_id: first.id,
     body: "Please tighten this step.",
     anchor: { heading_path: ["Stage: First half"], snippet: "Implement the first half" },
   });
   check("comment is minted open", added.comment.state === "open", added.comment.id);
-  await call("task.stage_send_notes", { task_id: t.task_id, stage_id: first.id });
-  const afterRevise = await call("task.stages", { task_id: t.task_id });
+  await call("plan.stage_send_notes", { plan_id: plan.plan_id, stage_id: first.id });
+  const afterRevise = await call("plan.stages", { plan_id: plan.plan_id });
   const revisedComment = afterRevise.stages.find((s) => s.id === first.id).comments[0];
   check("revision addresses the comment", revisedComment.state === "addressed", revisedComment.agent_reply);
-  const revisedDoc = await call("task.stage_doc", { task_id: t.task_id, stage_id: first.id });
+  const revisedDoc = await call("plan.stage_doc", { plan_id: plan.plan_id, stage_id: first.id });
   check("stage doc was actually revised", revisedDoc.contents.includes("(revised)"));
 
-  // The validation gate: stage 2 cannot run before stage 1 validates.
-  await call("task.stage_approve", { task_id: t.task_id, stage_id: second.id });
-  let gateErrored = false;
-  try {
-    await call("task.stage_dispatch", { task_id: t.task_id, stage_id: second.id });
-  } catch (e) {
-    gateErrored = true;
-  }
-  check("stage 2 dispatch is gated on stage 1 validation", gateErrored);
+  // Approve the plan (the coarse gate), then approve only stage 1's doc, then
+  // create the run: stage 1 auto-dispatches + validates, resting at the gate.
+  const approvedPlan = await call("plan.approve", { plan_id: plan.plan_id });
+  check("plan.approve reaches approved", approvedPlan.state === "approved", `state=${approvedPlan.state}`);
+  await call("plan.stage_approve", { plan_id: plan.plan_id, stage_id: first.id });
 
-  await call("task.stage_approve", { task_id: t.task_id, stage_id: first.id });
-  const afterFirst = await call("task.stage_dispatch", { task_id: t.task_id, stage_id: first.id });
-  check("task returns to plan_review between stages", afterFirst.state === "plan_review", `state=${afterFirst.state}`);
-  const midBoard = await call("task.stages", { task_id: t.task_id });
-  const firstDone = midBoard.stages.find((s) => s.id === first.id);
-  check("stage 1 validates after its build", firstDone.state === "validated_passed", firstDone.state);
+  const run = await call("run.create", { plan_id: plan.plan_id });
+  check("run.create rests at the stage gate after stage 1", run.state === "stage_gate", `state=${run.state}`);
+  check("run.create returns a build/ branch", /^build\//.test(run.branch), run.branch);
+  const firstProgress = run.stages.find((s) => s.id === first.id);
+  check("stage 1 validates after its build", firstProgress.state === "validated_passed", firstProgress.state);
   check(
     "validation carries notes for the next stage",
-    firstDone.validation.passed === true && firstDone.validation.notes_for_next_stage.length > 0,
-    firstDone.validation.notes_for_next_stage
+    firstProgress.validation.passed === true && firstProgress.validation.notes_for_next_stage.length > 0,
+    firstProgress.validation.notes_for_next_stage
   );
 
-  const afterSecond = await call("task.stage_dispatch", { task_id: t.task_id, stage_id: second.id });
-  check("final stage lands the task in review", afterSecond.state === "review", `state=${afterSecond.state}`);
+  // The validation gate: stage 2 cannot dispatch until its plan doc is approved.
+  // (Stage 1 already validated when the run was created; the remaining gate on
+  // the run is the per-stage doc approval — the reinterpreted "stage 2 is gated".)
+  let gateErrored = false;
+  try {
+    await call("run.stage_dispatch", { run_id: run.run_id, stage_id: second.id });
+  } catch (e) {
+    gateErrored = /not approved/.test(e.message);
+  }
+  check("stage 2 dispatch is gated on its plan doc approval", gateErrored);
 
-  const diff = await call("task.diff", { task_id: t.task_id });
+  await call("plan.stage_approve", { plan_id: plan.plan_id, stage_id: second.id });
+  const afterSecond = await call("run.stage_dispatch", { run_id: run.run_id, stage_id: second.id });
+  check("final stage lands the run in review", afterSecond.state === "review", `state=${afterSecond.state}`);
+
+  const diff = await call("run.diff", { run_id: run.run_id });
   check(
     "diff shows both stages' files",
     diff.files.some((f) => f.path === `result-${first.id}.txt`) &&
@@ -159,31 +169,33 @@ async function main() {
   );
   check("diff patch is non-empty", diff.patch.length > 0);
 
-  const merged = await call("task.approve_merge", { task_id: t.task_id });
-  check("approve_merge reaches merged", merged.state === "merged", `state=${merged.state}`);
+  const merged = await call("run.git_action", { run_id: run.run_id, action: "merge" });
+  check("git_action merge reaches merged", merged.state === "merged", `state=${merged.state}`);
 
-  // Run-all: approve every stage, arm auto-advance, and the chain runs to review.
-  const r = await call("task.dispatch", { goal: "Run-all banner polish" });
-  const runAllBoard = await call("task.stages", { task_id: r.task_id });
+  // Run-all: approve every stage, create the run, arm auto-advance, and the
+  // chain runs to review.
+  const runAllPlan = await call("plan.create", { goal: "Run-all banner polish" });
+  await call("plan.approve", { plan_id: runAllPlan.plan_id });
+  const runAllBoard = await call("plan.stages", { plan_id: runAllPlan.plan_id });
   for (const s of runAllBoard.stages) {
-    await call("task.stage_approve", { task_id: r.task_id, stage_id: s.id });
+    await call("plan.stage_approve", { plan_id: runAllPlan.plan_id, stage_id: s.id });
   }
-  const chained = await call("task.set_auto_advance", { task_id: r.task_id, enabled: true });
+  const runAll = await call("run.create", { plan_id: runAllPlan.plan_id });
+  const chained = await call("run.set_auto_advance", { run_id: runAll.run_id, enabled: true });
   check("run-all chains every stage to review", chained.state === "review", `state=${chained.state}`);
-  const chainedBoard = await call("task.stages", { task_id: r.task_id });
   check(
     "run-all validates every stage",
-    chainedBoard.stages.every((s) => s.state === "validated_passed"),
-    chainedBoard.stages.map((s) => s.state).join(",")
+    chained.stages.every((s) => s.state === "validated_passed"),
+    chained.stages.map((s) => s.state).join(",")
   );
-  const runAllMerged = await call("task.approve_merge", { task_id: r.task_id });
-  check("run-all task merges", runAllMerged.state === "merged");
+  const runAllMerged = await call("run.git_action", { run_id: runAll.run_id, action: "merge" });
+  check("run-all run merges", runAllMerged.state === "merged");
 
   // External worktree adoption: list → read-only browse → adopt → merge with
   // cleanup=keep. Conditional: runs only when the environment pre-created an
   // external worktree in the project repo (the local harness does this via
   // podman exec); a vanilla stack skips it without failing.
-  const withExternals = await call("task.list");
+  const withExternals = await call("board.list");
   const external = (withExternals.external_worktrees || []).find((w) => w.adoptable);
   if (external) {
     check("external worktree is listed", true, `${external.branch} (${external.worktree_id})`);
@@ -192,44 +204,51 @@ async function main() {
       worktree_id: external.worktree_id,
     });
     check("worktree browse shows the dirty diff", browse.patch.length > 0, browse.stat && `+${browse.stat.insertions}`);
-    const afterBrowse = await call("task.list");
+    const afterBrowse = await call("board.list");
     check(
       "browsing does not adopt",
       (afterBrowse.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
     );
 
-    const adopted = await call("task.adopt", {
+    const adopted = await call("run.adopt", {
       project_id: external.project_id,
       worktree_id: external.worktree_id,
     });
-    check("adopt mints a review task", adopted.state === "review" && adopted.adopted === true, `state=${adopted.state}`);
-    const afterAdopt = await call("task.list");
+    check("adopt mints a review run", adopted.state === "review" && adopted.adopted === true, `state=${adopted.state}`);
+    const afterAdopt = await call("board.list");
     check(
       "adopted worktree leaves the external list",
       !(afterAdopt.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
     );
 
-    const adoptedMerged = await call("task.approve_merge", { task_id: adopted.task_id, cleanup: "keep" });
-    check("adopted task merges with cleanup=keep", adoptedMerged.state === "merged", `state=${adoptedMerged.state}`);
+    const adoptedMerged = await call("run.git_action", { run_id: adopted.run_id, action: "merge", cleanup: "keep" });
+    check("adopted run merges with cleanup=keep", adoptedMerged.state === "merged", `state=${adoptedMerged.state}`);
   } else {
     console.log("· adoption checks skipped (no external worktree in the project repo)");
   }
 
-  // Quick task: dispatch → review → merge (no plan phase).
-  const q = await call("task.dispatch", { goal: "Quick fix typo", kind: "quick" });
-  check("quick task skips planning (review)", q.state === "review", `state=${q.state}`);
-  const qMerged = await call("task.approve_merge", { task_id: q.task_id });
-  check("quick task merges", qMerged.state === "merged");
+  // Quick run: a plan-less run (goal directly) → review → merge (no plan phase).
+  const q = await call("run.create", { goal: "Quick fix typo" });
+  check("quick run skips planning (review)", q.state === "review", `state=${q.state}`);
+  check("quick run has no plan", q.plan_id === null, `plan_id=${q.plan_id}`);
+  const qMerged = await call("run.git_action", { run_id: q.run_id, action: "merge" });
+  check("quick run merges", qMerged.state === "merged");
 
-  // Parallel/independent tasks visible on the board.
-  const a = await call("task.dispatch", { goal: "Parallel task A" });
-  const b = await call("task.dispatch", { goal: "Parallel task B" });
-  check("two parallel tasks have distinct branches", a.branch !== b.branch);
-  const list = await call("task.list");
-  check("task.list reports all tasks", list.tasks.length >= 4, `${list.tasks.length} tasks`);
+  // Parallel/independent runs visible on the board. `a` is a quick run we will
+  // abandon; `b` is a plan-backed run left alive at the stage gate — its worktree
+  // and materialized `.build/plan` docs feed the fs/agent surface checks below.
+  const a = await call("run.create", { goal: "Parallel run A" });
+  const bPlan = await call("plan.create", { goal: "Parallel plan B" });
+  await call("plan.approve", { plan_id: bPlan.plan_id });
+  const bBoard = await call("plan.stages", { plan_id: bPlan.plan_id });
+  await call("plan.stage_approve", { plan_id: bPlan.plan_id, stage_id: bBoard.stages[0].id });
+  const b = await call("run.create", { plan_id: bPlan.plan_id });
+  check("two parallel runs have distinct branches", a.branch !== b.branch);
+  const boardAll = await call("board.list");
+  check("board.list reports all runs", boardAll.runs.length >= 4, `${boardAll.runs.length} runs`);
 
   // Abandon is safe.
-  const abandoned = await call("task.abandon", { task_id: a.task_id });
+  const abandoned = await call("run.abandon", { run_id: a.run_id });
   check("abandon reaches abandoned", abandoned.state === "abandoned");
 
   // Error handling: unknown method and missing params are clean errors, not crashes.
@@ -243,7 +262,7 @@ async function main() {
 
   let badParamsErrored = false;
   try {
-    await call("task.dispatch", {});
+    await call("run.create", {});
   } catch (e) {
     badParamsErrored = /goal/.test(e.message);
   }
@@ -292,10 +311,10 @@ async function main() {
     check("term.close removes it from term.list", !(listed2.terminals || []).some((t2) => t2.term_id === created.term_id));
 
     // 4. Primary-changes summary + project.diff shape.
-    const withPrimary = await call("task.list");
+    const withPrimary = await call("board.list");
     const pc = (withPrimary.primary_changes || []).find((p) => p.project_id === projectId);
     check(
-      "task.list.primary_changes carries a branch + numeric files_changed",
+      "board.list.primary_changes carries a branch + numeric files_changed",
       !!pc && typeof pc.branch === "string" && pc.branch.length > 0 && typeof pc.files_changed === "number",
       pc ? `${pc.branch} (${pc.files_changed})` : "missing",
     );
@@ -307,16 +326,17 @@ async function main() {
     );
   }
 
-  // 2 + 3. fs round-trip and fencing, against a live plan_review task's worktree.
-  // `b` (Parallel task B) is still in plan_review — its worktree and stage docs
-  // exist on disk (t was merged+pruned, a was abandoned).
-  const tree = await call("fs.tree", { task_id: b.task_id });
+  // 2 + 3. fs round-trip and fencing, against a live run's worktree. `b`
+  // (Parallel run B) rests at the stage gate — its worktree and the materialized
+  // `.build/plan` stage docs exist on disk (the standard run merged+pruned, `a`
+  // was abandoned). fs scopes on `run_id` now (there is no plan-worktree scope).
+  const tree = await call("fs.tree", { run_id: b.run_id });
   const names = (tree.entries || []).map((e) => e.name);
   check("fs.tree lists .build and hides .git", names.includes(".build") && !names.includes(".git"), names.join(","));
-  const bStages = await call("task.stages", { task_id: b.task_id });
+  const bStages = await call("plan.stages", { plan_id: bPlan.plan_id });
   const firstStage = bStages.stages[0];
-  const stageFile = await call("fs.read", { task_id: b.task_id, path: firstStage.path });
-  const stageDoc = await call("task.stage_doc", { task_id: b.task_id, stage_id: firstStage.id });
+  const stageFile = await call("fs.read", { run_id: b.run_id, path: firstStage.path });
+  const stageDoc = await call("plan.stage_doc", { plan_id: bPlan.plan_id, stage_id: firstStage.id });
   check(
     "fs.read returns the stage doc's exact bytes",
     b64decode(stageFile.content_b64) === stageDoc.contents,
@@ -324,22 +344,23 @@ async function main() {
   );
   let fenceErrored = false;
   try {
-    await call("fs.read", { task_id: b.task_id, path: "../../../etc/passwd" });
+    await call("fs.read", { run_id: b.run_id, path: "../../../etc/passwd" });
   } catch (e) {
     fenceErrored = /path escapes/.test(e.message);
   }
   check("fs.read fences a traversal path", fenceErrored);
 
-  // 5. Agent attach: a live task returns its reserved id + a boolean live; a
-  // merged task (still a record) attaches with live:false.
-  const agentLive = await term.call("agent.attach", { task_id: b.task_id });
+  // 5. Agent attach: a live run returns its reserved id + a boolean live; a
+  // merged run (still a record) attaches with live:false. The scope key is the
+  // opaque entity `id` (plan-… / run-…).
+  const agentLive = await term.call("agent.attach", { id: b.run_id });
   check(
     "agent.attach returns the reserved id + boolean live",
-    agentLive.term_id === `agent:${b.task_id}` && typeof agentLive.live === "boolean",
+    agentLive.term_id === `agent:${b.run_id}` && typeof agentLive.live === "boolean",
     `live=${agentLive.live}`,
   );
-  const agentMerged = await term.call("agent.attach", { task_id: t.task_id });
-  check("agent.attach on a merged task succeeds with live:false", agentMerged.live === false, `live=${agentMerged.live}`);
+  const agentMerged = await term.call("agent.attach", { id: run.run_id });
+  check("agent.attach on a merged run succeeds with live:false", agentMerged.live === false, `live=${agentMerged.live}`);
 
   tc.ws.close();
   c.ws.close();

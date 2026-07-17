@@ -41,7 +41,8 @@ async function awaitDeviceKey(recv, preferDeviceId = null) {
 
 // Open an E2EE session and return an RPC `call(method, params)` over it. This is
 // the real client API the UI uses: bootstrap once, then make many encrypted calls
-// to the bridge's application RPC (task.dispatch, task.diff, task.approve_merge…).
+// to the bridge's application RPC (plan.create, run.create, run.diff,
+// run.git_action…).
 export async function openSession({ send, recv, transport, preferDeviceId = null }) {
   if (transport.ready) await transport.ready();
 

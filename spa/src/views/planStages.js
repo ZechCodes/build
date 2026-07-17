@@ -12,6 +12,7 @@
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { STAGE_LABEL, stageChipClass, commentCard, headingPathFor, bindAction } from "./stages.js";
+import { stageNotesTarget } from "../core/taskActions.js";
 import { watchSelection } from "../selectWatch.js";
 import { showCommentPop, hideCommentPop } from "../commentPop.js";
 
@@ -182,24 +183,36 @@ function renderStageDoc(ctx, stage) {
 }
 
 // Plan-side per-stage actions: send the stage's open comments back for a
-// revision (plan.stage_send_notes), and — while the doc is still planned —
-// approve it (plan.stage_approve). An approved doc keeps its send-notes path
-// (progressive review: a revision resets the doc to planned), but has no
-// further plan-side action of its own.
+// revision, and — while the doc is still planned — approve it (plan.stage_approve).
+// The revision verb depends on the plan's lifecycle (stageNotesTarget): under
+// review it is plan.stage_send_notes; once the plan is approved with a live run
+// the bridge rejects that, so the notes route through the run's mid-run session
+// (run.stage_send_notes). An approved plan with no run has no session to revise
+// through — the send-notes button is disabled.
 function renderStageActions(ctx, stage) {
   const { body, plan, callRpc, repaint } = ctx;
   const planId = plan.plan_id;
   const actions = body.querySelector("#stageactions");
   const hint = body.querySelector("#stagehint");
   const openCount = stage.open_comments || 0;
+  const target = stageNotesTarget(plan);
+  const viaRun = target && target.method === "run.stage_send_notes";
   const sendNotesBtn = openCount > 0 ? `<button class="btn" id="sendnotes">Send ${openCount} comment${openCount === 1 ? "" : "s"}</button>` : "";
   const wireSendNotes = () => {
     const b = body.querySelector("#sendnotes");
-    if (b)
-      bindAction(b, "sending…", hint, async () => {
-        await callRpc("plan.stage_send_notes", { plan_id: planId, stage_id: stage.id });
-        repaint();
-      });
+    if (!b) return;
+    if (!target) {
+      // Plan approved but no run to revise through: nothing to send to.
+      b.disabled = true;
+      b.title = "Approve settled — start a run to revise this stage.";
+      return;
+    }
+    b.title = viaRun ? "Revises this stage through the run's stage-gate revision." : "";
+    bindAction(b, "sending…", hint, async () => {
+      const params = viaRun ? { run_id: target.entityId, stage_id: stage.id } : { plan_id: planId, stage_id: stage.id };
+      await callRpc(target.method, params);
+      repaint();
+    });
   };
 
   if (stage.state === "planned") {
@@ -214,6 +227,6 @@ function renderStageActions(ctx, stage) {
   // approved (or any non-planned doc state): send-notes stays available; the
   // doc is otherwise settled on the plan side.
   actions.innerHTML = sendNotesBtn;
-  hint.textContent = stage.state === "approved" ? "stage approved" : "";
+  hint.textContent = viaRun ? "Sends to the run's stage-gate revision." : stage.state === "approved" ? "stage approved" : "";
   wireSendNotes();
 }

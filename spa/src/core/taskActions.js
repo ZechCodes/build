@@ -33,10 +33,15 @@ export function planAbandonable(state) {
 }
 
 /** Whether the plan's first stage doc is approved — the fine-grained gate that
- *  run dispatch requires on top of the coarse plan approval. */
+ *  run dispatch requires on top of the coarse plan approval. Single-doc plans
+ *  (and migrated legacy single-plan tasks) carry an EMPTY stages array; the
+ *  bridge only gates the first stage doc when one exists (orchestrator.rs
+ *  dispatch_run: `if let Some(first_stage) = plan.stages.first()`), so an empty
+ *  manifest imposes no first-stage gate at all. */
 function firstStageApproved(plan) {
   const first = plan && (plan.stages || [])[0];
-  return !!first && first.state === "approved";
+  if (!first) return true;
+  return first.state === "approved";
 }
 
 /** Whether Implement (run.create for this plan) is available. The bridge rejects
@@ -66,6 +71,24 @@ export function implementBlockReason(plan) {
  *  all pick the same default. */
 export function defaultRunTab(run) {
   return run && run.state === "stage_gate" ? "stages" : "changes";
+}
+
+/** Which RPC revises a stage's open comments, given the plan's lifecycle, for
+ *  the plan cockpit's per-stage send-notes action. While the plan is still under
+ *  review the plan owns the drafting session, so `plan.stage_send_notes` applies.
+ *  Once the plan is approved its docs are frozen and the bridge REJECTS
+ *  `plan.stage_send_notes`; a live run (active_run_id) then owns the mid-run
+ *  revision session, so the notes must go through `run.stage_send_notes`. An
+ *  approved plan with no run has no session to revise through — null (disabled).
+ *  Returns { method, entityId } — the caller pairs entityId with the method's id
+ *  key (plan_id / run_id) and adds stage_id. Pure so both the routing and the
+ *  disabled/enabled hint are unit-testable. */
+export function stageNotesTarget(plan) {
+  if (!plan) return null;
+  if (plan.state === "approved") {
+    return plan.active_run_id ? { method: "run.stage_send_notes", entityId: plan.active_run_id } : null;
+  }
+  return { method: "plan.stage_send_notes", entityId: plan.plan_id };
 }
 
 /** The human-readable reason from a `merge_failed:<reason>` error message, or

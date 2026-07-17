@@ -145,6 +145,13 @@ describe("projectHtml", () => {
     expect(html).toContain('data-tab="changes"');
   });
 
+  it("a stage_gate run row opens on Stages (defaultRunTab — matching the board/notifications)", () => {
+    const m = model({ needsYou: [run({ run_id: "sg", state: "stage_gate" })], running: [], doneRecently: [] });
+    const html = projectHtml(m, ui());
+    expect(html).toContain('data-run="sg"');
+    expect(html).toContain('data-tab="stages"');
+  });
+
   it("collapsed projects render only the header", () => {
     const u = ui();
     u.closed.add("p1");

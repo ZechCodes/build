@@ -52,6 +52,26 @@ export function joinRunStages(planStages, runStages) {
   });
 }
 
+/** Pure: the stage board rows a run can render from its OWN progress records
+ *  alone, when the owning plan is gone (deleted — legal once the run is terminal)
+ *  and plan.stages can no longer be fetched. Only dispatched stages have a
+ *  progress record, so the board shows the run's progress states + validation
+ *  with placeholder titles (the plan held the real ones). doc_state is pinned to
+ *  "approved" — a stage only ran because its doc was approved — so the gate
+ *  reasoning never points at a plan that no longer exists. */
+export function runStagesFallback(runStages) {
+  return (runStages || []).map((progress, i) => ({
+    id: progress.id,
+    title: `Stage ${i + 1}`,
+    summary: "",
+    doc_state: "approved",
+    open_comments: 0,
+    state: progress.state,
+    validation: progress.validation || null,
+    start_sha: progress.start_sha || null,
+  }));
+}
+
 /** Pure: which run-all control the stage board shows for a given board.
  *  "stop" when auto-advance is already on; "run" (the split button) when the run
  *  is live and the earliest unfinished stage is runnable; "none" otherwise
@@ -200,7 +220,14 @@ export function stageBoardHtml(run, stagesData) {
     })
     .join("");
 
+  // The owning plan was deleted (legal once the run is terminal): the doc titles
+  // and comments are gone, so the board falls back to the run's own progress.
+  const deletedNote = stagesData.planDeleted
+    ? `<div class="empty stagenote">The plan for this run was deleted — showing the run's own stage progress.</div>`
+    : "";
+
   return `
+    ${deletedNote}
     ${reviewBanner}
     <div class="stagehead">
       <div class="runall" id="runall"></div>
@@ -267,6 +294,22 @@ function renderGateAction(ctx, host) {
     return;
   }
 
+  // At the stage gate, open comments on the gating stage can be routed to a
+  // mid-run revision session (run.stage_send_notes — legal only from stage_gate;
+  // the doc approval resets to planned and the agent replies to the comments).
+  const canSendNotes = stage.open_comments > 0 && run.state === "stage_gate";
+  const sendNotesBtn = canSendNotes
+    ? `<button class="btn" id="sendstagenotes">Send ${stage.open_comments} comment${stage.open_comments === 1 ? "" : "s"}</button>`
+    : "";
+  const wireSendStageNotes = () => {
+    const b = host.querySelector("#sendstagenotes");
+    if (b)
+      bindAction(b, "sending…", host.querySelector("#stagehint"), async () => {
+        await callRpc("run.stage_send_notes", { run_id: runId, stage_id: stage.id });
+        repaint();
+      });
+  };
+
   // planned / approved: the Start control, enabled only at the sequential gate.
   const reason = stageGateReason(stages, index, run.state);
   const models = (catalog && catalog.models) || [];
@@ -277,17 +320,19 @@ function renderGateAction(ctx, host) {
     const toPlan = stage.doc_state !== "approved"
       ? `<button class="btn" id="gotoplan">Open the plan →</button>`
       : "";
-    host.innerHTML = `<div class="actionbar"><span class="hint">${esc(reason)}</span>
-      <div class="right">${toPlan}<button class="btn primary" disabled>Start “${esc(stage.title)}”</button></div></div>`;
+    host.innerHTML = `<div class="actionbar"><span class="hint" id="stagehint">${esc(reason)}</span>
+      <div class="right">${sendNotesBtn}${toPlan}<button class="btn primary" disabled>Start “${esc(stage.title)}”</button></div></div>`;
     const g = host.querySelector("#gotoplan");
     if (g) g.onclick = () => openPlan(stage.id);
+    wireSendStageNotes();
     return;
   }
   host.innerHTML = `<div class="actionbar"><span class="hint" id="stagehint"></span>
-    <div class="right">
+    <div class="right">${sendNotesBtn}
       <select id="stModel" class="mini" title="Coding agent model">${modelOptionsHtml(models, run.model)}</select>
       <select id="stEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(efforts, run.effort)}</select>
       <button class="btn primary" id="startstage">Start “${esc(stage.title)}”</button></div></div>`;
+  wireSendStageNotes();
   const modelSel = host.querySelector("#stModel");
   const effortSel = host.querySelector("#stEffort");
   const syncEffort = () => {

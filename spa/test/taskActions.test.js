@@ -9,6 +9,7 @@ import {
   canImplement,
   implementBlockReason,
   defaultRunTab,
+  stageNotesTarget,
 } from "../src/core/taskActions.js";
 
 // Live (non-deletable) run states, from the wire contract.
@@ -86,9 +87,51 @@ describe("Implement availability", () => {
     expect(implementBlockReason(plan)).toMatch(/run/i);
   });
 
-  it("is unavailable for a missing plan or one with no stages", () => {
+  it("is unavailable for a missing plan", () => {
     expect(canImplement(null)).toBe(false);
-    expect(canImplement({ state: "approved", active_run_id: null, stages: [] })).toBe(false);
+  });
+
+  it("is available for a single-doc / migrated plan (empty stages: no first-stage gate)", () => {
+    // The bridge only gates the first stage doc when one exists; an empty stages
+    // array (single-doc or legacy migrated plan) imposes no per-stage gate.
+    const plan = { state: "approved", active_run_id: null, stages: [] };
+    expect(canImplement(plan)).toBe(true);
+    expect(implementBlockReason(plan)).toBeNull();
+  });
+
+  it("is still gated by plan approval and the single-active-writer rule when stages is empty", () => {
+    expect(canImplement({ state: "plan_review", active_run_id: null, stages: [] })).toBe(false);
+    expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/approve the plan/i);
+    expect(canImplement({ state: "approved", active_run_id: "run-1", stages: [] })).toBe(false);
+    expect(implementBlockReason({ state: "approved", active_run_id: "run-1", stages: [] })).toMatch(/already implementing/i);
+  });
+
+  it("is unavailable for a plan whose stages array is absent altogether (no gate, but approval still required)", () => {
+    expect(canImplement({ state: "approved", active_run_id: null })).toBe(true);
+  });
+});
+
+describe("stage-notes routing (which send-notes verb applies)", () => {
+  it("routes through the plan while it is still under review", () => {
+    expect(stageNotesTarget({ state: "plan_review", plan_id: "pl-1", active_run_id: null })).toEqual({
+      method: "plan.stage_send_notes",
+      entityId: "pl-1",
+    });
+  });
+
+  it("routes through the active run once the plan is approved (plan docs are frozen)", () => {
+    expect(stageNotesTarget({ state: "approved", plan_id: "pl-1", active_run_id: "run-9" })).toEqual({
+      method: "run.stage_send_notes",
+      entityId: "run-9",
+    });
+  });
+
+  it("has no revision path for an approved plan with no run", () => {
+    expect(stageNotesTarget({ state: "approved", plan_id: "pl-1", active_run_id: null })).toBeNull();
+  });
+
+  it("is safe for a missing plan", () => {
+    expect(stageNotesTarget(null)).toBeNull();
   });
 });
 

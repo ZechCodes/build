@@ -5,6 +5,7 @@ import {
   stageBoardHtml,
   runAllControlKind,
   joinRunStages,
+  runStagesFallback,
   stageGateReason,
 } from "../src/views/stages.js";
 
@@ -53,6 +54,50 @@ describe("joinRunStages", () => {
     expect(joinRunStages([], [])).toEqual([]);
     expect(joinRunStages(null, null)).toEqual([]);
     expect(joinRunStages(planStages, null).map((s) => s.id)).toEqual(["first", "second"]);
+  });
+});
+
+describe("runStagesFallback", () => {
+  const runStages = [
+    { id: "first", state: "validated_passed", start_sha: "abc", validation: { passed: true, findings: "ok", notes_for_next_stage: "" } },
+    { id: "second", state: "validated_passed", start_sha: "def", validation: { passed: true, findings: "done", notes_for_next_stage: "" } },
+  ];
+
+  it("builds a board shape from the run's own progress with placeholder titles", () => {
+    const stages = runStagesFallback(runStages);
+    expect(stages.map((s) => s.id)).toEqual(["first", "second"]);
+    expect(stages.map((s) => s.title)).toEqual(["Stage 1", "Stage 2"]);
+    expect(stages.map((s) => s.state)).toEqual(["validated_passed", "validated_passed"]);
+    expect(stages[0].doc_state).toBe("approved"); // a stage only ran once approved
+    expect(stages[0].validation.findings).toBe("ok");
+    expect(stages[0].start_sha).toBe("abc");
+    expect(stages[0].open_comments).toBe(0);
+  });
+
+  it("is safe for empty/absent progress", () => {
+    expect(runStagesFallback([])).toEqual([]);
+    expect(runStagesFallback(null)).toEqual([]);
+  });
+
+  it("carries a null validation through when a stage has none", () => {
+    expect(runStagesFallback([{ id: "a", state: "building" }])[0].validation).toBeNull();
+  });
+});
+
+describe("stageBoardHtml — deleted plan fallback", () => {
+  const stages = runStagesFallback([
+    { id: "a", state: "validated_passed", start_sha: "x", validation: { passed: true, findings: "verified", notes_for_next_stage: "" } },
+  ]);
+
+  it("shows a note that the plan was deleted when planDeleted is set", () => {
+    const html = stageBoardHtml({ state: "merged" }, { stages, auto_advance: false, planDeleted: true });
+    expect(html).toContain("The plan for this run was deleted");
+    expect(html).toContain('id="stagelist"'); // still a real board the poll can find
+  });
+
+  it("shows no such note under normal (plan present) rendering", () => {
+    const html = stageBoardHtml({ state: "stage_gate" }, { stages, auto_advance: false });
+    expect(html).not.toContain("was deleted");
   });
 });
 

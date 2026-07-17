@@ -503,6 +503,9 @@ body.sidebar-collapsed #side-open { display:block; }
    background is the section; no box, no padding, no leftover space below. */
 .termpane { height:100%; overflow:hidden; background:#15161e; }
 .agentwrap { position:relative; height:100%; }
+/* The plan surface is a normal scrolling page (not a full-height tab shell), so
+   its Agent pane needs a concrete height to fill instead of height:100%. */
+.plan-agentwrap { height:65vh; height:65dvh; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
   background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;
   font-size:12px; color:var(--dim); box-shadow:0 2px 8px rgba(0,0,0,.08); }

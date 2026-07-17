@@ -5,6 +5,7 @@
 // plans (project-scoped) and its runs (worktree-scoped; "Tasks" in the UI).
 
 import { esc, humanAge } from "./text.js";
+import { defaultRunTab } from "./taskActions.js";
 
 /** Truncation is CSS's job (ellipsis); classification is ours. */
 const RUN_TERMINAL = new Set(["merged", "abandoned", "archived"]);
@@ -77,9 +78,10 @@ const statHtml = (stat) =>
     : "";
 
 // A run row (the board's "Tasks"), keyed by run_id, routing to the run surface's
-// Changes tab (the worktree is where a run lives).
+// default tab — Stages for a run parked at the stage gate, Changes otherwise —
+// so the sidebar opens the same tab the board and notifications do (defaultRunTab).
 function runRow(r, { icon, right, cls = "" }) {
-  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="changes">
+  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;
 }
 

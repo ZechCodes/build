@@ -13,7 +13,7 @@ import { App, go, loadModelCatalog } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { canDelete, canAbandon, bannerText, defaultRunTab } from "../core/taskActions.js";
 import { openMessageAgent } from "../sheets/message.js";
-import { renderStagesTab, stageActionBusy, joinRunStages } from "./stages.js";
+import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
@@ -321,6 +321,10 @@ export async function renderTask() {
 
   // The Stages tab's poll freeze/rebuild key, preserved across ticks.
   let stagesKey = null;
+  // The owning plan can be deleted once the run is terminal; once plan.stages
+  // returns "unknown plan_id" we latch this and stop re-fetching, rendering the
+  // board from the run's own progress records alone.
+  let planGone = false;
 
   // Render the run-side Stages tab: join the plan's stage docs (title, doc
   // sub-state, open-comment counts) with the run's execution progress, then hand
@@ -328,13 +332,21 @@ export async function renderTask() {
   // plan.stages every tick for the doc metadata and joins it with the run's own
   // stage progress (already in `t.stages`). Frozen while a fix note is in flight.
   async function paintStages(t) {
-    let planStages;
-    try {
-      planStages = await App.call("plan.stages", { plan_id: t.plan_id });
-    } catch {
-      return; // not readable yet; the next poll retries
+    let planStages = null;
+    if (!planGone) {
+      try {
+        planStages = await App.call("plan.stages", { plan_id: t.plan_id });
+      } catch (e) {
+        // A deleted plan is a permanent condition (the run is terminal): latch it
+        // and fall through to the run-only board. Anything else is transient —
+        // leave the current board and let the next poll retry.
+        if (/unknown plan_id/.test((e && e.message) || "")) planGone = true;
+        else return;
+      }
     }
-    const stagesData = { stages: joinRunStages(planStages.stages, t.stages), auto_advance: t.auto_advance };
+    const stagesData = planGone
+      ? { stages: runStagesFallback(t.stages), auto_advance: t.auto_advance, planDeleted: true }
+      : { stages: joinRunStages(planStages.stages, t.stages), auto_advance: t.auto_advance };
     const key = t.state + " " + JSON.stringify(stagesData);
     const noteBox = $("#fixnote");
     const busy = stageActionBusy() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));

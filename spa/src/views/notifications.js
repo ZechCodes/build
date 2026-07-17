@@ -13,6 +13,8 @@ import { defaultRunTab } from "../core/taskActions.js";
 function runNotifEvent(t) {
   if (t.state === "review")
     return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", primary: true };
+  if (t.state === "stage_gate")
+    return { icon: "✦", tone: "", title: "Stage passed — next stage ready", sub: t.summary || "A stage finished and passed validation. Start the next stage.", action: "View stages", primary: true };
   if (t.state === "blocked")
     return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", primary: false };
   if (t.state === "failed")

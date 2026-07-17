@@ -125,4 +125,26 @@ describe("Implement availability text (plan cockpit footer)", () => {
     const plan = { state: "approved", active_run_id: "run-9", stages: readyStages };
     expect(implementBlockReason(plan)).toMatch(/already implementing/i);
   });
+
+  // Single-doc plans (and migrated legacy single-plan tasks) carry an EMPTY
+  // stages array. The bridge only gates the first stage doc when one exists, so
+  // an empty manifest imposes no first-stage requirement — only the plan-approval
+  // and single-active-writer gates remain.
+  it("is available for an approved single-doc plan (empty stages, no run)", () => {
+    const plan = { state: "approved", active_run_id: null, stages: [] };
+    expect(canImplement(plan)).toBe(true);
+    expect(implementBlockReason(plan)).toBeNull();
+  });
+
+  it("still blocks an unapproved single-doc plan at the review gate", () => {
+    const plan = { state: "plan_review", active_run_id: null, stages: [] };
+    expect(canImplement(plan)).toBe(false);
+    expect(implementBlockReason(plan)).toMatch(/approve the plan/i);
+  });
+
+  it("still blocks a single-doc plan that already has a run", () => {
+    const plan = { state: "approved", active_run_id: "run-3", stages: [] };
+    expect(canImplement(plan)).toBe(false);
+    expect(implementBlockReason(plan)).toMatch(/already implementing/i);
+  });
 });

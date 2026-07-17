@@ -16,9 +16,12 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { mountSplitButton } from "../core/splitButton.js";
+import { mountTabShell } from "../core/tabshell.js";
+import { mountAgentPane } from "../core/surfaceTabs.js";
+import { terminalManager } from "../terminal/manager.js";
 import { assemblePlanNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
-import { PLAN_STATE_LABEL, planChipClass, planPayloadFor } from "./shared.js";
+import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass, planPayloadFor } from "./shared.js";
 import { canImplement, implementBlockReason, planAbandonable, planDeletable, bannerText } from "../core/taskActions.js";
 import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
@@ -37,6 +40,12 @@ export async function renderPlan() {
   const root = $("#root");
   const id = App.route.id;
   let last = null;
+  // The plan carries two surfaces: Review (the doc / stage board) and Agent (the
+  // drafting session's live PTY — "the terminal is the basement"). The Agent tab
+  // shows only while the plan is non-terminal; Review is the default.
+  let tab = App.route.tab === "agent" ? "agent" : "review";
+  let tabShellCtl = null;
+  let agentPane = null;
   // A locally-held RPC failure (abandon/delete/implement) the bridge does not
   // record in last_error; it wins over the polled value so the poll can't wipe
   // it before the user reads it (same rule as task.js).
@@ -66,6 +75,81 @@ export async function renderPlan() {
     el.hidden = !message;
   };
 
+  // The Agent tab exists only while a planning session can be live — a terminal
+  // (abandoned) plan has no session, so only Review remains.
+  const agentAvailable = (p) => !!p && !PLAN_TERMINAL_STATES.has(p.state);
+
+  const disposeAgent = () => {
+    if (agentPane) {
+      agentPane.dispose();
+      agentPane = null;
+    }
+  };
+
+  // Mount the plan's drafting-session PTY into the body (agent.attach is
+  // entity-agnostic — a plan id resolves to its planning session). Mirrors
+  // task.js's Agent tab: a quiet idle chip over the retained last screen when no
+  // session is live. The poll never repaints the body while this is mounted.
+  const mountAgent = () => {
+    const body = $("#planbody");
+    if (!body) return;
+    if (planSelDispose) {
+      planSelDispose();
+      planSelDispose = null;
+    }
+    body.innerHTML = `<div class="agentwrap plan-agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
+    const chip = body.querySelector("#agentIdle");
+    const setIdle = (on) => {
+      if (!chip) return;
+      chip.textContent = on ? "no active planning session" : "";
+      chip.hidden = !on;
+    };
+    let pane = null;
+    let disposed = false;
+    mountAgentPane(body.querySelector("#agentpane"), id, {
+      onLive: (live) => setIdle(!live),
+      onExit: (reason) => {
+        if (reason === "agent_session_ended") setIdle(true);
+      },
+    }).then(
+      (p) => (disposed ? p.dispose() : (pane = p)),
+      () => setIdle(true), // unknown/absent session — chip alone, view intact
+    );
+    agentPane = {
+      dispose() {
+        disposed = true;
+        if (pane) pane.dispose();
+        terminalManager().detach(`agent:${id}`);
+      },
+    };
+  };
+
+  // Switch surfaces: Review repaints through the poll machinery; Agent owns its
+  // own body and is never touched by the poll.
+  const selectTab = (next) => {
+    tab = next;
+    App.route.tab = next;
+    history.replaceState(null, "", `#/plan/${encodeURIComponent(id)}/${next}`);
+    if (tabShellCtl) tabShellCtl.setActive(next);
+    disposeAgent();
+    if (next === "agent") {
+      mountAgent();
+    } else {
+      planKey = null;
+      stagesKey = null;
+      paint();
+    }
+  };
+
+  // The Review/Agent tab row. Rebuilt with the shell (identity/state changes),
+  // so the Agent tab appears/disappears as the plan crosses into a terminal state.
+  const wireTabs = (p) => {
+    const host = $("#plantabs");
+    if (!host) return;
+    const tabs = [{ id: "review", label: "Review" }, ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : [])];
+    tabShellCtl = mountTabShell(host, { tabs, active: tab, onSelect: (t) => selectTab(t) });
+  };
+
   // The header shell: identity + state chip + lifecycle actions, an error
   // banner, the review body host, and the persistent gate footer. Rebuilt only
   // when the plan's identity/state/run-link changes, so a poll tick never wipes
@@ -81,6 +165,7 @@ export async function renderPlan() {
           <span class="chip ${planChipClass(p.state)}">${PLAN_STATE_LABEL[p.state] || p.state}</span>
           <span class="taskactions" id="planactions"></span>
         </div></div>
+      <div class="tabs" id="plantabs"></div>
       <div class="task-error" id="planError" role="alert" hidden></div>
       ${context ? `<div class="payload planctx">${esc(context)}</div>` : ""}
       <div id="planbody"></div>
@@ -88,7 +173,11 @@ export async function renderPlan() {
         <span class="hint" id="planhint"></span><div class="right" id="gateactions"></div></div>`;
     wireLifecycle(p);
     wireGate(p);
+    wireTabs(p);
     showBanner(bannerText(localError, p.last_error));
+    // A shell rebuild wiped #planbody — re-mount the Agent pane so the poll's
+    // early-return leaves a live pane in place (mirrors task.js).
+    if (tab === "agent") mountAgent();
   };
 
   // Header lifecycle: message a live/parked planning session; abandon a live
@@ -366,10 +455,19 @@ export async function renderPlan() {
     } catch {
       return; // not readable yet — the poll retries
     }
+    // A plan that just crossed into a terminal state loses its Agent tab; fall
+    // back to Review before the shell rebuild so the surface stays consistent.
+    if (tab === "agent" && !agentAvailable(p)) {
+      selectTab("review");
+      return;
+    }
     const needShell = !last || last.state !== p.state || last.goal !== p.goal || last.active_run_id !== p.active_run_id;
     last = p;
     if (needShell) shell(p);
     showBanner(bannerText(localError, p.last_error));
+
+    // The Agent pane owns the body; the poll never repaints it.
+    if (tab === "agent") return;
 
     const body = $("#planbody");
     if (!body) return;
@@ -400,6 +498,7 @@ export async function renderPlan() {
 
   App.viewDispose = () => {
     if (planSelDispose) planSelDispose();
+    disposeAgent();
   };
 
   await paint();

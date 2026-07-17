@@ -104,7 +104,8 @@ pub fn diff_against_base(
 /// merge-base tree vs the working directory *and* index, untracked included —
 /// committed, staged, unstaged, and new files together. This is the browse/
 /// review surface for external worktrees, which may long predate the base tip;
-/// `diff_against_base` (base-tip-anchored) remains the task-diff surface.
+/// `diff_against_base` (anchored on the run's `base_sha`) remains the run-diff
+/// surface.
 pub fn diff_against_merge_base(
     worktree_path: &Path,
     base_branch: &str,
@@ -119,7 +120,7 @@ pub fn diff_against_merge_base(
 
 /// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
 /// working directory and index (untracked included).
-/// The scaffolded per-task MCP config: machine-local plumbing, never the
+/// The scaffolded per-owner MCP config: machine-local plumbing, never the
 /// user's work — excluded from every review surface.
 pub(crate) const MCP_CONFIG_PATH: &str = ".build/mcp.json";
 

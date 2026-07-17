@@ -1,5 +1,5 @@
-//! The harness model catalog: which models a task's agents can run on, and the
-//! reasoning-effort levels the harness accepts.
+//! The harness model catalog: which models an entity's agents (a plan's or a
+//! run's) can run on, and the reasoning-effort levels the harness accepts.
 //!
 //! There is no way to enumerate models from the harness itself — the Claude Code
 //! CLI has no list command, and the Models API needs API-key credentials the
@@ -59,8 +59,8 @@ pub fn catalog() -> Vec<ModelOption> {
     ]
 }
 
-/// A task's model selection. `None` means the harness default — the user's own
-/// Claude Code configuration decides.
+/// An agent's model selection (chosen at plan or run dispatch). `None` means the
+/// harness default — the user's own Claude Code configuration decides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
     #[serde(default, skip_serializing_if = "Option::is_none")]

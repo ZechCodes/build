@@ -33,9 +33,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::legacy::{Phase, Stage, StageComment, StageState, TaskKind, TaskState};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc, StageDocState};
 use crate::run::{RunState, StageProgress, StageProgressState};
-use crate::task::{Phase, Stage, StageComment, StageState, TaskKind, TaskState};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -84,10 +84,6 @@ pub enum StoreError {
     #[error("plan {plan_id} has no docs in the store: nothing to materialize")]
     NoStoredDocs { plan_id: String },
 }
-
-/// Legacy name for [`StoreError`], kept while `app.rs` still speaks tasks
-/// (dies with `task.rs` in the final cutover stage).
-pub type TaskStoreError = StoreError;
 
 /// The durable core of one task, exactly what boot recovery needs to re-attach
 /// it. Everything else (PTY sessions, output streams) is rebuilt or lost.
@@ -258,10 +254,6 @@ pub struct PersistedRun {
 pub struct Store {
     dir: PathBuf,
 }
-
-/// Legacy name for [`Store`], kept while `app.rs` still speaks tasks (dies
-/// with `task.rs` in the final cutover stage).
-pub type TaskStore = Store;
 
 impl Store {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
@@ -984,8 +976,8 @@ fn plan_comment_from_legacy(comment: &StageComment) -> crate::plan::StageComment
             }),
         body: comment.body.clone(),
         state: match comment.state {
-            crate::task::CommentState::Open => crate::plan::CommentState::Open,
-            crate::task::CommentState::Addressed => crate::plan::CommentState::Addressed,
+            crate::legacy::CommentState::Open => crate::plan::CommentState::Open,
+            crate::legacy::CommentState::Addressed => crate::plan::CommentState::Addressed,
         },
         agent_reply: comment.agent_reply.clone(),
     }
@@ -1001,7 +993,7 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{
+    use crate::legacy::{
         CommentAnchor, CommentState, Phase, Stage, StageComment, StageState, TaskKind, TaskState,
         ValidationReport,
     };
@@ -1022,7 +1014,7 @@ mod tests {
             serde_json::to_vec(&legacy).unwrap(),
         )
         .unwrap();
-        let store = TaskStore::new(dir.path());
+        let store = Store::new(dir.path());
         let loaded = store.load_all().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].model, None);
@@ -1050,7 +1042,7 @@ mod tests {
             serde_json::to_vec(&legacy).unwrap(),
         )
         .unwrap();
-        let store = TaskStore::new(dir.path());
+        let store = Store::new(dir.path());
         let loaded = store.load_all().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].stages, Vec::new());
@@ -1067,7 +1059,7 @@ mod tests {
     #[test]
     fn multi_stage_record_round_trips_every_new_field() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let mut rec = record("task-1", TaskState::PlanReview);
         rec.stages = vec![
             Stage {
@@ -1138,7 +1130,7 @@ mod tests {
             serde_json::to_vec(&legacy).unwrap(),
         )
         .unwrap();
-        let store = TaskStore::new(dir.path());
+        let store = Store::new(dir.path());
         let loaded = store.load_all().unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(!loaded[0].adopted);
@@ -1149,7 +1141,7 @@ mod tests {
     #[test]
     fn adopted_record_round_trips_both_flags() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let mut rec = record("task-1", TaskState::Review);
         rec.adopted = true;
         rec.pending_continuation = true;
@@ -1160,7 +1152,7 @@ mod tests {
     #[test]
     fn delete_removes_the_record_and_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         store.save(&record("task-1", TaskState::Merged)).unwrap();
         assert_eq!(store.load_all().unwrap().len(), 1);
 
@@ -1174,7 +1166,7 @@ mod tests {
     #[test]
     fn plan_snapshot_mirrors_plan_doc_and_stage_docs() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let worktree = dir.path().join("wt");
         std::fs::create_dir_all(worktree.join(".build/plan")).unwrap();
         std::fs::write(worktree.join(".build/plan.md"), "# the plan").unwrap();
@@ -1207,7 +1199,7 @@ mod tests {
     #[test]
     fn plan_snapshot_tracks_updates_and_tolerates_missing_sources() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let worktree = dir.path().join("wt");
         // Nothing to snapshot yet (no worktree at all) — a quiet no-op.
         store
@@ -1236,7 +1228,7 @@ mod tests {
     #[test]
     fn plan_snapshot_read_refuses_traversal_and_absolute_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         assert_eq!(
             store.read_plan_snapshot("task-1", "../task-2/plan.md"),
             None
@@ -1247,7 +1239,7 @@ mod tests {
     #[test]
     fn delete_removes_the_plan_snapshot_too() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         store.save(&record("task-1", TaskState::Merged)).unwrap();
         let worktree = dir.path().join("wt");
         std::fs::create_dir_all(worktree.join(".build")).unwrap();
@@ -1291,7 +1283,7 @@ mod tests {
     #[test]
     fn save_then_load_round_trips_every_field() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let rec = record("task-1", TaskState::PlanReview);
         store.save(&rec).unwrap();
 
@@ -1302,7 +1294,7 @@ mod tests {
     #[test]
     fn save_overwrites_atomically_leaving_no_tmp_file() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let mut rec = record("task-1", TaskState::Planning);
         store.save(&rec).unwrap();
         rec.state = TaskState::PlanReview;
@@ -1323,7 +1315,7 @@ mod tests {
     #[test]
     fn load_all_orders_by_creation_time() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         let mut newer = record("task-2", TaskState::Building);
         newer.created_at = "2026-07-01T11:00:00Z".into();
         let older = record("task-1", TaskState::Merged);
@@ -1342,7 +1334,7 @@ mod tests {
     #[test]
     fn missing_store_dir_is_no_tasks() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("never-created"));
+        let store = Store::new(dir.path().join("never-created"));
         assert_eq!(store.load_all().unwrap(), Vec::new());
     }
 
@@ -1350,7 +1342,7 @@ mod tests {
     fn corrupt_task_file_is_a_hard_error_naming_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let tasks = dir.path().join("tasks");
-        let store = TaskStore::new(&tasks);
+        let store = Store::new(&tasks);
         store.save(&record("task-1", TaskState::Review)).unwrap();
         std::fs::write(tasks.join("task-2.json"), "{ not json").unwrap();
 
@@ -1360,7 +1352,7 @@ mod tests {
             message.contains("task-2.json"),
             "error names the corrupt file: {message}"
         );
-        assert!(matches!(err, TaskStoreError::Corrupt { .. }));
+        assert!(matches!(err, StoreError::Corrupt { .. }));
     }
 
     #[test]
@@ -1370,12 +1362,12 @@ mod tests {
         // and that deleting it is safe — not a bare JSON parse error.
         let dir = tempfile::tempdir().unwrap();
         let tasks = dir.path().join("tasks");
-        let store = TaskStore::new(&tasks);
+        let store = Store::new(&tasks);
         store.save(&record("task-1", TaskState::Review)).unwrap();
         std::fs::write(tasks.join("task-2.json"), "").unwrap();
 
         let err = store.load_all().expect_err("empty file must fail loudly");
-        assert!(matches!(err, TaskStoreError::Empty { .. }));
+        assert!(matches!(err, StoreError::Empty { .. }));
         let message = err.to_string();
         assert!(message.contains("task-2.json"), "names the file: {message}");
         assert!(message.contains("delete"), "actionable: {message}");
@@ -1385,7 +1377,7 @@ mod tests {
     fn interrupted_write_leftover_tmp_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let tasks = dir.path().join("tasks");
-        let store = TaskStore::new(&tasks);
+        let store = Store::new(&tasks);
         store.save(&record("task-1", TaskState::Review)).unwrap();
         // A crash between write and rename leaves a torn .tmp behind.
         std::fs::write(tasks.join("task-1.json.tmp"), "{ torn").unwrap();
@@ -1398,7 +1390,7 @@ mod tests {
     #[test]
     fn phase_states_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let store = TaskStore::new(dir.path().join("tasks"));
+        let store = Store::new(dir.path().join("tasks"));
         for (i, state) in [
             TaskState::Blocked(Phase::Build),
             TaskState::Failed(Phase::Plan),

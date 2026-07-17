@@ -31,15 +31,16 @@ use crate::orchestrator::{
     ActivePlan, ActiveRun, Agent, Orchestrator, OrchestratorError, RunSource, SpawnOptions,
     TranscriptProbe,
 };
+use crate::plan::StageManifestEntry;
 use crate::plan::{
     CommentAnchor, CommentState, PlanEvent, PlanId, PlanState, StageComment, StageDoc,
     StageDocState,
 };
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
+use crate::run::ValidationReport;
 use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState};
 use crate::store::{now_rfc3339, PersistedPlan, PersistedRun, Store};
-use crate::task::{StageManifestEntry, ValidationReport};
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::transport::Frame;
 use crate::worktree::{discover_external_worktrees, ExternalWorktree, Worktree};
@@ -1050,8 +1051,9 @@ impl AppState {
         id
     }
 
-    /// Canonical paths of every task-bound worktree (all states): they are
-    /// Build's, never external. `fs::canonicalize` with the raw path as fallback.
+    /// Canonical paths of every Build-bound worktree — every run plus every live
+    /// planning worktree: they are Build's, never external. `fs::canonicalize`
+    /// with the raw path as fallback.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
         let canonical = |path: &std::path::Path| {
             std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -4275,7 +4277,7 @@ pub(crate) fn fenced_scope_path(
     root: &std::path::Path,
     path: &str,
 ) -> Result<std::path::PathBuf, String> {
-    if !path.is_empty() && !crate::task::is_worktree_contained_path(path) {
+    if !path.is_empty() && !crate::plan::is_worktree_contained_path(path) {
         return Err("path escapes the worktree".to_string());
     }
     let joined = if path.is_empty() {
@@ -7466,8 +7468,8 @@ mod tests {
         store
             .save(&legacy_task(
                 "task-quick",
-                crate::task::TaskKind::Quick,
-                crate::task::TaskState::Review,
+                crate::legacy::TaskKind::Quick,
+                crate::legacy::TaskState::Review,
                 &repo,
                 &quick_wt,
             ))
@@ -7477,10 +7479,22 @@ mod tests {
         store
             .save(&legacy_task(
                 "task-plan",
-                crate::task::TaskKind::Standard,
-                crate::task::TaskState::PlanReview,
+                crate::legacy::TaskKind::Standard,
+                crate::legacy::TaskState::PlanReview,
                 &repo,
                 &plan_wt,
+            ))
+            .unwrap();
+        // A standard legacy task past planning (building) → an approved plan AND
+        // a run pointing back at it, both surfaced.
+        let (_wt3, build_wt) = init_repo();
+        store
+            .save(&legacy_task(
+                "task-build",
+                crate::legacy::TaskKind::Standard,
+                crate::legacy::TaskState::Building,
+                &repo,
+                &build_wt,
             ))
             .unwrap();
 
@@ -7496,12 +7510,44 @@ mod tests {
             state.handle(req("run.get", json!({ "run_id": "task-plan" })))["ok"],
             false
         );
+        // The past-planning task became an approved plan plus a run linked back
+        // to it. The plan is a resting Approved; the run was mid-build, so boot
+        // recovery demotes it to Interrupted (its PTY died on the restart).
+        let built_plan = state.handle(req("plan.get", json!({ "plan_id": "task-build" })));
+        assert_eq!(built_plan["result"]["state"], "approved", "{built_plan:?}");
+        let built_run = state.handle(req("run.get", json!({ "run_id": "task-build" })));
+        assert_eq!(built_run["result"]["state"], "interrupted", "{built_run:?}");
+        assert_eq!(built_run["result"]["plan_id"], "task-build");
+
+        // Everything surfaces on the board, in the right collection.
+        let board = state.handle(req("board.list", json!({})));
+        let ids = |arr: &Value, key: &str| -> Vec<String> {
+            arr.as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v[key].as_str().unwrap().to_string())
+                .collect()
+        };
+        let plan_ids = ids(&board["result"]["plans"], "plan_id");
+        let run_ids = ids(&board["result"]["runs"], "run_id");
+        assert!(plan_ids.contains(&"task-plan".to_string()), "{plan_ids:?}");
+        assert!(plan_ids.contains(&"task-build".to_string()), "{plan_ids:?}");
+        assert!(
+            !plan_ids.contains(&"task-quick".to_string()),
+            "the quick task has no plan: {plan_ids:?}"
+        );
+        assert!(run_ids.contains(&"task-quick".to_string()), "{run_ids:?}");
+        assert!(run_ids.contains(&"task-build".to_string()), "{run_ids:?}");
+        assert!(
+            !run_ids.contains(&"task-plan".to_string()),
+            "the plan-only task has no run: {run_ids:?}"
+        );
     }
 
     fn legacy_task(
         id: &str,
-        kind: crate::task::TaskKind,
-        st: crate::task::TaskState,
+        kind: crate::legacy::TaskKind,
+        st: crate::legacy::TaskState,
         repo: &std::path::Path,
         worktree: &std::path::Path,
     ) -> crate::store::PersistedTask {

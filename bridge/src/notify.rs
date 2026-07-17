@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::plan::PlanState;
 use crate::run::RunState;
-use crate::task::TaskState;
 use crate::transport;
 
 /// Notify kinds (contract #6). Still content-free at the payload level: a kind is
@@ -36,26 +35,11 @@ pub const TASK_DONE_KIND: &str = "task_done";
 pub const BLOCKED_KIND: &str = "blocked";
 pub const ATTENTION_KIND: &str = "attention";
 
-/// The push kind for a task state, or `None` when the state should not push.
-/// `interrupted` is excluded — it's raised by boot recovery after a daemon
-/// restart, where the operator is already at the machine.
-pub fn kind_for_state(state: &TaskState) -> Option<&'static str> {
-    match state {
-        TaskState::PlanReview => Some(PLAN_READY_KIND),
-        TaskState::Review => Some(TASK_DONE_KIND),
-        TaskState::Blocked(_) => Some(BLOCKED_KIND),
-        // A failed report or a silent/crashed agent both surface as generic
-        // "needs your attention" — the diff/plan tells the human the rest.
-        TaskState::Failed(_) | TaskState::IdleUnreported(_) => Some(ATTENTION_KIND),
-        _ => None,
-    }
-}
-
 /// The push kind for a plan state, or `None` when the state should not push.
 /// The plan half of the split (`crate::plan::PlanState`): a plan needs the
 /// human at its review gate and when an agent blocked/failed/went quiet.
-/// `Interrupted` is excluded for the same reason as the fused mapping — it is
-/// raised by boot recovery, where the operator is already at the machine.
+/// `Interrupted` is excluded because it is raised by boot recovery after a
+/// daemon restart, where the operator is already at the machine.
 pub fn kind_for_plan_state(state: &PlanState) -> Option<&'static str> {
     match state {
         PlanState::PlanReview => Some(PLAN_READY_KIND),
@@ -69,7 +53,7 @@ pub fn kind_for_plan_state(state: &PlanState) -> Option<&'static str> {
 /// The run half of the split (`crate::run::RunState`): a run needs the human
 /// at its diff-review gate, at the between-stages gate (a stage's verdict is
 /// in), and when an agent blocked/failed/went quiet. `Interrupted` is excluded
-/// for the same reason as the plan and fused mappings.
+/// for the same reason as the plan mapping.
 pub fn kind_for_run_state(state: &RunState) -> Option<&'static str> {
     match state {
         RunState::Review => Some(TASK_DONE_KIND),
@@ -134,12 +118,6 @@ pub fn build_notify_request(
     })
 }
 
-/// Whether a task state is push-worthy — exactly the states [`kind_for_state`]
-/// maps to a kind.
-pub fn state_needs_push(state: &TaskState) -> bool {
-    kind_for_state(state).is_some()
-}
-
 /// At most one notify per task-state change: remembers the last state observed
 /// per task and fires only when the state actually changed into a push-worthy
 /// one. Owns no I/O — the caller sends the push.
@@ -149,27 +127,21 @@ pub struct NotifyThrottle {
 }
 
 impl NotifyThrottle {
-    /// Record `state` for `task_id`; `true` iff this observation is a *change*
-    /// into a state that needs the human.
-    pub fn should_notify(&mut self, task_id: &str, state: &TaskState) -> bool {
-        self.record(task_id, format!("{state:?}"), state_needs_push(state))
-    }
-
-    /// The plan-half twin of [`should_notify`](Self::should_notify): fires once
-    /// per change into a plan state that needs the human. Plan and run ids are
-    /// disjoint (`plan-…` / `run-…`), so both entities share the one map.
+    /// Fires once per change into a plan state that needs the human. Plan and
+    /// run ids are disjoint (`plan-…` / `run-…`), so both entities share the
+    /// one map.
     pub fn should_notify_plan(&mut self, plan_id: &str, state: &PlanState) -> bool {
         self.record(plan_id, format!("{state:?}"), plan_state_needs_push(state))
     }
 
-    /// The run-half twin of [`should_notify`](Self::should_notify).
+    /// The run-half twin of [`should_notify_plan`](Self::should_notify_plan).
     pub fn should_notify_run(&mut self, run_id: &str, state: &RunState) -> bool {
         self.record(run_id, format!("{state:?}"), run_state_needs_push(state))
     }
 
     /// The shared core: remember `state_repr` for `id`, and fire only when this
     /// observation is a *change* into a push-worthy state. Kept pure of the
-    /// state type so the plan/run/task twins share one throttle.
+    /// state type so the plan/run twins share one throttle.
     fn record(&mut self, id: &str, state_repr: String, needs_push: bool) -> bool {
         let unchanged = self
             .last_state
@@ -233,7 +205,6 @@ impl Notifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::Phase;
 
     #[test]
     fn challenge_matches_the_api_contract_and_binds_all_fields() {
@@ -256,29 +227,6 @@ mod tests {
             base,
             notify_challenge("dev-1", "task-1", "attention", 1_750_000_001)
         );
-    }
-
-    #[test]
-    fn kind_for_state_maps_each_push_worthy_state() {
-        assert_eq!(
-            kind_for_state(&TaskState::PlanReview),
-            Some(PLAN_READY_KIND)
-        );
-        assert_eq!(kind_for_state(&TaskState::Review), Some(TASK_DONE_KIND));
-        assert_eq!(
-            kind_for_state(&TaskState::Blocked(Phase::Build)),
-            Some(BLOCKED_KIND)
-        );
-        assert_eq!(
-            kind_for_state(&TaskState::Failed(Phase::Plan)),
-            Some(ATTENTION_KIND)
-        );
-        assert_eq!(
-            kind_for_state(&TaskState::IdleUnreported(Phase::Build)),
-            Some(ATTENTION_KIND)
-        );
-        assert_eq!(kind_for_state(&TaskState::Planning), None);
-        assert_eq!(kind_for_state(&TaskState::Merged), None);
     }
 
     #[test]
@@ -349,44 +297,6 @@ mod tests {
     }
 
     #[test]
-    fn push_worthy_states_are_exactly_the_agent_raised_attention_states() {
-        for state in [
-            TaskState::PlanReview,
-            TaskState::Review,
-            TaskState::Blocked(Phase::Plan),
-            TaskState::Failed(Phase::Build),
-            TaskState::IdleUnreported(Phase::Build),
-        ] {
-            assert!(state_needs_push(&state), "{state:?} should push");
-        }
-        for state in [
-            TaskState::Created,
-            TaskState::Planning,
-            TaskState::Building,
-            TaskState::Interrupted(Phase::Build),
-            TaskState::Merged,
-            TaskState::Abandoned,
-        ] {
-            assert!(!state_needs_push(&state), "{state:?} should not push");
-        }
-    }
-
-    #[test]
-    fn throttle_fires_once_per_state_change() {
-        let mut throttle = NotifyThrottle::default();
-        assert!(throttle.should_notify("t1", &TaskState::PlanReview));
-        // The same state observed again (e.g. a re-persist) pushes nothing.
-        assert!(!throttle.should_notify("t1", &TaskState::PlanReview));
-        // Leaving for a working state pushes nothing…
-        assert!(!throttle.should_notify("t1", &TaskState::Planning));
-        // …but a *fresh* transition back into plan_review (revision round) does.
-        assert!(throttle.should_notify("t1", &TaskState::PlanReview));
-        // Distinct attention states in sequence each fire once.
-        assert!(throttle.should_notify("t1", &TaskState::Blocked(Phase::Plan)));
-        assert!(!throttle.should_notify("t1", &TaskState::Blocked(Phase::Plan)));
-    }
-
-    #[test]
     fn kind_for_plan_state_maps_each_push_worthy_state() {
         assert_eq!(
             kind_for_plan_state(&PlanState::PlanReview),
@@ -454,11 +364,11 @@ mod tests {
     }
 
     #[test]
-    fn throttle_tracks_tasks_independently() {
+    fn throttle_tracks_entities_independently() {
         let mut throttle = NotifyThrottle::default();
-        assert!(throttle.should_notify("t1", &TaskState::Review));
-        assert!(throttle.should_notify("t2", &TaskState::Review));
-        assert!(!throttle.should_notify("t1", &TaskState::Review));
+        assert!(throttle.should_notify_run("run-1", &RunState::Review));
+        assert!(throttle.should_notify_run("run-2", &RunState::Review));
+        assert!(!throttle.should_notify_run("run-1", &RunState::Review));
     }
 
     #[tokio::test]

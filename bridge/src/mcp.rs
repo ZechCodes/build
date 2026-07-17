@@ -1,10 +1,13 @@
 //! The Build MCP server — the one way an agent talks *to* Build.
 //!
-//! Spawned per session over stdio (`build-bridge mcp --task <id>`), task identity
-//! baked into the transport: no shared server, no auth, no ambiguity. It exposes
-//! exactly one tool in v1, `done`, by which an agent reports the outcome of a
-//! phase. Everything here is hand-rolled newline-delimited JSON-RPC 2.0 — the MCP
-//! stdio framing — so the surface stays minimal and the parsing stays testable.
+//! Spawned per session over stdio (`build-bridge mcp --task <id>`), the owner id
+//! baked into the transport: no shared server, no auth, no ambiguity. The
+//! `--task` flag stays opaque across the plan/run split — the id is a plan id or
+//! a run id, and the daemon routes each `done` report by owner lookup (plans
+//! map, then runs map). It exposes exactly one tool in v1, `done`, by which an
+//! agent reports the outcome of a phase. Everything here is hand-rolled
+//! newline-delimited JSON-RPC 2.0 — the MCP stdio framing — so the surface stays
+//! minimal and the parsing stays testable.
 
 use std::io::{BufRead, Write};
 
@@ -51,12 +54,12 @@ pub struct DoneOutputs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_path: Option<String>,
     /// Echo of `.build/plan/stages.json`. Presence of a non-empty array on
-    /// phase=plan/completed marks the task multi-stage.
+    /// phase=plan/completed marks the plan multi-stage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stages: Option<Vec<crate::task::StageManifestEntry>>,
+    pub stages: Option<Vec<crate::plan::StageManifestEntry>>,
     /// Required when phase=validate and status=completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub validation: Option<crate::task::ValidationReport>,
+    pub validation: Option<crate::run::ValidationReport>,
     /// Optional on phase=revise/completed: per-comment resolutions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_resolutions: Option<Vec<CommentResolution>>,
@@ -108,7 +111,7 @@ fn is_kebab_slug(candidate: &str) -> bool {
 
 /// Validate a manifest echo per the spec's ordered rule list, naming the first
 /// offense found (checked in manifest order, one rule at a time per entry).
-fn validate_stages(entries: &[crate::task::StageManifestEntry]) -> Result<(), String> {
+fn validate_stages(entries: &[crate::plan::StageManifestEntry]) -> Result<(), String> {
     if entries.is_empty() {
         return Err("stages must be non-empty".to_string());
     }
@@ -128,7 +131,7 @@ fn validate_stages(entries: &[crate::task::StageManifestEntry]) -> Result<(), St
         }
         // The prefix check alone accepts `.build/plan/../../..` — the joined
         // path must also be traversal-free so it can never leave the plan dir.
-        if !crate::task::is_worktree_contained_path(&entry.path) {
+        if !crate::plan::is_worktree_contained_path(&entry.path) {
             return Err(format!(
                 "path \"{}\" must not contain traversal segments",
                 entry.path
@@ -152,7 +155,7 @@ impl DoneReport {
         // A reported plan_path is later joined under the worktree and read back
         // over RPC, so an escaping path would exfiltrate arbitrary host files.
         if let Some(path) = &args.outputs.plan_path {
-            if !crate::task::is_worktree_contained_path(path) {
+            if !crate::plan::is_worktree_contained_path(path) {
                 return Err(DoneError::PlanPathEscapesWorktree(path.clone()));
             }
         }
@@ -186,15 +189,16 @@ pub struct Handled {
     pub report: Option<DoneReport>,
 }
 
-/// The single-tool MCP server. Identity-scoped to one task.
+/// The single-tool MCP server. Identity-scoped to one owner (a plan or a run);
+/// `owner_id` is opaque here — the daemon disambiguates it by owner lookup.
 pub struct DoneServer {
-    task_id: String,
+    owner_id: String,
 }
 
 impl DoneServer {
-    pub fn new(task_id: impl Into<String>) -> Self {
+    pub fn new(owner_id: impl Into<String>) -> Self {
         DoneServer {
-            task_id: task_id.into(),
+            owner_id: owner_id.into(),
         }
     }
 
@@ -287,7 +291,7 @@ impl DoneServer {
                         json!({
                             "protocolVersion": version,
                             "capabilities": { "tools": {} },
-                            "serverInfo": { "name": format!("build-bridge[{}]", self.task_id), "version": env!("CARGO_PKG_VERSION") }
+                            "serverInfo": { "name": format!("build-bridge[{}]", self.owner_id), "version": env!("CARGO_PKG_VERSION") }
                         }),
                     )),
                     report: None,

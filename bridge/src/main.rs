@@ -448,13 +448,16 @@ fn hostname() -> String {
 /// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns
 /// (via the worktree's `.build/mcp.json`). It serves the single `done` tool over
 /// stdio and forwards each report to the running daemon's control socket
-/// (`BRIDGE_MCP_SOCKET`) as `{"task_id","report"}` lines, so a real agent's `done`
-/// reaches `orchestrator.on_done`. Without the socket it just logs (for testing).
+/// (`BRIDGE_MCP_SOCKET`) as `{"task_id","report"}` lines. The `task_id` field is
+/// the opaque owner id (a plan id or a run id) the `--task` flag was launched
+/// with; the daemon routes it by owner lookup to `on_plan_done` / `on_run_done`.
+/// The wire key stays `task_id` for cross-version compatibility. Without the
+/// socket it just logs (for testing).
 fn mcp_stdio() {
     use std::io::Write;
 
     let args: Vec<String> = std::env::args().collect();
-    let task_id = args
+    let owner_id = args
         .iter()
         .position(|a| a == "--task")
         .and_then(|i| args.get(i + 1))
@@ -462,11 +465,11 @@ fn mcp_stdio() {
         .unwrap_or_else(|| "unknown".to_string());
     let socket = std::env::var("BRIDGE_MCP_SOCKET").ok();
 
-    let server = build_bridge::mcp::DoneServer::new(&task_id);
+    let server = build_bridge::mcp::DoneServer::new(&owner_id);
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
     let _ = server.run_stdio(stdin, stdout, |report| {
-        let line = serde_json::json!({ "task_id": task_id, "report": report }).to_string();
+        let line = serde_json::json!({ "task_id": owner_id, "report": report }).to_string();
         match &socket {
             Some(path) => {
                 if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(path) {

@@ -7,8 +7,6 @@
 //! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
 //! `{findings}`, `{prior_notes}`.
 
-use crate::task::StageComment;
-
 /// Where the plan file lives by convention (the agent reports the real path back
 /// via `done`, so this is a default, not a hardcode). Legacy single-plan / Quick
 /// tasks only — multi-stage plans use `STAGES_MANIFEST_PATH`.
@@ -251,34 +249,9 @@ pub fn render(template: &str, vars: &Vars) -> String {
 }
 
 /// Render the `{comments}` block for a `revise_stage` prompt from a stage's
-/// open comments, in insertion order. Pure — the orchestrator filters to
-/// `Open` comments for one stage before calling this.
-///
-/// The `crate::task::StageComment` overload is the fused-spine caller; the
-/// plan/run split's canonical comments live on the plan
-/// ([`assemble_plan_stage_comments`]). Both delegate to the same renderer so
-/// the on-wire prompt shape is single-sourced across the cutover.
-pub fn assemble_stage_comments(comments: &[StageComment]) -> String {
-    comments
-        .iter()
-        .enumerate()
-        .map(|(index, comment)| {
-            render_one_stage_comment(
-                index + 1,
-                &comment.id,
-                comment
-                    .anchor
-                    .as_ref()
-                    .map(|anchor| (anchor.heading_path.as_slice(), anchor.snippet.as_str())),
-                &comment.body,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// The plan/run split twin of [`assemble_stage_comments`]: render one stage's
-/// open plan comments (`crate::plan::StageComment`) for a `revise_stage` prompt.
+/// open plan comments (`crate::plan::StageComment`), in insertion order. Pure —
+/// the orchestrator filters to `Open` comments for one stage before calling
+/// this.
 pub fn assemble_plan_stage_comments(comments: &[crate::plan::StageComment]) -> String {
     comments
         .iter()
@@ -329,7 +302,7 @@ fn collapse_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{CommentAnchor, CommentState, StageComment};
+    use crate::plan::{CommentAnchor, CommentState, StageComment};
 
     #[test]
     fn render_substitutes_every_placeholder() {
@@ -516,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_stage_comments_renders_anchored_and_general_entries() {
+    fn assemble_plan_stage_comments_renders_anchored_and_general_entries() {
         let comments = vec![
             comment(
                 "c-3",
@@ -534,7 +507,7 @@ mod tests {
                 CommentState::Open,
             ),
         ];
-        let out = assemble_stage_comments(&comments);
+        let out = assemble_plan_stage_comments(&comments);
         assert_eq!(
             out,
             "1. [c-3] Under \"Database schema > Tables\", on the passage: \"users table gets a soft-delete column\"\n   Comment: use a deleted_at timestamp, not a boolean\n\n2. [c-4] (general)\n   Comment: this stage feels too big, split the migration from the model changes"
@@ -542,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_stage_comments_handles_empty_heading_path() {
+    fn assemble_plan_stage_comments_handles_empty_heading_path() {
         let comments = vec![comment(
             "c-1",
             Some(CommentAnchor {
@@ -552,7 +525,7 @@ mod tests {
             "tighten this up",
             CommentState::Open,
         )];
-        let out = assemble_stage_comments(&comments);
+        let out = assemble_plan_stage_comments(&comments);
         assert_eq!(
             out,
             "1. [c-1] On the passage: \"a passage with extra whitespace\"\n   Comment: tighten this up"
@@ -560,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_stage_comments_empty_slice_is_empty_string() {
-        assert_eq!(assemble_stage_comments(&[]), "");
+    fn assemble_plan_stage_comments_empty_slice_is_empty_string() {
+        assert_eq!(assemble_plan_stage_comments(&[]), "");
     }
 }

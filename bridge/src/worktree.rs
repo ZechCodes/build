@@ -250,7 +250,8 @@ fn strip_trailing_digit_run(segment: &str) -> String {
 }
 
 /// Enumerate every git worktree of `repo_path` that is neither the primary
-/// checkout nor in `excluded_paths` (canonical paths of task-bound worktrees),
+/// checkout nor in `excluded_paths` (canonical paths of Build-bound worktrees —
+/// runs and live planning worktrees, which must never surface as adoptable),
 /// with a review summary per worktree. Read-only. A worktree whose summary
 /// cannot be computed (corrupt checkout, no merge base with the base branch)
 /// is skipped with an eprintln! — one broken stray must not fail the scan.

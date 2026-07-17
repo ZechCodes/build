@@ -4,7 +4,7 @@
 //! The split mirrors the rest of the bridge: reads go through `git2`,
 //! mutations shell out to the `git` binary as plain argv (never a shell),
 //! always with the `--` guard before positional paths. Every client-supplied
-//! path is fenced lexically with [`crate::task::is_worktree_contained_path`]
+//! path is fenced lexically with [`crate::plan::is_worktree_contained_path`]
 //! before any git call, and the scaffolded `.build/mcp.json` never enters the
 //! index through these verbs.
 
@@ -106,7 +106,9 @@ fn commit_summary_json(commit: &git2::Commit) -> Value {
 }
 
 /// The set of commits reachable from HEAD but not from `base_branch` — the
-/// "ahead of base" marker set for task-scoped `git.log`.
+/// "ahead of base" marker set for run-scoped `git.log`. Anchored on the base
+/// branch's fork point (not the run's `base_sha`), so the materialized-plan
+/// commit and every build commit after it all read as ahead on the commit rail.
 fn commits_ahead_of(
     repo: &git2::Repository,
     base_branch: &str,
@@ -123,7 +125,7 @@ fn commits_ahead_of(
 }
 
 /// One page of commit history from HEAD, topological newest-first. With
-/// `mark_ahead_of` (task scope), each entry carries `ahead_of_base`; without
+/// `mark_ahead_of` (run scope), each entry carries `ahead_of_base`; without
 /// it (project scope) the field is omitted entirely.
 pub fn log_page(
     repo_path: &Path,
@@ -520,7 +522,7 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
 /// only ever match a file actually named `*`.
 fn stageable_paths(paths: &[String]) -> Result<Vec<String>, String> {
     for path in paths {
-        if !crate::task::is_worktree_contained_path(path) {
+        if !crate::plan::is_worktree_contained_path(path) {
             return Err(format!("path escapes the worktree: {path}"));
         }
     }
@@ -899,7 +901,7 @@ pub fn merge_abort(repo_path: &Path) -> Result<(), String> {
 /// `.build/mcp.json` is silently skipped.
 pub fn discard_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     for path in paths {
-        if !crate::task::is_worktree_contained_path(path) {
+        if !crate::plan::is_worktree_contained_path(path) {
             return Err(format!("path escapes the worktree: {path}"));
         }
     }

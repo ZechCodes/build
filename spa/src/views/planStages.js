@@ -12,6 +12,12 @@
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { STAGE_LABEL, stageChipClass, commentCard, headingPathFor, bindAction } from "./stages.js";
+
+// The honest empty-state copy for a doc pane whose canonical contents are gone
+// (a migrated plan predating canonical storage, its worktree pruned). Shared by
+// the single-doc pane (plan.js) so both surfaces say the same thing.
+export const DOCS_UNAVAILABLE =
+  "This plan's documents are unavailable — they predate canonical doc storage and their worktree is gone.";
 import { stageNotesTarget } from "../core/taskActions.js";
 import { watchSelection } from "../selectWatch.js";
 import { showCommentPop, hideCommentPop } from "../commentPop.js";
@@ -131,19 +137,29 @@ function renderStageDoc(ctx, stage) {
   // the same); a terminal/other doc state is read-only here.
   const canComment = stage.state === "planned" || stage.state === "approved";
   const docContents = stageDoc && stageDoc.stage_id === stage.id ? stageDoc.contents : "";
+  // plan.js decides the pane state (unavailable / error / ready / loading) since
+  // it owns the fetch, the docs_available flag, and the per-stage error latch.
+  // A doc that is not readable never mounts the comment machinery.
+  const paneState = ctx.stageDocState || (docContents ? "ready" : "loading");
+  const docHtml =
+    paneState === "ready" ? renderMarkdown(docContents)
+    : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
+    : paneState === "error" ? `<div class="plan-empty warn">Couldn't load this stage document. Reopen the stage to retry.</div>`
+    : '<div class="plan-loading">✦ loading stage document…</div>';
+  const showComposer = canComment && paneState === "ready";
 
   body.innerHTML = `
     <div class="stageback" id="stageback">← All stages</div>
-    <div class="plan" id="stagedoc">${docContents ? renderMarkdown(docContents) : '<div class="plan-loading">✦ loading stage document…</div>'}</div>
+    <div class="plan" id="stagedoc">${docHtml}</div>
     <div class="stagecomments">${commentsHtml}</div>
-    ${canComment ? `<div class="plan-feedback"><textarea id="stage-general" class="plan-general" placeholder="Add a general comment on this stage…"></textarea>
+    ${showComposer ? `<div class="plan-feedback"><textarea id="stage-general" class="plan-general" placeholder="Add a general comment on this stage…"></textarea>
       <div class="right"><button class="btn mini" id="addgeneral">Add comment</button></div></div>` : ""}
     <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
 
   body.querySelector("#stageback").onclick = () => onSelectStage(null);
 
   // Anchored comments: select text in the doc → popover → plan.comment_add.
-  if (canComment) {
+  if (showComposer) {
     const docEl = body.querySelector("#stagedoc");
     stageSelDispose = watchSelection(docEl, (sel) => {
       const anchorNode = sel.anchorNode;

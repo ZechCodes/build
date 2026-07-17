@@ -1,16 +1,13 @@
-// The plan cockpit (project-scoped review), keyed by plan_id. Two review
-// surfaces share one poll loop:
-//   • single-doc plans — rendered markdown (plan.doc) with a select-to-comment
-//     notes composer that batches into plan.send_notes;
-//   • multi-stage plans — a stage board of docs (views/planStages.js) with
-//     per-stage approve, anchored persisted comments, and per-stage send-notes.
-// A persistent footer carries the plan-level gates: Approve plan (plan.approve)
-// while at review, then the Implement split-button (run.create) once approved —
-// disabled with an inline reason until every dispatch precondition holds, and
-// replaced by a link to the run once one exists. The header carries lifecycle
-// (message a live/parked planning session, abandon, delete). Live-polled on the
-// review cadence; in-flight comment/selection state survives ticks via the same
-// freeze/rebuild key discipline task.js uses.
+// The plan cockpit (project-scoped review), keyed by plan_id — the plan-side twin
+// of the run surface (views/task.js). The tab bar IS the top of the view (Review |
+// Agent, the same shell run/worktree use); a compact bar carries the single-line
+// goal, the state chip, and the lifecycle + gate actions (Message, Approve plan,
+// Implement, Abandon/Delete). The Review body renders the plan's summary (markdown,
+// clamped), then either a single doc (plan.doc, select-to-comment notes) or a
+// multi-stage board (views/planStages.js). "The terminal is the basement": the
+// Agent tab (the drafting session's PTY) shows only while the plan is non-terminal.
+// Live-polled on the review cadence; in-flight comment/selection state survives
+// ticks via the same freeze/rebuild key discipline task.js uses.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -21,19 +18,27 @@ import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
 import { assemblePlanNotes } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
-import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass, planPayloadFor } from "./shared.js";
-import { canImplement, implementBlockReason, planAbandonable, planDeletable, bannerText } from "../core/taskActions.js";
+import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
+import {
+  canImplement,
+  implementBlockReason,
+  planAbandonable,
+  planDeletable,
+  bannerText,
+  shouldFetchPlanDoc,
+  planDocPaneState,
+} from "../core/taskActions.js";
 import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
-import { renderPlanStages, planStageActionBusy } from "./planStages.js";
+import { renderPlanStages, planStageActionBusy, DOCS_UNAVAILABLE } from "./planStages.js";
 
 // Plan states whose planning session accepts a freeform message (the bridge
 // gates the rest): a live drafting session redirects, a parked one resumes.
 const MESSAGEABLE = ["drafting", "blocked", "failed", "idle_unreported", "interrupted"];
-// States that carry no plan-level gate yet (footer hidden) — nothing to approve
-// or implement while the agent is still drafting, and nothing once abandoned.
+// States that carry no plan-level gate yet (no Approve/Implement) — nothing to
+// approve or implement while the agent is still drafting, and nothing once abandoned.
 const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 
 export async function renderPlan() {
@@ -41,19 +46,19 @@ export async function renderPlan() {
   const id = App.route.id;
   let last = null;
   // The plan carries two surfaces: Review (the doc / stage board) and Agent (the
-  // drafting session's live PTY — "the terminal is the basement"). The Agent tab
-  // shows only while the plan is non-terminal; Review is the default.
+  // drafting session's live PTY). The Agent tab shows only while the plan is
+  // non-terminal; Review is the default.
   let tab = App.route.tab === "agent" ? "agent" : "review";
   let tabShellCtl = null;
   let agentPane = null;
-  // A locally-held RPC failure (abandon/delete/implement) the bridge does not
-  // record in last_error; it wins over the polled value so the poll can't wipe
+  // A locally-held RPC failure (abandon/delete/implement/approve) the bridge does
+  // not record in last_error; it wins over the polled value so the poll can't wipe
   // it before the user reads it (same rule as task.js).
   let localError = null;
 
   // Multi-stage state preserved across the poll: the selected stage (null → the
-  // board) and the last-rendered payload key. A stage deep-link (the run's
-  // Stages tab routing a mid-run revision here) seeds the opened stage.
+  // board) and the last-rendered payload key. A stage deep-link (the run's Stages
+  // tab routing a mid-run revision here) seeds the opened stage.
   let selectedStageId = App.route.stage || null;
   let stagesKey = null;
   // Single-doc review state preserved across the poll: pending comments, an id
@@ -62,6 +67,15 @@ export async function renderPlan() {
   let cid = 0;
   let planKey = null;
   let planSelDispose = null;
+  // The summary block's freeze key — re-rendered only when the summary text
+  // changes, so the expand/collapse toggle survives ticks.
+  let summaryKey = null;
+  // Doc-read error latches: any plan.doc / plan.stage_doc ERROR renders an error
+  // state and stops that doc's refetch until the user re-navigates (mirrors the
+  // planGone latch in task.js). singleDocError is the single-doc latch; stageDocError
+  // holds the latched stage ids.
+  let singleDocError = false;
+  const stageDocError = new Set();
 
   loadModelCatalog(); // warm the catalog before the Implement options need it
 
@@ -86,18 +100,73 @@ export async function renderPlan() {
     }
   };
 
-  // Mount the plan's drafting-session PTY into the body (agent.attach is
-  // entity-agnostic — a plan id resolves to its planning session). Mirrors
-  // task.js's Agent tab: a quiet idle chip over the retained last screen when no
-  // session is live. The poll never repaints the body while this is mounted.
-  const mountAgent = () => {
-    const body = $("#planbody");
+  // The Review body skeleton: a compact project·branch meta line, the summary
+  // block, then the doc/stage host (#planbody — the freeze/rebuild target that
+  // carries #plandoc / #stagelist / #stagedoc). Mounted once per shell rebuild or
+  // tab switch; the poll refreshes meta/summary and repaints #planbody in place.
+  const mountReviewSkeleton = () => {
+    const body = $("#tabbody");
     if (!body) return;
     if (planSelDispose) {
       planSelDispose();
       planSelDispose = null;
     }
-    body.innerHTML = `<div class="agentwrap plan-agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
+    body.classList.remove("bare");
+    body.innerHTML = `
+      <p class="mono projmeta" id="planmeta"></p>
+      <div class="plan-summary" id="plansummary" hidden></div>
+      <div id="planbody"></div>`;
+    summaryKey = null; // force the summary to repaint into the fresh skeleton
+  };
+
+  const updateMeta = (p) => {
+    const el = $("#planmeta");
+    if (el) el.textContent = (p.project || "") + (p.base_branch ? ` · ${p.base_branch}` : "");
+  };
+
+  // The plan's last summary, rendered as markdown and clamped to a few lines with
+  // an expand affordance shown only when it overflows. Re-rendered only when the
+  // text changes, so the expand toggle persists across polls.
+  const updateSummary = (p) => {
+    const host = $("#plansummary");
+    if (!host) return;
+    const text = p.summary || "";
+    if (summaryKey === text) return;
+    summaryKey = text;
+    if (!text) {
+      host.hidden = true;
+      host.innerHTML = "";
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = `<div class="ps-body clamped" id="psbody">${renderMarkdown(text)}</div><button class="ps-toggle" id="pstoggle" hidden>Show more</button>`;
+    const bodyEl = host.querySelector("#psbody");
+    const toggle = host.querySelector("#pstoggle");
+    requestAnimationFrame(() => {
+      if (!bodyEl.isConnected) return;
+      if (bodyEl.scrollHeight - bodyEl.clientHeight > 4) {
+        toggle.hidden = false;
+        toggle.onclick = () => {
+          const clamped = bodyEl.classList.toggle("clamped");
+          toggle.textContent = clamped ? "Show more" : "Show less";
+        };
+      }
+    });
+  };
+
+  // Mount the plan's drafting-session PTY edge-to-edge into #tabbody (agent.attach
+  // is entity-agnostic — a plan id resolves to its planning session). Mirrors
+  // task.js's Agent tab: a quiet idle chip over the retained last screen when no
+  // session is live. The poll never repaints the body while this is mounted.
+  const mountAgent = () => {
+    const body = $("#tabbody");
+    if (!body) return;
+    if (planSelDispose) {
+      planSelDispose();
+      planSelDispose = null;
+    }
+    body.classList.add("bare");
+    body.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
     const chip = body.querySelector("#agentIdle");
     const setIdle = (on) => {
       if (!chip) return;
@@ -135,14 +204,16 @@ export async function renderPlan() {
     if (next === "agent") {
       mountAgent();
     } else {
+      mountReviewSkeleton();
       planKey = null;
       stagesKey = null;
       paint();
     }
   };
 
-  // The Review/Agent tab row. Rebuilt with the shell (identity/state changes),
-  // so the Agent tab appears/disappears as the plan crosses into a terminal state.
+  // The Review/Agent tab row (the same shell run/worktree use). Rebuilt with the
+  // shell (identity/state changes), so the Agent tab appears/disappears as the
+  // plan crosses into a terminal state.
   const wireTabs = (p) => {
     const host = $("#plantabs");
     if (!host) return;
@@ -150,88 +221,57 @@ export async function renderPlan() {
     tabShellCtl = mountTabShell(host, { tabs, active: tab, onSelect: (t) => selectTab(t) });
   };
 
-  // The header shell: identity + state chip + lifecycle actions, an error
-  // banner, the review body host, and the persistent gate footer. Rebuilt only
-  // when the plan's identity/state/run-link changes, so a poll tick never wipes
-  // in-flight comment state in the body.
+  // The surface shell: the tab bar tops the view; the bar carries the single-line
+  // goal, the state chip, and the lifecycle + gate actions. Rebuilt only when the
+  // plan's identity/state/run-link changes, so a poll tick never wipes in-flight
+  // comment state in the body.
   const shell = (p) => {
-    const context = planPayloadFor(p);
     root.innerHTML = `
-      <div class="board-head"><div>
-          <h1>Plan: ${esc(p.goal)}</h1>
-          <p class="mono projmeta">${esc(p.project || "")}${p.base_branch ? ` · ${esc(p.base_branch)}` : ""}</p></div>
-        <div class="surface-meta" style="margin-left:auto">
+      <div class="surface-bar">
+        <div class="tabrow" id="plantabs"></div>
+        <span class="plan-ref quick" title="${esc(p.goal)}">${esc(p.goal)}</span>
+        <div class="surface-meta">
           <span id="planmsgaction"></span>
-          <span class="chip ${planChipClass(p.state)}">${PLAN_STATE_LABEL[p.state] || p.state}</span>
+          <span class="chip ${planChipClass(p.state)}" title="${esc(p.goal)}">${PLAN_STATE_LABEL[p.state] || p.state}</span>
           <span class="taskactions" id="planactions"></span>
-        </div></div>
-      <div class="tabs" id="plantabs"></div>
+        </div>
+      </div>
       <div class="task-error" id="planError" role="alert" hidden></div>
-      ${context ? `<div class="payload planctx">${esc(context)}</div>` : ""}
-      <div id="planbody"></div>
-      <div class="actionbar planfooter" id="planfooter" ${NO_GATE.has(p.state) ? "hidden" : ""}>
-        <span class="hint" id="planhint"></span><div class="right" id="gateactions"></div></div>`;
-    wireLifecycle(p);
-    wireGate(p);
+      <div id="tabbody"></div>`;
     wireTabs(p);
+    wireActions(p);
     showBanner(bannerText(localError, p.last_error));
-    // A shell rebuild wiped #planbody — re-mount the Agent pane so the poll's
-    // early-return leaves a live pane in place (mirrors task.js).
+    // A shell rebuild wiped #tabbody — re-mount the active surface so the poll's
+    // early-return leaves a live pane/skeleton in place (mirrors task.js).
     if (tab === "agent") mountAgent();
+    else mountReviewSkeleton();
   };
 
-  // Header lifecycle: message a live/parked planning session; abandon a live
-  // plan or delete a terminal (abandoned) one.
-  const wireLifecycle = (p) => {
+  // The bar's action cluster: Message (a live/parked planning session), the gate
+  // (Approve plan → Implement, or a link to the run implementing it), and removal
+  // (Abandon a live plan / Delete a terminal one) — the same slots the run view
+  // gives its actions.
+  const wireActions = (p) => {
     const msgEl = $("#planmsgaction");
     if (msgEl) {
       msgEl.innerHTML = MESSAGEABLE.includes(p.state) ? '<button class="btn mini" id="planmsg">Message agent</button>' : "";
       const b = $("#planmsg");
       if (b) b.onclick = () => openPlanMessage(p, paint);
     }
-    const el = $("#planactions");
-    if (!el) return;
-    if (planDeletable(p.state)) {
-      el.innerHTML = '<button class="btn danger mini" id="planremove">Delete</button>';
-    } else if (planAbandonable(p.state)) {
-      el.innerHTML = '<button class="btn mini" id="planremove">Abandon</button>';
-    } else {
-      el.innerHTML = "";
-      return;
-    }
-    const remove = $("#planremove");
-    remove.onclick = async () => {
-      localError = null;
-      const deleting = planDeletable(p.state);
-      if (!deleting && !window.confirm("Abandon this plan? Its planning worktree is removed; the plan stays as history."))
-        return;
-      remove.disabled = true;
-      remove.textContent = deleting ? "deleting…" : "abandoning…";
-      try {
-        await App.call(deleting ? "plan.delete" : "plan.abandon", { plan_id: id });
-        if (deleting) goHome();
-        else paint();
-      } catch (e) {
-        remove.disabled = false;
-        remove.textContent = deleting ? "Delete" : "Abandon";
-        localError = "error: " + e.message.slice(0, 80);
-        showBanner(localError);
-      }
-    };
+    const actions = $("#planactions");
+    if (!actions) return;
+    actions.innerHTML = "";
+    wireGate(p, actions);
+    wireRemoval(p, actions);
   };
 
-  // The gate footer: the review gate (Approve plan) while at plan_review, then
-  // the Implement trigger. A run already implementing the plan replaces
-  // Implement with a link to it.
-  const wireGate = (p) => {
+  // The gate: while at plan_review, Approve plan (plan.approve) tears down the
+  // planning worktree and unlocks Implement. A live run implementing the plan
+  // links to it; a ready plan gets the Implement split-button; otherwise a disabled
+  // Implement carrying the bridge's own rejection reason as its tooltip.
+  const wireGate = (p, actions) => {
     if (NO_GATE.has(p.state)) return;
-    const actions = $("#gateactions");
-    const hint = $("#planhint");
-    if (!actions) return;
 
-    // Left: the coarse review gate. plan.approve is accepted throughout
-    // plan_review (independent of per-stage approvals); it tears down the
-    // planning worktree and unlocks Implement.
     if (p.state === "plan_review") {
       const approve = document.createElement("button");
       approve.className = "btn";
@@ -250,21 +290,20 @@ export async function renderPlan() {
         } catch (e) {
           approve.disabled = false;
           approve.textContent = "Approve plan";
-          if (hint) hint.textContent = "error: " + e.message.slice(0, 60);
+          localError = "error: " + e.message.slice(0, 80);
+          showBanner(localError);
         }
       };
     }
 
-    // Right: the Implement trigger. A live run → a link to it; ready → the
-    // split-button; otherwise a disabled button with the bridge's own reason.
     if (p.active_run_id) {
       const link = document.createElement("button");
       link.className = "btn primary";
       link.id = "viewrun";
       link.textContent = "View run →";
+      link.title = "A run is implementing this plan.";
       link.onclick = () => go({ name: "task", id: p.active_run_id, tab: "changes" });
       actions.appendChild(link);
-      if (hint) hint.textContent = "A run is implementing this plan.";
       return;
     }
     if (canImplement(p)) {
@@ -285,8 +324,11 @@ export async function renderPlan() {
               : await openImplementOptions(p, App.modelCatalog || { models: [], efforts: [] });
           } catch (e) {
             // A dispatch error (not the options-sheet cancel) surfaces on the
-            // hint; either way the split-button restores itself for a retry.
-            if (e && e.message && e.message !== "cancelled" && hint) hint.textContent = "error: " + e.message.slice(0, 60);
+            // banner; either way the split-button restores itself for a retry.
+            if (e && e.message && e.message !== "cancelled") {
+              localError = "error: " + e.message.slice(0, 80);
+              showBanner(localError);
+            }
             throw e;
           }
           go({ name: "task", id: run.run_id, tab: "changes" });
@@ -302,17 +344,60 @@ export async function renderPlan() {
     disabled.title = reason || "";
     disabled.textContent = "Implement";
     actions.appendChild(disabled);
-    if (hint && reason) hint.textContent = reason;
+  };
+
+  // Removal: Delete a terminal (abandoned) plan, or Abandon a live one.
+  const wireRemoval = (p, actions) => {
+    let btn;
+    if (planDeletable(p.state)) {
+      btn = document.createElement("button");
+      btn.className = "btn danger mini";
+      btn.id = "planremove";
+      btn.textContent = "Delete";
+    } else if (planAbandonable(p.state)) {
+      btn = document.createElement("button");
+      btn.className = "btn mini";
+      btn.id = "planremove";
+      btn.textContent = "Abandon";
+    } else {
+      return;
+    }
+    actions.appendChild(btn);
+    const deleting = planDeletable(p.state);
+    btn.onclick = async () => {
+      localError = null;
+      if (!deleting && !window.confirm("Abandon this plan? Its planning worktree is removed; the plan stays as history."))
+        return;
+      btn.disabled = true;
+      btn.textContent = deleting ? "deleting…" : "abandoning…";
+      try {
+        await App.call(deleting ? "plan.delete" : "plan.abandon", { plan_id: id });
+        if (deleting) goHome();
+        else paint();
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = deleting ? "Delete" : "Abandon";
+        localError = "error: " + e.message.slice(0, 80);
+        showBanner(localError);
+      }
+    };
   };
 
   // ---- Single-doc review body (plan.doc + select-to-comment notes) ----------
 
-  function renderSingleDoc(doc) {
-    const editable = last.state === "plan_review";
+  function renderSingleDoc(doc, paneState) {
+    // Commenting requires the plan under review AND a readable doc — an
+    // unavailable/errored doc renders an honest state with no composer.
+    const editable = last.state === "plan_review" && paneState === "ready";
     planComments.length = 0;
     const body = $("#planbody");
+    const docHtml =
+      paneState === "ready" ? renderMarkdown(doc)
+      : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
+      : paneState === "error" ? `<div class="plan-empty warn">Couldn't load the plan document. Reopen the plan to retry.</div>`
+      : '<div class="plan-loading">✦ loading plan document…</div>';
     body.innerHTML = `
-      <div class="plan" id="plandoc">${renderMarkdown(doc)}</div>
+      <div class="plan" id="plandoc">${docHtml}</div>
       ${editable ? `<div class="plan-feedback"><div id="pclist"></div>
         <textarea id="pgeneral" class="plan-general" placeholder="Add a general comment about the plan and request updates…"></textarea>
         <div class="actionbar"><span class="hint" id="phint"></span><div class="right" id="pactions"></div></div></div>` : ""}`;
@@ -361,7 +446,7 @@ export async function renderPlan() {
           }
         };
       } else {
-        phint.textContent = "Select text in the plan to comment, or approve the plan below.";
+        phint.textContent = "Select text in the plan to comment, or approve the plan above.";
         pactions.innerHTML = "";
       }
     };
@@ -413,15 +498,25 @@ export async function renderPlan() {
     } catch {
       return; // not readable yet; the poll retries
     }
+    // Fetch the open stage's doc only when it can succeed — never for docs that
+    // predate canonical storage, never once a read has errored (latched off).
     let stageDoc = null;
-    if (selectedStageId) {
+    if (selectedStageId && shouldFetchPlanDoc({ docsAvailable: p.docs_available, errorLatched: stageDocError.has(selectedStageId) })) {
       try {
         stageDoc = await App.call("plan.stage_doc", { plan_id: id, stage_id: selectedStageId });
       } catch {
-        /* doc not available yet — the view shows a loading placeholder */
+        stageDocError.add(selectedStageId); // latch: render an error state, stop refetching
       }
     }
-    const key = p.state + " " + JSON.stringify(stagesData) + " " + selectedStageId + " " + (stageDoc ? stageDoc.contents.length : 0);
+    const stageDocState = selectedStageId
+      ? planDocPaneState({
+          docsAvailable: p.docs_available,
+          errorLatched: stageDocError.has(selectedStageId),
+          hasContents: !!(stageDoc && stageDoc.contents),
+        })
+      : "ready";
+    const key =
+      p.state + " " + JSON.stringify(stagesData) + " " + selectedStageId + " " + stageDocState + " " + (stageDoc ? stageDoc.contents.length : 0);
     const noteBox = $("#stage-general");
     const busy = hasCommentPop() || planStageActionBusy() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));
     const rendered = $("#stagelist") || $("#stagedoc");
@@ -432,6 +527,7 @@ export async function renderPlan() {
       plan: p,
       stagesData,
       stageDoc,
+      stageDocState,
       selectedStageId,
       callRpc: (method, params) => App.call(method, params),
       repaint: () => {
@@ -440,6 +536,8 @@ export async function renderPlan() {
       },
       onSelectStage: (stageId) => {
         selectedStageId = stageId;
+        // Re-navigating to a stage clears its error latch so the doc is retried.
+        if (stageId) stageDocError.delete(stageId);
         stagesKey = null;
         hideCommentPop();
         paint();
@@ -469,6 +567,9 @@ export async function renderPlan() {
     // The Agent pane owns the body; the poll never repaints it.
     if (tab === "agent") return;
 
+    updateMeta(p);
+    updateSummary(p);
+
     const body = $("#planbody");
     if (!body) return;
     // Multi-stage plans (a non-empty manifest) drive the stage board; single
@@ -484,16 +585,20 @@ export async function renderPlan() {
       planComments.length = 0;
       return;
     }
+    // Fetch the single doc only when it can succeed (available + not latched off).
     let doc = "";
-    try {
-      doc = (await App.call("plan.doc", { plan_id: id })).contents;
-    } catch {
-      /* plan doc not readable yet */
+    if (shouldFetchPlanDoc({ docsAvailable: p.docs_available, errorLatched: singleDocError })) {
+      try {
+        doc = (await App.call("plan.doc", { plan_id: id })).contents;
+      } catch {
+        singleDocError = true; // latch: render an error state, stop refetching
+      }
     }
-    const key = p.state + " " + doc;
+    const paneState = planDocPaneState({ docsAvailable: p.docs_available, errorLatched: singleDocError, hasContents: !!doc });
+    const key = p.state + " " + paneState + " " + doc;
     if (planKey === key && $("#plandoc")) return; // nothing changed — keep comments/selection
     planKey = key;
-    renderSingleDoc(doc);
+    renderSingleDoc(doc, paneState);
   };
 
   App.viewDispose = () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { planBucketKey, bucketPlans } from "../src/core/planRail.js";
 import { planStageBoardHtml } from "../src/views/planStages.js";
-import { canImplement, implementBlockReason } from "../src/core/taskActions.js";
+import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
 
 describe("planBucketKey", () => {
   it("puts a plan still being authored in Draft", () => {
@@ -146,5 +146,56 @@ describe("Implement availability text (plan cockpit footer)", () => {
     const plan = { state: "approved", active_run_id: "run-3", stages: [] };
     expect(canImplement(plan)).toBe(false);
     expect(implementBlockReason(plan)).toMatch(/already implementing/i);
+  });
+
+  // A migrated plan whose canonical docs are gone can never be materialized —
+  // the block precedes every state gate, even for an otherwise-ready plan.
+  it("blocks a plan whose docs are unavailable, with a reason, ahead of the state gates", () => {
+    const plan = { state: "approved", active_run_id: null, stages: [], docs_available: false };
+    expect(canImplement(plan)).toBe(false);
+    expect(implementBlockReason(plan)).toMatch(/documents are unavailable/i);
+  });
+
+  it("still allows implement when docs_available is true or absent", () => {
+    expect(canImplement({ state: "approved", active_run_id: null, stages: [], docs_available: true })).toBe(true);
+    expect(canImplement({ state: "approved", active_run_id: null, stages: [] })).toBe(true);
+  });
+});
+
+// The doc-fetch guard and pane-state decision that fix the "loading forever"
+// bug: docs that predate canonical storage (docs_available false) and docs whose
+// read has errored (latched) are never refetched, and the pane renders an honest
+// state instead of the loading placeholder.
+describe("plan doc fetch guard (shouldFetchPlanDoc)", () => {
+  it("fetches when docs are available and no read has errored", () => {
+    expect(shouldFetchPlanDoc({ docsAvailable: true, errorLatched: false })).toBe(true);
+    expect(shouldFetchPlanDoc({ docsAvailable: undefined, errorLatched: false })).toBe(true);
+  });
+
+  it("never fetches a doc that predates canonical storage", () => {
+    expect(shouldFetchPlanDoc({ docsAvailable: false, errorLatched: false })).toBe(false);
+  });
+
+  it("never refetches a doc whose read has errored (latched off)", () => {
+    expect(shouldFetchPlanDoc({ docsAvailable: true, errorLatched: true })).toBe(false);
+  });
+});
+
+describe("plan doc pane state (planDocPaneState)", () => {
+  it("is unavailable when the docs predate canonical storage — ahead of any error/contents", () => {
+    expect(planDocPaneState({ docsAvailable: false, errorLatched: false, hasContents: false })).toBe("unavailable");
+    expect(planDocPaneState({ docsAvailable: false, errorLatched: true, hasContents: true })).toBe("unavailable");
+  });
+
+  it("is error when a read has errored and is latched", () => {
+    expect(planDocPaneState({ docsAvailable: true, errorLatched: true, hasContents: false })).toBe("error");
+  });
+
+  it("is ready when contents are in hand", () => {
+    expect(planDocPaneState({ docsAvailable: true, errorLatched: false, hasContents: true })).toBe("ready");
+  });
+
+  it("is loading while still awaiting the first successful read", () => {
+    expect(planDocPaneState({ docsAvailable: true, errorLatched: false, hasContents: false })).toBe("loading");
   });
 });

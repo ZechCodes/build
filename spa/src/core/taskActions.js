@@ -50,18 +50,45 @@ function firstStageApproved(plan) {
  *  action shows as enabled only when it will succeed. */
 export function canImplement(plan) {
   if (!plan || plan.state !== "approved") return false;
+  if (plan.docs_available === false) return false;
   if (plan.active_run_id) return false;
   return firstStageApproved(plan);
 }
 
 /** Why Implement is unavailable, as human copy for a disabled action — or null
- *  when it is available. Ordered by the bridge's own rejection precedence. */
+ *  when it is available. Ordered by the bridge's own rejection precedence. A plan
+ *  whose canonical docs are gone (docs_available false: a migrated plan predating
+ *  canonical storage, its worktree pruned) can never be materialized into a run,
+ *  so that block precedes the state gates. */
 export function implementBlockReason(plan) {
   if (!plan) return "No plan.";
+  if (plan.docs_available === false) return "This plan's documents are unavailable, so it can't be implemented.";
   if (plan.active_run_id) return "A run is already implementing this plan.";
   if (plan.state !== "approved") return "Approve the plan before implementing it.";
   if (!firstStageApproved(plan)) return "Approve the first stage before implementing.";
   return null;
+}
+
+/** Whether a plan doc (the single plan.doc, or a stage's plan.stage_doc) is worth
+ *  fetching on this poll. Docs that predate canonical storage (docsAvailable
+ *  false) can never load, and a doc whose read already errored is latched off
+ *  until the user re-navigates — either case skips the fetch instead of retrying
+ *  it forever (the bug that pinned the pane on "loading…"). Pure. */
+export function shouldFetchPlanDoc({ docsAvailable, errorLatched }) {
+  return docsAvailable !== false && !errorLatched;
+}
+
+/** What a plan doc pane should render, from availability + fetch outcome:
+ *  "unavailable" — predates canonical storage (an honest empty state, no retry);
+ *  "error" — a read errored and is latched (an error state, no retry until the
+ *  user re-navigates); "ready" — contents in hand; "loading" — still awaiting the
+ *  first successful read. Unavailability wins over a latched error which wins over
+ *  stale contents. Pure so the decision is testable apart from the DOM. */
+export function planDocPaneState({ docsAvailable, errorLatched, hasContents }) {
+  if (docsAvailable === false) return "unavailable";
+  if (errorLatched) return "error";
+  if (hasContents) return "ready";
+  return "loading";
 }
 
 /** Which tab a run card opens on. A run parked between stages (stage_gate) opens

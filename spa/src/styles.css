@@ -129,9 +129,24 @@ a.plan-ref:hover { text-decoration:underline; }
 .plan-loading { color:var(--dim); padding:30px; text-align:center; }
 .plan ::selection, .plan::selection { background:#c7d2fe; }
 .plan mark.phl { background:#fde68a; border-radius:2px; padding:0 1px; }
+/* The plan cockpit's summary: last_summary as markdown, clamped to a few lines
+   with an expand affordance shown only when it overflows. */
+.plan-summary { max-width:820px; margin-bottom:16px; }
+.plan-summary .ps-body { color:var(--ink2); font-size:13px; }
+.plan-summary .ps-body.clamped { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.plan-summary .ps-body p { margin:0 0 4px; } .plan-summary .ps-body p:last-child { margin-bottom:0; }
+.plan-summary .ps-body code { font-family:var(--mono); font-size:12px; background:var(--line2); padding:1px 4px; border-radius:4px; }
+.plan-summary .ps-toggle { background:none; border:none; color:var(--accent); font-size:12px; cursor:pointer; padding:4px 0 0; }
+/* Honest doc-pane empty/error states (docs predating canonical storage, or a
+   read that errored and latched off) inside the .plan container. */
+.plan-empty { color:var(--dim); font-size:13px; }
+.plan-empty.warn { color:var(--red); }
 /* plan review comments */
 .plan-feedback { max-width:780px; margin-top:14px; }
-.plan-general { width:100%; min-height:60px; margin-top:8px; }
+/* Compact composers: a single-line box that grows on focus (the diff-comment
+   idiom), shared by the plan / stage / worktree feedback textareas. */
+.plan-general { width:100%; min-height:36px; margin-top:8px; }
+.plan-general:focus { min-height:64px; }
 .pcomment { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:8px 30px 8px 12px; margin-bottom:8px; font-size:13px; position:relative; }
 .pcomment .psnip { color:var(--ink2); font-style:italic; font-size:12px; border-left:2px solid var(--line); padding-left:8px; margin-bottom:5px; display:block; }
 .pcomment .pctext { color:var(--ink); }

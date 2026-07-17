@@ -86,8 +86,8 @@ describe("gitPollKey", () => {
 });
 
 describe("gitDraftKey", () => {
-  it("keys task scope by task_id", () => {
-    expect(gitDraftKey({ task_id: "t1" })).toBe("task:t1");
+  it("keys run scope by run_id", () => {
+    expect(gitDraftKey({ run_id: "t1" })).toBe("run:t1");
   });
 
   it("keys project scope by project_id", () => {
@@ -95,7 +95,7 @@ describe("gitDraftKey", () => {
   });
 
   it("never collides across scope kinds sharing an id", () => {
-    expect(gitDraftKey({ task_id: "x" })).not.toBe(gitDraftKey({ project_id: "x" }));
+    expect(gitDraftKey({ run_id: "x" })).not.toBe(gitDraftKey({ project_id: "x" }));
   });
 });
 
@@ -149,8 +149,8 @@ describe("commitVariantClearsDraft", () => {
 describe("isPermanentGitScopeError", () => {
   it.each([
     "unknown project_id",
-    "unknown task_id",
-    "provide exactly one of project_id or task_id",
+    "unknown run_id",
+    "provide exactly one of project_id or run_id",
   ])("treats %s as terminal", (message) => {
     expect(isPermanentGitScopeError(message)).toBe(true);
   });

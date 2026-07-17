@@ -60,9 +60,9 @@ describe("showBranchControl", () => {
     expect(showBranchControl({ project_id: "p1" })).toBe(true);
   });
 
-  it("shows static branch text for task scope", () => {
-    expect(showBranchControl({ task_id: "t1" })).toBe(false);
-    expect(showBranchControl({ project_id: "p1", task_id: "t1" })).toBe(false);
+  it("shows static branch text for run scope", () => {
+    expect(showBranchControl({ run_id: "t1" })).toBe(false);
+    expect(showBranchControl({ project_id: "p1", run_id: "t1" })).toBe(false);
   });
 });
 

@@ -99,15 +99,15 @@ describe("openRelaySession", () => {
     const { promise, ws } = await startOpen();
     const init = await completeHandshake(ws);
     const session = await promise;
-    const reply = session.call("task.get", { task_id: "x" });
+    const reply = session.call("run.get", { run_id: "x" });
     await tick();
     const { payload } = ws.sent.at(-1).envelope.frameFields;
     ws.serverSend({
       type: "e2ee_envelope",
       session_id: init.session_id,
-      envelope: { frameFields: { payload: { id: payload.id, ok: false, error: "no such task" } } },
+      envelope: { frameFields: { payload: { id: payload.id, ok: false, error: "no such run" } } },
     });
-    await expect(reply).rejects.toThrow("no such task");
+    await expect(reply).rejects.toThrow("no such run");
   });
 
   it("waits for the preferred device, skipping other device_key pushes", async () => {
@@ -145,7 +145,7 @@ describe("openRelaySession", () => {
     const { promise, ws, events } = await startOpen();
     await completeHandshake(ws, "dev-a");
     const session = await promise;
-    const pending = session.call("task.list", {});
+    const pending = session.call("board.list", {});
     await tick();
     ws.serverSend({ type: "device_offline", device_id: "dev-a" });
     ws.serverSend({ type: "device_offline", device_id: "dev-a" });
@@ -185,7 +185,7 @@ describe("openRelaySession", () => {
     const { promise, ws } = await startOpen({ isPaused: () => true });
     await completeHandshake(ws);
     const session = await promise;
-    await expect(session.call("task.list", {})).rejects.toThrow(/offline/);
+    await expect(session.call("board.list", {})).rejects.toThrow(/offline/);
   });
 
   it("seals the session key to the api-pinned transport key, not the relay-pushed one", async () => {

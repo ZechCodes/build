@@ -42,7 +42,7 @@ describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not
     fakeManager.attachTerminal.mockRejectedValue(new Error("unknown term_id"));
     const host = fakeHost();
     const exits = [];
-    mountAuxTab(host, "term-3", { scope: { task_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
+    mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
     await tick();
     expect(exits).toEqual(["reaped"]);
   });
@@ -51,7 +51,7 @@ describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not
     fakeManager.attachTerminal.mockRejectedValue(new Error("rpc term.attach timeout"));
     const host = fakeHost();
     const exits = [];
-    mountAuxTab(host, "term-3", { scope: { task_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
+    mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
     await tick();
     expect(exits).toEqual([]);
     expect(host.paneHost.innerHTML).toContain("timeout");
@@ -62,7 +62,7 @@ describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not
     fakeManager.attachTerminal.mockReturnValue(new Promise((_, reject) => (rejectAttach = reject)));
     const host = fakeHost();
     const exits = [];
-    const ctl = mountAuxTab(host, "term-3", { scope: { task_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
+    const ctl = mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
     ctl.dispose();
     rejectAttach(new Error("unknown term_id"));
     await tick();

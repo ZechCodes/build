@@ -1,25 +1,26 @@
-// The multi-stage plan tab: a stage board (per-stage state, open-comment counts)
-// and a per-stage doc view with persisted, server-side comments, the previous
-// stage's validation banner, and per-stage actions (approve / send notes / start
-// / fix). Rendering only — task.js owns the poll loop, freeze/rebuild key, and
-// the task.get / task.stages / task.stage_doc RPC fetches; every mutation here
-// goes through ctx.callRpc + ctx.repaint so it persists and re-polls.
+// The run-side Stages tab: a stage *progress* board that joins the run's
+// execution progress (Building/Built/Validating/Validated + validation findings)
+// with the plan's doc metadata (title, doc sub-state, open-comment count). The
+// doc itself and its comment/send-notes flow live on the PLAN route — the doc
+// home never moved (single active writer) — so a row click and the open-comment
+// badge both link there. This tab owns only the run-scoped execution actions:
+// Start stage (run.stage_dispatch) at the sequential gate, Send back to fix
+// (run.stage_fix) on a failed stage, and the run-all control (run.set_auto_advance).
+// Rendering only; task.js owns the poll loop, the freeze/rebuild key, and the
+// plan.stages / run.get fetches (it joins them via joinRunStages before calling in).
 
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { slugifyHeading, buildHeadingPath } from "../core/anchors.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
-import { watchSelection } from "../selectWatch.js";
-import { showCommentPop, hideCommentPop } from "../commentPop.js";
-import { mountSplitButton } from "../core/splitButton.js";
 
-// Task states with no more work to run — the run-all control is hidden on them.
-const TERMINAL_TASK_STATES = new Set(["merged", "abandoned"]);
+// Run states with no more work to run — the run-all control is hidden on them.
+const TERMINAL_RUN_STATES = new Set(["merged", "abandoned", "archived"]);
 
-// True while a board-level bulk action (Run all / Approve all) is mid-sequence.
-// The task poll consults this (stageActionBusy) and skips its rebuild so it never
-// remounts a fresh, enabled button under an in-flight multi-RPC loop — which would
-// reset the button to look un-pressed and invite a second, conflicting run.
+// True while a board-level bulk action (Run all) is mid-sequence. The task poll
+// consults this (stageActionBusy) and skips its rebuild so it never remounts a
+// fresh, enabled button under an in-flight multi-RPC loop — which would reset the
+// button to look un-pressed and invite a second, conflicting run.
 let bulkActionInFlight = false;
 
 /** Whether a stage-board bulk action is mid-flight (task.js freezes its rebuild
@@ -28,13 +29,37 @@ export function stageActionBusy() {
   return bulkActionInFlight;
 }
 
+/** Join the plan's stage docs (title, summary, doc sub-state, open comments)
+ *  with the run's per-stage execution progress (progress state, validation,
+ *  start_sha) by stage id. A stage the run has not dispatched yet has no progress
+ *  record, so its effective `state` is the plan doc's sub-state (planned/approved);
+ *  once dispatched, the run's progress state (building…validated_*) takes over.
+ *  Pure — the single source of truth the whole run-side board renders from. */
+export function joinRunStages(planStages, runStages) {
+  const progressById = new Map((runStages || []).map((p) => [p.id, p]));
+  return (planStages || []).map((doc) => {
+    const progress = progressById.get(doc.id) || null;
+    return {
+      id: doc.id,
+      title: doc.title,
+      summary: doc.summary,
+      doc_state: doc.state, // planned | approved (the plan's gate)
+      open_comments: doc.open_comments || 0,
+      state: progress ? progress.state : doc.state, // effective: progress wins
+      validation: progress ? progress.validation : null,
+      start_sha: progress ? progress.start_sha : null,
+    };
+  });
+}
+
 /** Pure: which run-all control the stage board shows for a given board.
- *  "stop" when auto-advance is already on; "run" (the split button) when the
- *  task is live and at least one stage is not yet validated; "none" otherwise
- *  (nothing left to run, or a terminal task). Load-bearing in renderStageList. */
+ *  "stop" when auto-advance is already on; "run" (the split button) when the run
+ *  is live and the earliest unfinished stage is runnable; "none" otherwise
+ *  (nothing left to run, a terminal run, or the gate is a validated_failed stage
+ *  that needs a manual fix). Load-bearing in wireRunAllControl. */
 export function runAllControlKind({ autoAdvance, stages, taskState }) {
   if (autoAdvance) return "stop";
-  if (TERMINAL_TASK_STATES.has(taskState)) return "none";
+  if (TERMINAL_RUN_STATES.has(taskState)) return "none";
   // The earliest stage that has not passed gates everything behind it. Run-all
   // only starts it if it is approvable/dispatchable (planned/approved) or already
   // in flight; a validated_failed gate needs a manual fix (the fix bar), and
@@ -44,22 +69,20 @@ export function runAllControlKind({ autoAdvance, stages, taskState }) {
   return "run";
 }
 
-// The split-button options for the "run" control (options[0] is the default
-// action). Named here so the wiring and any test read the exact copy.
-const RUN_ALL_OPTIONS = [
-  {
-    id: "run_all",
-    label: "Run all",
-    busyLabel: "Starting…",
-    description: "Approve remaining stages and run them all, auto-advancing between each.",
-  },
-  {
-    id: "arm_only",
-    menuLabel: "Auto-advance only",
-    busyLabel: "Starting…",
-    description: "Advance automatically, but approve and start each stage yourself.",
-  },
-];
+/** Why the earliest unfinished (gate) stage cannot be Started yet, as human copy
+ *  for a disabled action — or null when Start is ready. Ordered by the bridge's
+ *  own `dispatch_run_stage` gate: the doc must be Approved, every earlier stage
+ *  must have passed validation on this run, and the run must be parked at the
+ *  stage gate (a stage already building blocks a manual dispatch). */
+export function stageGateReason(stages, index, runState) {
+  const stage = stages[index];
+  if (!stage) return "No stage.";
+  if (stage.doc_state !== "approved") return `Approve “${stage.title}” on the plan before starting it.`;
+  const blocker = stages.slice(0, index).find((s) => s.state !== "validated_passed");
+  if (blocker) return `Waiting on validation of “${blocker.title}”.`;
+  if (runState !== "stage_gate") return "A stage is already running.";
+  return null;
+}
 
 export const STAGE_LABEL = {
   planned: "PLANNED",
@@ -82,15 +105,11 @@ export function stageChipClass(state) {
   return "";
 }
 
-// Document-level selection watcher for the stage doc; disposed on each render so
-// the 1.6s poll never accumulates listeners (same discipline as task.js).
-let stageSelDispose = null;
-
 const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "");
 
-// The enclosing heading chain for a selection anchor inside the rendered stage
-// doc: collect the h1/h2/h3 positioned at or before the anchor node, then reduce
-// to the enclosing chain (anchors.js). View-side; not unit-tested.
+// The enclosing heading chain for a selection anchor inside a rendered doc:
+// collect the h1/h2/h3 at or before the anchor node, then reduce to the
+// enclosing chain (anchors.js). Reused by planStages.js's comment composer.
 export function headingPathFor(docEl, anchorNode) {
   const preceding = Array.from(docEl.querySelectorAll("h1, h2, h3"))
     .filter((h) => h.compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING || h.contains(anchorNode))
@@ -104,7 +123,7 @@ function validationBanner(kind, heading, bodyMarkdown) {
 }
 
 // One persisted comment card. Open comments carry a delete affordance; addressed
-// comments show the agent's reply and are muted.
+// comments show the agent's reply and are muted. Reused by planStages.js.
 export function commentCard(comment) {
   const anchor = comment.anchor;
   const breadcrumb = anchor
@@ -126,7 +145,7 @@ export function commentCard(comment) {
 }
 
 // Bind an async RPC to a button: disable + label while in flight, restore + show
-// a hint on failure, repaint on success.
+// a hint on failure, repaint on success. Reused by planStages.js.
 export function bindAction(button, busyLabel, hintEl, run) {
   button.onclick = async () => {
     const original = button.textContent;
@@ -142,54 +161,19 @@ export function bindAction(button, busyLabel, hintEl, run) {
   };
 }
 
-export function renderStagesTab(ctx) {
-  const { body, task, stagesData, selectedStageId, callRpc, repaint } = ctx;
-  const planId = task.plan_id; // stage docs + comments are plan-scoped
-  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
+// Pure markup for the run-side stage progress board (exported for tests). Rows
+// carry the effective-state chip, the plan's open-comment badge, and a failed
+// stage's findings inline. The list container keeps id="stagelist" — task.js
+// keys its poll freeze/rebuild skip on that id, so a rename here silently
+// re-renders the board every tick and clobbers in-flight control state.
+export function stageBoardHtml(run, stagesData) {
   const stages = stagesData.stages || [];
-  if (stageSelDispose) {
-    stageSelDispose();
-    stageSelDispose = null;
-  }
-  const selected = selectedStageId ? stages.find((s) => s.id === selectedStageId) : null;
-  if (selected) renderStageDoc(ctx, selected);
-  else renderStageList(ctx);
-
-  // Shared: wire the delete/scroll affordances present in either view.
-  body.querySelectorAll(".cc-x[data-del]").forEach((x) => {
-    x.onclick = async (e) => {
-      e.stopPropagation();
-      try {
-        await callRpc("plan.comment_delete", { plan_id: planId, comment_id: x.dataset.del });
-        repaint();
-      } catch {
-        /* the poll will re-sync */
-      }
-    };
-  });
-  body.querySelectorAll(".cc-crumb[data-scroll]").forEach((c) => {
-    c.onclick = () => {
-      const id = c.dataset.scroll;
-      if (!id) return;
-      const target = body.querySelector("#stagedoc #" + CSS.escape(id));
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
-    };
-  });
-}
-
-// Pure markup for the stage board (exported for tests). The list container
-// carries id="stagelist" — task.js keys its poll freeze/rebuild skip on that
-// id, so a rename here silently re-renders the board on every poll tick and
-// clobbers in-flight control state (busy buttons, the run-all checkbox).
-export function stageBoardHtml(task, stagesData) {
-  const stages = stagesData.stages || [];
-  const allPlanned = stages.length > 0 && stages.every((s) => s.state === "planned");
   // At the merge gate the final stage's validation report is the decision
   // context: heading + FINDINGS (spec §8.4). notes_for_next_stage is empty on
   // a final stage (there is no next stage), so it can never be the body here.
   const final = stages.length ? stages[stages.length - 1] : null;
   const reviewBanner =
-    task.state === "review" && final && final.validation
+    run.state === "review" && final && final.validation
       ? validationBanner(
           final.validation.passed ? "pass" : "fail",
           `Validation of "${final.title}" ${final.validation.passed ? "passed" : "failed"}`,
@@ -200,6 +184,10 @@ export function stageBoardHtml(task, stagesData) {
   const rows = stages
     .map((s, i) => {
       const num = String(i + 1).padStart(2, "0");
+      const failFindings =
+        s.state === "validated_failed" && s.validation
+          ? validationBanner("fail", "Validation failed", s.validation.findings)
+          : "";
       return `<div class="stagerow" data-stage="${esc(s.id)}">
         <span class="stagenum">${num}</span>
         <div class="stagemain">
@@ -207,6 +195,7 @@ export function stageBoardHtml(task, stagesData) {
             <span class="chip stagechip ${stageChipClass(s.state)}">${STAGE_LABEL[s.state] || s.state}</span>
             ${commentBadge(s.open_comments)}</div>
           ${s.summary ? `<div class="stagesummary">${esc(s.summary)}</div>` : ""}
+          ${failFindings}
         </div></div>`;
     })
     .join("");
@@ -215,73 +204,128 @@ export function stageBoardHtml(task, stagesData) {
     ${reviewBanner}
     <div class="stagehead">
       <div class="runall" id="runall"></div>
-      ${allPlanned ? `<button class="btn mini" id="approveall">Approve all</button>` : ""}
       <span class="hint" id="stageshint"></span>
     </div>
-    <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
+    <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>
+    <div class="stageaction" id="stageaction"></div>`;
 }
 
-function renderStageList(ctx) {
-  const { body, task, stagesData, callRpc, repaint, onSelectStage } = ctx;
-  const planId = task.plan_id; // stage docs + comments are plan-scoped
-  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
+/** Render the run-side stage board and wire its run-scoped actions. ctx:
+ *  { body, run, stagesData:{stages(joined), auto_advance}, catalog, callRpc,
+ *    repaint, openPlan(stageId) }. */
+export function renderStagesTab(ctx) {
+  const { body, run, stagesData, callRpc, repaint, openPlan } = ctx;
   const stages = stagesData.stages || [];
-  body.innerHTML = stageBoardHtml(task, stagesData);
+  body.innerHTML = stageBoardHtml(run, stagesData);
 
   wireRunAllControl(ctx, body.querySelector("#runall"), body.querySelector("#stageshint"));
-  const approveAll = body.querySelector("#approveall");
-  if (approveAll) {
-    bindAction(approveAll, "approving…", body.querySelector("#stageshint"), async () => {
+
+  // A row and its comment badge both open the plan's stage doc — the doc home
+  // never moved to the run (single active writer).
+  body.querySelectorAll(".stagerow").forEach((row) => {
+    row.onclick = () => openPlan(row.dataset.stage);
+  });
+
+  renderGateAction(ctx, body.querySelector("#stageaction"));
+}
+
+// The single actionable stage's controls, below the board. The earliest
+// unfinished stage gates everything behind it, so at most one is actionable:
+// a validated_failed stage → the fix bar; an approved+ready stage → Start; an
+// approved-but-blocked stage → a disabled Start with the gate reason.
+function renderGateAction(ctx, host) {
+  const { run, stagesData, catalog, callRpc, repaint, openPlan } = ctx;
+  if (!host) return;
+  const stages = stagesData.stages || [];
+  const index = stages.findIndex((s) => s.state !== "validated_passed");
+  if (index < 0) return; // every stage validated — the merge gate lives on Changes
+  const stage = stages[index];
+  const runId = run.run_id;
+
+  if (stage.state === "validated_failed") {
+    host.innerHTML = `
+      <div class="fixbar"><div class="fixlabel">Fix “${esc(stage.title)}” and re-validate</div>
+        <textarea id="fixnote" class="plan-general" placeholder="Optional note for the fix agent…"></textarea>
+        <div class="actionbar"><span class="hint" id="stagehint"></span>
+          <div class="right"><button class="btn" id="fixplan">Comment on the plan →</button>
+            <button class="btn primary" id="sendfix">Send back to fix</button></div></div></div>`;
+    host.querySelector("#fixplan").onclick = () => openPlan(stage.id);
+    bindAction(host.querySelector("#sendfix"), "sending…", host.querySelector("#stagehint"), async () => {
+      const note = host.querySelector("#fixnote").value.trim();
+      await callRpc("run.stage_fix", { run_id: runId, stage_id: stage.id, note });
+      repaint();
+    });
+    return;
+  }
+
+  if (stage.state === "building" || stage.state === "built") {
+    host.innerHTML = `<div class="actionbar"><span class="hint">Agent building “${esc(stage.title)}”…</span></div>`;
+    return;
+  }
+  if (stage.state === "validating") {
+    host.innerHTML = `<div class="actionbar"><span class="hint">Validating “${esc(stage.title)}”…</span></div>`;
+    return;
+  }
+
+  // planned / approved: the Start control, enabled only at the sequential gate.
+  const reason = stageGateReason(stages, index, run.state);
+  const models = (catalog && catalog.models) || [];
+  const efforts = (catalog && catalog.efforts) || [];
+  if (reason) {
+    // Not startable yet. A planned doc points the user at the plan to approve it;
+    // otherwise the reason is informational (a stage is running).
+    const toPlan = stage.doc_state !== "approved"
+      ? `<button class="btn" id="gotoplan">Open the plan →</button>`
+      : "";
+    host.innerHTML = `<div class="actionbar"><span class="hint">${esc(reason)}</span>
+      <div class="right">${toPlan}<button class="btn primary" disabled>Start “${esc(stage.title)}”</button></div></div>`;
+    const g = host.querySelector("#gotoplan");
+    if (g) g.onclick = () => openPlan(stage.id);
+    return;
+  }
+  host.innerHTML = `<div class="actionbar"><span class="hint" id="stagehint"></span>
+    <div class="right">
+      <select id="stModel" class="mini" title="Coding agent model">${modelOptionsHtml(models, run.model)}</select>
+      <select id="stEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(efforts, run.effort)}</select>
+      <button class="btn primary" id="startstage">Start “${esc(stage.title)}”</button></div></div>`;
+  const modelSel = host.querySelector("#stModel");
+  const effortSel = host.querySelector("#stEffort");
+  const syncEffort = () => {
+    const supported = effortSupported(models, modelSel.value);
+    effortSel.disabled = !supported;
+    if (!supported) effortSel.value = "";
+  };
+  modelSel.onchange = syncEffort;
+  syncEffort();
+  bindAction(host.querySelector("#startstage"), "starting…", host.querySelector("#stagehint"), async () => {
+    const params = modelParams(models, modelSel.value, effortSel.value);
+    await callRpc("run.stage_dispatch", { run_id: runId, stage_id: stage.id, ...params });
+    repaint();
+  });
+}
+
+// Mount the run-all control into its host. "run": a plain button that turns on
+// auto-advance — the bridge's enable-kickstart dispatches the next approved
+// stage and chains each one to its verdict (stage approval itself is a plan-side
+// gate, so run-all only runs stages already approved). "stop": a plain button
+// that turns auto-advance off. "none": nothing.
+function wireRunAllControl(ctx, host, hint) {
+  const { run, stagesData, callRpc, repaint } = ctx;
+  if (!host) return;
+  const runId = run.run_id;
+  const stages = stagesData.stages || [];
+  const kind = runAllControlKind({ autoAdvance: stagesData.auto_advance, stages, taskState: run.state });
+
+  if (kind === "run") {
+    host.innerHTML = `<button class="btn mini" id="runallbtn">Run all</button>`;
+    bindAction(host.querySelector("#runallbtn"), "starting…", hint, async () => {
       bulkActionInFlight = true;
       try {
-        for (const s of stages.filter((x) => x.state === "planned")) {
-          await callRpc("plan.stage_approve", { plan_id: planId, stage_id: s.id });
-        }
+        await callRpc("run.set_auto_advance", { run_id: runId, enabled: true });
       } finally {
         bulkActionInFlight = false;
       }
       repaint();
-    });
-  }
-  body.querySelectorAll(".stagerow").forEach((row) => {
-    row.onclick = () => onSelectStage(row.dataset.stage);
-  });
-}
-
-// Mount the run-all control into its host. "run": a split button whose primary
-// (run_all) approves every planned stage then turns on auto-advance — the
-// bridge's enable-kickstart dispatches stage 1 now that it is Approved — and
-// whose menu (arm_only) turns on auto-advance only (the old passive semantics).
-// "stop": a plain button that turns auto-advance off. "none": nothing. Errors go
-// to the shared hint; the split button restores itself on a rejected run.
-function wireRunAllControl(ctx, host, hint) {
-  const { task, stagesData, callRpc, repaint } = ctx;
-  if (!host) return;
-  const planId = task.plan_id; // stage docs + comments are plan-scoped
-  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
-  const stages = stagesData.stages || [];
-  const kind = runAllControlKind({ autoAdvance: stagesData.auto_advance, stages, taskState: task.state });
-
-  if (kind === "run") {
-    mountSplitButton(host, {
-      options: RUN_ALL_OPTIONS,
-      run: async (optionId) => {
-        bulkActionInFlight = true;
-        try {
-          if (optionId === "run_all") {
-            for (const s of stages.filter((x) => x.state === "planned")) {
-              await callRpc("plan.stage_approve", { plan_id: planId, stage_id: s.id });
-            }
-          }
-          await callRpc("run.set_auto_advance", { run_id: runId, enabled: true });
-        } catch (e) {
-          bulkActionInFlight = false;
-          if (hint) hint.textContent = "error: " + e.message.slice(0, 60);
-          throw e; // let the split button restore itself for a retry
-        }
-        bulkActionInFlight = false; // cleared before repaint so the rebuild isn't frozen
-        repaint();
-      },
     });
     return;
   }
@@ -292,168 +336,4 @@ function wireRunAllControl(ctx, host, hint) {
       repaint();
     });
   }
-}
-
-function renderStageDoc(ctx, stage) {
-  const { body, task, stagesData, stageDoc, callRpc, repaint, onSelectStage } = ctx;
-  const planId = task.plan_id; // stage docs + comments are plan-scoped
-  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
-  const stages = stagesData.stages || [];
-  const index = stages.findIndex((s) => s.id === stage.id);
-  const prev = index > 0 ? stages[index - 1] : null;
-
-  // The previous stage's validation report is surfaced here (on stage N+1).
-  let banner = "";
-  if (prev && prev.validation) {
-    banner = prev.validation.passed
-      ? validationBanner("pass", `Validation of "${prev.title}" passed`, prev.validation.notes_for_next_stage)
-      : validationBanner("fail", `Validation of "${prev.title}" failed`, prev.validation.findings);
-  }
-  // This stage failed its own validation: its findings + a send-back-to-fix bar.
-  const ownFail = stage.state === "validated_failed" && stage.validation;
-  const ownFailBanner = ownFail ? validationBanner("fail", `This stage's validation failed`, stage.validation.findings) : "";
-
-  const comments = (stage.comments || []).slice().sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
-  const commentsHtml = comments.length ? comments.map(commentCard).join("") : "";
-  const canComment = stage.state === "planned" || stage.state === "approved";
-
-  const docContents = stageDoc && stageDoc.stage_id === stage.id ? stageDoc.contents : "";
-
-  body.innerHTML = `
-    <div class="stageback" id="stageback">← All stages</div>
-    ${banner}
-    ${ownFailBanner}
-    ${ownFail ? `<div class="fixbar"><textarea id="fixnote" class="plan-general" placeholder="Optional note for the fix agent…"></textarea>
-      <div class="actionbar"><span class="hint" id="fixhint"></span><div class="right"><button class="btn primary" id="sendfix">Send back to fix</button></div></div></div>` : ""}
-    <div class="plan" id="stagedoc">${docContents ? renderMarkdown(docContents) : '<div class="plan-loading">✦ loading stage document…</div>'}</div>
-    <div class="stagecomments">${commentsHtml}</div>
-    ${canComment ? `<div class="plan-feedback"><textarea id="stage-general" class="plan-general" placeholder="Add a general comment on this stage…"></textarea>
-      <div class="right"><button class="btn mini" id="addgeneral">Add comment</button></div></div>` : ""}
-    <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
-
-  body.querySelector("#stageback").onclick = () => onSelectStage(null);
-
-  if (ownFail) {
-    bindAction(body.querySelector("#sendfix"), "sending…", body.querySelector("#fixhint"), async () => {
-      const note = body.querySelector("#fixnote").value.trim();
-      await callRpc("run.stage_fix", { run_id: runId, stage_id: stage.id, note });
-      repaint();
-    });
-  }
-
-  // Anchored comments: select text in the doc → popover → task.comment_add.
-  if (canComment) {
-    const docEl = body.querySelector("#stagedoc");
-    stageSelDispose = watchSelection(docEl, (sel) => {
-      const anchorNode = sel.anchorNode;
-      const snippet = sel.toString().trim().slice(0, 400);
-      const range = sel.getRangeAt(0);
-      showCommentPop(range.getBoundingClientRect(), async (commentBody) => {
-        try {
-          await callRpc("plan.comment_add", {
-            plan_id: planId,
-            stage_id: stage.id,
-            body: commentBody,
-            anchor: { heading_path: headingPathFor(docEl, anchorNode), snippet },
-          });
-          window.getSelection().removeAllRanges();
-          repaint();
-        } catch {
-          /* poll re-syncs */
-        }
-      });
-    });
-    const addGeneral = body.querySelector("#addgeneral");
-    bindAction(addGeneral, "adding…", body.querySelector("#stagehint"), async () => {
-      const text = body.querySelector("#stage-general").value.trim();
-      if (!text) {
-        body.querySelector("#stagehint").textContent = "type a comment first.";
-        addGeneral.disabled = false;
-        addGeneral.textContent = "Add comment";
-        return;
-      }
-      await callRpc("plan.comment_add", { plan_id: planId, stage_id: stage.id, body: text, anchor: null });
-      hideCommentPop();
-      repaint();
-    });
-  }
-
-  renderStageActions(ctx, stage, index, prev);
-}
-
-function renderStageActions(ctx, stage, index, prev) {
-  const { body, task, stagesData, catalog, callRpc, repaint } = ctx;
-  const planId = task.plan_id; // stage docs + comments are plan-scoped
-  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
-  const stages = stagesData.stages || [];
-  const actions = body.querySelector("#stageactions");
-  const hint = body.querySelector("#stagehint");
-  const openCount = stage.open_comments || 0;
-  const sendNotesBtn = openCount > 0 ? `<button class="btn" id="sendnotes">Send ${openCount} comment${openCount === 1 ? "" : "s"}</button>` : "";
-  const wireSendNotes = () => {
-    const b = body.querySelector("#sendnotes");
-    if (b) bindAction(b, "sending…", hint, async () => {
-      await callRpc("plan.stage_send_notes", { plan_id: planId, stage_id: stage.id });
-      repaint();
-    });
-  };
-
-  if (stage.state === "planned") {
-    actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage</button>`;
-    bindAction(body.querySelector("#approvestage"), "approving…", hint, async () => {
-      await callRpc("plan.stage_approve", { plan_id: planId, stage_id: stage.id });
-      repaint();
-    });
-    wireSendNotes();
-    return;
-  }
-  if (stage.state === "approved") {
-    const priorsPassed = stages.slice(0, index).every((s) => s.state === "validated_passed");
-    const ready = priorsPassed && task.state === "plan_review";
-    const models = (catalog && catalog.models) || [];
-    const efforts = (catalog && catalog.efforts) || [];
-    actions.innerHTML = `${sendNotesBtn}
-      <select id="stModel" class="mini" title="Coding agent model">${modelOptionsHtml(models, task.model)}</select>
-      <select id="stEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(efforts, task.effort)}</select>
-      <button class="btn primary" id="startstage"${ready ? "" : " disabled"}>Start stage</button>`;
-    if (!ready) {
-      const blocker = stages.slice(0, index).find((s) => s.state !== "validated_passed");
-      hint.textContent = blocker ? `waiting on validation of "${blocker.title}"` : "waiting on the plan review gate";
-    }
-    const modelSel = body.querySelector("#stModel");
-    const effortSel = body.querySelector("#stEffort");
-    const syncEffort = () => {
-      const supported = effortSupported(models, modelSel.value);
-      effortSel.disabled = !supported;
-      if (!supported) effortSel.value = "";
-    };
-    modelSel.onchange = syncEffort;
-    syncEffort();
-    if (ready) {
-      bindAction(body.querySelector("#startstage"), "starting…", hint, async () => {
-        const params = modelParams(models, modelSel.value, effortSel.value);
-        await callRpc("run.stage_dispatch", { run_id: runId, stage_id: stage.id, ...params });
-        repaint();
-      });
-    }
-    wireSendNotes();
-    return;
-  }
-  if (stage.state === "building" || stage.state === "built") {
-    actions.innerHTML = "";
-    hint.textContent = "agent working on this stage…";
-    return;
-  }
-  if (stage.state === "validating") {
-    actions.innerHTML = "";
-    hint.textContent = "validation running…";
-    return;
-  }
-  if (stage.state === "validated_passed") {
-    actions.innerHTML = "";
-    hint.textContent = "stage complete";
-    return;
-  }
-  // validated_failed → the fix bar above owns the action.
-  actions.innerHTML = "";
 }

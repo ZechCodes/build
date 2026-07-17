@@ -9,8 +9,8 @@ const projects = [
   { project_id: "p2", name: "dotfiles" },
 ];
 
-const task = (over) => ({
-  task_id: "t1",
+const run = (over) => ({
+  run_id: "r1",
   project_id: "p1",
   goal: "Fix the thing",
   state: "review",
@@ -20,47 +20,74 @@ const task = (over) => ({
   ...over,
 });
 
-const ui = () => ({ closed: new Set(), wtOpen: new Set(), activeTaskId: null });
+const plan = (over) => ({
+  plan_id: "pl1",
+  project_id: "p1",
+  goal: "Design the thing",
+  state: "plan_review",
+  needs_attention: true,
+  updated_at: iso(1),
+  ...over,
+});
 
-describe("buildSidebarModel", () => {
-  it("groups tasks by project into needs-you / running / done-recently", () => {
-    const tasks = [
-      task({ task_id: "a", state: "review", needs_attention: true }),
-      task({ task_id: "b", state: "planning", needs_attention: false }),
-      task({ task_id: "c", state: "merged", needs_attention: false, updated_at: iso(5) }),
-      task({ task_id: "elsewhere", project_id: "p2", state: "building", needs_attention: false }),
+const ui = () => ({ closed: new Set(), wtOpen: new Set(), activeRunId: null });
+
+describe("buildSidebarModel — runs", () => {
+  it("groups runs by project into needs-you / running / done-recently", () => {
+    const runs = [
+      run({ run_id: "a", state: "review", needs_attention: true }),
+      run({ run_id: "b", state: "building", needs_attention: false }),
+      run({ run_id: "c", state: "merged", needs_attention: false, updated_at: iso(5) }),
+      run({ run_id: "elsewhere", project_id: "p2", state: "building", needs_attention: false }),
     ];
-    const [p1, p2] = buildSidebarModel({ projects, tasks, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.needsYou.map((t) => t.task_id)).toEqual(["a"]);
-    expect(p1.running.map((t) => t.task_id)).toEqual(["b"]);
-    expect(p1.doneRecently.map((t) => t.task_id)).toEqual(["c"]);
-    expect(p2.running.map((t) => t.task_id)).toEqual(["elsewhere"]);
+    const [p1, p2] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
+    expect(p1.needsYou.map((r) => r.run_id)).toEqual(["a"]);
+    expect(p1.running.map((r) => r.run_id)).toEqual(["b"]);
+    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["c"]);
+    expect(p2.running.map((r) => r.run_id)).toEqual(["elsewhere"]);
   });
 
-  it("archived tasks are terminal — done-recently, never running or needs-you", () => {
-    const tasks = [task({ task_id: "x", state: "archived", needs_attention: false, updated_at: iso(5) })];
-    const [p1] = buildSidebarModel({ projects, tasks, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.doneRecently.map((t) => t.task_id)).toEqual(["x"]);
+  it("archived runs are terminal — done-recently, never running or needs-you", () => {
+    const runs = [run({ run_id: "x", state: "archived", needs_attention: false, updated_at: iso(5) })];
+    const [p1] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
+    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["x"]);
     expect(p1.running).toEqual([]);
     expect(p1.unread).toBe(0);
   });
 
-  it("unread counts needs-you tasks not yet read", () => {
-    const tasks = [
-      task({ task_id: "a" }),
-      task({ task_id: "b" }),
-      task({ task_id: "c", needs_attention: false, state: "building" }),
-    ];
-    const [p1] = buildSidebarModel({ projects, tasks, externalWorktrees: [], readIds: new Set(["a"]), nowMs: NOW });
-    expect(p1.unread).toBe(1);
-  });
-
   it("done-recently is capped at 3, newest first, and windowed to 7 days", () => {
-    const tasks = [4, 1, 30 * 24, 2, 3].map((h, i) =>
-      task({ task_id: `d${i}`, state: "merged", needs_attention: false, updated_at: iso(h) })
+    const runs = [4, 1, 30 * 24, 2, 3].map((h, i) =>
+      run({ run_id: `d${i}`, state: "merged", needs_attention: false, updated_at: iso(h) })
     );
-    const [p1] = buildSidebarModel({ projects, tasks, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.doneRecently.map((t) => t.task_id)).toEqual(["d1", "d3", "d4"]); // 1h, 2h, 3h — 30d dropped, capped at 3
+    const [p1] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
+    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["d1", "d3", "d4"]); // 1h, 2h, 3h — 30d dropped, capped at 3
+  });
+});
+
+describe("buildSidebarModel — plans", () => {
+  it("groups plans by project into needs-you / approved / drafting / done", () => {
+    const plans = [
+      plan({ plan_id: "a", state: "plan_review", needs_attention: true }),
+      plan({ plan_id: "b", state: "approved", needs_attention: false }),
+      plan({ plan_id: "c", state: "drafting", needs_attention: false }),
+      plan({ plan_id: "d", state: "abandoned", needs_attention: false, updated_at: iso(5) }),
+      plan({ plan_id: "elsewhere", project_id: "p2", state: "drafting", needs_attention: false }),
+    ];
+    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
+    expect(p1.planNeedsYou.map((p) => p.plan_id)).toEqual(["a"]);
+    expect(p1.planApproved.map((p) => p.plan_id)).toEqual(["b"]);
+    expect(p1.planDrafting.map((p) => p.plan_id)).toEqual(["c"]);
+    expect(p1.plansDone.map((p) => p.plan_id)).toEqual(["d"]);
+    expect(p2.planDrafting.map((p) => p.plan_id)).toEqual(["elsewhere"]);
+  });
+});
+
+describe("buildSidebarModel — unread and worktrees", () => {
+  it("unread counts needs-you runs and plans not yet read", () => {
+    const runs = [run({ run_id: "a" }), run({ run_id: "b" }), run({ run_id: "c", needs_attention: false, state: "building" })];
+    const plans = [plan({ plan_id: "pa" }), plan({ plan_id: "pb", needs_attention: false, state: "approved" })];
+    const [p1] = buildSidebarModel({ projects, runs, plans, externalWorktrees: [], readIds: new Set(["a"]), nowMs: NOW });
+    expect(p1.unread).toBe(2); // b (run) + pa (plan); a is read, c/pb not needing attention
   });
 
   it("counts worktrees and uncommitted per project", () => {
@@ -69,7 +96,7 @@ describe("buildSidebarModel", () => {
       { worktree_id: "w2", project_id: "p1", branch: "feat-b", dirty_files: 0 },
       { worktree_id: "w3", project_id: "p2", branch: "other", dirty_files: 1 },
     ];
-    const [p1, p2] = buildSidebarModel({ projects, tasks: [], externalWorktrees: wts, readIds: new Set(), nowMs: NOW });
+    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: wts, readIds: new Set(), nowMs: NOW });
     expect(p1.worktrees.length).toBe(2);
     expect(p1.uncommitted).toBe(1);
     expect(p2.uncommitted).toBe(1);
@@ -77,7 +104,7 @@ describe("buildSidebarModel", () => {
 
   it("attaches the primary-changes summary per project (null when absent)", () => {
     const primaryChanges = [{ project_id: "p1", branch: "main", files_changed: 3, insertions: 12, deletions: 4 }];
-    const [p1, p2] = buildSidebarModel({ projects, tasks: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
+    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
     expect(p1.primary).toEqual({ branch: "main", files_changed: 3, insertions: 12, deletions: 4 });
     expect(p2.primary).toBeNull();
   });
@@ -88,9 +115,13 @@ describe("projectHtml", () => {
     project_id: "p1",
     name: "relaydb",
     unread: 1,
-    needsYou: [task({ task_id: "a" })],
-    running: [task({ task_id: "b", state: "planning", needs_attention: false, stat: null, last_error: null })],
-    doneRecently: [task({ task_id: "c", state: "merged", age_s: 5 * 3600 })],
+    needsYou: [run({ run_id: "a" })],
+    running: [run({ run_id: "b", state: "building", needs_attention: false, stat: null, last_error: null })],
+    doneRecently: [run({ run_id: "c", state: "merged", age_s: 5 * 3600 })],
+    planNeedsYou: [],
+    planApproved: [],
+    planDrafting: [],
+    plansDone: [],
     worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "feat-a", dirty_files: 1 }],
     uncommitted: 1,
     ...over,
@@ -102,10 +133,16 @@ describe("projectHtml", () => {
     expect(html).toContain('class="badge sbadge">1<');
     expect(html).toContain("+42");
     expect(html).toContain("-26");
-    expect(html).toContain("planning"); // running task with no stat shows its state
+    expect(html).toContain("building"); // running run with no stat shows its state
     expect(html).toContain("5h ago");
     expect(html).toContain("1 worktree");
     expect(html).toContain("1 uncommitted");
+  });
+
+  it("run rows are keyed by run_id and route to the run surface", () => {
+    const html = projectHtml(model(), ui());
+    expect(html).toContain('data-run="a"');
+    expect(html).toContain('data-tab="changes"');
   });
 
   it("collapsed projects render only the header", () => {
@@ -120,7 +157,7 @@ describe("projectHtml", () => {
   it("escapes external strings (goals, branch names, project names)", () => {
     const m = model({
       name: "<img src=x>",
-      needsYou: [task({ task_id: "a", goal: "<script>alert(1)</script>" })],
+      needsYou: [run({ run_id: "a", goal: "<script>alert(1)</script>" })],
       worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "<b>evil</b>", dirty_files: 0 }],
     });
     const u = ui();
@@ -147,9 +184,9 @@ describe("projectHtml", () => {
     expect(none).not.toContain("data-main=");
   });
 
-  it("marks the route's active task", () => {
+  it("marks the route's active run", () => {
     const u = ui();
-    u.activeTaskId = "a";
+    u.activeRunId = "a";
     expect(projectHtml(model(), u)).toContain('class="srow attn active"');
   });
 
@@ -167,9 +204,33 @@ describe("projectHtml", () => {
     expect(projectHtml(model(), u)).toContain("sproj-head active");
   });
 
-  it("blocked tasks in needs-you carry the warning icon", () => {
-    const m = model({ needsYou: [task({ task_id: "a", state: "blocked" })] });
+  it("blocked runs in needs-you carry the warning icon", () => {
+    const m = model({ needsYou: [run({ run_id: "a", state: "blocked" })] });
     expect(projectHtml(m, ui())).toContain("▲");
+  });
+
+  it("renders plan rows keyed by plan_id and routing to the plan cockpit (never a run)", () => {
+    const m = model({
+      needsYou: [],
+      running: [],
+      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })],
+      planApproved: [plan({ plan_id: "pl-b", state: "approved", needs_attention: false })],
+      planDrafting: [plan({ plan_id: "pl-c", state: "drafting", needs_attention: false })],
+    });
+    const html = projectHtml(m, ui());
+    expect(html).toContain("Plans");
+    expect(html).toContain('data-plan="pl-a"');
+    expect(html).toContain('data-plan="pl-b"');
+    expect(html).toContain('data-plan="pl-c"');
+    expect(html).toContain("Design the thing"); // the plan goal
+    expect(html).not.toContain('data-run="pl-a"'); // plan rows never carry a run handle
+  });
+
+  it("marks the route's active plan", () => {
+    const u = ui();
+    u.activePlanId = "pl-a";
+    const m = model({ needsYou: [], running: [], planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })] });
+    expect(projectHtml(m, u)).toContain('class="srow splan attn active"');
   });
 });
 

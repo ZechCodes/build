@@ -1,11 +1,14 @@
 // The project sidebar: pure model + HTML builders (no DOM, unit-testable).
-// Every page shows this rail — projects with unread badges, what needs you,
-// what's running, what just finished, and the project's worktrees.
+// Every page shows this rail — projects with unread badges, the plans authored
+// in each project, what needs you, what's running, what just finished, and the
+// project's worktrees. The plan/run split means each project carries both its
+// plans (project-scoped) and its runs (worktree-scoped; "Tasks" in the UI).
 
 import { esc, humanAge } from "./text.js";
 
 /** Truncation is CSS's job (ellipsis); classification is ours. */
-const TERMINAL = new Set(["merged", "abandoned", "archived"]);
+const RUN_TERMINAL = new Set(["merged", "abandoned", "archived"]);
+const PLAN_TERMINAL = new Set(["abandoned"]);
 const DONE_RECENTLY_CAP = 3;
 const DONE_RECENTLY_WINDOW_MS = 7 * 24 * 3600 * 1000;
 
@@ -14,29 +17,51 @@ function ageSeconds(iso, nowMs) {
   return Number.isFinite(t) ? Math.max(0, (nowMs - t) / 1000) : null;
 }
 
-/** Group the task feed into the per-project sidebar model. `primaryChanges` is
- *  task.list's cached primary-checkout summary, attached per project as
- *  `m.primary = {branch, files_changed, insertions, deletions} | null`. */
-export function buildSidebarModel({ projects, tasks, externalWorktrees, primaryChanges, readIds, nowMs }) {
+// The recently-finished tail of a terminal collection: windowed to 7 days,
+// newest first, capped. Shared by runs and plans (each supplies its own id).
+function doneRecently(items, nowMs) {
+  return items
+    .map((x) => ({ ...x, age_s: ageSeconds(x.updated_at, nowMs) }))
+    .filter((x) => x.age_s !== null && x.age_s * 1000 <= DONE_RECENTLY_WINDOW_MS)
+    .sort((a, b) => a.age_s - b.age_s)
+    .slice(0, DONE_RECENTLY_CAP);
+}
+
+/** Group the feed into the per-project sidebar model. Runs bucket as
+ *  needs-you / running / done-recently; plans bucket as needs-you / drafting /
+ *  approved / done. `primaryChanges` is board.list's cached primary-checkout
+ *  summary, attached per project as `m.primary`. */
+export function buildSidebarModel({ projects, runs, plans, externalWorktrees, primaryChanges, readIds, nowMs }) {
   return (projects || []).map((p) => {
-    const mine = (tasks || []).filter((t) => t.project_id === p.project_id);
-    const needsYou = mine.filter((t) => t.needs_attention && !TERMINAL.has(t.state));
-    const running = mine.filter((t) => !t.needs_attention && !TERMINAL.has(t.state));
-    const doneRecently = mine
-      .filter((t) => TERMINAL.has(t.state))
-      .map((t) => ({ ...t, age_s: ageSeconds(t.updated_at, nowMs) }))
-      .filter((t) => t.age_s !== null && t.age_s * 1000 <= DONE_RECENTLY_WINDOW_MS)
-      .sort((a, b) => a.age_s - b.age_s)
-      .slice(0, DONE_RECENTLY_CAP);
+    const myRuns = (runs || []).filter((r) => r.project_id === p.project_id);
+    const needsYou = myRuns.filter((r) => r.needs_attention && !RUN_TERMINAL.has(r.state));
+    const running = myRuns.filter((r) => !r.needs_attention && !RUN_TERMINAL.has(r.state));
+    const runsDone = doneRecently(myRuns.filter((r) => RUN_TERMINAL.has(r.state)), nowMs);
+
+    const myPlans = (plans || []).filter((pl) => pl.project_id === p.project_id);
+    const planNeedsYou = myPlans.filter((pl) => pl.needs_attention && !PLAN_TERMINAL.has(pl.state));
+    const planApproved = myPlans.filter((pl) => pl.state === "approved");
+    const planDrafting = myPlans.filter(
+      (pl) => !pl.needs_attention && !PLAN_TERMINAL.has(pl.state) && pl.state !== "approved"
+    );
+    const plansDone = doneRecently(myPlans.filter((pl) => PLAN_TERMINAL.has(pl.state)), nowMs);
+
     const worktrees = (externalWorktrees || []).filter((w) => w.project_id === p.project_id);
     const pc = (primaryChanges || []).find((c) => c.project_id === p.project_id) || null;
+    const unread =
+      needsYou.filter((r) => !readIds.has(r.run_id)).length +
+      planNeedsYou.filter((pl) => !readIds.has(pl.plan_id)).length;
     return {
       project_id: p.project_id,
       name: p.name,
-      unread: needsYou.filter((t) => !readIds.has(t.task_id)).length,
+      unread,
       needsYou,
       running,
-      doneRecently,
+      doneRecently: runsDone,
+      planNeedsYou,
+      planApproved,
+      planDrafting,
+      plansDone,
       worktrees,
       uncommitted: worktrees.filter((w) => (w.dirty_files || 0) > 0).length,
       primary: pc
@@ -51,15 +76,27 @@ const statHtml = (stat) =>
     ? `<span class="sstat mono"><em class="add">+${stat.insertions}</em> <em class="del">-${stat.deletions}</em></span>`
     : "";
 
-function taskRow(t, { icon, right, cls = "" }) {
-  // Plan-side and archived rows land on the plan (an archived task's worktree
-  // is gone — the preserved plan is what's left); everything else on Changes.
-  const tab = t.state === "plan_review" || t.state === "archived" ? "plan" : "changes";
-  return `<div class="srow ${cls}" data-task="${esc(t.task_id)}" data-tab="${tab}">
-    <span class="sicon">${icon}</span><span class="stitle">${esc(t.goal)}</span>${right}</div>`;
+// A run row (the board's "Tasks"), keyed by run_id, routing to the run surface's
+// Changes tab (the worktree is where a run lives).
+function runRow(r, { icon, right, cls = "" }) {
+  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="changes">
+    <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;
 }
 
-const doneIcon = (t) => (t.state === "merged" ? "✓" : "×");
+const doneIcon = (r) => (r.state === "merged" ? "✓" : "×");
+
+// A plan row (project-scoped), keyed by plan_id, routing to the plan cockpit.
+// Plans and runs share the rail, so a plan row carries its own glyph set and a
+// distinct data attribute — never a data-run — keeping the two click paths apart.
+function planRow(p, { icon, right = "", cls = "" }) {
+  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}">
+    <span class="sicon">${icon}</span><span class="stitle">${esc(p.goal)}</span>${right}</div>`;
+}
+
+const openCommentsRight = (p) => {
+  const n = (p.stages || []).reduce((sum, s) => sum + (s.open_comments || 0), 0);
+  return n ? `<span class="sstate">${n} 💬</span>` : "";
+};
 
 function section(label, rowsHtml) {
   return rowsHtml ? `<div class="ssec"><div class="sseclabel">${label}</div>${rowsHtml}</div>` : "";
@@ -97,7 +134,7 @@ function worktreeLine(m, open) {
 /** An outline folder, sized for the rail (the mock's project glyph). */
 const FOLDER_ICON = `<svg class="sfolder" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.5 1.75h6.9a1 1 0 0 1 1 1v6.75a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1V4.25z"/></svg>`;
 
-/** One project's block. `ui`: { closed:Set, wtOpen:Set, activeTaskId, activeProjectId } */
+/** One project's block. `ui`: { closed:Set, wtOpen:Set, activeRunId, activeProjectId } */
 export function projectHtml(m, ui) {
   const open = !ui.closed.has(m.project_id);
   const badge = m.unread ? `<span class="badge sbadge">${m.unread}</span>` : "";
@@ -109,38 +146,58 @@ export function projectHtml(m, ui) {
     ${badge}</div>`;
   if (!open) return `<div class="sproj">${head}</div>`;
 
-  const active = (t) => (t.task_id === ui.activeTaskId ? "active" : "");
+  const active = (r) => (r.run_id === ui.activeRunId ? "active" : "");
+  const activePlan = (p) => (p.plan_id === ui.activePlanId ? "active" : "");
   const needs = m.needsYou
-    .map((t) =>
-      taskRow(t, {
-        icon: t.state === "blocked" || t.state === "failed" ? '<span class="warn">▲</span>' : "✦",
-        right: statHtml(t.stat),
-        cls: `attn ${active(t)}`,
+    .map((r) =>
+      runRow(r, {
+        icon: r.state === "blocked" || r.state === "failed" ? '<span class="warn">▲</span>' : "✦",
+        right: statHtml(r.stat),
+        cls: `attn ${active(r)}`,
       })
     )
     .join("");
   const running = m.running
-    .map((t) =>
-      taskRow(t, {
+    .map((r) =>
+      runRow(r, {
         icon: "●",
         right:
-          (t.last_error ? '<span class="warn">▲</span> ' : "") +
-          (t.stat && t.stat.files_changed ? statHtml(t.stat) : `<span class="sstate">${esc(t.state)}</span>`),
-        cls: `work ${active(t)}`,
+          (r.last_error ? '<span class="warn">▲</span> ' : "") +
+          (r.stat && r.stat.files_changed ? statHtml(r.stat) : `<span class="sstate">${esc(r.state)}</span>`),
+        cls: `work ${active(r)}`,
       })
     )
     .join("");
+  // Plans (project-scoped): the ones needing you carry the attn styling and the
+  // review/parked glyph; approved plans are ready to Implement; drafting plans
+  // are still being authored.
+  const planNeeds = m.planNeedsYou
+    .map((p) =>
+      planRow(p, {
+        icon: p.state === "blocked" || p.state === "failed" ? '<span class="warn">▲</span>' : "✦",
+        right: openCommentsRight(p),
+        cls: `attn ${activePlan(p)}`,
+      })
+    )
+    .join("");
+  const planReady = m.planApproved.map((p) => planRow(p, { icon: "◆", right: openCommentsRight(p), cls: `ready ${activePlan(p)}` })).join("");
+  const planDrafting = m.planDrafting.map((p) => planRow(p, { icon: "✎", cls: `work ${activePlan(p)}` })).join("");
   const done = m.doneRecently
-    .map((t) =>
-      taskRow(t, {
-        icon: doneIcon(t),
-        right: `<span class="sage">${humanAge(t.age_s)}</span>`,
+    .map((r) =>
+      runRow(r, {
+        icon: doneIcon(r),
+        right: `<span class="sage">${humanAge(r.age_s)}</span>`,
         cls: "done",
       })
     )
     .join("");
+  const plansDone = m.plansDone
+    .map((p) => planRow(p, { icon: "×", right: `<span class="sage">${humanAge(p.age_s)}</span>`, cls: "done" }))
+    .join("");
   return `<div class="sproj">${head}<div class="sproj-body">
-    ${section("Needs you", needs)}${section("Running", running)}${section("Done recently", done)}
+    ${section("Needs you", needs)}${section("Running", running)}
+    ${section("Plans", planNeeds + planReady + planDrafting)}
+    ${section("Done recently", done + plansDone)}
     ${mainLine(m)}${worktreeLine(m, ui.wtOpen.has(m.project_id))}</div></div>`;
 }
 

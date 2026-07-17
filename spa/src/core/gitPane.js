@@ -44,10 +44,10 @@ export function syncChipState(status) {
   return { ahead, behind };
 }
 
-/** Branch switching is main-worktree (project scope) only — a task worktree's
- *  branch is owned by the task lifecycle, so sessions show it as static text. */
+/** Branch switching is main-worktree (project scope) only — a run worktree's
+ *  branch is owned by the run lifecycle, so sessions show it as static text. */
 export function showBranchControl(scope) {
-  return Boolean(scope && scope.project_id && !scope.task_id);
+  return Boolean(scope && scope.project_id && !scope.run_id);
 }
 
 /** Every toolbar verb is disabled while any action RPC is in flight (the same
@@ -230,7 +230,7 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
  *  a module-level Map so tab switches and view-shell rebuilds (which remount the
  *  pane from scratch) restore them transparently. */
 export function gitDraftKey(scope) {
-  return scope.task_id ? `task:${scope.task_id}` : `project:${scope.project_id || ""}`;
+  return scope.run_id ? `run:${scope.run_id}` : `project:${scope.project_id || ""}`;
 }
 
 // scope draft key -> the commit message typed so far. Module-level on purpose:
@@ -259,8 +259,8 @@ export function commitVariantClearsDraft(optionId) {
 // will never recover, so it must show the error instead of "loading..." forever.
 const PERMANENT_GIT_SCOPE_ERRORS = [
   "unknown project_id",
-  "unknown task_id",
-  "provide exactly one of project_id or task_id",
+  "unknown run_id",
+  "provide exactly one of project_id or run_id",
 ];
 
 /** True only for the bridge's permanent scope errors — every other poll failure
@@ -325,8 +325,8 @@ export function taskAgentCommitOptions(state, goal) {
 }
 
 /** Mount the git pane into `container`. Returns { dispose }. `scope` is exactly
- *  one of { project_id } / { task_id }; `callRpc(method, params)` is the RPC
- *  channel; `agentCommitOptions` (task scope) appends to the commit button;
+ *  one of { project_id } / { run_id }; `callRpc(method, params)` is the RPC
+ *  channel; `agentCommitOptions` (run scope) appends to the commit button;
  *  `review` (task/worktree surfaces) plugs the surface's review diff in as the
  *  rail's pinned "All changes" entry: { getBase(), mount(host), unmount() } —
  *  the plug owns the detail pane's DOM while selected (this pane never
@@ -618,7 +618,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     }
     if (optionId === "agent_commit") {
       try {
-        await callRpc("task.message", { task_id: scope.task_id, message: AGENT_COMMIT_MESSAGE });
+        await callRpc("run.message", { run_id: scope.run_id, message: AGENT_COMMIT_MESSAGE });
       } catch (e) {
         actionError(e);
         throw e;
@@ -631,7 +631,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     }
     if (optionId === "auto_commit") {
       try {
-        await callRpc("task.git_action", { task_id: scope.task_id, action: "commit" });
+        await callRpc("run.git_action", { run_id: scope.run_id, action: "commit" });
       } catch (e) {
         actionError(e);
         throw e;

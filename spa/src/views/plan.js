@@ -43,8 +43,9 @@ export async function renderPlan() {
   let localError = null;
 
   // Multi-stage state preserved across the poll: the selected stage (null → the
-  // board) and the last-rendered payload key.
-  let selectedStageId = null;
+  // board) and the last-rendered payload key. A stage deep-link (the run's
+  // Stages tab routing a mid-run revision here) seeds the opened stage.
+  let selectedStageId = App.route.stage || null;
   let stagesKey = null;
   // Single-doc review state preserved across the poll: pending comments, an id
   // counter, the last-rendered key, and the selection watcher's disposer.

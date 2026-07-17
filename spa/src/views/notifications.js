@@ -1,51 +1,88 @@
-// Notifications: every actionable task state becomes one decision-carrying card.
+// Notifications: every actionable plan or run state becomes one decision-carrying
+// card. Plan-review and parked-planning cards route to the plan cockpit; diff
+// review and parked-build cards route to the run.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { App, go } from "../app.js";
-import { attnTasks, payloadFor, setBadge } from "./shared.js";
+import { attnRuns, attnPlans, setBadge } from "./shared.js";
+import { defaultRunTab } from "../core/taskActions.js";
 
-function notifEvent(t) {
-  if (t.state === "plan_review")
-    return { icon: "✦", tone: "", title: "Plan ready to review", sub: payloadFor(t) || "A planning agent finished drafting the plan.", action: "Review plan", tab: "plan", primary: true };
+// A run's decision card. Runs never carry plan_review — that belongs to a plan.
+function runNotifEvent(t) {
   if (t.state === "review")
-    return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", tab: "changes", primary: true };
+    return { icon: "✦", tone: "", title: "Build ready to review", sub: t.summary || "The coding agent finished. Review the diff.", action: "Review diff", primary: true };
   if (t.state === "blocked")
-    return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", tab: "changes", primary: false };
+    return { icon: "▲", tone: "warn", title: "Build blocked", sub: t.summary || "The agent needs your input to continue.", action: "View task", primary: false };
   if (t.state === "failed")
-    return { icon: "▲", tone: "warn", title: "Build failed", sub: t.summary || "The build did not complete.", action: "View task", tab: "changes", primary: false };
+    return { icon: "▲", tone: "warn", title: "Build failed", sub: t.summary || "The build did not complete.", action: "View task", primary: false };
+  if (t.state === "idle_unreported")
+    return { icon: "▲", tone: "warn", title: "Build idle", sub: t.summary || "The build session went idle without reporting.", action: "View task", primary: false };
+  if (t.state === "interrupted")
+    return { icon: "▲", tone: "warn", title: "Build interrupted", sub: t.summary || "The build session was interrupted.", action: "View task", primary: false };
   if (t.state === "merged")
-    return { icon: "✓", tone: "muted", title: "Merge complete", branch: `${t.branch} → ${t.base_branch || "main"}`, action: "View task", tab: "changes", primary: false };
+    return { icon: "✓", tone: "muted", title: "Merge complete", branch: `${t.branch} → ${t.base_branch || "main"}`, action: "View task", primary: false };
+  return null;
+}
+
+// A plan's decision card. plan_review is the human gate; the parked arms all need
+// the user to move the plan forward.
+function planNotifEvent(p) {
+  if (p.state === "plan_review")
+    return { icon: "✦", tone: "", title: "Plan ready to review", sub: p.summary || "The planning agent finished. Review the plan.", action: "Review plan", primary: true };
+  if (p.state === "blocked")
+    return { icon: "▲", tone: "warn", title: "Planning blocked", sub: p.summary || "The planning agent needs your input.", action: "View plan", primary: false };
+  if (p.state === "failed")
+    return { icon: "▲", tone: "warn", title: "Planning failed", sub: p.summary || "Planning did not complete.", action: "View plan", primary: false };
+  if (p.state === "idle_unreported")
+    return { icon: "▲", tone: "warn", title: "Planning idle", sub: p.summary || "The planning session went idle without reporting.", action: "View plan", primary: false };
+  if (p.state === "interrupted")
+    return { icon: "▲", tone: "warn", title: "Planning interrupted", sub: p.summary || "The planning session was interrupted.", action: "View plan", primary: false };
   return null;
 }
 
 export async function renderNotifications() {
   const root = $("#root");
-  const expanded = new Set(); // task ids whose message is expanded (survives polling)
-  const draw = (tasks) => {
-    setBadge(tasks);
-    const events = tasks.map((t) => ({ t, e: notifEvent(t) })).filter((x) => x.e);
-    events.sort((a, b) => (a.t.state === "merged") - (b.t.state === "merged"));
-    const card = ({ t, e }) => `
-      <div class="ncard ${e.primary && App.readIds.has(t.task_id) ? "read" : ""}" data-id="${t.task_id}">
+  const expanded = new Set(); // ids whose message is expanded (survives polling)
+  const draw = (runs, plans) => {
+    setBadge(runs, plans);
+    const events = [
+      ...runs.map((t) => ({ kind: "run", id: t.run_id, goal: t.goal, terminal: t.state === "merged", src: t, e: runNotifEvent(t) })),
+      ...plans.map((p) => ({ kind: "plan", id: p.plan_id, goal: p.goal, terminal: false, src: p, e: planNotifEvent(p) })),
+    ].filter((x) => x.e);
+    events.sort((a, b) => a.terminal - b.terminal); // completed items sink
+    const card = ({ kind, id, goal, e }) => `
+      <div class="ncard ${e.primary && App.readIds.has(id) ? "read" : ""}" data-id="${esc(id)}">
         <div class="nhead ${e.tone}"><span class="nicon">${e.icon}</span><span>${e.title}</span></div>
-        <div class="ngoal">${esc(t.goal)}</div>
+        <div class="ngoal">${kind === "plan" ? "Plan: " : ""}${esc(goal)}</div>
         ${e.sub ? `<div class="nmsg">${renderMarkdown(e.sub)}</div><div class="nmsg-toggle">Show more</div>` : ""}
         ${e.branch ? `<div class="nbranch">${esc(e.branch)}</div>` : ""}
-        <div class="nact"><button class="btn ${e.primary ? "primary" : ""}" data-id="${t.task_id}" data-tab="${e.tab}">${e.action}</button></div>
+        <div class="nact"><button class="btn ${e.primary ? "primary" : ""}" data-id="${esc(id)}">${e.action}</button></div>
       </div>`;
-    const hasUnread = attnTasks(tasks).some((t) => !App.readIds.has(t.task_id));
+    const hasUnread =
+      attnRuns(runs).some((t) => !App.readIds.has(t.run_id)) || attnPlans(plans).some((p) => !App.readIds.has(p.plan_id));
     root.innerHTML = `
       <div class="board-head"><div><h1>Notifications</h1><p>Every card carries its decision. No dead-end pings.</p></div>
         ${hasUnread ? '<button class="btn" id="markread" style="margin-left:auto">Mark all read</button>' : ""}</div>
       ${events.length ? events.map(card).join("") : '<div class="empty">You’re all caught up.</div>'}`;
-    root.querySelectorAll(".nact button").forEach((b) => (b.onclick = () => go({ name: "task", id: b.dataset.id, tab: b.dataset.tab })));
+    // Route by entity kind: run cards to the run route on its default tab, plan
+    // cards to the plan cockpit's review surface.
+    const byId = new Map(events.map((x) => [x.id, x]));
+    root.querySelectorAll(".nact button").forEach((b) => {
+      b.onclick = () => {
+        const x = byId.get(b.dataset.id);
+        if (!x) return;
+        if (x.kind === "plan") go({ name: "plan", id: x.id, tab: "review" });
+        else go({ name: "task", id: x.id, tab: defaultRunTab(x.src) });
+      };
+    });
     const markRead = $("#markread");
     if (markRead)
       markRead.onclick = () => {
-        attnTasks(tasks).forEach((t) => App.readIds.add(t.task_id));
-        draw(tasks);
+        attnRuns(runs).forEach((t) => App.readIds.add(t.run_id));
+        attnPlans(plans).forEach((p) => App.readIds.add(p.plan_id));
+        draw(runs, plans);
       };
     // Measure each message (collapsed) and only offer expand when it overflows.
     root.querySelectorAll(".ncard").forEach((cardEl) => {
@@ -72,7 +109,8 @@ export async function renderNotifications() {
   };
   const load = async () => {
     try {
-      draw((await App.call("task.list")).tasks);
+      const board = await App.call("board.list");
+      draw(board.runs || [], board.plans || []);
     } catch {
       /* offline / transient — the poll retries */
     }

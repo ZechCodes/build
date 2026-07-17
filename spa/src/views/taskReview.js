@@ -141,7 +141,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         btn.textContent = "requesting…";
         const notes = assembleDiffNotes(diffComments, q("#dgeneral") ? q("#dgeneral").value : "");
         try {
-          await callRpc("task.request_changes", { task_id: taskId, comments: notes });
+          await callRpc("run.request_changes", { run_id: taskId, comments: notes });
           diffComments.length = 0;
           if (q("#dgeneral")) q("#dgeneral").value = "";
           diffKey = null;
@@ -170,10 +170,10 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       const run = async (optionId) => {
         const { action, cleanup } = GIT_ACTION_RPC[optionId];
         diffMsg = "";
-        const params = { task_id: taskId, action };
+        const params = { run_id: taskId, action };
         if (cleanup) params.cleanup = cleanup;
         try {
-          await callRpc("task.git_action", params);
+          await callRpc("run.git_action", params);
           if (action === "merge" || action === "merge_push") {
             onMerged();
           } else {
@@ -265,7 +265,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     if (!t) return;
     let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
     try {
-      diff = await callRpc("task.diff", { task_id: taskId });
+      diff = await callRpc("run.diff", { run_id: taskId });
     } catch {
       return; /* diff not readable yet — the poll retries */
     }

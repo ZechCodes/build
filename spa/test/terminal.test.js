@@ -251,7 +251,7 @@ describe("TerminalSocket", () => {
     await tick();
     p = lastPayload(ws2);
     expect(p.method).toBe("agent.attach");
-    expect(p.params).toEqual({ task_id: "task-5", cols: 120, rows: 40 });
+    expect(p.params).toEqual({ id: "task-5", cols: 120, rows: 40 });
     respond(ws2, init2, p.id, { snapshot: b64("A2"), cursor: 20, live: false });
     await tick();
     expect(agentSnaps).toEqual(["A1", "A2"]);
@@ -387,7 +387,7 @@ describe("TerminalSocket", () => {
     const init2 = await handshake(ws2);
     const p = lastPayload(ws2);
     expect(p.method).toBe("agent.attach");
-    rejectCall(ws2, init2, p.id, "unknown task_id");
+    rejectCall(ws2, init2, p.id, "unknown id");
     await tick();
     expect(closed).toEqual(["reaped"]);
 
@@ -417,12 +417,12 @@ describe("TerminalSocket", () => {
     respond(ws, init, p.id, { term_id: "term-7", cols: 80, rows: 24 });
     expect(await creating).toEqual({ term_id: "term-7", cols: 80, rows: 24 });
 
-    const listing = socket.listTerminals({ task_id: "task-3" });
+    const listing = socket.listTerminals({ run_id: "run-3" });
     listing.catch(() => {});
     await tick();
     p = lastPayload(ws);
     expect(p.method).toBe("term.list");
-    expect(p.params).toEqual({ task_id: "task-3" });
+    expect(p.params).toEqual({ run_id: "run-3" });
     respond(ws, init, p.id, { terminals: [{ term_id: "term-1", cols: 80, rows: 24 }] });
     expect(await listing).toEqual([{ term_id: "term-1", cols: 80, rows: 24 }]);
 

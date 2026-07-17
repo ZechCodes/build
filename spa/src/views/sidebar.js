@@ -26,8 +26,12 @@ export function setSidebarCollapsed(on) {
   localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
 }
 
-function activeTaskId() {
+function activeRunId() {
   return App.route.name === "task" ? App.route.id : null;
+}
+
+function activePlanId() {
+  return App.route.name === "plan" ? App.route.id : null;
 }
 
 function activeProjectId() {
@@ -40,7 +44,8 @@ function draw() {
   if (!aside) return;
   const model = buildSidebarModel({
     projects: lastFeed.projects,
-    tasks: lastFeed.tasks,
+    runs: lastFeed.runs,
+    plans: lastFeed.plans,
     externalWorktrees: lastFeed.externalWorktrees,
     primaryChanges: lastFeed.primaryChanges,
     readIds: App.readIds,
@@ -50,11 +55,12 @@ function draw() {
   aside.innerHTML = sidebarHtml(model, {
     closed: closedProjects,
     wtOpen,
-    activeTaskId: activeTaskId(),
+    activeRunId: activeRunId(),
+    activePlanId: activePlanId(),
     activeProjectId: activeProjectId(),
   });
   aside.scrollTop = scroll;
-  setBadge(lastFeed.tasks);
+  setBadge(lastFeed.runs, lastFeed.plans);
 
   $("#side-add").onclick = openAddProjectMenu;
   // The chevron toggles; the name navigates to the project page and expands it.
@@ -74,8 +80,11 @@ function draw() {
       go({ name: "project", projectId: pid });
     };
   });
-  aside.querySelectorAll(".srow[data-task]").forEach((r) => {
-    r.onclick = () => go({ name: "task", id: r.dataset.task, tab: r.dataset.tab });
+  aside.querySelectorAll(".srow[data-run]").forEach((r) => {
+    r.onclick = () => go({ name: "task", id: r.dataset.run, tab: r.dataset.tab });
+  });
+  aside.querySelectorAll(".srow[data-plan]").forEach((r) => {
+    r.onclick = () => go({ name: "plan", id: r.dataset.plan, tab: "review" });
   });
   aside.querySelectorAll(".srow[data-wtline]").forEach((r) => {
     r.onclick = () => {

@@ -142,7 +142,7 @@ export async function renderWorktree() {
   // view with the "no longer available" empty state.
   const handoffToTask = () => {
     stopPolling();
-    go({ name: "task", id: adopting.adoptedTaskId(), tab: "changes" });
+    go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });
   };
 
   // The tab bar is the top of the view; the worktree's identity (branch) rides
@@ -250,11 +250,11 @@ export async function renderWorktree() {
         stopPolling();
         const notes = assembleDiffNotes(diffComments, $("#wgeneral") ? $("#wgeneral").value : "");
         try {
-          await adopting.taskCall("task.request_changes", { comments: notes });
+          await adopting.runCall("run.request_changes", { comments: notes });
           hideCommentPop();
-          go({ name: "task", id: adopting.adoptedTaskId(), tab: "changes" });
+          go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });
         } catch (e) {
-          if (adopting.adoptedTaskId()) {
+          if (adopting.adoptedRunId()) {
             // Adoption succeeded but the follow-up failed: the task now owns this
             // worktree and its error — hand off to it rather than stranding the
             // user on a route the poll is about to blank.
@@ -294,10 +294,10 @@ export async function renderWorktree() {
         const { action, cleanup } = MERGE_RPC[optionId];
         stopPolling(); // adoption binds the worktree; the poll must not race us
         try {
-          await adopting.taskCall("task.git_action", { action, cleanup });
+          await adopting.runCall("run.git_action", { action, cleanup });
           goHome();
         } catch (e) {
-          if (adopting.adoptedTaskId()) {
+          if (adopting.adoptedRunId()) {
             // Adopted, then the merge failed (a conflict is the common case for a
             // stale external worktree): hand off to the task holding merge_failed.
             handoffToTask();
@@ -315,10 +315,10 @@ export async function renderWorktree() {
       abandon.textContent = "abandoning…";
       stopPolling(); // adoption binds the worktree; the poll must not race us
       try {
-        await adopting.taskCall("task.abandon", {});
+        await adopting.runCall("run.abandon", {});
         goHome();
       } catch (e) {
-        if (adopting.adoptedTaskId()) {
+        if (adopting.adoptedRunId()) {
           handoffToTask();
           return;
         }
@@ -402,7 +402,7 @@ export async function renderWorktree() {
     if (App.offline) return;
     // Adopted already? The worktree lives on as a task now — never poll it (the
     // diff would 404) — hand off so its outcome/error is where the user can see it.
-    if (adopting.adoptedTaskId()) {
+    if (adopting.adoptedRunId()) {
       handoffToTask();
       return;
     }
@@ -413,7 +413,7 @@ export async function renderWorktree() {
       if (String(e && e.message).includes("unknown worktree_id")) {
         // Bound to a task since the last poll → hand off; otherwise it was
         // genuinely removed and the not-found state is correct.
-        if (adopting.adoptedTaskId()) {
+        if (adopting.adoptedRunId()) {
           handoffToTask();
         } else {
           stopPolling();

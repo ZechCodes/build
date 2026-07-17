@@ -107,7 +107,7 @@ export class TerminalSocket {
     const entry = this._register(termId, "agent", taskId, opts);
     let r;
     try {
-      r = await this._call("agent.attach", { task_id: taskId, cols: entry.cols, rows: entry.rows });
+      r = await this._call("agent.attach", { id: taskId, cols: entry.cols, rows: entry.rows });
     } catch (e) {
       this._deregisterFailedAttach(termId, entry);
       throw e;
@@ -278,8 +278,8 @@ export class TerminalSocket {
 
   /// Re-attach every registered terminal after a (re)connect. User terminals go
   /// through term.attach; agent screens through agent.attach (refreshing onLive).
-  /// An `unknown term_id`/`unknown task_id` rejection means the server reaped the
-  /// terminal / dropped the task → onClosed("reaped") + deregister, never an
+  /// An `unknown term_id`/`unknown id` rejection means the server reaped the
+  /// terminal / dropped the run → onClosed("reaped") + deregister, never an
   /// eternal per-reconnect retry. Each snapshot resets that term's cursor to the
   /// response cursor first (snapshot resync, not byte replay).
   async _reattachAll() {
@@ -289,11 +289,11 @@ export class TerminalSocket {
       entry.preAttach = [];
       try {
         const r = entry.kind === "agent"
-          ? await this._call("agent.attach", { task_id: entry.taskId, cols: entry.cols, rows: entry.rows })
+          ? await this._call("agent.attach", { id: entry.taskId, cols: entry.cols, rows: entry.rows })
           : await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
         this._applyAttachResult(entry, r);
       } catch (e) {
-        if (/unknown (term_id|task_id)/.test(e.message || "")) {
+        if (/unknown (term_id|id)/.test(e.message || "")) {
           this._terms.delete(termId);
           entry.onClosed("reaped");
         }

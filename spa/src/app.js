@@ -6,6 +6,7 @@ import { renderBoard } from "./views/board.js";
 import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
+import { renderPlan } from "./views/plan.js";
 import { renderWorktree } from "./views/worktree.js";
 import { renderMain } from "./views/mainWorktree.js";
 import { renderProject } from "./views/project.js";
@@ -97,5 +98,6 @@ export function render() {
   else if (App.route.name === "worktree") renderWorktree();
   else if (App.route.name === "main") renderMain();
   else if (App.route.name === "project") renderProject();
+  else if (App.route.name === "plan") renderPlan();
   else renderTask();
 }

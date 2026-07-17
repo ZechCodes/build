@@ -15,6 +15,7 @@ import {
   planPayloadFor,
 } from "./shared.js";
 import { bucketPlans } from "../core/planRail.js";
+import { defaultRunTab } from "../core/taskActions.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
 
@@ -58,7 +59,7 @@ export async function renderProject() {
         ? `<div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((p) => planCard(p, quiet)).join("")}</div>`
         : "";
     const card = (t, quiet) => `
-      <div class="card ${quiet ? "quiet" : ""}" data-id="${t.run_id}">
+      <div class="card ${quiet ? "quiet" : ""}" data-id="${t.run_id}" data-tab="${defaultRunTab(t)}">
         <div class="top"><span class="title">${esc(t.goal)}</span>
           <span class="chip ${runChipClass(t.state)}">${RUN_STATE_LABEL[t.state] || t.state}</span></div>
         <div class="meta"><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
@@ -104,7 +105,7 @@ export async function renderProject() {
     $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });
     $("#newquick").onclick = () => openNewTask({ projectId, mode: "quick" });
     root.querySelectorAll(".card[data-plan]").forEach((c) => (c.onclick = () => go({ name: "plan", id: c.dataset.plan, tab: "review" })));
-    root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "changes" })));
+    root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: c.dataset.tab })));
     root
       .querySelectorAll(".card[data-wt]")
       .forEach((c) => (c.onclick = () => go({ name: "worktree", projectId: c.dataset.project, worktreeId: c.dataset.wt })));

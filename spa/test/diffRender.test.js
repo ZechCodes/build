@@ -94,3 +94,52 @@ describe("diff folding + file comments", () => {
     expect(html).toContain('class="fcmt"');
   });
 });
+
+describe("dotenv secret masking in diff rows", () => {
+  const envFile = [
+    {
+      path: "config/.env.production",
+      status: "EDIT",
+      add: 1,
+      del: 1,
+      rows: [
+        { t: "hunk", text: "@@ -1,2 +1,2 @@" },
+        { t: "del", o: 1, text: "TOKEN=oldsecret0123456789abcd" },
+        { t: "add", n: 1, text: "TOKEN=newsecret9876543210wxyz" },
+        { t: "ctx", o: 2, n: 2, text: "HOST=auth.example.com" },
+      ],
+    },
+  ];
+
+  it("masks both old and new secret values as click-to-reveal spoilers", () => {
+    const html = diffFilesHtml(envFile);
+    expect(html).toContain('class="spoiler"');
+    // Neither the removed nor the added secret appears in the rendered HTML text
+    // (it rides in the escaped data-secret attribute for reveal-on-click).
+    expect(html).toContain('data-secret="oldsecret0123456789abcd"');
+    expect(html).toContain('data-secret="newsecret9876543210wxyz"');
+    // The visible, non-secret context line stays as-is.
+    expect(html).toContain("auth.example.com");
+  });
+
+  it("does NOT mask non-dotenv files", () => {
+    const plain = [{ ...envFile[0], path: "src/app.js" }];
+    expect(diffFilesHtml(plain)).not.toContain("spoiler");
+  });
+
+  it("escapes an HTML-bearing masked value (no XSS via data-secret)", () => {
+    const hostile = [
+      {
+        path: ".env",
+        status: "EDIT",
+        add: 1,
+        del: 0,
+        rows: [{ t: "add", n: 1, text: 'PASSWORD="<img src=x onerror=alert(1)>"' }],
+      },
+    ];
+    const html = diffFilesHtml(hostile);
+    expect(html).toContain("spoiler");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+});

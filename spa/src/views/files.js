@@ -11,6 +11,7 @@
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
+import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -72,6 +73,13 @@ export function filesTreeHtml(dir, entries) {
  *  to escaped plain text — highlightCode never emits a live tag either way. */
 export function sourcePreviewHtml(path, text) {
   return `<pre class="fsrc"><code>${highlightCode(text, langForPath(path))}</code></pre>`;
+}
+
+/** Whether the source view for `path`/`mode` should render as a masked dotenv
+ *  file (secret-value spoilers). Only the source branch (never a rendered
+ *  markdown/html/binary preview) masks. */
+export function shouldMaskDotenv(path, mode, showSource) {
+  return isDotenvPath(path) && (showSource || mode === "source") && mode !== "binary" && mode !== "toolarge";
 }
 
 /** Render the preview body HTML for a fs.read response + a source-override flag.
@@ -156,6 +164,28 @@ export function renderFilesTab(body, { scope, callRpc }) {
     renderPreview(path, file);
   };
 
+  // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
+  // starts fully masked, so any repaint/navigation resets to the hidden state.
+  const wireDotenvSpoilers = (secrets) => {
+    const spoilers = [...previewEl.querySelectorAll(".spoiler[data-secret-index]")];
+    // The real values live in `secrets` (JS state) — never in the DOM — until a
+    // reveal swaps one in via textContent (never innerHTML, so no markup runs).
+    const setSpoiler = (span, reveal) => {
+      span.textContent = reveal ? secrets[+span.dataset.secretIndex] : SPOILER_DOTS;
+      span.classList.toggle("on", reveal);
+    };
+    spoilers.forEach((span) => (span.onclick = () => setSpoiler(span, !span.classList.contains("on"))));
+    const revealAll = previewEl.querySelector("#fpreveal");
+    if (revealAll) {
+      let shown = false;
+      revealAll.onclick = () => {
+        shown = !shown;
+        spoilers.forEach((span) => setSpoiler(span, shown));
+        revealAll.textContent = shown ? "Hide all" : "Reveal all";
+      };
+    }
+  };
+
   const renderPreview = (path, file) => {
     previewEl.classList.remove("idle");
     const mode = previewModeFor(file.mime, file.truncated);
@@ -163,9 +193,19 @@ export function renderFilesTab(body, { scope, callRpc }) {
     const toggle = canToggle
       ? `<button class="btn mini" id="fsrctoggle">${sourceOverride ? "view rendered" : "view source"}</button>`
       : "";
+    // A dotenv file's source view masks secret-like values. renderDotenvSourceHtml
+    // keeps every masked value OUT of the returned HTML (dots only) — the values
+    // ride back in `secrets` and are wired in after mount.
+    const dotenv = shouldMaskDotenv(path, mode, sourceOverride)
+      ? renderDotenvSourceHtml(decodeBase64Text(file.content_b64))
+      : null;
+    const truncNotice = dotenv && file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
+    const revealAll =
+      dotenv && dotenv.secrets.length ? `<button class="btn mini" id="fpreveal">Reveal all</button>` : "";
     previewEl.innerHTML = `
-      <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${toggle}</div>
-      <div class="fpbody">${previewBodyHtml(path, file, sourceOverride)}</div>`;
+      <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${revealAll}${toggle}</div>
+      <div class="fpbody">${dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride)}</div>`;
+    if (dotenv) wireDotenvSpoilers(dotenv.secrets);
     const toggleBtn = previewEl.querySelector("#fsrctoggle");
     if (toggleBtn)
       toggleBtn.onclick = () => {

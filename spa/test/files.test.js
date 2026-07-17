@@ -6,6 +6,7 @@ import {
   filesTreeHtml,
   sourcePreviewHtml,
   previewPlaceholderHtml,
+  shouldMaskDotenv,
 } from "../src/views/files.js";
 import { esc } from "../src/core/text.js";
 
@@ -119,6 +120,21 @@ describe("sourcePreviewHtml", () => {
     const html = sourcePreviewHtml("evil.js", `<script>alert(1)</script>`);
     expect(html).not.toContain("<script>");
     expect(/<(?!\/?(span|pre|code)\b)[a-zA-Z]/.test(html)).toBe(false);
+  });
+});
+
+describe("shouldMaskDotenv", () => {
+  it("masks a dotenv file only in its source view", () => {
+    expect(shouldMaskDotenv(".env", "source", false)).toBe(true);
+    expect(shouldMaskDotenv("config/.env.local", "source", false)).toBe(true);
+    // a source override on a rendered type still masks
+    expect(shouldMaskDotenv(".env", "markdown", true)).toBe(true);
+  });
+
+  it("never masks non-dotenv files or binary/toolarge previews", () => {
+    expect(shouldMaskDotenv("src/app.js", "source", false)).toBe(false);
+    expect(shouldMaskDotenv(".env", "binary", false)).toBe(false);
+    expect(shouldMaskDotenv(".env", "toolarge", false)).toBe(false);
   });
 });
 

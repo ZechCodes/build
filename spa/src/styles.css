@@ -538,6 +538,13 @@ body.sidebar-collapsed #side-open { display:block; }
 .fimg { max-width:100%; display:block; }
 .fbinary { color:var(--dim); font-size:13px; padding:8px 0; }
 .ftrunc { margin-top:10px; color:var(--amber); font-size:12px; }
+/* ---- Secret-value spoilers (dotenv screen-privacy) ----
+   A masked dotenv value shows a fixed dot block; a click reveals/re-hides it.
+   Masked: unselectable dots on a chip. Revealed (.on): real mono text with a
+   faint amber tint so the once-hidden span is still spottable. */
+.spoiler { display:inline-block; font-family:var(--mono); letter-spacing:-1px; background:var(--line2);
+  color:var(--dim); border-radius:5px; padding:0 6px; cursor:pointer; user-select:none; }
+.spoiler.on { letter-spacing:normal; user-select:text; color:var(--amber); background:var(--red-bg); }
 /* ---- Agent + terminal panes ----
    Terminals fill their (bare) tab body edge to edge — the pane's own
    background is the section; no box, no padding, no leftover space below. */

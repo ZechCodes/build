@@ -8,6 +8,7 @@ import { esc, humanAge } from "./text.js";
 import { parseDiff, filterNoiseFiles } from "./diff.js";
 import { diffFilesHtml, diffRowsHtml } from "./diffRender.js";
 import { langForPath } from "./highlight.js";
+import { isDotenvPath } from "./secrets.js";
 
 /** The exact canned instruction "Ask agent to commit" sends via task.message. */
 export const AGENT_COMMIT_MESSAGE =
@@ -59,7 +60,7 @@ export function uncommittedHtml(status, { repoControls = false, pendingConfirm =
         <span>${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
         ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}
         ${repoControls ? discardButtonHtml(f.path, pendingConfirm) : ""}</div>
-        ${diffFile ? `<div class="dscroll"><table>${diffRowsHtml(diffFile.rows, langForPath(f.path))}</table></div>` : ""}</div>`;
+        ${diffFile ? `<div class="dscroll"><table>${diffRowsHtml(diffFile.rows, langForPath(f.path), { maskDotenv: isDotenvPath(f.path) })}</table></div>` : ""}</div>`;
     })
     .join("");
   return `<div class="gitsec">

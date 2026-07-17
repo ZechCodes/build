@@ -14,6 +14,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
+import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
 
@@ -365,6 +366,7 @@ export async function renderWorktree() {
     // One delegated handler: diff folding always (capped body expands, the
     // filename bar toggles collapse), commenting only when adoptable.
     body.onclick = (e) => {
+      if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
       const commentButton = e.target.closest(".fcmt");
       if (commentButton) {
         const fileEl = commentButton.closest(".file");

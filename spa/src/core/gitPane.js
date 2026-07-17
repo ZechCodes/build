@@ -18,6 +18,7 @@ import {
   AGENT_COMMIT_MESSAGE,
 } from "./gitRender.js";
 import { mountSplitButton } from "./splitButton.js";
+import { toggleSecretSpoiler } from "./secrets.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -917,6 +918,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
 
   const handleClick = (event) => {
     const target = event.target;
+    if (toggleSecretSpoiler(target)) return; // reveal/hide a masked dotenv value in a diff
     if (target.closest(".gtfetch")) {
       runFetch();
       return;

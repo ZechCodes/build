@@ -10,6 +10,7 @@
 import { esc } from "../core/text.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
+import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { assembleDiffNotes } from "../core/notes.js";
 import { mergeFailureReason } from "../core/taskActions.js";
@@ -232,6 +233,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       // that line (touch-first path). Capped files leave the click to the
       // pane's fold handler (expand) instead of popping a comment.
       host.onclick = (e) => {
+        if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
         const commentButton = e.target.closest(".fcmt");
         if (commentButton) {
           const fileEl = commentButton.closest(".file");

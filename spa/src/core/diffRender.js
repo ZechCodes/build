@@ -5,6 +5,20 @@
 
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
+import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
+
+/** The code-cell HTML for one diff row. On a dotenv file a secret-like line is
+ *  masked (a click-to-reveal spoiler span, both old and new values independent);
+ *  every other line is syntax-highlighted as before. The masking is pure and
+ *  deterministic per line, so the review surfaces' poll-repaint freeze contract
+ *  (unchanged patch → identical HTML) is preserved. */
+function codeCellHtml(text, lang, maskDotenv) {
+  if (maskDotenv) {
+    const masked = maskedDiffCellHtml(text);
+    if (masked !== null) return masked;
+  }
+  return highlightCode(text, lang);
+}
 
 /** Table rows for one parsed file's diff (core/diff.js row objects). The two
  *  td.ln columns and the data-ln attribute are the review-surface row contract
@@ -12,13 +26,14 @@ import { highlightCode, langForPath } from "./highlight.js";
  *  innerHTML is syntax-highlighted. `lang` is a Prism language id (from
  *  langForPath) or null → each code cell is escaped plain text. Highlighting is
  *  per-line (each row tokenized on its own) — an accepted tradeoff for a
- *  multi-line grammar, since diff rows arrive one line at a time. */
-export function diffRowsHtml(rows, lang = null) {
+ *  multi-line grammar, since diff rows arrive one line at a time. `maskDotenv`
+ *  (set by the caller for a dotenv file path) masks secret-like line content. */
+export function diffRowsHtml(rows, lang = null, { maskDotenv = false } = {}) {
   return rows
     .map((r) =>
       r.t === "hunk"
         ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}</td></tr>`
-        : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${highlightCode(r.text, lang)}</td></tr>`,
+        : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`,
     )
     .join("");
 }
@@ -40,7 +55,7 @@ export function diffFilesHtml(files, { commentable = false } = {}) {
       return `
       <div class="file capped" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
         <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${commentButton}</div>
-        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang)}</table></div></div>`;
+        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div></div>`;
     })
     .join("");
 }

@@ -1,0 +1,219 @@
+// The plan-side half of the multi-stage surface: a stage board of docs and a
+// per-stage doc view with per-stage approve (plan.stage_approve), anchored
+// persisted comments (plan.comment_add / plan.comment_delete), and send-notes
+// per stage (plan.stage_send_notes). This mirrors views/stages.js but carries
+// only the plan-scoped actions — stage *execution* (dispatch/fix/auto-advance,
+// the Building/Validating sub-states) lives on the run, so nothing here touches
+// run.*. The low-level comment machinery (commentCard, headingPathFor,
+// bindAction) is reused from stages.js so the two boards stay in visual and
+// behavioural lockstep. Rendering only; plan.js owns the poll loop, the
+// freeze/rebuild key, and the plan.stages / plan.stage_doc fetches.
+
+import { esc } from "../core/text.js";
+import { renderMarkdown } from "../core/markdown.js";
+import { STAGE_LABEL, stageChipClass, commentCard, headingPathFor, bindAction } from "./stages.js";
+import { watchSelection } from "../selectWatch.js";
+import { showCommentPop, hideCommentPop } from "../commentPop.js";
+
+// True while an Approve-all sweep is mid-flight. plan.js consults this
+// (planStageActionBusy) and skips its poll rebuild so the in-flight button is
+// never remounted enabled under the running loop — the same discipline the run
+// stage board uses for its bulk controls.
+let bulkActionInFlight = false;
+
+/** Whether an Approve-all sweep is mid-flight (plan.js freezes its rebuild
+ *  while true, matching the open-comment-popover discipline). */
+export function planStageActionBusy() {
+  return bulkActionInFlight;
+}
+
+// Document-level selection watcher for the stage doc, disposed on each render so
+// the poll never accumulates listeners (same discipline as stages.js/task.js).
+let stageSelDispose = null;
+
+const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "");
+
+/** Pure markup for the plan-side stage board (exported for tests). Manifest
+ *  rows carry the doc sub-state chip (planned/approved), the stage summary, and
+ *  the open-comment badge; an Approve-all control shows only while every stage
+ *  is still planned. The list container keeps id="stagelist" so plan.js's poll
+ *  freeze/rebuild skip can find it — a rename here would silently re-render the
+ *  board every tick and clobber in-flight control state. */
+export function planStageBoardHtml(plan, stagesData) {
+  const stages = stagesData.stages || [];
+  const allPlanned = stages.length > 0 && stages.every((s) => s.state === "planned");
+  const rows = stages
+    .map((s, i) => {
+      const num = String(i + 1).padStart(2, "0");
+      return `<div class="stagerow" data-stage="${esc(s.id)}">
+        <span class="stagenum">${num}</span>
+        <div class="stagemain">
+          <div class="stagetop"><span class="stagetitle">${esc(s.title)}</span>
+            <span class="chip stagechip ${stageChipClass(s.state)}">${STAGE_LABEL[s.state] || s.state}</span>
+            ${commentBadge(s.open_comments)}</div>
+          ${s.summary ? `<div class="stagesummary">${esc(s.summary)}</div>` : ""}
+        </div></div>`;
+    })
+    .join("");
+  return `
+    <div class="stagehead">
+      ${allPlanned ? `<button class="btn mini" id="approveall">Approve all stages</button>` : ""}
+      <span class="hint" id="stageshint"></span>
+    </div>
+    <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
+}
+
+export function renderPlanStages(ctx) {
+  const { body, selectedStageId } = ctx;
+  const stages = ctx.stagesData.stages || [];
+  if (stageSelDispose) {
+    stageSelDispose();
+    stageSelDispose = null;
+  }
+  const selected = selectedStageId ? stages.find((s) => s.id === selectedStageId) : null;
+  if (selected) renderStageDoc(ctx, selected);
+  else renderStageList(ctx);
+
+  // Shared: the delete/scroll affordances live in either view.
+  body.querySelectorAll(".cc-x[data-del]").forEach((x) => {
+    x.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await ctx.callRpc("plan.comment_delete", { plan_id: ctx.plan.plan_id, comment_id: x.dataset.del });
+        ctx.repaint();
+      } catch {
+        /* the poll re-syncs */
+      }
+    };
+  });
+  body.querySelectorAll(".cc-crumb[data-scroll]").forEach((c) => {
+    c.onclick = () => {
+      const id = c.dataset.scroll;
+      if (!id) return;
+      const target = body.querySelector("#stagedoc #" + CSS.escape(id));
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+  });
+}
+
+function renderStageList(ctx) {
+  const { body, plan, stagesData, callRpc, repaint, onSelectStage } = ctx;
+  const stages = stagesData.stages || [];
+  body.innerHTML = planStageBoardHtml(plan, stagesData);
+
+  const approveAll = body.querySelector("#approveall");
+  if (approveAll) {
+    bindAction(approveAll, "approving…", body.querySelector("#stageshint"), async () => {
+      bulkActionInFlight = true;
+      try {
+        for (const s of stages.filter((x) => x.state === "planned")) {
+          await callRpc("plan.stage_approve", { plan_id: plan.plan_id, stage_id: s.id });
+        }
+      } finally {
+        bulkActionInFlight = false;
+      }
+      repaint();
+    });
+  }
+  body.querySelectorAll(".stagerow").forEach((row) => {
+    row.onclick = () => onSelectStage(row.dataset.stage);
+  });
+}
+
+function renderStageDoc(ctx, stage) {
+  const { body, plan, stageDoc, callRpc, repaint, onSelectStage } = ctx;
+  const planId = plan.plan_id;
+
+  const comments = (stage.comments || []).slice().sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
+  const commentsHtml = comments.length ? comments.map(commentCard).join("") : "";
+  // Comments are accepted on planned/approved docs only (the bridge enforces
+  // the same); a terminal/other doc state is read-only here.
+  const canComment = stage.state === "planned" || stage.state === "approved";
+  const docContents = stageDoc && stageDoc.stage_id === stage.id ? stageDoc.contents : "";
+
+  body.innerHTML = `
+    <div class="stageback" id="stageback">← All stages</div>
+    <div class="plan" id="stagedoc">${docContents ? renderMarkdown(docContents) : '<div class="plan-loading">✦ loading stage document…</div>'}</div>
+    <div class="stagecomments">${commentsHtml}</div>
+    ${canComment ? `<div class="plan-feedback"><textarea id="stage-general" class="plan-general" placeholder="Add a general comment on this stage…"></textarea>
+      <div class="right"><button class="btn mini" id="addgeneral">Add comment</button></div></div>` : ""}
+    <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
+
+  body.querySelector("#stageback").onclick = () => onSelectStage(null);
+
+  // Anchored comments: select text in the doc → popover → plan.comment_add.
+  if (canComment) {
+    const docEl = body.querySelector("#stagedoc");
+    stageSelDispose = watchSelection(docEl, (sel) => {
+      const anchorNode = sel.anchorNode;
+      const snippet = sel.toString().trim().slice(0, 400);
+      const range = sel.getRangeAt(0);
+      showCommentPop(range.getBoundingClientRect(), async (commentBody) => {
+        try {
+          await callRpc("plan.comment_add", {
+            plan_id: planId,
+            stage_id: stage.id,
+            body: commentBody,
+            anchor: { heading_path: headingPathFor(docEl, anchorNode), snippet },
+          });
+          window.getSelection().removeAllRanges();
+          repaint();
+        } catch {
+          /* poll re-syncs */
+        }
+      });
+    });
+    const addGeneral = body.querySelector("#addgeneral");
+    bindAction(addGeneral, "adding…", body.querySelector("#stagehint"), async () => {
+      const text = body.querySelector("#stage-general").value.trim();
+      if (!text) {
+        body.querySelector("#stagehint").textContent = "type a comment first.";
+        addGeneral.disabled = false;
+        addGeneral.textContent = "Add comment";
+        return;
+      }
+      await callRpc("plan.comment_add", { plan_id: planId, stage_id: stage.id, body: text, anchor: null });
+      hideCommentPop();
+      repaint();
+    });
+  }
+
+  renderStageActions(ctx, stage);
+}
+
+// Plan-side per-stage actions: send the stage's open comments back for a
+// revision (plan.stage_send_notes), and — while the doc is still planned —
+// approve it (plan.stage_approve). An approved doc keeps its send-notes path
+// (progressive review: a revision resets the doc to planned), but has no
+// further plan-side action of its own.
+function renderStageActions(ctx, stage) {
+  const { body, plan, callRpc, repaint } = ctx;
+  const planId = plan.plan_id;
+  const actions = body.querySelector("#stageactions");
+  const hint = body.querySelector("#stagehint");
+  const openCount = stage.open_comments || 0;
+  const sendNotesBtn = openCount > 0 ? `<button class="btn" id="sendnotes">Send ${openCount} comment${openCount === 1 ? "" : "s"}</button>` : "";
+  const wireSendNotes = () => {
+    const b = body.querySelector("#sendnotes");
+    if (b)
+      bindAction(b, "sending…", hint, async () => {
+        await callRpc("plan.stage_send_notes", { plan_id: planId, stage_id: stage.id });
+        repaint();
+      });
+  };
+
+  if (stage.state === "planned") {
+    actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage</button>`;
+    bindAction(body.querySelector("#approvestage"), "approving…", hint, async () => {
+      await callRpc("plan.stage_approve", { plan_id: planId, stage_id: stage.id });
+      repaint();
+    });
+    wireSendNotes();
+    return;
+  }
+  // approved (or any non-planned doc state): send-notes stays available; the
+  // doc is otherwise settled on the plan side.
+  actions.innerHTML = sendNotesBtn;
+  hint.textContent = stage.state === "approved" ? "stage approved" : "";
+  wireSendNotes();
+}

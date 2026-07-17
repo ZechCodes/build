@@ -4,7 +4,17 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
-import { STATE_LABEL, TERMINAL_STATES, chipClass, payloadFor, setBadge } from "./shared.js";
+import {
+  RUN_STATE_LABEL,
+  RUN_TERMINAL_STATES,
+  runChipClass,
+  runPayloadFor,
+  setBadge,
+  PLAN_STATE_LABEL,
+  planChipClass,
+  planPayloadFor,
+} from "./shared.js";
+import { bucketPlans } from "../core/planRail.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
 
@@ -12,22 +22,47 @@ export async function renderProject() {
   const root = $("#root");
   const projectId = App.route.projectId;
 
-  const draw = (project, tasks, externalWorktrees, primaryChanges) => {
-    const mine = tasks.filter((t) => t.project_id === projectId);
+  const draw = (project, runs, externalWorktrees, primaryChanges, plans) => {
+    const mine = runs.filter((t) => t.project_id === projectId);
+    const myPlans = (plans || []).filter((p) => p.project_id === projectId);
+    const planByBucket = bucketPlans(myPlans);
     const worktrees = externalWorktrees.filter((w) => w.project_id === projectId);
     const primary = (primaryChanges || []).find((c) => c.project_id === projectId) || null;
     const byBucket = { attn: [], work: [], done: [] };
     for (const t of mine) {
-      if (TERMINAL_STATES.has(t.state)) byBucket.done.push(t);
+      if (RUN_TERMINAL_STATES.has(t.state)) byBucket.done.push(t);
       else if (t.needs_attention) byBucket.attn.push(t);
       else byBucket.work.push(t);
     }
+    // A plan card: goal, state chip, and a footer summarising its manifest —
+    // stage count with the open-comment total (single-doc plans show neither).
+    const planCard = (p, quiet) => {
+      const stageCount = (p.stages || []).length;
+      const openComments = (p.stages || []).reduce((n, s) => n + (s.open_comments || 0), 0);
+      const context = planPayloadFor(p);
+      const meta = [
+        stageCount ? `${stageCount} stage${stageCount === 1 ? "" : "s"}` : null,
+        openComments ? `${openComments} 💬` : null,
+      ].filter(Boolean);
+      return `
+      <div class="card ${quiet ? "quiet" : ""}" data-plan="${esc(p.plan_id)}">
+        <div class="top"><span class="title">Plan: ${esc(p.goal)}</span>
+          <span class="chip ${planChipClass(p.state)}">${PLAN_STATE_LABEL[p.state] || p.state}</span></div>
+        ${meta.length ? `<div class="meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("<span>·</span>")}</div>` : ""}
+        ${context ? `<div class="payload">${esc(context)}</div>` : ""}
+        ${p.last_error ? `<div class="cerr">⚠ ${esc(p.last_error)}</div>` : ""}
+      </div>`;
+    };
+    const planBucket = (label, items, quiet) =>
+      items.length
+        ? `<div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((p) => planCard(p, quiet)).join("")}</div>`
+        : "";
     const card = (t, quiet) => `
-      <div class="card ${quiet ? "quiet" : ""}" data-id="${t.task_id}">
+      <div class="card ${quiet ? "quiet" : ""}" data-id="${t.run_id}">
         <div class="top"><span class="title">${esc(t.goal)}</span>
-          <span class="chip ${chipClass(t.state)}">${STATE_LABEL[t.state] || t.state}</span></div>
+          <span class="chip ${runChipClass(t.state)}">${RUN_STATE_LABEL[t.state] || t.state}</span></div>
         <div class="meta"><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
-        ${payloadFor(t) ? `<div class="payload">${esc(payloadFor(t))}</div>` : ""}
+        ${runPayloadFor(t) ? `<div class="payload">${esc(runPayloadFor(t))}</div>` : ""}
         ${t.last_error ? `<div class="cerr">⚠ ${esc(t.last_error)}</div>` : ""}
       </div>`;
     const bucket = (label, items, quiet) =>
@@ -48,34 +83,42 @@ export async function renderProject() {
             <div class="top"><span class="title mono">${esc(primary.branch)}</span>${dirty}</div>
             <div class="meta"><span>${esc(project ? project.path : "")}</span></div></div></div>`
       : "";
-    const anyContent = mine.length || worktrees.length || primary;
+    const anyContent = mine.length || myPlans.length || worktrees.length || primary;
     root.innerHTML = `
       <div class="board-head"><div>
           <h1>${esc(project ? project.name : projectId)}</h1>
           <p class="mono projmeta">${esc(project ? project.path : "")}${project ? ` · ${esc(project.base_branch)}` : ""}</p></div>
-        <button class="btn primary" id="newtask" style="margin-left:auto">+ New task</button></div>
-      ${anyContent ? "" : '<div class="empty">Nothing here yet — start a task in this project.</div>'}
+        <div class="row" style="margin-left:auto;gap:8px">
+          <button class="btn" id="newquick">Quick task</button>
+          <button class="btn primary" id="newplan">+ New plan</button></div></div>
+      ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan or start a quick task.</div>'}
+      ${planBucket("DRAFT", planByBucket.draft, false)}
+      ${planBucket("IN REVIEW", planByBucket.review, false)}
+      ${planBucket("APPROVED", planByBucket.approved, false)}
       ${bucket("NEEDS YOU", byBucket.attn, false)}
       ${bucket("WORKING", byBucket.work, true)}
       ${bucket("DONE", byBucket.done, true)}
+      ${planBucket("PLAN HISTORY", planByBucket.history, true)}
       ${mainBucket}
       ${worktreeBucket}`;
-    $("#newtask").onclick = () => openNewTask({ projectId });
-    root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "plan" })));
+    $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });
+    $("#newquick").onclick = () => openNewTask({ projectId, mode: "quick" });
+    root.querySelectorAll(".card[data-plan]").forEach((c) => (c.onclick = () => go({ name: "plan", id: c.dataset.plan, tab: "review" })));
+    root.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: "changes" })));
     root
       .querySelectorAll(".card[data-wt]")
       .forEach((c) => (c.onclick = () => go({ name: "worktree", projectId: c.dataset.project, worktreeId: c.dataset.wt })));
     root
       .querySelectorAll(".card[data-main]")
       .forEach((c) => (c.onclick = () => go({ name: "main", projectId: c.dataset.main })));
-    setBadge(tasks);
+    setBadge(runs, plans);
   };
 
   const load = async () => {
     try {
-      const [list, projectList] = await Promise.all([App.call("task.list"), App.call("project.list")]);
+      const [board, projectList] = await Promise.all([App.call("board.list"), App.call("project.list")]);
       const project = (projectList.projects || []).find((p) => p.project_id === projectId) || null;
-      draw(project, list.tasks || [], list.external_worktrees || [], list.primary_changes || []);
+      draw(project, board.runs || [], board.external_worktrees || [], board.primary_changes || [], board.plans || []);
     } catch {
       /* offline / transient — the poll retries */
     }

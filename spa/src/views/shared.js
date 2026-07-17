@@ -1,45 +1,91 @@
-// Task presentation helpers shared by the board, notifications, and task views.
+// Presentation helpers shared by the board, notifications, project, and the
+// run/plan views. The plan/run split gives each entity its own state vocabulary
+// (see the wire contract), so labels, chip palettes, terminal sets, and payload
+// copy come in matching run/plan variants.
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
 
-export const STATE_LABEL = {
-  plan_review: "READY TO REVIEW",
-  review: "READY TO REVIEW",
-  planning: "PLANNING",
-  building: "BUILDING",
+// ---- Runs (worktree-scoped; "Tasks" in the UI) --------------------------------
+
+export const RUN_STATE_LABEL = {
   created: "CREATED",
+  building: "BUILDING",
+  stage_gate: "STAGE GATE",
+  review: "READY TO REVIEW",
+  blocked: "BLOCKED",
+  failed: "FAILED",
+  idle_unreported: "IDLE",
+  interrupted: "INTERRUPTED",
   merged: "MERGED",
   abandoned: "ABANDONED",
   archived: "ARCHIVED",
-  blocked: "BLOCKED",
-  failed: "FAILED",
 };
 
-export function chipClass(state) {
+export function runChipClass(state) {
   if (state === "blocked" || state === "failed") return "warn";
   if (state === "merged") return "done";
-  if (state === "plan_review" || state === "review") return "attn";
+  if (state === "review") return "attn";
   return "work";
 }
 
-export function payloadFor(task) {
-  if (task.summary) return task.summary;
-  if (task.state === "planning") return "drafting plan…";
-  if (task.state === "building") return "coding agent working…";
+export function runPayloadFor(run) {
+  if (run.summary) return run.summary;
+  if (run.state === "building") return "coding agent working…";
   return "";
 }
 
-/** Terminal display states (the board's DONE bucket; never running/needs-you). */
-export const TERMINAL_STATES = new Set(["merged", "abandoned", "archived"]);
+/** Terminal run states (the board's DONE bucket; never running/needs-you). */
+export const RUN_TERMINAL_STATES = new Set(["merged", "abandoned", "archived"]);
 
-/** Tasks that are waiting on the user (the board's "NEEDS YOU" bucket). */
-export function attnTasks(tasks) {
-  return tasks.filter((t) => t.needs_attention && !TERMINAL_STATES.has(t.state));
+/** Runs waiting on the user (the board's "NEEDS YOU" bucket). */
+export function attnRuns(runs) {
+  return (runs || []).filter((r) => r.needs_attention && !RUN_TERMINAL_STATES.has(r.state));
 }
 
-export function setBadge(tasks) {
-  const unread = attnTasks(tasks).filter((t) => !App.readIds.has(t.task_id)).length;
+// ---- Plans (project-scoped) ---------------------------------------------------
+
+export const PLAN_STATE_LABEL = {
+  created: "CREATED",
+  drafting: "PLANNING",
+  plan_review: "READY TO REVIEW",
+  approved: "APPROVED",
+  blocked: "BLOCKED",
+  failed: "FAILED",
+  idle_unreported: "IDLE",
+  interrupted: "INTERRUPTED",
+  abandoned: "ABANDONED",
+};
+
+export function planChipClass(state) {
+  if (state === "blocked" || state === "failed") return "warn";
+  if (state === "approved") return "done";
+  if (state === "plan_review") return "attn";
+  return "work";
+}
+
+export function planPayloadFor(plan) {
+  if (plan.summary) return plan.summary;
+  if (plan.state === "drafting" || plan.state === "created") return "drafting plan…";
+  return "";
+}
+
+/** Terminal plan states (abandoned is the only one). */
+export const PLAN_TERMINAL_STATES = new Set(["abandoned"]);
+
+/** Plans waiting on the user. */
+export function attnPlans(plans) {
+  return (plans || []).filter((p) => p.needs_attention && !PLAN_TERMINAL_STATES.has(p.state));
+}
+
+// ---- The attention badge (runs + plans) --------------------------------------
+
+/** The nav badge counts every run *and* plan that needs the user and is not yet
+ *  read. Runs are keyed by run_id, plans by plan_id. */
+export function setBadge(runs, plans = []) {
+  const unread =
+    attnRuns(runs).filter((r) => !App.readIds.has(r.run_id)).length +
+    attnPlans(plans).filter((p) => !App.readIds.has(p.plan_id)).length;
   const badge = $("#notif");
   if (!badge) return;
   badge.style.display = unread ? "inline-block" : "none";

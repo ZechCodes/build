@@ -91,7 +91,7 @@ const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "
 // The enclosing heading chain for a selection anchor inside the rendered stage
 // doc: collect the h1/h2/h3 positioned at or before the anchor node, then reduce
 // to the enclosing chain (anchors.js). View-side; not unit-tested.
-function headingPathFor(docEl, anchorNode) {
+export function headingPathFor(docEl, anchorNode) {
   const preceding = Array.from(docEl.querySelectorAll("h1, h2, h3"))
     .filter((h) => h.compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING || h.contains(anchorNode))
     .map((h) => ({ level: +h.tagName.slice(1), text: h.textContent }));
@@ -105,7 +105,7 @@ function validationBanner(kind, heading, bodyMarkdown) {
 
 // One persisted comment card. Open comments carry a delete affordance; addressed
 // comments show the agent's reply and are muted.
-function commentCard(comment) {
+export function commentCard(comment) {
   const anchor = comment.anchor;
   const breadcrumb = anchor
     ? anchor.heading_path && anchor.heading_path.length
@@ -127,7 +127,7 @@ function commentCard(comment) {
 
 // Bind an async RPC to a button: disable + label while in flight, restore + show
 // a hint on failure, repaint on success.
-function bindAction(button, busyLabel, hintEl, run) {
+export function bindAction(button, busyLabel, hintEl, run) {
   button.onclick = async () => {
     const original = button.textContent;
     button.disabled = true;
@@ -144,7 +144,8 @@ function bindAction(button, busyLabel, hintEl, run) {
 
 export function renderStagesTab(ctx) {
   const { body, task, stagesData, selectedStageId, callRpc, repaint } = ctx;
-  const taskId = task.task_id;
+  const planId = task.plan_id; // stage docs + comments are plan-scoped
+  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
   const stages = stagesData.stages || [];
   if (stageSelDispose) {
     stageSelDispose();
@@ -159,7 +160,7 @@ export function renderStagesTab(ctx) {
     x.onclick = async (e) => {
       e.stopPropagation();
       try {
-        await callRpc("task.comment_delete", { task_id: taskId, comment_id: x.dataset.del });
+        await callRpc("plan.comment_delete", { plan_id: planId, comment_id: x.dataset.del });
         repaint();
       } catch {
         /* the poll will re-sync */
@@ -222,7 +223,8 @@ export function stageBoardHtml(task, stagesData) {
 
 function renderStageList(ctx) {
   const { body, task, stagesData, callRpc, repaint, onSelectStage } = ctx;
-  const taskId = task.task_id;
+  const planId = task.plan_id; // stage docs + comments are plan-scoped
+  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
   const stages = stagesData.stages || [];
   body.innerHTML = stageBoardHtml(task, stagesData);
 
@@ -233,7 +235,7 @@ function renderStageList(ctx) {
       bulkActionInFlight = true;
       try {
         for (const s of stages.filter((x) => x.state === "planned")) {
-          await callRpc("task.stage_approve", { task_id: taskId, stage_id: s.id });
+          await callRpc("plan.stage_approve", { plan_id: planId, stage_id: s.id });
         }
       } finally {
         bulkActionInFlight = false;
@@ -255,7 +257,8 @@ function renderStageList(ctx) {
 function wireRunAllControl(ctx, host, hint) {
   const { task, stagesData, callRpc, repaint } = ctx;
   if (!host) return;
-  const taskId = task.task_id;
+  const planId = task.plan_id; // stage docs + comments are plan-scoped
+  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
   const stages = stagesData.stages || [];
   const kind = runAllControlKind({ autoAdvance: stagesData.auto_advance, stages, taskState: task.state });
 
@@ -267,10 +270,10 @@ function wireRunAllControl(ctx, host, hint) {
         try {
           if (optionId === "run_all") {
             for (const s of stages.filter((x) => x.state === "planned")) {
-              await callRpc("task.stage_approve", { task_id: taskId, stage_id: s.id });
+              await callRpc("plan.stage_approve", { plan_id: planId, stage_id: s.id });
             }
           }
-          await callRpc("task.set_auto_advance", { task_id: taskId, enabled: true });
+          await callRpc("run.set_auto_advance", { run_id: runId, enabled: true });
         } catch (e) {
           bulkActionInFlight = false;
           if (hint) hint.textContent = "error: " + e.message.slice(0, 60);
@@ -285,7 +288,7 @@ function wireRunAllControl(ctx, host, hint) {
   if (kind === "stop") {
     host.innerHTML = `<button class="btn mini" id="stopadvance">Stop auto-advance</button>`;
     bindAction(host.querySelector("#stopadvance"), "stopping…", hint, async () => {
-      await callRpc("task.set_auto_advance", { task_id: taskId, enabled: false });
+      await callRpc("run.set_auto_advance", { run_id: runId, enabled: false });
       repaint();
     });
   }
@@ -293,7 +296,8 @@ function wireRunAllControl(ctx, host, hint) {
 
 function renderStageDoc(ctx, stage) {
   const { body, task, stagesData, stageDoc, callRpc, repaint, onSelectStage } = ctx;
-  const taskId = task.task_id;
+  const planId = task.plan_id; // stage docs + comments are plan-scoped
+  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
   const stages = stagesData.stages || [];
   const index = stages.findIndex((s) => s.id === stage.id);
   const prev = index > 0 ? stages[index - 1] : null;
@@ -332,7 +336,7 @@ function renderStageDoc(ctx, stage) {
   if (ownFail) {
     bindAction(body.querySelector("#sendfix"), "sending…", body.querySelector("#fixhint"), async () => {
       const note = body.querySelector("#fixnote").value.trim();
-      await callRpc("task.stage_fix", { task_id: taskId, stage_id: stage.id, note });
+      await callRpc("run.stage_fix", { run_id: runId, stage_id: stage.id, note });
       repaint();
     });
   }
@@ -346,8 +350,8 @@ function renderStageDoc(ctx, stage) {
       const range = sel.getRangeAt(0);
       showCommentPop(range.getBoundingClientRect(), async (commentBody) => {
         try {
-          await callRpc("task.comment_add", {
-            task_id: taskId,
+          await callRpc("plan.comment_add", {
+            plan_id: planId,
             stage_id: stage.id,
             body: commentBody,
             anchor: { heading_path: headingPathFor(docEl, anchorNode), snippet },
@@ -368,7 +372,7 @@ function renderStageDoc(ctx, stage) {
         addGeneral.textContent = "Add comment";
         return;
       }
-      await callRpc("task.comment_add", { task_id: taskId, stage_id: stage.id, body: text, anchor: null });
+      await callRpc("plan.comment_add", { plan_id: planId, stage_id: stage.id, body: text, anchor: null });
       hideCommentPop();
       repaint();
     });
@@ -379,7 +383,8 @@ function renderStageDoc(ctx, stage) {
 
 function renderStageActions(ctx, stage, index, prev) {
   const { body, task, stagesData, catalog, callRpc, repaint } = ctx;
-  const taskId = task.task_id;
+  const planId = task.plan_id; // stage docs + comments are plan-scoped
+  const runId = task.run_id; // stage execution (dispatch/fix/auto-advance) is run-scoped
   const stages = stagesData.stages || [];
   const actions = body.querySelector("#stageactions");
   const hint = body.querySelector("#stagehint");
@@ -388,7 +393,7 @@ function renderStageActions(ctx, stage, index, prev) {
   const wireSendNotes = () => {
     const b = body.querySelector("#sendnotes");
     if (b) bindAction(b, "sending…", hint, async () => {
-      await callRpc("task.stage_send_notes", { task_id: taskId, stage_id: stage.id });
+      await callRpc("plan.stage_send_notes", { plan_id: planId, stage_id: stage.id });
       repaint();
     });
   };
@@ -396,7 +401,7 @@ function renderStageActions(ctx, stage, index, prev) {
   if (stage.state === "planned") {
     actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage</button>`;
     bindAction(body.querySelector("#approvestage"), "approving…", hint, async () => {
-      await callRpc("task.stage_approve", { task_id: taskId, stage_id: stage.id });
+      await callRpc("plan.stage_approve", { plan_id: planId, stage_id: stage.id });
       repaint();
     });
     wireSendNotes();
@@ -427,7 +432,7 @@ function renderStageActions(ctx, stage, index, prev) {
     if (ready) {
       bindAction(body.querySelector("#startstage"), "starting…", hint, async () => {
         const params = modelParams(models, modelSel.value, effortSel.value);
-        await callRpc("task.stage_dispatch", { task_id: taskId, stage_id: stage.id, ...params });
+        await callRpc("run.stage_dispatch", { run_id: runId, stage_id: stage.id, ...params });
         repaint();
       });
     }

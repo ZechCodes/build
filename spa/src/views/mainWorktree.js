@@ -67,8 +67,10 @@ export async function renderMain() {
     if (shellCtl) shellCtl.setActive(id);
     disposeAux();
     const body = $("#tabbody");
-    // Terminal tabs go edge-to-edge; Changes/Files keep the body padding.
+    // Terminal tabs go edge-to-edge; Changes/Files run flush (their own rail +
+    // detail panes each scroll internally, so the body owns no padding/scroll).
     body.classList.toggle("bare", /^term-/.test(id));
+    body.classList.toggle("flush", id === "changes" || id === "files");
     if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status
       // responses so the branch/path header stays live while it runs.

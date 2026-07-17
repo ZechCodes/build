@@ -69,7 +69,7 @@ export async function renderWorktree() {
     disposeAux();
     if (tabId === "diff") {
       const body = $("#tabbody");
-      if (body) body.classList.remove("bare");
+      if (body) body.classList.remove("bare", "flush");
       diffKey = null;
       shellState = null; // force a shell rebuild + body repaint on the next paint
       paint();
@@ -82,8 +82,10 @@ export async function renderWorktree() {
     disposeAux();
     const body = $("#tabbody");
     if (!body) return;
-    // Terminal tabs go edge-to-edge; the Files browser keeps the body padding.
+    // Terminal tabs go edge-to-edge; the Files browser runs flush (tree rail +
+    // preview pane each scroll internally, so the body owns no padding).
     body.classList.toggle("bare", /^term-/.test(tabId));
+    body.classList.toggle("flush", tabId === "files");
     aux = mountAuxTab(body, tabId, {
       scope,
       callRpc: (method, params) => App.call(method, params),

@@ -100,7 +100,7 @@ export async function renderTask() {
     disposeAux();
     if (tabId === "stages") {
       const body = $("#tabbody");
-      if (body) body.classList.remove("bare");
+      if (body) body.classList.remove("bare", "flush");
       stagesKey = null;
       paint();
     } else {
@@ -112,8 +112,10 @@ export async function renderTask() {
     disposeAux();
     const body = $("#tabbody");
     if (!body) return;
-    // Terminal-ish tabs go edge-to-edge; content tabs keep the body padding.
+    // Terminal-ish tabs go edge-to-edge; Changes/Files run flush (rail + detail
+    // each scroll internally); the rest keep the body padding.
     body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
+    body.classList.toggle("flush", tabId === "changes" || tabId === "files");
     if (tabId === "agent") {
       aux = mountAgentTab(body);
       return;

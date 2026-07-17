@@ -392,15 +392,19 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     return true;
   };
 
-  // The persistent skeleton: toolbar/banner/rail/detail update independently so
-  // a poll repaint never clobbers the review plug's DOM in the detail host.
+  // The persistent skeleton: a flush left rail drives a right pane whose top
+  // carries the toolbar/banner (so the rail runs edge-to-edge to the tab bar)
+  // and whose scrolling body is the detail host. Each region updates
+  // independently so a poll repaint never clobbers the review plug's DOM.
   const paintSkeleton = () => {
     container.innerHTML = `<div class="gitpane">
-      <div class="gp-toolbar"></div>
-      <div class="gp-banner"></div>
       <div class="changes2">
         <aside class="crail-host"></aside>
-        <section class="cdetail-host"></section>
+        <section class="cdetail">
+          <div class="gp-toolbar"></div>
+          <div class="gp-banner"></div>
+          <div class="cdetail-host"></div>
+        </section>
       </div></div>`;
     container.onclick = handleClick;
     container.onchange = handleChange;

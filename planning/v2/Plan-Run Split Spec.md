@@ -184,8 +184,10 @@ Two entities replace the fused task.
   keyed by `plan_id`; doc reads come from the canonical store.
 - `run.create` (`plan_id` optional; quick runs pass `goal` directly; rejected while the
   plan already has an active run — single-active-writer), `run.get/diff/request_changes/
-  stage_dispatch/stage_fix/set_auto_advance/git_action/message/abandon/delete/adopt/
-  release`.
+  stage_dispatch/stage_fix/stage_send_notes/set_auto_advance/git_action/message/abandon/
+  delete/adopt/release`. `run.stage_send_notes` is the mid-run revision verb: once a plan
+  is Approved, `plan.stage_send_notes` is illegal — the revision session runs in the RUN's
+  worktree from the stage gate, and the ingest writes the docs back to the plan's store.
 - `board.list` replaces `task.list`: `{ plans: [plan_view], runs: [run_view],
   external_worktrees, primary_changes }`. `run_view` carries `plan_id`; stage progress
   (run) and stage docs/comments (plan) are joined client-side by `plan_id` + stage id.

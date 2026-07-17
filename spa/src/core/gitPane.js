@@ -301,7 +301,7 @@ export function commitSplitOptions(agentCommitOptions = []) {
 
 // Task states with a live/parked agent to message — the same list task.js uses
 // for its "Message agent" header button.
-const AGENT_MESSAGEABLE_STATES = ["planning", "building", "blocked", "failed", "idle_unreported", "interrupted"];
+const AGENT_MESSAGEABLE_STATES = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
 
 /** The task-scope agent-commit options for a task's state + goal: "Ask agent to
  *  commit" (task.message) only while the task is messageable, then the Build

@@ -5,6 +5,12 @@
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
+import { RUN_TERMINAL_STATES, PLAN_TERMINAL_STATES } from "../core/board.js";
+
+// The terminal-state sets are the board model's source of truth (core/board.js);
+// re-exported here so the run/plan presentation helpers and their importers keep
+// a single import point.
+export { RUN_TERMINAL_STATES, PLAN_TERMINAL_STATES };
 
 // ---- Runs (worktree-scoped; "Tasks" in the UI) --------------------------------
 
@@ -34,9 +40,6 @@ export function runPayloadFor(run) {
   if (run.state === "building") return "coding agent working…";
   return "";
 }
-
-/** Terminal run states (the board's DONE bucket; never running/needs-you). */
-export const RUN_TERMINAL_STATES = new Set(["merged", "abandoned", "archived"]);
 
 /** Runs waiting on the user (the board's "NEEDS YOU" bucket). */
 export function attnRuns(runs) {
@@ -69,9 +72,6 @@ export function planPayloadFor(plan) {
   if (plan.state === "drafting" || plan.state === "created") return "drafting plan…";
   return "";
 }
-
-/** Terminal plan states (abandoned is the only one). */
-export const PLAN_TERMINAL_STATES = new Set(["abandoned"]);
 
 /** Plans waiting on the user. */
 export function attnPlans(plans) {

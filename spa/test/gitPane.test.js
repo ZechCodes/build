@@ -200,7 +200,7 @@ describe("commitSplitOptions", () => {
 });
 
 describe("taskAgentCommitOptions", () => {
-  const messageable = ["planning", "building", "blocked", "failed", "idle_unreported", "interrupted"];
+  const messageable = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
 
   it.each(messageable)("offers Ask-agent-to-commit while %s", (state) => {
     const options = taskAgentCommitOptions(state, "fix login");
@@ -210,7 +210,7 @@ describe("taskAgentCommitOptions", () => {
   });
 
   it("drops the agent-message option when the task cannot be messaged", () => {
-    for (const state of ["review", "plan_review", "done", "merged", "created"]) {
+    for (const state of ["review", "stage_gate", "merged", "created", "archived", "abandoned"]) {
       expect(taskAgentCommitOptions(state, "g").map((o) => o.id)).toEqual(["auto_commit"]);
     }
   });

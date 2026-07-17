@@ -8,15 +8,14 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import {
   RUN_STATE_LABEL,
-  RUN_TERMINAL_STATES,
   runChipClass,
   runPayloadFor,
   PLAN_STATE_LABEL,
-  PLAN_TERMINAL_STATES,
   planChipClass,
   planPayloadFor,
   setBadge,
 } from "./shared.js";
+import { bucketBoard } from "../core/board.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
@@ -24,10 +23,7 @@ import { openNewTask } from "../sheets/newTask.js";
 export async function renderBoard() {
   const root = $("#root");
   const draw = (runs, externalWorktrees, plans) => {
-    const bucketOf = (needsAttention, terminal) => (terminal ? "done" : needsAttention ? "attn" : "work");
-    const byBucket = { attn: [], work: [], done: [] };
-    for (const r of runs) byBucket[bucketOf(r.needs_attention, RUN_TERMINAL_STATES.has(r.state))].push({ kind: "run", r });
-    for (const p of plans) byBucket[bucketOf(p.needs_attention, PLAN_TERMINAL_STATES.has(p.state))].push({ kind: "plan", p });
+    const byBucket = bucketBoard({ runs, plans });
 
     const runCard = (r, quiet) => `
       <div class="card ${quiet ? "quiet" : ""}" data-id="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}">

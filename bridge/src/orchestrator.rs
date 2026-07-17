@@ -1345,11 +1345,15 @@ impl Orchestrator {
             );
             return Ok(());
         }
-        let validation = report
-            .outputs
-            .validation
-            .clone()
-            .expect("mcp validated: outputs.validation present on phase=validate/completed");
+        // The mcp layer guarantees outputs.validation on validate/completed,
+        // but reports also arrive over the daemon socket as raw JSON (a
+        // version-skewed mcp binary, any local writer) — a missing report is
+        // a rejected report, never a panic inside the app mutex.
+        let Some(validation) = report.outputs.validation.clone() else {
+            return Err(OrchestratorError::Gate(
+                "validate/completed report carried no outputs.validation; rejected".to_string(),
+            ));
+        };
         let passed = validation.passed;
         let last_stage = doc_index + 1 == plan_stage_docs.len();
         let verdict = if passed {
@@ -3756,6 +3760,44 @@ mod tests {
         );
         let prompt = log.lock().unwrap().last().unwrap().clone();
         assert!(prompt.contains(".build/plan/02-second.md"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn validate_done_without_a_validation_report_is_rejected_not_a_panic() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(
+            run.stage_progress("first").unwrap().state,
+            StageProgressState::Validating
+        );
+
+        // The daemon socket deserializes reports as raw JSON — a
+        // validate/completed with no outputs.validation must be rejected
+        // with zero mutation, never unwrapped.
+        let err = orch
+            .on_run_done(
+                &mut run,
+                &plan.stages,
+                done(DonePhase::Validate, DoneStatus::Completed, None),
+            )
+            .expect_err("a report without outputs.validation is rejected");
+        assert!(err.to_string().contains("no outputs.validation"), "{err}");
+        assert_eq!(
+            run.stage_progress("first").unwrap().state,
+            StageProgressState::Validating,
+            "the stage still awaits a real verdict"
+        );
+        assert_eq!(run.run.state, RunState::Building);
     }
 
     #[tokio::test]

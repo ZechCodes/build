@@ -496,6 +496,7 @@ impl Store {
         if stage_dir.is_dir() {
             let dest_dir = docs_root.join(STAGE_PLAN_DIR);
             std::fs::create_dir_all(&dest_dir)?;
+            let mut worktree_names = std::collections::HashSet::new();
             for entry in std::fs::read_dir(&stage_dir)? {
                 let source = entry?.path();
                 if !source.is_file() {
@@ -505,7 +506,25 @@ impl Store {
                     continue;
                 };
                 std::fs::copy(&source, dest_dir.join(name))?;
+                worktree_names.insert(name.to_os_string());
                 ingested_files += 1;
+            }
+            // The worktree's stage dir is the truth, deletions included: a
+            // revision that drops or renames a stage doc must not leave the
+            // stale file in the store, where the next run's materialization
+            // would commit it (invisibly — the materialization commit is
+            // excluded from review diffs via base_sha).
+            for entry in std::fs::read_dir(&dest_dir)? {
+                let stored = entry?.path();
+                if !stored.is_file() {
+                    continue;
+                }
+                let Some(name) = stored.file_name() else {
+                    continue;
+                };
+                if !worktree_names.contains(name) {
+                    remove_file_if_present(&stored)?;
+                }
             }
         }
         if ingested_files == 0 {
@@ -594,6 +613,19 @@ impl Store {
                     // plan fully migrated, so a crash in between re-runs the
                     // (overwrite-safe) copy.
                     self.promote_snapshot_docs(&plan.id)?;
+                    // The legacy snapshot mirror was best-effort (and younger
+                    // than some records): when it never ran, the live worktree
+                    // is the only copy of the docs — ingest from it, or the
+                    // migrated plan is unreadable despite the files existing.
+                    if !dir_contains_a_file(&self.plan_docs_dir(&plan.id)) {
+                        let worktree = Path::new(&task.worktree_path);
+                        if worktree.is_dir() {
+                            match self.ingest_plan_docs(&plan.id, worktree, &task.plan_path) {
+                                Ok(()) | Err(StoreError::NothingToIngest { .. }) => {}
+                                Err(other) => return Err(other),
+                            }
+                        }
+                    }
                     self.save_plan(&plan)?;
                 }
             }
@@ -692,6 +724,17 @@ fn read_record<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, StoreEr
     serde_json::from_str(&text).map_err(|source| StoreError::Corrupt {
         path: path.to_path_buf(),
         source,
+    })
+}
+
+/// True iff the directory exists and holds at least one file, at any depth.
+fn dir_contains_a_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file() || (path.is_dir() && dir_contains_a_file(&path))
     })
 }
 
@@ -866,8 +909,17 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
             Some(task.id.clone())
         }
     };
+    // When a legacy task splits into both halves, the plan keeps the task id
+    // (its docs dir is already keyed by it) and the run takes a derived,
+    // disjoint id — done-report routing and every entity map assume no id is
+    // ever both a plan and a run. Quick tasks have no plan half, so their id
+    // carries over untouched.
+    let run_id = match plan_id {
+        Some(_) => format!("run-{}", task.id),
+        None => task.id.clone(),
+    };
     Some(PersistedRun {
-        id: task.id.clone(),
+        id: run_id,
         plan_id,
         goal: task.goal.clone(),
         project_path: task.project_path.clone(),
@@ -1799,6 +1851,42 @@ mod tests {
     }
 
     #[test]
+    fn re_ingest_mirrors_stage_doc_deletions_and_renames() {
+        // A revision that drops or renames a stage doc must not leave the
+        // stale file in the store — the next run would materialize and merge
+        // it invisibly.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join(".build/plan")).unwrap();
+        std::fs::write(worktree.join(".build/plan/01-keep.md"), "keep").unwrap();
+        std::fs::write(worktree.join(".build/plan/02-drop.md"), "drop").unwrap();
+        store
+            .ingest_plan_docs("plan-1", &worktree, ".build/plan.md")
+            .unwrap();
+
+        std::fs::remove_file(worktree.join(".build/plan/02-drop.md")).unwrap();
+        std::fs::write(worktree.join(".build/plan/02-renamed.md"), "renamed").unwrap();
+        store
+            .ingest_plan_docs("plan-1", &worktree, ".build/plan.md")
+            .unwrap();
+
+        assert_eq!(
+            store.read_plan_doc("plan-1", ".build/plan/01-keep.md"),
+            Some("keep".into())
+        );
+        assert_eq!(
+            store.read_plan_doc("plan-1", ".build/plan/02-renamed.md"),
+            Some("renamed".into())
+        );
+        assert_eq!(
+            store.read_plan_doc("plan-1", ".build/plan/02-drop.md"),
+            None,
+            "the deleted doc is gone from the store"
+        );
+    }
+
+    #[test]
     fn ingest_fails_fast_when_the_worktree_has_no_docs() {
         // Unlike the legacy snapshot (a quiet mirror), ingest is the canonical
         // write: the done report claimed docs exist, so finding none is an
@@ -2100,9 +2188,36 @@ mod tests {
         assert_eq!(store.migrate_legacy_tasks().unwrap(), 1);
         let plans = store.load_all_plans().unwrap();
         assert_eq!(plans[0].state, PlanState::Approved);
+        assert_eq!(plans[0].id, "task-b");
         let runs = store.load_all_runs().unwrap();
         assert_eq!(runs[0].state, RunState::Building);
         assert_eq!(runs[0].plan_id.as_deref(), Some("task-b"));
+        // The two halves must NOT share an id: done-report routing, agent
+        // screens, and the entity maps all rely on plan/run ids being
+        // crate-wide disjoint.
+        assert_eq!(runs[0].id, "run-task-b");
+    }
+
+    #[test]
+    fn migrate_ingests_docs_from_the_live_worktree_when_no_snapshot_exists() {
+        // Records older than the snapshot mirror (or whose best-effort mirror
+        // silently failed) hold their only docs in the worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let tasks = dir.path().join("tasks");
+        let store = Store::new(&tasks);
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(worktree.join(".build")).unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "# from the worktree").unwrap();
+        let mut fixture = legacy_task_json("task-w", "Standard", "PlanReview".into());
+        fixture["worktree_path"] = serde_json::json!(worktree.to_str().unwrap());
+        write_legacy_task(&tasks, &fixture);
+
+        assert_eq!(store.migrate_legacy_tasks().unwrap(), 1);
+        assert_eq!(
+            store.read_plan_doc("task-w", ".build/plan.md").as_deref(),
+            Some("# from the worktree")
+        );
     }
 
     #[test]

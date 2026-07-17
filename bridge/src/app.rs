@@ -1460,6 +1460,7 @@ impl AppState {
             "run.request_changes" => self.run_request_changes(params),
             "run.stage_dispatch" => self.run_stage_dispatch(params),
             "run.stage_fix" => self.run_stage_fix(params),
+            "run.stage_send_notes" => self.run_stage_send_notes(params),
             "run.set_auto_advance" => self.run_set_auto_advance(params),
             "run.git_action" => self.run_git_action(params),
             "run.message" => self.run_message(params),
@@ -3187,6 +3188,49 @@ impl AppState {
         Ok(self.run_view(&run_id, active))
     }
 
+    /// Send a stage's open comments (persisted on the owning plan) to a fresh
+    /// mid-run revision session in the RUN's worktree — the stage-gate
+    /// analogue of `plan.stage_send_notes`, which is illegal once the plan is
+    /// Approved. The run owns the session; the plan owns the docs; the
+    /// revision's `done` ingests the rewritten docs back to the store.
+    fn run_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
+        let run_id = require_str(params, "run_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let project_id = self.project_of(&run_id)?;
+        let plan_id = self
+            .runs
+            .get(&run_id)
+            .ok_or("unknown run_id")?
+            .run
+            .plan_id
+            .as_ref()
+            .map(|p| p.0.clone())
+            .ok_or("a quick run has no plan docs to revise")?;
+        let mut active = self.take_run(&run_id)?;
+        let mut plan = self.plans.remove(&plan_id);
+        let outcome = (|| -> Result<(), String> {
+            let plan = plan.as_mut().ok_or("unknown plan_id")?;
+            self.orch_for(&project_id)?
+                .send_run_stage_notes(&mut active, plan, &stage_id)
+                .map_err(err)?;
+            if self.qa_agent {
+                self.qa_simulate_run_stage_revise(&project_id, &mut active, plan)?;
+            }
+            Ok(())
+        })();
+        // Both entities re-insert before any error propagates — the
+        // take → finish_mutation invariant covers the plan here too.
+        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan).1);
+        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        outcome?;
+        if let Some(persisted) = plan_persisted {
+            persisted?;
+        }
+        persisted?;
+        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        Ok(self.run_view(&run_id, active))
+    }
+
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
     /// approved stage to its verdict.
     fn run_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
@@ -3811,6 +3855,53 @@ impl AppState {
                     phase: DonePhase::Revise,
                     status: DoneStatus::Completed,
                     summary: format!("Revised stage {stage_id}"),
+                    outputs: DoneOutputs {
+                        comment_resolutions: Some(resolutions),
+                        ..DoneOutputs::default()
+                    },
+                },
+            )
+            .map_err(err)
+    }
+
+    /// Simulate a mid-run stage-revision agent: rewrite the stage doc in the
+    /// RUN's worktree, resolve the plan's open comments, and route the
+    /// `done(revise)` through the cross-entity consume seam.
+    fn qa_simulate_run_stage_revise(
+        &self,
+        project_id: &str,
+        active: &mut ActiveRun,
+        plan: &mut ActivePlan,
+    ) -> Result<(), String> {
+        let stage_id = active
+            .revising_stage_id
+            .clone()
+            .ok_or("QA run revise: no stage revision in flight")?;
+        let index = plan.stage_doc_index(&stage_id)?;
+        let stage_path = plan.stages[index].path.clone();
+        let worktree = active.worktree.path.clone();
+        let mut contents = std::fs::read_to_string(worktree.join(&stage_path))
+            .map_err(|e| format!("QA run revise: could not read stage doc: {e}"))?;
+        contents.push_str("\n(revised mid-run)\n");
+        write_in_dir(&worktree, &stage_path, &contents)?;
+        let resolutions: Vec<CommentResolution> = plan
+            .open_comments_for(&stage_id)
+            .into_iter()
+            .map(|c| CommentResolution {
+                comment_id: c.id.clone(),
+                response: "QA: addressed.".to_string(),
+            })
+            .collect();
+        let store = self.require_store()?;
+        self.orch_for(project_id)?
+            .consume_run_stage_revision(
+                active,
+                plan,
+                store,
+                &DoneReport {
+                    phase: DonePhase::Revise,
+                    status: DoneStatus::Completed,
+                    summary: format!("Revised stage {stage_id} mid-run"),
                     outputs: DoneOutputs {
                         comment_resolutions: Some(resolutions),
                         ..DoneOutputs::default()
@@ -7286,6 +7377,68 @@ mod tests {
     }
 
     #[test]
+    fn mid_run_stage_send_notes_revises_the_plan_doc_from_the_stage_gate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "revise me mid-run" })));
+        let plan_id = plan_id_of(&plan);
+        state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "second-half" }),
+        ));
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "stage_gate");
+
+        // Comment on the upcoming stage, then send the notes through the run.
+        state.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": plan_id, "stage_id": "second-half", "body": "tighten this" }),
+        ));
+        let revised = state.handle(req(
+            "run.stage_send_notes",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(revised["ok"], true, "{revised:?}");
+        assert_eq!(revised["result"]["state"], "stage_gate", "{revised:?}");
+
+        // The doc revision landed in the canonical store and the approval
+        // is stale again (planned), with the comment addressed.
+        let doc = state.handle(req(
+            "plan.stage_doc",
+            json!({ "plan_id": plan_id, "stage_id": "second-half" }),
+        ));
+        assert!(
+            doc["result"]["contents"]
+                .as_str()
+                .unwrap()
+                .contains("(revised mid-run)"),
+            "{doc:?}"
+        );
+        let stages = state.handle(req("plan.stages", json!({ "plan_id": plan_id })));
+        let second = stages["result"]["stages"][1].clone();
+        assert_eq!(second["state"], "planned", "{second:?}");
+        assert_eq!(second["open_comments"], 0, "{second:?}");
+
+        // A quick run has no plan to revise.
+        let quick = state.handle(req("run.create", json!({ "goal": "quick thing" })));
+        let quick_id = run_id_of(&quick);
+        let refused = state.handle(req(
+            "run.stage_send_notes",
+            json!({ "run_id": quick_id, "stage_id": "second-half" }),
+        ));
+        assert!(
+            refused["error"].as_str().unwrap().contains("quick run"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
     fn set_auto_advance_runs_every_stage_to_review() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -7535,7 +7688,10 @@ mod tests {
         // recovery demotes it to Interrupted (its PTY died on the restart).
         let built_plan = state.handle(req("plan.get", json!({ "plan_id": "task-build" })));
         assert_eq!(built_plan["result"]["state"], "approved", "{built_plan:?}");
-        let built_run = state.handle(req("run.get", json!({ "run_id": "task-build" })));
+        // The run half takes a derived, disjoint id — plan and run ids never
+        // collide, or done-report routing (plans-first) would swallow the
+        // run's reports.
+        let built_run = state.handle(req("run.get", json!({ "run_id": "run-task-build" })));
         assert_eq!(built_run["result"]["state"], "interrupted", "{built_run:?}");
         assert_eq!(built_run["result"]["plan_id"], "task-build");
 
@@ -7557,7 +7713,10 @@ mod tests {
             "the quick task has no plan: {plan_ids:?}"
         );
         assert!(run_ids.contains(&"task-quick".to_string()), "{run_ids:?}");
-        assert!(run_ids.contains(&"task-build".to_string()), "{run_ids:?}");
+        assert!(
+            run_ids.contains(&"run-task-build".to_string()),
+            "{run_ids:?}"
+        );
         assert!(
             !run_ids.contains(&"task-plan".to_string()),
             "the plan-only task has no run: {run_ids:?}"

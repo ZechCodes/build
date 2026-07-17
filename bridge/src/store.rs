@@ -562,6 +562,14 @@ impl Store {
         Ok(())
     }
 
+    /// Whether the canonical store holds any doc at all for this plan. False
+    /// for a migrated plan whose docs were unrecoverable (worktree and branch
+    /// both gone) — the UI gates doc reads and Implement on this instead of
+    /// spinning on reads that can never succeed.
+    pub fn has_plan_docs(&self, plan_id: &str) -> bool {
+        dir_contains_a_file(&self.plan_docs_dir(plan_id))
+    }
+
     /// Read one canonical plan doc by its worktree-relative path. `None` when
     /// the doc does not exist (or the path tries to escape the docs dir).
     pub fn read_plan_doc(&self, plan_id: &str, rel_path: &str) -> Option<String> {
@@ -1848,6 +1856,21 @@ mod tests {
                 .as_deref(),
             Some("only stage")
         );
+    }
+
+    #[test]
+    fn has_plan_docs_reflects_the_canonical_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        assert!(!store.has_plan_docs("plan-1"), "no docs dir yet");
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join(".build")).unwrap();
+        std::fs::write(worktree.join(".build/plan.md"), "# plan").unwrap();
+        store
+            .ingest_plan_docs("plan-1", &worktree, ".build/plan.md")
+            .unwrap();
+        assert!(store.has_plan_docs("plan-1"));
+        assert!(!store.has_plan_docs("plan-2"), "scoped per plan");
     }
 
     #[test]

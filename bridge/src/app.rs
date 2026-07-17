@@ -3673,6 +3673,13 @@ impl AppState {
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "active_run_id": active_run_id,
+            // False when the store holds no docs (a migrated plan whose docs
+            // were unrecoverable): the client disables doc reads + Implement
+            // instead of retrying reads that can never succeed.
+            "docs_available": self
+                .store
+                .as_ref()
+                .is_some_and(|store| store.has_plan_docs(plan_id)),
             "created_at": self.entity_created_at.get(plan_id),
             "updated_at": self.entity_updated_at.get(plan_id),
             "stages": active
@@ -7053,6 +7060,7 @@ mod tests {
         let res = state.handle(req("plan.create", json!({ "goal": "add a greeting" })));
         assert_eq!(res["ok"], true, "{res:?}");
         assert_eq!(res["result"]["state"], "plan_review");
+        assert_eq!(res["result"]["docs_available"], true, "{res:?}");
         assert_eq!(res["result"]["stages"].as_array().unwrap().len(), 2);
         assert!(res["result"]["created_at"]
             .as_str()

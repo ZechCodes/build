@@ -218,7 +218,13 @@ export async function renderPlan() {
     const host = $("#plantabs");
     if (!host) return;
     const tabs = [{ id: "review", label: "Review" }, ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : [])];
-    tabShellCtl = mountTabShell(host, { tabs, active: tab, onSelect: (t) => selectTab(t) });
+    tabShellCtl = mountTabShell(host, {
+      tabs,
+      active: tab,
+      onSelect: (t) => selectTab(t),
+      back: { title: p.project ? `Back to ${p.project}` : "Back to project" },
+      onBack: () => goHome(),
+    });
   };
 
   // The surface shell: the tab bar tops the view; the bar carries the single-line

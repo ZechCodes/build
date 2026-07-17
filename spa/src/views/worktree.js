@@ -164,6 +164,8 @@ export async function renderWorktree() {
       onSelect: (tabId) => selectTab(tabId),
       onClose: (tabId) => closeTerminal(tabId),
       onNewTerminal: () => newTerminal(),
+      back: { title: "Back to project" },
+      onBack: () => goHome(),
     });
     // A shell rebuild wiped #tabbody — re-mount an aux tab so the poll's
     // early-return leaves a live Files/terminal pane in place.

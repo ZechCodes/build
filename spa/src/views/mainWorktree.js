@@ -6,7 +6,7 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
+import { App, go } from "../app.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
@@ -55,6 +55,8 @@ export async function renderMain() {
       onSelect: (id) => selectTab(id),
       onClose: (id) => closeTerminal(id),
       onNewTerminal: () => newTerminal(),
+      back: { title: projectName ? `Back to ${projectName}` : "Back to project" },
+      onBack: () => go({ name: "project", projectId }),
     });
   };
 

@@ -82,6 +82,8 @@ export async function renderTask() {
       onSelect: (tabId) => selectTab(tabId),
       onClose: (tabId) => closeTerminal(tabId),
       onNewTerminal: () => newTerminal(),
+      back: { title: m.project ? `Back to ${m.project}` : "Back to project" },
+      onBack: () => goHome(),
     });
     // A full shell rebuild (state/goal changed) wiped #tabbody — re-mount an aux
     // tab so the poll's early-return leaves a live pane in place.

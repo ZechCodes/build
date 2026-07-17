@@ -22,6 +22,21 @@ describe("tabShellHtml", () => {
     expect(html).toContain('class="t tplus" data-newterm="1"');
   });
 
+  it("renders a leading back chevron only when back is passed, with its title escaped", () => {
+    const bare = tabShellHtml({ tabs, active: "plan", hasNewTerminal: false });
+    expect(bare).not.toContain("tback");
+    const html = tabShellHtml({
+      tabs,
+      active: "plan",
+      hasNewTerminal: false,
+      back: { title: 'Back to <b>"proj"</b>' },
+    });
+    // The chevron is the FIRST cell in the row.
+    expect(html).toMatch(/<div class="tabs"><div class="t tback" data-back="1"/);
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("&quot;proj&quot;");
+  });
+
   it("marks only closable tabs with a × carrying the tab id", () => {
     const html = tabShellHtml({ tabs, active: "plan", hasNewTerminal: true });
     expect(html).toContain('<span class="tx" data-close="term-3"');

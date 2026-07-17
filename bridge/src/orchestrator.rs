@@ -728,6 +728,10 @@ impl Orchestrator {
     /// teardown, because a leaked planning worktree would linger as a stray.
     pub fn approve_plan(&self, active: &mut ActivePlan) -> Result<(), OrchestratorError> {
         // Pure legality first — nothing is torn down for an illegal approve.
+        // Stage docs deliberately do NOT gate the coarse approve: per-stage
+        // review is progressive (later docs keep getting approved/revised
+        // while an earlier stage builds); the dispatch seams re-gate each doc
+        // at the moment its build session would spawn.
         plan_transition(&active.plan.state, PlanEvent::Approve)?;
         active.session.end();
         if let Some(worktree) = &active.worktree {
@@ -1052,6 +1056,18 @@ impl Orchestrator {
                          rejected (single-active-writer)",
                         plan.plan.id.0
                     )));
+                }
+                // Dispatch spawns the first stage's build session immediately,
+                // so its doc must carry a live approval. `approve_plan` already
+                // guarantees this for natively approved plans; migrated plans
+                // (and revision-staled docs on a re-run) are re-gated here.
+                if let Some(first_stage) = plan.stages.first() {
+                    if first_stage.state != StageDocState::Approved {
+                        return Err(OrchestratorError::Gate(format!(
+                            "cannot implement plan {}: stage {:?} is not approved",
+                            plan.plan.id.0, first_stage.id
+                        )));
+                    }
                 }
                 Some(*plan)
             }
@@ -2488,6 +2504,10 @@ mod tests {
         stage_count: usize,
     ) -> ActivePlan {
         let mut plan = multi_stage_plan_in_review(orch, store, id, stage_count);
+        let stage_ids: Vec<String> = plan.stages.iter().map(|s| s.id.clone()).collect();
+        for stage_id in stage_ids {
+            orch.approve_plan_stage(&mut plan, &stage_id).unwrap();
+        }
         orch.approve_plan(&mut plan).unwrap();
         plan
     }
@@ -2847,6 +2867,34 @@ mod tests {
             "the plan stays at its gate so a re-approve retries the teardown"
         );
         assert!(plan.worktree.is_some(), "the worktree record is kept");
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_rejects_a_plan_whose_first_stage_doc_is_unapproved() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        // A migrated plan can rest at Approved while a stage doc is Planned
+        // (legacy records never re-gate); dispatch must still hold the line.
+        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        plan.stages[0].state = StageDocState::Planned;
+
+        let Err(error) = orch.dispatch_run(
+            RunId::new("run-1"),
+            RunSource::Plan {
+                plan: &plan,
+                has_active_run: false,
+            },
+            "main",
+            Default::default(),
+            &store,
+        ) else {
+            panic!("stage 0 must be approved before its build session spawns");
+        };
+        assert!(
+            error.to_string().contains("first"),
+            "the gate names the unapproved stage: {error}"
+        );
     }
 
     #[tokio::test]
@@ -3678,6 +3726,9 @@ mod tests {
         let store = split_store(&dir);
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
+        // Un-approve the second doc (a mid-run revision resets approval the
+        // same way) so the gate has something to refuse.
+        plan.stages[1].state = StageDocState::Planned;
 
         // The next stage's doc is not approved yet → refused.
         let err = orch
@@ -3712,7 +3763,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         // Stage one fails validation → the run parks at the gate, stage one
         // `Validated{passed:false}`.
         let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
@@ -3727,7 +3778,6 @@ mod tests {
             .unwrap();
         assert_eq!(run.run.state, RunState::StageGate);
 
-        orch.approve_plan_stage(&mut plan, "second").unwrap();
         let err = orch
             .dispatch_run_stage(&mut run, &plan.stages, "second", None)
             .expect_err("stage one has not passed validation");

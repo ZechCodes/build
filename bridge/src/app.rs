@@ -6989,6 +6989,10 @@ mod tests {
         let plan_id = plan_id_of(&plan);
         let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
         assert_eq!(approved["result"]["state"], "approved", "{approved:?}");
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
 
         // Implement it: stage 1 auto-dispatches, QA drives it to the stage gate.
         let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
@@ -7099,6 +7103,10 @@ mod tests {
             let plan = state.handle(req("plan.create", json!({ "goal": "doomed run" })));
             plan_id = plan_id_of(&plan);
             state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+            state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+            ));
             let doc = state.handle(req(
                 "plan.stage_doc",
                 json!({ "plan_id": plan_id, "stage_id": "first-half" }),
@@ -7150,6 +7158,10 @@ mod tests {
         let plan = state.handle(req("plan.create", json!({ "goal": "one writer" })));
         let plan_id = plan_id_of(&plan);
         state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
         let first = state.handle(req("run.create", json!({ "plan_id": plan_id })));
         assert_eq!(first["ok"], true, "{first:?}");
         let second = state.handle(req("run.create", json!({ "plan_id": plan_id })));
@@ -7241,6 +7253,10 @@ mod tests {
         let plan = state.handle(req("plan.create", json!({ "goal": "gate this" })));
         let plan_id = plan_id_of(&plan);
         state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
         let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
         let run_id = run_id_of(&run);
         assert_eq!(run["result"]["state"], "stage_gate");
@@ -7276,6 +7292,10 @@ mod tests {
         let plan = state.handle(req("plan.create", json!({ "goal": "run all" })));
         let plan_id = plan_id_of(&plan);
         state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
         state.handle(req(
             "plan.stage_approve",
             json!({ "plan_id": plan_id, "stage_id": "second-half" }),

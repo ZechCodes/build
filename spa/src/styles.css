@@ -489,6 +489,7 @@ body.sidebar-collapsed #side-open { display:block; }
   padding:4px 6px; border-radius:6px; }
 .sproj-open:hover { background:var(--line2); }
 .sfolder { color:var(--ink2); flex:none; }
+.sbranch { flex:none; vertical-align:middle; }
 .sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sbadge { margin-left:auto; }
 /* The classic tree guide: a 1px rule hanging from under the head's icon,

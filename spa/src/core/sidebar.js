@@ -6,6 +6,7 @@
 
 import { esc, humanAge } from "./text.js";
 import { defaultRunTab } from "./taskActions.js";
+import { RUN_STATE_LABEL, PLAN_STATE_LABEL } from "./entityPresentation.js";
 
 /** Truncation is CSS's job (ellipsis); classification is ours. */
 const RUN_TERMINAL = new Set(["merged", "abandoned", "archived"]);
@@ -66,7 +67,7 @@ export function buildSidebarModel({ projects, runs, plans, externalWorktrees, pr
       worktrees,
       uncommitted: worktrees.filter((w) => (w.dirty_files || 0) > 0).length,
       primary: pc
-        ? { branch: pc.branch, files_changed: pc.files_changed || 0, insertions: pc.insertions || 0, deletions: pc.deletions || 0 }
+        ? { branch: pc.branch, path: pc.path || null, files_changed: pc.files_changed || 0, insertions: pc.insertions || 0, deletions: pc.deletions || 0 }
         : null,
     };
   });
@@ -81,18 +82,38 @@ const statHtml = (stat) =>
 // default tab — Stages for a run parked at the stage gate, Changes otherwise —
 // so the sidebar opens the same tab notifications does (defaultRunTab).
 function runRow(r, { icon, right, cls = "" }) {
-  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}">
+  const title = `${esc(r.goal)} — ${esc(RUN_STATE_LABEL[r.state] || r.state || "")}`;
+  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}" title="${title}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;
 }
 
 const doneIcon = (r) => (r.state === "merged" ? "✓" : "×");
 
+// The plan's short rail state word (like the run rows' state span). Terse
+// lowercase so the rail stays scannable; the full label rides the row's title.
+const PLAN_STATE_WORD = {
+  plan_review: "review",
+  drafting: "drafting",
+  created: "drafting",
+  approved: "ready",
+  blocked: "blocked",
+  failed: "failed",
+  idle_unreported: "idle",
+  interrupted: "interrupted",
+  abandoned: "abandoned",
+};
+export const planStateWord = (state) => PLAN_STATE_WORD[state] || state || "";
+
 // A plan row (project-scoped), keyed by plan_id, routing to the plan cockpit.
 // Plans and runs share the rail, so a plan row carries its own glyph set and a
 // distinct data attribute — never a data-run — keeping the two click paths apart.
+// When the caller supplies no `right` (e.g. no open comments), the plan's state
+// word fills that slot so a plan row is as legible as a run row.
 function planRow(p, { icon, right = "", cls = "" }) {
-  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}">
-    <span class="sicon">${icon}</span><span class="stitle">${esc(p.goal)}</span>${right}</div>`;
+  const title = `${esc(p.goal)} — ${esc(PLAN_STATE_LABEL[p.state] || p.state || "")}`;
+  const rightHtml = right || `<span class="sstate">${esc(planStateWord(p.state))}</span>`;
+  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}" title="${title}">
+    <span class="sicon">${icon}</span><span class="stitle">${esc(p.goal)}</span>${rightHtml}</div>`;
 }
 
 const openCommentsRight = (p) => {
@@ -112,7 +133,8 @@ function mainLine(m, ui) {
     ? ` <span class="swt-dirty">· ${m.primary.files_changed} uncommitted</span>`
     : "";
   const active = ui.activeMainProjectId === m.project_id ? "active" : "";
-  return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}">
+  const title = esc(m.primary.branch) + (m.primary.path ? ` — ${esc(m.primary.path)}` : "");
+  return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}" title="${title}">
     <span class="sicon">⌂</span><span class="stitle mono">main <span class="dim">${esc(m.primary.branch)}</span>${dirty}</span></div>`;
 }
 
@@ -124,8 +146,8 @@ function worktreeLine(m, open, ui) {
   const list = open
     ? `<div class="swt-list">${m.worktrees
         .map(
-          (w) => `<div class="srow swt-item ${w.worktree_id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.worktree_id)}" data-project="${esc(w.project_id)}">
-      <span class="sicon">⌥</span><span class="stitle mono">${esc(w.branch || "(detached)")}</span>${
+          (w) => `<div class="srow swt-item ${w.worktree_id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.worktree_id)}" data-project="${esc(w.project_id)}" title="${esc(w.path || w.branch || "")}">
+      <span class="sicon">${BRANCH_ICON}</span><span class="stitle mono">${esc(w.branch || "(detached)")}</span>${
         (w.dirty_files || 0) > 0 ? '<span class="swt-dirty">●</span>' : ""
       }</div>`
         )
@@ -135,11 +157,14 @@ function worktreeLine(m, open, ui) {
   // highlight when it hides the active worktree.
   const lineActive = activeInProject && !open ? "active" : "";
   return `<div class="srow swt-line ${lineActive}" data-wtline="${esc(m.project_id)}">
-    <span class="sicon">⌥</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
+    <span class="sicon">${BRANCH_ICON}</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
 }
 
 /** An outline folder, sized for the rail (the mock's project glyph). */
 const FOLDER_ICON = `<svg class="sfolder" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.5 1.75h6.9a1 1 0 0 1 1 1v6.75a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1V4.25z"/></svg>`;
+
+/** A branch glyph for the worktree rows (the mock's fork), in the FOLDER_ICON style. */
+const BRANCH_ICON = `<svg class="sbranch" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="6" r="1.7"/><path d="M4 5.7v4.6M12 7.7c0 2.3-3 2.3-5.3 2.6"/></svg>`;
 
 /** One project's block. `ui`: { closed:Set, wtOpen:Set, activeRunId, activeProjectId } */
 export function projectHtml(m, ui) {

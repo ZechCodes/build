@@ -105,7 +105,7 @@ describe("buildSidebarModel — unread and worktrees", () => {
   it("attaches the primary-changes summary per project (null when absent)", () => {
     const primaryChanges = [{ project_id: "p1", branch: "main", files_changed: 3, insertions: 12, deletions: 4 }];
     const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
-    expect(p1.primary).toEqual({ branch: "main", files_changed: 3, insertions: 12, deletions: 4 });
+    expect(p1.primary).toEqual({ branch: "main", path: null, files_changed: 3, insertions: 12, deletions: 4 });
     expect(p2.primary).toBeNull();
   });
 });
@@ -260,6 +260,56 @@ describe("projectHtml", () => {
     u.activePlanId = "pl-a";
     const m = model({ needsYou: [], running: [], planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })] });
     expect(projectHtml(m, u)).toContain('class="srow splan attn active"');
+  });
+
+  it("run rows carry a title with the goal and the state label (W10)", () => {
+    const html = projectHtml(model(), ui());
+    expect(html).toContain('title="Fix the thing — READY TO REVIEW"');
+  });
+
+  it("plan rows carry a title with the goal and the state label (W10)", () => {
+    const m = model({ needsYou: [], running: [], planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })] });
+    expect(projectHtml(m, ui())).toContain('title="Design the thing — READY TO REVIEW"');
+  });
+
+  it("plan rows carry a short state word like run rows do (W10)", () => {
+    const m = model({
+      needsYou: [],
+      running: [],
+      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })],
+      planApproved: [plan({ plan_id: "pl-b", state: "approved", needs_attention: false })],
+      planDrafting: [plan({ plan_id: "pl-c", state: "drafting", needs_attention: false })],
+    });
+    const html = projectHtml(m, ui());
+    expect(html).toContain('<span class="sstate">review</span>');
+    expect(html).toContain('<span class="sstate">ready</span>');
+    expect(html).toContain('<span class="sstate">drafting</span>');
+  });
+
+  it("open-comments count wins over the state word when present (W10)", () => {
+    const m = model({
+      needsYou: [],
+      running: [],
+      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review", stages: [{ open_comments: 2 }] })],
+    });
+    const html = projectHtml(m, ui());
+    expect(html).toContain("2 💬");
+    expect(html).not.toContain('<span class="sstate">review</span>');
+  });
+
+  it("worktree rows use a branch glyph, not the ⌥ option glyph, and carry a path/branch title (W10)", () => {
+    const u = ui();
+    u.wtOpen.add("p1");
+    const m = model({ worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "feat-a", path: "/tmp/wt/feat-a", dirty_files: 1 }], uncommitted: 1 });
+    const html = projectHtml(m, u);
+    expect(html).not.toContain("⌥");
+    expect(html).toContain('class="sbranch"');
+    expect(html).toContain('title="/tmp/wt/feat-a"');
+  });
+
+  it("the main line carries a branch title (W10)", () => {
+    const m = model({ worktrees: [], uncommitted: 0, primary: { branch: "main", files_changed: 0, insertions: 0, deletions: 0 } });
+    expect(projectHtml(m, ui())).toContain('title="main"');
   });
 });
 

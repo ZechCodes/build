@@ -118,6 +118,123 @@ export function stageNotesTarget(plan) {
   return { method: "plan.stage_send_notes", entityId: plan.plan_id };
 }
 
+// ---- Confirmation plans (the modal-confirm step outlines) --------------------
+// Each builder returns { title, intro?, actions, confirmLabel, danger } for
+// core/confirm.js's confirmAction — the ordered `actions` list is the concrete
+// outline of what the bridge will do, so the user confirms the real steps, not
+// a vague verb. Pure so the exact copy is unit-testable.
+
+/** The confirmation plan for a merge variant of run.git_action, or null for the
+ *  non-destructive actions (commit, push) which get no modal. `base` may be a
+ *  placeholder like "the base branch" when the real base is unknown. */
+export function gitActionConfirm(optionId, { branch, base }) {
+  const commitAndMerge = [`Commit any uncommitted changes on ${branch}`, `Merge ${branch} into ${base}`];
+  const pruneSteps = [...commitAndMerge, "Delete the worktree", `Delete branch ${branch}`];
+  switch (optionId) {
+    case "merge_prune":
+      return { title: `Merge ${branch}?`, actions: pruneSteps, confirmLabel: "Merge & clean up", danger: true };
+    case "merge_keep":
+      return {
+        title: `Merge ${branch}?`,
+        actions: [...commitAndMerge, "Keep the worktree and branch"],
+        confirmLabel: "Merge",
+        danger: false,
+      };
+    case "merge_release":
+      return {
+        title: `Merge ${branch}?`,
+        actions: [...commitAndMerge, "Release the task — keep the worktree and branch, drop the task"],
+        confirmLabel: "Merge & release",
+        danger: false,
+      };
+    case "merge_push":
+      return {
+        title: `Merge ${branch}?`,
+        actions: [...pruneSteps, `Push ${base} to origin`],
+        confirmLabel: "Merge & push",
+        danger: true,
+      };
+    default:
+      return null;
+  }
+}
+
+/** The confirmation plan for run.abandon. An adopted worktree holds files Build
+ *  did not create — the outline says so explicitly. */
+export function abandonConfirm({ adopted, branch }) {
+  return {
+    title: adopted ? "Delete this adopted worktree?" : "Abandon this task?",
+    actions: [
+      `Delete the worktree${adopted ? " (files Build did not create)" : ""}`,
+      `Delete branch ${branch}`,
+      "Keep the task as history",
+    ],
+    confirmLabel: adopted ? "Delete worktree" : "Abandon",
+    danger: true,
+  };
+}
+
+/** The confirmation plan for run.delete (removes the terminal run's record). */
+export function deleteRunConfirm() {
+  return {
+    title: "Delete this task?",
+    actions: ["Remove the task record permanently"],
+    confirmLabel: "Delete",
+    danger: true,
+  };
+}
+
+/** The confirmation plan for plan.delete (removes the abandoned plan's record). */
+export function deletePlanConfirm() {
+  return {
+    title: "Delete this plan?",
+    actions: ["Remove the plan record permanently"],
+    confirmLabel: "Delete",
+    danger: true,
+  };
+}
+
+/** The confirmation plan for plan.abandon: the planning worktree goes, the plan
+ *  document is store-canonical and stays as history — so not a danger verb. */
+export function abandonPlanConfirm() {
+  return {
+    title: "Abandon this plan?",
+    actions: ["Remove the planning worktree", "Keep the plan as history"],
+    confirmLabel: "Abandon",
+    danger: false,
+  };
+}
+
+/** The confirmation plan for plan.approve — a decisive gate, not a destructive
+ *  one: the outline frames what approval unlocks. */
+export function approvePlanConfirm() {
+  return {
+    title: "Approve this plan?",
+    actions: [
+      "The planning worktree is removed — the plan document is already saved",
+      "Implement unlocks: a coding agent can execute this plan",
+    ],
+    confirmLabel: "Approve plan",
+    danger: false,
+  };
+}
+
+/** The confirmation plan for run.create (Implement): what-happens-next framing.
+ *  `base` may be a placeholder like "the base branch". */
+export function implementConfirm({ base }) {
+  return {
+    title: "Implement this plan?",
+    intro: "A fresh agent session will execute this plan.",
+    actions: [
+      `Create a worktree on a new branch off ${base}`,
+      "Start a coding agent session running the plan",
+      "You'll be notified when it's ready to review",
+    ],
+    confirmLabel: "Implement",
+    danger: false,
+  };
+}
+
 /** The human-readable reason from a `merge_failed:<reason>` error message, or
  *  null when the message is some other error. Lets the view show just the reason
  *  (conflict files, wrong base checkout) without the machine prefix. */

@@ -10,6 +10,13 @@ import {
   implementBlockReason,
   defaultRunTab,
   stageNotesTarget,
+  gitActionConfirm,
+  abandonConfirm,
+  deleteRunConfirm,
+  deletePlanConfirm,
+  abandonPlanConfirm,
+  approvePlanConfirm,
+  implementConfirm,
 } from "../src/core/taskActions.js";
 
 // Live (non-deletable) run states, from the wire contract.
@@ -149,6 +156,164 @@ describe("default run tab selection", () => {
   it("is safe for a missing run", () => {
     expect(defaultRunTab(null)).toBe("changes");
     expect(defaultRunTab(undefined)).toBe("changes");
+  });
+});
+
+describe("git-action confirmation plans (the modal's step outline)", () => {
+  const names = { branch: "feat/x", base: "main" };
+
+  it("merge & clean up outlines commit, merge, worktree removal, and branch deletion", () => {
+    expect(gitActionConfirm("merge_prune", names)).toEqual({
+      title: "Merge feat/x?",
+      actions: [
+        "Commit any uncommitted changes on feat/x",
+        "Merge feat/x into main",
+        "Delete the worktree",
+        "Delete branch feat/x",
+      ],
+      confirmLabel: "Merge & clean up",
+      danger: true,
+    });
+  });
+
+  it("merge & keep outlines commit + merge and keeps the worktree (not danger)", () => {
+    expect(gitActionConfirm("merge_keep", names)).toEqual({
+      title: "Merge feat/x?",
+      actions: [
+        "Commit any uncommitted changes on feat/x",
+        "Merge feat/x into main",
+        "Keep the worktree and branch",
+      ],
+      confirmLabel: "Merge",
+      danger: false,
+    });
+  });
+
+  it("merge & release outlines the un-adopt step (not danger)", () => {
+    expect(gitActionConfirm("merge_release", names)).toEqual({
+      title: "Merge feat/x?",
+      actions: [
+        "Commit any uncommitted changes on feat/x",
+        "Merge feat/x into main",
+        "Release the task — keep the worktree and branch, drop the task",
+      ],
+      confirmLabel: "Merge & release",
+      danger: false,
+    });
+  });
+
+  it("merge & push appends the origin push to the clean-up steps", () => {
+    expect(gitActionConfirm("merge_push", names)).toEqual({
+      title: "Merge feat/x?",
+      actions: [
+        "Commit any uncommitted changes on feat/x",
+        "Merge feat/x into main",
+        "Delete the worktree",
+        "Delete branch feat/x",
+        "Push main to origin",
+      ],
+      confirmLabel: "Merge & push",
+      danger: true,
+    });
+  });
+
+  it("non-destructive actions (commit, push) get NO modal", () => {
+    expect(gitActionConfirm("commit", names)).toBeNull();
+    expect(gitActionConfirm("push", names)).toBeNull();
+    expect(gitActionConfirm("unknown_option", names)).toBeNull();
+  });
+
+  it("interpolates a placeholder base ('the base branch') gracefully", () => {
+    const plan = gitActionConfirm("merge_push", { branch: "feat/x", base: "the base branch" });
+    expect(plan.actions).toContain("Merge feat/x into the base branch");
+    expect(plan.actions).toContain("Push the base branch to origin");
+  });
+});
+
+describe("abandon confirmation plan", () => {
+  it("an adopted worktree warns that files Build did not create are deleted", () => {
+    expect(abandonConfirm({ adopted: true, branch: "feat/x" })).toEqual({
+      title: "Delete this adopted worktree?",
+      actions: [
+        "Delete the worktree (files Build did not create)",
+        "Delete branch feat/x",
+        "Keep the task as history",
+      ],
+      confirmLabel: "Delete worktree",
+      danger: true,
+    });
+  });
+
+  it("a Build-created task gets the plain abandon outline", () => {
+    expect(abandonConfirm({ adopted: false, branch: "feat/x" })).toEqual({
+      title: "Abandon this task?",
+      actions: ["Delete the worktree", "Delete branch feat/x", "Keep the task as history"],
+      confirmLabel: "Abandon",
+      danger: true,
+    });
+  });
+});
+
+describe("run/plan removal confirmation plans", () => {
+  it("deleting a run removes the record (danger)", () => {
+    expect(deleteRunConfirm()).toEqual({
+      title: "Delete this task?",
+      actions: ["Remove the task record permanently"],
+      confirmLabel: "Delete",
+      danger: true,
+    });
+  });
+
+  it("deleting a plan removes the record (danger)", () => {
+    expect(deletePlanConfirm()).toEqual({
+      title: "Delete this plan?",
+      actions: ["Remove the plan record permanently"],
+      confirmLabel: "Delete",
+      danger: true,
+    });
+  });
+
+  it("abandoning a plan removes the planning worktree but keeps the plan as history", () => {
+    expect(abandonPlanConfirm()).toEqual({
+      title: "Abandon this plan?",
+      actions: ["Remove the planning worktree", "Keep the plan as history"],
+      confirmLabel: "Abandon",
+      danger: false,
+    });
+  });
+});
+
+describe("plan gate confirmation plans (Approve / Implement)", () => {
+  it("approve outlines the worktree teardown and the implement unlock", () => {
+    expect(approvePlanConfirm()).toEqual({
+      title: "Approve this plan?",
+      actions: [
+        "The planning worktree is removed — the plan document is already saved",
+        "Implement unlocks: a coding agent can execute this plan",
+      ],
+      confirmLabel: "Approve plan",
+      danger: false,
+    });
+  });
+
+  it("implement outlines the worktree, the agent session, and the notification", () => {
+    expect(implementConfirm({ base: "main" })).toEqual({
+      title: "Implement this plan?",
+      intro: "A fresh agent session will execute this plan.",
+      actions: [
+        "Create a worktree on a new branch off main",
+        "Start a coding agent session running the plan",
+        "You'll be notified when it's ready to review",
+      ],
+      confirmLabel: "Implement",
+      danger: false,
+    });
+  });
+
+  it("implement interpolates a placeholder base gracefully", () => {
+    expect(implementConfirm({ base: "the base branch" }).actions[0]).toBe(
+      "Create a worktree on a new branch off the base branch",
+    );
   });
 });
 

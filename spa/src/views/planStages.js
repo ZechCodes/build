@@ -40,6 +40,18 @@ let stageSelDispose = null;
 
 const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "");
 
+/** The doc-read error pane, with an inline Retry that clears the read latch and
+ *  refetches (W15) — replacing the old "Reopen the plan/stage to retry" copy.
+ *  `kind` is "plan" (the single-doc pane in plan.js) or "stage" (this file's
+ *  stage-doc pane); each carries the button id its host wires. Pure/exported so
+ *  both surfaces render the same affordance and it can be tested directly. */
+export function docErrorPaneHtml(kind) {
+  const isStage = kind === "stage";
+  const buttonId = isStage ? "stagedocretry" : "docretry";
+  const what = isStage ? "this stage document" : "the plan document";
+  return `<div class="plan-empty warn">Couldn't load ${what}. <button class="btn mini" id="${buttonId}">Retry</button></div>`;
+}
+
 /** Pure markup for the plan-side stage board (exported for tests). Manifest
  *  rows carry the doc sub-state chip (planned/approved), the stage summary, and
  *  the open-comment badge; an Approve-all control shows only while every stage
@@ -144,7 +156,7 @@ function renderStageDoc(ctx, stage) {
   const docHtml =
     paneState === "ready" ? renderMarkdown(docContents)
     : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
-    : paneState === "error" ? `<div class="plan-empty warn">Couldn't load this stage document. Reopen the stage to retry.</div>`
+    : paneState === "error" ? docErrorPaneHtml("stage")
     : '<div class="plan-loading">✦ loading stage document…</div>';
   const showComposer = canComment && paneState === "ready";
 
@@ -157,6 +169,11 @@ function renderStageDoc(ctx, stage) {
     <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
 
   body.querySelector("#stageback").onclick = () => onSelectStage(null);
+
+  // A stage doc-read error latched the pane; the inline Retry clears the latch
+  // and refetches through plan.js's onRetryStageDoc callback (W15).
+  const stageRetry = body.querySelector("#stagedocretry");
+  if (stageRetry && ctx.onRetryStageDoc) stageRetry.onclick = () => ctx.onRetryStageDoc(stage.id);
 
   // Anchored comments: select text in the doc → popover → plan.comment_add.
   if (showComposer) {

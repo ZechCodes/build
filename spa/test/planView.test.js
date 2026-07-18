@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { planBucketKey, bucketPlans } from "../src/core/planRail.js";
-import { planStageBoardHtml } from "../src/views/planStages.js";
+import { planStageBoardHtml, docErrorPaneHtml } from "../src/views/planStages.js";
 import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
 
 describe("planBucketKey", () => {
@@ -96,6 +96,28 @@ describe("planStageBoardHtml", () => {
     const html = planStageBoardHtml({ state: "plan_review" }, allPlanned);
     expect(html).not.toContain('id="runall"');
     expect(html).not.toContain("stage-validation");
+  });
+});
+
+// The doc-read error pane carries an inline Retry affordance (W15) instead of the
+// old "Reopen the plan/stage to retry" copy. The button ids let plan.js /
+// planStages.js wire the latch-clear + refetch.
+describe("docErrorPaneHtml (doc-read Retry)", () => {
+  it("offers an inline Retry button for the plan doc", () => {
+    const html = docErrorPaneHtml("plan");
+    expect(html).toContain('class="plan-empty warn"');
+    expect(html).toContain('id="docretry"');
+    expect(html).toContain("Retry");
+    expect(html).toContain("the plan document");
+    expect(html).not.toContain("Reopen");
+  });
+
+  it("offers an inline Retry button for a stage doc with a distinct id", () => {
+    const html = docErrorPaneHtml("stage");
+    expect(html).toContain('id="stagedocretry"');
+    expect(html).toContain("Retry");
+    expect(html).toContain("this stage document");
+    expect(html).not.toContain("Reopen");
   });
 });
 

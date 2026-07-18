@@ -37,7 +37,7 @@ import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
-import { renderPlanStages, planStageActionBusy, DOCS_UNAVAILABLE } from "./planStages.js";
+import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
 
 // Plan states whose planning session accepts a freeform message (the bridge
 // gates the rest): a live drafting session redirects, a parked one resumes.
@@ -448,13 +448,25 @@ export async function renderPlan() {
     const docHtml =
       paneState === "ready" ? renderMarkdown(doc)
       : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
-      : paneState === "error" ? `<div class="plan-empty warn">Couldn't load the plan document. Reopen the plan to retry.</div>`
+      : paneState === "error" ? docErrorPaneHtml("plan")
       : '<div class="plan-loading">✦ loading plan document…</div>';
     body.innerHTML = `
       <div class="plan" id="plandoc">${docHtml}</div>
       ${editable ? `<div class="plan-feedback"><div id="pclist"></div>
         <textarea id="pgeneral" class="plan-general" placeholder="Add a general comment about the plan and request updates…"></textarea>
         <div class="actionbar"><span class="hint" id="phint"></span><div class="right" id="pactions"></div></div></div>` : ""}`;
+    // A doc-read error latched the pane; the inline Retry clears the latch, forces
+    // a refetch, and repaints (W15). Wired before the editable early-return since
+    // an errored pane is never editable.
+    if (paneState === "error") {
+      const retry = $("#docretry");
+      if (retry)
+        retry.onclick = () => {
+          singleDocError = false;
+          planKey = null;
+          paint();
+        };
+    }
     if (!editable) return;
     const pclist = $("#pclist"),
       pactions = $("#pactions"),
@@ -594,6 +606,13 @@ export async function renderPlan() {
         if (stageId) stageDocError.delete(stageId);
         stagesKey = null;
         hideCommentPop();
+        paint();
+      },
+      // The stage doc's inline Retry (W15): clear that stage's read latch, force a
+      // stages rebuild, and repaint so the doc is refetched.
+      onRetryStageDoc: (stageId) => {
+        stageDocError.delete(stageId);
+        stagesKey = null;
         paint();
       },
     });

@@ -3007,6 +3007,7 @@ mod tests {
             last_error: Some("boom".into()),
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
+            state_changed_at: None,
         };
         let active = ActivePlan::reattach(&record);
         assert_eq!(active.plan.id.0, "plan-1");
@@ -3059,6 +3060,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
+            state_changed_at: None,
         };
         let active = ActiveRun::reattach(&record, ".build/plan.md".into());
         assert_eq!(active.run.id.0, "run-1");

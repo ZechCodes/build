@@ -188,6 +188,11 @@ pub struct PersistedPlan {
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
+    /// When the plan last changed *state* (vs `updated_at`, any mutation).
+    /// `None` on records from before the field existed — restore falls back
+    /// to `updated_at`.
+    #[serde(default)]
+    pub state_changed_at: Option<String>,
 }
 
 /// The durable core of one run — the worktree-scoped half of the split. A run
@@ -246,6 +251,11 @@ pub struct PersistedRun {
     /// RFC 3339 UTC timestamps.
     pub created_at: String,
     pub updated_at: String,
+    /// When the run last changed *state* (vs `updated_at`, any mutation).
+    /// `None` on records from before the field existed — restore falls back
+    /// to `updated_at`.
+    #[serde(default)]
+    pub state_changed_at: Option<String>,
 }
 
 /// The bridge's JSON record store: plans (record + canonical docs per dir),
@@ -876,6 +886,7 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
         updated_at: task.updated_at.clone(),
+        state_changed_at: None,
     })
 }
 
@@ -955,6 +966,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
         updated_at: task.updated_at.clone(),
+        state_changed_at: None,
     })
 }
 
@@ -1514,6 +1526,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
+            state_changed_at: None,
         }
     }
 
@@ -1550,6 +1563,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T11:00:00Z".into(),
             updated_at: "2026-07-01T11:05:00Z".into(),
+            state_changed_at: None,
         }
     }
 

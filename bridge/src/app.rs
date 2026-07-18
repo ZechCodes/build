@@ -487,6 +487,12 @@ pub struct AppState {
     entity_created_at: HashMap<String, String>,
     /// entity id → its RFC 3339 last-mutation time (stamped on every mutation).
     entity_updated_at: HashMap<String, String>,
+    /// entity id → the RFC 3339 time of its last *state transition* (vs
+    /// `entity_updated_at`, which moves on every mutation).
+    entity_state_changed_at: HashMap<String, String>,
+    /// entity id → the wire state string last seen by a mutation tail, so
+    /// `entity_state_changed_at` only moves on real transitions.
+    entity_last_state: HashMap<String, String>,
     /// run id → cached `board.list` diffstat, so the poll surface never runs
     /// per-run git work more than once per TTL window.
     run_stat_cache: HashMap<String, (std::time::Instant, Value)>,
@@ -547,6 +553,8 @@ impl AppState {
             store: None,
             entity_created_at: HashMap::new(),
             entity_updated_at: HashMap::new(),
+            entity_state_changed_at: HashMap::new(),
+            entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
@@ -702,6 +710,23 @@ impl AppState {
             }
         }
 
+        // A boot transition (e.g. drafting → interrupted) is a real state
+        // change and stamps now; otherwise keep the record's stamp. Old
+        // records carry none — fall back to their updated_at. Seed the
+        // last-observed state from the (post-recovery) plan so the first
+        // post-boot mutation in the same state doesn't false-stamp.
+        self.entity_state_changed_at.insert(
+            plan_id.clone(),
+            if state_changed {
+                now_rfc3339()
+            } else {
+                record
+                    .state_changed_at
+                    .unwrap_or_else(|| record.updated_at.clone())
+            },
+        );
+        self.entity_last_state
+            .insert(plan_id.clone(), plan_state_str(&active.plan.state));
         self.entity_created_at
             .insert(plan_id.clone(), record.created_at);
         self.entity_updated_at
@@ -797,6 +822,21 @@ impl AppState {
             );
         }
 
+        // Same restore discipline as recover_plan: a boot transition stamps
+        // now, otherwise keep the record's stamp (falling back to updated_at
+        // for pre-field records); seed last-state from the recovered run.
+        self.entity_state_changed_at.insert(
+            run_id.clone(),
+            if state_changed {
+                now_rfc3339()
+            } else {
+                record
+                    .state_changed_at
+                    .unwrap_or_else(|| record.updated_at.clone())
+            },
+        );
+        self.entity_last_state
+            .insert(run_id.clone(), run_state_str(&active.run.state));
         self.entity_created_at
             .insert(run_id.clone(), record.created_at);
         self.entity_updated_at
@@ -856,6 +896,7 @@ impl AppState {
             last_error: active.last_error.clone(),
             created_at,
             updated_at,
+            state_changed_at: self.entity_state_changed_at.get(plan_id).cloned(),
         };
         self.store
             .as_ref()
@@ -902,6 +943,7 @@ impl AppState {
             last_error: active.last_error.clone(),
             created_at,
             updated_at,
+            state_changed_at: self.entity_state_changed_at.get(run_id).cloned(),
         };
         self.store
             .as_ref()
@@ -923,7 +965,8 @@ impl AppState {
         self.entity_created_at
             .entry(plan_id.clone())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(plan_id.clone(), now);
+        self.entity_updated_at.insert(plan_id.clone(), now.clone());
+        self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let view = self.plan_view(&plan_id, &active);
         let persisted = self.persist_plan_record(&plan_id, &active);
         self.push_notify_plan(&plan_id, active.plan.state);
@@ -944,7 +987,8 @@ impl AppState {
         self.entity_created_at
             .entry(run_id.clone())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(run_id.clone(), now);
+        self.entity_updated_at.insert(run_id.clone(), now.clone());
+        self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
         self.run_stat_cache.remove(&run_id);
         let view = self.run_view(&run_id, &active);
@@ -954,6 +998,18 @@ impl AppState {
         self.reap_orphaned_terminals();
         self.ensure_agent_pumps();
         (view, persisted)
+    }
+
+    /// Move `entity_state_changed_at` only when the entity's wire state
+    /// actually differs from the last one a mutation tail observed. A fresh
+    /// entity's first mutation stamps it — creation is a state change.
+    fn stamp_state_change(&mut self, entity_id: &str, state: String, now: String) {
+        if self.entity_last_state.get(entity_id) == Some(&state) {
+            return;
+        }
+        self.entity_state_changed_at
+            .insert(entity_id.to_string(), now);
+        self.entity_last_state.insert(entity_id.to_string(), state);
     }
 
     /// Fire one content-free web-push notify when a plan-state change lands in
@@ -2937,6 +2993,8 @@ impl AppState {
         self.entity_project_path.remove(&plan_id);
         self.entity_created_at.remove(&plan_id);
         self.entity_updated_at.remove(&plan_id);
+        self.entity_state_changed_at.remove(&plan_id);
+        self.entity_last_state.remove(&plan_id);
         self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
     }
@@ -3377,6 +3435,8 @@ impl AppState {
                 self.entity_project_path.remove(run_id);
                 self.entity_created_at.remove(run_id);
                 self.entity_updated_at.remove(run_id);
+                self.entity_state_changed_at.remove(run_id);
+                self.entity_last_state.remove(run_id);
                 self.run_stat_cache.remove(run_id);
                 self.invalidate_external_scan(project_id);
             }
@@ -3468,6 +3528,8 @@ impl AppState {
         self.entity_project_path.remove(&run_id);
         self.entity_created_at.remove(&run_id);
         self.entity_updated_at.remove(&run_id);
+        self.entity_state_changed_at.remove(&run_id);
+        self.entity_last_state.remove(&run_id);
         self.run_stat_cache.remove(&run_id);
 
         if worktree.path.exists() {
@@ -3529,6 +3591,8 @@ impl AppState {
         self.entity_project_path.remove(&run_id);
         self.entity_created_at.remove(&run_id);
         self.entity_updated_at.remove(&run_id);
+        self.entity_state_changed_at.remove(&run_id);
+        self.entity_last_state.remove(&run_id);
         self.run_stat_cache.remove(&run_id);
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
@@ -3682,6 +3746,7 @@ impl AppState {
                 .is_some_and(|store| store.has_plan_docs(plan_id)),
             "created_at": self.entity_created_at.get(plan_id),
             "updated_at": self.entity_updated_at.get(plan_id),
+            "state_changed_at": self.entity_state_changed_at.get(plan_id),
             "stages": active
                 .stages
                 .iter()
@@ -3710,6 +3775,7 @@ impl AppState {
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
             "base_sha": active.base_sha,
+            "worktree_path": active.worktree.path.display().to_string(),
             "summary": active.last_summary,
             "last_error": active.last_error,
             "project": project,
@@ -3722,6 +3788,7 @@ impl AppState {
             "adopted": active.adopted,
             "created_at": self.entity_created_at.get(run_id),
             "updated_at": self.entity_updated_at.get(run_id),
+            "state_changed_at": self.entity_state_changed_at.get(run_id),
             "stages": active
                 .stages
                 .iter()
@@ -7192,6 +7259,124 @@ mod tests {
     }
 
     #[test]
+    fn board_list_views_carry_state_changed_at_and_run_worktree_path() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "progress facts" })));
+        let run_id = run_id_of(&run);
+        state.handle(req("plan.create", json!({ "goal": "a plan" })));
+
+        let board = state.handle(req("board.list", json!({})));
+        let run_entry = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["run_id"] == json!(run_id.clone()))
+            .unwrap()
+            .clone();
+        assert!(
+            run_entry["state_changed_at"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "{run_entry:?}"
+        );
+        let worktree_path = run_entry["worktree_path"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(worktree_path).exists(),
+            "{run_entry:?}"
+        );
+
+        let plan_entry = &board["result"]["plans"].as_array().unwrap()[0];
+        assert!(
+            plan_entry["state_changed_at"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty()),
+            "{plan_entry:?}"
+        );
+    }
+
+    #[test]
+    fn state_changed_at_moves_on_transitions_but_not_same_state_mutations() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "quick change" })));
+        let run_id = run_id_of(&run);
+        let entry = |res: &Value| {
+            res["result"]["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["run_id"] == json!(run_id.clone()))
+                .unwrap()
+                .clone()
+        };
+        let at_review = entry(&state.handle(req("board.list", json!({}))));
+        assert_eq!(at_review["state"], "review", "{at_review:?}");
+        let review_stamp = at_review["state_changed_at"].as_str().unwrap().to_string();
+        let review_updated = at_review["updated_at"].as_str().unwrap().to_string();
+
+        // A same-state git mutation advances updated_at but never the stamp.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let staged = state.handle(req(
+            "git.stage",
+            json!({ "run_id": run_id, "paths": ["result.txt"] }),
+        ));
+        assert_eq!(staged["ok"], true, "{staged:?}");
+        let committed = state.handle(req(
+            "git.commit",
+            json!({ "run_id": run_id, "message": "keep" }),
+        ));
+        assert_eq!(committed["ok"], true, "{committed:?}");
+        let after_commit = entry(&state.handle(req("board.list", json!({}))));
+        assert_eq!(after_commit["state"], "review", "{after_commit:?}");
+        assert_eq!(after_commit["state_changed_at"], json!(review_stamp));
+        assert_ne!(after_commit["updated_at"], json!(review_updated));
+
+        // Merging is a real transition: the stamp moves with it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let merged = state.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": "merge" }),
+        ));
+        assert_eq!(merged["result"]["state"], "merged", "{merged:?}");
+        assert_ne!(merged["result"]["state_changed_at"], json!(review_stamp));
+    }
+
+    #[test]
+    fn state_changed_at_survives_a_daemon_restart() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let stamp;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let run = state.handle(req("run.create", json!({ "goal": "restartable" })));
+            run_id = run_id_of(&run);
+            let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+            assert_eq!(got["result"]["state"], "review", "{got:?}");
+            stamp = got["result"]["state_changed_at"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        } // daemon dies
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let got = reloaded.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(got["result"]["state"], "review", "{got:?}");
+        assert_eq!(got["result"]["state_changed_at"], json!(stamp));
+
+        // A restored entity's first same-state mutation must not false-stamp:
+        // the last-observed state is seeded from the record on boot. A commit
+        // runs the full mutation tail but keeps the run in review.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let committed = reloaded.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": "commit" }),
+        ));
+        assert_eq!(committed["result"]["state"], "review", "{committed:?}");
+        assert_eq!(committed["result"]["state_changed_at"], json!(stamp));
+    }
+
+    #[test]
     fn deleting_a_run_worktree_archives_it_and_plan_docs_survive() {
         let (dir, repo) = init_repo();
         let plan_id;
@@ -7634,6 +7819,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:00:00Z".into(),
+            state_changed_at: None,
         }
     }
 
@@ -7852,6 +8038,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:00:00Z".into(),
+            state_changed_at: None,
         }
     }
 
@@ -7879,6 +8066,7 @@ mod tests {
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:00:00Z".into(),
+            state_changed_at: None,
         }
     }
 

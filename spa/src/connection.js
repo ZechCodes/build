@@ -97,9 +97,9 @@ export async function resume() {
     adoptSession(session);
     restoreOnline();
     reconnectDelay = 0;
-    // The board holds no user input, so refreshing it is safe; the task view's
-    // own poll resumes and its key-diffing preserves in-progress work.
-    if (App.route.name === "board") render();
+    // The notifications view holds no user input, so refreshing it is safe; the
+    // task view's own poll resumes and its key-diffing preserves in-progress work.
+    if (App.route.name === "notifications") render();
   } catch {
     // Relay unreachable — retry with backoff until it's back.
     reconnectDelay = Math.min((reconnectDelay || 1000) * 2, 15000);

@@ -23,6 +23,7 @@ if (location.pathname.startsWith("/app")) {
 initRouter();
 initDevicePicker();
 
+$(".logo").onclick = () => go({ name: "notifications" });
 $("#nav-notif").onclick = () => go({ name: "notifications" });
 $("#nav-account").onclick = () => go({ name: "settings" });
 $("#scrim").onclick = (e) => {

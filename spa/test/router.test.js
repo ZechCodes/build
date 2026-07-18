@@ -3,7 +3,6 @@ import { routeFromHash, hashFromRoute } from "../src/core/router.js";
 
 describe("routeFromHash", () => {
   it("maps hashes to routes", () => {
-    expect(routeFromHash("#/board")).toEqual({ name: "board" });
     expect(routeFromHash("#/notifications")).toEqual({ name: "notifications" });
     expect(routeFromHash("#/settings")).toEqual({ name: "settings" });
     // The run route keeps the #/task grammar (runs are "Tasks" in the UI), keyed by run_id.
@@ -63,16 +62,20 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/main/a%20b/files")).toEqual({ name: "main", projectId: "a b", tab: "files" });
   });
 
-  it("defaults unknown or empty hashes to the board", () => {
-    expect(routeFromHash("")).toEqual({ name: "board" });
-    expect(routeFromHash("#")).toEqual({ name: "board" });
-    expect(routeFromHash("#/nope")).toEqual({ name: "board" });
-    expect(routeFromHash("#/task")).toEqual({ name: "board" });
-    expect(routeFromHash("#/plan")).toEqual({ name: "board" });
-    expect(routeFromHash("#/worktree")).toEqual({ name: "board" });
-    expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "board" });
-    expect(routeFromHash("#/main")).toEqual({ name: "board" });
-    expect(routeFromHash("#/project")).toEqual({ name: "board" });
+  it("defaults unknown or empty hashes to notifications (the landing surface)", () => {
+    expect(routeFromHash("")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/nope")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/task")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/plan")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/worktree")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/main")).toEqual({ name: "notifications" });
+    expect(routeFromHash("#/project")).toEqual({ name: "notifications" });
+  });
+
+  it("redirects stale #/board hashes to notifications (the board is gone)", () => {
+    expect(routeFromHash("#/board")).toEqual({ name: "notifications" });
   });
 
   it("decodes worktree route segments", () => {
@@ -88,7 +91,6 @@ describe("routeFromHash", () => {
 describe("hashFromRoute", () => {
   it("is the inverse of routeFromHash", () => {
     for (const route of [
-      { name: "board" },
       { name: "notifications" },
       { name: "settings" },
       { name: "task", id: "run-9", tab: "changes" },
@@ -115,6 +117,11 @@ describe("hashFromRoute", () => {
     const route = { name: "plan", id: "plan-1", tab: "review", stage: "second-half" };
     expect(hashFromRoute(route)).toBe("#/plan/plan-1/review/second-half");
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+  });
+
+  it("maps unknown route names (including the retired board) to #/notifications", () => {
+    expect(hashFromRoute({ name: "board" })).toBe("#/notifications");
+    expect(hashFromRoute({ name: "whatever" })).toBe("#/notifications");
   });
 
   it("supplies the default tab when a route omits it", () => {

@@ -1,6 +1,6 @@
-// One shared board-feed poller for surfaces that live on every page (the
+// One shared board.list-feed poller for surfaces that live on every page (the
 // sidebar, the nav badge) — views keep their own detail polls. The plan/run
-// split means the board carries both collections; consumers read `plans` and
+// split means the feed carries both collections; consumers read `plans` and
 // `runs` separately.
 
 import { App } from "../app.js";

@@ -80,7 +80,7 @@ export async function renderPlan() {
   loadModelCatalog(); // warm the catalog before the Implement options need it
 
   const goHome = () =>
-    go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "board" });
+    go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "notifications" });
 
   const showBanner = (message) => {
     const el = $("#planError");

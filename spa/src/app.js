@@ -2,7 +2,6 @@
 
 import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute } from "./core/router.js";
-import { renderBoard } from "./views/board.js";
 import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
@@ -17,7 +16,7 @@ const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 export const App = {
   call: null, // RPC into the live E2EE session (session.call)
   session: null, // { call, deviceId, close }
-  route: { name: "board" },
+  route: { name: "notifications" },
   poll: null,
   viewDispose: null, // the current view's teardown (terminal panes, observers)
   readIds: new Set(),
@@ -92,8 +91,7 @@ export function render() {
   // every other view keeps the centered reading column.
   const surfaceRoutes = ["task", "worktree", "main", "plan"];
   $("#root").classList.toggle("surface", surfaceRoutes.includes(App.route.name));
-  if (App.route.name === "board") renderBoard();
-  else if (App.route.name === "notifications") renderNotifications();
+  if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();
   else if (App.route.name === "worktree") renderWorktree();
   else if (App.route.name === "main") renderMain();

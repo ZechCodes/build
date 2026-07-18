@@ -435,7 +435,7 @@ body.sidebar-collapsed #sidebar { display:none; }
 body.gated #sidebar, body.gated #side-open { display:none !important; }
 #shell main { flex:1; min-width:0; }
 .side-top { display:flex; align-items:center; margin:0 2px 10px; }
-.side-top .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; }
+.side-top .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 .side-top .iconbtn { margin-left:auto; }
 .side-nav { margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line2); }
 .srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }

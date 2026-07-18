@@ -6,10 +6,10 @@
 
 // Terminal *display* states the bridge's run.delete accepts (merged/abandoned/
 // archived/failed). A failed run is recoverable by replying, but it can also be
-// cleared off the board, so Delete is the removal affordance we show for it.
+// cleared away, so Delete is the removal affordance we show for it.
 const RUN_DELETABLE = new Set(["merged", "abandoned", "archived", "failed"]);
 
-/** Whether run.delete is valid for this state (terminal on the board). */
+/** Whether run.delete is valid for this state (a terminal display state). */
 export function canDelete(state) {
   return RUN_DELETABLE.has(state);
 }
@@ -94,7 +94,7 @@ export function planDocPaneState({ docsAvailable, errorLatched, hasContents }) {
 /** Which tab a run card opens on. A run parked between stages (stage_gate) opens
  *  on Stages, where the sequential gate's Start control lives; every other state
  *  — building, review (needs-you), the parked arms — opens on Changes, the diff
- *  review surface that is the product. Pure so the board/notifications/sidebar
+ *  review surface that is the product. Pure so notifications/sidebar/project
  *  all pick the same default. */
 export function defaultRunTab(run) {
   return run && run.state === "stage_gate" ? "stages" : "changes";

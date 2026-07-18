@@ -202,9 +202,10 @@ export async function renderTask() {
 
   let last = null;
 
-  // Leaving the run lands on its project page (nothing links to the board).
+  // Leaving the run lands on its project page (or notifications when the
+  // owning project was never learned).
   const goHome = () =>
-    go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "board" });
+    go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "notifications" });
 
   // A mid-run revision belongs to the plan (the doc home never moved): open the
   // owning plan's stage doc so the user comments / sends notes there.

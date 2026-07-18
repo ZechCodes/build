@@ -1,4 +1,4 @@
-// Hash routes: #/board, #/notifications, #/settings,
+// Hash routes: #/notifications (the landing surface), #/settings,
 // #/task/<runId>/<tab>       — a run (worktree-scoped; "Task" in the UI),
 // #/plan/<planId>/<tab>      — a plan (project-scoped review surface),
 // #/worktree/<projectId>/<worktreeId>/<tab> (read-only external-worktree browse),
@@ -28,10 +28,10 @@ export function routeFromHash(hash) {
     case "settings":
       return { name: "settings" };
     case "task":
-      if (!parts[1]) return { name: "board" };
+      if (!parts[1]) return { name: "notifications" };
       return { name: "task", id: decodeURIComponent(parts[1]), tab: runTab(parts[2]) };
     case "plan": {
-      if (!parts[1]) return { name: "board" };
+      if (!parts[1]) return { name: "notifications" };
       // An optional 4th segment deep-links one stage's doc — the run's Stages
       // tab links here so a mid-run revision lands on the exact plan doc.
       const route = { name: "plan", id: decodeURIComponent(parts[1]), tab: planTab(parts[2]) };
@@ -39,7 +39,7 @@ export function routeFromHash(hash) {
       return route;
     }
     case "worktree":
-      if (!parts[1] || !parts[2]) return { name: "board" };
+      if (!parts[1] || !parts[2]) return { name: "notifications" };
       return {
         name: "worktree",
         projectId: decodeURIComponent(parts[1]),
@@ -47,13 +47,16 @@ export function routeFromHash(hash) {
         tab: worktreeTab(parts[3]),
       };
     case "main":
-      if (!parts[1]) return { name: "board" };
+      if (!parts[1]) return { name: "notifications" };
       return { name: "main", projectId: decodeURIComponent(parts[1]), tab: mainTab(parts[2]) };
     case "project":
-      if (!parts[1]) return { name: "board" };
+      if (!parts[1]) return { name: "notifications" };
       return { name: "project", projectId: decodeURIComponent(parts[1]) };
+    case "board":
+      // The board is gone; stale bookmarks land on the notifications surface.
+      return { name: "notifications" };
     default:
-      return { name: "board" };
+      return { name: "notifications" };
   }
 }
 
@@ -69,5 +72,5 @@ export function hashFromRoute(route) {
   if (route.name === "project") return `#/project/${encodeURIComponent(route.projectId)}`;
   if (route.name === "notifications") return "#/notifications";
   if (route.name === "settings") return "#/settings";
-  return "#/board";
+  return "#/notifications";
 }

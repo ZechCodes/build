@@ -1,4 +1,4 @@
-// Connection gate. Before the board can load we need a live, owned device.
+// Connection gate. Before the app can load we need a live, owned device.
 // Three entry states: onboarding (no devices yet), waiting (devices exist but
 // none online — auto-reconnect), connected (open the E2EE session and render).
 

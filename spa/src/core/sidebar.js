@@ -77,9 +77,9 @@ const statHtml = (stat) =>
     ? `<span class="sstat mono"><em class="add">+${stat.insertions}</em> <em class="del">-${stat.deletions}</em></span>`
     : "";
 
-// A run row (the board's "Tasks"), keyed by run_id, routing to the run surface's
+// A run row ("Tasks" in the UI), keyed by run_id, routing to the run surface's
 // default tab — Stages for a run parked at the stage gate, Changes otherwise —
-// so the sidebar opens the same tab the board and notifications do (defaultRunTab).
+// so the sidebar opens the same tab notifications does (defaultRunTab).
 function runRow(r, { icon, right, cls = "" }) {
   return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;

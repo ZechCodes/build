@@ -1,10 +1,10 @@
-// The understated board card for a git worktree Build did not create. Every
-// field (branch, subject, path) is UNTRUSTED external text and passes through
-// esc() at each interpolation.
+// The understated project-page card for a git worktree Build did not create.
+// Every field (branch, subject, path) is UNTRUSTED external text and passes
+// through esc() at each interpolation.
 
 import { esc, humanAge } from "./text.js";
 
-/** The understated board card for one external worktree (task.list entry). */
+/** The understated card for one external worktree (task.list entry). */
 export function externalWorktreeCard(w) {
   const stat = w.diffstat || { files_changed: 0, insertions: 0, deletions: 0 };
   const dirty = w.dirty_files ? ` · ${w.dirty_files} uncommitted` : "";

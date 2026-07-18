@@ -1,5 +1,5 @@
-// Presentation helpers shared by the board, notifications, project, and the
-// run/plan views. The plan/run split gives each entity its own state vocabulary
+// Presentation helpers shared by notifications, project, and the run/plan
+// views. The plan/run split gives each entity its own state vocabulary
 // (see the wire contract), so labels, chip palettes, terminal sets, and payload
 // copy come in matching run/plan variants.
 
@@ -41,7 +41,7 @@ export function runPayloadFor(run) {
   return "";
 }
 
-/** Runs waiting on the user (the board's "NEEDS YOU" bucket). */
+/** Runs waiting on the user (core/board.js's "NEEDS YOU" bucket). */
 export function attnRuns(runs) {
   return (runs || []).filter((r) => r.needs_attention && !RUN_TERMINAL_STATES.has(r.state));
 }

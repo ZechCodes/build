@@ -202,11 +202,31 @@ export async function renderTask() {
   };
 
   let last = null;
+  // Latched once run.get reports "unknown run_id": the run was deleted out from
+  // under this view. We stop the poll and render a terminal gone-state so a stray
+  // tick can never repaint over it.
+  let gone = false;
 
   // Leaving the run lands on its project page (or notifications when the
   // owning project was never learned).
   const goHome = () =>
     go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "notifications" });
+
+  // The run is gone (deleted while we were on it): stop the poll, tear down any
+  // mounted aux pane, and render a latched terminal state with a way back — the
+  // owning project if a prior paint learned it, else notifications.
+  const renderGone = () => {
+    gone = true;
+    if (App.poll) {
+      clearInterval(App.poll);
+      App.poll = null;
+    }
+    disposeAux();
+    const backLabel = last && last.project_id ? "Back to project" : "Back to notifications";
+    root.innerHTML = `<div class="empty gone">This task no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
+    const back = $("#goneback");
+    if (back) back.onclick = () => goHome();
+  };
 
   // A mid-run revision belongs to the plan (the doc home never moved): open the
   // owning plan's stage doc so the user comments / sends notes there.
@@ -378,11 +398,14 @@ export async function renderTask() {
   let visitMarkedRead = false; // paint() marks the run read once per visit
 
   const paint = async () => {
-    if (App.offline) return; // freeze the view; resume() restarts the flow
+    if (gone || App.offline) return; // latched gone-state / offline freeze: no repaint
     let t;
     try {
       t = await App.call("run.get", { run_id: id });
-    } catch {
+    } catch (e) {
+      // A deleted run is permanent: latch the gone-state and stop polling.
+      // Every other error is transient — stay silent and let the poll retry.
+      if (/unknown run_id/.test((e && e.message) || "")) renderGone();
       return;
     }
     // Visiting the run reads it: mark once, on the first successful fetch.

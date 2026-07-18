@@ -81,11 +81,36 @@ export async function renderPlan() {
   // holds the latched stage ids.
   let singleDocError = false;
   const stageDocError = new Set();
+  // Latched once plan.get reports "unknown plan_id": the plan was deleted out
+  // from under this view. We stop the poll and render a terminal gone-state so a
+  // stray tick can never repaint over it (mirrors task.js's planGone latch).
+  let gone = false;
 
   loadModelCatalog(); // warm the catalog before the Implement options need it
 
   const goHome = () =>
     go(last && last.project_id ? { name: "project", projectId: last.project_id } : { name: "notifications" });
+
+  // The plan is gone (deleted while we were on it): stop everything and render a
+  // latched terminal state with a way back — the owning project if a prior paint
+  // learned it, else notifications. Tears down the agent pane and the selection
+  // watcher so nothing lingers under the replaced #root.
+  const renderGone = () => {
+    gone = true;
+    if (App.poll) {
+      clearInterval(App.poll);
+      App.poll = null;
+    }
+    disposeAgent();
+    if (planSelDispose) {
+      planSelDispose();
+      planSelDispose = null;
+    }
+    const backLabel = last && last.project_id ? "Back to project" : "Back to notifications";
+    root.innerHTML = `<div class="empty gone">This plan no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
+    const back = $("#goneback");
+    if (back) back.onclick = () => goHome();
+  };
 
   const showBanner = (message) => {
     const el = $("#planError");
@@ -120,7 +145,7 @@ export async function renderPlan() {
     body.innerHTML = `
       <p class="mono projmeta" id="planmeta"></p>
       <div class="plan-summary" id="plansummary" hidden></div>
-      <div id="planbody"></div>`;
+      <div id="planbody"><div class="plan-loading">loading…</div></div>`;
     summaryKey = null; // force the summary to repaint into the fresh skeleton
   };
 
@@ -227,7 +252,7 @@ export async function renderPlan() {
       tabs,
       active: tab,
       onSelect: (t) => selectTab(t),
-      back: { title: p.project ? `Back to ${p.project}` : "Back to project" },
+      back: { title: p && p.project ? `Back to ${p.project}` : "Back to project" },
       onBack: () => goHome(),
     });
   };
@@ -237,24 +262,29 @@ export async function renderPlan() {
   // plan's identity/state/run-link changes, so a poll tick never wipes in-flight
   // comment state in the body.
   const shell = (p) => {
+    const m = p || {};
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="plantabs"></div>
-        <span class="plan-ref quick" title="${esc(p.goal)}">${esc(p.goal)}</span>
+        <span class="plan-ref quick" title="${esc(m.goal || "")}">${esc(m.goal || "")}</span>
         <div class="surface-meta">
           <span id="planmsgaction"></span>
-          <span class="chip ${planChipClass(p.state)}" title="${esc(p.goal)}">${PLAN_STATE_LABEL[p.state] || p.state}</span>
+          <span class="chip ${planChipClass(m.state)}" title="${esc(m.goal || "")}">${PLAN_STATE_LABEL[m.state] || m.state || ""}</span>
           <span class="taskactions" id="planactions"></span>
         </div>
       </div>
       <div class="task-error" id="planError" role="alert" hidden></div>
       <div id="tabbody"></div>`;
     wireTabs(p);
-    wireActions(p);
-    showBanner(bannerText(localError, p.last_error));
+    // Actions/banner/agent only make sense once a real plan is in hand; the
+    // skeleton shell (p null, route entry) shows the bar + a loading body.
+    if (p) {
+      wireActions(p);
+      showBanner(bannerText(localError, p.last_error));
+    }
     // A shell rebuild wiped #tabbody — re-mount the active surface so the poll's
     // early-return leaves a live pane/skeleton in place (mirrors task.js).
-    if (tab === "agent") mountAgent();
+    if (tab === "agent" && p) mountAgent();
     else mountReviewSkeleton();
   };
 
@@ -572,12 +602,15 @@ export async function renderPlan() {
   let visitMarkedRead = false; // paint() marks the plan read once per visit
 
   const paint = async () => {
-    if (App.offline) return;
+    if (gone || App.offline) return; // latched gone-state / offline freeze: no repaint
     let p;
     try {
       p = await App.call("plan.get", { plan_id: id });
-    } catch {
-      return; // not readable yet — the poll retries
+    } catch (e) {
+      // A deleted plan is permanent: latch the gone-state and stop polling.
+      // Every other error is transient — stay silent and let the poll retry.
+      if (/unknown plan_id/.test((e && e.message) || "")) renderGone();
+      return;
     }
     // Visiting the plan reads it: mark once, on the first successful fetch.
     if (!visitMarkedRead) {
@@ -637,6 +670,7 @@ export async function renderPlan() {
     disposeAgent();
   };
 
+  shell(null); // route entry: paint the surface-bar skeleton + a loading body at once
   await paint();
   App.poll = setInterval(paint, 1600);
 }

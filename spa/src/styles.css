@@ -46,6 +46,8 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
 .chip.warn { background:var(--red-bg); color:var(--red); }
 .tis { font-size:11px; color:var(--dim); margin-top:5px; }
 .empty { color:var(--dim); font-size:13px; padding:6px 0; }
+.empty.gone { text-align:center; padding:56px 12px; font-size:14px; }
+.empty.gone .btn { margin-top:14px; }
 /* notifications */
 .ncard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; }
 .ncard.read { opacity:.5; }

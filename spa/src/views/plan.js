@@ -27,7 +27,12 @@ import {
   bannerText,
   shouldFetchPlanDoc,
   planDocPaneState,
+  approvePlanConfirm,
+  implementConfirm,
+  abandonPlanConfirm,
+  deletePlanConfirm,
 } from "../core/taskActions.js";
+import { confirmAction } from "../core/confirm.js";
 import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
@@ -285,6 +290,9 @@ export async function renderPlan() {
       approve.textContent = "Approve plan";
       actions.appendChild(approve);
       approve.onclick = async () => {
+        // A decisive gate: confirm what approval does; cancel leaves the
+        // button (and any held error) untouched.
+        if (!(await confirmAction(approvePlanConfirm()))) return;
         localError = null;
         approve.disabled = true;
         approve.textContent = "approving…";
@@ -322,6 +330,15 @@ export async function renderPlan() {
           { id: "implement_opts", menuLabel: "Implement with options…", busyLabel: "starting…", description: "Override the base branch, model, or effort for this run." },
         ],
         run: async (optionId) => {
+          // Plain Implement is a decisive gate: confirm with what-happens-next
+          // framing before dispatch. The with-options path opens the options
+          // sheet — the sheet IS the deliberate step, so no extra modal there.
+          // Cancel throws before the RPC (split button restores, no banner).
+          if (
+            optionId === "implement" &&
+            !(await confirmAction(implementConfirm({ base: p.base_branch || "the base branch" })))
+          )
+            throw new Error("cancelled");
           localError = null;
           let run;
           try {
@@ -371,9 +388,10 @@ export async function renderPlan() {
     actions.appendChild(btn);
     const deleting = planDeletable(p.state);
     btn.onclick = async () => {
+      // Both removal verbs confirm with their step outline; cancel leaves the
+      // button (and any held error) untouched.
+      if (!(await confirmAction(deleting ? deletePlanConfirm() : abandonPlanConfirm()))) return;
       localError = null;
-      if (!deleting && !window.confirm("Abandon this plan? Its planning worktree is removed; the plan stays as history."))
-        return;
       btn.disabled = true;
       btn.textContent = deleting ? "deleting…" : "abandoning…";
       try {

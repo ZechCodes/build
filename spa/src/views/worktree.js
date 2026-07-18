@@ -12,6 +12,9 @@ import { assembleDiffNotes } from "../core/notes.js";
 import { App, go } from "../app.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
+import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
+import { confirmAction } from "../core/confirm.js";
+import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
@@ -297,11 +300,23 @@ export async function renderWorktree() {
       options: WORKTREE_MERGE_OPTIONS,
       run: async (optionId) => {
         const { action, cleanup } = MERGE_RPC[optionId];
+        // Confirm the exact step outline BEFORE stopping the poll or adopting —
+        // a cancel leaves the browse view live and untouched. The base branch
+        // is unknown on this surface, so the outline names it generically.
+        const confirmPlan = gitActionConfirm(optionId, {
+          branch: (shellState && shellState.branch) || "the branch",
+          base: "the base branch",
+        });
+        if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
         stopPolling(); // adoption binds the worktree; the poll must not race us
         try {
           await adopting.runCall("run.git_action", { action, cleanup });
           goHome();
         } catch (e) {
+          // A merge failure persists as an expandable notice (full message in
+          // the detail) alongside the surface banner.
+          const reason = mergeFailureReason(e.message);
+          notifyError(reason ? "Merge failed: " + reason.split("\n")[0] : "Action failed", e.message);
           if (adopting.adoptedRunId()) {
             // Adopted, then the merge failed (a conflict is the common case for a
             // stale external worktree): hand off to the task holding merge_failed.
@@ -315,7 +330,11 @@ export async function renderWorktree() {
       },
     });
     abandon.onclick = async () => {
-      if (!window.confirm("Delete this worktree and its branch? This removes files Build did not create.")) return;
+      // adopted: true — this surface deletes files Build did not create.
+      const confirmed = await confirmAction(
+        abandonConfirm({ adopted: true, branch: (shellState && shellState.branch) || "the branch" }),
+      );
+      if (!confirmed) return;
       abandon.disabled = true;
       abandon.textContent = "abandoning…";
       stopPolling(); // adoption binds the worktree; the poll must not race us

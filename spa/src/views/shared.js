@@ -37,7 +37,7 @@ export function runChipClass(state) {
 
 export function runPayloadFor(run) {
   if (run.summary) return run.summary;
-  if (run.state === "building") return "coding agent working…";
+  if (run.state === "building") return "Building — you'll be notified. No need to stay.";
   return "";
 }
 

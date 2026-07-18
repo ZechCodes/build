@@ -13,7 +13,9 @@ import { diffFilesHtml } from "../core/diffRender.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { assembleDiffNotes } from "../core/notes.js";
-import { mergeFailureReason } from "../core/taskActions.js";
+import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
+import { confirmAction } from "../core/confirm.js";
+import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 
@@ -170,6 +172,14 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       };
       const run = async (optionId) => {
         const { action, cleanup } = GIT_ACTION_RPC[optionId];
+        // Merge variants are decisive: confirm with the exact step outline
+        // first. A cancel throws BEFORE any RPC — the split button restores
+        // the primary, and no error notice appears.
+        const confirmPlan = gitActionConfirm(optionId, {
+          branch: (task && task.branch) || "the branch",
+          base,
+        });
+        if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
         diffMsg = "";
         const params = { run_id: taskId, action };
         if (cleanup) params.cleanup = cleanup;
@@ -183,9 +193,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
             paint();
           }
         } catch (e) {
+          // Failures persist as an expandable notice (full message in the
+          // detail); successes above stay transient. The hint no longer
+          // carries error text — the notice owns it.
           const reason = mergeFailureReason(e.message);
-          flash(reason ? "merge failed: " + reason.slice(0, 70) : "error: " + e.message.slice(0, 70));
-          if (hint) hint.textContent = diffMsg;
+          notifyError(reason ? "Merge failed: " + reason.split("\n")[0] : "Action failed", e.message);
           throw e; // let the split button restore the primary button
         }
       };

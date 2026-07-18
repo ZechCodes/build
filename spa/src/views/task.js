@@ -11,7 +11,8 @@ import { esc } from "../core/text.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
-import { canDelete, canAbandon, bannerText, defaultRunTab } from "../core/taskActions.js";
+import { canDelete, canAbandon, bannerText, defaultRunTab, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
+import { confirmAction } from "../core/confirm.js";
 import { openMessageAgent } from "../sheets/message.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
@@ -267,6 +268,7 @@ export async function renderTask() {
     if (canDelete(state)) {
       el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
       $("#deleteTask").onclick = async () => {
+        if (!(await confirmAction(deleteRunConfirm()))) return; // cancel: view untouched
         localError = null; // a fresh action clears any stale local error
         const btn = $("#deleteTask");
         btn.disabled = true;
@@ -294,8 +296,9 @@ export async function renderTask() {
         ]
       : [{ id: "abandon_delete", label: "Abandon", description: "delete the worktree and branch; the task stays as history", busyLabel: "abandoning…" }];
     const run = async (optionId) => {
-      localError = null; // a fresh action clears any stale local error
       if (optionId === "release") {
+        // Release is non-destructive — no modal.
+        localError = null; // a fresh action clears any stale local error
         try {
           await App.call("run.release", { run_id: id });
           goHome();
@@ -306,10 +309,11 @@ export async function renderTask() {
         }
         return;
       }
-      const confirmText = m.adopted
-        ? "Delete this adopted worktree and its branch? This removes files Build did not create. The task stays as history."
-        : "Abandon this task? Its worktree and branch are removed; the task stays as history.";
-      if (!window.confirm(confirmText)) throw new Error("cancelled");
+      // The step-outline modal replaces window.confirm; a cancel throws before
+      // the RPC (and before touching localError) so the split button restores
+      // and the view stays untouched.
+      if (!(await confirmAction(abandonConfirm({ adopted: m.adopted, branch: m.branch })))) throw new Error("cancelled");
+      localError = null; // a fresh action clears any stale local error
       try {
         await App.call("run.abandon", { run_id: id });
         paint();

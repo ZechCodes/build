@@ -35,6 +35,13 @@ describe("tabShellHtml", () => {
     expect(html).toMatch(/<div class="tabs"><div class="t tback" data-back="1"/);
     expect(html).not.toContain("<b>");
     expect(html).toContain("&quot;proj&quot;");
+    // It carries an escaped aria-label so the chevron is reachable to assistive tech.
+    expect(html).toContain('aria-label="Back to &lt;b&gt;&quot;proj&quot;&lt;/b&gt;"');
+  });
+
+  it("falls back the back chevron's aria-label to 'Back' when no title is given", () => {
+    const html = tabShellHtml({ tabs, active: "plan", hasNewTerminal: false, back: {} });
+    expect(html).toContain('aria-label="Back"');
   });
 
   it("marks only closable tabs with a × carrying the tab id", () => {

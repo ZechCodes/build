@@ -129,7 +129,8 @@ a.plan-ref:hover { text-decoration:underline; }
 .tabs .t .tx:hover { color:var(--red); background:var(--line2); }
 .tabs .t.tplus { color:var(--dim); font-weight:600; padding:9px 12px; }
 .tabs .t.tplus:hover { color:var(--accent); }
-.tabs .t.tback { color:var(--dim); font-weight:600; font-size:16px; line-height:1; padding:8px 12px 10px; }
+.tabs .t.tback { color:var(--dim); font-weight:600; font-size:16px; line-height:1; padding:8px 12px 10px;
+  position:sticky; left:0; background:var(--panel); z-index:1; }
 .tabs .t.tback:hover { color:var(--accent); }
 /* plan */
 .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }

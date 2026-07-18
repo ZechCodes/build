@@ -13,7 +13,9 @@ import { esc } from "./text.js";
  *  renders a leading chevron cell (the surface's way out — up to its project).
  *  Everything is escaped. */
 export function tabShellHtml({ tabs, active, hasNewTerminal, back }) {
-  const backCell = back ? `<div class="t tback" data-back="1" title="${esc(back.title || "Back")}">‹</div>` : "";
+  const backCell = back
+    ? `<div class="t tback" data-back="1" title="${esc(back.title || "Back")}" aria-label="${esc(back.title || "Back")}">‹</div>`
+    : "";
   const cells = (tabs || [])
     .map((tab) => {
       const closer = tab.closable ? `<span class="tx" data-close="${esc(tab.id)}" title="Close terminal">×</span>` : "";

@@ -628,6 +628,18 @@ export async function renderPlan() {
       },
       onSelectStage: (stageId) => {
         selectedStageId = stageId;
+        // Deep-link the open stage into the hash without re-routing (the router
+        // parses the 4th segment) so the selection is shareable and survives a
+        // reload; back-to-list drops the segment. App.route.stage stays in sync.
+        history.replaceState(
+          null,
+          "",
+          stageId
+            ? `#/plan/${encodeURIComponent(id)}/review/${encodeURIComponent(stageId)}`
+            : `#/plan/${encodeURIComponent(id)}/review`,
+        );
+        if (stageId) App.route.stage = stageId;
+        else delete App.route.stage;
         // Re-navigating to a stage clears its error latch so the doc is retried.
         if (stageId) stageDocError.delete(stageId);
         stagesKey = null;

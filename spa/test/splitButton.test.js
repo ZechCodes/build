@@ -58,6 +58,15 @@ describe("createSingleFlight", () => {
     expect(flight.begin()).toBe(true);
   });
 
+  it("active() reflects the latch: false when idle, true in flight, false after end()", () => {
+    const flight = createSingleFlight();
+    expect(flight.active()).toBe(false);
+    flight.begin();
+    expect(flight.active()).toBe(true);
+    flight.end();
+    expect(flight.active()).toBe(false);
+  });
+
   it("begin() returns false while already in flight", () => {
     const flight = createSingleFlight();
     flight.begin();

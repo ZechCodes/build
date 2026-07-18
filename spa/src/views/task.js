@@ -74,8 +74,11 @@ export async function renderTask() {
       </div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div id="tabbody"></div>`;
+    // Both plan entries from a run (the bar's plan-ref link and the Stages
+    // tab's rows) go through openPlan so the plan's back chevron returns HERE
+    // (the plan↔run round trip stamps the sessionStorage marker).
     const planLink = $("#planref");
-    if (planLink && m.plan_id) planLink.onclick = () => go({ name: "plan", id: m.plan_id, tab: "review" });
+    if (planLink && m.plan_id) planLink.onclick = () => openPlan();
     wireActions(m);
     showBanner(bannerText(localError, m.last_error));
     shellCtl = mountTabShell($("#tabrow"), {

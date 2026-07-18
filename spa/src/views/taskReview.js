@@ -12,7 +12,7 @@ import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
 import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
-import { mountSplitButton } from "../core/splitButton.js";
+import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { assembleDiffNotes } from "../core/notes.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
@@ -81,6 +81,14 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
   let changedOnlyFilter = false;
   let renderedFiles = [];
 
+  // ONE single-flight latch for the git split button, owned by the plug — not
+  // by each mount. paint() re-runs updateActions() every tick, and without a
+  // shared latch each remount would arm a fresh one: mid-merge, the poll would
+  // replace the disabled "merging…" button with an enabled Merge that can
+  // dispatch a second concurrent run.git_action. The latch is also the freeze
+  // key: while active, updateActions leaves the actionbar untouched.
+  const gitFlight = createSingleFlight();
+
   const q = (sel) => (host ? host.querySelector(sel) : null);
 
   // The <tr> (with a line number) containing a selection/click node.
@@ -137,6 +145,10 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     const actions = q("#diffactions"),
       hint = q("#diffhint");
     if (!actions) return;
+    // A git action (or its confirm modal) is in flight: freeze the actionbar so
+    // the poll can never remount an enabled button (or pop a second modal)
+    // under the pending RPC.
+    if (gitFlight.active()) return;
     const task = getTask();
     const general = q("#dgeneral") ? q("#dgeneral").value.trim() : "";
     if (diffComments.length || general) {
@@ -165,7 +177,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         } catch (e) {
           btn.disabled = false;
           btn.textContent = "Request Changes";
-          hint.textContent = "error: " + e.message.slice(0, 50);
+          notifyError("Request Changes failed", e.message);
         }
       };
     } else if (lastDiffState === "review") {
@@ -213,7 +225,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
           throw e; // let the split button restore the primary button
         }
       };
-      mountSplitButton(actions, { options: reviewMergeOptions(task && task.adopted, base), run });
+      mountSplitButton(actions, { options: reviewMergeOptions(task && task.adopted, base), run, flight: gitFlight });
     } else if (lastDiffState === "building") {
       hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
       actions.innerHTML = "";
@@ -344,8 +356,13 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     const general = q("#dgeneral");
     // Freeze the diff while the user is actively commenting (pending comments,
     // open popover, or text in the general box) so anchors/selection survive —
-    // and skip the rebuild when nothing changed (fold state survives too).
-    const busy = diffComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
+    // and skip the rebuild when nothing changed (fold state survives too). A
+    // git action in flight freezes too: a rebuild would wipe the busy button.
+    const busy =
+      gitFlight.active() ||
+      diffComments.length > 0 ||
+      hasCommentPop() ||
+      (general && (general.value.trim() || document.activeElement === general));
     if (q(".diffbar") && (key === diffKey || busy)) {
       updateActions();
       return;

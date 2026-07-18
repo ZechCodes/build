@@ -36,6 +36,7 @@ import {
 import { confirmAction } from "../core/confirm.js";
 import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
+import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
@@ -397,11 +398,11 @@ export async function renderPlan() {
               ? await App.call("run.create", { plan_id: id })
               : await openImplementOptions(p, App.modelCatalog || { models: [], efforts: [] });
           } catch (e) {
-            // A dispatch error (not the options-sheet cancel) surfaces on the
-            // banner; either way the split-button restores itself for a retry.
+            // A dispatch error (not the options-sheet/confirm cancel) raises a
+            // persistent expandable notification (G2, full message); either way
+            // the split-button restores itself for a retry.
             if (e && e.message && e.message !== "cancelled") {
-              localError = "error: " + e.message.slice(0, 80);
-              showBanner(localError);
+              notifyError("Implement failed", e.message);
             }
             throw e;
           }
@@ -534,7 +535,7 @@ export async function renderPlan() {
           } catch (e) {
             btn.disabled = false;
             btn.textContent = "Request updates";
-            phint.textContent = "error: " + e.message.slice(0, 50);
+            notifyError("Request updates failed", e.message);
           }
         };
       } else {

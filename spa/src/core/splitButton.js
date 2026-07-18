@@ -23,7 +23,8 @@ export function splitButtonMarkup(options) {
 }
 
 /** Pure single-flight latch: begin() arms and returns true, or returns false
- *  when a flight is already in progress; end() re-arms. */
+ *  when a flight is already in progress; end() re-arms; active() peeks at the
+ *  latch (callers freeze repaints while a flight is running). */
 export function createSingleFlight() {
   let inFlight = false;
   return {
@@ -35,6 +36,9 @@ export function createSingleFlight() {
     end() {
       inFlight = false;
     },
+    active() {
+      return inFlight;
+    },
   };
 }
 
@@ -44,14 +48,15 @@ export function createSingleFlight() {
  *  RPCs); rejection restores label + enabled (the caller owns error display);
  *  resolution leaves both disabled (the caller repaints/navigates). The caret
  *  toggles the menu; a pointerdown outside closes it; a menu item runs its
- *  option through the same primary button. */
-export function mountSplitButton(container, { options, run }) {
+ *  option through the same primary button. Callers whose surface remounts the
+ *  button while an action can be pending (poll-driven repaints) pass a shared
+ *  `flight` latch so a remount can never re-arm a fresh one mid-flight. */
+export function mountSplitButton(container, { options, run, flight = createSingleFlight() }) {
   container.innerHTML = splitButtonMarkup(options);
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
   const primary = container.querySelector(".btn.primary:not(.caret)");
   const caret = container.querySelector(".caret");
   const menu = container.querySelector(".splitmenu");
-  const flight = createSingleFlight();
 
   const invoke = async (optionId) => {
     if (!flight.begin()) return;

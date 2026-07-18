@@ -122,7 +122,7 @@ function renderStageList(ctx) {
 
   const approveAll = body.querySelector("#approveall");
   if (approveAll) {
-    bindAction(approveAll, "approving…", body.querySelector("#stageshint"), async () => {
+    bindAction(approveAll, "approving…", async () => {
       bulkActionInFlight = true;
       try {
         for (const s of stages.filter((x) => x.state === "planned")) {
@@ -198,7 +198,7 @@ function renderStageDoc(ctx, stage) {
       });
     });
     const addGeneral = body.querySelector("#addgeneral");
-    bindAction(addGeneral, "adding…", body.querySelector("#stagehint"), async () => {
+    bindAction(addGeneral, "adding…", async () => {
       const text = body.querySelector("#stage-general").value.trim();
       if (!text) {
         body.querySelector("#stagehint").textContent = "type a comment first.";
@@ -241,7 +241,7 @@ function renderStageActions(ctx, stage) {
       return;
     }
     b.title = viaRun ? "Revises this stage through the run's stage-gate revision." : "";
-    bindAction(b, "sending…", hint, async () => {
+    bindAction(b, "sending…", async () => {
       const params = viaRun ? { run_id: target.entityId, stage_id: stage.id } : { plan_id: planId, stage_id: stage.id };
       await callRpc(target.method, params);
       repaint();
@@ -250,7 +250,7 @@ function renderStageActions(ctx, stage) {
 
   if (stage.state === "planned") {
     actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage</button>`;
-    bindAction(body.querySelector("#approvestage"), "approving…", hint, async () => {
+    bindAction(body.querySelector("#approvestage"), "approving…", async () => {
       await callRpc("plan.stage_approve", { plan_id: planId, stage_id: stage.id });
       repaint();
     });

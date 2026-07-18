@@ -13,6 +13,7 @@ import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { slugifyHeading, buildHeadingPath } from "../core/anchors.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
+import { notifyError } from "../core/notify.js";
 
 // Run states with no more work to run — the run-all control is hidden on them.
 const TERMINAL_RUN_STATES = new Set(["merged", "abandoned", "archived"]);
@@ -164,9 +165,10 @@ export function commentCard(comment) {
     ${reply}</div>`;
 }
 
-// Bind an async RPC to a button: disable + label while in flight, restore + show
-// a hint on failure, repaint on success. Reused by planStages.js.
-export function bindAction(button, busyLabel, hintEl, run) {
+// Bind an async RPC to a button: disable + label while in flight, restore +
+// raise a persistent expandable error notification on failure (G2 — the notice
+// carries the full message), repaint on success. Reused by planStages.js.
+export function bindAction(button, busyLabel, run) {
   button.onclick = async () => {
     const original = button.textContent;
     button.disabled = true;
@@ -176,7 +178,7 @@ export function bindAction(button, busyLabel, hintEl, run) {
     } catch (e) {
       button.disabled = false;
       button.textContent = original;
-      if (hintEl) hintEl.textContent = "error: " + e.message.slice(0, 60);
+      notifyError(original + " failed", e.message);
     }
   };
 }
@@ -245,7 +247,7 @@ export function renderStagesTab(ctx) {
   const stages = stagesData.stages || [];
   body.innerHTML = stageBoardHtml(run, stagesData);
 
-  wireRunAllControl(ctx, body.querySelector("#runall"), body.querySelector("#stageshint"));
+  wireRunAllControl(ctx, body.querySelector("#runall"));
 
   // A row and its comment badge both open the plan's stage doc — the doc home
   // never moved to the run (single active writer).
@@ -277,7 +279,7 @@ function renderGateAction(ctx, host) {
           <div class="right"><button class="btn" id="fixplan">Comment on the plan →</button>
             <button class="btn primary" id="sendfix">Send back to fix</button></div></div></div>`;
     host.querySelector("#fixplan").onclick = () => openPlan(stage.id);
-    bindAction(host.querySelector("#sendfix"), "sending…", host.querySelector("#stagehint"), async () => {
+    bindAction(host.querySelector("#sendfix"), "sending…", async () => {
       const note = host.querySelector("#fixnote").value.trim();
       await callRpc("run.stage_fix", { run_id: runId, stage_id: stage.id, note });
       repaint();
@@ -304,7 +306,7 @@ function renderGateAction(ctx, host) {
   const wireSendStageNotes = () => {
     const b = host.querySelector("#sendstagenotes");
     if (b)
-      bindAction(b, "sending…", host.querySelector("#stagehint"), async () => {
+      bindAction(b, "sending…", async () => {
         await callRpc("run.stage_send_notes", { run_id: runId, stage_id: stage.id });
         repaint();
       });
@@ -342,7 +344,7 @@ function renderGateAction(ctx, host) {
   };
   modelSel.onchange = syncEffort;
   syncEffort();
-  bindAction(host.querySelector("#startstage"), "starting…", host.querySelector("#stagehint"), async () => {
+  bindAction(host.querySelector("#startstage"), "starting…", async () => {
     const params = modelParams(models, modelSel.value, effortSel.value);
     await callRpc("run.stage_dispatch", { run_id: runId, stage_id: stage.id, ...params });
     repaint();
@@ -354,7 +356,7 @@ function renderGateAction(ctx, host) {
 // stage and chains each one to its verdict (stage approval itself is a plan-side
 // gate, so run-all only runs stages already approved). "stop": a plain button
 // that turns auto-advance off. "none": nothing.
-function wireRunAllControl(ctx, host, hint) {
+function wireRunAllControl(ctx, host) {
   const { run, stagesData, callRpc, repaint } = ctx;
   if (!host) return;
   const runId = run.run_id;
@@ -363,7 +365,7 @@ function wireRunAllControl(ctx, host, hint) {
 
   if (kind === "run") {
     host.innerHTML = `<button class="btn mini" id="runallbtn">Run all</button>`;
-    bindAction(host.querySelector("#runallbtn"), "starting…", hint, async () => {
+    bindAction(host.querySelector("#runallbtn"), "starting…", async () => {
       bulkActionInFlight = true;
       try {
         await callRpc("run.set_auto_advance", { run_id: runId, enabled: true });
@@ -376,7 +378,7 @@ function wireRunAllControl(ctx, host, hint) {
   }
   if (kind === "stop") {
     host.innerHTML = `<button class="btn mini" id="stopadvance">Stop auto-advance</button>`;
-    bindAction(host.querySelector("#stopadvance"), "stopping…", hint, async () => {
+    bindAction(host.querySelector("#stopadvance"), "stopping…", async () => {
       await callRpc("run.set_auto_advance", { run_id: runId, enabled: false });
       repaint();
     });

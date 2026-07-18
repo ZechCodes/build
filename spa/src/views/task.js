@@ -9,7 +9,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { mountSplitButton } from "../core/splitButton.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { canDelete, canAbandon, bannerText, defaultRunTab } from "../core/taskActions.js";
 import { openMessageAgent } from "../sheets/message.js";
@@ -371,6 +371,8 @@ export async function renderTask() {
     });
   }
 
+  let visitMarkedRead = false; // paint() marks the run read once per visit
+
   const paint = async () => {
     if (App.offline) return; // freeze the view; resume() restarts the flow
     let t;
@@ -378,6 +380,11 @@ export async function renderTask() {
       t = await App.call("run.get", { run_id: id });
     } catch {
       return;
+    }
+    // Visiting the run reads it: mark once, on the first successful fetch.
+    if (!visitMarkedRead) {
+      visitMarkedRead = true;
+      markEntityRead(id);
     }
     // Update `last` BEFORE any shell rebuild: shell() remounts aux tabs (the
     // Changes git pane builds its commit options from last.state/last.goal) and

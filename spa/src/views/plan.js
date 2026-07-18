@@ -17,7 +17,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
 import { assemblePlanNotes } from "../core/notes.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
 import {
   canImplement,
@@ -551,6 +551,8 @@ export async function renderPlan() {
     });
   }
 
+  let visitMarkedRead = false; // paint() marks the plan read once per visit
+
   const paint = async () => {
     if (App.offline) return;
     let p;
@@ -558,6 +560,11 @@ export async function renderPlan() {
       p = await App.call("plan.get", { plan_id: id });
     } catch {
       return; // not readable yet — the poll retries
+    }
+    // Visiting the plan reads it: mark once, on the first successful fetch.
+    if (!visitMarkedRead) {
+      visitMarkedRead = true;
+      markEntityRead(id);
     }
     // A plan that just crossed into a terminal state loses its Agent tab; fall
     // back to Review before the shell rebuild so the surface stays consistent.

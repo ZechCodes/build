@@ -2,6 +2,7 @@
 
 import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute } from "./core/router.js";
+import { loadReadIds, persistReadIds } from "./core/readState.js";
 import { renderNotifications } from "./views/notifications.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTask } from "./views/task.js";
@@ -19,7 +20,7 @@ export const App = {
   route: { name: "notifications" },
   poll: null,
   viewDispose: null, // the current view's teardown (terminal panes, observers)
-  readIds: new Set(),
+  readIds: loadReadIds(localStorage), // persisted; pruned against the feed each tick
   offline: false,
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
@@ -38,6 +39,14 @@ export async function loadModelCatalog() {
     App.modelCatalog = { models: [], efforts: [] };
   }
   return App.modelCatalog;
+}
+
+/** Mark one run/plan read (visiting its surface counts as reading it) and
+ *  persist. Badges pick the change up on the next feed tick. */
+export function markEntityRead(id) {
+  if (!id || App.readIds.has(id)) return;
+  App.readIds.add(id);
+  persistReadIds(App.readIds, localStorage);
 }
 
 export function rememberSelectedDevice(deviceId) {

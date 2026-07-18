@@ -4,6 +4,7 @@
 // `runs` separately.
 
 import { App } from "../app.js";
+import { pruneReadIds, persistReadIds } from "./readState.js";
 
 const subscribers = new Set();
 let timer = null;
@@ -31,6 +32,12 @@ async function tick() {
       primaryChanges: board.primary_changes || [],
       projects: projectList.projects || [],
     };
+    // Prune read-state against EVERY live id (not just needs-attention ones) so
+    // the persisted set can't grow forever, while an entity that re-enters
+    // needs-attention stays read.
+    const liveIds = [...last.runs.map((r) => r.run_id), ...last.plans.map((p) => p.plan_id)];
+    App.readIds = pruneReadIds(App.readIds, liveIds);
+    persistReadIds(App.readIds, localStorage);
     subscribers.forEach((fn) => fn(last));
   } catch {
     /* offline / transient — the next tick retries */

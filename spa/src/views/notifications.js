@@ -6,6 +6,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { App, go } from "../app.js";
+import { persistReadIds } from "../core/readState.js";
 import { attnRuns, attnPlans, setBadge } from "./shared.js";
 import { defaultRunTab } from "../core/taskActions.js";
 
@@ -84,6 +85,7 @@ export async function renderNotifications() {
       markRead.onclick = () => {
         attnRuns(runs).forEach((t) => App.readIds.add(t.run_id));
         attnPlans(plans).forEach((p) => App.readIds.add(p.plan_id));
+        persistReadIds(App.readIds, localStorage);
         draw(runs, plans);
       };
     // Measure each message (collapsed) and only offer expand when it overflows.

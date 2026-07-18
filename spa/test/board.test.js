@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bucketBoard } from "../src/core/board.js";
+import { bucketBoard, bucketProjectEntities } from "../src/core/board.js";
 
 const run = (over) => ({ run_id: "r", state: "building", needs_attention: false, ...over });
 const plan = (over) => ({ plan_id: "p", state: "drafting", needs_attention: false, ...over });
@@ -42,5 +42,48 @@ describe("bucketBoard", () => {
   it("is safe for empty or absent lists", () => {
     expect(bucketBoard({})).toEqual({ attn: [], work: [], done: [] });
     expect(bucketBoard({ runs: [], plans: [] })).toEqual({ attn: [], work: [], done: [] });
+  });
+});
+
+describe("bucketProjectEntities", () => {
+  it("pulls approved plans out of working into readyPlans", () => {
+    const plans = [
+      plan({ plan_id: "p-approved", state: "approved" }),
+      plan({ plan_id: "p-draft", state: "drafting" }),
+    ];
+    const entities = bucketProjectEntities({ runs: [run({ run_id: "r-building" })], plans });
+    expect(entities.readyPlans.map((p) => p.plan_id)).toEqual(["p-approved"]);
+    // an approved plan must not also linger in the WORKING bucket
+    expect(entities.working.map((e) => (e.kind === "run" ? e.r.run_id : e.p.plan_id))).toEqual([
+      "r-building",
+      "p-draft",
+    ]);
+  });
+
+  it("keeps the attn bucket's mixed run/plan ordering in needsYou", () => {
+    const entities = bucketProjectEntities({
+      runs: [run({ run_id: "r-review", state: "review", needs_attention: true })],
+      plans: [plan({ plan_id: "p-review", state: "plan_review", needs_attention: true })],
+    });
+    expect(entities.needsYou.map((e) => (e.kind === "run" ? e.r.run_id : e.p.plan_id))).toEqual([
+      "r-review",
+      "p-review",
+    ]);
+  });
+
+  it("routes terminal entities to done", () => {
+    const entities = bucketProjectEntities({
+      runs: [run({ run_id: "r-merged", state: "merged" })],
+      plans: [plan({ plan_id: "p-gone", state: "abandoned" })],
+    });
+    expect(entities.done.map((e) => (e.kind === "run" ? e.r.run_id : e.p.plan_id))).toEqual([
+      "r-merged",
+      "p-gone",
+    ]);
+    expect(entities.readyPlans).toEqual([]);
+  });
+
+  it("is safe for empty or absent lists", () => {
+    expect(bucketProjectEntities({})).toEqual({ needsYou: [], working: [], readyPlans: [], done: [] });
   });
 });

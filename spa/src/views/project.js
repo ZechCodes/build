@@ -6,7 +6,6 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import {
   RUN_STATE_LABEL,
-  RUN_TERMINAL_STATES,
   runChipClass,
   runPayloadFor,
   setBadge,
@@ -14,7 +13,7 @@ import {
   planChipClass,
   planPayloadFor,
 } from "./shared.js";
-import { bucketPlans } from "../core/planRail.js";
+import { bucketProjectEntities } from "../core/board.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
@@ -26,15 +25,9 @@ export async function renderProject() {
   const draw = (project, runs, externalWorktrees, primaryChanges, plans) => {
     const mine = runs.filter((t) => t.project_id === projectId);
     const myPlans = (plans || []).filter((p) => p.project_id === projectId);
-    const planByBucket = bucketPlans(myPlans);
+    const entities = bucketProjectEntities({ runs: mine, plans: myPlans });
     const worktrees = externalWorktrees.filter((w) => w.project_id === projectId);
     const primary = (primaryChanges || []).find((c) => c.project_id === projectId) || null;
-    const byBucket = { attn: [], work: [], done: [] };
-    for (const t of mine) {
-      if (RUN_TERMINAL_STATES.has(t.state)) byBucket.done.push(t);
-      else if (t.needs_attention) byBucket.attn.push(t);
-      else byBucket.work.push(t);
-    }
     // A plan card: goal, state chip, and a footer summarising its manifest —
     // stage count with the open-comment total (single-doc plans show neither).
     const planCard = (p, quiet) => {
@@ -66,10 +59,22 @@ export async function renderProject() {
         ${runPayloadFor(t) ? `<div class="payload">${esc(runPayloadFor(t))}</div>` : ""}
         ${t.last_error ? `<div class="cerr">⚠ ${esc(t.last_error)}</div>` : ""}
       </div>`;
-    const bucket = (label, items, quiet) =>
-      items.length
-        ? `<div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((t) => card(t, quiet)).join("")}</div>`
+    // A mixed NEEDS YOU / WORKING / DONE bucket dispatches each kind-tagged entry
+    // to the matching card template.
+    const entryCard = (entry, quiet) => (entry.kind === "run" ? card(entry.r, quiet) : planCard(entry.p, quiet));
+    const mixedBucket = (label, entries, quiet) =>
+      entries.length
+        ? `<div class="bucket"><h2>${label} <span class="n">${entries.length}</span></h2>${entries.map((e) => entryCard(e, quiet)).join("")}</div>`
         : "";
+    // NEEDS YOU always renders — its emptiness is the affirmation that nothing
+    // is waiting on the user, not an absent section.
+    const needsYouBucket = `<div class="bucket"><h2>NEEDS YOU${
+      entities.needsYou.length ? ` <span class="n">${entities.needsYou.length}</span>` : ""
+    }</h2>${
+      entities.needsYou.length
+        ? entities.needsYou.map((e) => entryCard(e, false)).join("")
+        : '<div class="allclear">✓ Nothing needs you.</div>'
+    }</div>`;
     const worktreeBucket = worktrees.length
       ? `<div class="bucket"><h2>WORKTREES <span class="n">${worktrees.length}</span></h2>${worktrees.map((w) => externalWorktreeCard(w)).join("")}</div>`
       : "";
@@ -93,13 +98,10 @@ export async function renderProject() {
           <button class="btn" id="newquick">Quick task</button>
           <button class="btn primary" id="newplan">+ New plan</button></div></div>
       ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan or start a quick task.</div>'}
-      ${planBucket("DRAFT", planByBucket.draft, false)}
-      ${planBucket("IN REVIEW", planByBucket.review, false)}
-      ${planBucket("APPROVED", planByBucket.approved, false)}
-      ${bucket("NEEDS YOU", byBucket.attn, false)}
-      ${bucket("WORKING", byBucket.work, true)}
-      ${bucket("DONE", byBucket.done, true)}
-      ${planBucket("PLAN HISTORY", planByBucket.history, true)}
+      ${needsYouBucket}
+      ${mixedBucket("WORKING", entities.working, true)}
+      ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}
+      ${mixedBucket("DONE", entities.done, true)}
       ${mainBucket}
       ${worktreeBucket}`;
     $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });

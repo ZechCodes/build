@@ -21,3 +21,18 @@ export function bucketBoard({ runs = [], plans = [] } = {}) {
   for (const plan of plans) byBucket[bucketOf(plan.needs_attention, PLAN_TERMINAL_STATES.has(plan.state))].push({ kind: "plan", p: plan });
   return byBucket;
 }
+
+/** The project page's attention-ordered grouping, built on bucketBoard. NEEDS
+ *  YOU is the attn bucket (in-review plans + attention runs, mixed); READY TO
+ *  IMPLEMENT lifts approved plans out of WORKING so the user's next decisive
+ *  action isn't buried among still-drafting work; WORKING is the remainder of
+ *  the work bucket (running runs + drafting plans); DONE is the terminal bucket.
+ *  needsYou/working/done keep bucketBoard's kind-tagged entries; readyPlans is a
+ *  plain plan-object list (rendered by the plan-card path). */
+export function bucketProjectEntities({ runs = [], plans = [] } = {}) {
+  const { attn, work, done } = bucketBoard({ runs, plans });
+  const isApprovedPlanEntry = (entry) => entry.kind === "plan" && entry.p.state === "approved";
+  const readyPlans = work.filter(isApprovedPlanEntry).map((entry) => entry.p);
+  const working = work.filter((entry) => !isApprovedPlanEntry(entry));
+  return { needsYou: attn, working, readyPlans, done };
+}

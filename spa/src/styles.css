@@ -456,9 +456,12 @@ body.sidebar-collapsed #side-open { display:block; }
 .iconbtn:hover { background:var(--line2); color:var(--ink2); }
 .sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }
-.sproj { margin-bottom:6px; }
+/* Generous gap BETWEEN project blocks so each reads as one unit; the internal
+   rhythm (head → body → rows) stays tight. Collapsed projects carry the same
+   margin, so the rail scans evenly whether a project is open or shut. */
+.sproj { margin-bottom:18px; }
 .sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;
-  font-size:13.5px; font-weight:600; }
+  font-size:14px; font-weight:600; }
 .sproj-head.active { background:var(--accent-soft); }
 .sproj-head.active .sproj-name { color:var(--accent); }
 .chevbtn { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
@@ -470,9 +473,15 @@ body.sidebar-collapsed #side-open { display:block; }
 .sfolder { color:var(--ink2); flex:none; }
 .sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sbadge { margin-left:auto; }
-.sproj-body { padding:0 0 6px 14px; }
-.ssec { margin:8px 0 2px; }
-.ssec .sseclabel { margin:0 6px 3px; }
+/* The classic tree guide: a 1px rule hanging from under the head's icon,
+   running the body's full height, with the children nested just inside it.
+   The row backgrounds sit in the padding gap so hover/active never touch the
+   line. */
+.sproj-body { margin-left:16px; padding:2px 0 0 10px; border-left:1px solid var(--line); }
+.ssec { margin:6px 0 1px; }
+/* Quieter than the head that anchors the block: smaller, tighter tracking,
+   lighter weight — a whisper, not a shout. */
+.ssec .sseclabel { margin:0 6px 3px; font-size:9.5px; letter-spacing:.05em; font-weight:600; }
 .srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
   font-size:13px; color:var(--ink2); cursor:pointer; }
 .srow:hover { background:var(--line2); }

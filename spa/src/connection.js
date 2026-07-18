@@ -22,6 +22,7 @@ import {
   refreshDevices,
 } from "./devices.js";
 import { retargetTerminals } from "./terminal/manager.js";
+import { offlineBannerText } from "./core/text.js";
 
 export function setConn(html) {
   $("#conn").innerHTML = html;
@@ -51,6 +52,7 @@ export function adoptSession(session) {
 
 function restoreOnline() {
   App.offline = false;
+  App.offlineSince = null;
   document.body.classList.remove("offline");
   $("#offbar").hidden = true;
   setConn('<span class="dot"></span>connected');
@@ -62,6 +64,7 @@ let reconnectDelay = 0;
 export function goOffline() {
   if (App.offline) return;
   App.offline = true;
+  App.offlineSince = Date.now();
   try {
     App.session?.close();
   } catch {
@@ -69,7 +72,7 @@ export function goOffline() {
   }
   document.body.classList.add("offline");
   const name = deviceName(App.session?.deviceId) || "Your device";
-  $("#offbar-text").textContent = `${name} went offline — reconnecting automatically.`;
+  $("#offbar-text").textContent = offlineBannerText(name, App.offlineSince);
   $("#offbar").hidden = false;
   setConn('<span class="dot" style="background:#d29922"></span>reconnecting…');
   resume();

@@ -22,6 +22,8 @@ export const App = {
   viewDispose: null, // the current view's teardown (terminal panes, observers)
   readIds: loadReadIds(localStorage), // persisted; pruned against the feed each tick
   offline: false,
+  offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
+
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,

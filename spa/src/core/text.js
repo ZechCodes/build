@@ -10,6 +10,14 @@ export const esc = (value) =>
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The offline banner sentence: honest about WHEN the device went unreachable
+ *  (a moving "reconnecting…" claim reads as a lie while nothing is happening)
+ *  and calm about what resumes automatically. */
+export function offlineBannerText(name, sinceMs) {
+  const time = new Date(sinceMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${name} unreachable since ${time} — tasks will resume when it reconnects.`;
+}
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

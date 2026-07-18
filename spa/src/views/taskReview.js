@@ -244,7 +244,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         : '<div class="empty">No file changes yet.</div>';
     host.innerHTML = `
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
-        ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
+        ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
       ${filesHtml}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}

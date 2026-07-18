@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { esc, humanAge } from "../src/core/text.js";
+import { esc, humanAge, offlineBannerText } from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -29,5 +29,18 @@ describe("humanAge", () => {
     expect(humanAge(59)).toBe("just now");
     expect(humanAge(3599)).toBe("59m ago");
     expect(humanAge(86399)).toBe("23h ago");
+  });
+});
+
+describe("offlineBannerText", () => {
+  it("names the device, stamps the time it went unreachable, and promises resumption", () => {
+    // A fixed local timestamp — assert on the pieces, not a locale-exact string.
+    const sinceMs = new Date(2026, 6, 18, 15, 42).getTime();
+    const text = offlineBannerText("Zech's MacBook", sinceMs);
+    expect(text).toContain("Zech's MacBook");
+    expect(text).toContain("unreachable since");
+    expect(text).toContain("tasks will resume when it reconnects");
+    // Carries a rendered clock time (locale-formatted h:mm).
+    expect(text).toMatch(/\d{1,2}:\d{2}/);
   });
 });

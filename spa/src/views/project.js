@@ -44,7 +44,7 @@ export async function renderProject() {
         <div class="top"><span class="title">Plan: ${esc(p.goal)}</span>
           <span class="chip ${planChipClass(p.state)}">${PLAN_STATE_LABEL[p.state] || p.state}</span></div>
         ${meta.length ? `<div class="meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("<span>·</span>")}</div>` : ""}
-        ${context ? `<div class="payload">${esc(context)}</div>` : ""}
+        ${context ? `<div class="payload${p.state === "drafting" ? " live-claim" : ""}">${esc(context)}</div>` : ""}
         ${p.last_error ? `<div class="cerr">⚠ ${esc(p.last_error)}</div>` : ""}
       </div>`;
     };
@@ -61,7 +61,7 @@ export async function renderProject() {
         <div class="top"><span class="title">${esc(t.goal)}</span>
           <span class="chip ${runChipClass(t.state)}">${RUN_STATE_LABEL[t.state] || t.state}</span></div>
         <div class="meta"><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
-        ${runPayloadFor(t) ? `<div class="payload">${esc(runPayloadFor(t))}</div>` : ""}
+        ${runPayloadFor(t) ? `<div class="payload${t.state === "building" ? " live-claim" : ""}">${esc(runPayloadFor(t))}</div>` : ""}
         ${facts ? `<div class="facts mono">${esc(facts)}</div>` : ""}
         ${t.last_error ? `<div class="cerr">⚠ ${esc(t.last_error)}</div>` : ""}
       </div>`;

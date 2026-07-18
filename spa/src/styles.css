@@ -404,6 +404,11 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    surfaces stay live — the sheet (add-device dialog) and the devices panel. */
 body.offline #root .btn.primary { opacity: .45; pointer-events: none; }
 body.offline #root #adddev { opacity: 1; pointer-events: auto; }
+/* Copy that claims a live agent ("…working", "diff updating live…") would lie
+   while frozen offline: the polls early-return so the view can't repaint, so the
+   swap is pure CSS — hide the live claim, show "last known state" in its place. */
+body.offline .live-claim { font-size:0 !important; }
+body.offline .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
 
 
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
@@ -568,7 +573,15 @@ body.sidebar-collapsed #side-open { display:block; }
 /* ---- Agent + terminal panes ----
    Terminals fill their (bare) tab body edge to edge — the pane's own
    background is the section; no box, no padding, no leftover space below. */
-.termpane { height:100%; overflow:hidden; background:#15161e; }
+.termpane { position:relative; height:100%; overflow:hidden; background:#15161e; }
+/* Per-pane connectivity chip (same visual family as .agent-idle) — shown while
+   the shared terminal socket is not connected, over a dimmed frozen screen. */
+.term-conn { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:5;
+  background:var(--panel); border:1px solid var(--amber); color:var(--amber);
+  border-radius:14px; padding:3px 12px; font-size:12px; }
+.termpane.term-offline canvas,
+.termpane.term-offline .xterm,
+.termpane.term-offline > :not(.term-conn) { opacity:.45; }
 .agentwrap { position:relative; height:100%; }
 /* The plan surface is a normal scrolling page (not a full-height tab shell), so
    its Agent pane needs a concrete height to fill instead of height:100%. */

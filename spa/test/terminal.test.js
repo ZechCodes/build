@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { TerminalSocket } from "../src/terminal/session.js";
+import { createStatusHub } from "../src/terminal/statusHub.js";
 
 class FakeWebSocket {
   constructor(url) {
@@ -446,5 +447,42 @@ describe("TerminalSocket", () => {
     await tick();
     expect(out).toEqual([]);
     socket.close();
+  });
+});
+
+describe("createStatusHub (per-pane connectivity fan-out)", () => {
+  it("delivers the current status to a new subscriber, but only once a status is known", () => {
+    const hub = createStatusHub();
+    const early = [];
+    hub.subscribe((s) => early.push(s)); // nothing set yet — nothing delivered
+    expect(early).toEqual([]);
+
+    hub.set("connected");
+    expect(early).toEqual(["connected"]);
+
+    const late = [];
+    hub.subscribe((s) => late.push(s)); // a late subscriber gets the current status now
+    expect(late).toEqual(["connected"]);
+  });
+
+  it("fans a status change out to every subscriber", () => {
+    const hub = createStatusHub();
+    const a = [];
+    const b = [];
+    hub.subscribe((s) => a.push(s));
+    hub.subscribe((s) => b.push(s));
+    hub.set("disconnected");
+    expect(a).toEqual(["disconnected"]);
+    expect(b).toEqual(["disconnected"]);
+  });
+
+  it("stops delivering after unsubscribe", () => {
+    const hub = createStatusHub();
+    const seen = [];
+    const unsubscribe = hub.subscribe((s) => seen.push(s));
+    hub.set("connecting");
+    unsubscribe();
+    hub.set("connected");
+    expect(seen).toEqual(["connecting"]);
   });
 });

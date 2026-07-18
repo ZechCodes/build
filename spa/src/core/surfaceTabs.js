@@ -5,10 +5,38 @@
 // (§7.2). Panes ride the ONE shared terminal socket (manager.js), demuxed by
 // term_id; fs.* ride the app RPC session.
 
-import { terminalManager } from "../terminal/manager.js";
+import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import { renderFilesTab } from "../views/files.js";
 import { esc } from "./text.js";
+
+/**
+ * Overlay a `.termpane` host with a connectivity chip + dim-while-offline, driven
+ * by the shared terminal socket's status (subscribeTerminalStatus). A frozen
+ * pane now says why. Same visual family as the agent-idle chip (a small pill
+ * floated over the screen). Returns { dispose() } — unsubscribe + remove the chip.
+ * Call AFTER the pane has mounted, so ghostty's own innerHTML reset (pane.js)
+ * doesn't wipe the chip.
+ */
+export function attachConnectionOverlay(host) {
+  const chip = document.createElement("div");
+  chip.className = "term-conn";
+  chip.hidden = true;
+  chip.textContent = "reconnecting to your machine…";
+  host.appendChild(chip);
+  const unsubscribe = subscribeTerminalStatus((status) => {
+    const offline = status !== "connected";
+    chip.hidden = !offline;
+    host.classList.toggle("term-offline", offline);
+  });
+  return {
+    dispose() {
+      unsubscribe();
+      chip.remove();
+      host.classList.remove("term-offline");
+    },
+  };
+}
 
 /** Track a surface's open user terminals: list on mount, create on `+`, close on
  *  `×`. Ordinal labels ("1", "2", …) come from position in creation/list order. */
@@ -79,6 +107,17 @@ export function mountAgentPane(host, taskId, { onLive, onExit }) {
     // "no active agent session" chip shows instead of the input silently
     // vanishing. Non-destructive: a new session's first frame clears it (B1).
     onInputError: () => onExit && onExit("agent_session_ended"),
+  }).then((pane) => {
+    // Overlay the connectivity chip once the pane exists (its mount resets the
+    // host's innerHTML). Fold its teardown into the pane's own dispose.
+    const conn = attachConnectionOverlay(host);
+    return {
+      ...pane,
+      dispose() {
+        conn.dispose();
+        pane.dispose();
+      },
+    };
   });
 }
 
@@ -97,9 +136,17 @@ export function mountAuxTab(host, tabId, { scope, callRpc, onExit }) {
   const paneHost = host.querySelector("#termpane");
   const manager = terminalManager();
   let pane = null;
+  let conn = null;
   let disposed = false;
   mountUserTerminalPane(paneHost, tabId, { onExit }).then(
-    (p) => (disposed ? p.dispose() : (pane = p)),
+    (p) => {
+      if (disposed) {
+        p.dispose();
+        return;
+      }
+      pane = p;
+      conn = attachConnectionOverlay(paneHost);
+    },
     (e) => {
       if (disposed) return;
       // "unknown term_id" = the terminal is gone (exited/closed elsewhere/reaped
@@ -112,6 +159,7 @@ export function mountAuxTab(host, tabId, { scope, callRpc, onExit }) {
   return {
     dispose() {
       disposed = true;
+      if (conn) conn.dispose();
       if (pane) pane.dispose();
       manager.detach(tabId);
     },

@@ -12,7 +12,10 @@ const fakeManager = {
 // Capture the last opts the pane was mounted with, so a test can drive the
 // pane's callbacks (onInputError) without a real ghostty terminal.
 const paneSpy = vi.hoisted(() => ({ lastOpts: null }));
-vi.mock("../src/terminal/manager.js", () => ({ terminalManager: () => fakeManager }));
+vi.mock("../src/terminal/manager.js", () => ({
+  terminalManager: () => fakeManager,
+  subscribeTerminalStatus: () => () => {}, // returns an unsubscribe
+}));
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {
     paneSpy.lastOpts = opts;
@@ -26,9 +29,25 @@ import { mountAuxTab, mountAgentPane } from "../src/core/surfaceTabs.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+// attachConnectionOverlay appends a chip element to the pane host and toggles a
+// class on it, so the host doubles gain the minimal DOM surface it touches.
+global.document = global.document || {
+  createElement: () => ({ className: "", hidden: true, textContent: "", remove() {} }),
+};
+
+function fakeEl(extra = {}) {
+  return {
+    innerHTML: "",
+    classList: { toggle() {}, remove() {}, add() {} },
+    appendChild() {},
+    ...extra,
+  };
+}
+
 function fakeHost() {
-  const paneHost = { innerHTML: "" };
-  return { innerHTML: "", querySelector: () => paneHost, paneHost };
+  const paneHost = fakeEl();
+  const host = fakeEl({ querySelector: () => paneHost, paneHost });
+  return host;
 }
 
 beforeEach(() => {

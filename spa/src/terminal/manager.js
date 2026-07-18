@@ -9,8 +9,23 @@ import { App } from "../app.js";
 import { fetchGatewayToken } from "../api.js";
 import { pinnedDeviceTransportKey } from "../devices.js";
 import { TerminalSocket } from "./session.js";
+import { createStatusHub } from "./statusHub.js";
 
 let socket = null;
+
+// One hub for the whole page: the singleton socket's status feeds it, every pane
+// overlay subscribes to it. Lives at module scope so subscribeTerminalStatus
+// works even before the first pane mounts the socket.
+const statusHub = createStatusHub();
+
+export { createStatusHub };
+
+/** Subscribe to the terminal socket's connectivity status. The callback fires
+ *  immediately with the current status if one is already known. Returns an
+ *  unsubscribe function. */
+export function subscribeTerminalStatus(fn) {
+  return statusHub.subscribe(fn);
+}
 
 export function terminalManager() {
   if (!socket) {
@@ -25,6 +40,7 @@ export function terminalManager() {
       // calls retargetTerminals() to force that reconnect.
       preferDeviceId: () => App.session?.deviceId || App.selectedDeviceId || null,
     });
+    socket.onStatus((status) => statusHub.set(status));
     // A failed initial connect self-heals: _connect closes the socket, whose
     // close event schedules the backoff reconnect.
     socket.start().catch(() => {});

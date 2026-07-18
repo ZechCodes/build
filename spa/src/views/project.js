@@ -14,6 +14,7 @@ import {
   planPayloadFor,
 } from "./shared.js";
 import { bucketProjectEntities } from "../core/board.js";
+import { runProgressFacts } from "../core/progressFacts.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
 import { openNewTask } from "../sheets/newTask.js";
@@ -51,20 +52,27 @@ export async function renderProject() {
       items.length
         ? `<div class="bucket"><h2>${label} <span class="n">${items.length}</span></h2>${items.map((p) => planCard(p, quiet)).join("")}</div>`
         : "";
-    const card = (t, quiet) => `
+    // withFacts: NEEDS YOU / WORKING cards carry the live progress-facts line
+    // (diffstat, last activity, time-in-state); DONE cards stay quiet history.
+    const card = (t, quiet, withFacts) => {
+      const facts = withFacts ? runProgressFacts(t, Date.now()) : "";
+      return `
       <div class="card ${quiet ? "quiet" : ""}" data-id="${t.run_id}" data-tab="${defaultRunTab(t)}">
         <div class="top"><span class="title">${esc(t.goal)}</span>
           <span class="chip ${runChipClass(t.state)}">${RUN_STATE_LABEL[t.state] || t.state}</span></div>
         <div class="meta"><span>${esc(t.branch)}</span><span>·</span><span>${esc(t.harness)}</span></div>
         ${runPayloadFor(t) ? `<div class="payload">${esc(runPayloadFor(t))}</div>` : ""}
+        ${facts ? `<div class="facts mono">${esc(facts)}</div>` : ""}
         ${t.last_error ? `<div class="cerr">⚠ ${esc(t.last_error)}</div>` : ""}
       </div>`;
+    };
     // A mixed NEEDS YOU / WORKING / DONE bucket dispatches each kind-tagged entry
     // to the matching card template.
-    const entryCard = (entry, quiet) => (entry.kind === "run" ? card(entry.r, quiet) : planCard(entry.p, quiet));
-    const mixedBucket = (label, entries, quiet) =>
+    const entryCard = (entry, quiet, withFacts) =>
+      entry.kind === "run" ? card(entry.r, quiet, withFacts) : planCard(entry.p, quiet);
+    const mixedBucket = (label, entries, quiet, withFacts) =>
       entries.length
-        ? `<div class="bucket"><h2>${label} <span class="n">${entries.length}</span></h2>${entries.map((e) => entryCard(e, quiet)).join("")}</div>`
+        ? `<div class="bucket"><h2>${label} <span class="n">${entries.length}</span></h2>${entries.map((e) => entryCard(e, quiet, withFacts)).join("")}</div>`
         : "";
     // NEEDS YOU always renders — its emptiness is the affirmation that nothing
     // is waiting on the user, not an absent section.
@@ -72,7 +80,7 @@ export async function renderProject() {
       entities.needsYou.length ? ` <span class="n">${entities.needsYou.length}</span>` : ""
     }</h2>${
       entities.needsYou.length
-        ? entities.needsYou.map((e) => entryCard(e, false)).join("")
+        ? entities.needsYou.map((e) => entryCard(e, false, true)).join("")
         : '<div class="allclear">✓ Nothing needs you.</div>'
     }</div>`;
     const worktreeBucket = worktrees.length
@@ -99,9 +107,9 @@ export async function renderProject() {
           <button class="btn primary" id="newplan">+ New plan</button></div></div>
       ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan or start a quick task.</div>'}
       ${needsYouBucket}
-      ${mixedBucket("WORKING", entities.working, true)}
+      ${mixedBucket("WORKING", entities.working, true, true)}
       ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}
-      ${mixedBucket("DONE", entities.done, true)}
+      ${mixedBucket("DONE", entities.done, true, false)}
       ${mainBucket}
       ${worktreeBucket}`;
     $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });

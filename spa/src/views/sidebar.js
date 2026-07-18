@@ -26,6 +26,15 @@ export function setSidebarCollapsed(on) {
   localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
 }
 
+// Navigating from a rail row on a narrow viewport collapses the sidebar so the
+// destination surface isn't hidden behind the overlaid rail (tap the scrim, or
+// the open toggle, to bring it back). On a wide viewport the rail is docked, so
+// it stays put.
+function goFromRail(route) {
+  go(route);
+  if (window.innerWidth < 900) setSidebarCollapsed(true);
+}
+
 function activeRunId() {
   return App.route.name === "task" ? App.route.id : null;
 }
@@ -104,14 +113,14 @@ function draw() {
       const pid = el.dataset.open;
       closedProjects.delete(pid);
       persistClosed();
-      go({ name: "project", projectId: pid });
+      goFromRail({ name: "project", projectId: pid });
     };
   });
   aside.querySelectorAll(".srow[data-run]").forEach((r) => {
-    r.onclick = () => go({ name: "task", id: r.dataset.run, tab: r.dataset.tab });
+    r.onclick = () => goFromRail({ name: "task", id: r.dataset.run, tab: r.dataset.tab });
   });
   aside.querySelectorAll(".srow[data-plan]").forEach((r) => {
-    r.onclick = () => go({ name: "plan", id: r.dataset.plan, tab: "review" });
+    r.onclick = () => goFromRail({ name: "plan", id: r.dataset.plan, tab: "review" });
   });
   aside.querySelectorAll(".srow[data-wtline]").forEach((r) => {
     r.onclick = () => {
@@ -121,10 +130,10 @@ function draw() {
     };
   });
   aside.querySelectorAll(".srow[data-wt]").forEach((r) => {
-    r.onclick = () => go({ name: "worktree", projectId: r.dataset.project, worktreeId: r.dataset.wt });
+    r.onclick = () => goFromRail({ name: "worktree", projectId: r.dataset.project, worktreeId: r.dataset.wt });
   });
   aside.querySelectorAll(".srow[data-main]").forEach((r) => {
-    r.onclick = () => go({ name: "main", projectId: r.dataset.main });
+    r.onclick = () => goFromRail({ name: "main", projectId: r.dataset.main });
   });
 }
 
@@ -180,6 +189,10 @@ export function initSidebar() {
   );
   $("#side-collapse").onclick = () => setSidebarCollapsed(true);
   $("#side-open").onclick = () => setSidebarCollapsed(false);
+  // On a narrow viewport the open rail overlays the content behind a scrim;
+  // tapping it dismisses the rail (the sheet scrim precedent).
+  const scrim = $("#side-scrim");
+  if (scrim) scrim.onclick = () => setSidebarCollapsed(true);
   subscribeFeed((feed) => {
     lastFeed = feed;
     draw();

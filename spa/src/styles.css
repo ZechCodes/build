@@ -521,9 +521,14 @@ body.sidebar-collapsed #side-open { display:block; }
 .sempty { font-size:12.5px; margin:8px 6px; }
 .addmenu { display:flex; flex-direction:column; gap:8px; margin:14px 0; }
 .addmenu .btn { text-align:left; }
+#side-scrim { display:none; }
 @media (max-width: 900px) {
   #sidebar { position:fixed; left:0; top:0; bottom:0; height:auto; z-index:40;
     box-shadow:8px 0 24px rgba(0,0,0,.08); width:min(86vw, 300px); }
+  /* The open rail overlays content on narrow viewports; a scrim beneath it
+     (above the content) taps to dismiss. Hidden while gated (unlock screen). */
+  body:not(.sidebar-collapsed):not(.gated) #side-scrim {
+    display:block; position:fixed; inset:0; z-index:35; background:rgba(0,0,0,.35); }
 }
 /* project page header */
 .crumb { font-size:12.5px; margin-bottom:2px; }

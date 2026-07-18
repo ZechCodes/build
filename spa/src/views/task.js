@@ -67,6 +67,7 @@ export async function renderTask() {
         ${planRef}
         <div class="surface-meta">
           <span id="msgaction"></span>
+          ${m.branch ? `<span class="mono dim" title="${esc(m.worktree_path || "")}">${esc(m.branch)}</span>` : ""}
           <span class="chip ${runChipClass(m.state)}" title="${esc(m.goal || "")}">${RUN_STATE_LABEL[m.state] || m.state || ""}</span>
           <span class="taskactions" id="taskactions"></span>
         </div>

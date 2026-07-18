@@ -31,6 +31,7 @@ import {
   implementConfirm,
   abandonPlanConfirm,
   deletePlanConfirm,
+  planBackTarget,
 } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { openPlanMessage } from "../sheets/message.js";
@@ -50,6 +51,10 @@ const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 export async function renderPlan() {
   const root = $("#root");
   const id = App.route.id;
+  // If the user entered this plan from a run (task.js's openPlan stamped the
+  // marker), the back chevron returns to that run's Stages tab (the plan↔run
+  // round trip). Read once at entry; the chevron clears it on return.
+  const returnRunId = sessionStorage.getItem("build.planReturn." + id);
   let last = null;
   // The plan carries two surfaces: Review (the doc / stage board) and Agent (the
   // drafting session's live PTY). The Agent tab shows only while the plan is
@@ -253,12 +258,20 @@ export async function renderPlan() {
     const host = $("#plantabs");
     if (!host) return;
     const tabs = [{ id: "review", label: "Review" }, ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : [])];
+    // The chevron returns to the originating run (if we came from one and it's
+    // still this plan's active run), else up to the project — goHome's target.
+    const backTarget = planBackTarget({ returnRunId, activeRunId: p && p.active_run_id, projectId: p && p.project_id });
+    const backTitle =
+      backTarget.name === "task" ? "Back to run" : p && p.project ? `Back to ${p.project}` : "Back to project";
     tabShellCtl = mountTabShell(host, {
       tabs,
       active: tab,
       onSelect: (t) => selectTab(t),
-      back: { title: p && p.project ? `Back to ${p.project}` : "Back to project" },
-      onBack: () => goHome(),
+      back: { title: backTitle },
+      onBack: () => {
+        if (backTarget.name === "task") sessionStorage.removeItem("build.planReturn." + id);
+        go(backTarget);
+      },
     });
   };
 
@@ -351,7 +364,10 @@ export async function renderPlan() {
       link.id = "viewrun";
       link.textContent = "View run →";
       link.title = "A run is implementing this plan.";
-      link.onclick = () => go({ name: "task", id: p.active_run_id, tab: "changes" });
+      // A multi-stage plan's run is driven from its Stages tab (the stage_gate
+      // case); single-doc plans open on Changes.
+      link.onclick = () =>
+        go({ name: "task", id: p.active_run_id, tab: p.stages && p.stages.length ? "stages" : "changes" });
       actions.appendChild(link);
       return;
     }

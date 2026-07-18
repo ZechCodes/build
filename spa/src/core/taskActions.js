@@ -100,6 +100,18 @@ export function defaultRunTab(run) {
   return run && run.state === "stage_gate" ? "stages" : "changes";
 }
 
+/** Where the plan cockpit's back chevron returns to. When the user entered the
+ *  plan FROM a run (a sessionStorage marker records that run's id) and that run
+ *  is still the plan's active run, the chevron returns to that run's Stages tab —
+ *  the plan↔run round trip. A stale marker (run no longer active, or gone) falls
+ *  back to the owning project, and a project-less plan to notifications. Pure so
+ *  the routing is unit-testable; the view owns the sessionStorage read/removal. */
+export function planBackTarget({ returnRunId, activeRunId, projectId }) {
+  if (returnRunId && returnRunId === activeRunId) return { name: "task", id: returnRunId, tab: "stages" };
+  if (projectId) return { name: "project", projectId };
+  return { name: "notifications" };
+}
+
 /** Which RPC revises a stage's open comments, given the plan's lifecycle, for
  *  the plan cockpit's per-stage send-notes action. While the plan is still under
  *  review the plan owns the drafting session, so `plan.stage_send_notes` applies.

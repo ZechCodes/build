@@ -232,7 +232,12 @@ export async function renderTask() {
   // A mid-run revision belongs to the plan (the doc home never moved): open the
   // owning plan's stage doc so the user comments / sends notes there.
   const openPlan = (stageId) => {
-    if (last && last.plan_id) go({ name: "plan", id: last.plan_id, tab: "review", stage: stageId });
+    if (last && last.plan_id) {
+      // Mark that we entered the plan from this run so the plan's back chevron
+      // returns here (the plan↔run round trip; core/taskActions.planBackTarget).
+      sessionStorage.setItem("build.planReturn." + last.plan_id, id);
+      go({ name: "plan", id: last.plan_id, tab: "review", stage: stageId });
+    }
   };
 
   // The review surface (the Changes rail's "All changes" entry). ONE instance for

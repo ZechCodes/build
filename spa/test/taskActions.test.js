@@ -17,6 +17,7 @@ import {
   abandonPlanConfirm,
   approvePlanConfirm,
   implementConfirm,
+  planBackTarget,
 } from "../src/core/taskActions.js";
 
 // Live (non-deletable) run states, from the wire contract.
@@ -64,6 +65,41 @@ describe("plan removal actions match the bridge contract", () => {
   it("plan abandon is not offered for a missing/unknown state", () => {
     expect(planAbandonable("")).toBe(false);
     expect(planAbandonable(undefined)).toBe(false);
+  });
+});
+
+describe("planBackTarget — the plan chevron's return route", () => {
+  it("returns to the originating run's stages tab when the marker matches the active run", () => {
+    expect(planBackTarget({ returnRunId: "run-7", activeRunId: "run-7", projectId: "p1" })).toEqual({
+      name: "task",
+      id: "run-7",
+      tab: "stages",
+    });
+  });
+
+  it("falls back to the project when the return marker is stale (no longer the active run)", () => {
+    expect(planBackTarget({ returnRunId: "run-old", activeRunId: "run-7", projectId: "p1" })).toEqual({
+      name: "project",
+      projectId: "p1",
+    });
+  });
+
+  it("falls back to the project when there is no return marker", () => {
+    expect(planBackTarget({ returnRunId: null, activeRunId: "run-7", projectId: "p1" })).toEqual({
+      name: "project",
+      projectId: "p1",
+    });
+  });
+
+  it("falls back to notifications when there is no project", () => {
+    expect(planBackTarget({ returnRunId: null, activeRunId: null, projectId: null })).toEqual({ name: "notifications" });
+  });
+
+  it("does not return to a run when there is a marker but no active run (run gone)", () => {
+    expect(planBackTarget({ returnRunId: "run-7", activeRunId: null, projectId: "p1" })).toEqual({
+      name: "project",
+      projectId: "p1",
+    });
   });
 });
 

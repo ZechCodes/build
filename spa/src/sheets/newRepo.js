@@ -38,7 +38,10 @@ export function openNewRepo(onDone, pre = {}) {
   };
   $("#nrdo").onclick = async () => {
     const name = $("#nrname").value.trim();
-    if (!name) return;
+    if (!name) {
+      $("#nrerr").textContent = "Enter a name first.";
+      return;
+    }
     const parent = $("#nrloc").value.trim() || undefined;
     const base_branch = $("#nrbranch").value.trim() || undefined;
     const remote = $("#nrremote").value.trim() || undefined;

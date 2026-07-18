@@ -16,7 +16,10 @@ export function openClone(onDone) {
   $("#clcancel").onclick = () => $("#scrim").classList.remove("show");
   $("#cldo").onclick = async () => {
     const url = $("#clurl").value.trim();
-    if (!url) return;
+    if (!url) {
+      $("#clerr").textContent = "Enter a remote URL first.";
+      return;
+    }
     const name = $("#clname").value.trim() || undefined;
     $("#cldo").disabled = true;
     $("#cldo").textContent = "cloning…";

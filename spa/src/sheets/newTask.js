@@ -8,6 +8,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, loadModelCatalog } from "../app.js";
+import { notifyError } from "../core/notify.js";
 import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
 
 export async function openNewTask({ projectId, mode = "plan" } = {}) {
@@ -27,12 +28,17 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
       <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
     </div>
     <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
+    <div class="adderr" id="ntkerr"></div>
     <div class="row"><span class="dim mono" style="font-size:11px">${esc("Claude Code")}</span>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="dispatch">Create</button></div>`;
   $("#scrim").classList.add("show");
   $("#goal").focus();
   $("#cancel").onclick = () => $("#scrim").classList.remove("show");
+  // Guard against dispatching before we know the projects: keep Create disabled
+  // until project.list resolves with at least one project (re-enabled below).
+  $("#dispatch").disabled = true;
+  $("#goal").oninput = () => ($("#ntkerr").textContent = "");
 
   // The segmented switch: the two paths are distinct verbs, so each has its own
   // explanation and its own dispatch. `path` drives the dispatch handler below.
@@ -65,6 +71,9 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
       ? projects.map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} · ${esc(p.base_branch)}</option>`).join("")
       : '<option value="">(no projects — add one in Settings)</option>';
     if (projectId && projects.some((p) => p.project_id === projectId)) select.value = projectId;
+    // Only enable Create once we actually have a project to dispatch into; the
+    // zero-project placeholder keeps it disabled and explains why.
+    if (projects.length) $("#dispatch").disabled = false;
   } catch {
     select.innerHTML = '<option value="">(could not load projects)</option>';
   }
@@ -86,24 +95,30 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
 
   $("#dispatch").onclick = async () => {
     const goal = $("#goal").value.trim();
-    if (!goal) return;
-    const project_id = select.value || undefined;
-    const params = { goal, project_id, ...modelParams(catalog.models, $("#model").value, $("#effort").value) };
-    $("#dispatch").disabled = true;
-    $("#dispatch").textContent = "dispatching…";
+    if (!goal) {
+      $("#ntkerr").textContent = "Enter a goal first.";
+      return;
+    }
+    // Optimistic close: capture everything, drop the sheet immediately, then
+    // await the RPC. On failure the sheet is gone, so a persistent error
+    // notification (not a resurrected button label) carries the reason.
+    const currentPath = path;
+    const params = {
+      goal,
+      project_id: select.value || undefined,
+      ...modelParams(catalog.models, $("#model").value, $("#effort").value),
+    };
+    $("#scrim").classList.remove("show");
     try {
-      if (path === "quick") {
+      if (currentPath === "quick") {
         const run = await App.call("run.create", params);
-        $("#scrim").classList.remove("show");
         go({ name: "task", id: run.run_id, tab: "changes" });
       } else {
         const plan = await App.call("plan.create", params);
-        $("#scrim").classList.remove("show");
         go({ name: "plan", id: plan.plan_id, tab: "review" });
       }
     } catch (e) {
-      $("#dispatch").textContent = "error: " + e.message.slice(0, 40);
-      $("#dispatch").disabled = false;
+      notifyError(currentPath === "quick" ? "Couldn't start the task" : "Couldn't create the plan", e.message);
     }
   };
 }

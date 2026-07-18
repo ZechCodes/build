@@ -24,7 +24,10 @@ export function openMessageAgent(run, onDone) {
   $("#msgcancel").onclick = () => $("#scrim").classList.remove("show");
   $("#msgsend").onclick = async () => {
     const message = $("#agentmsg").value.trim();
-    if (!message) return;
+    if (!message) {
+      $("#msgerr").textContent = "Type a message first.";
+      return;
+    }
     $("#msgsend").disabled = true;
     $("#msgsend").textContent = "sending…";
     try {
@@ -61,7 +64,10 @@ export function openPlanMessage(plan, onDone) {
   $("#pmsgcancel").onclick = () => $("#scrim").classList.remove("show");
   $("#pmsgsend").onclick = async () => {
     const message = $("#planmsg").value.trim();
-    if (!message) return;
+    if (!message) {
+      $("#pmsgerr").textContent = "Type a message first.";
+      return;
+    }
     $("#pmsgsend").disabled = true;
     $("#pmsgsend").textContent = "sending…";
     try {

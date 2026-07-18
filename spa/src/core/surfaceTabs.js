@@ -39,17 +39,17 @@ export function attachConnectionOverlay(host) {
 }
 
 /** Track a surface's open user terminals: list on mount, create on `+`, close on
- *  `×`. Ordinal labels ("1", "2", …) come from position in creation/list order. */
+ *  `×`. Readable ordinal labels come from position in creation/list order. */
 export function terminalTabsController(scope) {
   const manager = terminalManager();
   let terms = []; // [{ term_id }] in list/creation order
   return {
     ids: () => terms.map((t) => t.term_id),
     /** The tab descriptors for the shell: closable, ordinal-labeled. */
-    tabs: () => terms.map((t, i) => ({ id: t.term_id, label: String(i + 1), closable: true })),
+    tabs: () => terms.map((t, i) => ({ id: t.term_id, label: `Terminal ${i + 1}`, closable: true })),
     label: (termId) => {
       const i = terms.findIndex((t) => t.term_id === termId);
-      return i < 0 ? "" : String(i + 1);
+      return i < 0 ? "" : `Terminal ${i + 1}`;
     },
     has: (termId) => terms.some((t) => t.term_id === termId),
     async load() {

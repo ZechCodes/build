@@ -158,9 +158,10 @@ const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
 /// At most this many user terminals daemon-wide, all scopes combined. Agent
 /// screens don't count (at most one per task, bounded by tasks).
 const MAX_USER_TERMINALS: usize = 16;
-/// `fs.read` never returns more than this many content bytes in one response,
-/// regardless of the file's real size (spec §4).
+/// Source/document previews stay tightly capped; playable media gets a larger
+/// bounded response because browsers cannot decode a truncated data URL.
 const FS_READ_MAX_BYTES: u64 = 1_048_576;
+const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
 
 impl TermScreen {
     fn new(cols: u16, rows: u16) -> TermScreen {
@@ -2041,8 +2042,8 @@ impl AppState {
         Ok(json!({ "path": path, "entries": entries }))
     }
 
-    /// Read one file from a worktree-backed scope, base64 always, capped at
-    /// [`FS_READ_MAX_BYTES`] server-side (spec §4.3).
+    /// Read one file from a worktree-backed scope, base64 always, capped at the
+    /// source limit or the larger bounded media limit server-side.
     fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
         let scope = TermScope::parse(params)?;
         let root = scope.resolve_root(self)?;
@@ -2058,11 +2059,16 @@ impl AppState {
         }
         let size = leaf.len();
         let file = std::fs::File::open(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
-        let mut content = Vec::with_capacity(size.min(FS_READ_MAX_BYTES) as usize);
-        file.take(FS_READ_MAX_BYTES)
+        let read_limit = if media_mime_hint(&target).is_some() {
+            FS_MEDIA_READ_MAX_BYTES
+        } else {
+            FS_READ_MAX_BYTES
+        };
+        let mut content = Vec::with_capacity(size.min(read_limit) as usize);
+        file.take(read_limit)
             .read_to_end(&mut content)
             .map_err(|e| format!("cannot read {path}: {e}"))?;
-        let truncated = size > FS_READ_MAX_BYTES;
+        let truncated = size > read_limit;
         let head_len = content.len().min(8192);
         let mime = mime_hint(&target, &content[..head_len]);
         Ok(json!({
@@ -4478,10 +4484,33 @@ fn mime_hint(path: &std::path::Path, head: &[u8]) -> &'static str {
         Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
         Some("bmp") => "image/bmp",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("flac") => "audio/flac",
+        Some("mp4") | Some("m4v") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
         Some("json") => "application/json",
         Some("pdf") => "application/pdf",
         _ if head.contains(&0u8) => "application/octet-stream",
         _ => "text/plain",
+    }
+}
+
+fn media_mime_hint(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    match ext.as_str() {
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "m4a" => Some("audio/mp4"),
+        "aac" => Some("audio/aac"),
+        "flac" => Some("audio/flac"),
+        "mp4" | "m4v" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        _ => None,
     }
 }
 
@@ -5885,6 +5914,8 @@ mod tests {
         std::fs::write(repo.join("page.html"), "<h1>hi</h1>\n").unwrap();
         std::fs::write(repo.join("icon.svg"), "<svg></svg>\n").unwrap();
         std::fs::write(repo.join("pic.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        std::fs::write(repo.join("sound.mp3"), b"ID3audio").unwrap();
+        std::fs::write(repo.join("clip.mp4"), b"media").unwrap();
         std::fs::write(repo.join("plain.txt"), "just text\n").unwrap();
         std::fs::write(repo.join("blob.bin"), [0u8, 1, 2, 3, 0, 4]).unwrap();
 
@@ -5907,6 +5938,8 @@ mod tests {
         assert_eq!(read("page.html")["result"]["mime"], "text/html");
         assert_eq!(read("icon.svg")["result"]["mime"], "image/svg+xml");
         assert_eq!(read("pic.png")["result"]["mime"], "image/png");
+        assert_eq!(read("sound.mp3")["result"]["mime"], "audio/mpeg");
+        assert_eq!(read("clip.mp4")["result"]["mime"], "video/mp4");
         assert_eq!(read("plain.txt")["result"]["mime"], "text/plain");
         assert_eq!(
             read("blob.bin")["result"]["mime"],
@@ -5934,10 +5967,11 @@ mod tests {
 
         let real_size = FS_READ_MAX_BYTES as usize + 4096;
         std::fs::write(repo.join("big.bin"), vec![b'a'; real_size]).unwrap();
+        std::fs::write(repo.join("clip.mp4"), vec![b'm'; real_size]).unwrap();
 
         let res = state.handle(req(
             "fs.read",
-            json!({ "project_id": project_id, "path": "big.bin" }),
+            json!({ "project_id": project_id.clone(), "path": "big.bin" }),
         ));
         assert_eq!(res["ok"], true, "{res:?}");
         assert_eq!(res["result"]["size"], real_size as u64);
@@ -5946,6 +5980,17 @@ mod tests {
             .decode(res["result"]["content_b64"].as_str().unwrap())
             .unwrap();
         assert_eq!(decoded.len(), FS_READ_MAX_BYTES as usize);
+
+        let media = state.handle(req(
+            "fs.read",
+            json!({ "project_id": project_id, "path": "clip.mp4" }),
+        ));
+        assert_eq!(media["result"]["mime"], "video/mp4");
+        assert_eq!(media["result"]["truncated"], false);
+        let media_decoded = base64::engine::general_purpose::STANDARD
+            .decode(media["result"]["content_b64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(media_decoded.len(), real_size);
     }
 
     #[test]

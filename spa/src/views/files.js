@@ -28,10 +28,14 @@ export function previewModeFor(mime, truncated) {
           ? "svg"
           : (mime || "").startsWith("image/")
             ? "image"
+            : (mime || "").startsWith("audio/")
+              ? "audio"
+              : (mime || "").startsWith("video/")
+                ? "video"
             : mime === "application/octet-stream" || mime === "application/pdf"
               ? "binary"
               : "source";
-  if (truncated && (base === "html" || base === "svg" || base === "image")) return "toolarge";
+  if (truncated && (base === "html" || base === "svg" || base === "image" || base === "audio" || base === "video")) return "toolarge";
   return base;
 }
 
@@ -72,7 +76,18 @@ export function filesTreeHtml(dir, entries) {
  *  the path's extension (langForPath) and, for an unknown extension, falls back
  *  to escaped plain text — highlightCode never emits a live tag either way. */
 export function sourcePreviewHtml(path, text) {
-  return `<pre class="fsrc"><code>${highlightCode(text, langForPath(path))}</code></pre>`;
+  const lang = langForPath(path);
+  const rows = text
+    .split("\n")
+    .map((line, index) => `<tr><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
+    .join("");
+  return `<div class="fsrc"><table>${rows}</table></div>`;
+}
+
+export function mediaPreviewHtml(mode, mime, contentB64) {
+  const tag = mode === "audio" ? "audio" : "video";
+  const className = mode === "audio" ? "faudio" : "fvideo";
+  return `<${tag} class="fmedia ${className}" controls preload="metadata" src="data:${esc(mime)};base64,${contentB64}"></${tag}>`;
 }
 
 /** Whether the source view for `path`/`mode` should render as a masked dotenv
@@ -95,6 +110,7 @@ function previewBodyHtml(path, file, showSource) {
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
   if (mode === "svg") return `<img class="fimg" src="data:image/svg+xml;base64,${file.content_b64}" alt="">`;
   if (mode === "image") return `<img class="fimg" src="data:${esc(file.mime)};base64,${file.content_b64}" alt="" style="max-width:100%">`;
+  if (mode === "audio" || mode === "video") return mediaPreviewHtml(mode, file.mime, file.content_b64);
   return sizePlaceholder(mode, file.size);
 }
 

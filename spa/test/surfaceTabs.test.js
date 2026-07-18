@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Isolate mountAuxTab's failure handling: the pane just forwards the manager's
 // attach rejection (no ghostty/wasm in node), and the manager is a test double.
 const fakeManager = {
+  listTerminals: vi.fn(),
+  createTerminal: vi.fn(),
+  closeTerminal: vi.fn(),
   attachTerminal: vi.fn(),
   attachAgent: vi.fn(async () => ({ live: true, snapshot: "", cursor: 0 })),
   input: vi.fn(async () => {}),
@@ -25,7 +28,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab: vi.fn() }));
 
-import { mountAuxTab, mountAgentPane } from "../src/core/surfaceTabs.js";
+import { mountAuxTab, mountAgentPane, terminalTabsController } from "../src/core/surfaceTabs.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -51,9 +54,24 @@ function fakeHost() {
 }
 
 beforeEach(() => {
+  fakeManager.listTerminals.mockReset();
+  fakeManager.createTerminal.mockReset();
+  fakeManager.closeTerminal.mockReset();
   fakeManager.attachTerminal.mockReset();
   fakeManager.detach.mockReset();
   paneSpy.lastOpts = null;
+});
+
+describe("terminalTabsController labels", () => {
+  it("uses readable terminal names for listed and newly-created sessions", async () => {
+    fakeManager.listTerminals.mockResolvedValue([{ term_id: "term-a" }, { term_id: "term-b" }]);
+    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-c" });
+    const controller = terminalTabsController({ project_id: "p1" });
+    await controller.load();
+    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Terminal 2"]);
+    await controller.create();
+    expect(controller.label("term-c")).toBe("Terminal 3");
+  });
 });
 
 describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not blank)", () => {

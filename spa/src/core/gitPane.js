@@ -12,6 +12,7 @@ import {
   uncommittedHtml,
   commitDetailHtml,
   changesRailHtml,
+  gitBranchControlHtml,
   gitToolbarHtml,
   gitStateBannerHtml,
   branchMenuHtml,
@@ -405,10 +406,17 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
           <div class="gp-toolbar"></div>
           <div class="gp-banner"></div>
           <div class="cdetail-host"></div>
+          <div class="gp-commit"></div>
         </section>
       </div></div>`;
     container.onclick = handleClick;
     container.onchange = handleChange;
+    container.onkeydown = (event) => {
+      if ((event.key === "Enter" || event.key === " ") && event.target.closest(".gitmore")) {
+        event.preventDefault();
+        showMore();
+      }
+    };
   };
 
   const defaultSelection = () => (review ? "review" : "uncommitted");
@@ -421,6 +429,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     const hadFocus = box && document.activeElement === box;
     const repoControls = supportsRepoManagement(lastStatus);
     detailHost.innerHTML = uncommittedHtml(lastStatus, { repoControls, pendingConfirm });
+    const commitHost = container.querySelector(".gp-commit");
+    const composer = detailHost.querySelector(".gitcommit");
+    if (commitHost && composer) commitHost.appendChild(composer);
     const freshBox = messageBox();
     if (freshBox) {
       freshBox.value = draft;
@@ -454,14 +465,18 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     if (disposed || !lastStatus || !lastLog) return;
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
-    container.querySelector(".gp-toolbar").innerHTML = repoControls
-      ? gitToolbarHtml({
+    const branchMarkup = repoControls
+      ? gitBranchControlHtml({
           branch: lastStatus.branch,
           showBranchControl: branchControl,
-          chips: syncChipState(lastStatus),
           branchMenuHtml: branchMenuOpen
             ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered })
             : "",
+        })
+      : "";
+    container.querySelector(".gp-toolbar").innerHTML = repoControls
+      ? gitToolbarHtml({
+          chips: syncChipState(lastStatus),
         })
       : "";
     container.querySelector(".gp-banner").innerHTML = repoControls
@@ -477,8 +492,11 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       status: lastStatus,
       log: mergedLog,
       selected,
+      branchControlHtml: branchMarkup,
     });
     const detailHost = container.querySelector(".cdetail-host");
+    const commitHost = container.querySelector(".gp-commit");
+    if (commitHost) commitHost.innerHTML = "";
     if (selected === "review") {
       // The plug owns the detail DOM — mount once, then leave it alone.
       if (!reviewMounted) {

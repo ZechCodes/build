@@ -66,9 +66,10 @@ export function diffFilesHtml(files, { commentable = false, changedSince = null,
         ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(f.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
         : "";
       return `
-      <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
+      <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span class="fpath">${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
         <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}</div>
-        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div></div>`;
+        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div>
+        <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
     })
     .join("");
 }

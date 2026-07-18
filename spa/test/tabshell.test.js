@@ -5,7 +5,7 @@ const tabs = [
   { id: "plan", label: "Plan" },
   { id: "diff", label: "Diff" },
   { id: "files", label: "Files" },
-  { id: "term-3", label: "1", closable: true },
+  { id: "term-3", label: "Terminal 1", closable: true },
 ];
 
 describe("tabShellHtml", () => {

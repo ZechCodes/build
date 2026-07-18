@@ -118,6 +118,10 @@ describe("uncommittedHtml", () => {
     expect(uncommittedHtml(status())).not.toContain("diff truncated");
   });
 
+  it("labels capped file diffs with an explicit expansion affordance", () => {
+    expect(uncommittedHtml(status())).toContain("Expand full diff");
+  });
+
   it("includes the commit-message box and actions host when there are changes", () => {
     const html = uncommittedHtml(status());
     expect(html).toContain('class="gitmsg"');
@@ -248,9 +252,15 @@ describe("changesRailHtml", () => {
     expect(html.match(/rrow sel/g)).toBeNull();
   });
 
-  it("shows the Show more affordance only when another page exists", () => {
-    expect(rail({ log: log({ more: true }) })).toContain('class="btn mini gitmore"');
+  it("shows a quiet older-commits affordance only when another page exists", () => {
+    expect(rail({ log: log({ more: true }) })).toContain('class="gitmore"');
+    expect(rail({ log: log({ more: true }) })).toContain("Load older commits");
     expect(rail()).not.toContain("gitmore");
+  });
+
+  it("places supplied branch selection above the pinned commit-log rows", () => {
+    const html = rail({ branchControlHtml: '<button class="gtbranchbtn">main</button>' });
+    expect(html.indexOf("crail-branch")).toBeLessThan(html.indexOf('data-sel="uncommitted"'));
   });
 
   it("renders the empty state for a repo with no commits", () => {

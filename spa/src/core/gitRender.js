@@ -57,10 +57,10 @@ export function uncommittedHtml(status, { repoControls = false, pendingConfirm =
       const diffFile = diffByPath.get(f.path);
       return `<div class="file gitfile capped"><div class="fhead">
         <label class="toggle"><input type="checkbox" class="stagebox" data-path="${esc(f.path)}"${checked}></label>
-        <span>${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
+        <span class="fpath">${esc(f.path)}</span><span class="fb ${badge.cls}">${badge.label}</span>
         ${diffFile ? `<span class="pm"><span class="a">+${diffFile.add}</span> <span class="d">−${diffFile.del}</span></span>` : ""}
         ${repoControls ? discardButtonHtml(f.path, pendingConfirm) : ""}</div>
-        ${diffFile ? `<div class="dscroll"><table>${diffRowsHtml(diffFile.rows, langForPath(f.path), { maskDotenv: isDotenvPath(f.path) })}</table></div>` : ""}</div>`;
+        ${diffFile ? `<div class="dscroll"><table>${diffRowsHtml(diffFile.rows, langForPath(f.path), { maskDotenv: isDotenvPath(f.path) })}</table></div><div class="diff-expand" aria-hidden="true">Expand full diff ↓</div>` : ""}</div>`;
     })
     .join("");
   return `<div class="gitsec">
@@ -103,7 +103,7 @@ export function commitDetailHtml(show) {
  *  commit history (plus any paged-in extra commits merged by the caller) with
  *  its Show more affordance. `selected` is "review" | "uncommitted" | a commit
  *  hash. `review` is { base } or null. */
-export function changesRailHtml({ review = null, status, log, selected, nowSeconds = Date.now() / 1000 }) {
+export function changesRailHtml({ review = null, status, log, selected, branchControlHtml = "", nowSeconds = Date.now() / 1000 }) {
   const rrow = (sel, title, sub) =>
     `<div class="${["rrow", selected === sel ? "sel" : ""].filter(Boolean).join(" ")}" data-sel="${sel}">
       <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
@@ -118,29 +118,30 @@ export function changesRailHtml({ review = null, status, log, selected, nowSecon
     .map((c) => commitRowHtml(c, { selected: selected === c.hash, nowSeconds }))
     .join("");
   return `<div class="crail">
+    ${branchControlHtml ? `<div class="crail-branch">${branchControlHtml}</div>` : ""}
     ${reviewRow}${uncommittedRow}
     <div class="rhead">History</div>
     ${commits || '<div class="empty">No commits yet.</div>'}
-    ${log.more ? '<div class="cmore"><button class="btn mini gitmore">Show more</button></div>' : ""}</div>`;
+    ${log.more ? '<div class="gitmore" role="button" tabindex="0">Load older commits…</div>' : ""}</div>`;
 }
 
-/** The repo-management toolbar: branch control (an interactive button in main
- *  scope, static text in a session), a sync cluster (Fetch + ahead/behind chips
- *  + Pull/Push split-button hosts the controller mounts into), and a Stash
- *  split-button host. `chips` is { ahead, behind } or null (no upstream / older
- *  bridge → hidden). `branchMenuHtml` is the pre-rendered open branch menu, or
- *  "" when closed. Every git-derived string is escaped. */
-export function gitToolbarHtml({ branch, showBranchControl, chips, branchMenuHtml: branchMenu = "" }) {
-  const branchControl = showBranchControl
+/** Branch selection belongs to the commit/history rail, not over the diff. */
+export function gitBranchControlHtml({ branch, showBranchControl, branchMenuHtml: branchMenu = "" }) {
+  return showBranchControl
     ? `<button class="btn mini gtbranchbtn" title="Switch branch">⑂ ${esc(branch || "(detached)")} ▾</button>${branchMenu}`
     : `<span class="gtbranchlabel">⑂ ${esc(branch || "(detached)")}</span>`;
+}
+
+/** The repo-management toolbar: Fetch + ahead/behind chips + Pull/Push split
+ *  button hosts, and a Stash split-button host. Branch selection lives above
+ *  the commit log in the rail. */
+export function gitToolbarHtml({ chips }) {
   const chipsHtml = chips
     ? `<span class="gtchips"><span class="gtahead" title="ahead of upstream">↑${esc(chips.ahead)}</span> <span class="gtbehind" title="behind upstream">↓${esc(chips.behind)}</span></span>`
     : "";
   return `<div class="gittoolbar">
-    <div class="gtbranch">${branchControl}</div>
     <div class="gtsync">
-      <button class="btn mini gtfetch" title="Fetch --prune">Fetch</button>
+      <button class="btn mini gtfetch" title="Fetch --prune"><span aria-hidden="true">↻</span> Fetch</button>
       ${chipsHtml}
       <div class="gtpull"></div>
       <div class="gtpush"></div>

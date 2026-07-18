@@ -5,6 +5,7 @@ import {
   decodeBase64Text,
   filesTreeHtml,
   sourcePreviewHtml,
+  mediaPreviewHtml,
   previewPlaceholderHtml,
   shouldMaskDotenv,
 } from "../src/views/files.js";
@@ -19,6 +20,8 @@ describe("previewModeFor", () => {
     expect(previewModeFor("image/svg+xml", false)).toBe("svg");
     expect(previewModeFor("image/png", false)).toBe("image");
     expect(previewModeFor("image/jpeg", false)).toBe("image");
+    expect(previewModeFor("audio/mpeg", false)).toBe("audio");
+    expect(previewModeFor("video/mp4", false)).toBe("video");
     expect(previewModeFor("application/octet-stream", false)).toBe("binary");
     expect(previewModeFor("application/pdf", false)).toBe("binary");
     expect(previewModeFor("text/plain", false)).toBe("source");
@@ -29,6 +32,8 @@ describe("previewModeFor", () => {
     expect(previewModeFor("text/html", true)).toBe("toolarge");
     expect(previewModeFor("image/svg+xml", true)).toBe("toolarge");
     expect(previewModeFor("image/png", true)).toBe("toolarge");
+    expect(previewModeFor("audio/wav", true)).toBe("toolarge");
+    expect(previewModeFor("video/webm", true)).toBe("toolarge");
   });
 
   it("keeps truncated markdown/source renderable (partial + notice)", () => {
@@ -102,11 +107,18 @@ describe("decodeBase64Text", () => {
 });
 
 describe("sourcePreviewHtml", () => {
-  it("syntax-highlights source by the file's extension inside a <pre class=fsrc>", () => {
+  it("syntax-highlights source by extension with a numbered row per line", () => {
     const html = sourcePreviewHtml("bridge/src/app.rs", "fn main() { let x = 1; }");
-    expect(html).toContain('<pre class="fsrc"><code>');
+    expect(html).toContain('<div class="fsrc"><table>');
+    expect(html).toContain('<td class="fsrc-ln">1</td>');
     expect(html).toContain('class="token');
-    expect(html).toContain("</code></pre>");
+    expect(html).toContain("</table></div>");
+  });
+
+  it("renders stable line numbers including blank lines", () => {
+    const html = sourcePreviewHtml("notes.txt", "first\n\nthird");
+    expect(html.match(/class="fsrc-ln"/g)).toHaveLength(3);
+    expect(html).toContain('<td class="fsrc-ln">3</td>');
   });
 
   it("escapes source of an unknown extension and never emits a live tag", () => {
@@ -119,7 +131,18 @@ describe("sourcePreviewHtml", () => {
   it("keeps a hostile payload inert even under a real grammar", () => {
     const html = sourcePreviewHtml("evil.js", `<script>alert(1)</script>`);
     expect(html).not.toContain("<script>");
-    expect(/<(?!\/?(span|pre|code)\b)[a-zA-Z]/.test(html)).toBe(false);
+    expect(/<(?!\/?(span|div|table|tr|td|code)\b)[a-zA-Z]/.test(html)).toBe(false);
+  });
+});
+
+describe("mediaPreviewHtml", () => {
+  it("renders native audio and video controls", () => {
+    expect(mediaPreviewHtml("audio", "audio/mpeg", "SUQz")).toContain('<audio class="fmedia faudio" controls');
+    expect(mediaPreviewHtml("video", "video/mp4", "AAAA")).toContain('<video class="fmedia fvideo" controls');
+  });
+
+  it("escapes a hostile MIME hint", () => {
+    expect(mediaPreviewHtml("audio", 'audio/mpeg" onerror="alert(1)', "SUQz")).not.toContain('onerror="alert(1)"');
   });
 });
 

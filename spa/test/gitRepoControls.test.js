@@ -18,6 +18,7 @@ import {
   outsidePressDismisses,
 } from "../src/core/gitPane.js";
 import {
+  gitBranchControlHtml,
   gitToolbarHtml,
   gitStateBannerHtml,
   branchMenuHtml,
@@ -276,22 +277,38 @@ const cleanStatus = (overrides = {}) => ({
   ...overrides,
 });
 
-describe("gitToolbarHtml", () => {
+describe("gitBranchControlHtml", () => {
   it("renders an interactive branch button in main scope", () => {
-    const html = gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 });
+    const html = gitBranchControlHtml({ branch: "main", showBranchControl: true });
     expect(html).toContain("gtbranchbtn");
     expect(html).toContain("main");
     expect(html).not.toContain("gtbranchlabel");
   });
 
   it("renders the branch as static text in task scope", () => {
-    const html = gitToolbarHtml({ branch: "feat/x", showBranchControl: false, chips: null, stashCount: 0 });
+    const html = gitBranchControlHtml({ branch: "feat/x", showBranchControl: false });
     expect(html).toContain("gtbranchlabel");
     expect(html).not.toContain("gtbranchbtn");
   });
 
+  it("escapes a malicious branch name in both button and label forms", () => {
+    const evil = '"><img src=x onerror=alert(1)>';
+    expect(gitBranchControlHtml({ branch: evil, showBranchControl: true })).not.toContain("<img");
+    expect(gitBranchControlHtml({ branch: evil, showBranchControl: false })).not.toContain("<img");
+  });
+
+  it("attaches the branch menu markup when the menu is open", () => {
+    const html = gitBranchControlHtml({
+      branch: "main", showBranchControl: true,
+      branchMenuHtml: '<div class="gtbranch-menu">MENU</div>',
+    });
+    expect(html).toContain("gtbranch-menu");
+  });
+});
+
+describe("gitToolbarHtml", () => {
   it("renders fetch and the pull/push/stash split-button hosts", () => {
-    const html = gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 });
+    const html = gitToolbarHtml({ chips: null });
     expect(html).toContain("gtfetch");
     expect(html).toContain('class="gtpull"');
     expect(html).toContain('class="gtpush"');
@@ -299,23 +316,9 @@ describe("gitToolbarHtml", () => {
   });
 
   it("renders ahead/behind chips only when chip data is supplied", () => {
-    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: { ahead: 3, behind: 4 }, stashCount: 0 })).toContain("↑3");
-    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: { ahead: 3, behind: 4 }, stashCount: 0 })).toContain("↓4");
-    expect(gitToolbarHtml({ branch: "main", showBranchControl: true, chips: null, stashCount: 0 })).not.toContain("gtchips");
-  });
-
-  it("escapes a malicious branch name in both button and label forms", () => {
-    const evil = '"><img src=x onerror=alert(1)>';
-    expect(gitToolbarHtml({ branch: evil, showBranchControl: true, chips: null, stashCount: 0 })).not.toContain("<img");
-    expect(gitToolbarHtml({ branch: evil, showBranchControl: false, chips: null, stashCount: 0 })).not.toContain("<img");
-  });
-
-  it("attaches the branch menu markup when the menu is open", () => {
-    const html = gitToolbarHtml({
-      branch: "main", showBranchControl: true, chips: null, stashCount: 0,
-      branchMenuHtml: '<div class="gtbranch-menu">MENU</div>',
-    });
-    expect(html).toContain("gtbranch-menu");
+    expect(gitToolbarHtml({ chips: { ahead: 3, behind: 4 } })).toContain("↑3");
+    expect(gitToolbarHtml({ chips: { ahead: 3, behind: 4 } })).toContain("↓4");
+    expect(gitToolbarHtml({ chips: null })).not.toContain("gtchips");
   });
 });
 

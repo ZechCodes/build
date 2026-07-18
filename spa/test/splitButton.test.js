@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitButtonMarkup } from "../src/core/splitButton.js";
+import { splitButtonMarkup, createSingleFlight } from "../src/core/splitButton.js";
 
 const MERGE = { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: "commit, merge into main", busyLabel: "merging…" };
 const KEEP = { id: "merge_keep", menuLabel: "Merge & keep worktree", description: "merge into main, keep the worktree", busyLabel: "merging…" };
@@ -49,5 +49,33 @@ describe("splitButtonMarkup", () => {
     expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;img src=x&gt;");
+  });
+});
+
+describe("createSingleFlight", () => {
+  it("begin() arms and returns true when idle", () => {
+    const flight = createSingleFlight();
+    expect(flight.begin()).toBe(true);
+  });
+
+  it("begin() returns false while already in flight", () => {
+    const flight = createSingleFlight();
+    flight.begin();
+    expect(flight.begin()).toBe(false);
+    expect(flight.begin()).toBe(false);
+  });
+
+  it("end() re-arms so begin() succeeds again", () => {
+    const flight = createSingleFlight();
+    flight.begin();
+    flight.end();
+    expect(flight.begin()).toBe(true);
+  });
+
+  it("instances are independent", () => {
+    const a = createSingleFlight();
+    const b = createSingleFlight();
+    a.begin();
+    expect(b.begin()).toBe(true);
   });
 });

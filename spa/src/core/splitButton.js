@@ -22,10 +22,27 @@ export function splitButtonMarkup(options) {
   return `<div class="splitbtn">${primaryButton}<button class="btn primary${dangerClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${items}</div></div>`;
 }
 
+/** Pure single-flight latch: begin() arms and returns true, or returns false
+ *  when a flight is already in progress; end() re-arms. */
+export function createSingleFlight() {
+  let inFlight = false;
+  return {
+    begin() {
+      if (inFlight) return false;
+      inFlight = true;
+      return true;
+    },
+    end() {
+      inFlight = false;
+    },
+  };
+}
+
 /** Render into `container` and wire behavior. `run(optionId)` is awaited; while
- *  in flight the primary button is disabled and shows the option's busyLabel;
- *  rejection restores label + enabled (the caller owns error display);
- *  resolution leaves it disabled (the caller repaints/navigates). The caret
+ *  in flight the primary button and caret are disabled, the menu stays closed,
+ *  and further invokes are ignored (single flight — no concurrent destructive
+ *  RPCs); rejection restores label + enabled (the caller owns error display);
+ *  resolution leaves both disabled (the caller repaints/navigates). The caret
  *  toggles the menu; a pointerdown outside closes it; a menu item runs its
  *  option through the same primary button. */
 export function mountSplitButton(container, { options, run }) {
@@ -34,21 +51,27 @@ export function mountSplitButton(container, { options, run }) {
   const primary = container.querySelector(".btn.primary:not(.caret)");
   const caret = container.querySelector(".caret");
   const menu = container.querySelector(".splitmenu");
+  const flight = createSingleFlight();
 
   const invoke = async (optionId) => {
+    if (!flight.begin()) return;
     const option = byId[optionId];
     if (menu) menu.hidden = true;
     primary.disabled = true;
+    if (caret) caret.disabled = true;
     const restoreLabel = primary.textContent;
     primary.textContent = option.busyLabel || "working…";
     try {
       await run(optionId);
-      // Resolution: leave the button disabled — the caller repaints or navigates.
+      // Resolution: leave primary + caret disabled — the caller repaints or navigates.
     } catch {
-      // Rejection: the caller has shown the error; restore the button so the
+      // Rejection: the caller has shown the error; restore the buttons so the
       // user can retry a different action.
       primary.disabled = false;
+      if (caret) caret.disabled = false;
       primary.textContent = restoreLabel;
+    } finally {
+      flight.end();
     }
   };
 
@@ -57,6 +80,7 @@ export function mountSplitButton(container, { options, run }) {
   if (caret && menu) {
     caret.onclick = (event) => {
       event.stopPropagation();
+      if (caret.disabled) return;
       menu.hidden = !menu.hidden;
       if (!menu.hidden) {
         const close = (ev) => {

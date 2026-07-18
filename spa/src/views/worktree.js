@@ -50,14 +50,14 @@ export async function renderWorktree() {
     shellState = null;
 
   // The unified tab shell: Diff (the entire existing review content, untouched),
-  // Files, then user terminal tabs with `+`. Default tab: diff. Scope:
+  // Files, then user terminal tabs with `+`. Default tab: changes. Scope:
   // { project_id, worktree_id }.
-  let tab = App.route.tab || "diff";
+  let tab = App.route.tab || "changes";
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
   let aux = null;
   const isAuxTab = (tabId) => tabId === "files" || /^term-/.test(tabId);
-  const staticTabs = () => [{ id: "diff", label: "Diff" }, { id: "files", label: "Files" }, ...terminals.tabs()];
+  const staticTabs = () => [{ id: "changes", label: "Changes" }, { id: "files", label: "Files" }, ...terminals.tabs()];
   const disposeAux = () => {
     if (aux) {
       aux.dispose();
@@ -71,7 +71,7 @@ export async function renderWorktree() {
     history.replaceState(null, "", `#/worktree/${encodeURIComponent(projectId)}/${encodeURIComponent(worktreeId)}/${tabId}`);
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
-    if (tabId === "diff") {
+    if (tabId === "changes") {
       const body = $("#tabbody");
       if (body) body.classList.remove("bare", "flush");
       diffKey = null;
@@ -96,7 +96,7 @@ export async function renderWorktree() {
       onExit: () => {
         terminals.drop(tabId);
         if (shellCtl) shellCtl.setTabs(staticTabs());
-        selectTab("diff");
+        selectTab("changes");
       },
     });
   };
@@ -120,7 +120,7 @@ export async function renderWorktree() {
       /* raced with the reaper — drop the tab regardless */
     }
     if (shellCtl) shellCtl.setTabs(staticTabs());
-    if (tab === termId) selectTab("diff");
+    if (tab === termId) selectTab("changes");
   };
 
   const goHome = () => go({ name: "project", projectId });
@@ -465,18 +465,18 @@ export async function renderWorktree() {
     // is mid-comment. Only the fields the bar actually shows are keyed; the
     // churny ones (dirty_files, head_subject) no longer render anywhere.
     const shellKey = `${meta.branch}|${meta.adoptable}|${meta.path}`;
-    // Rebuild the header on first paint always; afterward only while the Diff tab
-    // is active — an aux tab (Files/terminal) owns #tabbody and must not be wiped
-    // by a churny header refresh (dirty_files/head_subject move as the user edits
-    // their own live checkout). Switching back to Diff resets shellState.
-    if (!busy && (shellState === null || (tab === "diff" && shellState.key !== shellKey))) {
+    // Rebuild the header on first paint always; afterward only while the Changes
+    // tab is active — an aux tab (Files/terminal) owns #tabbody and must not be
+    // wiped by a churny header refresh (dirty_files/head_subject move as the user
+    // edits their own live checkout). Switching back to Changes resets shellState.
+    if (!busy && (shellState === null || (tab === "changes" && shellState.key !== shellKey))) {
       shell(meta);
       shellState = { ...meta, key: shellKey };
       diffKey = null; // shell wiped #tabbody — force a body repaint below
     }
     // Files and terminal tabs are fetch-/push-driven — the poll keeps only the
     // header current (and watches for the worktree vanishing) for them.
-    if (tab !== "diff") return;
+    if (tab !== "changes") return;
     if ($("#wdiff-feedback") && (key === diffKey || busy)) {
       updateActions();
       return;

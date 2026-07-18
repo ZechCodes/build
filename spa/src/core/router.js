@@ -17,7 +17,7 @@ const runTab = (seg) =>
 // A plan is project-scoped: the review doc plus its disposable-worktree agent
 // screen. Plans are not a terminal scope, so `term-<n>` falls back to review.
 const planTab = (seg) => (seg === "agent" ? "agent" : "review");
-const worktreeTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "diff");
+const worktreeTab = (seg) => (seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "changes");
 const mainTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "changes");
 
 export function routeFromHash(hash) {
@@ -67,7 +67,7 @@ export function hashFromRoute(route) {
     return route.stage ? `${base}/${encodeURIComponent(route.stage)}` : base;
   }
   if (route.name === "worktree")
-    return `#/worktree/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.worktreeId)}/${route.tab || "diff"}`;
+    return `#/worktree/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.worktreeId)}/${route.tab || "changes"}`;
   if (route.name === "main") return `#/main/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
   if (route.name === "project") return `#/project/${encodeURIComponent(route.projectId)}`;
   if (route.name === "notifications") return "#/notifications";

@@ -11,7 +11,7 @@ describe("routeFromHash", () => {
     // The plan route is project-scoped, keyed by plan_id.
     expect(routeFromHash("#/plan/plan-123/review")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
     expect(routeFromHash("#/plan/plan-123")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
-    expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "diff" });
+    expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" });
     expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1" });
   });
 
@@ -45,12 +45,13 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/plan/a%20b/review/s%20x").stage).toBe("s x");
   });
 
-  it("parses the worktree tab vocabulary and defaults to diff", () => {
-    expect(routeFromHash("#/worktree/p/w/diff").tab).toBe("diff");
+  it("parses the worktree tab vocabulary and defaults to changes", () => {
+    expect(routeFromHash("#/worktree/p/w/changes").tab).toBe("changes");
+    expect(routeFromHash("#/worktree/p/w/diff").tab).toBe("changes"); // legacy Diff links land on Changes
     expect(routeFromHash("#/worktree/p/w/files").tab).toBe("files");
     expect(routeFromHash("#/worktree/p/w/term-2").tab).toBe("term-2");
-    expect(routeFromHash("#/worktree/p/w/agent").tab).toBe("diff"); // no agent on worktrees
-    expect(routeFromHash("#/worktree/p/w").tab).toBe("diff");
+    expect(routeFromHash("#/worktree/p/w/agent").tab).toBe("changes"); // no agent on worktrees
+    expect(routeFromHash("#/worktree/p/w").tab).toBe("changes");
   });
 
   it("parses the main surface and its tab vocabulary", () => {
@@ -79,7 +80,7 @@ describe("routeFromHash", () => {
   });
 
   it("decodes worktree route segments", () => {
-    expect(routeFromHash("#/worktree/a%20b/wt-1")).toEqual({ name: "worktree", projectId: "a b", worktreeId: "wt-1", tab: "diff" });
+    expect(routeFromHash("#/worktree/a%20b/wt-1")).toEqual({ name: "worktree", projectId: "a b", worktreeId: "wt-1", tab: "changes" });
   });
 
   it("decodes run and plan ids", () => {
@@ -100,7 +101,7 @@ describe("hashFromRoute", () => {
       { name: "task", id: "run-9", tab: "term-4" },
       { name: "plan", id: "plan-9", tab: "review" },
       { name: "plan", id: "a b", tab: "agent" },
-      { name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "diff" },
+      { name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" },
       { name: "worktree", projectId: "a b", worktreeId: "wt x", tab: "files" },
       { name: "worktree", projectId: "p", worktreeId: "w", tab: "term-1" },
       { name: "main", projectId: "proj-1", tab: "changes" },
@@ -127,7 +128,7 @@ describe("hashFromRoute", () => {
   it("supplies the default tab when a route omits it", () => {
     expect(hashFromRoute({ name: "task", id: "r" })).toBe("#/task/r/changes");
     expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/plan/p/review");
-    expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/worktree/p/w/diff");
+    expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/worktree/p/w/changes");
     expect(hashFromRoute({ name: "main", projectId: "p" })).toBe("#/main/p/changes");
   });
 });

@@ -38,6 +38,7 @@ import { openImplementOptions } from "../sheets/implement.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
+import { hashText } from "../core/reviewMemory.js";
 
 // Plan states whose planning session accepts a freeform message (the bridge
 // gates the rest): a live drafting session redirects, a parked one resumes.
@@ -81,6 +82,10 @@ export async function renderPlan() {
   // holds the latched stage ids.
   let singleDocError = false;
   const stageDocError = new Set();
+  // Re-review memory for the single doc (W6): a hash of the doc text at the last
+  // Send Notes. When the doc later differs, the pane prepends a "changed since
+  // your review" chip. Per-session (per renderPlan call), survives the poll.
+  let sendNotesStamp = null;
   // Latched once plan.get reports "unknown plan_id": the plan was deleted out
   // from under this view. We stop the poll and render a terminal gone-state so a
   // stray tick can never repaint over it (mirrors task.js's planGone latch).
@@ -450,7 +455,10 @@ export async function renderPlan() {
       : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
       : paneState === "error" ? docErrorPaneHtml("plan")
       : '<div class="plan-loading">✦ loading plan document…</div>';
+    // The doc moved since the reviewer's last Send Notes (W6): flag it above the doc.
+    const docChanged = sendNotesStamp && doc && hashText(doc) !== sendNotesStamp ? `<div class="doc-changed">changed since your review</div>` : "";
     body.innerHTML = `
+      ${docChanged}
       <div class="plan" id="plandoc">${docHtml}</div>
       ${editable ? `<div class="plan-feedback"><div id="pclist"></div>
         <textarea id="pgeneral" class="plan-general" placeholder="Add a general comment about the plan and request updates…"></textarea>
@@ -501,6 +509,8 @@ export async function renderPlan() {
           const notes = assemblePlanNotes(planComments, $("#pgeneral") ? $("#pgeneral").value : "");
           try {
             await App.call("plan.send_notes", { plan_id: id, comments: notes });
+            // Stamp the doc we just reviewed: a later revision flags it as changed.
+            sendNotesStamp = hashText(doc);
             planComments.length = 0;
             planKey = null;
             hideCommentPop();

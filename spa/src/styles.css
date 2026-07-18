@@ -276,6 +276,11 @@ tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !
 .fcmt { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
   border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
 .fcmt:hover { background:var(--accent-soft); color:var(--accent); }
+/* re-review memory: changed-since chip, per-file viewed toggle, changes-only filter */
+.fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
+.fviewed { margin-left:auto; font-size:11px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
+.doc-changed { font-size:11px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:2px 8px; display:inline-block; margin-bottom:8px; }
+.changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
 .splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }

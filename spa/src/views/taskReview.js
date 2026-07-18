@@ -10,6 +10,7 @@
 import { esc } from "../core/text.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
+import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { assembleDiffNotes } from "../core/notes.js";
@@ -70,6 +71,15 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     diffKey = null,
     lastDiffState = null,
     diffMsg = "";
+
+  // Re-review memory (W6), per plug instance (per-session): a stamp of what the
+  // reviewer saw at their last Request Changes, the files they have ticked off as
+  // viewed, and whether the diff is filtered to only what moved since the review.
+  // renderedFiles holds the freshest parsed diff so the stamp is taken from it.
+  let reviewStamps = new Map();
+  const viewedFiles = new Set();
+  let changedOnlyFilter = false;
+  let renderedFiles = [];
 
   const q = (sel) => (host ? host.querySelector(sel) : null);
 
@@ -145,6 +155,8 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         const notes = assembleDiffNotes(diffComments, q("#dgeneral") ? q("#dgeneral").value : "");
         try {
           await callRpc("run.request_changes", { run_id: taskId, comments: notes });
+          // Stamp what we just reviewed: the next pass marks files that moved.
+          reviewStamps = stampReview(renderedFiles);
           diffComments.length = 0;
           if (q("#dgeneral")) q("#dgeneral").value = "";
           diffKey = null;
@@ -214,15 +226,56 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
   function renderBody(t, files) {
     const editable = t.state === "review" || t.state === "building";
     const working = t.state === "building";
+    // The diffbar totals always count ALL files; the changed-only filter narrows
+    // only what is rendered below. `changed` drives both the per-file chip and the
+    // filter membership.
     const totalIns = files.reduce((a, f) => a + f.add, 0),
       totalDel = files.reduce((a, f) => a + f.del, 0);
+    const changed = changedSinceReview(reviewStamps, files);
+    const filesToRender = changedOnlyFilter ? files.filter((f) => changed.has(f.path)) : files;
+    const changedOnlyToggle =
+      reviewStamps.size > 0
+        ? `<label class="changedonly"><input type="checkbox" id="changedonly"${changedOnlyFilter ? " checked" : ""}/> Only changes since my review</label>`
+        : "";
+    const filesHtml = filesToRender.length
+      ? diffFilesHtml(filesToRender, { commentable: editable, changedSince: changed, viewed: viewedFiles, withViewedToggle: editable })
+      : files.length
+        ? '<div class="empty">Nothing changed since your review.</div>'
+        : '<div class="empty">No file changes yet.</div>';
     host.innerHTML = `
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
-        ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}</div>
-      ${files.length ? diffFilesHtml(files, { commentable: editable }) : '<div class="empty">No file changes yet.</div>'}
+        ${working ? '<span class="dim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
+      ${filesHtml}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
+
+    // The changed-only filter and the per-file Viewed checkbox live on a delegated
+    // change handler: the filter repaints (forcing a rebuild), Viewed collapses the
+    // file in place with NO repaint so it survives the poll freeze.
+    host.onchange = (e) => {
+      const target = e.target;
+      if (target.id === "changedonly") {
+        changedOnlyFilter = target.checked;
+        diffKey = null;
+        paint();
+        return;
+      }
+      if (target.classList && target.classList.contains("fviewed-box")) {
+        const path = target.dataset.file;
+        const fileEl = target.closest(".file");
+        if (target.checked) {
+          viewedFiles.add(path);
+          if (fileEl) {
+            fileEl.classList.add("collapsed");
+            fileEl.classList.remove("capped");
+          }
+        } else {
+          viewedFiles.delete(path);
+          if (fileEl) fileEl.classList.remove("collapsed");
+        }
+      }
+    };
 
     if (editable) {
       // Range selections (mouse drag or touch handles) → comment on the span.
@@ -285,6 +338,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     }
     if (!host) return; // unmounted while the RPC was in flight
     const files = filterNoiseFiles(parseDiff(diff.patch));
+    renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
     lastDiffState = t.state;
     const key = t.state + " " + diff.patch;
     const general = q("#dgeneral");
@@ -314,7 +368,10 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       if (selDispose) selDispose();
       selDispose = null;
       hideCommentPop();
-      if (host) host.onclick = null;
+      if (host) {
+        host.onclick = null;
+        host.onchange = null;
+      }
       host = null;
     },
   };

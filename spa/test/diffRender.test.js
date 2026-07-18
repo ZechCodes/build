@@ -95,6 +95,43 @@ describe("diff folding + file comments", () => {
   });
 });
 
+describe("diffFilesHtml re-review options", () => {
+  const files = [
+    { path: "a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] },
+    { path: "b.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "y" }] },
+  ];
+
+  it("is byte-identical to the old output when no new options are passed", () => {
+    expect(diffFilesHtml(files, { commentable: true })).toBe(
+      diffFilesHtml(files, { commentable: true, changedSince: null, viewed: null, withViewedToggle: false }),
+    );
+  });
+
+  it("emits no re-review markup by default", () => {
+    const html = diffFilesHtml(files);
+    expect(html).not.toContain("fchanged");
+    expect(html).not.toContain("fviewed");
+  });
+
+  it("marks only the changed paths with a changed-since chip", () => {
+    const html = diffFilesHtml(files, { changedSince: new Set(["a.js"]) });
+    expect((html.match(/fchanged/g) || []).length).toBe(1);
+    expect(html).toContain("changed since your review");
+  });
+
+  it("renders a viewed checkbox per file when withViewedToggle", () => {
+    const html = diffFilesHtml(files, { withViewedToggle: true });
+    expect((html.match(/fviewed-box/g) || []).length).toBe(2);
+  });
+
+  it("collapses (not caps) a viewed file and checks its box", () => {
+    const html = diffFilesHtml(files, { withViewedToggle: true, viewed: new Set(["a.js"]) });
+    expect(html).toMatch(/<div class="file collapsed" data-file="a\.js"/);
+    expect(html).toMatch(/<div class="file capped" data-file="b\.js"/);
+    expect(html).toContain('data-file="a.js" checked');
+  });
+});
+
 describe("dotenv secret masking in diff rows", () => {
   const envFile = [
     {

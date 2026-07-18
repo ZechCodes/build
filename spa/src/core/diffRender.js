@@ -46,15 +46,28 @@ export function diffRowsHtml(rows, lang = null, { maskDotenv = false } = {}) {
  *  Folding contract (wired by the mounting view): every file starts `capped`
  *  (max-height + fade); a click on the capped body expands it, a click on the
  *  .fhead toggles `collapsed` (header only). `commentable` adds the
- *  whole-file comment control to the header. */
-export function diffFilesHtml(files, { commentable = false } = {}) {
+ *  whole-file comment control to the header.
+ *
+ *  Re-review options (all opt-in; omitting them keeps the output byte-identical
+ *  so the poll-repaint freeze contract holds): `changedSince` is a Set of paths
+ *  that moved since the reviewer's last pass (an amber "changed since your
+ *  review" chip); `viewed` is a Set of paths the reviewer ticked off (those
+ *  files render `collapsed` instead of `capped` — collapsed wins); and
+ *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header. */
+export function diffFilesHtml(files, { commentable = false, changedSince = null, viewed = null, withViewedToggle = false } = {}) {
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   return files
     .map((f) => {
       const lang = langForPath(f.path);
+      const isViewed = viewed ? viewed.has(f.path) : false;
+      const foldClass = isViewed ? "collapsed" : "capped";
+      const changedChip = changedSince && changedSince.has(f.path) ? `<span class="fchanged">changed since your review</span>` : "";
+      const viewedToggle = withViewedToggle
+        ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(f.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
+        : "";
       return `
-      <div class="file capped" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${commentButton}</div>
+      <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span>${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
+        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}</div>
         <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div></div>`;
     })
     .join("");

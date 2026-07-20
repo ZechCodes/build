@@ -295,10 +295,19 @@ pub fn capture_login_path(shell: &str, timeout: std::time::Duration) -> Option<S
     match rx.recv_timeout(timeout) {
         Ok(Ok(out)) if out.status.success() => {
             let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            path.contains('/').then_some(path)
+            path_widens_launchd_default(&path).then_some(path)
         }
         _ => None,
     }
+}
+
+/// launchd's own PATH. A captured PATH that adds nothing to it is not worth
+/// adopting — it would mask the real problem behind a "PATH adopted" log line.
+const LAUNCHD_BARE_PATH: [&str; 4] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+fn path_widens_launchd_default(path: &str) -> bool {
+    path.split(':')
+        .any(|dir| !dir.is_empty() && !LAUNCHD_BARE_PATH.contains(&dir))
 }
 
 impl TermSession {
@@ -5037,6 +5046,30 @@ mod tests {
             .expect("bash must yield a PATH");
         assert!(path.contains('/'), "{path}");
         assert!(path.contains("bin"), "{path}");
+    }
+
+    #[test]
+    fn capture_login_path_rejects_a_bare_launchd_path() {
+        // A shell whose rc files never widen PATH leaves us with launchd's bare
+        // default. Adopting it is worse than useless: it *looks* like the fix
+        // worked while `claude` still can't be found. Reject it so the daemon
+        // logs the truth and keeps whatever it inherited.
+        let shell = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            shell.path(),
+            "#!/bin/sh\nprintf %s /usr/bin:/bin:/usr/sbin:/sbin\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            shell.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+
+        assert_eq!(
+            capture_login_path(&shell.path().to_string_lossy(), Duration::from_secs(5)),
+            None
+        );
     }
 
     #[test]

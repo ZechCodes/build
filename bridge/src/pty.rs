@@ -21,6 +21,43 @@ pub enum PtyError {
     Pty(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("harness {binary:?} not found in PATH {path:?} — install it, or restart the daemon from a shell that can see it")]
+    HarnessNotFound { binary: String, path: String },
+}
+
+/// Resolve `binary` the way a shell would, against the daemon's PATH (or the
+/// spec's own override). We do this rather than leaving it to portable-pty:
+/// portable-pty searches the *CommandBuilder's* environment, which falls back to
+/// confstr `_CS_PATH` ("/usr/bin:/bin:/usr/sbin:/sbin") and produces an opaque
+/// "No viable candidates" error that names neither the harness nor the fix.
+fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, PtyError> {
+    if spec.binary.contains('/') {
+        return Ok(PathBuf::from(&spec.binary));
+    }
+    let path = spec
+        .env
+        .iter()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    for dir in path.split(':').filter(|dir| !dir.is_empty()) {
+        let candidate = PathBuf::from(dir).join(&spec.binary);
+        if is_executable(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(PtyError::HarnessNotFound {
+        binary: spec.binary.clone(),
+        path,
+    })
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 /// How a harness wants a prompt "sent" once written. Most CLIs submit on Enter.
@@ -106,7 +143,7 @@ impl PtySession {
             .openpty(size)
             .map_err(|e| PtyError::Pty(e.to_string()))?;
 
-        let mut cmd = CommandBuilder::new(&spec.binary);
+        let mut cmd = CommandBuilder::new(resolve_binary(spec)?);
         cmd.args(&spec.args);
         for (key, value) in &spec.env {
             cmd.env(key, value);
@@ -324,6 +361,81 @@ mod tests {
 
         let out = read_until(&mut rx, "REPLY[ping]").await;
         assert!(out.contains("REPLY[ping]"), "got: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn child_inherits_the_daemon_environment() {
+        // Without inheritance the child gets an empty env and portable-pty falls
+        // back to the confstr PATH ("/usr/bin:/bin:/usr/sbin:/sbin"), so a harness
+        // installed anywhere else (`claude` under ~/.local/bin, a toolbox shim)
+        // fails to spawn at all.
+        let parent_path = std::env::var("PATH").unwrap();
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'PATH[%s]' \"$PATH\"");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+
+        let out = read_until(&mut rx, "PATH[").await;
+        assert!(
+            out.contains(&format!("PATH[{parent_path}")),
+            "child PATH should be the daemon's; got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_the_binary_through_the_daemon_path() {
+        // portable-pty resolves argv[0] against the *builder's* PATH, not the
+        // process's; with none set it falls back to confstr `_CS_PATH`
+        // ("/usr/bin:/bin:/usr/sbin:/sbin"). That is why `sh` spawned fine but
+        // `claude` — installed under ~/.local/bin, a toolbox shim, mise, nvm —
+        // died with "No viable candidates found in PATH".
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("build-test-harness");
+        std::fs::write(&bin, "#!/bin/sh\nprintf 'HARNESS_OK'\n").unwrap();
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        // Only ever *append* to PATH so concurrent tests stay unaffected.
+        let path = format!(
+            "{}:{}",
+            std::env::var("PATH").unwrap(),
+            dir.path().display()
+        );
+        std::env::set_var("PATH", &path);
+
+        let spec = HarnessSpec::new("build-test-harness");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+
+        let out = read_until(&mut rx, "HARNESS_OK").await;
+        assert!(out.contains("HARNESS_OK"), "got: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn missing_harness_names_the_binary_and_the_path() {
+        let spec = HarnessSpec::new("build-definitely-missing-harness");
+        let msg = match PtySession::spawn(&spec, None, small_pty()) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("a missing harness must not spawn"),
+        };
+        assert!(
+            msg.contains("build-definitely-missing-harness")
+                && msg.contains(&std::env::var("PATH").unwrap()),
+            "error should name the harness and the PATH searched; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_env_overrides_the_inherited_value() {
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'TERM[%s]' \"$TERM\"")
+            .env("TERM", "build-test-term");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+
+        let out = read_until(&mut rx, "TERM[").await;
+        assert!(out.contains("TERM[build-test-term]"), "got: {out:?}");
     }
 
     #[tokio::test]

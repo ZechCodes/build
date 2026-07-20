@@ -90,6 +90,24 @@ pub struct ServiceConfig {
     pub env: Vec<(String, String)>,
 }
 
+/// Pin the installing shell's PATH into the daemon environment. launchd starts
+/// agents with a bare PATH, and a bare PATH means the `claude` harness — which
+/// lives wherever the user's toolchain manager put it — cannot be spawned at
+/// all. `path` supplies the value (normally `std::env::var("PATH")`); an
+/// explicit PATH already in `env` wins.
+pub fn with_install_path(
+    mut env: Vec<(String, String)>,
+    path: impl FnOnce() -> Option<String>,
+) -> Vec<(String, String)> {
+    if env.iter().any(|(key, _)| key == "PATH") {
+        return env;
+    }
+    if let Some(path) = path().filter(|path| !path.trim().is_empty()) {
+        env.push(("PATH".to_string(), path));
+    }
+    env
+}
+
 pub fn plist_path(home: &Path) -> PathBuf {
     home.join("Library/LaunchAgents")
         .join(format!("{SERVICE_LABEL}.plist"))
@@ -237,6 +255,33 @@ mod tests {
         assert!(plist.contains("<string>wss://relay.getbuild.ing</string>"));
         assert!(plist.contains("/Users/dev/.build/log/bridge.log"));
         assert!(plist.contains("/Users/dev/.build/log/bridge.err.log"));
+    }
+
+    #[test]
+    fn daemon_env_pins_the_installing_shells_path() {
+        // launchd hands agents a bare PATH ("/usr/bin:/bin:/usr/sbin:/sbin"), so
+        // a daemon installed from a normal shell must carry that shell's PATH or
+        // it cannot find `claude` (or any other user-installed harness).
+        let env = with_install_path(vec![("BRIDGE_API_URL".into(), "https://x".into())], || {
+            Some("/opt/homebrew/bin:/usr/bin".to_string())
+        });
+        assert_eq!(
+            env.iter().find(|(key, _)| key == "PATH").map(|(_, v)| v),
+            Some(&"/opt/homebrew/bin:/usr/bin".to_string())
+        );
+        assert!(render_launchd_plist(&ServiceConfig {
+            env,
+            ..sample_config()
+        })
+        .contains("<key>PATH</key>"));
+    }
+
+    #[test]
+    fn an_explicit_path_in_the_env_is_left_alone() {
+        let env = with_install_path(vec![("PATH".into(), "/pinned".into())], || {
+            Some("/opt/homebrew/bin".to_string())
+        });
+        assert_eq!(env, vec![("PATH".to_string(), "/pinned".to_string())]);
     }
 
     #[test]

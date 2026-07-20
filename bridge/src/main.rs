@@ -100,9 +100,10 @@ async fn serve() {
                 std::env::set_var("PATH", &path);
                 eprintln!("PATH adopted from login shell ({shell})");
             }
-            None => {
-                eprintln!("could not read PATH from login shell ({shell}); keeping inherited PATH")
-            }
+            None => eprintln!(
+                "no usable PATH from login shell ({shell}); keeping inherited PATH {:?}",
+                std::env::var("PATH").unwrap_or_default()
+            ),
         }
     }
 
@@ -344,6 +345,8 @@ async fn install_service() {
             daemon_env.push((key.to_string(), value));
         }
     }
+    // launchd's bare PATH can't see `claude`; carry this shell's PATH.
+    let mut daemon_env = service::with_install_path(daemon_env, || std::env::var("PATH").ok());
     daemon_env.sort();
 
     let config = service::ServiceConfig {

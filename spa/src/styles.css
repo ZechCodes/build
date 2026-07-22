@@ -97,6 +97,9 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
 .surface-meta { margin-left:auto; display:flex; gap:10px; align-items:center;
   font-size:12px; color:var(--dim); padding-left:12px; flex:none; }
 .surface-meta .taskactions { display:flex; gap:8px; }
+.project-surface .tabrow { flex:1 1 auto; }
+.projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
+.project-inbox { width:100%; max-width:1180px; margin:0 auto; }
 /* The run view's compact plan reference: a link back to the owning plan (or the
    goal for a quick run). Sits left of the state meta, truncating gracefully. */
 .plan-ref { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden;
@@ -455,6 +458,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .board-head h1 { font-size:20px; }
   .tabs { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .surface-bar { padding:0 10px; gap:8px; }
+  .surface-bar.project-surface { flex-wrap:wrap; padding-bottom:8px; }
+  .project-surface .tabrow { flex:1 1 100%; order:1; }
+  .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
+  .project-surface .surface-meta { display:none; }
   .surface #tabbody { padding:12px 12px 40px; }
   .plan { padding:16px 14px; }
   .panel { padding:14px 12px; }

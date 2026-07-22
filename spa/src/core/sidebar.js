@@ -126,7 +126,7 @@ function section(label, rowsHtml) {
 }
 
 // The primary-checkout "main" row: branch + a dirty count when the working tree
-// has uncommitted changes. Links to #/main/<projectId> (wired by the view).
+// has uncommitted changes. Links to #/project/<projectId>/changes.
 function mainLine(m, ui) {
   if (!m.primary) return "";
   const dirty = m.primary.files_changed

@@ -9,7 +9,6 @@ import { renderTask } from "./views/task.js";
 import { renderPlan } from "./views/plan.js";
 import { renderWorktree } from "./views/worktree.js";
 import { renderMain } from "./views/mainWorktree.js";
-import { renderProject } from "./views/project.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
 
@@ -99,15 +98,14 @@ export function render() {
   }
   setActiveNav(App.route.name);
   sidebarRouteChanged(); // keep the rail's active row tracking the route
-  // Worktree-backed surfaces (task/worktree/main) are full-height tab shells;
+  // Worktree-backed surfaces (task/worktree/project) are full-height tab shells;
   // every other view keeps the centered reading column.
-  const surfaceRoutes = ["task", "worktree", "main", "plan"];
+  const surfaceRoutes = ["task", "worktree", "main", "project", "plan"];
   $("#root").classList.toggle("surface", surfaceRoutes.includes(App.route.name));
   if (App.route.name === "notifications") renderNotifications();
   else if (App.route.name === "settings") renderSettings();
   else if (App.route.name === "worktree") renderWorktree();
-  else if (App.route.name === "main") renderMain();
-  else if (App.route.name === "project") renderProject();
+  else if (App.route.name === "main" || App.route.name === "project") renderMain();
   else if (App.route.name === "plan") renderPlan();
   else renderTask();
 }

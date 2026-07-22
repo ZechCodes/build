@@ -12,7 +12,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/plan/plan-123/review")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
     expect(routeFromHash("#/plan/plan-123")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
     expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" });
-    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1" });
+    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
   });
 
   it("parses the run (task) tab vocabulary and falls back to changes on unknown", () => {
@@ -54,13 +54,18 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/worktree/p/w").tab).toBe("changes");
   });
 
-  it("parses the main surface and its tab vocabulary", () => {
-    expect(routeFromHash("#/main/proj-1")).toEqual({ name: "main", projectId: "proj-1", tab: "changes" });
-    expect(routeFromHash("#/main/proj-1/changes").tab).toBe("changes");
-    expect(routeFromHash("#/main/proj-1/files").tab).toBe("files");
-    expect(routeFromHash("#/main/proj-1/term-9").tab).toBe("term-9");
-    expect(routeFromHash("#/main/proj-1/bogus").tab).toBe("changes");
-    expect(routeFromHash("#/main/a%20b/files")).toEqual({ name: "main", projectId: "a b", tab: "files" });
+  it("parses the project inbox and primary-checkout tabs under one URL", () => {
+    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
+    expect(routeFromHash("#/project/proj-1/changes").tab).toBe("changes");
+    expect(routeFromHash("#/project/proj-1/files").tab).toBe("files");
+    expect(routeFromHash("#/project/proj-1/term-9").tab).toBe("term-9");
+    expect(routeFromHash("#/project/proj-1/bogus").tab).toBe("inbox");
+    expect(routeFromHash("#/project/a%20b/files")).toEqual({ name: "project", projectId: "a b", tab: "files" });
+  });
+
+  it("keeps old main bookmarks as aliases of the canonical project tabs", () => {
+    expect(routeFromHash("#/main/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "changes" });
+    expect(routeFromHash("#/main/proj-1/files")).toEqual({ name: "project", projectId: "proj-1", tab: "files" });
   });
 
   it("defaults unknown or empty hashes to notifications (the landing surface)", () => {
@@ -104,11 +109,10 @@ describe("hashFromRoute", () => {
       { name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" },
       { name: "worktree", projectId: "a b", worktreeId: "wt x", tab: "files" },
       { name: "worktree", projectId: "p", worktreeId: "w", tab: "term-1" },
-      { name: "main", projectId: "proj-1", tab: "changes" },
-      { name: "main", projectId: "a b", tab: "files" },
-      { name: "main", projectId: "p", tab: "term-2" },
-      { name: "project", projectId: "proj-1" },
-      { name: "project", projectId: "a b" },
+      { name: "project", projectId: "proj-1", tab: "inbox" },
+      { name: "project", projectId: "a b", tab: "changes" },
+      { name: "project", projectId: "p", tab: "files" },
+      { name: "project", projectId: "p", tab: "term-2" },
     ]) {
       expect(routeFromHash(hashFromRoute(route))).toEqual(route);
     }
@@ -129,6 +133,12 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "task", id: "r" })).toBe("#/task/r/changes");
     expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/plan/p/review");
     expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/worktree/p/w/changes");
-    expect(hashFromRoute({ name: "main", projectId: "p" })).toBe("#/main/p/changes");
+    expect(hashFromRoute({ name: "project", projectId: "p" })).toBe("#/project/p");
+    expect(hashFromRoute({ name: "project", projectId: "p", tab: "inbox" })).toBe("#/project/p");
+  });
+
+  it("emits canonical project URLs for legacy main route objects", () => {
+    expect(hashFromRoute({ name: "main", projectId: "p" })).toBe("#/project/p/changes");
+    expect(hashFromRoute({ name: "main", projectId: "p", tab: "files" })).toBe("#/project/p/files");
   });
 });

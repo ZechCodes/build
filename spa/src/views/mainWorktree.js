@@ -1,15 +1,29 @@
-// The primary-checkout "main" surface: a project's own live checkout as a
-// worktree-backed surface. Tabs: Changes (the git surface — commit history
-// plus per-file staging and commit for the user's own work; review actions
-// still live on task/worktree surfaces), Files, and user terminal tabs with
-// `+`. Scope: { project_id }.
+// One unified project surface. The root tab is Inbox; Changes, Files, and user
+// terminals operate on the project's primary checkout. Creation actions stay
+// in the shared header so they are available on every project tab.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App, go } from "../app.js";
+import { App } from "../app.js";
+import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
+import { mountProjectInbox } from "./project.js";
+import { openNewTask } from "../sheets/newTask.js";
+
+export const projectSurfaceTabs = (terminalTabs = []) => [
+  { id: "inbox", label: "Inbox" },
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+  ...terminalTabs,
+];
+
+export const projectSurfaceActionsHtml = () => `
+  <span class="projectactions">
+    <button class="btn mini" id="newquick">Quick task</button>
+    <button class="btn mini primary" id="newplan">+ New plan</button>
+  </span>`;
 
 export async function renderMain() {
   const root = $("#root");
@@ -17,7 +31,7 @@ export async function renderMain() {
   const scope = { project_id: projectId };
   const terminals = terminalTabsController(scope);
 
-  let tab = App.route.tab || "changes";
+  let tab = App.route.tab || "inbox";
   let projectName = projectId;
   let shellCtl = null; // tab-row controller
   let aux = null; // current changes/files/terminal pane controller
@@ -31,21 +45,18 @@ export async function renderMain() {
     }
   };
 
-  const staticTabs = () => [
-    { id: "changes", label: "Changes" },
-    { id: "files", label: "Files" },
-    ...terminals.tabs(),
-  ];
+  const staticTabs = () => projectSurfaceTabs(terminals.tabs());
 
   // The tab bar is the top of the view; the checkout's branch rides the bar's
   // right cluster (path on hover) and stays live via refreshHeader.
   const shell = () => {
     root.innerHTML = `
-      <div class="surface-bar">
+      <div class="surface-bar project-surface">
         <div class="tabrow" id="tabrow"></div>
+        ${projectSurfaceActionsHtml()}
         <div class="surface-meta">
           <span class="mono dim" id="mainbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
-          <span class="chip" title="${esc(projectName)}">MAIN</span>
+          <span class="chip" title="${esc(projectName)}">PROJECT</span>
         </div>
       </div>
       <div id="tabbody"></div>`;
@@ -55,15 +66,15 @@ export async function renderMain() {
       onSelect: (id) => selectTab(id),
       onClose: (id) => closeTerminal(id),
       onNewTerminal: () => newTerminal(),
-      back: { title: projectName ? `Back to ${projectName}` : "Back to project" },
-      onBack: () => go({ name: "project", projectId }),
     });
+    $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });
+    $("#newquick").onclick = () => openNewTask({ projectId, mode: "quick" });
   };
 
   const selectTab = (id) => {
     tab = id;
-    App.route.tab = id;
-    history.replaceState(null, "", `#/main/${encodeURIComponent(projectId)}/${id}`);
+    App.route = { name: "project", projectId, tab: id };
+    history.replaceState(null, "", hashFromRoute(App.route));
     if (shellCtl) shellCtl.setActive(id);
     disposeAux();
     const body = $("#tabbody");
@@ -71,7 +82,12 @@ export async function renderMain() {
     // detail panes each scroll internally, so the body owns no padding/scroll).
     body.classList.toggle("bare", /^term-/.test(id));
     body.classList.toggle("flush", id === "changes" || id === "files");
-    if (id === "changes") {
+    if (id === "inbox") {
+      aux = mountProjectInbox(body, {
+        projectId,
+        callRpc: (method, params) => App.call(method, params),
+      });
+    } else if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status
       // responses so the branch/path header stays live while it runs.
       aux = mountGitPane(body, {
@@ -134,11 +150,15 @@ export async function renderMain() {
     }
   };
 
-  // Fetch the project name for the back link (best-effort; falls back to the id).
+  // Fetch project identity for the persistent header (best-effort; the id and
+  // live git.status metadata remain usable while offline).
   try {
     const projectList = await App.call("project.list");
     const project = (projectList.projects || []).find((p) => p.project_id === projectId);
-    if (project) projectName = project.name;
+    if (project) {
+      projectName = project.name;
+      meta = { branch: project.base_branch || "", path: project.path || "" };
+    }
   } catch {
     /* offline — the id stands in */
   }

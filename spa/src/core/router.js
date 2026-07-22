@@ -2,8 +2,9 @@
 // #/task/<runId>/<tab>       — a run (worktree-scoped; "Task" in the UI),
 // #/plan/<planId>/<tab>      — a plan (project-scoped review surface),
 // #/worktree/<projectId>/<worktreeId>/<tab> (read-only external-worktree browse),
-// #/main/<projectId>/<tab>   — the primary-checkout surface,
-// #/project/<projectId>      — one project's plans, tasks + worktrees.
+// #/project/<projectId>       — one project's Inbox,
+// #/project/<projectId>/<tab> — that project's primary checkout tabs.
+// #/main/<projectId>/<tab> is accepted only as a legacy alias.
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
 const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
@@ -19,6 +20,8 @@ const runTab = (seg) =>
 const planTab = (seg) => (seg === "agent" ? "agent" : "review");
 const worktreeTab = (seg) => (seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "changes");
 const mainTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "changes");
+const projectTab = (seg) =>
+  seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "inbox";
 
 export function routeFromHash(hash) {
   const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
@@ -48,10 +51,10 @@ export function routeFromHash(hash) {
       };
     case "main":
       if (!parts[1]) return { name: "notifications" };
-      return { name: "main", projectId: decodeURIComponent(parts[1]), tab: mainTab(parts[2]) };
+      return { name: "project", projectId: decodeURIComponent(parts[1]), tab: mainTab(parts[2]) };
     case "project":
       if (!parts[1]) return { name: "notifications" };
-      return { name: "project", projectId: decodeURIComponent(parts[1]) };
+      return { name: "project", projectId: decodeURIComponent(parts[1]), tab: projectTab(parts[2]) };
     case "board":
       // The board is gone; stale bookmarks land on the notifications surface.
       return { name: "notifications" };
@@ -68,8 +71,11 @@ export function hashFromRoute(route) {
   }
   if (route.name === "worktree")
     return `#/worktree/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.worktreeId)}/${route.tab || "changes"}`;
-  if (route.name === "main") return `#/main/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
-  if (route.name === "project") return `#/project/${encodeURIComponent(route.projectId)}`;
+  if (route.name === "main") return `#/project/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
+  if (route.name === "project") {
+    const base = `#/project/${encodeURIComponent(route.projectId)}`;
+    return !route.tab || route.tab === "inbox" ? base : `${base}/${route.tab}`;
+  }
   if (route.name === "notifications") return "#/notifications";
   if (route.name === "settings") return "#/settings";
   return "#/notifications";

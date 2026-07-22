@@ -44,7 +44,7 @@ function activePlanId() {
 }
 
 /** The project that owns whatever surface the route shows — the project page
- *  itself, the main/worktree surfaces (project in the route), or a plan/run
+ *  itself, external worktrees (project in the route), or a plan/run
  *  surface (owner resolved through the feed) — so the rail always shows where
  *  you are, not just which leaf row. */
 function activeProjectId() {
@@ -65,7 +65,10 @@ function activeProjectId() {
 }
 
 function activeMainProjectId() {
-  return App.route.name === "main" ? App.route.projectId : null;
+  const route = App.route;
+  return route.name === "main" || (route.name === "project" && route.tab !== "inbox")
+    ? route.projectId
+    : null;
 }
 
 function activeWorktreeId() {
@@ -133,7 +136,7 @@ function draw() {
     r.onclick = () => goFromRail({ name: "worktree", projectId: r.dataset.project, worktreeId: r.dataset.wt });
   });
   aside.querySelectorAll(".srow[data-main]").forEach((r) => {
-    r.onclick = () => goFromRail({ name: "main", projectId: r.dataset.main });
+    r.onclick = () => goFromRail({ name: "project", projectId: r.dataset.main, tab: "changes" });
   });
 }
 

@@ -42,6 +42,7 @@ import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js"
 import { watchSelection } from "../selectWatch.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
 import { hashText } from "../core/reviewMemory.js";
+import { hashFromRoute } from "../core/router.js";
 
 // Plan states whose planning session accepts a freeform message (the bridge
 // gates the rest): a live drafting session redirects, a parked one resumes.
@@ -53,6 +54,7 @@ const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 export async function renderPlan() {
   const root = $("#root");
   const id = App.route.id;
+  let projectId = App.route.projectId || null;
   // If the user entered this plan from a run (task.js's openPlan stamped the
   // marker), the back chevron returns to that run's Stages tab (the plan↔run
   // round trip). Read once at entry; the chevron clears it on return.
@@ -73,6 +75,16 @@ export async function renderPlan() {
   // board) and the last-rendered payload key. A stage deep-link (the run's Stages
   // tab routing a mid-run revision here) seeds the opened stage.
   let selectedStageId = App.route.stage || null;
+  const replacePlanHash = () => {
+    App.route = {
+      name: "plan",
+      ...(projectId ? { projectId } : {}),
+      id,
+      tab,
+      ...(tab === "review" && selectedStageId ? { stage: selectedStageId } : {}),
+    };
+    history.replaceState(null, "", hashFromRoute(App.route));
+  };
   let stagesKey = null;
   // Single-doc review state preserved across the poll: pending comments, an id
   // counter, the last-rendered key, and the selection watcher's disposer.
@@ -253,8 +265,7 @@ export async function renderPlan() {
   // own body and is never touched by the poll.
   const selectTab = (next) => {
     tab = next;
-    App.route.tab = next;
-    history.replaceState(null, "", `#/plan/${encodeURIComponent(id)}/${next}`);
+    replacePlanHash();
     if (tabShellCtl) tabShellCtl.setActive(next);
     disposeAgent();
     if (next === "agent") {
@@ -383,7 +394,7 @@ export async function renderPlan() {
       // A multi-stage plan's run is driven from its Stages tab (the stage_gate
       // case); single-doc plans open on Changes.
       link.onclick = () =>
-        go({ name: "task", id: p.active_run_id, tab: p.stages && p.stages.length ? "stages" : "changes" });
+        go({ name: "task", projectId: p.project_id, id: p.active_run_id, tab: p.stages && p.stages.length ? "stages" : "changes" });
       actions.appendChild(link);
       return;
     }
@@ -421,7 +432,7 @@ export async function renderPlan() {
             }
             throw e;
           }
-          go({ name: "task", id: run.run_id, tab: "changes" });
+          go({ name: "task", projectId: p.project_id, id: run.run_id, tab: "changes" });
         },
       });
       return;
@@ -649,18 +660,10 @@ export async function renderPlan() {
       },
       onSelectStage: (stageId) => {
         selectedStageId = stageId;
-        // Deep-link the open stage into the hash without re-routing (the router
-        // parses the 4th segment) so the selection is shareable and survives a
+        // Deep-link the open stage into the hash without re-routing so the
+        // selection is shareable and survives a
         // reload; back-to-list drops the segment. App.route.stage stays in sync.
-        history.replaceState(
-          null,
-          "",
-          stageId
-            ? `#/plan/${encodeURIComponent(id)}/review/${encodeURIComponent(stageId)}`
-            : `#/plan/${encodeURIComponent(id)}/review`,
-        );
-        if (stageId) App.route.stage = stageId;
-        else delete App.route.stage;
+        replacePlanHash();
         // Re-navigating to a stage clears its error latch so the doc is retried.
         if (stageId) stageDocError.delete(stageId);
         stagesKey = null;
@@ -703,6 +706,10 @@ export async function renderPlan() {
     }
     const needShell = !last || last.state !== p.state || last.goal !== p.goal || last.active_run_id !== p.active_run_id;
     last = p;
+    if (p.project_id && p.project_id !== projectId) {
+      projectId = p.project_id;
+      replacePlanHash();
+    }
     if (needShell) shell(p);
     showBanner(bannerText(localError, p.last_error));
 

@@ -141,7 +141,7 @@ describe("projectHtml", () => {
 
   it("run rows are keyed by run_id and route to the run surface", () => {
     const html = projectHtml(model(), ui());
-    expect(html).toContain('data-run="a"');
+    expect(html).toContain('data-run="a" data-project="p1"');
     expect(html).toContain('data-tab="changes"');
   });
 
@@ -248,7 +248,7 @@ describe("projectHtml", () => {
     });
     const html = projectHtml(m, ui());
     expect(html).toContain("Plans");
-    expect(html).toContain('data-plan="pl-a"');
+    expect(html).toContain('data-plan="pl-a" data-project="p1"');
     expect(html).toContain('data-plan="pl-b"');
     expect(html).toContain('data-plan="pl-c"');
     expect(html).toContain("Design the thing"); // the plan goal

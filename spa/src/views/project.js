@@ -90,8 +90,10 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
       ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}
       ${mixedBucket("DONE", entities.done, true, false)}
       ${worktreeBucket}</div>`;
-    host.querySelectorAll(".card[data-plan]").forEach((c) => (c.onclick = () => go({ name: "plan", id: c.dataset.plan, tab: "review" })));
-    host.querySelectorAll(".card[data-id]").forEach((c) => (c.onclick = () => go({ name: "task", id: c.dataset.id, tab: c.dataset.tab })));
+    host.querySelectorAll(".card[data-plan]").forEach((c) =>
+      (c.onclick = () => go({ name: "plan", projectId, id: c.dataset.plan, tab: "review" })));
+    host.querySelectorAll(".card[data-id]").forEach((c) =>
+      (c.onclick = () => go({ name: "task", projectId, id: c.dataset.id, tab: c.dataset.tab })));
     host
       .querySelectorAll(".card[data-wt]")
       .forEach((c) => (c.onclick = () => go({ name: "worktree", projectId: c.dataset.project, worktreeId: c.dataset.wt })));

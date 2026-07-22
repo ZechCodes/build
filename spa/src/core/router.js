@@ -1,10 +1,10 @@
 // Hash routes: #/notifications (the landing surface), #/settings,
-// #/task/<runId>/<tab>       — a run (worktree-scoped; "Task" in the UI),
-// #/plan/<planId>/<tab>      — a plan (project-scoped review surface),
-// #/worktree/<projectId>/<worktreeId>/<tab> (read-only external-worktree browse),
 // #/project/<projectId>       — one project's Inbox,
 // #/project/<projectId>/<tab> — that project's primary checkout tabs.
-// #/main/<projectId>/<tab> is accepted only as a legacy alias.
+// #/project/<projectId>/task/<runId>/<tab>
+// #/project/<projectId>/plan/<planId>/<tab>[/<stage>]
+// #/project/<projectId>/worktree/<worktreeId>/<tab>
+// The old top-level task/plan/worktree/main forms remain legacy aliases.
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
 const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
@@ -52,9 +52,25 @@ export function routeFromHash(hash) {
     case "main":
       if (!parts[1]) return { name: "notifications" };
       return { name: "project", projectId: decodeURIComponent(parts[1]), tab: mainTab(parts[2]) };
-    case "project":
+    case "project": {
       if (!parts[1]) return { name: "notifications" };
-      return { name: "project", projectId: decodeURIComponent(parts[1]), tab: projectTab(parts[2]) };
+      const projectId = decodeURIComponent(parts[1]);
+      if (parts[2] === "task") {
+        if (!parts[3]) return { name: "notifications" };
+        return { name: "task", projectId, id: decodeURIComponent(parts[3]), tab: runTab(parts[4]) };
+      }
+      if (parts[2] === "plan") {
+        if (!parts[3]) return { name: "notifications" };
+        const route = { name: "plan", projectId, id: decodeURIComponent(parts[3]), tab: planTab(parts[4]) };
+        if (parts[5]) route.stage = decodeURIComponent(parts[5]);
+        return route;
+      }
+      if (parts[2] === "worktree") {
+        if (!parts[3]) return { name: "notifications" };
+        return { name: "worktree", projectId, worktreeId: decodeURIComponent(parts[3]), tab: worktreeTab(parts[4]) };
+      }
+      return { name: "project", projectId, tab: projectTab(parts[2]) };
+    }
     case "board":
       // The board is gone; stale bookmarks land on the notifications surface.
       return { name: "notifications" };
@@ -64,13 +80,19 @@ export function routeFromHash(hash) {
 }
 
 export function hashFromRoute(route) {
-  if (route.name === "task") return `#/task/${encodeURIComponent(route.id)}/${route.tab || "changes"}`;
+  if (route.name === "task") {
+    const leaf = `task/${encodeURIComponent(route.id)}/${route.tab || "changes"}`;
+    return route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
+  }
   if (route.name === "plan") {
-    const base = `#/plan/${encodeURIComponent(route.id)}/${route.tab || "review"}`;
+    const leaf = `plan/${encodeURIComponent(route.id)}/${route.tab || "review"}`;
+    const base = route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
     return route.stage ? `${base}/${encodeURIComponent(route.stage)}` : base;
   }
-  if (route.name === "worktree")
-    return `#/worktree/${encodeURIComponent(route.projectId)}/${encodeURIComponent(route.worktreeId)}/${route.tab || "changes"}`;
+  if (route.name === "worktree") {
+    const leaf = `worktree/${encodeURIComponent(route.worktreeId)}/${route.tab || "changes"}`;
+    return `#/project/${encodeURIComponent(route.projectId)}/${leaf}`;
+  }
   if (route.name === "main") return `#/project/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
   if (route.name === "project") {
     const base = `#/project/${encodeURIComponent(route.projectId)}`;

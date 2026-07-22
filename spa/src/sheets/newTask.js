@@ -139,10 +139,10 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     try {
       if (currentPath === "quick") {
         const run = await App.call("run.create", params);
-        go({ name: "task", id: run.run_id, tab: "changes" });
+        go({ name: "task", projectId: run.project_id || params.project_id, id: run.run_id, tab: "changes" });
       } else {
         const plan = await App.call("plan.create", params);
-        go({ name: "plan", id: plan.plan_id, tab: "review" });
+        go({ name: "plan", projectId: plan.project_id || params.project_id, id: plan.plan_id, tab: "review" });
       }
     } catch (e) {
       notifyError(currentPath === "quick" ? "Couldn't start the task" : "Couldn't create the plan", e.message);

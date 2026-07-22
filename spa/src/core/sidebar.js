@@ -83,7 +83,7 @@ const statHtml = (stat) =>
 // so the sidebar opens the same tab notifications does (defaultRunTab).
 function runRow(r, { icon, right, cls = "" }) {
   const title = `${esc(r.goal)} — ${esc(RUN_STATE_LABEL[r.state] || r.state || "")}`;
-  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-tab="${defaultRunTab(r)}" title="${title}">
+  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-project="${esc(r.project_id)}" data-tab="${defaultRunTab(r)}" title="${title}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;
 }
 
@@ -112,7 +112,7 @@ export const planStateWord = (state) => PLAN_STATE_WORD[state] || state || "";
 function planRow(p, { icon, right = "", cls = "" }) {
   const title = `${esc(p.goal)} — ${esc(PLAN_STATE_LABEL[p.state] || p.state || "")}`;
   const rightHtml = right || `<span class="sstate">${esc(planStateWord(p.state))}</span>`;
-  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}" title="${title}">
+  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}" data-project="${esc(p.project_id)}" title="${title}">
     <span class="sicon">${icon}</span><span class="stitle">${esc(p.goal)}</span>${rightHtml}</div>`;
 }
 

@@ -120,10 +120,10 @@ function draw() {
     };
   });
   aside.querySelectorAll(".srow[data-run]").forEach((r) => {
-    r.onclick = () => goFromRail({ name: "task", id: r.dataset.run, tab: r.dataset.tab });
+    r.onclick = () => goFromRail({ name: "task", projectId: r.dataset.project, id: r.dataset.run, tab: r.dataset.tab });
   });
   aside.querySelectorAll(".srow[data-plan]").forEach((r) => {
-    r.onclick = () => goFromRail({ name: "plan", id: r.dataset.plan, tab: "review" });
+    r.onclick = () => goFromRail({ name: "plan", projectId: r.dataset.project, id: r.dataset.plan, tab: "review" });
   });
   aside.querySelectorAll(".srow[data-wtline]").forEach((r) => {
     r.onclick = () => {

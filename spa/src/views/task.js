@@ -20,11 +20,18 @@ import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/sur
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
 import { terminalManager } from "../terminal/manager.js";
+import { hashFromRoute } from "../core/router.js";
 
 export async function renderTask() {
   const root = $("#root");
-  const id = App.route.id; // a run_id (the run route keeps the #/task grammar)
+  const id = App.route.id;
+  let projectId = App.route.projectId || null;
   let tab = App.route.tab || "changes";
+
+  const replaceTaskHash = () => {
+    App.route = { name: "task", ...(projectId ? { projectId } : {}), id, tab };
+    history.replaceState(null, "", hashFromRoute(App.route));
+  };
 
   // Terminals are scoped to this run's worktree ({ run_id }). Files/Agent/terminal
   // tabs are fetch-/push-driven — the 1.6s poll never wipes their bodies (§7.2).
@@ -99,8 +106,7 @@ export async function renderTask() {
   // tabs (Changes/Files/Agent/terminals) mount their own bodies and are never polled.
   const selectTab = (tabId) => {
     tab = tabId;
-    App.route.tab = tabId;
-    history.replaceState(null, "", `#/task/${encodeURIComponent(id)}/${tabId}`);
+    replaceTaskHash();
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
     if (tabId === "stages") {
@@ -239,7 +245,7 @@ export async function renderTask() {
       // Mark that we entered the plan from this run so the plan's back chevron
       // returns here (the plan↔run round trip; core/taskActions.planBackTarget).
       sessionStorage.setItem("build.planReturn." + last.plan_id, id);
-      go({ name: "plan", id: last.plan_id, tab: "review", stage: stageId });
+      go({ name: "plan", projectId: last.project_id || projectId, id: last.plan_id, tab: "review", stage: stageId });
     }
   };
 
@@ -432,8 +438,12 @@ export async function renderTask() {
     const needShell =
       !last || last.state !== t.state || last.goal !== t.goal || (last.stages || []).length !== (t.stages || []).length;
     last = t;
+    if (t.project_id && t.project_id !== projectId) {
+      projectId = t.project_id;
+      replaceTaskHash();
+    }
     if (needShell) shell(t);
-    // A stale #/task/<id>/stages URL on a single-stage/quick run (no Stages tab)
+    // A stale task Stages URL on a single-stage/quick run (no Stages tab)
     // falls back to Changes rather than leaving an empty, tab-less body.
     if (tab === "stages" && !isMultiStage()) {
       selectTab("changes");

@@ -10,6 +10,7 @@ import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
 import { diffThreadMessages } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
+import { hashFromRoute } from "../core/router.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
@@ -74,6 +75,10 @@ export async function renderWorktree() {
   let aux = null;
   const isAuxTab = (tabId) => tabId === "files" || /^term-/.test(tabId);
   const staticTabs = () => [{ id: "changes", label: "Changes" }, { id: "files", label: "Files" }, ...terminals.tabs()];
+  const replaceWorktreeHash = () => {
+    App.route = { name: "worktree", projectId, worktreeId, tab };
+    history.replaceState(null, "", hashFromRoute(App.route));
+  };
   const disposeAux = () => {
     if (aux) {
       aux.dispose();
@@ -83,8 +88,7 @@ export async function renderWorktree() {
 
   const selectTab = (tabId) => {
     tab = tabId;
-    App.route.tab = tabId;
-    history.replaceState(null, "", `#/worktree/${encodeURIComponent(projectId)}/${encodeURIComponent(worktreeId)}/${tabId}`);
+    replaceWorktreeHash();
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
     if (tabId === "changes") {
@@ -164,7 +168,7 @@ export async function renderWorktree() {
   // view with the "no longer available" empty state.
   const handoffToTask = () => {
     stopPolling();
-    go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });
+    go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
   };
 
   // The tab bar is the top of the view; the worktree's identity (branch) rides
@@ -299,7 +303,7 @@ export async function renderWorktree() {
           );
           await adopting.runCall("run.request_changes", { messages });
           hideCommentPop();
-          go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });
+          go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
         } catch (e) {
           if (adopting.adoptedRunId()) {
             // Adoption succeeded but the follow-up failed: the task now owns this
@@ -530,6 +534,7 @@ export async function renderWorktree() {
   // Tear down any mounted terminal/files pane when navigating away.
   App.viewDispose = () => disposeAux();
 
+  replaceWorktreeHash();
   await terminals.load();
   await paint();
   App.poll = setInterval(paint, 1600);

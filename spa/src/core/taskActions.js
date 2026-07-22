@@ -107,7 +107,8 @@ export function defaultRunTab(run) {
  *  back to the owning project, and a project-less plan to notifications. Pure so
  *  the routing is unit-testable; the view owns the sessionStorage read/removal. */
 export function planBackTarget({ returnRunId, activeRunId, projectId }) {
-  if (returnRunId && returnRunId === activeRunId) return { name: "task", id: returnRunId, tab: "stages" };
+  if (returnRunId && returnRunId === activeRunId)
+    return { name: "task", projectId, id: returnRunId, tab: "stages" };
   if (projectId) return { name: "project", projectId };
   return { name: "notifications" };
 }

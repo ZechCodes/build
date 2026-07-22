@@ -90,8 +90,8 @@ export async function renderNotifications() {
       b.onclick = () => {
         const x = byId.get(b.dataset.open);
         if (!x) return;
-        if (x.kind === "plan") go({ name: "plan", id: x.id, tab: "review" });
-        else go({ name: "task", id: x.id, tab: defaultRunTab(x.src) });
+        if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "review" });
+        else go({ name: "task", projectId: x.src.project_id, id: x.id, tab: defaultRunTab(x.src) });
       };
     });
     root.querySelectorAll(".nact button[data-message]").forEach((b) => {
@@ -106,7 +106,7 @@ export async function renderNotifications() {
       b.onclick = () => {
         const x = byId.get(b.dataset.agent);
         if (!x) return;
-        go({ name: x.kind === "plan" ? "plan" : "task", id: x.id, tab: "agent" });
+        go({ name: x.kind === "plan" ? "plan" : "task", projectId: x.src.project_id, id: x.id, tab: "agent" });
       };
     });
     const markRead = $("#markread");

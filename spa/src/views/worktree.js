@@ -8,7 +8,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
-import { assembleDiffNotes } from "../core/notes.js";
+import { diffThreadMessages } from "../core/notes.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
@@ -291,13 +291,13 @@ export async function renderWorktree() {
         // after which the poll's worktree.diff would resolve to "unknown
         // worktree_id" and race us to renderNotFound.
         stopPolling();
-        const notes = assembleDiffNotes(diffComments, $("#wgeneral") ? $("#wgeneral").value : "");
+        const messages = diffThreadMessages(diffComments, $("#wgeneral") ? $("#wgeneral").value : "", null);
         try {
           const selectedCatalog = catalogForProvider(agentCatalog, agentChoice.provider);
           adopting.setAdoptParams(
             modelParams(selectedCatalog.models, agentChoice.model, agentChoice.effort, agentChoice.provider),
           );
-          await adopting.runCall("run.request_changes", { comments: notes });
+          await adopting.runCall("run.request_changes", { messages });
           hideCommentPop();
           go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });
         } catch (e) {

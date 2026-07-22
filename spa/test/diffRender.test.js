@@ -24,9 +24,9 @@ describe("diffFilesHtml", () => {
     expect(html).toContain('<span class="a">+1</span>');
     expect(html).toContain('<span class="d">−1</span>');
     expect(html).toContain('<tr class="hunk">');
-    expect(html).toContain('<tr class="del" data-ln="1">');
-    expect(html).toContain('<tr class="add" data-ln="1">');
-    expect(html).toContain('<tr class="ctx" data-ln="2">');
+    expect(html).toContain('<tr class="del" data-ln="1" data-side="old"');
+    expect(html).toContain('<tr class="add" data-ln="1" data-side="new"');
+    expect(html).toContain('<tr class="ctx" data-ln="2" data-side="new"');
   });
 
   it("wraps the table in a .dscroll box so the code scrolls under a fixed header", () => {
@@ -62,9 +62,9 @@ describe("diffRowsHtml", () => {
   it("preserves the row contract (data-ln + two td.ln columns) with an unknown language", () => {
     const html = diffRowsHtml(files[0].rows, null);
     expect(html).toContain('<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">');
-    expect(html).toContain('<tr class="del" data-ln="1"><td class="ln">1</td><td class="ln"></td><td class="code">');
-    expect(html).toContain('<tr class="add" data-ln="1"><td class="ln"></td><td class="ln">1</td><td class="code">');
-    expect(html).toContain('<tr class="ctx" data-ln="2"><td class="ln">2</td><td class="ln">2</td><td class="code">');
+    expect(html).toContain('<tr class="del" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
+    expect(html).toContain('<tr class="add" data-ln="1" data-side="new" data-old-line="" data-new-line="1"><td class="ln"></td><td class="ln">1</td><td class="code">');
+    expect(html).toContain('<tr class="ctx" data-ln="2" data-side="new" data-old-line="2" data-new-line="2"><td class="ln">2</td><td class="ln">2</td><td class="code">');
     // unknown lang → escaped, not tokenized
     expect(html).toContain("let x = &lt;old&gt;;");
     expect(html).not.toContain("token");
@@ -72,8 +72,8 @@ describe("diffRowsHtml", () => {
 
   it("keeps the exact ln columns intact when a known language tokenizes the code cell", () => {
     const html = diffRowsHtml(files[0].rows, "rust");
-    // the ln columns and data-ln are byte-identical; only td.code innerHTML gains tokens
-    expect(html).toContain('<tr class="del" data-ln="1"><td class="ln">1</td><td class="ln"></td><td class="code">');
+    // anchor metadata and line columns remain intact; only td.code innerHTML gains tokens
+    expect(html).toContain('<tr class="del" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
     expect(html).toContain('class="token');
     expect(html).not.toContain("<old>");
   });

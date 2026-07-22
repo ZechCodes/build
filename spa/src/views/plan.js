@@ -16,7 +16,8 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
-import { assemblePlanNotes } from "../core/notes.js";
+import { planThreadMessages } from "../core/notes.js";
+import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
 import {
@@ -82,6 +83,7 @@ export async function renderPlan() {
   // The summary block's freeze key — re-rendered only when the summary text
   // changes, so the expand/collapse toggle survives ticks.
   let summaryKey = null;
+  let threadRenderKey = null;
   // Doc-read error latches: any plan.doc / plan.stage_doc ERROR renders an error
   // state and stops that doc's refetch until the user re-navigates (mirrors the
   // planGone latch in task.js). singleDocError is the single-doc latch; stageDocError
@@ -156,13 +158,26 @@ export async function renderPlan() {
     body.innerHTML = `
       <p class="mono projmeta" id="planmeta"></p>
       <div class="plan-summary" id="plansummary" hidden></div>
+      <div id="planthread"></div>
       <div id="planbody"><div class="plan-loading">loading…</div></div>`;
     summaryKey = null; // force the summary to repaint into the fresh skeleton
+    threadRenderKey = null;
   };
 
   const updateMeta = (p) => {
     const el = $("#planmeta");
     if (el) el.textContent = (p.project || "") + (p.base_branch ? ` · ${p.base_branch}` : "");
+  };
+
+  const updateThread = (p) => {
+    const host = $("#planthread");
+    if (host) {
+      const key = JSON.stringify({ items: p.thread?.items || [], revisions: p.thread?.revisions || [], completion: p.thread?.last_completion || null });
+      if (key === threadRenderKey && host.firstChild) return;
+      threadRenderKey = key;
+      host.innerHTML = threadHtml(p.thread);
+      wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
+    }
   };
 
   // The plan's last summary, rendered as markdown and clamped to a few lines with
@@ -523,9 +538,14 @@ export async function renderPlan() {
           const btn = $("#requestUpdates");
           btn.disabled = true;
           btn.textContent = "requesting updates…";
-          const notes = assemblePlanNotes(planComments, $("#pgeneral") ? $("#pgeneral").value : "");
+          const messages = planThreadMessages(
+            planComments,
+            $("#pgeneral") ? $("#pgeneral").value : "",
+            currentRevisionId(last.thread, "plan"),
+            last.plan_path || ".build/plan.md",
+          );
           try {
-            await App.call("plan.send_notes", { plan_id: id, comments: notes });
+            await App.call("plan.send_notes", { plan_id: id, messages });
             // Stamp the doc we just reviewed: a later revision flags it as changed.
             sendNotesStamp = hashText(doc);
             planComments.length = 0;
@@ -691,6 +711,7 @@ export async function renderPlan() {
 
     updateMeta(p);
     updateSummary(p);
+    updateThread(p);
 
     const body = $("#planbody");
     if (!body) return;
@@ -718,7 +739,9 @@ export async function renderPlan() {
     }
     const paneState = planDocPaneState({ docsAvailable: p.docs_available, errorLatched: singleDocError, hasContents: !!doc });
     const key = p.state + " " + paneState + " " + doc;
-    if (planKey === key && $("#plandoc")) return; // nothing changed — keep comments/selection
+    const general = $("#pgeneral");
+    const commenting = planComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
+    if ((planKey === key || commenting) && $("#plandoc")) return; // keep comments/selection stable across polls
     planKey = key;
     renderSingleDoc(doc, paneState);
   };

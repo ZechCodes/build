@@ -13,7 +13,8 @@ import { diffFilesHtml } from "../core/diffRender.js";
 import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
-import { assembleDiffNotes } from "../core/notes.js";
+import { diffThreadMessages } from "../core/notes.js";
+import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
@@ -111,9 +112,9 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     });
   };
 
-  const addComment = (file, lnA, lnB, snippet, comment) => {
+  const addComment = (file, lnA, lnB, snippet, comment, side = "new") => {
     const idc = ++dcid;
-    diffComments.push({ id: idc, file, lnA, lnB, snippet: snippet.trim().slice(0, 400), comment });
+    diffComments.push({ id: idc, file, lnA, lnB, snippet: snippet.trim().slice(0, 400), comment, side });
     window.getSelection().removeAllRanges();
     applyHighlights();
     refreshFeedback();
@@ -164,9 +165,13 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         const btn = q("#requestChanges");
         btn.disabled = true;
         btn.textContent = "requesting…";
-        const notes = assembleDiffNotes(diffComments, q("#dgeneral") ? q("#dgeneral").value : "");
+        const messages = diffThreadMessages(
+          diffComments,
+          q("#dgeneral") ? q("#dgeneral").value : "",
+          currentRevisionId(getTask()?.thread, "diff"),
+        );
         try {
-          await callRpc("run.request_changes", { run_id: taskId, comments: notes });
+          await callRpc("run.request_changes", { run_id: taskId, messages });
           // Stamp what we just reviewed: the next pass marks files that moved.
           reviewStamps = stampReview(renderedFiles);
           diffComments.length = 0;
@@ -258,9 +263,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
         ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
       ${filesHtml}
+      ${threadHtml(t.thread)}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
+    wireThreadRevisionLinks(host, (revisionId) => callRpc("thread.revision", { entity_id: taskId, revision_id: revisionId }));
 
     // The changed-only filter and the per-file Viewed checkbox live on a delegated
     // change handler: the filter repaints (forcing a rebuild), Viewed collapses the
@@ -304,7 +311,8 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
           b = +(endRow || startRow).dataset.ln;
         if (a > b) [a, b] = [b, a];
         const text = sel.toString();
-        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addComment(file, a, b, text, comment));
+        const side = (startRow || endRow).dataset.side || "new";
+        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addComment(file, a, b, text, comment, side));
       });
       // Taps: the header ✎ comments the whole file; a tap on a line comments
       // that line (touch-first path). Capped files leave the click to the
@@ -328,7 +336,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         if (!tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
         const ln = +tr.dataset.ln,
           snippet = tr.querySelector(".code").textContent;
-        showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment));
+          showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment, tr.dataset.side || "new"));
       };
       q("#dgeneral").oninput = updateActions;
     } else {
@@ -352,7 +360,8 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     const files = filterNoiseFiles(parseDiff(diff.patch));
     renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
     lastDiffState = t.state;
-    const key = t.state + " " + diff.patch;
+    const threadKey = t.thread && t.thread.items ? t.thread.items.map((item) => item.data && item.data.sequence).join(",") : "";
+    const key = t.state + " " + diff.patch + " " + threadKey;
     const general = q("#dgeneral");
     // Freeze the diff while the user is actively commenting (pending comments,
     // open popover, or text in the general box) so anchors/selection survive —

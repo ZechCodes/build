@@ -33,7 +33,7 @@ export function diffRowsHtml(rows, lang = null, { maskDotenv = false } = {}) {
     .map((r) =>
       r.t === "hunk"
         ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}</td></tr>`
-        : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`,
+        : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`,
     )
     .join("");
 }

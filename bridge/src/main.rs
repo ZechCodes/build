@@ -449,7 +449,7 @@ fn hostname() -> String {
 }
 
 /// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns
-/// (via the worktree's `.build/mcp.json`). It serves the single `done` tool over
+/// (via the worktree's `.build/mcp.json`). It serves scoped conversation tools over
 /// stdio and forwards each report to the running daemon's control socket
 /// (`BRIDGE_MCP_SOCKET`) as `{"task_id","report"}` lines. The `task_id` field is
 /// the opaque owner id (a plan id or a run id) the `--task` flag was launched
@@ -457,7 +457,7 @@ fn hostname() -> String {
 /// The wire key stays `task_id` for cross-version compatibility. Without the
 /// socket it just logs (for testing).
 fn mcp_stdio() {
-    use std::io::Write;
+    use std::io::{BufRead, Write};
 
     let args: Vec<String> = std::env::args().collect();
     let owner_id = args
@@ -471,17 +471,52 @@ fn mcp_stdio() {
     let server = build_bridge::mcp::DoneServer::new(&owner_id);
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
-    let _ = server.run_stdio(stdin, stdout, |report| {
-        let line = serde_json::json!({ "task_id": owner_id, "report": report }).to_string();
-        match &socket {
-            Some(path) => {
-                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(path) {
-                    let _ = writeln!(stream, "{line}");
-                } else {
-                    eprintln!("[mcp] could not reach daemon socket {path}");
+    let _ = server.run_stdio(
+        stdin,
+        stdout,
+        |report| {
+            let line = serde_json::json!({ "task_id": owner_id, "report": report }).to_string();
+            match &socket {
+                Some(path) => {
+                    if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(path) {
+                        let _ = writeln!(stream, "{line}");
+                    } else {
+                        eprintln!("[mcp] could not reach daemon socket {path}");
+                    }
                 }
+                None => eprintln!("[mcp] done: {line}"),
             }
-            None => eprintln!("[mcp] done: {line}"),
-        }
-    });
+        },
+        |action| {
+            let Some(path) = &socket else {
+                return Err("Build daemon socket is not configured".to_string());
+            };
+            let mut stream = std::os::unix::net::UnixStream::connect(path)
+                .map_err(|error| format!("could not reach Build daemon: {error}"))?;
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .map_err(|error| format!("could not set daemon timeout: {error}"))?;
+            let line = serde_json::json!({ "task_id": owner_id, "request": action }).to_string();
+            writeln!(stream, "{line}")
+                .map_err(|error| format!("could not send request: {error}"))?;
+            let mut response = String::new();
+            std::io::BufReader::new(stream)
+                .read_line(&mut response)
+                .map_err(|error| format!("could not read response: {error}"))?;
+            let value: serde_json::Value = serde_json::from_str(&response)
+                .map_err(|error| format!("invalid daemon response: {error}"))?;
+            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                Ok(value
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null))
+            } else {
+                Err(value
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Build daemon rejected the request")
+                    .to_string())
+            }
+        },
+    );
 }

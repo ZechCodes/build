@@ -163,6 +163,16 @@ next stage's builder should know (surprises, renamed symbols, follow-ups) — us
 bullets in the summary argument. If you cannot complete the review, call `done`
 with status=\"blocked\" or status=\"failed\" and say, with markdown bullets, why.";
 
+const COMPLETION_REPORT_GUIDANCE: &str = "\
+\n\nIn every `done` call, set `outputs.completion_report` to a structured handoff:
+`{\"critical_files\":[],\"risk_notes\":[],\"decisions\":[],\"skips\":[]}`.
+List the important paths, known risks, consequential decisions, and anything
+intentionally not completed; use empty arrays when a category has nothing.";
+
+fn phase_template(base: &str) -> String {
+    format!("{base}{COMPLETION_REPORT_GUIDANCE}")
+}
+
 /// The phase templates. Clone-and-edit to override per project.
 #[derive(Debug, Clone)]
 pub struct Templates {
@@ -180,15 +190,15 @@ pub struct Templates {
 impl Default for Templates {
     fn default() -> Self {
         Templates {
-            plan: PLAN.to_string(),
-            build: BUILD.to_string(),
-            build_stage: BUILD_STAGE.to_string(),
-            revise: REVISE.to_string(),
-            revise_stage: REVISE_STAGE.to_string(),
-            fix_stage: FIX_STAGE.to_string(),
-            review_changes: REVIEW_CHANGES.to_string(),
-            validate: VALIDATE.to_string(),
-            message: MESSAGE.to_string(),
+            plan: phase_template(PLAN),
+            build: phase_template(BUILD),
+            build_stage: phase_template(BUILD_STAGE),
+            revise: phase_template(REVISE),
+            revise_stage: phase_template(REVISE_STAGE),
+            fix_stage: phase_template(FIX_STAGE),
+            review_changes: phase_template(REVIEW_CHANGES),
+            validate: phase_template(VALIDATE),
+            message: phase_template(MESSAGE),
         }
     }
 }
@@ -349,6 +359,21 @@ mod tests {
         assert!(t.plan.contains(".build/"));
         assert!(t.build.contains("phase=\"build\""));
         assert!(t.review_changes.contains("phase=\"revise\""));
+        for template in [
+            &t.plan,
+            &t.build,
+            &t.build_stage,
+            &t.revise,
+            &t.revise_stage,
+            &t.fix_stage,
+            &t.review_changes,
+            &t.validate,
+        ] {
+            assert!(
+                template.contains("outputs.completion_report"),
+                "every phase must leave structured cold-session handoff context"
+            );
+        }
     }
 
     #[test]

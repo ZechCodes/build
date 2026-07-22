@@ -183,6 +183,9 @@ pub struct PersistedPlan {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Durable conversation paired with this plan review artifact.
+    #[serde(default)]
+    pub thread: crate::thread::Thread,
     pub last_summary: Option<String>,
     /// The most recent thing that went wrong for this plan, shown on the card
     /// until the plan advances again.
@@ -250,6 +253,9 @@ pub struct PersistedRun {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Durable conversation paired with this run's evolving diff.
+    #[serde(default)]
+    pub thread: crate::thread::Thread,
     pub last_summary: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -888,6 +894,7 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
+        thread: crate::thread::Thread::new(&task.id),
         last_summary: task.last_summary.clone(),
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
@@ -944,7 +951,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         None => task.id.clone(),
     };
     Some(PersistedRun {
-        id: run_id,
+        id: run_id.clone(),
         plan_id,
         goal: task.goal.clone(),
         project_path: task.project_path.clone(),
@@ -969,6 +976,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
+        thread: crate::thread::Thread::new(&run_id),
         last_summary: task.last_summary.clone(),
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
@@ -1530,6 +1538,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
+            thread: crate::thread::Thread::new(id),
             last_summary: Some("planned it".into()),
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -1568,6 +1577,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),
+            thread: crate::thread::Thread::new(id),
             last_summary: Some("stage one built".into()),
             last_error: None,
             created_at: "2026-07-01T11:00:00Z".into(),

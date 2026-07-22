@@ -1,7 +1,7 @@
 //! Build bridge — the device daemon.
 //!
 //! Everything is files + git + PTY. The bridge owns git worktrees, spawns agent
-//! harnesses in full PTYs, serves a single-tool (`done`) MCP server per entity,
+//! harnesses in full PTYs, serves a conversation-aware MCP server per entity,
 //! watches git for legibility, and drives the **plan/run split**: two entities,
 //! each with its own lifecycle, instead of one fused task.
 //!
@@ -53,5 +53,6 @@ pub mod run;
 pub mod service;
 pub mod store;
 pub mod templates;
+pub mod thread;
 pub mod transport;
 pub mod worktree;

@@ -4,8 +4,8 @@
 //! baked into the transport: no shared server, no auth, no ambiguity. The
 //! `--task` flag stays opaque across the plan/run split — the id is a plan id or
 //! a run id, and the daemon routes each `done` report by owner lookup (plans
-//! map, then runs map). It exposes exactly one tool in v1, `done`, by which an
-//! agent reports the outcome of a phase. Everything here is hand-rolled
+//! map, then runs map). It exposes scoped unread/reply tools plus `done`, by
+//! which an agent reports the outcome of a phase. Everything here is hand-rolled
 //! newline-delimited JSON-RPC 2.0 — the MCP stdio framing — so the surface stays
 //! minimal and the parsing stays testable.
 
@@ -63,6 +63,9 @@ pub struct DoneOutputs {
     /// Optional on phase=revise/completed: per-comment resolutions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_resolutions: Option<Vec<CommentResolution>>,
+    /// Durable handoff context for reviewers and cold replacement sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_report: Option<crate::thread::CompletionReport>,
 }
 
 /// The raw `done` arguments as they arrive over the wire, before validation.
@@ -187,9 +190,23 @@ pub struct Handled {
     pub reply: Option<String>,
     /// A validated `done` the lifecycle should consume, if this message was one.
     pub report: Option<DoneReport>,
+    /// A thread operation the stdio adapter executes against the owning daemon
+    /// entity before it can write the JSON-RPC reply.
+    pub action: Option<BridgeAction>,
+    action_id: Option<Value>,
 }
 
-/// The single-tool MCP server. Identity-scoped to one owner (a plan or a run);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum BridgeAction {
+    ReadUnreadMessages,
+    PostThreadMessage {
+        body: String,
+        anchor: Option<crate::thread::MessageAnchor>,
+    },
+}
+
+/// The conversation-aware MCP server. Identity-scoped to one owner (a plan or a run);
 /// `owner_id` is opaque here — the daemon disambiguates it by owner lookup.
 pub struct DoneServer {
     owner_id: String,
@@ -249,6 +266,16 @@ impl DoneServer {
                                 },
                                 "required": ["comment_id", "response"]
                             }
+                        },
+                        "completion_report": {
+                            "type": "object",
+                            "description": "Structured handoff for the reviewer and any cold replacement session.",
+                            "properties": {
+                                "critical_files": { "type": "array", "items": { "type": "string" } },
+                                "risk_notes": { "type": "array", "items": { "type": "string" } },
+                                "decisions": { "type": "array", "items": { "type": "string" } },
+                                "skips": { "type": "array", "items": { "type": "string" } }
+                            }
                         }
                     }
                 }
@@ -265,6 +292,7 @@ impl DoneServer {
                 return Handled {
                     reply: Some(error(Value::Null, -32700, "parse error")),
                     report: None,
+                    ..Handled::default()
                 }
             }
         };
@@ -295,6 +323,7 @@ impl DoneServer {
                         }),
                     )),
                     report: None,
+                    ..Handled::default()
                 }
             }
             "tools/list" => Handled {
@@ -302,6 +331,21 @@ impl DoneServer {
                     id,
                     json!({
                         "tools": [{
+                            "name": "read_unread_messages",
+                            "description": "Read unread reviewer messages in your current Build conversation thread. Reading atomically marks them seen.",
+                            "inputSchema": { "type": "object", "properties": {} }
+                        }, {
+                            "name": "post_thread_message",
+                            "description": "Reply in the current Build conversation thread only for a question, necessary pushback or clarification, or an explicit response request. Do not acknowledge directives or recap diffs.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "body": { "type": "string" },
+                                    "anchor": { "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." }
+                                },
+                                "required": ["body"]
+                            }
+                        }, {
                             "name": "done",
                             "description": "Report the outcome of the current phase. Call with status=completed when the objective is met, status=blocked if you cannot proceed, or status=failed if the approach did not work.",
                             "inputSchema": Self::done_input_schema()
@@ -309,11 +353,13 @@ impl DoneServer {
                     }),
                 )),
                 report: None,
+                ..Handled::default()
             },
             "tools/call" => self.handle_tools_call(id, msg.get("params")),
             _ => Handled {
                 reply: Some(error(id, -32601, "method not found")),
                 report: None,
+                ..Handled::default()
             },
         }
     }
@@ -323,10 +369,55 @@ impl DoneServer {
             .and_then(|p| p.get("name"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        if name == "read_unread_messages" {
+            return Handled {
+                action: Some(BridgeAction::ReadUnreadMessages),
+                action_id: Some(id),
+                ..Handled::default()
+            };
+        }
+        if name == "post_thread_message" {
+            let arguments = params
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let body = arguments
+                .get("body")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|body| !body.is_empty());
+            let Some(body) = body else {
+                return Handled {
+                    reply: Some(tool_error(id, "body is required".to_string())),
+                    ..Handled::default()
+                };
+            };
+            let anchor = match arguments.get("anchor") {
+                None | Some(Value::Null) => None,
+                Some(value) => match serde_json::from_value(value.clone()) {
+                    Ok(anchor) => Some(anchor),
+                    Err(error) => {
+                        return Handled {
+                            reply: Some(tool_error(id, format!("invalid anchor: {error}"))),
+                            ..Handled::default()
+                        }
+                    }
+                },
+            };
+            return Handled {
+                action: Some(BridgeAction::PostThreadMessage {
+                    body: body.to_string(),
+                    anchor,
+                }),
+                action_id: Some(id),
+                ..Handled::default()
+            };
+        }
         if name != "done" {
             return Handled {
                 reply: Some(tool_error(id, format!("unknown tool: {name}"))),
                 report: None,
+                ..Handled::default()
             };
         }
 
@@ -340,6 +431,7 @@ impl DoneServer {
                 return Handled {
                     reply: Some(tool_error(id, format!("invalid done arguments: {e}"))),
                     report: None,
+                    ..Handled::default()
                 }
             }
         };
@@ -348,21 +440,25 @@ impl DoneServer {
             Ok(report) => Handled {
                 reply: Some(tool_ok(id, &report.summary)),
                 report: Some(report),
+                ..Handled::default()
             },
             Err(e) => Handled {
                 reply: Some(tool_error(id, e.to_string())),
                 report: None,
+                ..Handled::default()
             },
         }
     }
 
-    /// Run the server over real stdio, forwarding each `done` to `on_report`.
+    /// Run the server over real stdio, forwarding each `done` to `on_report`
+    /// and each thread operation to the scoped daemon callback.
     /// Blocks until stdin reaches EOF.
     pub fn run_stdio(
         &self,
         input: impl BufRead,
         mut output: impl Write,
         mut on_report: impl FnMut(DoneReport),
+        mut on_action: impl FnMut(BridgeAction) -> Result<Value, String>,
     ) -> std::io::Result<()> {
         for line in input.lines() {
             let line = line?;
@@ -370,6 +466,15 @@ impl DoneServer {
                 continue;
             }
             let handled = self.handle_message(&line);
+            if let (Some(id), Some(action)) = (handled.action_id, handled.action) {
+                let reply = match on_action(action) {
+                    Ok(value) => tool_ok(id, &value.to_string()),
+                    Err(message) => tool_error(id, message),
+                };
+                output.write_all(reply.as_bytes())?;
+                output.write_all(b"\n")?;
+                output.flush()?;
+            }
             if let Some(reply) = handled.reply {
                 output.write_all(reply.as_bytes())?;
                 output.write_all(b"\n")?;
@@ -438,20 +543,22 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_exposes_only_done() {
+    fn tools_list_exposes_thread_tools_and_done() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "done");
-        assert!(tools[0]["inputSchema"]["properties"]["phase"].is_object());
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0]["name"], "read_unread_messages");
+        assert_eq!(tools[1]["name"], "post_thread_message");
+        assert_eq!(tools[2]["name"], "done");
+        assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
     }
 
     #[test]
     fn summary_schema_asks_for_markdown_bullets() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let desc = v["result"]["tools"][0]["inputSchema"]["properties"]["summary"]["description"]
+        let desc = v["result"]["tools"][2]["inputSchema"]["properties"]["summary"]["description"]
             .as_str()
             .unwrap()
             .to_lowercase();
@@ -528,13 +635,46 @@ mod tests {
     fn tools_list_schema_enumerates_validate_phase_and_new_outputs() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let schema = &v["result"]["tools"][0]["inputSchema"];
+        let schema = &v["result"]["tools"][2]["inputSchema"];
         let phases = schema["properties"]["phase"]["enum"].as_array().unwrap();
         assert!(phases.iter().any(|p| p == "validate"));
         let outputs = &schema["properties"]["outputs"]["properties"];
         assert!(outputs["stages"].is_object());
         assert!(outputs["validation"].is_object());
         assert!(outputs["comment_resolutions"].is_object());
+        assert!(outputs["completion_report"].is_object());
+    }
+
+    #[test]
+    fn unread_and_reply_calls_emit_scoped_bridge_actions() {
+        let read = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"read_unread_messages","arguments":{}}}"#,
+        );
+        assert!(matches!(
+            read.action,
+            Some(BridgeAction::ReadUnreadMessages)
+        ));
+        assert!(read.reply.is_none());
+
+        let post = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"body":"Which name should I use?"}}}"#,
+        );
+        assert!(matches!(
+            post.action,
+            Some(BridgeAction::PostThreadMessage { ref body, anchor: None })
+                if body == "Which name should I use?"
+        ));
+        assert!(post.reply.is_none());
+    }
+
+    #[test]
+    fn done_carries_the_structured_completion_report() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":["src/main.rs"],"risk_notes":["migration"],"decisions":["kept API"],"skips":["load test"]}}}}}"#,
+        );
+        let report = h.report.unwrap().outputs.completion_report.unwrap();
+        assert_eq!(report.critical_files, vec!["src/main.rs"]);
+        assert_eq!(report.skips, vec!["load test"]);
     }
 
     #[test]
@@ -724,7 +864,12 @@ mod tests {
         let mut out = Vec::new();
         let mut reports = Vec::new();
         server()
-            .run_stdio(input.as_bytes(), &mut out, |r| reports.push(r))
+            .run_stdio(
+                input.as_bytes(),
+                &mut out,
+                |r| reports.push(r),
+                |_| Err("no thread action expected".into()),
+            )
             .unwrap();
 
         // One report (the done), and two response lines (initialize + tools/call;

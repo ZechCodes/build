@@ -24,3 +24,38 @@ export function assembleDiffNotes(comments, general) {
   if (general.trim()) out += `General feedback: ${general.trim()}\n`;
   return out;
 }
+
+/** Structured plan-thread posts. Anchors survive revisions and bridge restarts. */
+export function planThreadMessages(comments, general, revisionId, path) {
+  const messages = comments.map((comment) => ({
+    body: comment.comment.trim(),
+    anchor: {
+      artifact: "plan",
+      revision_id: revisionId || null,
+      path,
+      heading_path: comment.headingPath || [],
+      snippet: comment.snippet.trim().slice(0, 400),
+    },
+  }));
+  if (general.trim()) messages.push({ body: general.trim(), anchor: null });
+  return messages;
+}
+
+/** Structured diff-thread posts with a stable, side-aware source location. */
+export function diffThreadMessages(comments, general, revisionId) {
+  const messages = comments.map((comment) => ({
+    body: comment.comment.trim(),
+    anchor: {
+      artifact: "diff",
+      revision_id: revisionId || null,
+      path: comment.file,
+      side: comment.side || "new",
+      line_start: comment.lnA,
+      line_end: comment.lnB,
+      heading_path: [],
+      snippet: comment.snippet.trim().slice(0, 400),
+    },
+  }));
+  if (general.trim()) messages.push({ body: general.trim(), anchor: null });
+  return messages;
+}

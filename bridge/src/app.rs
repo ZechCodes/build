@@ -22,9 +22,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-use crate::mcp::{CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
+use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
@@ -459,7 +459,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                             serde_json::to_string(&mcp_socket).expect("socket serializes")
                         ),
                         "mcp_servers.build.required=true".to_string(),
-                        "mcp_servers.build.enabled_tools=[\"done\"]".to_string(),
+                        "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\"]".to_string(),
                         "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
                     ] {
                         spec = spec.arg("--config").arg(override_arg);
@@ -994,6 +994,7 @@ impl AppState {
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
+            thread: active.thread.clone(),
             last_summary: active.last_summary.clone(),
             last_error: active.last_error.clone(),
             created_at,
@@ -1042,6 +1043,7 @@ impl AppState {
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
+            thread: active.thread.clone(),
             last_summary: active.last_summary.clone(),
             last_error: active.last_error.clone(),
             created_at,
@@ -1416,7 +1418,8 @@ impl AppState {
                 };
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
-                    let mut lines = tokio::io::BufReader::new(stream).lines();
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut lines = tokio::io::BufReader::new(read_half).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
                             continue;
@@ -1429,6 +1432,19 @@ impl AppState {
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
                             state.lock().unwrap().on_agent_done(entity_id, report);
+                            continue;
+                        }
+                        if let Ok(action) = serde_json::from_value::<BridgeAction>(
+                            v.get("request").cloned().unwrap_or(Value::Null),
+                        ) {
+                            let response =
+                                match state.lock().unwrap().on_mcp_action(entity_id, action) {
+                                    Ok(result) => json!({ "ok": true, "result": result }),
+                                    Err(error) => json!({ "ok": false, "error": error }),
+                                };
+                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+                            let _ = write_half.write_all(b"\n").await;
+                            let _ = write_half.flush().await;
                         }
                     }
                 });
@@ -1448,11 +1464,47 @@ impl AppState {
         }
     }
 
+    /// Execute an MCP thread request against the identity-scoped owner baked
+    /// into that session's MCP command. There is no caller-supplied thread id:
+    /// a plan process can only reach its plan thread and a run process only its
+    /// run thread.
+    fn on_mcp_action(&mut self, entity_id: &str, action: BridgeAction) -> Result<Value, String> {
+        let now = now_rfc3339();
+        if self.plans.contains_key(entity_id) {
+            let mut active = self.take_plan(entity_id)?;
+            let result = apply_thread_action(
+                &mut active.thread,
+                crate::thread::ArtifactKind::Plan,
+                action,
+                &now,
+            );
+            let (_, persisted) = self.finish_plan_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if self.runs.contains_key(entity_id) {
+            let mut active = self.take_run(entity_id)?;
+            let result = apply_thread_action(
+                &mut active.thread,
+                crate::thread::ArtifactKind::Diff,
+                action,
+                &now,
+            );
+            let (_, persisted) = self.finish_run_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        Err(format!("unknown conversation owner: {entity_id}"))
+    }
+
     /// A plan agent reported `done`: ingest + advance on the plan's orchestrator.
     fn on_plan_agent_done(&mut self, plan_id: &str, report: DoneReport) {
         let Some(mut active) = self.plans.remove(plan_id) else {
             return;
         };
+        let report_for_thread = report.clone();
         let outcome = (|| -> Result<(), String> {
             let project_id = self.project_of(plan_id)?;
             let store = self.require_store()?;
@@ -1460,8 +1512,22 @@ impl AppState {
                 .on_plan_done(&mut active, store, report)
                 .map_err(err)
         })();
-        if let Err(e) = outcome {
+        if let Err(e) = &outcome {
             eprintln!("on_agent_done {plan_id}: {e}");
+        }
+        record_report_in_thread(
+            &mut active.thread,
+            &report_for_thread,
+            outcome.as_ref().err().map(String::as_str),
+        );
+        if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed {
+            if let Some(contents) = self.plan_revision_contents(plan_id, &active) {
+                active.thread.add_revision(
+                    crate::thread::ArtifactKind::Plan,
+                    &contents,
+                    &now_rfc3339(),
+                );
+            }
         }
         let (_, persisted) = self.finish_plan_mutation(plan_id.to_string(), active);
         if let Err(e) = persisted {
@@ -1485,14 +1551,34 @@ impl AppState {
             return;
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
+        let report_for_thread = report.clone();
         let outcome = (|| -> Result<(), String> {
             let project_id = self.project_of(run_id)?;
             self.orch_for(&project_id)?
                 .on_run_done(&mut active, &plan_docs, report)
                 .map_err(err)
         })();
-        if let Err(e) = outcome {
+        if let Err(e) = &outcome {
             eprintln!("on_agent_done {run_id}: {e}");
+        }
+        record_report_in_thread(
+            &mut active.thread,
+            &report_for_thread,
+            outcome.as_ref().err().map(String::as_str),
+        );
+        if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed {
+            if let Ok(project_id) = self.project_of(run_id) {
+                if let Ok(diff) = self
+                    .orch_for(&project_id)
+                    .and_then(|orch| orch.run_diff(&active).map_err(err))
+                {
+                    active.thread.add_revision(
+                        crate::thread::ArtifactKind::Diff,
+                        diff.patch(),
+                        &now_rfc3339(),
+                    );
+                }
+            }
         }
         let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
@@ -1511,6 +1597,7 @@ impl AppState {
         mut active: ActiveRun,
         report: DoneReport,
     ) {
+        let report_for_thread = report.clone();
         let plan_id = active.run.plan_id.as_ref().map(|p| p.0.clone());
         let mut plan = plan_id.as_ref().and_then(|pid| self.plans.remove(pid));
         let outcome = (|| -> Result<(), String> {
@@ -1523,8 +1610,29 @@ impl AppState {
                 .consume_run_stage_revision(&mut active, plan, store, &report)
                 .map_err(err)
         })();
-        if let Err(e) = outcome {
+        if let Err(e) = &outcome {
             eprintln!("on_agent_done {run_id}: {e}");
+        }
+        record_report_in_thread(
+            &mut active.thread,
+            &report_for_thread,
+            outcome.as_ref().err().map(String::as_str),
+        );
+        if outcome.is_ok() {
+            if let (Some(pid), Some(plan_ref)) = (plan_id.as_deref(), plan.as_mut()) {
+                if let Some(contents) = self.plan_revision_contents(pid, plan_ref) {
+                    plan_ref.thread.add_revision(
+                        crate::thread::ArtifactKind::Plan,
+                        &contents,
+                        &now_rfc3339(),
+                    );
+                    active.thread.add_revision(
+                        crate::thread::ArtifactKind::Plan,
+                        &contents,
+                        &now_rfc3339(),
+                    );
+                }
+            }
         }
         if let (Some(pid), Some(plan)) = (plan_id, plan) {
             let (_, persisted) = self.finish_plan_mutation(pid, plan);
@@ -1536,6 +1644,22 @@ impl AppState {
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
+    }
+
+    fn plan_revision_contents(&self, plan_id: &str, active: &ActivePlan) -> Option<String> {
+        let store = self.store.as_ref()?;
+        if active.stages.is_empty() {
+            return store.read_plan_doc(plan_id, &active.plan_path);
+        }
+        let mut combined = String::new();
+        for stage in &active.stages {
+            let contents = store.read_plan_doc(plan_id, &stage.path)?;
+            combined.push_str(&stage.path);
+            combined.push('\n');
+            combined.push_str(&contents);
+            combined.push('\n');
+        }
+        Some(combined)
     }
 
     /// Synchronous dispatch used by the unit tests (no background producer). The
@@ -1570,6 +1694,7 @@ impl AppState {
                 "default_provider": AgentProvider::Claude,
                 "providers": models::provider_catalogs(),
             })),
+            "thread.revision" => self.thread_revision(params),
             "fs.list" => self.fs_list(params),
             "fs.tree" => self.fs_tree(params),
             "fs.read" => self.fs_read(params),
@@ -1927,6 +2052,7 @@ impl AppState {
             if let Some(code) = exit_code {
                 active.last_error = Some(format!("agent exited unexpectedly (exit code {code})"));
             }
+            record_idle_in_thread(&mut active.thread, exit_code);
             let (_, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {plan_id}: {e}");
@@ -1950,6 +2076,7 @@ impl AppState {
             if let Some(code) = exit_code {
                 active.last_error = Some(format!("agent exited unexpectedly (exit code {code})"));
             }
+            record_idle_in_thread(&mut active.thread, exit_code);
             let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {run_id}: {e}");
@@ -2971,7 +3098,7 @@ impl AppState {
     /// Send a batch of plan notes back to a fresh revision session.
     fn plan_send_notes(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
-        let comments = require_str(params, "comments")?;
+        let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Plan, "comments")?;
         let project_id = self.project_of(&plan_id)?;
         if self
             .plans
@@ -2983,10 +3110,11 @@ impl AppState {
             );
         }
         let mut active = self.take_plan(&plan_id)?;
+        append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             self.orch_for(&project_id)?
-                .send_plan_notes(&mut active, store, &comments)
+                .send_plan_notes(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             if self.qa_agent {
                 self.qa_simulate_plan(&project_id, &mut active)?;
@@ -3020,6 +3148,19 @@ impl AppState {
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        if let Some(stage) = active
+            .stages
+            .iter()
+            .find(|stage| stage.id == stage_id)
+            .cloned()
+        {
+            let comments: Vec<StageComment> = active
+                .open_comments_for(&stage_id)
+                .into_iter()
+                .cloned()
+                .collect();
+            append_stage_comments_to_thread(&mut active.thread, &stage, &comments);
+        }
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             self.orch_for(&project_id)?
@@ -3042,10 +3183,11 @@ impl AppState {
         let message = require_str(params, "message")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        active.thread.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             self.orch_for(&project_id)?
-                .message_plan(&mut active, store, &message)
+                .message_plan(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             if self.qa_agent && active.plan.state == PlanState::Drafting {
                 if active.revising_stage_id.is_some() {
@@ -3262,6 +3404,32 @@ impl AppState {
         Ok(self.run_view(&run_id, active))
     }
 
+    fn thread_revision(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let revision_id = require_str(params, "revision_id")?;
+        let thread = self
+            .plans
+            .get(&entity_id)
+            .map(|active| &active.thread)
+            .or_else(|| self.runs.get(&entity_id).map(|active| &active.thread))
+            .ok_or("unknown conversation owner")?;
+        let revision = thread
+            .revisions
+            .iter()
+            .find(|revision| revision.id == revision_id)
+            .ok_or("unknown revision_id")?;
+        let contents = revision
+            .snapshot
+            .as_ref()
+            .ok_or("revision snapshot is no longer retained")?;
+        Ok(json!({
+            "revision_id": revision.id,
+            "artifact": revision.artifact,
+            "created_at": revision.created_at,
+            "contents": contents,
+        }))
+    }
+
     fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
@@ -3287,16 +3455,17 @@ impl AppState {
     /// Send diff comments to the coding agent — from `review` or `building`.
     fn run_request_changes(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
-        let comments = require_str(params, "comments")?;
+        let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Diff, "comments")?;
         let project_id = self.project_of(&run_id)?;
         let plan_docs = {
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
             self.owning_plan_stage_docs(active)
         };
         let mut active = self.take_run(&run_id)?;
+        append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
             self.orch_for(&project_id)?
-                .run_request_changes(&mut active, &comments)
+                .run_request_changes(&mut active, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
@@ -3384,6 +3553,19 @@ impl AppState {
         let mut plan = self.plans.remove(&plan_id);
         let outcome = (|| -> Result<(), String> {
             let plan = plan.as_mut().ok_or("unknown plan_id")?;
+            let stage = plan
+                .stages
+                .iter()
+                .find(|stage| stage.id == stage_id)
+                .cloned()
+                .ok_or_else(|| format!("unknown stage_id: {stage_id}"))?;
+            let comments: Vec<StageComment> = plan
+                .open_comments_for(&stage_id)
+                .into_iter()
+                .cloned()
+                .collect();
+            append_stage_comments_to_thread(&mut active.thread, &stage, &comments);
+            append_stage_comments_to_thread(&mut plan.thread, &stage, &comments);
             self.orch_for(&project_id)?
                 .send_run_stage_notes(&mut active, plan, &stage_id)
                 .map_err(err)?;
@@ -3570,9 +3752,10 @@ impl AppState {
             self.owning_plan_stage_docs(active)
         };
         let mut active = self.take_run(&run_id)?;
+        active.thread.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             self.orch_for(&project_id)?
-                .message_run(&mut active, &message)
+                .message_run(&mut active, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             if self.qa_agent && active.run.state == RunState::Building {
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
@@ -3849,10 +4032,12 @@ impl AppState {
             "project": project,
             "project_id": project_id,
             "base_branch": active.base_branch,
+            "plan_path": active.plan_path,
             "harness": if self.qa_agent { self.harness.as_str() } else { active.model_choice.provider.label() },
             "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
+            "thread": active.thread.wire_value(),
             "active_run_id": active_run_id,
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
@@ -3901,6 +4086,7 @@ impl AppState {
             "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
+            "thread": active.thread.wire_value(),
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
@@ -4640,6 +4826,212 @@ fn media_mime_hint(path: &std::path::Path) -> Option<&'static str> {
 
 fn err(e: OrchestratorError) -> String {
     e.to_string()
+}
+
+fn apply_thread_action(
+    thread: &mut crate::thread::Thread,
+    artifact: crate::thread::ArtifactKind,
+    action: BridgeAction,
+    now: &str,
+) -> Result<Value, String> {
+    match action {
+        BridgeAction::ReadUnreadMessages => Ok(json!({
+            "thread_id": thread.id,
+            "agent_id": thread.agent.id,
+            "messages": thread.read_unread(now),
+        })),
+        BridgeAction::PostThreadMessage { body, anchor } => {
+            let body = body.trim();
+            if body.is_empty() {
+                return Err("message body must not be empty".to_string());
+            }
+            if body.len() > 32_000 {
+                return Err("message body exceeds 32000 bytes".to_string());
+            }
+            if anchor.as_ref().is_some_and(|anchor| {
+                anchor.artifact != artifact
+                    && !thread.items.iter().any(|item| {
+                        matches!(
+                            item,
+                            crate::thread::ThreadItem::Message(message)
+                                if message.anchor.as_ref().is_some_and(|existing| existing.artifact == anchor.artifact)
+                        )
+                    })
+            }) {
+                return Err(format!(
+                    "anchor artifact must be {} for this conversation",
+                    artifact.as_str()
+                ));
+            }
+            let message_id = thread.post_agent(body, anchor, now);
+            Ok(json!({ "message_id": message_id }))
+        }
+    }
+}
+
+const NEW_THREAD_MESSAGES_PROMPT: &str =
+    "New reviewer messages are available. Call `read_unread_messages` now, then act on every unread message. Reply with `post_thread_message` only when the conversation policy requires a written response.";
+
+fn parse_thread_inputs(
+    params: &Value,
+    artifact: crate::thread::ArtifactKind,
+    legacy_field: &str,
+) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+    if let Some(messages) = params.get("messages") {
+        let messages = messages
+            .as_array()
+            .ok_or_else(|| "messages must be an array".to_string())?;
+        if messages.is_empty() {
+            return Err("messages must not be empty".to_string());
+        }
+        if messages.len() > 100 {
+            return Err("messages must contain at most 100 entries".to_string());
+        }
+        return messages
+            .iter()
+            .map(|message| {
+                let body = message
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|body| !body.is_empty())
+                    .ok_or_else(|| "every message requires a non-empty body".to_string())?;
+                if body.len() > 32_000 {
+                    return Err("message body exceeds 32000 bytes".to_string());
+                }
+                let anchor = match message.get("anchor") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        let anchor: crate::thread::MessageAnchor =
+                            serde_json::from_value(value.clone())
+                                .map_err(|error| format!("invalid message anchor: {error}"))?;
+                        if anchor.artifact != artifact {
+                            return Err(format!(
+                                "message anchor artifact must be {}",
+                                artifact.as_str()
+                            ));
+                        }
+                        Some(anchor)
+                    }
+                };
+                Ok((body.to_string(), anchor))
+            })
+            .collect();
+    }
+    let body = params
+        .get(legacy_field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|body| !body.is_empty())
+        .ok_or_else(|| format!("missing required param: {legacy_field} or messages"))?;
+    if body.len() > 32_000 {
+        return Err(format!("{legacy_field} exceeds 32000 bytes"));
+    }
+    Ok(vec![(body.to_string(), None)])
+}
+
+fn append_user_thread_messages(
+    thread: &mut crate::thread::Thread,
+    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+) {
+    let now = now_rfc3339();
+    for (body, anchor) in messages {
+        thread.post_user(body, anchor, &now);
+    }
+}
+
+fn append_stage_comments_to_thread(
+    thread: &mut crate::thread::Thread,
+    stage: &StageDoc,
+    comments: &[StageComment],
+) {
+    let now = now_rfc3339();
+    for comment in comments {
+        let body = format!("[{}] {}", comment.id, comment.body);
+        let already_posted = thread.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.role == crate::thread::MessageRole::User && message.body == body
+            )
+        });
+        if already_posted {
+            continue;
+        }
+        let anchor = comment
+            .anchor
+            .as_ref()
+            .map(|anchor| crate::thread::MessageAnchor {
+                artifact: crate::thread::ArtifactKind::Plan,
+                revision_id: None,
+                path: Some(stage.path.clone()),
+                side: None,
+                line_start: None,
+                line_end: None,
+                heading_path: anchor.heading_path.clone(),
+                snippet: anchor.snippet.clone(),
+            });
+        thread.post_user(body, anchor, &now);
+    }
+}
+
+fn record_report_in_thread(
+    thread: &mut crate::thread::Thread,
+    report: &DoneReport,
+    orchestration_error: Option<&str>,
+) {
+    let now = now_rfc3339();
+    if let Some(session_id) = thread
+        .sessions
+        .iter()
+        .rev()
+        .find(|session| session.ended_at.is_none())
+        .map(|session| session.id.clone())
+    {
+        thread.finish_session(&session_id, &now);
+    }
+    if let Some(completion) = &report.outputs.completion_report {
+        thread.last_completion = Some(completion.clone());
+    }
+    let (event, summary) = match orchestration_error {
+        Some(error) => (
+            crate::thread::ThreadEventKind::RunFailed,
+            format!(
+                "{}\n\nBuild could not apply the report: {error}",
+                report.summary
+            ),
+        ),
+        None if report.status == DoneStatus::Failed => (
+            crate::thread::ThreadEventKind::RunFailed,
+            report.summary.clone(),
+        ),
+        _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
+    };
+    thread.push_event(event, Some(summary), None, None, now);
+}
+
+fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit_code: Option<i32>) {
+    let now = now_rfc3339();
+    if let Some(session_id) = thread
+        .sessions
+        .iter()
+        .rev()
+        .find(|session| session.ended_at.is_none())
+        .map(|session| session.id.clone())
+    {
+        thread.finish_session(&session_id, &now);
+    }
+    let (event, summary) = match exit_code {
+        Some(code) => (
+            crate::thread::ThreadEventKind::RunFailed,
+            format!("Agent exited unexpectedly with code {code}"),
+        ),
+        None => (
+            crate::thread::ThreadEventKind::IdleUnreported,
+            "Agent went quiet without reporting done".to_string(),
+        ),
+    };
+    thread.push_event(event, Some(summary), None, None, now);
 }
 
 /// What happens to the worktree + branch after a user-approved merge lands
@@ -7962,6 +8354,31 @@ mod tests {
             json!({ "run_id": run_id, "comments": "rename the symbol" }),
         ));
         assert_eq!(rc["result"]["state"], "review", "{rc:?}");
+        let structured = state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "messages": [{
+                    "body": "Use the public name",
+                    "anchor": {
+                        "artifact": "diff",
+                        "path": "src/lib.rs",
+                        "side": "new",
+                        "line_start": 12,
+                        "line_end": 12,
+                        "heading_path": [],
+                        "snippet": "fn old_name()"
+                    }
+                }]
+            }),
+        ));
+        assert_eq!(structured["ok"], true, "{structured:?}");
+        let messages = structured["result"]["thread"]["items"].as_array().unwrap();
+        assert!(messages.iter().any(|item| {
+            item["type"] == "message"
+                && item["data"]["body"] == "Use the public name"
+                && item["data"]["anchor"]["path"] == "src/lib.rs"
+        }));
         let bad = state.handle(req("run.request_changes", json!({ "run_id": run_id })));
         assert!(
             bad["error"].as_str().unwrap().contains("comments"),
@@ -8047,6 +8464,63 @@ mod tests {
     }
 
     #[test]
+    fn mcp_thread_actions_are_owner_scoped_and_revision_snapshots_are_on_demand() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let mut active = crate::orchestrator::ActiveRun::reattach(
+            &fake_run_record("run-thread"),
+            ".build/plan.md".into(),
+        );
+        active.thread.post_user("rename it", None, now_rfc3339());
+        let revision = active.thread.add_revision(
+            crate::thread::ArtifactKind::Diff,
+            "diff --git a/a b/a\n+new",
+            &now_rfc3339(),
+        );
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert("run-thread".into(), project_id);
+        state.runs.insert("run-thread".into(), active);
+
+        let unread = state
+            .on_mcp_action("run-thread", BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(unread["messages"][0]["body"], "rename it");
+        assert!(state
+            .on_mcp_action("run-thread", BridgeAction::ReadUnreadMessages)
+            .unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        state
+            .on_mcp_action(
+                "run-thread",
+                BridgeAction::PostThreadMessage {
+                    body: "Which name?".into(),
+                    anchor: None,
+                },
+            )
+            .unwrap();
+        let view = state.handle(req("run.get", json!({ "run_id": "run-thread" })));
+        assert!(view["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["data"]["body"] == "Which name?"));
+        assert!(view["result"]["thread"]["revisions"][0]
+            .get("snapshot")
+            .is_none());
+
+        let historical = state.handle(req(
+            "thread.revision",
+            json!({ "entity_id": "run-thread", "revision_id": revision.id }),
+        ));
+        assert_eq!(historical["result"]["contents"], "diff --git a/a b/a\n+new");
+        assert!(state
+            .on_mcp_action("another-run", BridgeAction::ReadUnreadMessages)
+            .is_err());
+    }
+
+    #[test]
     fn mark_idle_demotes_a_quiet_plan_and_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -8103,6 +8577,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
+            thread: crate::thread::Thread::new(id),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -8323,6 +8798,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
+            thread: crate::thread::Thread::new(id),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -8352,6 +8828,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
+            thread: crate::thread::Thread::new(id),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),

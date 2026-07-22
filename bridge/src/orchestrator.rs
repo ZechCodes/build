@@ -269,6 +269,9 @@ pub struct ActivePlan {
     pub revising_stage_id: Option<String>,
     /// Which model/effort this plan's agents run on (None = harness default).
     pub model_choice: ModelChoice,
+    /// The durable review conversation. Build itself is the stable logical
+    /// owner; individual harness processes are recorded in `sessions`.
+    pub thread: crate::thread::Thread,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
     /// The most recent failure surfaced to the reviewer (unpersisted docs,
@@ -296,6 +299,8 @@ impl ActivePlan {
             }),
             _ => None,
         };
+        let mut thread = record.thread.clone();
+        thread.normalize(&record.id);
         ActivePlan {
             plan: Plan {
                 id: PlanId::new(record.id.clone()),
@@ -313,6 +318,7 @@ impl ActivePlan {
                 model: record.model.clone(),
                 effort: record.effort.clone(),
             },
+            thread,
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
             session: SessionSlot::default(),
@@ -387,6 +393,8 @@ pub struct ActiveRun {
     pub pending_continuation: bool,
     /// Which model/effort this run's agents run on (None = harness default).
     pub model_choice: ModelChoice,
+    /// The durable conversation paired with the evolving review diff.
+    pub thread: crate::thread::Thread,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
     /// The most recent failure surfaced to the reviewer (merge failure,
@@ -403,6 +411,8 @@ impl ActiveRun {
     /// the convention default). The caller (boot recovery) moves a working
     /// state to `Interrupted` itself.
     pub fn reattach(record: &PersistedRun, plan_path: String) -> Self {
+        let mut thread = record.thread.clone();
+        thread.normalize(&record.id);
         ActiveRun {
             run: Run {
                 id: RunId::new(record.id.clone()),
@@ -429,6 +439,7 @@ impl ActiveRun {
                 model: record.model.clone(),
                 effort: record.effort.clone(),
             },
+            thread,
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
             session: SessionSlot::default(),
@@ -478,6 +489,40 @@ pub type OneShotBuilder =
 /// Whether the harness has an existing conversation transcript for a worktree
 /// cwd. Injectable so tests never touch the real home directory.
 pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
+
+const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
+
+fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
+    let mut out = String::with_capacity(prompt.len() + 2048);
+    out.push_str(prompt);
+    out.push_str(
+        "\n\nBuild conversation protocol:\n\
+         - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
+         - You may implement a directive without replying; the next revision is its acknowledgment.\n\
+         - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
+         - Do not post acknowledgments or diff recaps.\n",
+    );
+    let catch_up = thread.catch_up_markdown(40);
+    if !catch_up.is_empty() {
+        out.push_str("\nCatch-up packet from the durable conversation (oldest to newest):\n");
+        if catch_up.len() <= 12_000 {
+            out.push_str(&catch_up);
+        } else {
+            let mut boundary = catch_up.len() - 12_000;
+            while !catch_up.is_char_boundary(boundary) {
+                boundary += 1;
+            }
+            out.push_str(&catch_up[boundary..]);
+        }
+        out.push('\n');
+    }
+    if let Some(report) = &thread.last_completion {
+        out.push_str("\nPrevious structured completion report:\n");
+        out.push_str(&serde_json::to_string(report).unwrap_or_default());
+        out.push('\n');
+    }
+    out
+}
 
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
@@ -566,6 +611,7 @@ impl Orchestrator {
         let mut plan = Plan::new(id, goal);
         plan.apply(PlanEvent::Dispatch)?;
 
+        let thread = crate::thread::Thread::new(&plan.id.0);
         let mut active = ActivePlan {
             plan,
             worktree: Some(worktree),
@@ -575,12 +621,13 @@ impl Orchestrator {
             comments: Vec::new(),
             revising_stage_id: None,
             model_choice,
+            thread,
             last_summary: None,
             last_error: None,
             session: SessionSlot::default(),
         };
         let prompt = self.render_plan(&self.templates.plan, &active, "");
-        self.spawn_plan_session(&mut active, &prompt)?;
+        self.spawn_plan_session(&mut active, &prompt, "plan")?;
         Ok(active)
     }
 
@@ -764,7 +811,7 @@ impl Orchestrator {
         active.last_error = None;
         active.session.end();
         let prompt = self.render_plan(&self.templates.revise, active, notes);
-        self.spawn_plan_session(active, &prompt)?;
+        self.spawn_plan_session(active, &prompt, "revise")?;
         Ok(())
     }
 
@@ -865,9 +912,13 @@ impl Orchestrator {
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
         active.session.end();
-        let comments = templates::assemble_plan_stage_comments(&open);
-        let prompt = self.render_plan_stage(&self.templates.revise_stage, active, index, &comments);
-        self.spawn_plan_session(active, &prompt)?;
+        let prompt = self.render_plan_stage(
+            &self.templates.revise_stage,
+            active,
+            index,
+            THREAD_NOTIFICATION,
+        );
+        self.spawn_plan_session(active, &prompt, "revise")?;
         Ok(())
     }
 
@@ -915,7 +966,7 @@ impl Orchestrator {
         }
         active.last_error = None;
         active.session.end();
-        self.spawn_plan_session(active, &prompt)?;
+        self.spawn_plan_session(active, &prompt, "message")?;
         Ok(())
     }
 
@@ -938,20 +989,19 @@ impl Orchestrator {
                 let index = active
                     .stage_doc_index(&stage_id)
                     .map_err(OrchestratorError::Gate)?;
-                let open: Vec<PlanStageComment> = active
-                    .open_comments_for(&stage_id)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                let comments = templates::assemble_plan_stage_comments(&open);
-                self.render_plan_stage(&self.templates.revise_stage, active, index, &comments)
+                self.render_plan_stage(
+                    &self.templates.revise_stage,
+                    active,
+                    index,
+                    THREAD_NOTIFICATION,
+                )
             }
             None => self.render_plan(&self.templates.plan, active, ""),
         };
         active.plan.apply(PlanEvent::Reply)?;
         active.last_error = None;
         active.session.end();
-        self.spawn_plan_session(active, &prompt)?;
+        self.spawn_plan_session(active, &prompt, "revise")?;
         Ok(())
     }
 
@@ -1103,6 +1153,7 @@ impl Orchestrator {
         let mut run = Run::new(id, plan_link.map(|plan| plan.plan.id.clone()), goal);
         run.apply(RunEvent::Dispatch)?;
 
+        let thread = crate::thread::Thread::new(&run.id.0);
         let mut active = ActiveRun {
             run,
             worktree,
@@ -1117,6 +1168,7 @@ impl Orchestrator {
             adopted: false,
             pending_continuation: false,
             model_choice,
+            thread,
             last_summary: None,
             last_error: None,
             session: SessionSlot::default(),
@@ -1136,7 +1188,7 @@ impl Orchestrator {
             }
             None => self.render_run(&self.templates.build, &active, ""),
         };
-        self.spawn_run_session(&mut active, &prompt)?;
+        self.spawn_run_session(&mut active, &prompt, "build")?;
         Ok(active)
     }
 
@@ -1298,7 +1350,7 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "validate")?;
         Ok(())
     }
 
@@ -1481,7 +1533,7 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "build")?;
         Ok(())
     }
 
@@ -1529,7 +1581,7 @@ impl Orchestrator {
             doc_index,
             note,
         );
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "build")?;
         Ok(())
     }
 
@@ -1560,7 +1612,7 @@ impl Orchestrator {
         active.last_error = None;
         active.session.end();
         let prompt = self.render_run(&self.templates.review_changes, active, comments);
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "revise")?;
         Ok(())
     }
 
@@ -1625,7 +1677,7 @@ impl Orchestrator {
         active.last_error = None;
         active.session.end();
         active.pending_continuation = true;
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "message")?;
         Ok(())
     }
 
@@ -1649,7 +1701,7 @@ impl Orchestrator {
         active.run.apply(RunEvent::Reply)?;
         active.last_error = None;
         active.session.end();
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "resume")?;
         Ok(())
     }
 
@@ -1767,6 +1819,7 @@ impl Orchestrator {
         run.apply(RunEvent::Dispatch)?;
         run.apply(RunEvent::BuildReady)?;
 
+        let thread = crate::thread::Thread::new(&run.id.0);
         Ok(ActiveRun {
             run,
             worktree,
@@ -1781,6 +1834,7 @@ impl Orchestrator {
             adopted: true,
             pending_continuation: true,
             model_choice,
+            thread,
             last_summary: None,
             last_error: None,
             session: SessionSlot::default(),
@@ -1892,15 +1946,14 @@ impl Orchestrator {
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
         active.session.end();
-        let comments = templates::assemble_plan_stage_comments(&open);
         let prompt = self.render_run_stage(
             &self.templates.revise_stage,
             active,
             &plan.stages,
             doc_index,
-            &comments,
+            THREAD_NOTIFICATION,
         );
-        self.spawn_run_session(active, &prompt)?;
+        self.spawn_run_session(active, &prompt, "revise")?;
         Ok(())
     }
 
@@ -2056,6 +2109,7 @@ impl Orchestrator {
         &self,
         active: &mut ActivePlan,
         prompt: &str,
+        phase: &str,
     ) -> Result<(), OrchestratorError> {
         let cwd = active
             .worktree
@@ -2068,14 +2122,30 @@ impl Orchestrator {
             .path
             .clone();
         let model_choice = active.model_choice.clone();
+        let prompt = conversation_prompt(prompt, &active.thread);
         self.spawn_into_slot(
             &mut active.session,
             &cwd,
             &active.plan.id.0,
             &model_choice,
             false,
-            prompt,
-        )
+            &prompt,
+        )?;
+        let session_id = active.thread.start_session(
+            active.model_choice.provider.label(),
+            active.model_choice.model.as_deref(),
+            active.model_choice.effort.as_deref(),
+            phase,
+            &crate::store::now_rfc3339(),
+        );
+        active.thread.push_event(
+            crate::thread::ThreadEventKind::RunStarted,
+            Some(format!("{phase} run started")),
+            Some(session_id),
+            None,
+            crate::store::now_rfc3339(),
+        );
+        Ok(())
     }
 
     /// Spawn the run's next session, consuming the one-shot continuation flag:
@@ -2085,20 +2155,37 @@ impl Orchestrator {
         &self,
         active: &mut ActiveRun,
         prompt: &str,
+        phase: &str,
     ) -> Result<(), OrchestratorError> {
         let continue_session = active.pending_continuation
             && (self.transcript_probe)(&active.worktree.path, active.model_choice.provider);
         active.pending_continuation = false;
         let cwd = active.worktree.path.clone();
         let model_choice = active.model_choice.clone();
+        let prompt = conversation_prompt(prompt, &active.thread);
         self.spawn_into_slot(
             &mut active.session,
             &cwd,
             &active.run.id.0,
             &model_choice,
             continue_session,
-            prompt,
-        )
+            &prompt,
+        )?;
+        let session_id = active.thread.start_session(
+            active.model_choice.provider.label(),
+            active.model_choice.model.as_deref(),
+            active.model_choice.effort.as_deref(),
+            phase,
+            &crate::store::now_rfc3339(),
+        );
+        active.thread.push_event(
+            crate::thread::ThreadEventKind::RunStarted,
+            Some(format!("{phase} run started")),
+            Some(session_id),
+            None,
+            crate::store::now_rfc3339(),
+        );
+        Ok(())
     }
 
     /// The shared spawn tail for both split entities: build the harness
@@ -2123,7 +2210,15 @@ impl Orchestrator {
                 // Warm harnesses take the prompt over the PTY and never see
                 // SpawnOptions: continuation is one-shot-specific.
                 let s = PtySession::spawn(spec, Some(cwd.to_path_buf()), self.pty_size)?;
-                s.write_prompt(prompt)?;
+                if let Err(error) = s.write_prompt(prompt) {
+                    // A harness that exits immediately is still a session the
+                    // idle/crash observer must retain and report. PTYs return
+                    // EIO when the slave has already closed; only suppress the
+                    // write failure when the child is demonstrably gone.
+                    if !s.has_exited() {
+                        return Err(error.into());
+                    }
+                }
                 s
             }
             Agent::OneShot(build) => {
@@ -3021,6 +3116,7 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
+            thread: crate::thread::Thread::new("plan-1"),
             last_summary: Some("planned it".into()),
             last_error: Some("boom".into()),
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -3075,6 +3171,7 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),
+            thread: crate::thread::Thread::new("run-1"),
             last_summary: Some("built it".into()),
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -3578,9 +3675,10 @@ mod tests {
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
         assert!(plan.session.subscribe().is_some(), "revise session is warm");
         let prompt = log.lock().unwrap().last().unwrap().clone();
+        assert!(prompt.contains("read_unread_messages"), "{prompt}");
         assert!(
-            prompt.contains("[c-1]"),
-            "the open comment is the payload: {prompt}"
+            !prompt.contains("[c-1]"),
+            "comments travel through MCP: {prompt}"
         );
         assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
 
@@ -3968,7 +4066,8 @@ mod tests {
         assert_eq!(run.run.state, RunState::Building);
         let (prompt, continued) = log.lock().unwrap().last().unwrap().clone();
         assert!(continued, "the message continues the conversation");
-        assert_eq!(prompt, "also handle the empty case");
+        assert!(prompt.starts_with("also handle the empty case"));
+        assert!(prompt.contains("Build conversation protocol"));
 
         // The review gate refuses a message (request-changes is the verb there).
         orch.on_run_done(

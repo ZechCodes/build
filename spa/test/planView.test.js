@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { planBucketKey, bucketPlans } from "../src/core/planRail.js";
-import { planStageBoardHtml, docErrorPaneHtml } from "../src/views/planStages.js";
+import { planStageBoardHtml, docErrorPaneHtml, renderPlanStages } from "../src/views/planStages.js";
+import { planReviewSkeletonHtml } from "../src/core/planReview.js";
 import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
 
 describe("planBucketKey", () => {
@@ -96,6 +98,33 @@ describe("planStageBoardHtml", () => {
     const html = planStageBoardHtml({ state: "plan_review" }, allPlanned);
     expect(html).not.toContain('id="runall"');
     expect(html).not.toContain("stage-validation");
+  });
+});
+
+describe("plan review layout", () => {
+  it("places one persistent conversation after the plan content", () => {
+    const html = planReviewSkeletonHtml();
+    expect(html.indexOf('id="planbody"')).toBeLessThan(html.indexOf('id="planthread"'));
+    expect(html.match(/id="planthread"/g)).toHaveLength(1);
+  });
+
+  it("uses the shared conversation instead of a form below a stage document", () => {
+    document.body.innerHTML = '<div id="planbody"></div>';
+    const stage = { id: "s1", title: "Schema", state: "planned", open_comments: 0, comments: [] };
+    renderPlanStages({
+      body: document.querySelector("#planbody"),
+      plan: { plan_id: "p1", state: "plan_review" },
+      stagesData: { stages: [stage] },
+      stageDoc: { stage_id: "s1", contents: "# Schema" },
+      stageDocState: "ready",
+      selectedStageId: "s1",
+      callRpc: async () => {},
+      repaint: () => {},
+      onSelectStage: () => {},
+    });
+    expect(document.querySelector("#stagedoc")).not.toBeNull();
+    expect(document.querySelector("#stage-general")).toBeNull();
+    expect(document.querySelector(".plan-feedback")).toBeNull();
   });
 });
 

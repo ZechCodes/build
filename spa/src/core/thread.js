@@ -53,20 +53,40 @@ function completionHtml(report) {
     ["Decisions", report.decisions],
     ["Skipped", report.skips],
   ].filter(([, values]) => values && values.length);
-  if (!groups.length) return "";
-  return `<details class="thread-completion"><summary>Completion report</summary>${groups
+  return `<article class="thread-message agent thread-completion">
+    <div class="thread-message-head"><strong>Agent</strong></div>
+    <div class="thread-body"><strong>Completion report</strong>${groups
     .map(([label, values]) => `<div><strong>${label}</strong><ul>${values.map((value) => `<li>${esc(value)}</li>`).join("")}</ul></div>`)
-    .join("")}</details>`;
+    .join("")}</div>
+  </article>`;
 }
 
-export function threadHtml(thread) {
-  const items = (thread && thread.items) || [];
-  if (!items.length) return `<section class="review-thread"><div class="thread-title">Conversation</div><div class="thread-empty">No conversation yet.</div>${completionHtml(thread && thread.last_completion)}<div class="thread-revision-view" hidden></div></section>`;
+function composerHtml(enabled) {
+  if (!enabled) return "";
+  return `<div class="thread-composer">
+    <textarea id="planthreadinput" rows="3" placeholder="Send a message to the planning agent…"></textarea>
+    <div class="thread-composer-actions"><span class="hint" id="planthreadhint"></span><button class="btn primary" id="planthreadsend">Send</button></div>
+  </div>`;
+}
+
+export function threadHtml(thread, options = {}) {
+  const sourceItems = (thread && thread.items) || [];
+  const initialMessage = String(options.initialMessage || "").trim();
+  const hasInitialMessage = sourceItems.some(
+    (item) => item.type === "message" && item.data?.role === "user" && String(item.data.body || "").trim() === initialMessage,
+  );
+  const items = initialMessage && !hasInitialMessage
+    ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
+    : sourceItems;
+  const completion = completionHtml(thread && thread.last_completion);
+  const itemCount = items.length + (completion ? 1 : 0);
   return `<section class="review-thread">
-    <div class="thread-title">Conversation <span>${items.length}</span></div>
-    <div class="thread-items">${items.map((item) => item.type === "message" ? messageHtml(item.data || {}) : eventHtml(item.data || {})).join("")}</div>
-    ${completionHtml(thread && thread.last_completion)}
+    <div class="thread-title">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</div>
+    <div class="thread-items">${items.length || completion
+      ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}) : eventHtml(item.data || {})).join("") + completion
+      : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
+    ${composerHtml(options.composer)}
   </section>`;
 }
 

@@ -1,13 +1,12 @@
 // The plan cockpit (project-scoped review), keyed by plan_id — the plan-side twin
 // of the run surface (views/task.js). The tab bar IS the top of the view (Review |
-// Agent, the same shell run/worktree use); a compact bar carries the single-line
-// goal, the state chip, and the lifecycle + gate actions (Message, Approve plan,
-// Implement, Abandon/Delete). The Review body renders the plan's summary (markdown,
-// clamped), then either a single doc (plan.doc, select-to-comment notes) or a
-// multi-stage board (views/planStages.js). "The terminal is the basement": the
+// Agent, the same shell run/worktree use); a compact bar carries state and gate
+// actions. The Review body renders the plan's summary (markdown), then either a
+// single doc or multi-stage board, followed by one persistent conversation and
+// composer. "The terminal is the basement": the
 // Agent tab (the drafting session's PTY) shows only while the plan is non-terminal.
-// Live-polled on the review cadence; in-flight comment/selection state survives
-// ticks via the same freeze/rebuild key discipline task.js uses.
+// Live-polled on the review cadence; conversation drafts survive stage switches
+// and thread refreshes.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -16,8 +15,8 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
-import { planThreadMessages } from "../core/notes.js";
-import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
+import { threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
+import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
 import {
@@ -35,13 +34,10 @@ import {
   planBackTarget,
 } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
-import { openPlanMessage } from "../sheets/message.js";
 import { openImplementOptions } from "../sheets/implement.js";
 import { notifyError } from "../core/notify.js";
-import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
-import { watchSelection } from "../selectWatch.js";
+import { hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
-import { hashText } from "../core/reviewMemory.js";
 import { hashFromRoute } from "../core/router.js";
 
 // Plan states whose planning session accepts a freeform message (the bridge
@@ -86,26 +82,19 @@ export async function renderPlan() {
     history.replaceState(null, "", hashFromRoute(App.route));
   };
   let stagesKey = null;
-  // Single-doc review state preserved across the poll: pending comments, an id
-  // counter, the last-rendered key, and the selection watcher's disposer.
-  const planComments = [];
-  let cid = 0;
+  // Single-doc review state preserved across the poll.
   let planKey = null;
-  let planSelDispose = null;
   // The summary block's freeze key — re-rendered only when the summary text
   // changes, so the expand/collapse toggle survives ticks.
   let summaryKey = null;
   let threadRenderKey = null;
+  let threadDraft = "";
   // Doc-read error latches: any plan.doc / plan.stage_doc ERROR renders an error
   // state and stops that doc's refetch until the user re-navigates (mirrors the
   // planGone latch in task.js). singleDocError is the single-doc latch; stageDocError
   // holds the latched stage ids.
   let singleDocError = false;
   const stageDocError = new Set();
-  // Re-review memory for the single doc (W6): a hash of the doc text at the last
-  // Send Notes. When the doc later differs, the pane prepends a "changed since
-  // your review" chip. Per-session (per renderPlan call), survives the poll.
-  let sendNotesStamp = null;
   // Latched once plan.get reports "unknown plan_id": the plan was deleted out
   // from under this view. We stop the poll and render a terminal gone-state so a
   // stray tick can never repaint over it (mirrors task.js's planGone latch).
@@ -118,8 +107,8 @@ export async function renderPlan() {
 
   // The plan is gone (deleted while we were on it): stop everything and render a
   // latched terminal state with a way back — the owning project if a prior paint
-  // learned it, else notifications. Tears down the agent pane and the selection
-  // watcher so nothing lingers under the replaced #root.
+  // learned it, else notifications. Tears down the agent pane so nothing lingers
+  // under the replaced #root.
   const renderGone = () => {
     gone = true;
     if (App.poll) {
@@ -127,10 +116,6 @@ export async function renderPlan() {
       App.poll = null;
     }
     disposeAgent();
-    if (planSelDispose) {
-      planSelDispose();
-      planSelDispose = null;
-    }
     const backLabel = last && last.project_id ? "Back to project" : "Back to notifications";
     root.innerHTML = `<div class="empty gone">This plan no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
     const back = $("#goneback");
@@ -155,23 +140,14 @@ export async function renderPlan() {
     }
   };
 
-  // The Review body skeleton: a compact project·branch meta line, the summary
-  // block, then the doc/stage host (#planbody — the freeze/rebuild target that
-  // carries #plandoc / #stagelist / #stagedoc). Mounted once per shell rebuild or
-  // tab switch; the poll refreshes meta/summary and repaints #planbody in place.
+  // The Review body skeleton: project metadata, summary, doc/stage host, then the
+  // persistent conversation. Mounted once per shell rebuild or tab switch; the
+  // poll refreshes each region in place.
   const mountReviewSkeleton = () => {
     const body = $("#tabbody");
     if (!body) return;
-    if (planSelDispose) {
-      planSelDispose();
-      planSelDispose = null;
-    }
     body.classList.remove("bare");
-    body.innerHTML = `
-      <p class="mono projmeta" id="planmeta"></p>
-      <div class="plan-summary" id="plansummary" hidden></div>
-      <div id="planthread"></div>
-      <div id="planbody"><div class="plan-loading">loading…</div></div>`;
+    body.innerHTML = planReviewSkeletonHtml();
     summaryKey = null; // force the summary to repaint into the fresh skeleton
     threadRenderKey = null;
   };
@@ -184,11 +160,60 @@ export async function renderPlan() {
   const updateThread = (p) => {
     const host = $("#planthread");
     if (host) {
-      const key = JSON.stringify({ items: p.thread?.items || [], revisions: p.thread?.revisions || [], completion: p.thread?.last_completion || null });
+      const composer = p.state === "plan_review" || MESSAGEABLE.includes(p.state);
+      const key = JSON.stringify({
+        goal: p.goal || "",
+        state: p.state,
+        items: p.thread?.items || [],
+        revisions: p.thread?.revisions || [],
+        completion: p.thread?.last_completion || null,
+      });
       if (key === threadRenderKey && host.firstChild) return;
       threadRenderKey = key;
-      host.innerHTML = threadHtml(p.thread);
+      host.innerHTML = threadHtml(p.thread, { initialMessage: p.goal, composer });
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
+      const input = host.querySelector("#planthreadinput");
+      const send = host.querySelector("#planthreadsend");
+      const hint = host.querySelector("#planthreadhint");
+      if (!input || !send) return;
+      input.value = threadDraft;
+      input.oninput = () => {
+        threadDraft = input.value;
+        if (hint) hint.textContent = "";
+      };
+      const submit = async () => {
+        const message = input.value.trim();
+        if (!message) {
+          if (hint) hint.textContent = "Type a message first.";
+          input.focus();
+          return;
+        }
+        send.disabled = true;
+        send.textContent = "sending…";
+        try {
+          if (p.state === "plan_review") {
+            await App.call("plan.send_notes", { plan_id: id, messages: [{ body: message, anchor: null }] });
+          } else {
+            await App.call("plan.message", { plan_id: id, message });
+          }
+          threadDraft = "";
+          threadRenderKey = null;
+          planKey = null;
+          stagesKey = null;
+          await paint();
+        } catch (error) {
+          send.disabled = false;
+          send.textContent = "Send";
+          notifyError("Message failed", error.message);
+        }
+      };
+      send.onclick = submit;
+      input.onkeydown = (event) => {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          submit();
+        }
+      };
     }
   };
 
@@ -229,10 +254,6 @@ export async function renderPlan() {
   const mountAgent = () => {
     const body = $("#tabbody");
     if (!body) return;
-    if (planSelDispose) {
-      planSelDispose();
-      planSelDispose = null;
-    }
     body.classList.add("bare");
     body.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
     const chip = body.querySelector("#agentIdle");
@@ -302,8 +323,8 @@ export async function renderPlan() {
     });
   };
 
-  // The surface shell: the tab bar tops the view; the bar carries the single-line
-  // goal, the state chip, and the lifecycle + gate actions. Rebuilt only when the
+  // The surface shell: the tab bar tops the view; the bar carries the state chip
+  // and lifecycle + gate actions. Rebuilt only when the
   // plan's identity/state/run-link changes, so a poll tick never wipes in-flight
   // comment state in the body.
   const shell = (p) => {
@@ -311,9 +332,7 @@ export async function renderPlan() {
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="plantabs"></div>
-        <span class="plan-ref quick" title="${esc(m.goal || "")}">${esc(m.goal || "")}</span>
         <div class="surface-meta">
-          <span id="planmsgaction"></span>
           <span class="chip ${planChipClass(m.state)}" title="${esc(m.goal || "")}">${PLAN_STATE_LABEL[m.state] || m.state || ""}</span>
           <span class="taskactions" id="planactions"></span>
         </div>
@@ -333,17 +352,10 @@ export async function renderPlan() {
     else mountReviewSkeleton();
   };
 
-  // The bar's action cluster: Message (a live/parked planning session), the gate
-  // (Approve plan → Implement, or a link to the run implementing it), and removal
-  // (Abandon a live plan / Delete a terminal one) — the same slots the run view
-  // gives its actions.
+  // The bar's action cluster: the gate (Approve plan → Implement, or a link to
+  // the run implementing it) and removal (Abandon/Delete). Agent messages live
+  // in the persistent conversation below the plan.
   const wireActions = (p) => {
-    const msgEl = $("#planmsgaction");
-    if (msgEl) {
-      msgEl.innerHTML = MESSAGEABLE.includes(p.state) ? '<button class="btn mini" id="planmsg">Message agent</button>' : "";
-      const b = $("#planmsg");
-      if (b) b.onclick = () => openPlanMessage(p, paint);
-    }
     const actions = $("#planactions");
     if (!actions) return;
     actions.innerHTML = "";
@@ -485,30 +497,18 @@ export async function renderPlan() {
     };
   };
 
-  // ---- Single-doc review body (plan.doc + select-to-comment notes) ----------
+  // ---- Single-doc review body ------------------------------------------------
 
   function renderSingleDoc(doc, paneState) {
-    // Commenting requires the plan under review AND a readable doc — an
-    // unavailable/errored doc renders an honest state with no composer.
-    const editable = last.state === "plan_review" && paneState === "ready";
-    planComments.length = 0;
     const body = $("#planbody");
     const docHtml =
       paneState === "ready" ? renderMarkdown(doc)
       : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
       : paneState === "error" ? docErrorPaneHtml("plan")
       : '<div class="plan-loading">✦ loading plan document…</div>';
-    // The doc moved since the reviewer's last Send Notes (W6): flag it above the doc.
-    const docChanged = sendNotesStamp && doc && hashText(doc) !== sendNotesStamp ? `<div class="doc-changed">changed since your review</div>` : "";
-    body.innerHTML = `
-      ${docChanged}
-      <div class="plan" id="plandoc">${docHtml}</div>
-      ${editable ? `<div class="plan-feedback"><div id="pclist"></div>
-        <textarea id="pgeneral" class="plan-general" placeholder="Add a general comment about the plan and request updates…"></textarea>
-        <div class="actionbar"><span class="hint" id="phint"></span><div class="right" id="pactions"></div></div></div>` : ""}`;
+    body.innerHTML = `<div class="plan" id="plandoc">${docHtml}</div>`;
     // A doc-read error latched the pane; the inline Retry clears the latch, forces
-    // a refetch, and repaints (W15). Wired before the editable early-return since
-    // an errored pane is never editable.
+    // a refetch, and repaints (W15).
     if (paneState === "error") {
       const retry = $("#docretry");
       if (retry)
@@ -518,99 +518,6 @@ export async function renderPlan() {
           paint();
         };
     }
-    if (!editable) return;
-    const pclist = $("#pclist"),
-      pactions = $("#pactions"),
-      phint = $("#phint");
-
-    const removeComment = (idc) => {
-      const i = planComments.findIndex((c) => c.id === idc);
-      if (i >= 0) planComments.splice(i, 1);
-      const mark = document.querySelector(`mark.phl[data-cid="${idc}"]`);
-      if (mark) {
-        const parent = mark.parentNode;
-        while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-        parent.removeChild(mark);
-        parent.normalize();
-      }
-      refreshFeedback();
-    };
-    const updateActions = () => {
-      const general = $("#pgeneral") ? $("#pgeneral").value.trim() : "";
-      if (planComments.length || general) {
-        phint.textContent = "Your comments go to the planning agent to revise the plan.";
-        pactions.innerHTML = `<button class="btn" id="clearfb">Clear</button><button class="btn primary" id="requestUpdates">Request updates</button>`;
-        $("#clearfb").onclick = () => {
-          planComments.slice().forEach((c) => removeComment(c.id));
-          if ($("#pgeneral")) $("#pgeneral").value = "";
-          refreshFeedback();
-        };
-        $("#requestUpdates").onclick = async () => {
-          const btn = $("#requestUpdates");
-          btn.disabled = true;
-          btn.textContent = "requesting updates…";
-          const messages = planThreadMessages(
-            planComments,
-            $("#pgeneral") ? $("#pgeneral").value : "",
-            currentRevisionId(last.thread, "plan"),
-            last.plan_path || ".build/plan.md",
-          );
-          try {
-            await App.call("plan.send_notes", { plan_id: id, messages });
-            // Stamp the doc we just reviewed: a later revision flags it as changed.
-            sendNotesStamp = hashText(doc);
-            planComments.length = 0;
-            planKey = null;
-            hideCommentPop();
-            paint();
-          } catch (e) {
-            btn.disabled = false;
-            btn.textContent = "Request updates";
-            notifyError("Request updates failed", e.message);
-          }
-        };
-      } else {
-        phint.textContent = "Select text in the plan to comment, or approve the plan above.";
-        pactions.innerHTML = "";
-      }
-    };
-    function refreshFeedback() {
-      if (pclist) {
-        pclist.innerHTML = planComments
-          .map(
-            (c) => `
-          <div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
-            <span class="psnip">${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 160))}</span>
-            <span class="pctext">${esc(c.comment)}</span></div>`,
-          )
-          .join("");
-        pclist.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeComment(+x.dataset.id)));
-      }
-      updateActions();
-    }
-    const addComment = (snippet, comment, range) => {
-      const idc = ++cid;
-      planComments.push({ id: idc, snippet, comment });
-      try {
-        const mark = document.createElement("mark");
-        mark.className = "phl";
-        mark.dataset.cid = idc;
-        range.surroundContents(mark);
-      } catch {
-        /* selection spanned nodes — keep the comment without the highlight */
-      }
-      window.getSelection().removeAllRanges();
-      refreshFeedback();
-    };
-    const planEl = $("#plandoc");
-    if (planSelDispose) planSelDispose();
-    planSelDispose = watchSelection(planEl, (sel) => {
-      const text = sel.toString().trim();
-      const range = sel.getRangeAt(0).cloneRange();
-      showCommentPop(range.getBoundingClientRect(), (comment) => addComment(text, comment, range));
-    });
-    $("#pgeneral").oninput = updateActions;
-    refreshFeedback();
   }
 
   // ---- Multi-stage review body (plan.stages + plan.stage_doc) ---------------
@@ -641,8 +548,7 @@ export async function renderPlan() {
       : "ready";
     const key =
       p.state + " " + JSON.stringify(stagesData) + " " + selectedStageId + " " + stageDocState + " " + (stageDoc ? stageDoc.contents.length : 0);
-    const noteBox = $("#stage-general");
-    const busy = hasCommentPop() || planStageActionBusy() || (noteBox && (noteBox.value.trim() || document.activeElement === noteBox));
+    const busy = hasCommentPop() || planStageActionBusy();
     const rendered = $("#stagelist") || $("#stagedoc");
     if (rendered && (key === stagesKey || busy)) return;
     stagesKey = key;
@@ -732,7 +638,6 @@ export async function renderPlan() {
     if (p.state === "created" || p.state === "drafting") {
       body.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
       planKey = "drafting";
-      planComments.length = 0;
       return;
     }
     // Fetch the single doc only when it can succeed (available + not latched off).
@@ -746,15 +651,12 @@ export async function renderPlan() {
     }
     const paneState = planDocPaneState({ docsAvailable: p.docs_available, errorLatched: singleDocError, hasContents: !!doc });
     const key = p.state + " " + paneState + " " + doc;
-    const general = $("#pgeneral");
-    const commenting = planComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
-    if ((planKey === key || commenting) && $("#plandoc")) return; // keep comments/selection stable across polls
+    if (planKey === key && $("#plandoc")) return;
     planKey = key;
     renderSingleDoc(doc, paneState);
   };
 
   App.viewDispose = () => {
-    if (planSelDispose) planSelDispose();
     disposeAgent();
   };
 

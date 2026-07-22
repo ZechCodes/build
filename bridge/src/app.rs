@@ -3100,15 +3100,6 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Plan, "comments")?;
         let project_id = self.project_of(&plan_id)?;
-        if self
-            .plans
-            .get(&plan_id)
-            .is_some_and(ActivePlan::is_multi_stage)
-        {
-            return Err(
-                "multi-stage plan: use plan.comment_add + plan.stage_send_notes".to_string(),
-            );
-        }
         let mut active = self.take_plan(&plan_id)?;
         append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
@@ -7799,6 +7790,10 @@ mod tests {
         assert!(res["result"]["created_at"]
             .as_str()
             .is_some_and(|s| !s.is_empty()));
+        let first_item = &res["result"]["thread"]["items"][0];
+        assert_eq!(first_item["type"], "message", "{res:?}");
+        assert_eq!(first_item["data"]["role"], "user", "{res:?}");
+        assert_eq!(first_item["data"]["body"], "add a greeting", "{res:?}");
         let plan_id = plan_id_of(&res);
 
         // Each stage doc is readable from the canonical store, never a worktree.
@@ -7811,6 +7806,32 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("add a greeting"));
+    }
+
+    #[test]
+    fn plan_send_notes_accepts_a_conversation_message_for_multi_stage_plans() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "make it staged" })));
+        let plan_id = plan_id_of(&plan);
+
+        let revised = state.handle(req(
+            "plan.send_notes",
+            json!({
+                "plan_id": plan_id,
+                "messages": [{ "body": "Keep the second stage reversible.", "anchor": null }]
+            }),
+        ));
+
+        assert_eq!(revised["ok"], true, "{revised:?}");
+        assert_eq!(revised["result"]["state"], "plan_review", "{revised:?}");
+        assert!(revised["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "message"
+                && item["data"]["role"] == "user"
+                && item["data"]["body"] == "Keep the second stage reversible."));
     }
 
     #[test]

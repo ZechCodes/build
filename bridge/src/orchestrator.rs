@@ -611,7 +611,12 @@ impl Orchestrator {
         let mut plan = Plan::new(id, goal);
         plan.apply(PlanEvent::Dispatch)?;
 
-        let thread = crate::thread::Thread::new(&plan.id.0);
+        let mut thread = crate::thread::Thread::new(&plan.id.0);
+        // The goal is the first turn in the durable conversation. Mark it seen:
+        // dispatching the planning session is the agent acting on that prompt.
+        let now = crate::store::now_rfc3339();
+        thread.post_user(plan.goal.clone(), None, &now);
+        let _ = thread.read_unread(&now);
         let mut active = ActivePlan {
             plan,
             worktree: Some(worktree),

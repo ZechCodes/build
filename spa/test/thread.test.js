@@ -27,6 +27,32 @@ describe("conversation thread rendering", () => {
     await Promise.resolve();
     expect(document.querySelector(".thread-revision-view").textContent).toContain("+renamed");
   });
+
+  it("starts with the plan prompt, renders completion as an agent message, and ends with a composer", () => {
+    const html = threadHtml(
+      {
+        items: [{ type: "event", data: { event: "done", summary: "A detailed done report that must remain readable." } }],
+        last_completion: {
+          critical_files: ["src/plan.js"],
+          risk_notes: ["Keep the durable thread intact."],
+          decisions: [],
+          skips: [],
+        },
+      },
+      { initialMessage: "Make review conversations persistent", composer: true },
+    );
+
+    document.body.innerHTML = html;
+    const messages = [...document.querySelectorAll(".thread-message")];
+    expect(messages[0].classList.contains("user")).toBe(true);
+    expect(messages[0].textContent).toContain("Make review conversations persistent");
+    expect(messages.at(-1).classList.contains("agent")).toBe(true);
+    expect(messages.at(-1).textContent).toContain("Completion report");
+    expect(messages.at(-1).textContent).toContain("src/plan.js");
+    expect(document.querySelector("details")).toBeNull();
+    expect(document.querySelector("#planthreadinput")).not.toBeNull();
+    expect(document.querySelector("#planthreadsend").textContent).toBe("Send");
+  });
 });
 
 describe("structured review messages", () => {

@@ -20,7 +20,7 @@ export const DOCS_UNAVAILABLE =
   "This plan's documents are unavailable — they predate canonical doc storage and their worktree is gone.";
 import { stageNotesTarget } from "../core/taskActions.js";
 import { watchSelection } from "../selectWatch.js";
-import { showCommentPop, hideCommentPop } from "../commentPop.js";
+import { showCommentPop } from "../commentPop.js";
 
 // True while an Approve-all sweep is mid-flight. plan.js consults this
 // (planStageActionBusy) and skips its poll rebuild so the in-flight button is
@@ -158,14 +158,12 @@ function renderStageDoc(ctx, stage) {
     : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
     : paneState === "error" ? docErrorPaneHtml("stage")
     : '<div class="plan-loading">✦ loading stage document…</div>';
-  const showComposer = canComment && paneState === "ready";
+  const canAnnotate = canComment && paneState === "ready";
 
   body.innerHTML = `
     <div class="stageback" id="stageback">← All stages</div>
     <div class="plan" id="stagedoc">${docHtml}</div>
     <div class="stagecomments">${commentsHtml}</div>
-    ${showComposer ? `<div class="plan-feedback"><textarea id="stage-general" class="plan-general" placeholder="Add a general comment on this stage…"></textarea>
-      <div class="right"><button class="btn mini" id="addgeneral">Add comment</button></div></div>` : ""}
     <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
 
   body.querySelector("#stageback").onclick = () => onSelectStage(null);
@@ -176,7 +174,7 @@ function renderStageDoc(ctx, stage) {
   if (stageRetry && ctx.onRetryStageDoc) stageRetry.onclick = () => ctx.onRetryStageDoc(stage.id);
 
   // Anchored comments: select text in the doc → popover → plan.comment_add.
-  if (showComposer) {
+  if (canAnnotate) {
     const docEl = body.querySelector("#stagedoc");
     stageSelDispose = watchSelection(docEl, (sel) => {
       const anchorNode = sel.anchorNode;
@@ -196,19 +194,6 @@ function renderStageDoc(ctx, stage) {
           /* poll re-syncs */
         }
       });
-    });
-    const addGeneral = body.querySelector("#addgeneral");
-    bindAction(addGeneral, "adding…", async () => {
-      const text = body.querySelector("#stage-general").value.trim();
-      if (!text) {
-        body.querySelector("#stagehint").textContent = "type a comment first.";
-        addGeneral.disabled = false;
-        addGeneral.textContent = "Add comment";
-        return;
-      }
-      await callRpc("plan.comment_add", { plan_id: planId, stage_id: stage.id, body: text, anchor: null });
-      hideCommentPop();
-      repaint();
     });
   }
 

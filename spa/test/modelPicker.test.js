@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  catalogForProvider,
   modelOptionsHtml,
   effortOptionsHtml,
   effortSupported,
   modelParams,
+  providerOptionsHtml,
 } from "../src/core/modelPicker.js";
 
 // The selectors are fed by the bridge's models.list RPC (the catalog ships with
@@ -15,6 +17,44 @@ const MODELS = [
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", supports_effort: false },
 ];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const CATALOG = {
+  default_provider: "claude",
+  providers: [
+    { id: "claude", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+    {
+      id: "codex",
+      label: "Codex CLI",
+      efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      models: [
+        { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", supports_effort: true, efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+        { id: "gpt-5.6-luna", label: "GPT-5.6-Luna", supports_effort: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
+      ],
+    },
+  ],
+};
+
+describe("provider catalog", () => {
+  it("renders providers and resolves a provider-specific model catalog", () => {
+    expect(providerOptionsHtml(CATALOG.providers, "codex")).toContain('value="codex" selected');
+    expect(catalogForProvider(CATALOG, "codex").models[0].id).toBe("gpt-5.6-sol");
+  });
+
+  it("uses the selected model's reasoning levels", () => {
+    const codex = catalogForProvider(CATALOG, "codex");
+    const html = effortOptionsHtml(codex.efforts, "", codex.models[1]);
+    expect(html).toContain("max");
+    expect(html).not.toContain("ultra");
+  });
+
+  it("includes provider in dispatch params", () => {
+    const codex = catalogForProvider(CATALOG, "codex");
+    expect(modelParams(codex.models, "gpt-5.6-sol", "ultra", "codex")).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+    });
+  });
+});
 
 describe("modelOptionsHtml", () => {
   it("offers harness default first, then the catalog, marking the selection", () => {

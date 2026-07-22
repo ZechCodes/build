@@ -9,7 +9,15 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { notifyError } from "../core/notify.js";
-import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
+import {
+  catalogForProvider,
+  effortOptionsHtml,
+  effortSupported,
+  modelInCatalog,
+  modelOptionsHtml,
+  modelParams,
+  providerOptionsHtml,
+} from "../core/modelPicker.js";
 
 export async function openNewTask({ projectId, mode = "plan" } = {}) {
   let path = mode === "quick" ? "quick" : "plan";
@@ -24,12 +32,13 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
     <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
     <div class="field-row" style="display:flex;gap:10px">
+      <div class="field" style="flex:1"><label>Agent</label><select id="provider"><option value="claude">Claude Code</option></select></div>
       <div class="field" style="flex:1"><label>Model</label><select id="model"><option value="">Harness default</option></select></div>
       <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
     </div>
     <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
     <div class="adderr" id="ntkerr"></div>
-    <div class="row"><span class="dim mono" style="font-size:11px">${esc("Claude Code")}</span>
+    <div class="row"><span class="dim mono" id="agentname" style="font-size:11px">${esc("Claude Code")}</span>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="dispatch">Create</button></div>`;
   $("#scrim").classList.add("show");
@@ -79,19 +88,32 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
   }
 
   // Model + effort selectors from the bridge's catalog (never hardcoded here).
-  let catalog = { models: [], efforts: [] };
+  let catalog = { default_provider: "claude", providers: [] };
   try {
     catalog = await loadModelCatalog();
-    $("#model").innerHTML = modelOptionsHtml(catalog.models, "");
-    $("#effort").innerHTML = effortOptionsHtml(catalog.efforts, "");
+    $("#provider").innerHTML = providerOptionsHtml(catalog.providers, catalog.default_provider);
   } catch {
     /* selectors keep only the defaults */
   }
-  $("#model").onchange = () => {
-    const supported = effortSupported(catalog.models, $("#model").value);
+  const syncModel = () => {
+    const providerCatalog = catalogForProvider(catalog, $("#provider").value);
+    const model = modelInCatalog(providerCatalog.models, $("#model").value);
+    const selectedEffort = $("#effort").value;
+    $("#effort").innerHTML = effortOptionsHtml(providerCatalog.efforts, selectedEffort, model);
+    const supported = effortSupported(providerCatalog.models, $("#model").value);
     $("#effort").disabled = !supported;
     if (!supported) $("#effort").value = "";
   };
+  const syncProvider = () => {
+    const providerCatalog = catalogForProvider(catalog, $("#provider").value);
+    $("#model").innerHTML = modelOptionsHtml(providerCatalog.models, "");
+    $("#effort").innerHTML = effortOptionsHtml(providerCatalog.efforts, "");
+    $("#agentname").textContent = providerCatalog.label || "Coding agent";
+    syncModel();
+  };
+  $("#provider").onchange = syncProvider;
+  $("#model").onchange = syncModel;
+  syncProvider();
 
   $("#dispatch").onclick = async () => {
     const goal = $("#goal").value.trim();
@@ -106,7 +128,12 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     const params = {
       goal,
       project_id: select.value || undefined,
-      ...modelParams(catalog.models, $("#model").value, $("#effort").value),
+      ...modelParams(
+        catalogForProvider(catalog, $("#provider").value).models,
+        $("#model").value,
+        $("#effort").value,
+        $("#provider").value,
+      ),
     };
     $("#scrim").classList.remove("show");
     try {

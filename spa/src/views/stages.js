@@ -12,7 +12,16 @@
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { slugifyHeading, buildHeadingPath } from "../core/anchors.js";
-import { modelOptionsHtml, effortOptionsHtml, effortSupported, modelParams } from "../core/modelPicker.js";
+import {
+  catalogForProvider,
+  effortOptionsHtml,
+  effortSupported,
+  modelInCatalog,
+  modelOptionsHtml,
+  modelParams,
+  normalizeModelCatalog,
+  providerOptionsHtml,
+} from "../core/modelPicker.js";
 import { notifyError } from "../core/notify.js";
 
 // Run states with no more work to run — the run-all control is hidden on them.
@@ -314,8 +323,9 @@ function renderGateAction(ctx, host) {
 
   // planned / approved: the Start control, enabled only at the sequential gate.
   const reason = stageGateReason(stages, index, run.state);
-  const models = (catalog && catalog.models) || [];
-  const efforts = (catalog && catalog.efforts) || [];
+  const fullCatalog = normalizeModelCatalog(catalog || {});
+  const providerId = run.provider || fullCatalog.default_provider;
+  const providerCatalog = catalogForProvider(fullCatalog, providerId);
   if (reason) {
     // Not startable yet. A planned doc points the user at the plan to approve it;
     // otherwise the reason is informational (a stage is running).
@@ -331,21 +341,41 @@ function renderGateAction(ctx, host) {
   }
   host.innerHTML = `<div class="actionbar"><span class="hint" id="stagehint"></span>
     <div class="right">${sendNotesBtn}
-      <select id="stModel" class="mini" title="Coding agent model">${modelOptionsHtml(models, run.model)}</select>
-      <select id="stEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(efforts, run.effort)}</select>
+      <select id="stProvider" class="mini" title="Coding agent">${providerOptionsHtml(fullCatalog.providers, providerId)}</select>
+      <select id="stModel" class="mini" title="Coding agent model">${modelOptionsHtml(providerCatalog.models, run.model)}</select>
+      <select id="stEffort" class="mini" title="Reasoning effort">${effortOptionsHtml(providerCatalog.efforts, run.effort, modelInCatalog(providerCatalog.models, run.model))}</select>
       <button class="btn primary" id="startstage">Start “${esc(stage.title)}”</button></div></div>`;
   wireSendStageNotes();
+  const providerSel = host.querySelector("#stProvider");
   const modelSel = host.querySelector("#stModel");
   const effortSel = host.querySelector("#stEffort");
   const syncEffort = () => {
-    const supported = effortSupported(models, modelSel.value);
+    const selectedCatalog = catalogForProvider(fullCatalog, providerSel.value);
+    const selected = effortSel.value;
+    effortSel.innerHTML = effortOptionsHtml(
+      selectedCatalog.efforts,
+      selected,
+      modelInCatalog(selectedCatalog.models, modelSel.value),
+    );
+    const supported = effortSupported(selectedCatalog.models, modelSel.value);
     effortSel.disabled = !supported;
     if (!supported) effortSel.value = "";
+  };
+  providerSel.onchange = () => {
+    const selectedCatalog = catalogForProvider(fullCatalog, providerSel.value);
+    modelSel.innerHTML = modelOptionsHtml(selectedCatalog.models, "");
+    effortSel.innerHTML = effortOptionsHtml(selectedCatalog.efforts, "");
+    syncEffort();
   };
   modelSel.onchange = syncEffort;
   syncEffort();
   bindAction(host.querySelector("#startstage"), "starting…", async () => {
-    const params = modelParams(models, modelSel.value, effortSel.value);
+    const params = modelParams(
+      catalogForProvider(fullCatalog, providerSel.value).models,
+      modelSel.value,
+      effortSel.value,
+      providerSel.value,
+    );
     await callRpc("run.stage_dispatch", { run_id: runId, stage_id: stage.id, ...params });
     repaint();
   });

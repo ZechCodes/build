@@ -55,4 +55,18 @@ describe("createAdoptingCall", () => {
     await adopting.runCall("run.abandon");
     expect(call).toHaveBeenNthCalledWith(2, "run.abandon", { run_id: "r" });
   });
+
+  it("includes the selected agent choice when adoption first mints the run", async () => {
+    const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "r" } : { ok: true }));
+    const adopting = createAdoptingCall(call, "p", "w");
+    adopting.setAdoptParams({ provider: "codex", model: "gpt-5.6-sol", effort: "high" });
+    await adopting.runCall("run.request_changes", { comments: "fix it" });
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", {
+      project_id: "p",
+      worktree_id: "w",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      effort: "high",
+    });
+  });
 });

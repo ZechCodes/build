@@ -89,8 +89,8 @@ fn provision() {
 }
 
 async fn serve() {
-    // launchd starts agents with a bare PATH, so user-installed tools — the
-    // `claude` harness, everything a terminal expects — don't resolve. Adopt
+    // launchd starts agents with a bare PATH, so coding-agent harnesses and
+    // everything a terminal expects don't resolve. Adopt
     // the login shell's PATH up front (the terminal-emulator trick), before
     // any PTY or harness spawns. BRIDGE_PATH_FROM_SHELL=0 disables.
     if std::env::var("BRIDGE_PATH_FROM_SHELL").as_deref() != Ok("0") {

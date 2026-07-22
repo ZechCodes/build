@@ -9,7 +9,7 @@ import { esc } from "../core/text.js";
 import { parseDiff, filterNoiseFiles } from "../core/diff.js";
 import { diffFilesHtml } from "../core/diffRender.js";
 import { assembleDiffNotes } from "../core/notes.js";
-import { App, go } from "../app.js";
+import { App, go, loadModelCatalog } from "../app.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
@@ -20,6 +20,15 @@ import { watchSelection } from "../selectWatch.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
+import {
+  catalogForProvider,
+  effortOptionsHtml,
+  modelInCatalog,
+  modelOptionsHtml,
+  modelParams,
+  normalizeModelCatalog,
+  providerOptionsHtml,
+} from "../core/modelPicker.js";
 
 // The adopted-task merge set for the browse view: prune / keep / release only
 // (no commit/push/merge_push here — those belong to a task already in review).
@@ -40,6 +49,13 @@ export async function renderWorktree() {
   const worktreeId = App.route.worktreeId;
   const adopting = createAdoptingCall((method, params) => App.call(method, params), projectId, worktreeId);
   const scope = { project_id: projectId, worktree_id: worktreeId };
+  let agentCatalog = normalizeModelCatalog({});
+  const agentChoice = { provider: "claude", model: "", effort: "" };
+  loadModelCatalog().then((catalog) => {
+    agentCatalog = normalizeModelCatalog(catalog);
+    agentChoice.provider = agentCatalog.default_provider || "claude";
+    updateActions();
+  });
 
   // Review-comment state, preserved across the 1.6s poll (same discipline as the
   // task diff tab). Comments only accrue on an adoptable worktree.
@@ -241,7 +257,26 @@ export async function renderWorktree() {
     const general = $("#wgeneral") ? $("#wgeneral").value.trim() : "";
     if (diffComments.length || general) {
       hint.textContent = "Your comments adopt this worktree as a task and are sent to the coding agent.";
-      actions.innerHTML = `<button class="btn" id="wclear">Clear</button><button class="btn primary" id="wrequest">Request Changes</button>`;
+      const providerCatalog = catalogForProvider(agentCatalog, agentChoice.provider);
+      const selectedModel = modelInCatalog(providerCatalog.models, agentChoice.model);
+      actions.innerHTML = `<select class="mini" id="wprovider" title="Coding agent">${providerOptionsHtml(agentCatalog.providers, agentChoice.provider)}</select>
+        <select class="mini" id="wmodel" title="Coding agent model">${modelOptionsHtml(providerCatalog.models, agentChoice.model)}</select>
+        <select class="mini" id="weffort" title="Reasoning effort">${effortOptionsHtml(providerCatalog.efforts, agentChoice.effort, selectedModel)}</select>
+        <button class="btn" id="wclear">Clear</button><button class="btn primary" id="wrequest">Request Changes</button>`;
+      $("#wprovider").onchange = (event) => {
+        agentChoice.provider = event.target.value;
+        agentChoice.model = "";
+        agentChoice.effort = "";
+        updateActions();
+      };
+      $("#wmodel").onchange = (event) => {
+        agentChoice.model = event.target.value;
+        agentChoice.effort = "";
+        updateActions();
+      };
+      $("#weffort").onchange = (event) => {
+        agentChoice.effort = event.target.value;
+      };
       $("#wclear").onclick = () => {
         diffComments.length = 0;
         if ($("#wgeneral")) $("#wgeneral").value = "";
@@ -258,6 +293,10 @@ export async function renderWorktree() {
         stopPolling();
         const notes = assembleDiffNotes(diffComments, $("#wgeneral") ? $("#wgeneral").value : "");
         try {
+          const selectedCatalog = catalogForProvider(agentCatalog, agentChoice.provider);
+          adopting.setAdoptParams(
+            modelParams(selectedCatalog.models, agentChoice.model, agentChoice.effort, agentChoice.provider),
+          );
           await adopting.runCall("run.request_changes", { comments: notes });
           hideCommentPop();
           go({ name: "task", id: adopting.adoptedRunId(), tab: "changes" });

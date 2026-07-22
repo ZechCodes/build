@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::legacy::{Phase, Stage, StageComment, StageState, TaskKind, TaskState};
+use crate::models::AgentProvider;
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc, StageDocState};
 use crate::run::{RunState, StageProgress, StageProgressState};
 
@@ -175,6 +176,8 @@ pub struct PersistedPlan {
     /// Persisted per-stage plan comments (flat; each carries its `stage_id`).
     #[serde(default)]
     pub comments: Vec<crate::plan::StageComment>,
+    #[serde(default)]
+    pub provider: AgentProvider,
     /// Model/effort the plan's agents run on (None = harness default).
     #[serde(default)]
     pub model: Option<String>,
@@ -240,6 +243,8 @@ pub struct PersistedRun {
     /// session spawn after adoption, persisted so a restart in between keeps it.
     #[serde(default)]
     pub pending_continuation: bool,
+    #[serde(default)]
+    pub provider: AgentProvider,
     /// Model/effort the run's agents run on (None = harness default).
     #[serde(default)]
     pub model: Option<String>,
@@ -880,6 +885,7 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         plan_path: task.plan_path.clone(),
         stages: task.stages.iter().map(stage_doc_from_legacy).collect(),
         comments: task.comments.iter().map(plan_comment_from_legacy).collect(),
+        provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
         last_summary: task.last_summary.clone(),
@@ -960,6 +966,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         auto_advance: task.auto_advance,
         adopted: task.adopted,
         pending_continuation: task.pending_continuation,
+        provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
         last_summary: task.last_summary.clone(),
@@ -1520,6 +1527,7 @@ mod tests {
                 state: crate::plan::CommentState::Open,
                 agent_reply: None,
             }],
+            provider: AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
             last_summary: Some("planned it".into()),
@@ -1557,6 +1565,7 @@ mod tests {
             auto_advance: true,
             adopted: false,
             pending_continuation: false,
+            provider: AgentProvider::Claude,
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),
             last_summary: Some("stage one built".into()),
@@ -1571,7 +1580,10 @@ mod tests {
     fn plan_save_then_load_round_trips_every_field() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks"));
-        let rec = plan_record("plan-1", PlanState::PlanReview);
+        let mut rec = plan_record("plan-1", PlanState::PlanReview);
+        rec.provider = AgentProvider::Codex;
+        rec.model = Some("gpt-5.6-sol".into());
+        rec.effort = Some("ultra".into());
         store.save_plan(&rec).unwrap();
         assert_eq!(store.load_all_plans().unwrap(), vec![rec]);
     }
@@ -1605,7 +1617,10 @@ mod tests {
     fn run_save_then_load_round_trips_every_field() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks"));
-        let rec = run_record("run-1", RunState::StageGate);
+        let mut rec = run_record("run-1", RunState::StageGate);
+        rec.provider = AgentProvider::Codex;
+        rec.model = Some("gpt-5.6-terra".into());
+        rec.effort = Some("max".into());
         store.save_run(&rec).unwrap();
         assert_eq!(store.load_all_runs().unwrap(), vec![rec]);
     }

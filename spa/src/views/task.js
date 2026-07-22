@@ -370,6 +370,10 @@ export async function renderTask() {
   // plan.stages every tick for the doc metadata and joins it with the run's own
   // stage progress (already in `t.stages`). Frozen while a fix note is in flight.
   async function paintStages(t) {
+    // The first stage gate may paint before the catalog warm-up resolves. Wait
+    // here so the provider selector never gets frozen on the legacy Claude-only
+    // fallback by the view's render-key optimization.
+    const modelCatalog = await loadModelCatalog();
     let planStages = null;
     if (!planGone) {
       try {
@@ -394,7 +398,7 @@ export async function renderTask() {
       body: $("#tabbody"),
       run: t,
       stagesData,
-      catalog: App.modelCatalog || { models: [], efforts: [] },
+      catalog: modelCatalog,
       callRpc: (method, params) => App.call(method, params),
       repaint: () => {
         stagesKey = null;

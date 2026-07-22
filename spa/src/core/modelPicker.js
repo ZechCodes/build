@@ -1,9 +1,36 @@
-// Model/effort selector logic. The catalog comes from the bridge's models.list
-// RPC — the UI never hardcodes model ids, so new models arrive with bridge
-// updates. An empty value means "harness default": the user's own Claude Code
-// configuration decides, and the dispatch params omit the field entirely.
+// Provider/model/effort selector logic. The catalog comes from the bridge's
+// models.list RPC, so new harness choices arrive with bridge updates. An empty
+// model means the selected agent CLI's own configured default.
 
 import { esc } from "./text.js";
+
+export function providerOptionsHtml(providers, selectedId) {
+  return providers
+    .map((provider) => `<option value="${esc(provider.id)}"${provider.id === selectedId ? " selected" : ""}>${esc(provider.label)}</option>`)
+    .join("");
+}
+
+export function catalogForProvider(catalog, providerId) {
+  const providers = catalog.providers || [];
+  return providers.find((provider) => provider.id === providerId) || providers[0] || { models: [], efforts: [] };
+}
+
+export function normalizeModelCatalog(catalog) {
+  if (catalog && Array.isArray(catalog.providers) && catalog.providers.length) return catalog;
+  return {
+    default_provider: "claude",
+    providers: [{
+      id: "claude",
+      label: "Claude Code",
+      models: (catalog && catalog.models) || [],
+      efforts: (catalog && catalog.efforts) || [],
+    }],
+  };
+}
+
+export function modelInCatalog(models, modelId) {
+  return (models || []).find((model) => model.id === modelId) || null;
+}
 
 /** <option> list for the model select: harness default, catalog, and — when the
  *  current selection is not in the catalog (e.g. a task dispatched on a newer
@@ -29,18 +56,20 @@ export function effortSupported(models, selectedId) {
   return entry ? entry.supports_effort : true;
 }
 
-export function effortOptionsHtml(efforts, selected) {
+export function effortOptionsHtml(efforts, selected, model = null) {
+  const available = model && Array.isArray(model.efforts) ? model.efforts : efforts;
   const sel = (v) => (v === (selected || "") ? " selected" : "");
   return [
     `<option value=""${sel("")}>Default effort</option>`,
-    ...efforts.map((e) => `<option value="${esc(e)}"${sel(e)}>${esc(e)}</option>`),
+    ...available.map((e) => `<option value="${esc(e)}"${sel(e)}>${esc(e)}</option>`),
   ].join("");
 }
 
 /** The dispatch/approve params fragment for a selection: empties are omitted
  *  (harness default), and effort is dropped for models that don't support it. */
-export function modelParams(models, model, effort) {
+export function modelParams(models, model, effort, provider) {
   const params = {};
+  if (provider) params.provider = provider;
   if (model) params.model = model;
   if (effort && effortSupported(models, model)) params.effort = effort;
   return params;

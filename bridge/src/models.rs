@@ -1,11 +1,10 @@
 //! The harness model catalog: which models an entity's agents (a plan's or a
 //! run's) can run on, and the reasoning-effort levels the harness accepts.
 //!
-//! There is no way to enumerate models from the harness itself — the Claude Code
-//! CLI has no list command, and the Models API needs API-key credentials the
-//! bridge cannot assume (harnesses commonly run on subscription auth). So the
-//! catalog is curated here and served to clients over RPC (`models.list`); it
-//! ships with bridge updates and the UI never hardcodes model ids.
+//! Catalogs are curated here and served to clients over RPC (`models.list`), so
+//! the UI never hardcodes provider models. Codex has an experimental debug
+//! catalog command, but Build cannot assume every installed CLI version exposes
+//! it; shipping the catalog keeps the web contract deterministic.
 //!
 //! Selection is validated but not restricted to the catalog: an unknown id with
 //! a safe shape passes through, so a newly released model is usable before a
@@ -14,8 +13,29 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The local coding-agent CLI used for an entity's sessions. Persisted on plans
+/// and runs so changing a later default never moves existing work to a different
+/// harness.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentProvider {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl AgentProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentProvider::Claude => "Claude Code",
+            AgentProvider::Codex => "Codex CLI",
+        }
+    }
+}
+
 /// Reasoning-effort levels accepted by the harness (`claude --effort`).
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+pub const CODEX_EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// One selectable model.
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +46,16 @@ pub struct ModelOption {
     pub label: &'static str,
     /// Whether `--effort` may be combined with this model.
     pub supports_effort: bool,
+    /// Exact effort values this model accepts. Empty means effort is disabled.
+    pub efforts: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderCatalog {
+    pub id: AgentProvider,
+    pub label: &'static str,
+    pub models: Vec<ModelOption>,
+    pub efforts: &'static [&'static str],
 }
 
 /// The curated catalog, most capable first. (cached: 2026-07)
@@ -35,26 +65,85 @@ pub fn catalog() -> Vec<ModelOption> {
             id: "claude-fable-5",
             label: "Claude Fable 5",
             supports_effort: true,
+            efforts: &EFFORT_LEVELS,
         },
         ModelOption {
             id: "claude-opus-4-8",
             label: "Claude Opus 4.8",
             supports_effort: true,
+            efforts: &EFFORT_LEVELS,
         },
         ModelOption {
             id: "claude-sonnet-5",
             label: "Claude Sonnet 5",
             supports_effort: true,
+            efforts: &EFFORT_LEVELS,
         },
         ModelOption {
             id: "claude-sonnet-4-6",
             label: "Claude Sonnet 4.6",
             supports_effort: true,
+            efforts: &EFFORT_LEVELS,
         },
         ModelOption {
             id: "claude-haiku-4-5",
             label: "Claude Haiku 4.5",
             supports_effort: false,
+            efforts: &[],
+        },
+    ]
+}
+
+pub fn codex_catalog() -> Vec<ModelOption> {
+    const THROUGH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
+    const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    vec![
+        ModelOption {
+            id: "gpt-5.6-sol",
+            label: "GPT-5.6-Sol",
+            supports_effort: true,
+            efforts: &CODEX_EFFORT_LEVELS,
+        },
+        ModelOption {
+            id: "gpt-5.6-terra",
+            label: "GPT-5.6-Terra",
+            supports_effort: true,
+            efforts: &CODEX_EFFORT_LEVELS,
+        },
+        ModelOption {
+            id: "gpt-5.6-luna",
+            label: "GPT-5.6-Luna",
+            supports_effort: true,
+            efforts: THROUGH_MAX,
+        },
+        ModelOption {
+            id: "gpt-5.5",
+            label: "GPT-5.5",
+            supports_effort: true,
+            efforts: THROUGH_XHIGH,
+        },
+        ModelOption {
+            id: "gpt-5.2",
+            label: "GPT-5.2",
+            supports_effort: true,
+            efforts: THROUGH_XHIGH,
+        },
+    ]
+}
+
+pub fn provider_catalogs() -> Vec<ProviderCatalog> {
+    vec![
+        ProviderCatalog {
+            id: AgentProvider::Claude,
+            label: AgentProvider::Claude.label(),
+            models: catalog(),
+            efforts: &EFFORT_LEVELS,
+        },
+        ProviderCatalog {
+            id: AgentProvider::Codex,
+            label: AgentProvider::Codex.label(),
+            models: codex_catalog(),
+            efforts: &CODEX_EFFORT_LEVELS,
         },
     ]
 }
@@ -63,6 +152,8 @@ pub fn catalog() -> Vec<ModelOption> {
 /// harness default — the user's own Claude Code configuration decides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
+    #[serde(default)]
+    pub provider: AgentProvider,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,16 +182,24 @@ impl ModelChoice {
             }
         }
         if let Some(effort) = &self.effort {
-            if !EFFORT_LEVELS.contains(&effort.as_str()) {
+            let allowed = match self.provider {
+                AgentProvider::Claude => EFFORT_LEVELS.as_slice(),
+                AgentProvider::Codex => CODEX_EFFORT_LEVELS.as_slice(),
+            };
+            if !allowed.contains(&effort.as_str()) {
                 return Err(format!(
                     "invalid effort {effort:?} (expected one of {})",
-                    EFFORT_LEVELS.join("/")
+                    allowed.join("/")
                 ));
             }
             if let Some(model) = &self.model {
-                if let Some(entry) = catalog().iter().find(|m| m.id == model) {
-                    if !entry.supports_effort {
-                        return Err(format!("model {model} does not support effort levels"));
+                let catalog = match self.provider {
+                    AgentProvider::Claude => catalog(),
+                    AgentProvider::Codex => codex_catalog(),
+                };
+                if let Some(entry) = catalog.iter().find(|m| m.id == model) {
+                    if !entry.efforts.contains(&effort.as_str()) {
+                        return Err(format!("model {model} does not support effort {effort}"));
                     }
                 }
             }
@@ -116,8 +215,19 @@ impl ModelChoice {
             args.push(model.clone());
         }
         if let Some(effort) = &self.effort {
-            args.push("--effort".to_string());
-            args.push(effort.clone());
+            match self.provider {
+                AgentProvider::Claude => {
+                    args.push("--effort".to_string());
+                    args.push(effort.clone());
+                }
+                AgentProvider::Codex => {
+                    args.push("--config".to_string());
+                    args.push(format!(
+                        "model_reasoning_effort={}",
+                        serde_json::to_string(effort).expect("effort serializes")
+                    ));
+                }
+            }
         }
         args
     }
@@ -129,6 +239,7 @@ mod tests {
 
     fn choice(model: Option<&str>, effort: Option<&str>) -> ModelChoice {
         ModelChoice {
+            provider: AgentProvider::Claude,
             model: model.map(str::to_string),
             effort: effort.map(str::to_string),
         }
@@ -189,5 +300,76 @@ mod tests {
         for m in cat {
             assert!(choice(Some(m.id), None).validate().is_ok(), "{}", m.id);
         }
+    }
+
+    #[test]
+    fn provider_catalogs_expose_codex_models_and_model_specific_efforts() {
+        let providers = provider_catalogs();
+        let claude = providers
+            .iter()
+            .find(|provider| provider.id == AgentProvider::Claude)
+            .unwrap();
+        let codex = providers
+            .iter()
+            .find(|provider| provider.id == AgentProvider::Codex)
+            .unwrap();
+
+        assert_eq!(claude.label, "Claude Code");
+        assert!(claude
+            .models
+            .iter()
+            .any(|model| model.id == "claude-opus-4-8"));
+        let sol = codex
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(codex.label, "Codex CLI");
+        assert!(sol.efforts.contains(&"ultra"));
+        let luna = codex
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.6-luna")
+            .unwrap();
+        assert!(!luna.efforts.contains(&"ultra"));
+    }
+
+    #[test]
+    fn codex_choice_maps_reasoning_to_config_instead_of_claude_effort_flag() {
+        let c = ModelChoice {
+            provider: AgentProvider::Codex,
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("ultra".into()),
+        };
+        assert!(c.validate().is_ok());
+        assert_eq!(
+            c.harness_args(),
+            vec![
+                "--model",
+                "gpt-5.6-sol",
+                "--config",
+                "model_reasoning_effort=\"ultra\""
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_rejects_an_effort_the_selected_model_does_not_support() {
+        let c = ModelChoice {
+            provider: AgentProvider::Codex,
+            model: Some("gpt-5.6-luna".into()),
+            effort: Some("ultra".into()),
+        };
+        assert!(c
+            .validate()
+            .unwrap_err()
+            .contains("does not support effort ultra"));
+    }
+
+    #[test]
+    fn old_choices_without_a_provider_deserialize_as_claude() {
+        let choice: ModelChoice =
+            serde_json::from_str(r#"{"model":"claude-opus-4-8","effort":"high"}"#).unwrap();
+        assert_eq!(choice.provider, AgentProvider::Claude);
     }
 }

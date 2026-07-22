@@ -40,7 +40,7 @@ use portable_pty::PtySize;
 
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
-use crate::models::ModelChoice;
+use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
     plan_transition, stage_doc_transition, CommentState as PlanCommentState, IllegalPlanTransition,
     IllegalStageDocTransition, Plan, PlanEvent, PlanId, PlanState,
@@ -309,6 +309,7 @@ impl ActivePlan {
             comments: record.comments.clone(),
             revising_stage_id: None,
             model_choice: ModelChoice {
+                provider: record.provider,
                 model: record.model.clone(),
                 effort: record.effort.clone(),
             },
@@ -424,6 +425,7 @@ impl ActiveRun {
             adopted: record.adopted,
             pending_continuation: record.pending_continuation,
             model_choice: ModelChoice {
+                provider: record.provider,
                 model: record.model.clone(),
                 effort: record.effort.clone(),
             },
@@ -460,11 +462,13 @@ pub enum RunSource<'a> {
 }
 
 /// Per-spawn context a one-shot harness builder may honor.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
     /// Resume the harness's own most-recent conversation for this cwd
     /// (claude: `--continue`). Set only for the first session after adoption.
     pub continue_session: bool,
+    /// Entity whose per-session MCP server receives the terminal `done` report.
+    pub owner_id: String,
 }
 
 /// Builds the one-shot harness command for a rendered prompt + model + context.
@@ -473,7 +477,7 @@ pub type OneShotBuilder =
 
 /// Whether the harness has an existing conversation transcript for a worktree
 /// cwd. Injectable so tests never touch the real home directory.
-pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
 
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
@@ -527,7 +531,7 @@ impl Orchestrator {
                 pixel_width: 0,
                 pixel_height: 0,
             },
-            transcript_probe: std::sync::Arc::new(|_| false),
+            transcript_probe: std::sync::Arc::new(|_, _| false),
         }
     }
 
@@ -1609,7 +1613,8 @@ impl Orchestrator {
             // Pure legality first — the caller persists the run even on Err.
             run_transition(&active.run.state, event)?;
         }
-        let prompt = if (self.transcript_probe)(&active.worktree.path) {
+        let prompt = if (self.transcript_probe)(&active.worktree.path, active.model_choice.provider)
+        {
             message.to_string()
         } else {
             self.render_run(&self.templates.message, active, message)
@@ -2063,7 +2068,14 @@ impl Orchestrator {
             .path
             .clone();
         let model_choice = active.model_choice.clone();
-        self.spawn_into_slot(&mut active.session, &cwd, &model_choice, false, prompt)
+        self.spawn_into_slot(
+            &mut active.session,
+            &cwd,
+            &active.plan.id.0,
+            &model_choice,
+            false,
+            prompt,
+        )
     }
 
     /// Spawn the run's next session, consuming the one-shot continuation flag:
@@ -2074,14 +2086,15 @@ impl Orchestrator {
         active: &mut ActiveRun,
         prompt: &str,
     ) -> Result<(), OrchestratorError> {
-        let continue_session =
-            active.pending_continuation && (self.transcript_probe)(&active.worktree.path);
+        let continue_session = active.pending_continuation
+            && (self.transcript_probe)(&active.worktree.path, active.model_choice.provider);
         active.pending_continuation = false;
         let cwd = active.worktree.path.clone();
         let model_choice = active.model_choice.clone();
         self.spawn_into_slot(
             &mut active.session,
             &cwd,
+            &active.run.id.0,
             &model_choice,
             continue_session,
             prompt,
@@ -2096,11 +2109,15 @@ impl Orchestrator {
         &self,
         slot: &mut SessionSlot,
         cwd: &Path,
+        owner_id: &str,
         model_choice: &ModelChoice,
         continue_session: bool,
         prompt: &str,
     ) -> Result<(), OrchestratorError> {
-        let options = SpawnOptions { continue_session };
+        let options = SpawnOptions {
+            continue_session,
+            owner_id: owner_id.to_string(),
+        };
         let session = match &self.agent {
             Agent::Warm(spec) => {
                 // Warm harnesses take the prompt over the PTY and never see
@@ -3001,6 +3018,7 @@ mod tests {
             plan_path: ".build/plan.md".into(),
             stages: vec![],
             comments: vec![plan_comment("c-1", "first", PlanCommentState::Open)],
+            provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
             last_summary: Some("planned it".into()),
@@ -3054,6 +3072,7 @@ mod tests {
             auto_advance: true,
             adopted: true,
             pending_continuation: true,
+            provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),
             last_summary: Some("built it".into()),
@@ -3933,7 +3952,7 @@ mod tests {
             prompt_spy_agent(log.clone()),
             Templates::default(),
         )
-        .with_transcript_probe(std::sync::Arc::new(|_| true));
+        .with_transcript_probe(std::sync::Arc::new(|_, _| true));
         let store = split_store(&dir);
 
         let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");

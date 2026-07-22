@@ -11,6 +11,7 @@ import { renderWorktree } from "./views/worktree.js";
 import { renderMain } from "./views/mainWorktree.js";
 import { renderProject } from "./views/project.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
+import { normalizeModelCatalog } from "./core/modelPicker.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -30,15 +31,15 @@ export const App = {
   modelCatalog: null, // models.list result, fetched once per session
 };
 
-/** The bridge's model catalog ({models, efforts}), cached for the session.
+/** The bridge's provider/model catalog, cached for the session.
  *  An older bridge without the RPC yields empty lists — selectors then offer
  *  only "Harness default", which is exactly what that bridge supports. */
 export async function loadModelCatalog() {
   if (App.modelCatalog) return App.modelCatalog;
   try {
-    App.modelCatalog = await App.call("models.list");
+    App.modelCatalog = normalizeModelCatalog(await App.call("models.list"));
   } catch {
-    App.modelCatalog = { models: [], efforts: [] };
+    App.modelCatalog = normalizeModelCatalog({ models: [], efforts: [] });
   }
   return App.modelCatalog;
 }

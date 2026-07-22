@@ -9,11 +9,12 @@
 export function createAdoptingCall(call, projectId, worktreeId) {
   let runId = null;
   let adoptInFlight = null;
+  let adoptParams = {};
 
   const ensureAdopted = () => {
     if (runId) return Promise.resolve(runId);
     if (!adoptInFlight) {
-      adoptInFlight = call("run.adopt", { project_id: projectId, worktree_id: worktreeId }).then(
+      adoptInFlight = call("run.adopt", { project_id: projectId, worktree_id: worktreeId, ...adoptParams }).then(
         (view) => {
           runId = view.run_id;
           return runId;
@@ -28,6 +29,9 @@ export function createAdoptingCall(call, projectId, worktreeId) {
   };
 
   return {
+    setAdoptParams(params) {
+      if (!runId && !adoptInFlight) adoptParams = params || {};
+    },
     async runCall(method, params) {
       const id = await ensureAdopted();
       return call(method, { run_id: id, ...(params || {}) });

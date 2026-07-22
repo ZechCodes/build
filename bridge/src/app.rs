@@ -25,7 +25,7 @@ use tokio::sync::broadcast;
 use tokio::io::AsyncBufReadExt;
 
 use crate::mcp::{CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
-use crate::models::{self, ModelChoice};
+use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, Agent, Orchestrator, OrchestratorError, RunSource, SpawnOptions,
@@ -279,8 +279,8 @@ fn passwd_shell() -> Option<String> {
 }
 
 /// Ask a login shell what PATH looks like — the terminal-emulator trick.
-/// launchd starts agents with a bare PATH, so user-installed tools (the
-/// `claude` harness included) don't resolve until we adopt the login PATH.
+/// launchd starts agents with a bare PATH, so user-installed coding-agent
+/// harnesses don't resolve until we adopt the login PATH.
 /// Bounded by `timeout`; a hung rc file just means we keep the inherited PATH.
 pub fn capture_login_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -410,25 +410,62 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // prompt writes); the scripted agent does the file writing.
         Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"))
     } else {
-        // Real agent: a one-shot `claude` headless run with the rendered prompt
-        // baked in, the per-task `done` MCP server wired via .build/mcp.json, and
-        // the daemon's control socket so its `done` reaches on_agent_done.
+        // Real agents are one-shot headless runs. Both providers receive the
+        // rendered prompt in argv and report completion through the same local
+        // per-entity MCP server.
+        let bridge_exe = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_string))
+            .unwrap_or_else(|| "build-bridge".to_string());
         Agent::OneShot(Arc::new(
-            move |prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
-                let mut spec = HarnessSpec::new("claude")
-                    .arg("-p")
-                    .arg(prompt)
-                    .arg("--mcp-config")
-                    .arg(".build/mcp.json")
-                    .arg("--strict-mcp-config")
-                    .arg("--dangerously-skip-permissions");
-                if options.continue_session {
-                    spec = spec.arg("--continue");
+            move |prompt: &str, choice: &ModelChoice, options: &SpawnOptions| match choice.provider
+            {
+                AgentProvider::Claude => {
+                    let mut spec = HarnessSpec::new("claude")
+                        .arg("-p")
+                        .arg(prompt)
+                        .arg("--mcp-config")
+                        .arg(".build/mcp.json")
+                        .arg("--strict-mcp-config")
+                        .arg("--dangerously-skip-permissions");
+                    if options.continue_session {
+                        spec = spec.arg("--continue");
+                    }
+                    for arg in choice.harness_args() {
+                        spec = spec.arg(arg);
+                    }
+                    spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
                 }
-                for arg in choice.harness_args() {
-                    spec = spec.arg(arg);
+                AgentProvider::Codex => {
+                    let mut spec = HarnessSpec::new("codex").arg("exec");
+                    if options.continue_session {
+                        spec = spec.arg("resume").arg("--last");
+                    }
+                    spec = spec.arg("--dangerously-bypass-approvals-and-sandbox");
+                    for arg in choice.harness_args() {
+                        spec = spec.arg(arg);
+                    }
+                    let mcp_args =
+                        serde_json::to_string(&vec!["mcp", "--task", options.owner_id.as_str()])
+                            .expect("MCP args serialize");
+                    for override_arg in [
+                        format!(
+                            "mcp_servers.build.command={}",
+                            serde_json::to_string(&bridge_exe).expect("path serializes")
+                        ),
+                        format!("mcp_servers.build.args={mcp_args}"),
+                        format!(
+                            "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
+                            serde_json::to_string(&mcp_socket).expect("socket serializes")
+                        ),
+                        "mcp_servers.build.required=true".to_string(),
+                        "mcp_servers.build.enabled_tools=[\"done\"]".to_string(),
+                        "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
+                    ] {
+                        spec = spec.arg("--config").arg(override_arg);
+                    }
+                    spec.arg(prompt)
                 }
-                spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
             },
         ))
     }
@@ -456,14 +493,68 @@ pub(crate) fn claude_transcript_exists(root: &std::path::Path, cwd: &std::path::
         .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
 }
 
-/// The production transcript probe, rooted at `~/.claude/projects` (claude-
-/// specific, like the harness argv in [`build_agent`]).
-fn default_claude_transcript_probe() -> TranscriptProbe {
-    Arc::new(|cwd: &std::path::Path| {
+/// Codex stores dated JSONL rollouts. The first line is session metadata with
+/// the canonical cwd; scanning that small header is enough to decide whether
+/// `codex exec resume --last` has a cwd-scoped conversation to continue.
+pub(crate) fn codex_transcript_exists(root: &std::path::Path, cwd: &std::path::Path) -> bool {
+    use std::io::BufRead;
+
+    let wanted = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // Never follow a user-created symlink loop while looking through
+            // Codex's dated session directories.
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if !kind.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let mut first = String::new();
+            if std::io::BufReader::new(file).read_line(&mut first).is_err() {
+                continue;
+            }
+            let session_cwd = serde_json::from_str::<Value>(&first).ok().and_then(|meta| {
+                meta.pointer("/payload/cwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+            if session_cwd.is_some_and(|path| {
+                let path = std::path::PathBuf::from(path);
+                std::fs::canonicalize(&path).unwrap_or(path) == wanted
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn default_transcript_probe() -> TranscriptProbe {
+    Arc::new(|cwd: &std::path::Path, provider| {
         let Ok(home) = std::env::var("HOME") else {
             return false;
         };
-        claude_transcript_exists(&std::path::Path::new(&home).join(".claude/projects"), cwd)
+        let home = std::path::Path::new(&home);
+        match provider {
+            AgentProvider::Claude => claude_transcript_exists(&home.join(".claude/projects"), cwd),
+            AgentProvider::Codex => codex_transcript_exists(&home.join(".codex/sessions"), cwd),
+        }
     })
 }
 
@@ -545,9 +636,9 @@ impl AppState {
     ) -> Self {
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
         let transcript_probe: TranscriptProbe = if qa_agent {
-            Arc::new(|_| false)
+            Arc::new(|_, _| false)
         } else {
-            default_claude_transcript_probe()
+            default_transcript_probe()
         };
         let mut state = AppState {
             projects: Vec::new(),
@@ -900,6 +991,7 @@ impl AppState {
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
             comments: active.comments.clone(),
+            provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
             last_summary: active.last_summary.clone(),
@@ -947,6 +1039,7 @@ impl AppState {
             auto_advance: active.auto_advance,
             adopted: active.adopted,
             pending_continuation: active.pending_continuation,
+            provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
             last_summary: active.last_summary.clone(),
@@ -1474,6 +1567,8 @@ impl AppState {
             "models.list" => Ok(json!({
                 "models": models::catalog(),
                 "efforts": models::EFFORT_LEVELS,
+                "default_provider": AgentProvider::Claude,
+                "providers": models::provider_catalogs(),
             })),
             "fs.list" => self.fs_list(params),
             "fs.tree" => self.fs_tree(params),
@@ -3088,7 +3183,7 @@ impl AppState {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let model_choice = model_choice_from(params)?;
+        let requested_choice = model_choice_from(params)?;
         let base_override = params
             .get("base_branch")
             .and_then(Value::as_str)
@@ -3107,6 +3202,11 @@ impl AppState {
             });
             let store = self.require_store()?;
             let plan = &self.plans[&plan_id];
+            let model_choice = if has_agent_choice(params) {
+                requested_choice
+            } else {
+                plan.model_choice.clone()
+            };
             let active = self
                 .orch_for(&project_id)?
                 .dispatch_run(
@@ -3122,6 +3222,7 @@ impl AppState {
                 .map_err(err)?;
             (project_id, active)
         } else {
+            let model_choice = requested_choice;
             let goal = require_str(params, "goal")?;
             let project_id = match params.get("project_id").and_then(Value::as_str) {
                 Some(p) => p.to_string(),
@@ -3208,7 +3309,7 @@ impl AppState {
     fn run_stage_dispatch(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
-        let model_override = if params.get("model").is_some() || params.get("effort").is_some() {
+        let model_override = if has_agent_choice(params) {
             Some(model_choice_from(params)?)
         } else {
             None
@@ -3748,7 +3849,8 @@ impl AppState {
             "project": project,
             "project_id": project_id,
             "base_branch": active.base_branch,
-            "harness": self.harness,
+            "harness": if self.qa_agent { self.harness.as_str() } else { active.model_choice.provider.label() },
+            "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "active_run_id": active_run_id,
@@ -3795,7 +3897,8 @@ impl AppState {
             "last_error": active.last_error,
             "project": project,
             "project_id": project_id,
-            "harness": self.harness,
+            "harness": if self.qa_agent { self.harness.as_str() } else { active.model_choice.provider.label() },
+            "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "auto_advance": active.auto_advance,
@@ -4383,9 +4486,15 @@ fn git_default_branch(dir: &std::path::Path) -> Option<String> {
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
-/// Parse and validate the optional `model`/`effort` params of a request.
+/// Parse and validate the optional provider/model/effort params of a request.
 fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
+    let provider = match params.get("provider").and_then(Value::as_str) {
+        None | Some("") | Some("claude") => AgentProvider::Claude,
+        Some("codex") => AgentProvider::Codex,
+        Some(other) => return Err(format!("unknown agent provider: {other}")),
+    };
     let choice = ModelChoice {
+        provider,
         model: params
             .get("model")
             .and_then(Value::as_str)
@@ -4399,6 +4508,12 @@ fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
     };
     choice.validate()?;
     Ok(choice)
+}
+
+fn has_agent_choice(params: &Value) -> bool {
+    ["provider", "model", "effort"]
+        .iter()
+        .any(|key| params.get(key).is_some())
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -5658,6 +5773,18 @@ mod tests {
         assert!(models.iter().all(|m| m["supports_effort"].is_boolean()));
         let efforts = res["result"]["efforts"].as_array().unwrap();
         assert!(efforts.iter().any(|e| e == "xhigh"));
+        let providers = res["result"]["providers"].as_array().unwrap();
+        let codex = providers.iter().find(|p| p["id"] == "codex").unwrap();
+        assert!(codex["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["id"] == "gpt-5.6-sol"));
+        assert!(codex["efforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "ultra"));
     }
 
     #[test]
@@ -5666,6 +5793,7 @@ mod tests {
             panic!("real agent should be one-shot");
         };
         let choice = ModelChoice {
+            provider: AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
         };
@@ -5688,6 +5816,7 @@ mod tests {
             &choice,
             &SpawnOptions {
                 continue_session: true,
+                ..SpawnOptions::default()
             },
         );
         let args = spec.args.join(" ");
@@ -5695,6 +5824,51 @@ mod tests {
             args.contains("--dangerously-skip-permissions --continue --model"),
             "{args}"
         );
+    }
+
+    #[test]
+    fn codex_harness_argv_wires_done_mcp_and_resumes_by_cwd() {
+        let Agent::OneShot(build) = build_agent(false, "/tmp/build mcp.sock".into()) else {
+            panic!("real agent should be one-shot");
+        };
+        let choice = ModelChoice {
+            provider: AgentProvider::Codex,
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("ultra".into()),
+        };
+        let options = SpawnOptions {
+            continue_session: false,
+            owner_id: "run-7".into(),
+        };
+        let spec = build("do the thing", &choice, &options);
+        assert_eq!(spec.binary, "codex");
+        let args = spec.args.join(" ");
+        assert!(args.starts_with("exec "), "{args}");
+        assert!(
+            args.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "{args}"
+        );
+        assert!(args.contains("--model gpt-5.6-sol"), "{args}");
+        assert!(args.contains("model_reasoning_effort=\"ultra\""), "{args}");
+        assert!(
+            args.contains("mcp_servers.build.args=[\"mcp\",\"--task\",\"run-7\"]"),
+            "{args}"
+        );
+        assert!(
+            args.contains("mcp_servers.build.env.BRIDGE_MCP_SOCKET=\"/tmp/build mcp.sock\""),
+            "{args}"
+        );
+        assert!(args.ends_with("do the thing"), "{args}");
+
+        let resumed = build(
+            "a follow-up",
+            &choice,
+            &SpawnOptions {
+                continue_session: true,
+                owner_id: "run-7".into(),
+            },
+        );
+        assert!(resumed.args.join(" ").starts_with("exec resume --last "));
     }
 
     #[test]
@@ -5724,6 +5898,29 @@ mod tests {
         );
         std::fs::write(encoded_dir.join("session.jsonl"), "{}\n").unwrap();
         assert!(claude_transcript_exists(root.path(), cwd));
+    }
+
+    #[test]
+    fn codex_transcript_probe_reads_nested_session_metadata_by_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let dated = root.path().join("sessions/2026/07/22");
+        std::fs::create_dir_all(&dated).unwrap();
+        std::fs::write(
+            dated.join("rollout.jsonl"),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":{}}}}}\n{{}}\n",
+                serde_json::to_string(&cwd.display().to_string()).unwrap()
+            ),
+        )
+        .unwrap();
+
+        assert!(codex_transcript_exists(&root.path().join("sessions"), &cwd));
+        assert!(!codex_transcript_exists(
+            &root.path().join("sessions"),
+            &root.path().join("other")
+        ));
     }
 
     #[test]
@@ -7229,8 +7426,17 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
 
-        let plan = state.handle(req("plan.create", json!({ "goal": "add a greeting" })));
+        let plan = state.handle(req(
+            "plan.create",
+            json!({
+                "goal": "add a greeting",
+                "provider": "codex",
+                "model": "gpt-5.6-sol",
+                "effort": "ultra"
+            }),
+        ));
         let plan_id = plan_id_of(&plan);
+        assert_eq!(plan["result"]["provider"], "codex", "{plan:?}");
         let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
         assert_eq!(approved["result"]["state"], "approved", "{approved:?}");
         state.handle(req(
@@ -7243,6 +7449,9 @@ mod tests {
         assert_eq!(run["ok"], true, "{run:?}");
         assert_eq!(run["result"]["state"], "stage_gate", "{run:?}");
         assert_eq!(run["result"]["plan_id"], json!(plan_id));
+        assert_eq!(run["result"]["provider"], "codex", "{run:?}");
+        assert_eq!(run["result"]["model"], "gpt-5.6-sol", "{run:?}");
+        assert_eq!(run["result"]["effort"], "ultra", "{run:?}");
         let run_id = run_id_of(&run);
         assert_eq!(run["result"]["stages"][0]["state"], "validated_passed");
 
@@ -7891,6 +8100,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            provider: AgentProvider::Claude,
             model: None,
             effort: None,
             last_summary: None,
@@ -8110,6 +8320,7 @@ mod tests {
             plan_path: ".build/plan.md".into(),
             stages: Vec::new(),
             comments: Vec::new(),
+            provider: AgentProvider::Claude,
             model: None,
             effort: None,
             last_summary: None,
@@ -8138,6 +8349,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            provider: AgentProvider::Claude,
             model: None,
             effort: None,
             last_summary: None,

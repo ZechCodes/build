@@ -396,7 +396,7 @@ export async function renderPlan() {
           try {
             run = optionId === "implement"
               ? await App.call("run.create", { plan_id: id })
-              : await openImplementOptions(p, App.modelCatalog || { models: [], efforts: [] });
+              : await openImplementOptions(p, await loadModelCatalog());
           } catch (e) {
             // A dispatch error (not the options-sheet/confirm cancel) raises a
             // persistent expandable notification (G2, full message); either way

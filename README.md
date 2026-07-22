@@ -10,6 +10,10 @@ Build does not run agents, host code, or see code. Agents run on the user's own 
 bridge; the relay moves ciphertext and nothing else. Build's job is **orchestration**: starting
 work, watching it through git, and gating the transitions where human judgment matters.
 
+The web app lets you choose **Claude Code** or **Codex CLI** per plan/run, including each
+provider's model and reasoning-effort options. The selected CLI must already be installed and
+authenticated on the machine running `build-bridge`.
+
 Task intake is **goal-form + batched plan/diff comments** — there is deliberately no chat UI.
 
 See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and roadmap, and

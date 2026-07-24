@@ -164,13 +164,15 @@ export async function renderPlan() {
       const key = JSON.stringify({
         goal: p.goal || "",
         state: p.state,
+        harness: p.harness || "",
+        sessions: p.thread?.sessions || [],
         items: p.thread?.items || [],
         revisions: p.thread?.revisions || [],
         completion: p.thread?.last_completion || null,
       });
       if (key === threadRenderKey && host.firstChild) return;
       threadRenderKey = key;
-      host.innerHTML = threadHtml(p.thread, { initialMessage: p.goal, composer });
+      host.innerHTML = threadHtml(p.thread, { initialMessage: p.goal, composer, agentLabel: p.harness });
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
       const input = host.querySelector("#planthreadinput");
       const send = host.querySelector("#planthreadsend");

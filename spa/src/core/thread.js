@@ -43,7 +43,14 @@ function anchorLabel(anchor) {
   return `<div class="thread-anchor">${esc(path + lines + heading)}${anchor.snippet ? ` · “${esc(anchor.snippet.replace(/\s+/g, " ").slice(0, 120))}”` : ""}</div>`;
 }
 
-function messageHtml(message) {
+function harnessLabel(thread, override) {
+  const raw = override || (thread && thread.sessions && thread.sessions.at(-1)?.provider) || "Agent";
+  if (raw === "codex" || raw === "Codex CLI") return "Codex";
+  if (raw === "claude" || raw === "Claude") return "Claude Code";
+  return raw;
+}
+
+function messageHtml(message, agentLabel = "Agent") {
   const user = message.role === "user";
   const completion = message.source === "completion";
   const status = user
@@ -52,21 +59,22 @@ function messageHtml(message) {
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}${completion ? " thread-completion" : ""}">
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : "Agent"}</strong> ${completion ? "reported completion" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
+      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> ${completion ? "reported completion" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
       ${anchorLabel(message.anchor)}
       <div class="thread-body markdown">${renderMarkdown(message.body || "")}</div>
     </div>
   </article>`;
 }
 
-function eventHtml(event) {
+function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
+  const label = meta.label.replace(/^Agent\b/, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
     : event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <div class="thread-event-content"><div><strong>${esc(meta.label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}</div>
+    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}</div>
   </div>`;
 }
 
@@ -81,8 +89,8 @@ function completionBody(report) {
   return ["**Completion report**", ...groups.map(([label, values]) => `**${label}**\n${values.map((value) => `- ${value}`).join("\n")}`)].join("\n\n");
 }
 
-function completionHtml(report) {
-  return report ? messageHtml({ role: "agent", source: "completion", body: completionBody(report) }) : "";
+function completionHtml(report, agentLabel) {
+  return report ? messageHtml({ role: "agent", source: "completion", body: completionBody(report) }, agentLabel) : "";
 }
 
 function composerHtml(enabled) {
@@ -94,6 +102,7 @@ function composerHtml(enabled) {
 }
 
 export function threadHtml(thread, options = {}) {
+  const agentLabel = harnessLabel(thread, options.agentLabel);
   const sourceItems = (thread && thread.items) || [];
   const initialMessage = String(options.initialMessage || "").trim();
   const hasInitialMessage = sourceItems.some(
@@ -103,12 +112,12 @@ export function threadHtml(thread, options = {}) {
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
   const hasSequencedCompletion = sourceItems.some((item) => item.type === "message" && item.data?.source === "completion");
-  const completion = hasSequencedCompletion ? "" : completionHtml(thread && thread.last_completion);
+  const completion = hasSequencedCompletion ? "" : completionHtml(thread && thread.last_completion, agentLabel);
   const itemCount = items.length + (completion ? 1 : 0);
   return `<section class="review-thread">
     <div class="thread-title">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</div>
     <div class="thread-items thread-timeline">${items.length || completion
-      ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}) : eventHtml(item.data || {})).join("") + completion
+      ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}, agentLabel) : eventHtml(item.data || {}, agentLabel)).join("") + completion
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
     ${composerHtml(options.composer)}

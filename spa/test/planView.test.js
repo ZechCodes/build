@@ -126,6 +126,24 @@ describe("plan review layout", () => {
     expect(document.querySelector("#stage-general")).toBeNull();
     expect(document.querySelector(".plan-feedback")).toBeNull();
   });
+
+  it("omits the redundant sticky action bar for a settled stage with no actions", () => {
+    document.body.innerHTML = '<div id="planbody"></div>';
+    const stage = { id: "s1", title: "Schema", state: "approved", open_comments: 0, comments: [] };
+    renderPlanStages({
+      body: document.querySelector("#planbody"),
+      plan: { plan_id: "p1", state: "plan_review" },
+      stagesData: { stages: [stage] },
+      stageDoc: { stage_id: "s1", contents: "# Schema" },
+      stageDocState: "ready",
+      selectedStageId: "s1",
+      callRpc: async () => {},
+      repaint: () => {},
+      onSelectStage: () => {},
+    });
+    expect(document.querySelector(".actionbar")).toBeNull();
+    expect(document.body.textContent).not.toContain("stage approved");
+  });
 });
 
 // The doc-read error pane carries an inline Retry affordance (W15) instead of the

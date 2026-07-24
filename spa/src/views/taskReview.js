@@ -263,7 +263,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
         ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
       ${filesHtml}
-      ${threadHtml(t.thread)}
+      ${threadHtml(t.thread, { agentLabel: t.harness })}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;

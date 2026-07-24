@@ -84,6 +84,21 @@ describe("conversation thread rendering", () => {
     });
     expect(document.querySelectorAll(".thread-completion")).toHaveLength(1);
   });
+
+  it("identifies the harness that reported completion", () => {
+    document.body.innerHTML = threadHtml({
+      sessions: [{ provider: "Codex CLI" }],
+      items: [
+        { type: "event", data: { event: "session_started" } },
+        { type: "event", data: { event: "done" } },
+        { type: "message", data: { role: "agent", source: "completion", body: "Done" } },
+      ],
+    });
+    expect(document.querySelector(".thread-message-head").textContent).toContain("Codex reported completion");
+    expect(document.querySelector(".thread-message-head").textContent).not.toContain("Agent reported completion");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
+  });
 });
 
 describe("structured review messages", () => {

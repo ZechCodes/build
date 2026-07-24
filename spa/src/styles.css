@@ -665,6 +665,7 @@ body.sidebar-collapsed #side-open { display:block; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
 .review-thread { margin:18px 0; background:transparent; }
+#planthread { max-width:820px; }
 .thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; font-weight:650; }
 .thread-title span { color:var(--dim); font-size:11px; font-weight:500; }
 .thread-timeline { position:relative; display:flex; flex-direction:column; gap:18px; padding:18px 0; }

@@ -245,6 +245,7 @@ function renderStageActions(ctx, stage) {
   // approved (or any non-planned doc state): send-notes stays available; the
   // doc is otherwise settled on the plan side.
   actions.innerHTML = sendNotesBtn;
-  hint.textContent = viaRun ? "Sends to the run's stage-gate revision." : stage.state === "approved" ? "stage approved" : "";
+  hint.textContent = viaRun ? "Sends to the run's stage-gate revision." : "";
   wireSendNotes();
+  if (!sendNotesBtn && !hint.textContent) body.querySelector(".actionbar")?.remove();
 }

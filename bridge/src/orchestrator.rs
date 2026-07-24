@@ -511,6 +511,7 @@ fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
          - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
          - You may implement a directive without replying; the next revision is its acknowledgment.\n\
          - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
+         - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - Do not post acknowledgments or diff recaps.\n",
     );
     let catch_up = thread.catch_up_markdown(40);
@@ -4220,6 +4221,21 @@ mod tests {
             .message_run(&mut run, "sneak past")
             .expect_err("review gate refuses messages");
         assert!(err.to_string().contains("review gate"), "{err}");
+    }
+
+    #[test]
+    fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
+        let thread = crate::thread::Thread::new("run-1");
+        let prompt = conversation_prompt("do the work", &thread);
+        assert!(prompt.contains("Build conversation protocol"), "{prompt}");
+        assert!(
+            prompt.contains("either a question or a directive"),
+            "ambiguous reviewer messages must trigger a clarifying reply: {prompt}"
+        );
+        assert!(
+            prompt.contains("one-line clarifying reply"),
+            "the reply must be a one-liner, not a silent code change: {prompt}"
+        );
     }
 
     #[tokio::test]

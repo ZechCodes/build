@@ -28,8 +28,8 @@ use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneRe
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, Agent, Orchestrator, OrchestratorError, RunSource, SpawnOptions,
-    TranscriptProbe,
+    ActivePlan, ActiveRun, Agent, Orchestrator, OrchestratorError, RunSource, SessionSlot,
+    SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -1694,6 +1694,7 @@ impl AppState {
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
+            "thread.post" => self.thread_post(params),
             "fs.list" => self.fs_list(params),
             "fs.tree" => self.fs_tree(params),
             "fs.read" => self.fs_read(params),
@@ -3520,6 +3521,49 @@ impl AppState {
         }))
     }
 
+    /// Post a reviewer message to an entity's conversation WITHOUT dispatching
+    /// work — the review-surface write path. Resolves a plan OR a run (the
+    /// `thread.revision` idiom), appends the body as an unread user message,
+    /// and nudges a live harness session in place through its PTY so the agent
+    /// calls `read_unread_messages`. Never ends or spawns a session and never
+    /// moves plan/run state — with no live session the message simply waits
+    /// for the next session's catch-up. Refused only where no conversation
+    /// remains to post to: a terminal or unknown entity.
+    fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        if let Some(active) = self.plans.get(&entity_id) {
+            if active.plan.state.is_terminal() {
+                return Err(format!(
+                    "thread.post: plan is {} — the conversation is closed",
+                    plan_state_str(&active.plan.state)
+                ));
+            }
+            let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
+            let mut active = self.take_plan(&entity_id)?;
+            append_user_thread_messages(&mut active.thread, messages);
+            nudge_live_session(&active.session, &entity_id);
+            let (view, persisted) = self.finish_plan_mutation(entity_id, active);
+            persisted?;
+            return Ok(view);
+        }
+        if let Some(active) = self.runs.get(&entity_id) {
+            if active.run.state.is_terminal() {
+                return Err(format!(
+                    "thread.post: run is {} — the conversation is closed",
+                    run_state_str(&active.run.state)
+                ));
+            }
+            let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
+            let mut active = self.take_run(&entity_id)?;
+            append_user_thread_messages(&mut active.thread, messages);
+            nudge_live_session(&active.session, &entity_id);
+            let (view, persisted) = self.finish_run_mutation(entity_id, active);
+            persisted?;
+            return Ok(view);
+        }
+        Err("unknown conversation owner".to_string())
+    }
+
     fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
@@ -5068,6 +5112,34 @@ fn parse_thread_inputs(
         return Err(format!("{legacy_field} exceeds 32000 bytes"));
     }
     Ok(vec![(body.to_string(), None)])
+}
+
+/// Parse `thread.post`'s single `body` (+ optional `anchor`) by funneling it
+/// through [`parse_thread_inputs`]'s batch validator, so body limits and
+/// anchor artifact-matching stay single-sourced.
+fn parse_thread_post_input(
+    params: &Value,
+    artifact: crate::thread::ArtifactKind,
+) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+    let wrapped = json!({
+        "messages": [{
+            "body": params.get("body").cloned().unwrap_or(Value::Null),
+            "anchor": params.get("anchor").cloned().unwrap_or(Value::Null),
+        }]
+    });
+    parse_thread_inputs(&wrapped, artifact, "body")
+}
+
+/// Tell a live harness session — in place, through the same PTY-write
+/// primitive `term.input` uses — that unread thread messages await. A dead
+/// slot swallows the write (the message waits for the next session's
+/// catch-up), and a write failure against an exiting harness is logged, never
+/// surfaced: the message is durable either way.
+fn nudge_live_session(session: &SessionSlot, entity_id: &str) {
+    let notification = format!("{NEW_THREAD_MESSAGES_PROMPT}\r");
+    if let Err(error) = session.write_input(notification.as_bytes()) {
+        eprintln!("thread.post {entity_id}: live-session notify failed: {error}");
+    }
 }
 
 fn append_user_thread_messages(
@@ -9000,6 +9072,266 @@ mod tests {
                 .len(),
             0,
             "{drained:?}"
+        );
+    }
+
+    // ---- thread.post: the non-dispatching conversation write ---------------
+
+    /// The review surface's whole point: a message lands in the run's thread
+    /// as unread WITHOUT respawning the agent or moving the run's state, and
+    /// the agent's catch-up tool then drains it.
+    #[test]
+    fn thread_post_in_review_posts_unread_and_moves_no_state() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "post-only path" })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "review", "{run:?}");
+        let generation_before = state.runs[&run_id].session.generation();
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "just a review note" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        // The same Full-thread view shape the dispatching verbs return, so the
+        // caller can render optimistically.
+        assert_eq!(posted["result"]["state"], "review", "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let message = items
+            .iter()
+            .find(|item| item["data"]["body"] == "just a review note")
+            .unwrap_or_else(|| panic!("posted message missing: {posted:?}"));
+        assert_eq!(message["data"]["role"], "user", "{message:?}");
+        assert!(
+            message["data"].get("seen_at").is_none(),
+            "the post must land unread: {message:?}"
+        );
+
+        let active = state.runs.get(&run_id).unwrap();
+        assert_eq!(active.run.state, RunState::Review, "no state transition");
+        assert_eq!(
+            active.session.generation(),
+            generation_before,
+            "no session respawn"
+        );
+
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(unread["messages"][0]["body"], "just a review note");
+    }
+
+    /// A mid-build post must leave the live harness session running (same
+    /// generation, still subscribable) and nudge it in place through its PTY —
+    /// the PTY echoes written input back to its reader, so the nudge is
+    /// observable on the session's output stream.
+    #[test]
+    fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "keep building" })));
+        let run_id = run_id_of(&run);
+        // The QA drive parks the run in review with the warm harness still
+        // live; rewind the coarse state to model a mid-build post.
+        let active = state.runs.get_mut(&run_id).unwrap();
+        active.run.state = RunState::Building;
+        let generation_before = active.session.generation();
+        let mut output = active.session.subscribe().expect("a live session");
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "while you build" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let active = state.runs.get(&run_id).unwrap();
+        assert_eq!(active.run.state, RunState::Building, "no state transition");
+        assert_eq!(
+            active.session.generation(),
+            generation_before,
+            "the live session must not be respawned"
+        );
+        assert!(
+            active.session.subscribe().is_some(),
+            "the live session must not be ended"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut echoed = String::new();
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+            match output.try_recv() {
+                Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            echoed.contains("read_unread_messages"),
+            "the live PTY must hear the nudge: {echoed:?}"
+        );
+    }
+
+    /// Only entities with no meaningful conversation left refuse a post:
+    /// terminal states and unknown ids.
+    #[test]
+    fn thread_post_refuses_terminal_and_unknown_entities() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let run = state.handle(req("run.create", json!({ "goal": "goes away" })));
+        let run_id = run_id_of(&run);
+        state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        let refused = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "anyone home?" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("abandoned"),
+            "{refused:?}"
+        );
+
+        let archived = state.handle(req("run.create", json!({ "goal": "swept away" })));
+        let archived_id = run_id_of(&archived);
+        state.runs.get_mut(&archived_id).unwrap().run.state = RunState::Archived;
+        let refused_archived = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": archived_id, "body": "anyone home?" }),
+        ));
+        assert_eq!(refused_archived["ok"], false, "{refused_archived:?}");
+        assert!(
+            refused_archived["error"]
+                .as_str()
+                .unwrap()
+                .contains("archived"),
+            "{refused_archived:?}"
+        );
+
+        let plan = state.handle(req("plan.create", json!({ "goal": "dropped plan" })));
+        let plan_id = plan_id_of(&plan);
+        state.handle(req("plan.abandon", json!({ "plan_id": plan_id })));
+        let refused_plan = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": plan_id, "body": "anyone home?" }),
+        ));
+        assert_eq!(refused_plan["ok"], false, "{refused_plan:?}");
+        assert!(
+            refused_plan["error"]
+                .as_str()
+                .unwrap()
+                .contains("abandoned"),
+            "{refused_plan:?}"
+        );
+
+        let unknown = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "nope", "body": "hi" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown conversation owner"),
+            "{unknown:?}"
+        );
+    }
+
+    /// A stage awaiting its validation verdict refuses the dispatching verb
+    /// (`run.message`) but must NOT block a post-only write.
+    #[test]
+    fn thread_post_is_not_blocked_by_a_stage_awaiting_validation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "stage gate wait" })));
+        let run_id = run_id_of(&run);
+        let active = state.runs.get_mut(&run_id).unwrap();
+        active.run.state = RunState::Building;
+        active.current_stage_id = Some("stage-1".into());
+        active.stages = vec![StageProgress {
+            stage_id: "stage-1".into(),
+            state: StageProgressState::Built,
+            start_sha: None,
+            validation: None,
+        }];
+
+        let dispatching = state.handle(req(
+            "run.message",
+            json!({ "run_id": run_id, "message": "hurry it up" }),
+        ));
+        assert_eq!(dispatching["ok"], false, "{dispatching:?}");
+        assert!(
+            dispatching["error"]
+                .as_str()
+                .unwrap()
+                .contains("awaiting validation"),
+            "{dispatching:?}"
+        );
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "for the record" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            posted["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["data"]["body"] == "for the record"),
+            "{posted:?}"
+        );
+    }
+
+    /// The plan review gate refuses `plan.message` (the dispatching verb) but
+    /// accepts a post; a mismatched anchor artifact is rejected by the shared
+    /// validator.
+    #[test]
+    fn thread_post_reaches_a_plan_at_its_review_gate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "gate keeping" })));
+        let plan_id = plan_id_of(&plan);
+        assert_eq!(plan["result"]["state"], "plan_review", "{plan:?}");
+
+        let dispatching = state.handle(req(
+            "plan.message",
+            json!({ "plan_id": plan_id, "message": "psst" }),
+        ));
+        assert_eq!(dispatching["ok"], false, "{dispatching:?}");
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": plan_id, "body": "a note at the gate" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(posted["result"]["state"], "plan_review", "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let message = items
+            .iter()
+            .find(|item| item["data"]["body"] == "a note at the gate")
+            .unwrap_or_else(|| panic!("posted message missing: {posted:?}"));
+        assert_eq!(message["data"]["role"], "user", "{message:?}");
+        assert!(message["data"].get("seen_at").is_none(), "{message:?}");
+
+        let bad_anchor = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": plan_id,
+                "body": "anchored wrong",
+                "anchor": { "artifact": "diff", "heading_path": ["A"], "snippet": "x" }
+            }),
+        ));
+        assert_eq!(bad_anchor["ok"], false, "{bad_anchor:?}");
+        assert!(
+            bad_anchor["error"]
+                .as_str()
+                .unwrap()
+                .contains("anchor artifact must be plan"),
+            "{bad_anchor:?}"
         );
     }
 

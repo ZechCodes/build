@@ -5229,8 +5229,12 @@ fn parse_thread_post_input(
 /// catch-up), and a write failure against an exiting harness is logged, never
 /// surfaced: the message is durable either way.
 fn nudge_live_session(session: &SessionSlot, entity_id: &str) {
-    let notification = format!("{NEW_THREAD_MESSAGES_PROMPT}\r");
-    if let Err(error) = session.write_input(notification.as_bytes()) {
+    // Through write_prompt, not a raw write with a hardcoded Enter: the nudge is
+    // a turn, so it must honor the harness's SubmitKey and paste framing exactly
+    // as a dispatched prompt does. Hardcoding \r submits into a SubmitKey::None
+    // harness that never asked for it, and leaves the notification unframed —
+    // safe today only because it happens to be one line.
+    if let Err(error) = session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
         eprintln!("thread.post {entity_id}: live-session notify failed: {error}");
     }
 }

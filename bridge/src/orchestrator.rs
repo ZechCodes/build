@@ -181,6 +181,22 @@ impl SessionSlot {
         Ok(())
     }
 
+    /// Submit a prompt turn to the warm session, honoring the harness's own
+    /// submit key and paste framing; a dead session swallows it (the message
+    /// stays durable and the next session's catch-up carries it).
+    ///
+    /// Distinct from [`write_input`](Self::write_input) on purpose: raw input is
+    /// the user's keystrokes, where Build must not decide what a turn is. Build
+    /// speaking to a live agent is a turn, and it must travel the same way a
+    /// dispatched prompt does — otherwise the two paths drift and one of them
+    /// submits a multi-line body as N fragmented turns.
+    pub fn write_prompt(&self, prompt: &str) -> Result<(), OrchestratorError> {
+        if let Some(session) = &self.session {
+            session.write_prompt(prompt)?;
+        }
+        Ok(())
+    }
+
     /// Like [`write_input`](Self::write_input) but a dead session is an error —
     /// the agent-tab contract surfaces "no active agent session" to the typer.
     pub fn write_input_strict(&self, bytes: &[u8]) -> Result<(), String> {

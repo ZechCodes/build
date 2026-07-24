@@ -336,13 +336,17 @@ impl DoneServer {
                             "inputSchema": { "type": "object", "properties": {} }
                         }, {
                             "name": "post_thread_message",
-                            // Defers by reference to the "Build conversation protocol"
-                            // block that `conversation_prompt` in orchestrator.rs bakes
-                            // into every spawn prompt — that block is canonical. Do not
-                            // restate its bullets here: this description is re-sent on
-                            // every tools/list and outlives context compaction, so a
-                            // restated copy is the one that drifts.
-                            "description": "Reply in the current Build conversation thread only when the conversation policy in your prompt requires a written response.",
+                            // MUST agree with the "Build conversation protocol"
+                            // block in `conversation_prompt` (orchestrator.rs),
+                            // which is canonical — change both together.
+                            //
+                            // Deliberately self-contained rather than a pointer at
+                            // that block: this description is re-sent on every
+                            // tools/list and so outlives context compaction, which
+                            // means it is the ONE statement guaranteed to still be
+                            // in context when an ambiguous message actually arrives.
+                            // A pointer would resolve to nothing exactly then.
+                            "description": "Reply in the current Build conversation thread. Post only for a question, necessary pushback or clarification, an explicit request for a response, or a reviewer message that reads as either a question or a directive — for that last case post a one-line clarifying reply rather than silently changing code. Implementing an unambiguous directive needs no reply: the next revision is the acknowledgment. Do not post bare acknowledgments or diff recaps.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -560,24 +564,35 @@ mod tests {
         assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
     }
 
+    /// This description outlives context compaction (it rides every
+    /// `tools/list`) while the spawn prompt's protocol block does not — so it is
+    /// the statement still in context when an ambiguous message lands, and it
+    /// has to carry the rule rather than point at one.
     #[test]
-    fn post_thread_message_description_defers_to_the_conversation_policy() {
+    fn post_thread_message_description_carries_the_policy_it_must_survive_on() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let description = v["result"]["tools"][1]["description"].as_str().unwrap();
+        let lowered = description.to_lowercase();
         assert!(
-            description.contains("conversation policy"),
-            "the description must defer to the spawn prompt's conversation policy \
-             instead of restating it: {description}"
+            lowered.contains("either a question or a directive")
+                && lowered.contains("one-line clarifying reply"),
+            "the ambiguity carve-out must be stated here, not deferred to a block \
+             that compaction removes: {description}"
         );
-        assert!(
-            !description
-                .to_lowercase()
-                .contains("not acknowledge directives"),
-            "an unqualified 'do not acknowledge directives' contradicts the protocol's \
-             ambiguity carve-out (clarify when a message reads as question-or-directive): \
-             {description}"
-        );
+        // The contradiction this replaced: a blanket ban on replying to anything
+        // read as a directive, which suppresses the carve-out above. Assert the
+        // MEANING is gated on ambiguity, not one former spelling of the ban.
+        for banned in [
+            "not acknowledge directives",
+            "never acknowledge directives",
+            "do not reply to directives",
+        ] {
+            assert!(
+                !lowered.contains(banned),
+                "an unqualified directive ban contradicts the ambiguity carve-out: {description}"
+            );
+        }
     }
 
     #[test]

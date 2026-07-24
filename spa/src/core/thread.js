@@ -28,6 +28,57 @@ function timeHtml(createdAt) {
   return `<time datetime="${esc(createdAt)}">on ${esc(label)}</time>`;
 }
 
+// Client half of the thread cursor: the detail polls (plan.get / run.get every
+// 1.6s) would otherwise re-ship the whole forever-growing conversation over
+// E2EE on every tick. The cache holds one entity's accumulated items, tells the
+// caller which cursor to send, and folds each delta back into a full thread for
+// rendering. A `thread_total` that disagrees with what it holds (bridge
+// restart, entity swap, dropped delta) resets it to a full refetch.
+export function createThreadCache() {
+  let accumulatedItems = [];
+
+  const lastHeldSequence = () =>
+    accumulatedItems.length ? accumulatedItems[accumulatedItems.length - 1].data?.sequence || 0 : 0;
+
+  return {
+    // Extra params for the next plan.get / run.get: the last sequence held, or
+    // nothing when a full fetch is needed (first load, or after a reset).
+    cursorParam() {
+      return accumulatedItems.length ? { thread_after_sequence: lastHeldSequence() } : {};
+    },
+    // Fold a polled thread payload into the cache and return a thread whose
+    // `items` is the complete accumulated list. Never mutates the payload.
+    absorb(threadPayload) {
+      if (!threadPayload) {
+        accumulatedItems = [];
+        return threadPayload;
+      }
+      const arrivedItems = threadPayload.items || [];
+      if (threadPayload.thread_total == null) {
+        // An uncursored (full) response is authoritative: replace, don't merge.
+        accumulatedItems = [...arrivedItems];
+        return { ...threadPayload, items: accumulatedItems };
+      }
+      const heldSequences = new Set(accumulatedItems.map((item) => item.data?.sequence));
+      const merged = [
+        ...accumulatedItems,
+        ...arrivedItems.filter((item) => !heldSequences.has(item.data?.sequence)),
+      ].sort((a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0));
+      if (merged.length !== threadPayload.thread_total) {
+        // Gap or shrink: render what we have this tick, but drop the cache so
+        // the next poll refetches the full thread and self-heals.
+        accumulatedItems = [];
+        return { ...threadPayload, items: merged };
+      }
+      accumulatedItems = merged;
+      return { ...threadPayload, items: accumulatedItems };
+    },
+    reset() {
+      accumulatedItems = [];
+    },
+  };
+}
+
 export function currentRevisionId(thread, artifact) {
   const revisions = (thread && thread.revisions) || [];
   return [...revisions].reverse().find((revision) => revision.artifact === artifact)?.id || null;

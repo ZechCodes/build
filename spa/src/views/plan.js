@@ -15,7 +15,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
-import { threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -89,6 +89,9 @@ export async function renderPlan() {
   let summaryKey = null;
   let threadRenderKey = null;
   let threadDraft = "";
+  // Cursor cache for the conversation: each poll sends the last-held sequence
+  // so the bridge ships only new items, not the whole thread every 1.6s.
+  const threadCache = createThreadCache();
   // Doc-read error latches: any plan.doc / plan.stage_doc ERROR renders an error
   // state and stops that doc's refetch until the user re-navigates (mirrors the
   // planGone latch in task.js). singleDocError is the single-doc latch; stageDocError
@@ -594,13 +597,16 @@ export async function renderPlan() {
     if (gone || App.offline) return; // latched gone-state / offline freeze: no repaint
     let p;
     try {
-      p = await App.call("plan.get", { plan_id: id });
+      p = await App.call("plan.get", { plan_id: id, ...threadCache.cursorParam() });
     } catch (e) {
       // A deleted plan is permanent: latch the gone-state and stop polling.
       // Every other error is transient — stay silent and let the poll retry.
       if (/unknown plan_id/.test((e && e.message) || "")) renderGone();
       return;
     }
+    // Fold the cursored conversation delta back into a full thread before
+    // anything below reads p.thread.
+    p = { ...p, thread: threadCache.absorb(p.thread) };
     // Visiting the plan reads it: mark once, on the first successful fetch.
     if (!visitMarkedRead) {
       visitMarkedRead = true;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { createThreadCache, currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
@@ -98,6 +98,63 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-message-head").textContent).not.toContain("Agent reported completion");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
+  });
+});
+
+describe("thread cache (cursor merge for the detail polls)", () => {
+  const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+
+  it("starts with a full fetch, then sends the last-known sequence as the cursor", () => {
+    const cache = createThreadCache();
+    expect(cache.cursorParam()).toEqual({});
+    const absorbed = cache.absorb({ id: "thread:plan-1", items: [item(1, "hello"), item(3, "world")], revisions: [] });
+    expect(absorbed.items.map((i) => i.data.sequence)).toEqual([1, 3]);
+    expect(absorbed.revisions).toEqual([]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 3 });
+  });
+
+  it("appends a cursored delta in sequence order without mutating the payload", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "b")] });
+    const delta = { items: [item(4, "d"), item(3, "c")], thread_total: 4, thread_last_sequence: 4 };
+    const merged = cache.absorb(delta);
+    expect(merged.items.map((i) => i.data.sequence)).toEqual([1, 2, 3, 4]);
+    expect(delta.items.map((i) => i.data.sequence)).toEqual([4, 3]); // payload untouched
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 4 });
+  });
+
+  it("de-duplicates a replayed sequence, keeping the item it already holds", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "held")] });
+    const merged = cache.absorb({ items: [item(2, "replayed"), item(3, "c")], thread_total: 3, thread_last_sequence: 3 });
+    expect(merged.items.map((i) => i.data.sequence)).toEqual([1, 2, 3]);
+    expect(merged.items[1].data.body).toBe("held");
+  });
+
+  it("a zero-item delta leaves the accumulated items intact", () => {
+    const cache = createThreadCache();
+    const first = cache.absorb({ items: [item(1, "a"), item(2, "b")] });
+    const second = cache.absorb({ items: [], thread_total: 2, thread_last_sequence: 2 });
+    expect(second.items).toEqual(first.items);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+  });
+
+  it("resets to a full refetch when thread_total disagrees with what it holds", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "b"), item(3, "c")] });
+    // The bridge restarted (or the entity swapped): it now reports fewer items
+    // than we hold. The cache drops its state so the next poll refetches whole.
+    cache.absorb({ items: [], thread_total: 1, thread_last_sequence: 1 });
+    expect(cache.cursorParam()).toEqual({});
+    const refetched = cache.absorb({ items: [item(1, "only")] });
+    expect(refetched.items.map((i) => i.data.sequence)).toEqual([1]);
+  });
+
+  it("passes a missing thread through and clears its state", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a")] });
+    expect(cache.absorb(null)).toBeNull();
+    expect(cache.cursorParam()).toEqual({});
   });
 });
 

@@ -128,6 +128,16 @@ pub enum ThreadItem {
     Event(ThreadEvent),
 }
 
+/// How much conversation a wire view carries: `Digest` for the polled list
+/// surfaces (board.list / plan.list re-ship every entity every ~2.5s, so a
+/// full thread there grows without bound), `Full` for the detail surfaces
+/// that actually render the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadDetail {
+    Digest,
+    Full,
+}
+
 impl ThreadItem {
     pub fn sequence(&self) -> u64 {
         match self {
@@ -479,6 +489,70 @@ impl Thread {
         })
     }
 
+    /// The highest sequence any item carries (0 for an empty thread) — the
+    /// client's cursor high-water mark.
+    pub fn last_sequence(&self) -> u64 {
+        self.items
+            .iter()
+            .map(ThreadItem::sequence)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Bounded summary for list surfaces: identity plus counters and the
+    /// latest event, never message bodies or the item array, so the polled
+    /// board payload stops growing with conversation length.
+    pub fn digest_value(&self) -> Value {
+        let latest_event = self.items.iter().rev().find_map(|item| match item {
+            ThreadItem::Event(event) => Some(event),
+            ThreadItem::Message(_) => None,
+        });
+        let unseen_user_messages = self
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    ThreadItem::Message(message)
+                        if message.role == MessageRole::User && message.seen_at.is_none()
+                )
+            })
+            .count();
+        json!({
+            "id": self.id,
+            "agent": self.agent,
+            "item_count": self.items.len(),
+            "last_sequence": self.last_sequence(),
+            "last_event": latest_event.map(|event| json!({
+                "event": event.event,
+                "created_at": event.created_at,
+            })),
+            "unseen_user_messages": unseen_user_messages,
+        })
+    }
+
+    /// Cursor view for the detail polls: only items strictly after
+    /// `after_sequence`, plus `thread_total` / `thread_last_sequence` so the
+    /// client can detect a gap (bridge restart, dropped delta) and refetch in
+    /// full. Sessions, revisions and last_completion are small and bounded, so
+    /// they always ship whole.
+    pub fn wire_value_after(&self, after_sequence: u64) -> Value {
+        let newer: Vec<&ThreadItem> = self
+            .items
+            .iter()
+            .filter(|item| item.sequence() > after_sequence)
+            .collect();
+        let mut value = self.wire_value();
+        let object = value.as_object_mut().expect("wire_value returns an object");
+        object.insert("items".to_string(), json!(newer));
+        object.insert("thread_total".to_string(), json!(self.items.len()));
+        object.insert(
+            "thread_last_sequence".to_string(),
+            json!(self.last_sequence()),
+        );
+        value
+    }
+
     pub fn catch_up_markdown(&self, limit: usize) -> String {
         let mut lines = Vec::new();
         for item in self.items.iter().rev().take(limit).rev() {
@@ -542,5 +616,78 @@ impl ArtifactKind {
             ArtifactKind::Plan => "plan",
             ArtifactKind::Diff => "diff",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread_with_conversation() -> Thread {
+        let mut thread = Thread::new("plan-1");
+        thread.post_user("please rename the helper", None, "2026-07-24T12:00:00Z");
+        thread.post_agent("Which name do you prefer?", None, "2026-07-24T12:01:00Z");
+        thread.push_event(
+            ThreadEventKind::Done,
+            Some("Agent reported done".to_string()),
+            None,
+            None,
+            "2026-07-24T12:02:00Z",
+        );
+        thread
+    }
+
+    #[test]
+    fn digest_value_is_bounded_and_omits_bodies() {
+        let mut thread = thread_with_conversation();
+        thread.post_user("a second unread ask", None, "2026-07-24T12:03:00Z");
+        let digest = thread.digest_value();
+
+        assert_eq!(digest["id"], "thread:plan-1");
+        assert_eq!(digest["agent"]["id"], "agent:plan-1");
+        assert_eq!(digest["item_count"], 4);
+        assert_eq!(digest["last_sequence"], 4);
+        assert_eq!(digest["last_event"]["event"], "done");
+        assert_eq!(digest["last_event"]["created_at"], "2026-07-24T12:02:00Z");
+        assert_eq!(digest["unseen_user_messages"], 2);
+        // The bounded contract: no item array, no message bodies anywhere.
+        assert!(digest.get("items").is_none(), "{digest:?}");
+        let serialized = digest.to_string();
+        assert!(!serialized.contains("please rename the helper"));
+        assert!(!serialized.contains("a second unread ask"));
+    }
+
+    #[test]
+    fn digest_value_of_an_empty_thread_has_zero_counters_and_no_event() {
+        let digest = Thread::new("plan-empty").digest_value();
+        assert_eq!(digest["item_count"], 0);
+        assert_eq!(digest["last_sequence"], 0);
+        assert_eq!(digest["unseen_user_messages"], 0);
+        assert!(digest["last_event"].is_null(), "{digest:?}");
+    }
+
+    #[test]
+    fn wire_value_after_ships_only_newer_items_with_totals() {
+        let thread = thread_with_conversation();
+        let delta = thread.wire_value_after(1);
+
+        let items = delta["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_eq!(items[0]["data"]["sequence"], 2);
+        assert_eq!(items[1]["data"]["sequence"], 3);
+        assert_eq!(delta["thread_total"], 3);
+        assert_eq!(delta["thread_last_sequence"], 3);
+        // The small bounded companions still ship in full.
+        assert!(delta["sessions"].is_array());
+        assert!(delta["revisions"].is_array());
+    }
+
+    #[test]
+    fn wire_value_after_past_the_end_is_an_empty_delta_not_an_error() {
+        let thread = thread_with_conversation();
+        let delta = thread.wire_value_after(9_999);
+        assert_eq!(delta["items"].as_array().unwrap().len(), 0);
+        assert_eq!(delta["thread_total"], 3);
+        assert_eq!(delta["thread_last_sequence"], 3);
     }
 }

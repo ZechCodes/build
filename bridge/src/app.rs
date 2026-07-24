@@ -42,6 +42,7 @@ use crate::run::ValidationReport;
 use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState};
 use crate::store::{now_rfc3339, PersistedPlan, PersistedRun, Store};
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
+use crate::thread::ThreadDetail;
 use crate::transport::Frame;
 use crate::worktree::{discover_external_worktrees, ExternalWorktree, Worktree};
 
@@ -1070,7 +1071,7 @@ impl AppState {
             .or_insert_with(|| now.clone());
         self.entity_updated_at.insert(plan_id.clone(), now.clone());
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
-        let view = self.plan_view(&plan_id, &active);
+        let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
         let persisted = self.persist_plan_record(&plan_id, &active);
         self.push_notify_plan(&plan_id, active.plan.state);
         self.plans.insert(plan_id, active);
@@ -1094,7 +1095,7 @@ impl AppState {
         self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
         self.run_stat_cache.remove(&run_id);
-        let view = self.run_view(&run_id, &active);
+        let view = self.run_view(&run_id, &active, ThreadDetail::Full);
         let persisted = self.persist_run_record(&run_id, &active);
         self.push_notify_run(&run_id, active.run.state);
         self.runs.insert(run_id, active);
@@ -2994,14 +2995,26 @@ impl AppState {
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
-        Ok(self.plan_view(&plan_id, active))
+        let mut view = self.plan_view(&plan_id, active, ThreadDetail::Full);
+        // The detail poll's optional cursor: ship only conversation items the
+        // client does not already hold. Absent → the full backward-compatible
+        // thread.
+        if let Some(after_sequence) = thread_cursor(params) {
+            view.as_object_mut()
+                .expect("plan_view returns an object")
+                .insert(
+                    "thread".to_string(),
+                    active.thread.wire_value_after(after_sequence),
+                );
+        }
+        Ok(view)
     }
 
     fn plan_list(&self) -> Value {
         let plans: Vec<Value> = self
             .plans
             .iter()
-            .map(|(id, active)| self.plan_view(id, active))
+            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest))
             .collect();
         json!({ "plans": plans })
     }
@@ -3460,13 +3473,25 @@ impl AppState {
         }
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
+        // The detail poll's optional cursor: ship only conversation items the
+        // client does not already hold. Absent → the full backward-compatible
+        // thread.
+        if let Some(after_sequence) = thread_cursor(params) {
+            view.as_object_mut()
+                .expect("run_view returns an object")
+                .insert(
+                    "thread".to_string(),
+                    active.thread.wire_value_after(after_sequence),
+                );
+        }
+        Ok(view)
     }
 
     fn thread_revision(&self, params: &Value) -> Result<Value, String> {
@@ -3565,7 +3590,7 @@ impl AppState {
         persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -3593,7 +3618,7 @@ impl AppState {
         persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -3649,7 +3674,7 @@ impl AppState {
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -3672,7 +3697,7 @@ impl AppState {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -4010,7 +4035,7 @@ impl AppState {
             ids.into_iter()
                 .map(|id| {
                     let active = self.plans.get(&id).expect("listed above");
-                    self.plan_view(&id, active)
+                    self.plan_view(&id, active, ThreadDetail::Digest)
                 })
                 .collect()
         };
@@ -4020,7 +4045,7 @@ impl AppState {
                 .map(|id| {
                     let stat = self.run_stat(&id);
                     let active = self.runs.get(&id).expect("listed above");
-                    let mut view = self.run_view(&id, active);
+                    let mut view = self.run_view(&id, active, ThreadDetail::Digest);
                     view.as_object_mut()
                         .expect("run_view returns an object")
                         .insert("stat".to_string(), stat);
@@ -4103,7 +4128,9 @@ impl AppState {
     /// The wire view of a plan (spec §board.list): identity, state, project,
     /// model, timestamps, its stage docs (with open-comment counts), and the
     /// id of its active run if any (single-active-writer → at most one).
-    fn plan_view(&self, plan_id: &str, active: &ActivePlan) -> Value {
+    /// `thread_detail` picks a bounded digest (list surfaces) or the full
+    /// conversation (detail surfaces + mutation responses).
+    fn plan_view(&self, plan_id: &str, active: &ActivePlan, thread_detail: ThreadDetail) -> Value {
         let project_id = self
             .entity_project
             .get(plan_id)
@@ -4135,7 +4162,10 @@ impl AppState {
             "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
-            "thread": active.thread.wire_value(),
+            "thread": match thread_detail {
+                ThreadDetail::Digest => active.thread.digest_value(),
+                ThreadDetail::Full => active.thread.wire_value(),
+            },
             "active_run_id": active_run_id,
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
@@ -4158,7 +4188,9 @@ impl AppState {
     /// The wire view of a run (spec §board.list): identity + plan link, state,
     /// branch/base, per-stage execution progress (with validation), model, and
     /// timestamps. The live diffstat rides along in `board.list`.
-    fn run_view(&self, run_id: &str, active: &ActiveRun) -> Value {
+    /// `thread_detail` picks a bounded digest (list surfaces) or the full
+    /// conversation (detail surfaces + mutation responses).
+    fn run_view(&self, run_id: &str, active: &ActiveRun, thread_detail: ThreadDetail) -> Value {
         let project_id = self.entity_project.get(run_id).cloned().unwrap_or_default();
         let project = self
             .projects
@@ -4184,7 +4216,10 @@ impl AppState {
             "provider": active.model_choice.provider,
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
-            "thread": active.thread.wire_value(),
+            "thread": match thread_detail {
+                ThreadDetail::Digest => active.thread.digest_value(),
+                ThreadDetail::Full => active.thread.wire_value(),
+            },
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
@@ -4806,6 +4841,13 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("missing required param: {key}"))
+}
+
+/// The detail polls' optional `thread_after_sequence` cursor. A missing or
+/// garbage (non-integer, negative) value reads as absent — the poll then gets
+/// the full backward-compatible thread instead of an error.
+fn thread_cursor(params: &Value) -> Option<u64> {
+    params.get("thread_after_sequence").and_then(Value::as_u64)
 }
 
 /// A resolved `git.*` scope: the repository directory the RPC operates on,
@@ -8128,6 +8170,155 @@ mod tests {
                 .is_some_and(|s| !s.is_empty()),
             "{plan_entry:?}"
         );
+    }
+
+    #[test]
+    fn list_surfaces_carry_thread_digests_without_message_bodies() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "digest the board" })));
+        let plan_id = plan_id_of(&plan);
+        let run = state.handle(req("run.create", json!({ "goal": "a quick run" })));
+        let run_id = run_id_of(&run);
+        // Seed a real user message into each conversation so the assertions
+        // below prove bodies are omitted, not merely absent.
+        state.handle(req(
+            "plan.send_notes",
+            json!({
+                "plan_id": plan_id,
+                "messages": [{ "body": "plan-only-body-marker", "anchor": null }]
+            }),
+        ));
+        state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "messages": [{ "body": "run-only-body-marker", "anchor": null }]
+            }),
+        ));
+
+        let board = state.handle(req("board.list", json!({})));
+        for thread in [
+            &board["result"]["plans"][0]["thread"],
+            &board["result"]["runs"][0]["thread"],
+        ] {
+            assert!(thread.get("items").is_none(), "{thread:?}");
+            assert!(thread["item_count"].as_u64().unwrap() > 0, "{thread:?}");
+            assert!(thread["last_sequence"].as_u64().unwrap() > 0, "{thread:?}");
+            assert!(thread["last_event"]["event"].is_string(), "{thread:?}");
+        }
+        let serialized_board = board.to_string();
+        assert!(!serialized_board.contains("plan-only-body-marker"));
+        assert!(!serialized_board.contains("run-only-body-marker"));
+
+        let listed = state.handle(req("plan.list", json!({})));
+        assert!(
+            listed["result"]["plans"][0]["thread"]
+                .get("items")
+                .is_none(),
+            "{listed:?}"
+        );
+
+        // The detail surfaces must not regress: full threads, bodies intact.
+        let plan_view = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert!(plan_view.to_string().contains("plan-only-body-marker"));
+        let run_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert!(run_view.to_string().contains("run-only-body-marker"));
+    }
+
+    #[test]
+    fn detail_gets_with_a_cursor_ship_only_newer_thread_items() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "cursor the thread" })));
+        let run_id = run_id_of(&run);
+        state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "messages": [{ "body": "tighten the loop", "anchor": null }]
+            }),
+        ));
+
+        // Without a cursor the wire is exactly as before: every item, no totals.
+        let full = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let full_items = full["result"]["thread"]["items"].as_array().unwrap();
+        assert!(full_items.len() >= 2, "{full:?}");
+        assert!(full["result"]["thread"].get("thread_total").is_none());
+        let total = full_items.len() as u64;
+        let last_sequence = full_items.last().unwrap()["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+        let cursor = full_items[full_items.len() - 2]["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+
+        let delta = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_after_sequence": cursor }),
+        ));
+        let delta_thread = &delta["result"]["thread"];
+        let delta_items = delta_thread["items"].as_array().unwrap();
+        assert!(!delta_items.is_empty(), "{delta:?}");
+        assert!(delta_items
+            .iter()
+            .all(|item| item["data"]["sequence"].as_u64().unwrap() > cursor));
+        assert_eq!(delta_thread["thread_total"], total);
+        assert_eq!(delta_thread["thread_last_sequence"], last_sequence);
+
+        // A cursor past the end is an empty delta, never an error.
+        let drained = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_after_sequence": last_sequence + 100 }),
+        ));
+        assert_eq!(drained["ok"], true, "{drained:?}");
+        assert_eq!(
+            drained["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(drained["result"]["thread"]["thread_total"], total);
+
+        // A garbage cursor is treated as absent: the full backward-compatible thread.
+        let garbage = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_after_sequence": "junk" }),
+        ));
+        assert_eq!(garbage["ok"], true, "{garbage:?}");
+        assert_eq!(
+            garbage["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            full_items.len()
+        );
+        assert!(garbage["result"]["thread"].get("thread_total").is_none());
+    }
+
+    #[test]
+    fn plan_get_honors_the_thread_cursor() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "cursor the plan" })));
+        let plan_id = plan_id_of(&plan);
+
+        let full = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let full_items = full["result"]["thread"]["items"].as_array().unwrap();
+        assert!(!full_items.is_empty(), "{full:?}");
+        let last_sequence = full_items.last().unwrap()["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+
+        let delta = state.handle(req(
+            "plan.get",
+            json!({ "plan_id": plan_id, "thread_after_sequence": last_sequence }),
+        ));
+        let delta_thread = &delta["result"]["thread"];
+        assert_eq!(delta_thread["items"].as_array().unwrap().len(), 0);
+        assert_eq!(delta_thread["thread_total"], full_items.len() as u64);
+        assert_eq!(delta_thread["thread_last_sequence"], last_sequence);
     }
 
     #[test]

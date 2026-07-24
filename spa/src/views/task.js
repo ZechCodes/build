@@ -19,6 +19,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
+import { createThreadCache } from "../core/thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { hashFromRoute } from "../core/router.js";
 
@@ -216,6 +217,10 @@ export async function renderTask() {
   // under this view. We stop the poll and render a terminal gone-state so a stray
   // tick can never repaint over it.
   let gone = false;
+  // Cursor cache for the conversation: each poll sends the last-held sequence
+  // so the bridge ships only new items, not the whole thread every 1.6s. The
+  // review plug reads the merged thread through getTask() → last.
+  const threadCache = createThreadCache();
 
   // Leaving the run lands on its project page (or notifications when the
   // owning project was never learned).
@@ -420,13 +425,16 @@ export async function renderTask() {
     if (gone || App.offline) return; // latched gone-state / offline freeze: no repaint
     let t;
     try {
-      t = await App.call("run.get", { run_id: id });
+      t = await App.call("run.get", { run_id: id, ...threadCache.cursorParam() });
     } catch (e) {
       // A deleted run is permanent: latch the gone-state and stop polling.
       // Every other error is transient — stay silent and let the poll retry.
       if (/unknown run_id/.test((e && e.message) || "")) renderGone();
       return;
     }
+    // Fold the cursored conversation delta back into a full thread before
+    // `last` (and everything reading it) sees the payload.
+    t = { ...t, thread: threadCache.absorb(t.thread) };
     // Visiting the run reads it: mark once, on the first successful fetch.
     if (!visitMarkedRead) {
       visitMarkedRead = true;

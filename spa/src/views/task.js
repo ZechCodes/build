@@ -261,6 +261,13 @@ export async function renderTask() {
     taskId: id,
     callRpc: (method, params) => App.call(method, params),
     getTask: () => last,
+    // The plug's composer (thread.post) gets the full updated run view back:
+    // fold it through the same thread cache the poll uses, so the echoed
+    // message and the next cursored delta agree, and hand back the merged task.
+    absorbTaskView: (view) => {
+      last = { ...view, thread: threadCache.absorb(view.thread) };
+      return last;
+    },
     isOffline: () => App.offline,
     onMerged: () => goHome(),
   });

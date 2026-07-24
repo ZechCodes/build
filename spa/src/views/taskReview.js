@@ -16,19 +16,13 @@ import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { diffThreadMessages } from "../core/notes.js";
 import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
+import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 
 export const REVIEW_POLL_MS = 1600;
-
-// Run states whose agent can receive a freeform run.message — mirrors the
-// bridge's message_run gate (orchestrator.rs): a live Building session is
-// redirected, parked states resume. Review/StageGate are refused there (the
-// gates have structured verbs — request changes / dispatch a stage), and
-// terminal runs have no session to message, so no composer is offered.
-export const RUN_MESSAGEABLE_STATES = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
 
 // Each option id maps to a task.git_action call. cleanup is omitted for
 // commit/push (the bridge rejects cleanup on non-merges).
@@ -60,14 +54,16 @@ export function reviewMergeOptions(adopted, base) {
 }
 
 /**
- * createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) →
+ * createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged }) →
  *   { mount(host), unmount() } — the gitPane review plug for a task.
  *
  * getTask() returns the task view's freshest task.get payload (its own poll
- * keeps it current on every tab); onMerged() navigates away after a
- * successful merge.
+ * keeps it current on every tab); absorbTaskView(view) folds an RPC-returned
+ * run view back into that cached payload — through the task view's thread
+ * cursor cache, so the fold and the next cursored poll agree — and returns
+ * the merged task; onMerged() navigates away after a successful merge.
  */
-export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) {
+export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged }) {
   let host = null;
   let timer = null;
   let selDispose = null;
@@ -79,6 +75,13 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     diffKey = null,
     lastDiffState = null,
     diffMsg = "";
+  // Set by a successful composer send: the next paint must rebuild even
+  // through the busy freeze. paint() treats a focused composer as busy, and
+  // Cmd+Enter leaves focus in the textarea — without this flag the echo of a
+  // just-sent message would never paint (plan.js gets the same guarantee by
+  // force-nulling its render key; here busy would still win, so nulling
+  // diffKey alone is not enough).
+  let forceRebuild = false;
   // The conversation composer's draft, held in the plug closure (like plan.js's
   // threadDraft) and restored into every rebuild — a poll repaint can never eat
   // a half-typed message.
@@ -251,10 +254,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     }
   }
 
-  // Wire the conversation composer (run.message): "ask / tell the agent
-  // something" — a message to the agent's session, never a revision dispatch.
-  // The request-changes box below it is the other, distinct verb ("send these
-  // comments and get a revision"); the copy on each keeps them legible.
+  // Wire the conversation composer (thread.post): "ask / tell the agent
+  // something" — a durable conversation write that never dispatches a
+  // revision pass or moves run state. The request-changes box below it is the
+  // other, distinct verb ("send these comments and get a revision"); the copy
+  // on each keeps them legible.
   function wireComposer() {
     const input = q("#diffthreadinput"),
       send = q("#diffthreadsend"),
@@ -266,6 +270,9 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       if (hint) hint.textContent = "";
     };
     const submit = async () => {
+      // A send is in flight: Cmd+Enter reaches here without the button's
+      // native disabled gate, and a retry would double-post.
+      if (send.disabled) return;
       const message = input.value.trim();
       if (!message) {
         if (hint) hint.textContent = "Type a message first.";
@@ -275,9 +282,21 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       send.disabled = true;
       send.textContent = "sending…";
       try {
-        await callRpc("run.message", { run_id: taskId, message });
+        const view = await callRpc("thread.post", { entity_id: taskId, body: message });
+        // Restore the composer in place BEFORE any repaint: the busy freeze
+        // (or an offline tick) can skip the rebuild, and a wedged "sending…"
+        // button holding the sent text would re-send on the next Cmd+Enter.
         threadDraft = "";
+        input.value = "";
+        send.disabled = false;
+        send.textContent = "Send";
+        // Optimistic echo: thread.post returns the full updated run view.
+        // Fold it back through the task view's thread cache (never around it,
+        // or the next cursored poll would disagree with what we paint), then
+        // force the rebuild through the focused-composer freeze.
+        if (absorbTaskView) absorbTaskView(view);
         diffKey = null;
+        forceRebuild = true;
         paint();
       } catch (e) {
         send.disabled = false;
@@ -319,10 +338,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       ${filesHtml}
       ${threadHtml(t.thread, {
         agentLabel: t.harness,
-        // The composer shows only when run.message can land (the bridge refuses
-        // it at review gates and on terminal runs) — diff-scoped ids so it can
-        // never collide with the plan composer.
-        composer: RUN_MESSAGEABLE_STATES.includes(t.state) && {
+        // The composer shows wherever thread.post can land — the bridge
+        // refuses it only once the run is terminal (the conversation is
+        // closed), so review and the stage gate get it too. Diff-scoped ids
+        // so it can never collide with the plan composer.
+        composer: !RUN_TERMINAL_STATES.has(t.state) && {
           inputId: "diffthreadinput",
           sendId: "diffthreadsend",
           hintId: "diffthreadhint",
@@ -443,12 +463,21 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       hasCommentPop() ||
       (general && (general.value.trim() || document.activeElement === general)) ||
       (composerInput && document.activeElement === composerInput);
-    if (q(".diffbar") && (key === diffKey || busy)) {
+    if (q(".diffbar") && !forceRebuild && (key === diffKey || busy)) {
       updateActions();
       return;
     }
+    forceRebuild = false;
+    // A forced rebuild can run while the request-changes box holds unsent
+    // text (its content lives only in the DOM): carry it into the fresh box.
+    const generalDraft = general ? general.value : "";
     diffKey = key;
     renderBody(t, files);
+    const rebuiltGeneral = q("#dgeneral");
+    if (rebuiltGeneral && generalDraft && !rebuiltGeneral.value) {
+      rebuiltGeneral.value = generalDraft;
+      updateActions();
+    }
   };
 
   return {

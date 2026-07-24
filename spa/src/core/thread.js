@@ -37,8 +37,15 @@ function timeHtml(createdAt) {
 export function createThreadCache() {
   let accumulatedItems = [];
 
+  // The bridge bumps `updated_sequence` (drawn from the same counter as
+  // `sequence`) when it mutates a message in place — marking it seen,
+  // resolving it with a revision — so the cursor must cover the newest
+  // counter value any held item has touched, not just the newest creation.
+  const itemCursorSequence = (item) =>
+    Math.max(item.data?.sequence || 0, item.data?.updated_sequence || 0);
+
   const lastHeldSequence = () =>
-    accumulatedItems.length ? accumulatedItems[accumulatedItems.length - 1].data?.sequence || 0 : 0;
+    accumulatedItems.reduce((highest, item) => Math.max(highest, itemCursorSequence(item)), 0);
 
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
@@ -59,11 +66,16 @@ export function createThreadCache() {
         accumulatedItems = [...arrivedItems];
         return { ...threadPayload, items: accumulatedItems };
       }
-      const heldSequences = new Set(accumulatedItems.map((item) => item.data?.sequence));
-      const merged = [
-        ...accumulatedItems,
-        ...arrivedItems.filter((item) => !heldSequences.has(item.data?.sequence)),
-      ].sort((a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0));
+      // Keyed by creation sequence so a replay never grows the list, while an
+      // arrived copy replaces the held one — the bridge re-ships an item
+      // exactly when it holds newer state (seen, resolved) for it.
+      const mergedBySequence = new Map(accumulatedItems.map((item) => [item.data?.sequence, item]));
+      for (const arrived of arrivedItems) {
+        mergedBySequence.set(arrived.data?.sequence, arrived);
+      }
+      const merged = [...mergedBySequence.values()].sort(
+        (a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0),
+      );
       if (merged.length !== threadPayload.thread_total) {
         // Gap or shrink: render what we have this tick, but drop the cache so
         // the next poll refetches the full thread and self-heals.

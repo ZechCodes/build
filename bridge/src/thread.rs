@@ -73,6 +73,12 @@ pub struct MessageAnchor {
 pub struct ThreadMessage {
     pub id: String,
     pub sequence: u64,
+    /// Drawn from the same counter as `sequence` and bumped whenever the
+    /// message mutates in place (`seen_at`, `resolved_by_revision`), so the
+    /// cursor protocol re-ships the newer copy of an already-held item.
+    /// Defaults to 0 (never mutated) on records persisted before this field.
+    #[serde(default)]
+    pub updated_sequence: u64,
     pub role: MessageRole,
     #[serde(default, skip_serializing_if = "MessageSource::is_chat")]
     pub source: MessageSource,
@@ -142,6 +148,15 @@ impl ThreadItem {
     pub fn sequence(&self) -> u64 {
         match self {
             ThreadItem::Message(message) => message.sequence,
+            ThreadItem::Event(event) => event.sequence,
+        }
+    }
+
+    /// The newest counter value this item has touched: its creation sequence,
+    /// or a later in-place mutation bump. Events never mutate in place.
+    pub fn latest_sequence(&self) -> u64 {
+        match self {
+            ThreadItem::Message(message) => message.sequence.max(message.updated_sequence),
             ThreadItem::Event(event) => event.sequence,
         }
     }
@@ -238,7 +253,7 @@ impl Thread {
         self.next_sequence = self.next_sequence.max(
             self.items
                 .iter()
-                .map(ThreadItem::sequence)
+                .map(ThreadItem::latest_sequence)
                 .max()
                 .unwrap_or(0),
         );
@@ -312,6 +327,7 @@ impl Thread {
         self.items.push(ThreadItem::Message(ThreadMessage {
             id: id.clone(),
             sequence,
+            updated_sequence: sequence,
             role,
             source,
             body,
@@ -331,6 +347,11 @@ impl Thread {
             };
             if message.role == MessageRole::User && message.seen_at.is_none() {
                 message.seen_at = Some(now.to_string());
+                // An in-place mutation of an already-sequenced item: bump its
+                // updated_sequence (inlined `next()` — the loop holds a borrow
+                // of `self.items`) so cursored polls re-ship the seen state.
+                self.next_sequence += 1;
+                message.updated_sequence = self.next_sequence;
                 unread.push(message.clone());
             }
         }
@@ -443,6 +464,10 @@ impl Thread {
                 && !contents.contains(anchor.snippet.trim())
             {
                 message.resolved_by_revision = Some(revision.id.clone());
+                // Same cursor rule as read_unread: resolution mutates an
+                // already-sequenced item, so bump for the cursored polls.
+                self.next_sequence += 1;
+                message.updated_sequence = self.next_sequence;
             }
         }
         self.revisions.push(revision.clone());
@@ -478,23 +503,36 @@ impl Thread {
             "agent": self.agent,
             "sessions": self.sessions,
             "items": self.items,
-            "revisions": self.revisions.iter().map(|revision| json!({
-                "id": revision.id,
-                "artifact": revision.artifact,
-                "content_hash": revision.content_hash,
-                "created_at": revision.created_at,
-                "snapshot_available": revision.snapshot.is_some(),
-            })).collect::<Vec<_>>(),
+            "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
         })
     }
 
-    /// The highest sequence any item carries (0 for an empty thread) — the
-    /// client's cursor high-water mark.
+    /// Snapshot-free revision listing shared by the full and cursored wire
+    /// views.
+    fn revision_summaries(&self) -> Vec<Value> {
+        self.revisions
+            .iter()
+            .map(|revision| {
+                json!({
+                    "id": revision.id,
+                    "artifact": revision.artifact,
+                    "content_hash": revision.content_hash,
+                    "created_at": revision.created_at,
+                    "snapshot_available": revision.snapshot.is_some(),
+                })
+            })
+            .collect()
+    }
+
+    /// The highest counter value any item has touched — creation or in-place
+    /// mutation bump (0 for an empty thread) — the client's cursor high-water
+    /// mark. Counting mutation bumps is what keeps the cursored polls from
+    /// re-shipping a mutated item forever.
     pub fn last_sequence(&self) -> u64 {
         self.items
             .iter()
-            .map(ThreadItem::sequence)
+            .map(ThreadItem::latest_sequence)
             .max()
             .unwrap_or(0)
     }
@@ -507,17 +545,6 @@ impl Thread {
             ThreadItem::Event(event) => Some(event),
             ThreadItem::Message(_) => None,
         });
-        let unseen_user_messages = self
-            .items
-            .iter()
-            .filter(|item| {
-                matches!(
-                    item,
-                    ThreadItem::Message(message)
-                        if message.role == MessageRole::User && message.seen_at.is_none()
-                )
-            })
-            .count();
         json!({
             "id": self.id,
             "agent": self.agent,
@@ -527,30 +554,32 @@ impl Thread {
                 "event": event.event,
                 "created_at": event.created_at,
             })),
-            "unseen_user_messages": unseen_user_messages,
         })
     }
 
-    /// Cursor view for the detail polls: only items strictly after
-    /// `after_sequence`, plus `thread_total` / `thread_last_sequence` so the
-    /// client can detect a gap (bridge restart, dropped delta) and refetch in
-    /// full. Sessions, revisions and last_completion are small and bounded, so
-    /// they always ship whole.
+    /// Cursor view for the detail polls: only items created — or mutated in
+    /// place — strictly after `after_sequence`, plus `thread_total` /
+    /// `thread_last_sequence` so the client can detect a gap (bridge restart,
+    /// dropped delta) and refetch in full. Built directly (never by trimming a
+    /// full `wire_value`) so the per-poll serialization cost is bounded like
+    /// the wire. Sessions, revisions and last_completion are small and
+    /// bounded, so they always ship whole.
     pub fn wire_value_after(&self, after_sequence: u64) -> Value {
         let newer: Vec<&ThreadItem> = self
             .items
             .iter()
-            .filter(|item| item.sequence() > after_sequence)
+            .filter(|item| item.latest_sequence() > after_sequence)
             .collect();
-        let mut value = self.wire_value();
-        let object = value.as_object_mut().expect("wire_value returns an object");
-        object.insert("items".to_string(), json!(newer));
-        object.insert("thread_total".to_string(), json!(self.items.len()));
-        object.insert(
-            "thread_last_sequence".to_string(),
-            json!(self.last_sequence()),
-        );
-        value
+        json!({
+            "id": self.id,
+            "agent": self.agent,
+            "sessions": self.sessions,
+            "items": newer,
+            "revisions": self.revision_summaries(),
+            "last_completion": self.last_completion,
+            "thread_total": self.items.len(),
+            "thread_last_sequence": self.last_sequence(),
+        })
     }
 
     pub fn catch_up_markdown(&self, limit: usize) -> String {
@@ -649,8 +678,9 @@ mod tests {
         assert_eq!(digest["last_sequence"], 4);
         assert_eq!(digest["last_event"]["event"], "done");
         assert_eq!(digest["last_event"]["created_at"], "2026-07-24T12:02:00Z");
-        assert_eq!(digest["unseen_user_messages"], 2);
-        // The bounded contract: no item array, no message bodies anywhere.
+        // The bounded contract: no item array, no message bodies anywhere, and
+        // no counters nothing consumes (unseen_user_messages was dead payload).
+        assert!(digest.get("unseen_user_messages").is_none(), "{digest:?}");
         assert!(digest.get("items").is_none(), "{digest:?}");
         let serialized = digest.to_string();
         assert!(!serialized.contains("please rename the helper"));
@@ -662,7 +692,6 @@ mod tests {
         let digest = Thread::new("plan-empty").digest_value();
         assert_eq!(digest["item_count"], 0);
         assert_eq!(digest["last_sequence"], 0);
-        assert_eq!(digest["unseen_user_messages"], 0);
         assert!(digest["last_event"].is_null(), "{digest:?}");
     }
 
@@ -689,5 +718,55 @@ mod tests {
         assert_eq!(delta["items"].as_array().unwrap().len(), 0);
         assert_eq!(delta["thread_total"], 3);
         assert_eq!(delta["thread_last_sequence"], 3);
+    }
+
+    #[test]
+    fn wire_value_after_reships_a_message_marked_seen_after_the_cursor() {
+        let mut thread = Thread::new("plan-1");
+        thread.post_user("please rename the helper", None, "2026-07-24T12:00:00Z");
+        let cursor = thread.last_sequence();
+        thread.read_unread("2026-07-24T12:05:00Z");
+
+        let delta = thread.wire_value_after(cursor);
+        let items = delta["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["data"]["seen_at"], "2026-07-24T12:05:00Z");
+        // The mutation advances the high-water mark so the client's next
+        // cursor moves past it instead of re-requesting the item forever.
+        let bumped = delta["thread_last_sequence"].as_u64().unwrap();
+        assert!(bumped > cursor, "{delta:?}");
+        let drained = thread.wire_value_after(bumped);
+        assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    #[test]
+    fn wire_value_after_reships_a_message_resolved_by_a_later_revision() {
+        let mut thread = Thread::new("plan-1");
+        let anchor = MessageAnchor {
+            artifact: ArtifactKind::Plan,
+            revision_id: None,
+            path: None,
+            side: None,
+            line_start: None,
+            line_end: None,
+            heading_path: Vec::new(),
+            snippet: "old wording".to_string(),
+        };
+        thread.post_user("tighten this", Some(anchor), "2026-07-24T12:00:00Z");
+        let cursor = thread.last_sequence();
+        let revision = thread.add_revision(ArtifactKind::Plan, "rewritten", "2026-07-24T12:06:00Z");
+
+        let delta = thread.wire_value_after(cursor);
+        let items = delta["items"].as_array().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| item["data"]["resolved_by_revision"] == json!(revision.id)),
+            "{items:?}"
+        );
+        let bumped = delta["thread_last_sequence"].as_u64().unwrap();
+        assert!(bumped > cursor, "{delta:?}");
+        let drained = thread.wire_value_after(bumped);
+        assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
     }
 }

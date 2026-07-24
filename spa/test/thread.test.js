@@ -144,12 +144,36 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 4 });
   });
 
-  it("de-duplicates a replayed sequence, keeping the item it already holds", () => {
+  it("never grows on a replayed sequence, and the arrived copy of the item wins", () => {
     const cache = createThreadCache();
-    cache.absorb({ items: [item(1, "a"), item(2, "held")] });
-    const merged = cache.absorb({ items: [item(2, "replayed"), item(3, "c")], thread_total: 3, thread_last_sequence: 3 });
+    cache.absorb({ items: [item(1, "a"), item(2, "stale")] });
+    const merged = cache.absorb({ items: [item(2, "reshipped"), item(3, "c")], thread_total: 3, thread_last_sequence: 3 });
     expect(merged.items.map((i) => i.data.sequence)).toEqual([1, 2, 3]);
-    expect(merged.items[1].data.body).toBe("held");
+    expect(merged.items[1].data.body).toBe("reshipped");
+  });
+
+  it("replaces a held item when a mutation delta re-ships it, and advances the cursor past the bump", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [{ type: "message", data: { sequence: 1, role: "user", body: "rename it", seen_at: null } }],
+    });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });
+    // The bridge stamped seen_at on the held message and bumped its
+    // updated_sequence; the cursored delta re-ships the newer copy.
+    const merged = cache.absorb({
+      items: [{ type: "message", data: { sequence: 1, updated_sequence: 2, role: "user", body: "rename it", seen_at: "2026-07-24T12:05:00Z" } }],
+      thread_total: 1,
+      thread_last_sequence: 2,
+    });
+    expect(merged.items).toHaveLength(1);
+    expect(merged.items[0].data.seen_at).toBe("2026-07-24T12:05:00Z");
+    // The next cursor moves past the mutation bump so the bridge stops
+    // re-shipping the same item on every poll.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+    // End-to-end regression guard: the re-rendered thread shows Seen.
+    const html = threadHtml(merged);
+    expect(html).toContain("Seen");
+    expect(html).not.toContain("Unread");
   });
 
   it("a zero-item delta leaves the accumulated items intact", () => {

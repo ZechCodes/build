@@ -8948,6 +8948,62 @@ mod tests {
     }
 
     #[test]
+    fn a_cursored_poll_reships_a_message_after_the_agent_marks_it_seen() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let mut active = crate::orchestrator::ActiveRun::reattach(
+            &fake_run_record("run-seen"),
+            ".build/plan.md".into(),
+        );
+        active.thread.post_user("rename it", None, now_rfc3339());
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert("run-seen".into(), project_id);
+        state.runs.insert("run-seen".into(), active);
+
+        // The client holds the full thread: its cursor is the last sequence.
+        let full = state.handle(req("run.get", json!({ "run_id": "run-seen" })));
+        let full_items = full["result"]["thread"]["items"].as_array().unwrap();
+        let cursor = full_items.last().unwrap()["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+
+        // The agent reads the message: an in-place mutation of an item the
+        // client already holds. Pre-fix regression: the cursored poll skipped
+        // it and the message rendered "Unread" forever.
+        state
+            .on_mcp_action("run-seen", BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        let delta = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-seen", "thread_after_sequence": cursor }),
+        ));
+        let delta_thread = &delta["result"]["thread"];
+        let reshipped = delta_thread["items"].as_array().unwrap();
+        assert!(
+            reshipped
+                .iter()
+                .any(|item| item["data"]["body"] == "rename it"
+                    && item["data"]["seen_at"].is_string()),
+            "{delta_thread:?}"
+        );
+        // And the advanced high-water mark drains: the client does not loop.
+        let advanced = delta_thread["thread_last_sequence"].as_u64().unwrap();
+        assert!(advanced > cursor, "{delta_thread:?}");
+        let drained = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-seen", "thread_after_sequence": advanced }),
+        ));
+        assert_eq!(
+            drained["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "{drained:?}"
+        );
+    }
+
+    #[test]
     fn mark_idle_demotes_a_quiet_plan_and_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());

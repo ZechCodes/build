@@ -530,7 +530,11 @@ const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_m
 /// startup screen. First output is the readiness signal; when the grace
 /// expires the prompt is written anyway — a spawn that silently never delivers
 /// its prompt is worse than one that races the startup screen.
-const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Upper bound on waiting for a harness to become ready. Must comfortably
+/// exceed a real TUI's full startup — claude 2.1.219 settles at ~1.8s, plus its
+/// declared settle window — or the wait expires and the prompt is written into
+/// a still-painting screen, which is the failure it exists to prevent.
+const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(6000);
 
 fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);

@@ -75,6 +75,11 @@ const PASTE_END: &str = "\u{1b}[201~";
 /// dialog, well before it will accept a turn).
 const PASTE_MODE_ENABLED: &[u8] = b"\x1b[?2004h";
 
+/// Default settle window for a harness that declares none — small, because a
+/// scripted harness paints once and stops. Real TUIs override it: see
+/// [`HarnessSpec::settle`].
+const DEFAULT_SETTLE: Duration = Duration::from_millis(50);
+
 /// Remove bracketed-paste markers from prompt text before it enters a TUI.
 /// Prompt text carries reviewer-supplied thread content: an embedded paste-end
 /// would close the frame mid-prompt and replay the remainder as raw keystrokes
@@ -132,6 +137,25 @@ pub struct HarnessSpec {
     pub env: Vec<(String, String)>,
     /// How a written prompt is submitted.
     pub submit: SubmitKey,
+    /// Environment variables to REMOVE before exec.
+    ///
+    /// Build spawns an agent from a process that may itself be an agent, and a
+    /// harness that finds its own session markers in the environment believes it
+    /// is a nested child of that session — claude 2.1.219 disables transcript
+    /// saving and warns about an "inherited CLAUDE_CODE_CHILD_SESSION marker".
+    /// The spawned agent must be its own session, never a continuation of
+    /// whatever launched the daemon.
+    pub unset: Vec<String>,
+    /// How long this harness must stop painting before its input is live.
+    ///
+    /// Startup is a burst with GAPS in it — measured against claude 2.1.219:
+    /// paste mode at 550ms, a 311ms lull, then the alternate-screen switch at
+    /// 1212ms whose clear discards anything typed during that lull, and a final
+    /// render at 1761ms. So the window must outlast the largest intra-startup
+    /// gap, not merely the first pause. Per-harness rather than global: a
+    /// scripted test harness paints once and would otherwise pay a real TUI's
+    /// startup cost on every spawn.
+    pub settle: Duration,
 }
 
 impl HarnessSpec {
@@ -142,7 +166,27 @@ impl HarnessSpec {
             args: Vec::new(),
             env: Vec::new(),
             submit: SubmitKey::Enter,
+            unset: Vec::new(),
+            settle: DEFAULT_SETTLE,
         }
+    }
+
+    /// Remove `key` from the spawned harness's environment.
+    pub fn unset(mut self, key: impl Into<String>) -> Self {
+        self.unset.push(key.into());
+        self
+    }
+
+    /// Remove every named key from the spawned harness's environment.
+    pub fn unset_all<K: Into<String>>(mut self, keys: impl IntoIterator<Item = K>) -> Self {
+        self.unset.extend(keys.into_iter().map(Into::into));
+        self
+    }
+
+    /// Declare how long this harness's startup paint takes to settle.
+    pub fn settle(mut self, settle: Duration) -> Self {
+        self.settle = settle;
+        self
     }
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
@@ -172,6 +216,7 @@ pub struct PtySession {
     /// "now" at spawn, so it never distinguishes "not ready" from "just spawned".
     accepts_paste: Arc<AtomicBool>,
     submit: SubmitKey,
+    settle: Duration,
     /// The child's exit code, cached the first time it is observed. `try_wait`
     /// reaps the child exactly once, so the status must be remembered here or the
     /// crash-detection message ("exit code N") could never recover the code after
@@ -193,6 +238,9 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new(resolve_binary(spec)?);
         cmd.args(&spec.args);
+        for key in &spec.unset {
+            cmd.env_remove(key);
+        }
         for (key, value) in &spec.env {
             cmd.env(key, value);
         }
@@ -269,6 +317,7 @@ impl PtySession {
             last_activity,
             accepts_paste,
             submit: spec.submit.clone(),
+            settle: spec.settle,
             exit_code: Mutex::new(None),
         })
     }
@@ -370,7 +419,14 @@ impl PtySession {
     pub fn ready_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.accepts_paste.load(Ordering::Relaxed) {
+            // Paste mode alone is necessary but NOT sufficient: a real TUI
+            // announces it during startup and then switches to the alternate
+            // screen and clears it, which wipes anything typed in between.
+            // Verified against claude 2.1.219 — the prompt wrote successfully,
+            // and the clear discarded it. So also require the paint storm to
+            // have settled: an editor that has stopped redrawing is one that is
+            // waiting on input.
+            if self.accepts_paste.load(Ordering::Relaxed) && self.idle_for() >= self.settle {
                 return true;
             }
             if self.has_exited() || Instant::now() >= deadline {

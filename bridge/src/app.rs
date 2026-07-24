@@ -405,6 +405,27 @@ struct ExternalScanCache {
 /// UI layer over the agent's PTY: every provider is launched interactively, the
 /// rendered prompt is injected into that PTY, and the same session is streamed
 /// to attached clients. The closure is shared across projects via `Agent: Clone`.
+/// How long a real harness TUI must stop painting before its input is live.
+/// Measured against claude 2.1.219: the largest gap inside its startup burst is
+/// ~400ms (and the alternate-screen clear lands after a 311ms lull), so the
+/// window has to clear that comfortably or the prompt is typed into a screen
+/// that is about to be wiped.
+const REAL_TUI_SETTLE: Duration = Duration::from_millis(750);
+
+/// Session markers a parent agent leaves in the environment. A harness that
+/// finds its own markers treats itself as a nested child of that session rather
+/// than its own — claude disables transcript saving, which breaks the
+/// `--continue` adoption path Build depends on. Build's agents are always their
+/// own sessions.
+const INHERITED_AGENT_MARKERS: [&str; 6] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_EFFORT",
+];
+
 fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
@@ -434,6 +455,8 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                 AgentProvider::Claude => {
                     pre_trust_worktree_for_claude(&options.cwd);
                     let mut spec = HarnessSpec::new("claude")
+                        .settle(REAL_TUI_SETTLE)
+                        .unset_all(INHERITED_AGENT_MARKERS)
                         .arg("--mcp-config")
                         .arg(".build/mcp.json")
                         .arg("--strict-mcp-config")
@@ -447,8 +470,10 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                     spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
                 }
                 AgentProvider::Codex => {
-                    let mut spec =
-                        HarnessSpec::new("codex").arg("--dangerously-bypass-approvals-and-sandbox");
+                    let mut spec = HarnessSpec::new("codex")
+                        .settle(REAL_TUI_SETTLE)
+                        .unset_all(INHERITED_AGENT_MARKERS)
+                        .arg("--dangerously-bypass-approvals-and-sandbox");
                     for arg in choice.harness_args() {
                         spec = spec.arg(arg);
                     }
@@ -9361,6 +9386,181 @@ mod tests {
         assert!(
             echoed.contains("read_unread_messages"),
             "the live PTY must hear the nudge: {echoed:?}"
+        );
+    }
+
+    /// The only test that can prove prompt delivery actually works.
+    ///
+    /// Everything else in this suite runs against a scripted harness, which by
+    /// construction cannot tell a delivered prompt from one eaten by a startup
+    /// dialog or shredded into per-line turns — that blind spot is exactly how
+    /// three rounds of green suites hid a dispatch that delivered nothing. This
+    /// spawns the REAL `claude` binary through the REAL adapter, in a fresh
+    /// worktree-like directory (so the workspace-trust dialog is armed), with a
+    /// deliberately MULTI-LINE prompt (so bracketed-paste framing is exercised),
+    /// and asserts the agent acted on the whole prompt.
+    ///
+    /// Ignored by default: it needs `claude` installed, authenticated, and a
+    /// network round trip, none of which belong in `cargo test`. Run it by hand
+    /// after touching anything in the spawn path:
+    ///
+    /// ```text
+    /// cargo test --lib real_claude -- --ignored --nocapture
+    /// BUILD_E2E_TIMING=1     # timestamp every chunk, flag paste-mode/alt-screen
+    /// BUILD_E2E_TRANSCRIPT=/tmp/e2e.txt   # dump the full raw stream
+    /// BUILD_E2E_WAIT=45      # shorten the wait while iterating
+    /// ```
+    ///
+    /// STATUS: currently FAILS against claude 2.1.219, and that failure is real
+    /// — warm-TUI dispatch does not deliver. What it has already established:
+    ///   - Workspace trust is fixed. The dialog no longer appears in a brand-new
+    ///     directory, so `pre_trust_worktree_for_claude` works.
+    ///   - Readiness and settle are necessary but not sufficient. With
+    ///     REAL_TUI_SETTLE the write now lands ~750ms after the final startup
+    ///     paint (measured: last paint 2716ms, write 3466ms) instead of into the
+    ///     alternate-screen clear.
+    ///   - The prompt text never appears on screen at all, and the TUI emits
+    ///     ZERO output for the following two minutes. A composer receiving
+    ///     keystrokes would redraw, so the remaining fault is below paste
+    ///     framing and below the submit key — the bytes are not reaching
+    ///     claude's input reader. Cause not yet identified.
+    /// Do not treat the warm-TUI path as working until this passes.
+    /// Shortened via BUILD_E2E_WAIT while iterating on the spawn path.
+    fn e2e_wait() -> Duration {
+        Duration::from_secs(
+            std::env::var("BUILD_E2E_WAIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(180),
+        )
+    }
+
+    #[test]
+    #[ignore = "spawns the real claude binary; needs auth + network"]
+    fn real_claude_session_receives_the_whole_multiline_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("fresh-worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        // The adapter passes --mcp-config .build/mcp.json --strict-mcp-config,
+        // so the file must exist or claude exits before reading a byte of the
+        // prompt. Real dispatch scaffolds this (Orchestrator::scaffold_build_dir);
+        // mirror the shape here. The server is never called — this test asserts
+        // prompt DELIVERY, not the done round trip.
+        let build_dir = workspace.join(".build");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::write(
+            build_dir.join("mcp.json"),
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+
+        // The marker is split across prompt LINES on purpose: only a prompt that
+        // arrived as one turn can reassemble it. A prompt submitted line-by-line
+        // leaves the agent acting on a fragment, which is the exact production
+        // failure this guards.
+        let prompt = "You are being driven by an automated test.\n\
+             Do exactly this and nothing else, then stop.\n\
+             \n\
+             Create a file named `handshake.txt` in the current directory.\n\
+             Its only contents must be these two words joined by a hyphen:\n\
+             first word: BUILD\n\
+             second word: DELIVERED\n\
+             \n\
+             So the file contains exactly: BUILD-DELIVERED\n";
+
+        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/unused-e2e.sock".into()) else {
+            panic!("real agent should be a provider-aware warm TUI");
+        };
+        let choice = ModelChoice {
+            provider: AgentProvider::Claude,
+            model: Some("haiku".into()),
+            effort: None,
+        };
+        let options = SpawnOptions {
+            continue_session: false,
+            owner_id: "e2e".into(),
+            cwd: workspace.clone(),
+        };
+        // Building the spec is what pre-trusts the workspace — the dialog this
+        // guards against fires precisely because the directory is brand new.
+        let spec = build(prompt, &choice, &options);
+
+        // The three lines under test, mirroring Orchestrator::spawn_into_slot.
+        let session = PtySession::spawn(
+            &spec,
+            Some(workspace.clone()),
+            PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
+        .expect("claude should spawn — is it installed and on PATH?");
+        // Capture the session so a failure reports what the harness actually did
+        // — a trust dialog, an argv rejection and an unsubmitted prompt all look
+        // identical from the filesystem alone.
+        let mut output = session.subscribe();
+        let transcript = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        {
+            let transcript = std::sync::Arc::clone(&transcript);
+            let started = std::time::Instant::now();
+            std::thread::spawn(move || {
+                while let Ok(chunk) = output.blocking_recv() {
+                    let text = String::from_utf8_lossy(&chunk).into_owned();
+                    if std::env::var("BUILD_E2E_TIMING").is_ok() {
+                        eprintln!(
+                            "[{:>6}ms] {:>5}B{}{}",
+                            started.elapsed().as_millis(),
+                            chunk.len(),
+                            if text.contains("\u{1b}[?2004h") {
+                                " PASTE-MODE"
+                            } else {
+                                ""
+                            },
+                            if text.contains("\u{1b}[?1049h") {
+                                " ALT-SCREEN"
+                            } else {
+                                ""
+                            },
+                        );
+                    }
+                    transcript.lock().unwrap().push_str(&text);
+                }
+            });
+        }
+
+        let ready = session.ready_within(Duration::from_secs(30));
+        let written = session.write_prompt(prompt);
+
+        let handshake = workspace.join("handshake.txt");
+        let deadline = std::time::Instant::now() + e2e_wait();
+        while std::time::Instant::now() < deadline {
+            if std::fs::read_to_string(&handshake)
+                .is_ok_and(|body| body.contains("BUILD-DELIVERED"))
+            {
+                session.kill_and_reap();
+                return;
+            }
+            if session.has_exited() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        let observed = std::fs::read_to_string(&handshake).unwrap_or_default();
+        session.kill_and_reap();
+        let seen = transcript.lock().unwrap().clone();
+        if let Ok(dump) = std::env::var("BUILD_E2E_TRANSCRIPT") {
+            let _ = std::fs::write(&dump, &seen);
+        }
+        panic!(
+            "the agent never acted on the delivered prompt.\n\
+             ready={ready} write={written:?} handshake={observed:?}\n\
+             Either the prompt landed in a startup dialog, was never submitted, \
+             or arrived as fragmented turns.\n\
+             ---- harness output ----\n{}\n---- end ----",
+            &seen[seen.len().saturating_sub(4000)..]
         );
     }
 

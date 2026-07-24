@@ -3634,7 +3634,9 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            nudge_live_session(&active.session, &entity_id);
+            if matches!(active.plan.state, PlanState::Drafting) {
+                nudge_live_session(&active.session, &entity_id);
+            }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             persisted?;
             return Ok(view);
@@ -3649,7 +3651,9 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            nudge_live_session(&active.session, &entity_id);
+            if matches!(active.run.state, RunState::Building) {
+                nudge_live_session(&active.session, &entity_id);
+            }
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
             return Ok(view);
@@ -5223,11 +5227,18 @@ fn parse_thread_post_input(
     parse_thread_inputs(&wrapped, artifact, "body")
 }
 
-/// Tell a live harness session — in place, through the same PTY-write
-/// primitive `term.input` uses — that unread thread messages await. A dead
-/// slot swallows the write (the message waits for the next session's
-/// catch-up), and a write failure against an exiting harness is logged, never
-/// surfaced: the message is durable either way.
+/// Tell a live harness session, in place, that unread thread messages await.
+///
+/// Only call this when the agent acting on them can actually be CONSUMED — a
+/// run that is `building`, a plan that is `drafting`. A harness parked at a
+/// review gate is still alive (nothing ends the session at the gate), so waking
+/// it there dispatches work whose `done` is an illegal transition: the report is
+/// rejected, nothing moves, and the conversation gains a bogus failure event.
+/// Everywhere else the post is simply durable, and the next session's catch-up
+/// packet carries it.
+///
+/// A dead slot swallows the write, and a write failure against an exiting
+/// harness is logged, never surfaced: the message is durable either way.
 fn nudge_live_session(session: &SessionSlot, entity_id: &str) {
     // Through write_prompt, not a raw write with a hardcoded Enter: the nudge is
     // a turn, so it must honor the harness's SubmitKey and paste framing exactly
@@ -9351,6 +9362,54 @@ mod tests {
             echoed.contains("read_unread_messages"),
             "the live PTY must hear the nudge: {echoed:?}"
         );
+    }
+
+    /// A post at a review gate must NOT wake the harness. The session outlives
+    /// `done` (nothing ends it at the gate), so nudging it to "act on every
+    /// unread message" dispatches work whose `done` is an illegal transition
+    /// from `review` — the report is rejected, the run does not move, and the
+    /// conversation gains a bogus failure event. Post-only means the message
+    /// waits for the next dispatch's catch-up.
+    #[test]
+    fn thread_post_at_a_review_gate_leaves_the_parked_harness_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run = state.handle(req("run.create", json!({ "goal": "parked but live" })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "review", "{run:?}");
+        let active = state.runs.get(&run_id).unwrap();
+        assert!(
+            active.session.subscribe().is_some(),
+            "precondition: the harness is still live at the gate"
+        );
+        let mut output = active.session.subscribe().unwrap();
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "a note for later" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let mut echoed = String::new();
+        while std::time::Instant::now() < deadline {
+            match output.try_recv() {
+                Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            !echoed.contains("read_unread_messages"),
+            "a parked harness must not be told to act: {echoed:?}"
+        );
+        // Durable regardless: the next session's catch-up carries it.
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(unread["messages"][0]["body"], "a note for later");
     }
 
     /// Only entities with no meaningful conversation left refuse a post:

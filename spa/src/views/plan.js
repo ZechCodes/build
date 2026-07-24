@@ -15,7 +15,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentPane } from "../core/surfaceTabs.js";
 import { terminalManager } from "../terminal/manager.js";
-import { createThreadCache, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -184,48 +184,24 @@ export async function renderPlan() {
       threadRenderKey = key;
       host.innerHTML = threadHtml(p.thread, { initialMessage: p.goal, composer, agentLabel: p.harness });
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
-      const input = host.querySelector("#planthreadinput");
-      const send = host.querySelector("#planthreadsend");
-      const hint = host.querySelector("#planthreadhint");
-      if (!input || !send) return;
-      input.value = threadDraft;
-      input.oninput = () => {
-        threadDraft = input.value;
-        if (hint) hint.textContent = "";
-      };
-      const submit = async () => {
-        const message = input.value.trim();
-        if (!message) {
-          if (hint) hint.textContent = "Type a message first.";
-          input.focus();
-          return;
-        }
-        send.disabled = true;
-        send.textContent = "sending…";
-        try {
-          if (p.state === "plan_review") {
-            await App.call("plan.send_notes", { plan_id: id, messages: [{ body: message, anchor: null }] });
-          } else {
-            await App.call("plan.message", { plan_id: id, message });
-          }
-          threadDraft = "";
+      wireThreadComposer(host, {
+        ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+        readDraft: () => threadDraft,
+        writeDraft: (value) => {
+          threadDraft = value;
+        },
+        onSubmit: (message) =>
+          p.state === "plan_review"
+            ? App.call("plan.send_notes", { plan_id: id, messages: [{ body: message, anchor: null }] })
+            : App.call("plan.message", { plan_id: id, message }),
+        afterSubmit: () => {
           threadRenderKey = null;
           planKey = null;
           stagesKey = null;
-          await paint();
-        } catch (error) {
-          send.disabled = false;
-          send.textContent = "Send";
-          notifyError("Message failed", error.message);
-        }
-      };
-      send.onclick = submit;
-      input.onkeydown = (event) => {
-        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault();
-          submit();
-        }
-      };
+          paint();
+        },
+        onError: (error) => notifyError("Message failed", error.message),
+      });
     }
   };
 

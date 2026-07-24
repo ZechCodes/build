@@ -76,6 +76,65 @@ function mountReview(initialTask, { deferThreadPost = false } = {}) {
   };
 }
 
+/// A review surface whose thread items the test can swap between polls, to
+/// stand in for the bridge mutating an item in place (seen_at/resolved_by).
+function mountReviewWithThread(items) {
+  let task = { run_id: "r1", state: "review", thread: { items, sessions: [], revisions: [] } };
+  const callRpc = (method) =>
+    method === "run.diff"
+      ? Promise.resolve({ patch: patchFor("a.txt"), stat: {}, files: [] })
+      : Promise.resolve({});
+  const plug = createTaskReview({
+    taskId: "r1",
+    callRpc,
+    getTask: () => task,
+    absorbTaskView: (view) => (task = view),
+    isOffline: () => false,
+    onMerged: () => {},
+  });
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  plug.mount(host);
+  return {
+    plug,
+    host,
+    setTask: (nextItems) => {
+      task = { ...task, thread: { ...task.thread, items: nextItems } };
+    },
+  };
+}
+
+/// A review surface whose run.diff resolution the test controls, so a poll
+/// paint can be held mid-flight while the composer posts underneath it.
+function mountReviewWithSlowDiff() {
+  const rpcCalls = [];
+  const pendingDiffs = [];
+  let task = { run_id: "r1", state: "review", thread: { items: [], sessions: [], revisions: [] } };
+  let nextSequence = 100;
+  const callRpc = (method, params) => {
+    rpcCalls.push({ method, params });
+    if (method === "run.diff") {
+      return new Promise((resolve) =>
+        pendingDiffs.push(() => resolve({ patch: patchFor("a.txt"), stat: {}, files: [] })),
+      );
+    }
+    if (method === "thread.post") return Promise.resolve(runViewAfterPost(task, params.body, ++nextSequence));
+    return Promise.resolve({});
+  };
+  const plug = createTaskReview({
+    taskId: "r1",
+    callRpc,
+    getTask: () => task,
+    absorbTaskView: (view) => (task = view),
+    isOffline: () => false,
+    onMerged: () => {},
+  });
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  plug.mount(host);
+  return { plug, host, rpcCalls, resolveDiff: () => pendingDiffs.splice(0).forEach((resolve) => resolve()) };
+}
+
 const cmdEnter = (input) => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
 
 const typeInto = (input, text) => {
@@ -268,6 +327,60 @@ describe("diff conversation composer (DOM)", () => {
     expect(anchored.anchor).toMatchObject({ artifact: "diff", path: "a.txt", line_start: 1, line_end: 1, side: "new" });
     expect(general).toEqual({ body: "tighten the error handling", anchor: null });
     expect(rpcCalls.filter((c) => c.method === "thread.post")).toHaveLength(0);
+    plug.unmount();
+  });
+});
+
+describe("conversation freshness on the review surface", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = "";
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("repaints when the agent marks a message seen, though no item is added", async () => {
+    // read_unread stamps seen_at on an ALREADY-sequenced message and appends
+    // nothing. A repaint key built from creation sequences alone is identical
+    // before and after, so the badge stays "Unread" for the life of the page —
+    // the regression the cursor protocol was supposed to close.
+    const unread = { type: "message", data: { role: "user", body: "why this name?", sequence: 1, seen_at: null } };
+    const { host, plug, setTask } = mountReviewWithThread([unread]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.textContent).toContain("Unread");
+
+    setTask([{ ...unread, data: { ...unread.data, seen_at: "2026-07-24T12:05:00Z", updated_sequence: 2 } }]);
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+
+    expect(host.textContent).toContain("Seen");
+    expect(host.textContent).not.toContain("Unread");
+    plug.unmount();
+  });
+
+  it("does not let a stale in-flight paint swallow the composer's forced rebuild", async () => {
+    // paint() snapshots the task BEFORE awaiting run.diff. A timer paint still
+    // in flight when the composer posts resolves holding the pre-post task,
+    // consumes forceRebuild, and renders stale — and the composer's own paint
+    // then early-returns because focus is still in the textarea.
+    const { host, plug, rpcCalls, resolveDiff } = mountReviewWithSlowDiff();
+    await vi.advanceTimersByTimeAsync(0);
+    resolveDiff();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const input = host.querySelector("#diffthreadinput");
+    input.focus();
+    typeInto(input, "does this cover the migration?");
+    // A timer paint starts and blocks on run.diff...
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    // ...while the user sends. Both are now in flight.
+    cmdEnter(input);
+    await vi.advanceTimersByTimeAsync(0);
+    resolveDiff();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(rpcCalls.filter((c) => c.method === "thread.post")).toHaveLength(1);
+    expect(host.textContent).toContain("does this cover the migration?");
     plug.unmount();
   });
 });

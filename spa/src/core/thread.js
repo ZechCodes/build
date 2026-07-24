@@ -226,3 +226,61 @@ export function wireThreadRevisionLinks(root, loadRevision) {
     };
   });
 }
+
+/// Wire a thread composer's submit path: draft restore, re-entry guard,
+/// in-place button restore, and Cmd/Ctrl+Enter.
+///
+/// Shared because the plan and diff composers are the same gesture and drifted
+/// apart once: Cmd+Enter reaches submit without the button's native disabled
+/// gate, so a composer that only disables the button double-posts on the retry
+/// a wedged-looking box invites. Restoring the button here — before any
+/// repaint — keeps that true even when the caller's rebuild is frozen.
+///
+/// `onSubmit(body)` does the transport and resolves when the post has landed.
+export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit }) {
+  if (!root) return;
+  const input = root.querySelector(`#${ids.input}`);
+  const send = root.querySelector(`#${ids.send}`);
+  const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
+  if (!input || !send) return;
+
+  input.value = readDraft();
+  input.oninput = () => {
+    writeDraft(input.value);
+    if (hint) hint.textContent = "";
+  };
+
+  const submit = async () => {
+    // A send is already in flight: the keyboard path has no disabled gate.
+    if (send.disabled) return;
+    const body = input.value.trim();
+    if (!body) {
+      if (hint) hint.textContent = "Type a message first.";
+      input.focus();
+      return;
+    }
+    send.disabled = true;
+    send.textContent = "sending…";
+    try {
+      const result = await onSubmit(body);
+      writeDraft("");
+      input.value = "";
+      send.disabled = false;
+      send.textContent = "Send";
+      if (afterSubmit) afterSubmit(result);
+    } catch (error) {
+      // The text stays put: a failed send must never cost the user their words.
+      send.disabled = false;
+      send.textContent = "Send";
+      if (onError) onError(error);
+    }
+  };
+
+  send.onclick = submit;
+  input.onkeydown = (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      submit();
+    }
+  };
+}

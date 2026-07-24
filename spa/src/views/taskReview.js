@@ -14,7 +14,7 @@ import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { diffThreadMessages } from "../core/notes.js";
-import { currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../core/thread.js";
+import { currentRevisionId, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { confirmAction } from "../core/confirm.js";
@@ -260,57 +260,25 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
   // other, distinct verb ("send these comments and get a revision"); the copy
   // on each keeps them legible.
   function wireComposer() {
-    const input = q("#diffthreadinput"),
-      send = q("#diffthreadsend"),
-      hint = q("#diffthreadhint");
-    if (!input || !send) return;
-    input.value = threadDraft;
-    input.oninput = () => {
-      threadDraft = input.value;
-      if (hint) hint.textContent = "";
-    };
-    const submit = async () => {
-      // A send is in flight: Cmd+Enter reaches here without the button's
-      // native disabled gate, and a retry would double-post.
-      if (send.disabled) return;
-      const message = input.value.trim();
-      if (!message) {
-        if (hint) hint.textContent = "Type a message first.";
-        input.focus();
-        return;
-      }
-      send.disabled = true;
-      send.textContent = "sending…";
-      try {
-        const view = await callRpc("thread.post", { entity_id: taskId, body: message });
-        // Restore the composer in place BEFORE any repaint: the busy freeze
-        // (or an offline tick) can skip the rebuild, and a wedged "sending…"
-        // button holding the sent text would re-send on the next Cmd+Enter.
-        threadDraft = "";
-        input.value = "";
-        send.disabled = false;
-        send.textContent = "Send";
-        // Optimistic echo: thread.post returns the full updated run view.
-        // Fold it back through the task view's thread cache (never around it,
-        // or the next cursored poll would disagree with what we paint), then
-        // force the rebuild through the focused-composer freeze.
+    wireThreadComposer(host, {
+      ids: { input: "diffthreadinput", send: "diffthreadsend", hint: "diffthreadhint" },
+      readDraft: () => threadDraft,
+      writeDraft: (value) => {
+        threadDraft = value;
+      },
+      onSubmit: (body) => callRpc("thread.post", { entity_id: taskId, body }),
+      // Optimistic echo: thread.post returns the full updated run view. Fold it
+      // back THROUGH the task view's thread cache (never around it, or the next
+      // cursored poll would disagree with what we paint), then force the
+      // rebuild past the focused-composer freeze.
+      afterSubmit: (view) => {
         if (absorbTaskView) absorbTaskView(view);
         diffKey = null;
         forceRebuild = true;
         paint();
-      } catch (e) {
-        send.disabled = false;
-        send.textContent = "Send";
-        notifyError("Message failed", e.message);
-      }
-    };
-    send.onclick = submit;
-    input.onkeydown = (event) => {
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        submit();
-      }
-    };
+      },
+      onError: (error) => notifyError("Message failed", error.message),
+    });
   }
 
   function renderBody(t, files) {
@@ -434,8 +402,7 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
 
   const paint = async () => {
     if (!host || isOffline()) return;
-    const t = getTask();
-    if (!t) return;
+    if (!getTask()) return;
     let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
     try {
       diff = await callRpc("run.diff", { run_id: taskId });
@@ -443,10 +410,23 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       return; /* diff not readable yet — the poll retries */
     }
     if (!host) return; // unmounted while the RPC was in flight
+    // Re-read AFTER the round trip: a paint that snapshotted the task before
+    // awaiting would render pre-post state if the composer posted underneath
+    // it, while still consuming the forced-rebuild flag that post set.
+    const t = getTask();
+    if (!t) return;
     const files = filterNoiseFiles(parseDiff(diff.patch));
     renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
     lastDiffState = t.state;
-    const threadKey = t.thread && t.thread.items ? t.thread.items.map((item) => item.data && item.data.sequence).join(",") : "";
+    // Keyed on BOTH sequences: read_unread and the revision-resolution pass
+    // stamp seen_at / resolved_by_revision on an already-sequenced message and
+    // append nothing, so a key built from creation sequences alone is identical
+    // across a mutation and the badge never repaints. updated_sequence is the
+    // bridge's marker for exactly that (bridge/src/thread.rs).
+    const threadKey =
+      t.thread && t.thread.items
+        ? t.thread.items.map((item) => `${item.data && item.data.sequence}:${(item.data && item.data.updated_sequence) || 0}`).join(",")
+        : "";
     const key = t.state + " " + diff.patch + " " + threadKey;
     const general = q("#dgeneral");
     const composerInput = q("#diffthreadinput");

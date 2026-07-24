@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createThreadCache, currentRevisionId, threadHtml, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { createThreadCache, currentRevisionId, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
@@ -212,5 +212,81 @@ describe("structured review messages", () => {
         { body: "rename", anchor: { artifact: "diff", revision_id: "diff-r1", path: "src/a.js", side: "new", line_start: 2, line_end: 4, heading_path: [], snippet: "old()" } },
         { body: "ship safely", anchor: null },
       ]);
+  });
+});
+
+describe("thread composer wiring", () => {
+  const mount = (ids = { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" }) => {
+    document.body.innerHTML = `<div id="host">
+      <textarea id="${ids.input}"></textarea>
+      <span id="${ids.hint}"></span>
+      <button id="${ids.send}">Send</button>
+    </div>`;
+    return document.querySelector("#host");
+  };
+  const cmdEnter = (input) => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
+
+  it("posts once when Cmd+Enter is pressed repeatedly during an in-flight send", async () => {
+    // Cmd+Enter bypasses the button's native disabled gate, so without an
+    // explicit re-entry guard the obvious retry double-posts.
+    const host = mount();
+    let resolveSend;
+    const sent = [];
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: (body) => {
+        sent.push(body);
+        return new Promise((resolve) => (resolveSend = resolve));
+      },
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "ship it";
+    cmdEnter(input);
+    cmdEnter(input);
+    cmdEnter(input);
+    expect(sent).toEqual(["ship it"]);
+
+    resolveSend();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(input.value).toBe("");
+    expect(host.querySelector("#planthreadsend").disabled).toBe(false);
+    expect(host.querySelector("#planthreadsend").textContent).toBe("Send");
+  });
+
+  it("restores the composer and keeps the text when the send fails", async () => {
+    const host = mount();
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => Promise.reject(new Error("relay down")),
+      onError: () => {},
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "keep me";
+    cmdEnter(input);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(input.value).toBe("keep me");
+    expect(host.querySelector("#planthreadsend").disabled).toBe(false);
+  });
+
+  it("refuses an empty body without calling the transport", () => {
+    const host = mount();
+    let calls = 0;
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => { calls += 1; return Promise.resolve(); },
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "   ";
+    cmdEnter(input);
+    expect(calls).toBe(0);
+    expect(host.querySelector("#planthreadhint").textContent).toContain("Type a message");
   });
 });

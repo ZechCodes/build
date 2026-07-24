@@ -480,6 +480,11 @@ pub struct SpawnOptions {
     pub continue_session: bool,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
+    /// The worktree the harness will run in. Providers gate an interactive
+    /// session behind a workspace-trust dialog for a directory they have not
+    /// seen before, and Build mints a fresh worktree per run — so the adapter
+    /// needs the path to pre-trust it, or the dialog eats the injected prompt.
+    pub cwd: PathBuf,
 }
 
 /// Builds an interactive harness command for a rendered prompt + model + context.
@@ -2233,6 +2238,7 @@ impl Orchestrator {
         let options = SpawnOptions {
             continue_session,
             owner_id: owner_id.to_string(),
+            cwd: cwd.to_path_buf(),
         };
         let spec = match &self.agent {
             // Fixed warm harnesses take the prompt over the PTY and never
@@ -2429,7 +2435,7 @@ mod tests {
     fn warm_harness() -> HarnessSpec {
         HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf ready; cat >/dev/null")
+            .arg("printf '\\033[?2004h'; cat >/dev/null")
     }
 
     fn orchestrator(dir: &tempfile::TempDir, repo: &Path) -> Orchestrator {

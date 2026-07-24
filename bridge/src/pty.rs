@@ -68,6 +68,13 @@ fn is_executable(path: &std::path::Path) -> bool {
 const PASTE_START: &str = "\u{1b}[200~";
 const PASTE_END: &str = "\u{1b}[201~";
 
+/// DECSET 2004. A TUI emits this once its line editor is live and it wants
+/// pastes bracketed — which is exactly the precondition for injecting a prompt:
+/// it says both "input is being serviced" and "the frame below will be honored".
+/// First output is a weaker signal (a harness paints its banner, or a modal
+/// dialog, well before it will accept a turn).
+const PASTE_MODE_ENABLED: &[u8] = b"\x1b[?2004h";
+
 /// Remove bracketed-paste markers from prompt text before it enters a TUI.
 /// Prompt text carries reviewer-supplied thread content: an embedded paste-end
 /// would close the frame mid-prompt and replay the remainder as raw keystrokes
@@ -159,11 +166,11 @@ pub struct PtySession {
     /// session itself is still held (the keyed-terminal pumps key off this).
     output_tx: Arc<Mutex<Option<broadcast::Sender<Vec<u8>>>>>,
     last_activity: Arc<Mutex<Instant>>,
-    /// Set by the reader pump on the child's first output byte — the readiness
-    /// signal [`ready_within`](Self::ready_within) waits on before the first
-    /// prompt write. `last_activity` cannot express this: it is stamped "now"
-    /// at spawn, so it never distinguishes "no output yet" from "just spawned".
-    produced_output: Arc<AtomicBool>,
+    /// Set by the reader pump when the child enables bracketed-paste mode — the
+    /// readiness signal [`ready_within`](Self::ready_within) waits on before the
+    /// first prompt write. `last_activity` cannot express this: it is stamped
+    /// "now" at spawn, so it never distinguishes "not ready" from "just spawned".
+    accepts_paste: Arc<AtomicBool>,
     submit: SubmitKey,
     /// The child's exit code, cached the first time it is observed. `try_wait`
     /// reaps the child exactly once, so the status must be remembered here or the
@@ -212,7 +219,7 @@ impl PtySession {
         let (sender, _) = broadcast::channel(1024);
         let output_tx = Arc::new(Mutex::new(Some(sender.clone())));
         let last_activity = Arc::new(Mutex::new(Instant::now()));
-        let produced_output = Arc::new(AtomicBool::new(false));
+        let accepts_paste = Arc::new(AtomicBool::new(false));
 
         // Blocking reader pump: forward chunks and stamp activity. A dropped
         // receiver is fine (broadcast lag/closed is not fatal to the pump). At
@@ -221,16 +228,31 @@ impl PtySession {
         {
             let output_slot = Arc::clone(&output_tx);
             let last_activity = Arc::clone(&last_activity);
-            let produced_output = Arc::clone(&produced_output);
+            let accepts_paste = Arc::clone(&accepts_paste);
             std::thread::spawn(move || {
                 let mut reader = reader;
                 let mut buf = [0u8; 4096];
+                // The paste-mode sequence can straddle a read boundary, so each
+                // scan is prefixed with the tail of the previous chunk.
+                let mut carry: Vec<u8> = Vec::new();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             *last_activity.lock().unwrap() = Instant::now();
-                            produced_output.store(true, Ordering::Relaxed);
+                            if !accepts_paste.load(Ordering::Relaxed) {
+                                carry.extend_from_slice(&buf[..n]);
+                                if carry
+                                    .windows(PASTE_MODE_ENABLED.len())
+                                    .any(|window| window == PASTE_MODE_ENABLED)
+                                {
+                                    accepts_paste.store(true, Ordering::Relaxed);
+                                    carry = Vec::new();
+                                } else {
+                                    let keep = carry.len().min(PASTE_MODE_ENABLED.len() - 1);
+                                    carry.drain(..carry.len() - keep);
+                                }
+                            }
                             let _ = sender.send(buf[..n].to_vec());
                         }
                     }
@@ -245,7 +267,7 @@ impl PtySession {
             child: Mutex::new(child),
             output_tx,
             last_activity,
-            produced_output,
+            accepts_paste,
             submit: spec.submit.clone(),
             exit_code: Mutex::new(None),
         })
@@ -333,17 +355,22 @@ impl PtySession {
         self.exit_code().is_some()
     }
 
-    /// Whether the child produces its first output within `timeout` — the
-    /// readiness signal a fresh prompt write waits on. A TUI that has painted
-    /// anything has at least started servicing its PTY; writing into one that
-    /// has produced nothing risks the prompt landing before the TUI enters raw
-    /// mode. Returns `false` (promptly, not at the deadline) for a child that
-    /// exits without output: it will never become ready, and the caller's
-    /// exit-race guard should see the write failure without extra delay.
+    /// Whether the child signals it will accept a bracketed paste within
+    /// `timeout` — the readiness signal a fresh prompt write waits on.
+    ///
+    /// First output is NOT that signal, and the difference is the whole point:
+    /// a harness paints its banner (or a modal workspace-trust dialog) long
+    /// before its line editor will take a turn, so a prompt written on first
+    /// byte lands in whatever owns the keyboard at the time and the submit key
+    /// answers it. [`PASTE_MODE_ENABLED`] is emitted by the line editor itself,
+    /// so it says both "input is being serviced" and "the frame will be
+    /// honored". Returns `false` (promptly, not at the deadline) for a child
+    /// that exits first: it will never become ready, and the caller's exit-race
+    /// guard should see the write failure without extra delay.
     pub fn ready_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.produced_output.load(Ordering::Relaxed) {
+            if self.accepts_paste.load(Ordering::Relaxed) {
                 return true;
             }
             if self.has_exited() || Instant::now() >= deadline {
@@ -736,12 +763,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_within_returns_once_the_child_produces_output() {
-        // First output is the readiness signal: a TUI that has painted
-        // anything has at least started servicing its PTY.
+    async fn ready_within_returns_once_the_child_enables_paste_mode() {
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf ready; sleep 5");
+            .arg("printf '\\033[?2004h'; sleep 5");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
 
         let waited = Instant::now();
@@ -750,6 +775,34 @@ mod tests {
             waited.elapsed() < Duration::from_secs(1),
             "readiness must be observed promptly, not at the deadline"
         );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn ready_within_ignores_output_that_is_not_the_paste_mode_signal() {
+        // The defect this guards: a harness whose FIRST output is a modal
+        // workspace-trust dialog. Treating any byte as readiness put the prompt
+        // into that dialog and let the submit key answer it, so the agent
+        // received nothing at all.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'Do you trust the files in this folder?'; sleep 5");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        assert!(!session.ready_within(Duration::from_millis(300)));
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn ready_within_sees_a_paste_mode_signal_split_across_reads() {
+        // The sequence is 8 bytes and a TUI can flush mid-escape; a scan that
+        // only looked inside one chunk would miss it and burn the full grace.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf '\\033[?20'; sleep 0.2; printf '04h'; sleep 5");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        assert!(session.ready_within(Duration::from_secs(3)));
         session.kill_and_reap();
     }
 

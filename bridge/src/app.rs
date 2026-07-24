@@ -409,13 +409,17 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
         // (a non-reading child would let the PTY input queue fill and block
-        // prompt writes) and emits a startup byte like a TUI's first paint
-        // (so the spawn's readiness wait returns promptly instead of idling
-        // out its grace); the scripted agent does the file writing.
+        // prompt writes) and enables bracketed-paste mode like a real TUI's
+        // line editor, so the spawn's readiness wait resolves on the same
+        // signal production does instead of idling out its grace. Modelling
+        // that signal matters: a `cat` that merely echoed could not tell a
+        // delivered prompt from one eaten by a startup dialog, which is how a
+        // fully green suite once hid exactly that bug. The scripted agent does
+        // the file writing.
         Agent::Warm(
             HarnessSpec::new("sh")
                 .arg("-c")
-                .arg("printf ready; cat >/dev/null"),
+                .arg("printf '\\033[?2004h'; cat >/dev/null"),
         )
     } else {
         // Real agents are interactive TUIs. The builder configures argv and the
@@ -428,6 +432,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
             move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| match choice.provider
             {
                 AgentProvider::Claude => {
+                    pre_trust_worktree_for_claude(&options.cwd);
                     let mut spec = HarnessSpec::new("claude")
                         .arg("--mcp-config")
                         .arg(".build/mcp.json")
@@ -460,6 +465,11 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                             "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
                             serde_json::to_string(&mcp_socket).expect("socket serializes")
                         ),
+                        format!(
+                            "projects.{}.trust_level=\"trusted\"",
+                            serde_json::to_string(&options.cwd.to_string_lossy())
+                                .expect("worktree path serializes")
+                        ),
                         "mcp_servers.build.required=true".to_string(),
                         "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\"]".to_string(),
                         "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
@@ -485,6 +495,83 @@ pub(crate) fn encode_claude_project_dir(path: &std::path::Path) -> String {
         .chars()
         .map(|c| if c == '/' || c == '.' { '-' } else { c })
         .collect()
+}
+
+/// Record a Build-created worktree as trusted in claude's project registry, so
+/// the interactive session skips its workspace-trust dialog.
+///
+/// Build mints a fresh worktree per run and the dialog fires for any directory
+/// claude has not seen. It owns the keyboard until answered, so the prompt Build
+/// injects lands in the dialog and the trailing Enter answers it — the agent
+/// receives nothing and the run sits in `building` until the idle sweep demotes
+/// it. Codex takes the same grant as a per-invocation `--config`; claude keeps
+/// trust in shared state, so this is the one place Build writes outside its own
+/// tree. It only ever ADDS the flag for a path Build itself created.
+///
+/// Best-effort by design: claude rewrites this file too, so an interleaved write
+/// could drop the insert. Failing the spawn over that would be worse than the
+/// dialog it prevents, so every error here is swallowed — the caller still gets
+/// a session, and the worst case is today's behavior.
+fn pre_trust_worktree_for_claude(cwd: &std::path::Path) {
+    let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(|dir| std::path::PathBuf::from(dir).join(".claude.json"))
+        .or_else(|| dirs_home().map(|home| home.join(".claude.json")))
+    else {
+        return;
+    };
+    if let Err(error) = record_claude_workspace_trust(&config, cwd) {
+        eprintln!("pre-trust {}: {error}", cwd.display());
+    }
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// The read-modify-write half, split out so tests drive a temp registry instead
+/// of the developer's real one. Writes through a temp file + rename so a crash
+/// mid-write cannot truncate a registry holding every project's state.
+fn record_claude_workspace_trust(
+    config: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<(), String> {
+    let key = cwd.to_string_lossy().to_string();
+    let mut registry: Value = match std::fs::read_to_string(config) {
+        Ok(raw) => {
+            serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", config.display()))?
+        }
+        // No registry yet: claude will merge its own defaults into ours.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(format!("read {}: {error}", config.display())),
+    };
+    let projects = registry
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", config.display()))?
+        .entry("projects")
+        .or_insert_with(|| json!({}));
+    let project = projects
+        .as_object_mut()
+        .ok_or_else(|| "projects is not a JSON object".to_string())?
+        .entry(key)
+        .or_insert_with(|| json!({}));
+    let project = project
+        .as_object_mut()
+        .ok_or_else(|| "project entry is not a JSON object".to_string())?;
+    if project.get("hasTrustDialogAccepted") == Some(&json!(true)) {
+        return Ok(());
+    }
+    project.insert("hasTrustDialogAccepted".to_string(), json!(true));
+
+    if let Some(parent) = config.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let staged = config.with_extension("json.build-tmp");
+    std::fs::write(
+        &staged,
+        serde_json::to_vec_pretty(&registry).map_err(|e| format!("serialize: {e}"))?,
+    )
+    .map_err(|e| format!("write {}: {e}", staged.display()))?;
+    std::fs::rename(&staged, config).map_err(|e| format!("rename {}: {e}", config.display()))
 }
 
 /// True iff the encoded directory exists under `root` and holds at least one
@@ -6420,6 +6507,86 @@ mod tests {
             .any(|e| e == "ultra"));
     }
 
+    /// Build mints a fresh worktree per run, and an interactive harness gates a
+    /// directory it has not seen behind a workspace-trust dialog. That dialog
+    /// owns the keyboard, so the injected prompt lands in it and the trailing
+    /// submit key answers it — the agent receives nothing and the run parks
+    /// until the idle sweep demotes it. Codex takes the grant as a per-invocation
+    /// `--config`, so nothing outside this spawn is touched.
+    #[test]
+    fn codex_argv_pre_trusts_the_worktree_it_will_run_in() {
+        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+            panic!("real agent should be a provider-aware warm TUI");
+        };
+        let choice = ModelChoice {
+            provider: AgentProvider::Codex,
+            ..ModelChoice::default()
+        };
+        let spec = build(
+            "do the thing",
+            &choice,
+            &SpawnOptions {
+                cwd: std::path::PathBuf::from("/tmp/build worktrees/run-9"),
+                ..SpawnOptions::default()
+            },
+        );
+        let args = spec.args.join(" ");
+        assert!(
+            args.contains(r#"projects."/tmp/build worktrees/run-9".trust_level="trusted""#),
+            "{args}"
+        );
+    }
+
+    /// Claude keeps workspace trust in a shared registry that also holds every
+    /// other project's state, so the grant must be additive and idempotent.
+    #[test]
+    fn claude_workspace_trust_is_added_without_disturbing_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "firstStartTime": "2026-01-01",
+                "projects": {
+                    "/Users/someone/other": { "hasTrustDialogAccepted": true, "lastCost": 1.5 }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let worktree = std::path::Path::new("/tmp/build worktrees/run-9");
+        record_claude_workspace_trust(&config, worktree).unwrap();
+        record_claude_workspace_trust(&config, worktree).expect("idempotent");
+
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            written["projects"]["/tmp/build worktrees/run-9"]["hasTrustDialogAccepted"],
+            json!(true)
+        );
+        // Neighbouring state survives: this file is not Build's to own.
+        assert_eq!(written["firstStartTime"], json!("2026-01-01"));
+        assert_eq!(
+            written["projects"]["/Users/someone/other"]["lastCost"],
+            json!(1.5)
+        );
+        assert!(!dir.path().join(".claude.json.build-tmp").exists());
+    }
+
+    #[test]
+    fn claude_workspace_trust_creates_a_registry_that_does_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("nested").join(".claude.json");
+        record_claude_workspace_trust(&config, std::path::Path::new("/tmp/wt")).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            written["projects"]["/tmp/wt"]["hasTrustDialogAccepted"],
+            json!(true)
+        );
+    }
+
     #[test]
     fn real_tui_argv_includes_the_selected_model_and_effort() {
         let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
@@ -6477,6 +6644,7 @@ mod tests {
         let options = SpawnOptions {
             continue_session: false,
             owner_id: "run-7".into(),
+            ..SpawnOptions::default()
         };
         let spec = build("do the thing", &choice, &options);
         assert_eq!(spec.binary, "codex");
@@ -6504,6 +6672,7 @@ mod tests {
             &SpawnOptions {
                 continue_session: true,
                 owner_id: "run-7".into(),
+                ..SpawnOptions::default()
             },
         );
         assert!(resumed.args.join(" ").ends_with("resume --last"));
@@ -9734,7 +9903,7 @@ mod tests {
             Agent::Warm(
                 HarnessSpec::new("sh")
                     .arg("-c")
-                    .arg("(while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null"),
+                    .arg("printf '\\033[?2004h'; (while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null"),
             ),
             Templates::default(),
         );

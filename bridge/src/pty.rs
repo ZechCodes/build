@@ -72,13 +72,26 @@ const PASTE_END: &str = "\u{1b}[201~";
 /// Prompt text carries reviewer-supplied thread content: an embedded paste-end
 /// would close the frame mid-prompt and replay the remainder as raw keystrokes
 /// (newlines as Enter included), and an embedded paste-start could open a
-/// frame around later input. Loops because a single removal pass can splice
-/// the surrounding bytes into a fresh marker; each pass shortens the string,
-/// so the loop terminates.
+/// frame around later input.
+///
+/// Single pass, checking the OUTPUT tail after each push: removing a marker can
+/// splice its neighbours into a fresh one, and re-examining the tail catches
+/// that as it forms. Rescanning the whole string per removal instead would be
+/// quadratic in nesting depth — and since this text is reviewer-supplied and
+/// the dispatch holds the app-wide lock, that is a remote stall of every
+/// project rather than merely a slow function.
 fn strip_bracketed_paste_markers(prompt: &str) -> String {
-    let mut sanitized = prompt.to_string();
-    while sanitized.contains(PASTE_START) || sanitized.contains(PASTE_END) {
-        sanitized = sanitized.replace(PASTE_START, "").replace(PASTE_END, "");
+    let mut sanitized = String::with_capacity(prompt.len());
+    for character in prompt.chars() {
+        sanitized.push(character);
+        // Markers are pure ASCII, so truncating by their byte length always
+        // lands on a character boundary.
+        for marker in [PASTE_START, PASTE_END] {
+            if sanitized.ends_with(marker) {
+                sanitized.truncate(sanitized.len() - marker.len());
+                break;
+            }
+        }
     }
     sanitized
 }
@@ -778,6 +791,35 @@ mod tests {
         assert!(
             !sanitized.contains("\u{1b}[200~") && !sanitized.contains("\u{1b}[201~"),
             "no marker may survive or re-form: {sanitized:?}"
+        );
+    }
+
+    #[test]
+    fn marker_stripping_stays_linear_on_deeply_nested_markers() {
+        // Prompt text carries reviewer-supplied thread content, and the whole
+        // dispatch runs under the app-wide lock — so a sanitizer whose cost
+        // grows with nesting depth is a remote stall of every project, not a
+        // slow function. `nest` is the adversarial shape: each pass peels one
+        // level, so a rescan-the-whole-string loop is quadratic.
+        // The core is a real marker; each wrap is inert until the level inside
+        // it is removed, at which point the surrounding bytes splice into a
+        // fresh marker. So the payload peels exactly one level per pass.
+        let mut nested = String::from(PASTE_END);
+        for _ in 0..8_000 {
+            nested = format!("\u{1b}[20{nested}0~");
+        }
+        let started = std::time::Instant::now();
+        let sanitized = strip_bracketed_paste_markers(&nested);
+        let elapsed = started.elapsed();
+
+        assert!(
+            !sanitized.contains(PASTE_START) && !sanitized.contains(PASTE_END),
+            "no marker may survive or re-form"
+        );
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "sanitizing {} bytes took {elapsed:?}; a nesting-sensitive scan stalls the bridge",
+            nested.len()
         );
     }
 

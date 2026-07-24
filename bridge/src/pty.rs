@@ -8,6 +8,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,6 +59,28 @@ fn is_executable(path: &std::path::Path) -> bool {
     std::fs::metadata(path)
         .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Bracketed-paste frame delimiters (xterm). A TUI receiving input between
+/// these treats it as one pasted block instead of typed keystrokes, so the
+/// embedded newlines of a multi-line prompt do not read as the Enter key and
+/// submit the prompt as N fragmented turns.
+const PASTE_START: &str = "\u{1b}[200~";
+const PASTE_END: &str = "\u{1b}[201~";
+
+/// Remove bracketed-paste markers from prompt text before it enters a TUI.
+/// Prompt text carries reviewer-supplied thread content: an embedded paste-end
+/// would close the frame mid-prompt and replay the remainder as raw keystrokes
+/// (newlines as Enter included), and an embedded paste-start could open a
+/// frame around later input. Loops because a single removal pass can splice
+/// the surrounding bytes into a fresh marker; each pass shortens the string,
+/// so the loop terminates.
+fn strip_bracketed_paste_markers(prompt: &str) -> String {
+    let mut sanitized = prompt.to_string();
+    while sanitized.contains(PASTE_START) || sanitized.contains(PASTE_END) {
+        sanitized = sanitized.replace(PASTE_START, "").replace(PASTE_END, "");
+    }
+    sanitized
 }
 
 /// How a harness wants a prompt "sent" once written. Most CLIs submit on Enter.
@@ -123,6 +146,11 @@ pub struct PtySession {
     /// session itself is still held (the keyed-terminal pumps key off this).
     output_tx: Arc<Mutex<Option<broadcast::Sender<Vec<u8>>>>>,
     last_activity: Arc<Mutex<Instant>>,
+    /// Set by the reader pump on the child's first output byte — the readiness
+    /// signal [`ready_within`](Self::ready_within) waits on before the first
+    /// prompt write. `last_activity` cannot express this: it is stamped "now"
+    /// at spawn, so it never distinguishes "no output yet" from "just spawned".
+    produced_output: Arc<AtomicBool>,
     submit: SubmitKey,
     /// The child's exit code, cached the first time it is observed. `try_wait`
     /// reaps the child exactly once, so the status must be remembered here or the
@@ -171,6 +199,7 @@ impl PtySession {
         let (sender, _) = broadcast::channel(1024);
         let output_tx = Arc::new(Mutex::new(Some(sender.clone())));
         let last_activity = Arc::new(Mutex::new(Instant::now()));
+        let produced_output = Arc::new(AtomicBool::new(false));
 
         // Blocking reader pump: forward chunks and stamp activity. A dropped
         // receiver is fine (broadcast lag/closed is not fatal to the pump). At
@@ -179,6 +208,7 @@ impl PtySession {
         {
             let output_slot = Arc::clone(&output_tx);
             let last_activity = Arc::clone(&last_activity);
+            let produced_output = Arc::clone(&produced_output);
             std::thread::spawn(move || {
                 let mut reader = reader;
                 let mut buf = [0u8; 4096];
@@ -187,6 +217,7 @@ impl PtySession {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             *last_activity.lock().unwrap() = Instant::now();
+                            produced_output.store(true, Ordering::Relaxed);
                             let _ = sender.send(buf[..n].to_vec());
                         }
                     }
@@ -201,6 +232,7 @@ impl PtySession {
             child: Mutex::new(child),
             output_tx,
             last_activity,
+            produced_output,
             submit: spec.submit.clone(),
             exit_code: Mutex::new(None),
         })
@@ -220,10 +252,22 @@ impl PtySession {
         }
     }
 
-    /// Write a prompt and submit it (per the harness's `SubmitKey`).
+    /// Write a prompt and submit it (per the harness's `SubmitKey`). A
+    /// multi-line prompt bound for an Enter-submitting TUI travels as ONE
+    /// bracketed paste: written raw, the TUI would read every embedded newline
+    /// as the Enter key and submit the prompt as fragmented turns. Prompts
+    /// written verbatim (`SubmitKey::None`) are never framed — that contract
+    /// promises the harness the exact bytes.
     pub fn write_prompt(&self, prompt: &str) -> Result<(), PtyError> {
+        let sanitized = strip_bracketed_paste_markers(prompt);
         let mut writer = self.writer.lock().unwrap();
-        writer.write_all(prompt.as_bytes())?;
+        if self.submit == SubmitKey::Enter && sanitized.contains('\n') {
+            writer.write_all(PASTE_START.as_bytes())?;
+            writer.write_all(sanitized.as_bytes())?;
+            writer.write_all(PASTE_END.as_bytes())?;
+        } else {
+            writer.write_all(sanitized.as_bytes())?;
+        }
         writer.write_all(self.submit.bytes())?;
         writer.flush()?;
         Ok(())
@@ -274,6 +318,26 @@ impl PtySession {
     /// never leaves a zombie behind.
     pub fn has_exited(&self) -> bool {
         self.exit_code().is_some()
+    }
+
+    /// Whether the child produces its first output within `timeout` — the
+    /// readiness signal a fresh prompt write waits on. A TUI that has painted
+    /// anything has at least started servicing its PTY; writing into one that
+    /// has produced nothing risks the prompt landing before the TUI enters raw
+    /// mode. Returns `false` (promptly, not at the deadline) for a child that
+    /// exits without output: it will never become ready, and the caller's
+    /// exit-race guard should see the write failure without extra delay.
+    pub fn ready_within(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.produced_output.load(Ordering::Relaxed) {
+                return true;
+            }
+            if self.has_exited() || Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Whether the child exits within `timeout`. `has_exited` is a single
@@ -365,6 +429,98 @@ mod tests {
             "timed out waiting for {needle:?}; got: {acc:?}"
         );
         acc
+    }
+
+    /// A harness that copies its stdin to `capture`, byte-for-byte after the
+    /// PTY's canonical-mode line discipline (which maps the submitted `\r` to
+    /// `\n`). File capture — not `cat >/dev/null` — so tests can assert on the
+    /// exact bytes a real TUI would receive.
+    fn stdin_capture_spec(capture: &std::path::Path) -> HarnessSpec {
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("cat > \"$1\"")
+            .arg("build-stdin-capture")
+            .arg(capture.to_string_lossy())
+    }
+
+    /// Poll `capture` until its contents contain `needle` (bounded), returning them.
+    async fn capture_containing(capture: &std::path::Path, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(capture) {
+                if contents.contains(needle) {
+                    return contents;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?} in the stdin capture"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_line_prompt_is_framed_as_one_bracketed_paste() {
+        // Written raw, a TUI reads every embedded newline as the Enter key and
+        // submits the prompt as N fragmented turns; the paste frame makes it
+        // one pasted block submitted once.
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let session = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+
+        session
+            .write_prompt("do the task\nBuild conversation protocol:\n- rule")
+            .unwrap();
+
+        let captured = capture_containing(&capture, "\u{1b}[201~").await;
+        assert_eq!(
+            captured, "\u{1b}[200~do the task\nBuild conversation protocol:\n- rule\u{1b}[201~\n",
+            "the whole multi-line prompt travels as one paste, submitted once"
+        );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn single_line_prompt_is_written_without_paste_framing() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let session = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+
+        session.write_prompt("just ping").unwrap();
+
+        let captured = capture_containing(&capture, "just ping").await;
+        assert_eq!(
+            captured, "just ping\n",
+            "a single-line prompt needs no paste frame"
+        );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn embedded_paste_terminator_cannot_end_the_paste_early() {
+        // A prompt that smuggles the paste-end marker (thread content is
+        // reviewer-supplied) would otherwise close the frame mid-prompt and
+        // replay the rest as raw keystrokes — newlines as Enter included.
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let session = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+
+        session
+            .write_prompt("review this\u{1b}[201~\nrm -rf /tmp/pwned")
+            .unwrap();
+
+        let captured = capture_containing(&capture, "pwned").await;
+        assert_eq!(
+            captured.matches("\u{1b}[201~").count(),
+            1,
+            "only the framing terminator survives: {captured:?}"
+        );
+        assert!(
+            captured.ends_with("\u{1b}[201~\n"),
+            "the frame closes at the end, not mid-prompt: {captured:?}"
+        );
+        session.kill_and_reap();
     }
 
     #[tokio::test]
@@ -564,6 +720,65 @@ mod tests {
             "the wait must return promptly after its deadline"
         );
         session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn ready_within_returns_once_the_child_produces_output() {
+        // First output is the readiness signal: a TUI that has painted
+        // anything has at least started servicing its PTY.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf ready; sleep 5");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let waited = Instant::now();
+        assert!(session.ready_within(Duration::from_secs(2)));
+        assert!(
+            waited.elapsed() < Duration::from_secs(1),
+            "readiness must be observed promptly, not at the deadline"
+        );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn ready_within_gives_up_bounded_when_the_child_stays_silent() {
+        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 30");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let waited = Instant::now();
+        assert!(!session.ready_within(Duration::from_millis(100)));
+        assert!(
+            waited.elapsed() < Duration::from_secs(2),
+            "the wait must return promptly after its deadline"
+        );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn ready_within_stops_waiting_for_a_child_that_exits_silently() {
+        // An instantly dead harness will never become ready; the wait must not
+        // burn its full deadline before the exit-race guard downstream can run.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("exit 0");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let waited = Instant::now();
+        session.ready_within(Duration::from_secs(10));
+        assert!(
+            waited.elapsed() < Duration::from_secs(5),
+            "a dead child must end the wait early, not at the deadline"
+        );
+    }
+
+    #[test]
+    fn marker_stripping_cannot_recombine_split_markers() {
+        // A single removal pass would splice the surrounding bytes of these
+        // nested payloads into fresh markers — the classic sanitizer bypass.
+        let sneaky = "\u{1b}[200\u{1b}[200~~ payload \u{1b}[20\u{1b}[201~1~";
+        let sanitized = strip_bracketed_paste_markers(sneaky);
+        assert!(
+            !sanitized.contains("\u{1b}[200~") && !sanitized.contains("\u{1b}[201~"),
+            "no marker may survive or re-form: {sanitized:?}"
+        );
     }
 
     #[tokio::test]

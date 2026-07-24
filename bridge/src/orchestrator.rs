@@ -503,6 +503,14 @@ const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `re
 /// its write error promptly.
 const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long a fresh spawn waits for the harness's first output before writing
+/// the prompt into its PTY. Real harnesses are interactive TUIs: injecting the
+/// prompt before the TUI has started servicing the PTY risks it landing on a
+/// startup screen. First output is the readiness signal; when the grace
+/// expires the prompt is written anyway — a spawn that silently never delivers
+/// its prompt is worse than one that races the startup screen.
+const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
 fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
@@ -2226,25 +2234,20 @@ impl Orchestrator {
             continue_session,
             owner_id: owner_id.to_string(),
         };
-        let session = match &self.agent {
-            Agent::Warm(spec) => {
-                // Fixed warm harnesses take the prompt over the PTY and never
-                // need provider/model-specific SpawnOptions.
-                let s = PtySession::spawn(spec, Some(cwd.to_path_buf()), self.pty_size)?;
-                if let Err(error) = s.write_prompt(prompt) {
-                    Self::absorb_prompt_write_failure_of_exiting_harness(&s, error)?;
-                }
-                s
-            }
-            Agent::WarmBuilder(build) => {
-                let spec = build(prompt, model_choice, &options);
-                let s = PtySession::spawn(&spec, Some(cwd.to_path_buf()), self.pty_size)?;
-                if let Err(error) = s.write_prompt(prompt) {
-                    Self::absorb_prompt_write_failure_of_exiting_harness(&s, error)?;
-                }
-                s
-            }
+        let spec = match &self.agent {
+            // Fixed warm harnesses take the prompt over the PTY and never
+            // need provider/model-specific SpawnOptions.
+            Agent::Warm(spec) => spec.clone(),
+            Agent::WarmBuilder(build) => build(prompt, model_choice, &options),
         };
+        let session = PtySession::spawn(&spec, Some(cwd.to_path_buf()), self.pty_size)?;
+        // Wait (bounded) for the TUI's first output before injecting the
+        // prompt; on expiry or an early exit, write anyway — the exit-race
+        // guard below decides whether a failed write is benign.
+        session.ready_within(HARNESS_READY_GRACE);
+        if let Err(error) = session.write_prompt(prompt) {
+            Self::absorb_prompt_write_failure_of_exiting_harness(&session, error)?;
+        }
         slot.install(session);
         Ok(())
     }
@@ -2419,10 +2422,14 @@ mod tests {
     /// A warm "harness" that stays alive and drains stdin (it discards the
     /// prompt), like a real interactive CLI. Draining matters: a child that never
     /// reads lets the PTY's canonical-mode input queue fill, so writing a
-    /// full-size rendered prompt would block and then fail with EIO. The test
+    /// full-size rendered prompt would block and then fail with EIO. The startup
+    /// byte matters too: like a real TUI painting its screen, it satisfies the
+    /// spawn's readiness wait so dispatches don't idle out the grace. The test
     /// plays the agent: it writes files and forwards `done` reports.
     fn warm_harness() -> HarnessSpec {
-        HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null")
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf ready; cat >/dev/null")
     }
 
     fn orchestrator(dir: &tempfile::TempDir, repo: &Path) -> Orchestrator {
@@ -2794,9 +2801,10 @@ mod tests {
         let capture_for_builder = capture.clone();
         let agent = Agent::WarmBuilder(std::sync::Arc::new(
             move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                // The startup byte signals readiness like a real TUI's first paint.
                 HarnessSpec::new("sh")
                     .arg("-c")
-                    .arg("cat > \"$1\"")
+                    .arg("printf ready; cat > \"$1\"")
                     .arg("build-warm-capture")
                     .arg(capture_for_builder.to_string_lossy())
             },
@@ -2823,6 +2831,56 @@ mod tests {
         .expect("rendered prompt should be written into the warm PTY");
 
         assert!(plan.session.subscribe().is_some());
+    }
+
+    #[tokio::test]
+    async fn dispatch_paste_frames_the_prompt_and_writes_even_without_readiness() {
+        // The rendered dispatch prompt is always multi-line (conversation_prompt
+        // appends the protocol block), so through a real TUI it must arrive as
+        // ONE bracketed paste. The capture harness never produces output, so
+        // this also proves the readiness grace expires into a write rather
+        // than a silently lost prompt.
+        let (dir, repo) = init_repo();
+        let capture = dir.path().join("warm-stdin.txt");
+        let capture_for_builder = capture.clone();
+        let agent = Agent::WarmBuilder(std::sync::Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("cat > \"$1\"")
+                    .arg("build-warm-capture")
+                    .arg(capture_for_builder.to_string_lossy())
+            },
+        ));
+        let orch = Orchestrator::new(
+            repo,
+            dir.path().join("worktrees"),
+            agent,
+            Templates::default(),
+        );
+
+        drafting_plan(&orch, "plan-paste", "Paste framing marker");
+        let captured = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&capture) {
+                    if contents.contains("\u{1b}[201~") {
+                        return contents;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the framed prompt should reach the harness despite its silence");
+
+        assert!(
+            captured.starts_with("\u{1b}[200~"),
+            "the prompt opens as a bracketed paste: {captured:?}"
+        );
+        assert!(
+            captured.contains("Paste framing marker"),
+            "the rendered prompt rides inside the frame: {captured:?}"
+        );
     }
 
     #[tokio::test]

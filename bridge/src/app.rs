@@ -409,8 +409,14 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
         // (a non-reading child would let the PTY input queue fill and block
-        // prompt writes); the scripted agent does the file writing.
-        Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"))
+        // prompt writes) and emits a startup byte like a TUI's first paint
+        // (so the spawn's readiness wait returns promptly instead of idling
+        // out its grace); the scripted agent does the file writing.
+        Agent::Warm(
+            HarnessSpec::new("sh")
+                .arg("-c")
+                .arg("printf ready; cat >/dev/null"),
+        )
     } else {
         // Real agents are interactive TUIs. The builder configures argv and the
         // per-entity MCP server; Orchestrator submits the prompt through the PTY.

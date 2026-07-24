@@ -276,6 +276,25 @@ impl PtySession {
         self.exit_code().is_some()
     }
 
+    /// Whether the child exits within `timeout`. `has_exited` is a single
+    /// racy poll: a dying harness closes its side of the PTY (so writes fail
+    /// with EIO) *before* the OS makes its exit status reapable, so one poll
+    /// can report a harness that is already gone as still running. Callers
+    /// deciding whether a PTY write error means "crashed" (benign) rather
+    /// than "wedged" (fatal) wait out that reap lag here instead.
+    pub fn exited_within(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.has_exited() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// The child's exit code once it has exited, or `None` while it is still
     /// running. Caches the first observed status: `try_wait` reaps the child once,
     /// so a later poll would otherwise lose the code (contract: the crash message
@@ -510,6 +529,41 @@ mod tests {
         // Repeated polls keep returning it even though try_wait reaps only once.
         assert_eq!(session.exit_code(), Some(3));
         assert!(session.has_exited());
+    }
+
+    #[tokio::test]
+    async fn exited_within_bridges_the_gap_until_the_exit_is_reapable() {
+        // The prompt-write race, with the reap lag under our control: a child
+        // that is still un-reapable right now but exits shortly after models
+        // the kernel window where the PTY already returned EIO while
+        // `try_wait` still says "running".
+        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 0.15");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        assert!(
+            !session.has_exited(),
+            "precondition: the exit status must not be reapable yet"
+        );
+        assert!(
+            session.exited_within(Duration::from_millis(500)),
+            "the bounded wait must observe the exit that a single poll misses"
+        );
+    }
+
+    #[tokio::test]
+    async fn exited_within_gives_up_on_a_harness_that_keeps_running() {
+        // A genuinely live harness must not be misread as exited — and the
+        // wait must actually be bounded, not hang.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 30");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let waited = Instant::now();
+        assert!(!session.exited_within(Duration::from_millis(100)));
+        assert!(
+            waited.elapsed() < Duration::from_secs(2),
+            "the wait must return promptly after its deadline"
+        );
+        session.kill_and_reap();
     }
 
     #[tokio::test]

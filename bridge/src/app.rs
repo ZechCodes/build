@@ -400,9 +400,10 @@ struct ExternalScanCache {
     worktrees: Vec<ExternalWorktree>,
 }
 
-/// Build the harness adapter shared by every project's orchestrator: the
-/// deterministic scripted agent for QA, or a one-shot `claude` headless run for
-/// real work. The closure is shared (Arc) across projects via `Agent: Clone`.
+/// Build the warm TUI adapter shared by every project's orchestrator. Build is a
+/// UI layer over the agent's PTY: every provider is launched interactively, the
+/// rendered prompt is injected into that PTY, and the same session is streamed
+/// to attached clients. The closure is shared across projects via `Agent: Clone`.
 fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
@@ -410,20 +411,17 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // prompt writes); the scripted agent does the file writing.
         Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"))
     } else {
-        // Real agents are one-shot headless runs. Both providers receive the
-        // rendered prompt in argv and report completion through the same local
-        // per-entity MCP server.
+        // Real agents are interactive TUIs. The builder configures argv and the
+        // per-entity MCP server; Orchestrator submits the prompt through the PTY.
         let bridge_exe = std::env::current_exe()
             .ok()
             .and_then(|path| path.to_str().map(str::to_string))
             .unwrap_or_else(|| "build-bridge".to_string());
-        Agent::OneShot(Arc::new(
-            move |prompt: &str, choice: &ModelChoice, options: &SpawnOptions| match choice.provider
+        Agent::WarmBuilder(Arc::new(
+            move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| match choice.provider
             {
                 AgentProvider::Claude => {
                     let mut spec = HarnessSpec::new("claude")
-                        .arg("-p")
-                        .arg(prompt)
                         .arg("--mcp-config")
                         .arg(".build/mcp.json")
                         .arg("--strict-mcp-config")
@@ -437,11 +435,8 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                     spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
                 }
                 AgentProvider::Codex => {
-                    let mut spec = HarnessSpec::new("codex").arg("exec");
-                    if options.continue_session {
-                        spec = spec.arg("resume").arg("--last");
-                    }
-                    spec = spec.arg("--dangerously-bypass-approvals-and-sandbox");
+                    let mut spec =
+                        HarnessSpec::new("codex").arg("--dangerously-bypass-approvals-and-sandbox");
                     for arg in choice.harness_args() {
                         spec = spec.arg(arg);
                     }
@@ -464,7 +459,10 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                     ] {
                         spec = spec.arg("--config").arg(override_arg);
                     }
-                    spec.arg(prompt)
+                    if options.continue_session {
+                        spec = spec.arg("resume").arg("--last");
+                    }
+                    spec
                 }
             },
         ))
@@ -495,7 +493,7 @@ pub(crate) fn claude_transcript_exists(root: &std::path::Path, cwd: &std::path::
 
 /// Codex stores dated JSONL rollouts. The first line is session metadata with
 /// the canonical cwd; scanning that small header is enough to decide whether
-/// `codex exec resume --last` has a cwd-scoped conversation to continue.
+/// `codex resume --last` has a cwd-scoped conversation to continue.
 pub(crate) fn codex_transcript_exists(root: &std::path::Path, cwd: &std::path::Path) -> bool {
     use std::io::BufRead;
 
@@ -6303,9 +6301,9 @@ mod tests {
     }
 
     #[test]
-    fn real_harness_argv_includes_the_selected_model_and_effort() {
-        let Agent::OneShot(build) = build_agent(false, "/tmp/m.sock".into()) else {
-            panic!("real agent should be one-shot");
+    fn real_tui_argv_includes_the_selected_model_and_effort() {
+        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+            panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
             provider: AgentProvider::Claude,
@@ -6314,6 +6312,11 @@ mod tests {
         };
         let spec = build("do the thing", &choice, &SpawnOptions::default());
         let args = spec.args.join(" ");
+        assert_eq!(spec.binary, "claude");
+        assert!(!args
+            .split_whitespace()
+            .any(|arg| arg == "-p" || arg == "--print"));
+        assert!(!args.contains("do the thing"), "{args}");
         assert!(args.contains("--model claude-opus-4-8"), "{args}");
         assert!(args.contains("--effort xhigh"), "{args}");
         assert!(!args.contains("--continue"), "{args}");
@@ -6342,9 +6345,9 @@ mod tests {
     }
 
     #[test]
-    fn codex_harness_argv_wires_done_mcp_and_resumes_by_cwd() {
-        let Agent::OneShot(build) = build_agent(false, "/tmp/build mcp.sock".into()) else {
-            panic!("real agent should be one-shot");
+    fn codex_tui_argv_wires_done_mcp_and_resumes_by_cwd() {
+        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/build mcp.sock".into()) else {
+            panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
             provider: AgentProvider::Codex,
@@ -6358,7 +6361,7 @@ mod tests {
         let spec = build("do the thing", &choice, &options);
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
-        assert!(args.starts_with("exec "), "{args}");
+        assert!(!args.contains("exec"), "{args}");
         assert!(
             args.contains("--dangerously-bypass-approvals-and-sandbox"),
             "{args}"
@@ -6373,7 +6376,7 @@ mod tests {
             args.contains("mcp_servers.build.env.BRIDGE_MCP_SOCKET=\"/tmp/build mcp.sock\""),
             "{args}"
         );
-        assert!(args.ends_with("do the thing"), "{args}");
+        assert!(!args.contains("do the thing"), "{args}");
 
         let resumed = build(
             "a follow-up",
@@ -6383,7 +6386,7 @@ mod tests {
                 owner_id: "run-7".into(),
             },
         );
-        assert!(resumed.args.join(" ").starts_with("exec resume --last "));
+        assert!(resumed.args.join(" ").ends_with("resume --last"));
     }
 
     #[test]

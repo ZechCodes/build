@@ -136,7 +136,7 @@ pub struct PersistedTask {
     /// Defaulted so task files written before adoption existed load as native.
     #[serde(default)]
     pub adopted: bool,
-    /// Adoption's one-shot harness-continuation flag; consumed by the first
+    /// Adoption's warm harness-continuation flag; consumed by the first
     /// session spawn after adoption, persisted so a restart in between keeps it.
     #[serde(default)]
     pub pending_continuation: bool,
@@ -242,7 +242,7 @@ pub struct PersistedRun {
     /// True for a run minted around a pre-existing (user-created) worktree.
     #[serde(default)]
     pub adopted: bool,
-    /// Adoption's one-shot harness-continuation flag; consumed by the first
+    /// Adoption's warm harness-continuation flag; consumed by the first
     /// session spawn after adoption, persisted so a restart in between keeps it.
     #[serde(default)]
     pub pending_continuation: bool,

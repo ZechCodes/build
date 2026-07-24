@@ -388,7 +388,7 @@ pub struct ActiveRun {
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
     pub adopted: bool,
-    /// One-shot continuation flag: set at adoption, consumed by the first
+    /// Warm-session continuation flag: set at adoption, consumed by the first
     /// session spawn afterwards.
     pub pending_continuation: bool,
     /// Which model/effort this run's agents run on (None = harness default).
@@ -472,7 +472,7 @@ pub enum RunSource<'a> {
     },
 }
 
-/// Per-spawn context a one-shot harness builder may honor.
+/// Per-spawn context an interactive harness builder may honor.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
     /// Resume the harness's own most-recent conversation for this cwd
@@ -482,8 +482,12 @@ pub struct SpawnOptions {
     pub owner_id: String,
 }
 
-/// Builds the one-shot harness command for a rendered prompt + model + context.
-pub type OneShotBuilder =
+/// Builds an interactive harness command for a rendered prompt + model + context.
+///
+/// The prompt is supplied so test and custom adapters can inspect the turn being
+/// dispatched, but it is always submitted through the spawned PTY by
+/// [`spawn_into_slot`](Orchestrator::spawn_into_slot), never baked into argv.
+pub type WarmBuilder =
     std::sync::Arc<dyn Fn(&str, &ModelChoice, &SpawnOptions) -> HarnessSpec + Send + Sync>;
 
 /// Whether the harness has an existing conversation transcript for a worktree
@@ -491,6 +495,13 @@ pub type OneShotBuilder =
 pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
 
 const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
+
+/// How long a failed prompt write waits for the harness's exit status to
+/// become reapable before the failure is treated as fatal. Long enough to
+/// cover the kernel's close-fds-then-reap lag for a harness that exited
+/// under the write; short enough that a genuinely wedged PTY still surfaces
+/// its write error promptly.
+const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
@@ -527,13 +538,12 @@ fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
 pub enum Agent {
-    /// A warm interactive session: spawn the binary, then write the prompt to its
-    /// PTY. Supports in-session revision rounds (the QA harness uses this).
+    /// A fixed warm interactive session: spawn the binary, then write the prompt
+    /// to its PTY.
     Warm(HarnessSpec),
-    /// One-shot: build the full spawn command from the rendered prompt (e.g.
-    /// `claude -p "<prompt>"`). The agent runs, does the work, reports `done`, and
-    /// exits — no warm session.
-    OneShot(OneShotBuilder),
+    /// A provider/model-aware warm interactive session. The builder supplies
+    /// argv and environment; Build still injects the prompt through the PTY.
+    WarmBuilder(WarmBuilder),
 }
 
 /// Owns project configuration and drives plans and runs through their
@@ -2153,9 +2163,9 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Spawn the run's next session, consuming the one-shot continuation flag:
+    /// Spawn the run's next session, consuming the warm-session continuation flag:
     /// the first spawn after adoption probes for an existing harness
-    /// transcript in the worktree and asks the one-shot builder to continue it.
+    /// transcript in the worktree and asks the TUI builder to continue it.
     fn spawn_run_session(
         &self,
         active: &mut ActiveRun,
@@ -2212,29 +2222,45 @@ impl Orchestrator {
         };
         let session = match &self.agent {
             Agent::Warm(spec) => {
-                // Warm harnesses take the prompt over the PTY and never see
-                // SpawnOptions: continuation is one-shot-specific.
+                // Fixed warm harnesses take the prompt over the PTY and never
+                // need provider/model-specific SpawnOptions.
                 let s = PtySession::spawn(spec, Some(cwd.to_path_buf()), self.pty_size)?;
                 if let Err(error) = s.write_prompt(prompt) {
-                    // A harness that exits immediately is still a session the
-                    // idle/crash observer must retain and report. PTYs return
-                    // EIO when the slave has already closed; only suppress the
-                    // write failure when the child is demonstrably gone.
-                    if !s.has_exited() {
-                        return Err(error.into());
-                    }
+                    Self::absorb_prompt_write_failure_of_exiting_harness(&s, error)?;
                 }
                 s
             }
-            Agent::OneShot(build) => {
-                // The prompt is baked into the command (e.g. `claude -p`);
-                // nothing is written to stdin.
+            Agent::WarmBuilder(build) => {
                 let spec = build(prompt, model_choice, &options);
-                PtySession::spawn(&spec, Some(cwd.to_path_buf()), self.pty_size)?
+                let s = PtySession::spawn(&spec, Some(cwd.to_path_buf()), self.pty_size)?;
+                if let Err(error) = s.write_prompt(prompt) {
+                    Self::absorb_prompt_write_failure_of_exiting_harness(&s, error)?;
+                }
+                s
             }
         };
         slot.install(session);
         Ok(())
+    }
+
+    /// Decide whether a failed prompt write into a fresh session is benign. A
+    /// harness that exits immediately is still a session the idle/crash
+    /// observer must retain and report — PTYs return EIO once the child's side
+    /// is closed — so an exiting harness keeps its session and the write error
+    /// is swallowed. The child closes the PTY *before* the OS makes its exit
+    /// status reapable, so a single `has_exited` poll here races the kernel
+    /// and can fail the spawn for a harness that is already gone; the bounded
+    /// wait covers that reap lag while still surfacing the write error for a
+    /// genuinely wedged (live but unwritable) PTY.
+    fn absorb_prompt_write_failure_of_exiting_harness(
+        session: &PtySession,
+        error: PtyError,
+    ) -> Result<(), OrchestratorError> {
+        if session.exited_within(PROMPT_WRITE_EXIT_GRACE) {
+            Ok(())
+        } else {
+            Err(error.into())
+        }
     }
 
     /// Write the per-entity MCP config under `.build/` so it never trips
@@ -2414,9 +2440,9 @@ mod tests {
         }
     }
 
-    /// A one-shot agent that records every spawn's prompt and continue flag.
+    /// A warm agent builder that records every spawn's prompt and continue flag.
     fn prompt_spy_agent(log: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>) -> Agent {
-        Agent::OneShot(std::sync::Arc::new(
+        Agent::WarmBuilder(std::sync::Arc::new(
             move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                 log.lock()
                     .unwrap()
@@ -2424,6 +2450,77 @@ mod tests {
                 HarnessSpec::new("sh").arg("-c").arg("exit 0")
             },
         ))
+    }
+
+    // ---- The prompt-write race ----
+
+    #[tokio::test]
+    async fn prompt_write_failure_is_absorbed_while_the_exit_is_not_yet_reapable() {
+        // The race, deterministically: a dying harness closes its PTY (the
+        // write fails with EIO) *before* the OS makes its exit reapable, so a
+        // single `has_exited` poll says "running" and the old guard failed
+        // the spawn. A child that is un-reapable now but exits shortly after
+        // is that kernel window with the lag under test control.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 0.15");
+        let session = PtySession::spawn(
+            &spec,
+            None,
+            PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
+        .unwrap();
+        assert!(
+            !session.has_exited(),
+            "precondition: the exit status must not be reapable yet"
+        );
+        let write_error = PtyError::Io(std::io::Error::from_raw_os_error(libc_eio()));
+
+        let verdict =
+            Orchestrator::absorb_prompt_write_failure_of_exiting_harness(&session, write_error);
+
+        assert!(
+            verdict.is_ok(),
+            "a write failure against an exiting harness is benign: {verdict:?}"
+        );
+    }
+
+    /// EIO — the errno a PTY write returns once the child's side is closed.
+    fn libc_eio() -> i32 {
+        5
+    }
+
+    #[tokio::test]
+    async fn dispatch_survives_a_harness_that_exits_before_the_prompt_write() {
+        // End-to-end: an instantly exiting harness must still yield a spawned,
+        // installed session (the idle/crash observer retains and reports it),
+        // never a failed dispatch.
+        let (dir, repo) = init_repo();
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            Agent::WarmBuilder(std::sync::Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    HarnessSpec::new("sh").arg("-c").arg("exit 0")
+                },
+            )),
+            Templates::default(),
+        );
+
+        let plan = orch
+            .dispatch_plan(
+                PlanId::new("plan-1"),
+                "Add a greeting",
+                "main",
+                Default::default(),
+            )
+            .expect("an instantly exiting harness must not fail the dispatch");
+
+        assert_eq!(plan.session.generation(), 1, "the session was installed");
+        assert!(plan.session.subscribe().is_some());
     }
 
     // ---- Worktree adoption ----
@@ -2514,9 +2611,9 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A one-shot agent that records every rendered prompt it is asked to spawn.
+    /// A warm agent builder that records every rendered prompt it is asked to spawn.
     fn prompt_recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Agent {
-        Agent::OneShot(std::sync::Arc::new(
+        Agent::WarmBuilder(std::sync::Arc::new(
             move |prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
                 log.lock().unwrap().push(prompt.to_string());
                 HarnessSpec::new("sh").arg("-c").arg("exit 0")
@@ -2682,6 +2779,44 @@ mod tests {
         // The scaffolded MCP config routes `done` reports back to THIS plan.
         let mcp = std::fs::read_to_string(worktree.path.join(".build/mcp.json")).unwrap();
         assert!(mcp.contains("plan-1"), "{mcp}");
+    }
+
+    #[tokio::test]
+    async fn warm_builder_receives_the_rendered_prompt_through_its_pty() {
+        let (dir, repo) = init_repo();
+        let capture = dir.path().join("warm-prompt.txt");
+        let capture_for_builder = capture.clone();
+        let agent = Agent::WarmBuilder(std::sync::Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("cat > \"$1\"")
+                    .arg("build-warm-capture")
+                    .arg(capture_for_builder.to_string_lossy())
+            },
+        ));
+        let orch = Orchestrator::new(
+            repo,
+            dir.path().join("worktrees"),
+            agent,
+            Templates::default(),
+        );
+
+        let plan = drafting_plan(&orch, "plan-warm", "Warm prompt marker");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if std::fs::read_to_string(&capture)
+                    .is_ok_and(|contents| contents.contains("Warm prompt marker"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rendered prompt should be written into the warm PTY");
+
+        assert!(plan.session.subscribe().is_some());
     }
 
     #[tokio::test]

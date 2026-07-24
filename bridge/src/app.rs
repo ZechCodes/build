@@ -3089,6 +3089,15 @@ impl AppState {
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan(&mut active).map_err(err));
+        if outcome.is_ok() {
+            active.thread.push_event(
+                crate::thread::ThreadEventKind::Approved,
+                Some("Plan approved".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        }
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
@@ -3123,9 +3132,24 @@ impl AppState {
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        let stage_title = active
+            .stages
+            .iter()
+            .find(|stage| stage.id == stage_id)
+            .map(|stage| stage.title.clone())
+            .unwrap_or_else(|| stage_id.clone());
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan_stage(&mut active, &stage_id).map_err(err));
+        if outcome.is_ok() {
+            active.thread.push_event(
+                crate::thread::ThreadEventKind::StageApproved,
+                Some(format!("Approved stage “{stage_title}”")),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        }
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
@@ -3202,6 +3226,15 @@ impl AppState {
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_plan(&mut active).map_err(err));
+        if outcome.is_ok() {
+            active.thread.push_event(
+                crate::thread::ThreadEventKind::Abandoned,
+                Some("Plan abandoned".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        }
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
@@ -3264,6 +3297,16 @@ impl AppState {
                 ));
             }
             let anchor = parse_comment_anchor(params.get("anchor"))?;
+            let thread_anchor = anchor.as_ref().map(|anchor| crate::thread::MessageAnchor {
+                artifact: crate::thread::ArtifactKind::Plan,
+                revision_id: None,
+                path: Some(active.stages[index].path.clone()),
+                side: None,
+                line_start: None,
+                line_end: None,
+                heading_path: anchor.heading_path.clone(),
+                snippet: anchor.snippet.clone(),
+            });
             let comment = StageComment {
                 id: active.mint_comment_id(),
                 stage_id: stage_id.clone(),
@@ -3273,6 +3316,9 @@ impl AppState {
                 agent_reply: None,
             };
             active.comments.push(comment.clone());
+            active
+                .thread
+                .post_user(body.clone(), thread_anchor, now_rfc3339());
             minted = Some(comment);
             Ok(())
         })();
@@ -3296,7 +3342,24 @@ impl AppState {
             if active.comments[index].state != CommentState::Open {
                 return Err("only open comments can be deleted".to_string());
             }
-            active.comments.remove(index);
+            let comment = active.comments.remove(index);
+            let stage_path = active
+                .stages
+                .iter()
+                .find(|stage| stage.id == comment.stage_id)
+                .map(|stage| stage.path.as_str());
+            if let Some(message_index) = active.thread.items.iter().rposition(|item| {
+                matches!(
+                    item,
+                    crate::thread::ThreadItem::Message(message)
+                        if message.role == crate::thread::MessageRole::User
+                            && message.body == comment.body
+                            && message.anchor.as_ref().and_then(|anchor| anchor.path.as_deref())
+                                == comment.anchor.as_ref().and(stage_path)
+                )
+            }) {
+                active.thread.items.remove(message_index);
+            }
             Ok(())
         })();
         let (_, persisted) = self.finish_plan_mutation(plan_id, active);
@@ -3316,6 +3379,7 @@ impl AppState {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let source_plan_id = plan_id.clone();
         let requested_choice = model_choice_from(params)?;
         let base_override = params
             .get("base_branch")
@@ -3384,6 +3448,18 @@ impl AppState {
         }
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
+        if let Some(plan_id) = source_plan_id {
+            let mut plan = self.take_plan(&plan_id)?;
+            plan.thread.push_event(
+                crate::thread::ThreadEventKind::ImplementationStarted,
+                Some(format!("Implementation started as {run_id}")),
+                None,
+                None,
+                now_rfc3339(),
+            );
+            let (_, plan_persisted) = self.finish_plan_mutation(plan_id, plan);
+            plan_persisted?;
+        }
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         Ok(self.run_view(&run_id, active))
@@ -3684,6 +3760,30 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
+        if result.is_ok() {
+            let (event, summary) = match action.as_str() {
+                "commit" => (
+                    crate::thread::ThreadEventKind::Committed,
+                    "Changes committed",
+                ),
+                "push" => (
+                    crate::thread::ThreadEventKind::Pushed,
+                    "Changes committed and pushed",
+                ),
+                "merge" => (
+                    crate::thread::ThreadEventKind::Merged,
+                    "Changes merged into the base branch",
+                ),
+                "merge_push" => (
+                    crate::thread::ThreadEventKind::Merged,
+                    "Changes merged and pushed",
+                ),
+                _ => unreachable!("validated git action"),
+            };
+            active
+                .thread
+                .push_event(event, Some(summary.to_string()), None, None, now_rfc3339());
+        }
         let merged_worktree = (result.is_ok() && active.run.state == RunState::Merged)
             .then(|| active.worktree.clone());
         let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
@@ -3766,6 +3866,15 @@ impl AppState {
         let result = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_run(&mut active).map_err(err));
+        if result.is_ok() {
+            active.thread.push_event(
+                crate::thread::ThreadEventKind::Abandoned,
+                Some("Run abandoned".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        }
         let (view, persisted) = self.finish_run_mutation(run_id, active);
         result?;
         persisted?;
@@ -4938,12 +5047,15 @@ fn append_stage_comments_to_thread(
 ) {
     let now = now_rfc3339();
     for comment in comments {
-        let body = format!("[{}] {}", comment.id, comment.body);
+        let body = comment.body.clone();
         let already_posted = thread.items.iter().any(|item| {
             matches!(
                 item,
                 crate::thread::ThreadItem::Message(message)
-                    if message.role == crate::thread::MessageRole::User && message.body == body
+                    if message.role == crate::thread::MessageRole::User
+                        && message.body == body
+                        && message.anchor.as_ref().and_then(|anchor| anchor.path.as_deref())
+                            == comment.anchor.as_ref().map(|_| stage.path.as_str())
             )
         });
         if already_posted {
@@ -4981,9 +5093,6 @@ fn record_report_in_thread(
     {
         thread.finish_session(&session_id, &now);
     }
-    if let Some(completion) = &report.outputs.completion_report {
-        thread.last_completion = Some(completion.clone());
-    }
     let (event, summary) = match orchestration_error {
         Some(error) => (
             crate::thread::ThreadEventKind::RunFailed,
@@ -4992,13 +5101,36 @@ fn record_report_in_thread(
                 report.summary
             ),
         ),
+        None if report.status == DoneStatus::Blocked => (
+            crate::thread::ThreadEventKind::Blocked,
+            report.summary.clone(),
+        ),
         None if report.status == DoneStatus::Failed => (
             crate::thread::ThreadEventKind::RunFailed,
             report.summary.clone(),
         ),
+        None if report
+            .outputs
+            .validation
+            .as_ref()
+            .is_some_and(|validation| !validation.passed) =>
+        {
+            (
+                crate::thread::ThreadEventKind::ReviewBlocked,
+                report
+                    .outputs
+                    .validation
+                    .as_ref()
+                    .map(|validation| validation.findings.clone())
+                    .unwrap_or_else(|| report.summary.clone()),
+            )
+        }
         _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
     };
-    thread.push_event(event, Some(summary), None, None, now);
+    thread.push_event(event, Some(summary), None, None, &now);
+    if let Some(completion) = &report.outputs.completion_report {
+        thread.post_completion(completion, now);
+    }
 }
 
 fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit_code: Option<i32>) {
@@ -8482,6 +8614,86 @@ mod tests {
                 outputs: DoneOutputs::default(),
             },
         );
+    }
+
+    #[test]
+    fn conversation_records_blockers_validation_gates_and_completion_messages() {
+        let mut thread = crate::thread::Thread::new("run-activity");
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Blocked,
+                summary: "Needs production credentials".into(),
+                outputs: DoneOutputs::default(),
+            },
+            None,
+        );
+        assert!(thread.items.iter().any(|item| matches!(
+            item,
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::Blocked
+                    && event.summary.as_deref() == Some("Needs production credentials")
+        )));
+
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Validate,
+                status: DoneStatus::Completed,
+                summary: "Validation completed".into(),
+                outputs: DoneOutputs {
+                    validation: Some(crate::run::ValidationReport {
+                        passed: false,
+                        findings: "The migration is not reversible".into(),
+                        notes_for_next_stage: String::new(),
+                    }),
+                    completion_report: Some(crate::thread::CompletionReport {
+                        critical_files: vec!["src/app.rs".into()],
+                        ..crate::thread::CompletionReport::default()
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+            None,
+        );
+        assert!(thread.items.iter().any(|item| matches!(
+            item,
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::ReviewBlocked
+                    && event.summary.as_deref() == Some("The migration is not reversible")
+        )));
+        assert!(thread.items.iter().any(|item| matches!(
+            item,
+            crate::thread::ThreadItem::Message(message)
+                if message.role == crate::thread::MessageRole::Agent
+                    && message.source == crate::thread::MessageSource::Completion
+                    && message.body.contains("src/app.rs")
+        )));
+    }
+
+    #[test]
+    fn review_actions_are_recorded_in_the_plan_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "review activity" })));
+        let plan_id = plan_id_of(&plan);
+
+        state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        let view = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let items = view["result"]["thread"]["items"].as_array().unwrap();
+        assert!(items
+            .iter()
+            .any(|item| item["data"]["event"] == "stage_approved"));
+        assert!(items.iter().any(|item| item["data"]["event"] == "approved"));
+        assert!(items
+            .iter()
+            .any(|item| item["data"]["event"] == "implementation_started"));
     }
 
     #[test]

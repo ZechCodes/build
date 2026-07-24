@@ -1,14 +1,32 @@
 import { esc } from "./text.js";
+import { renderMarkdown } from "./markdown.js";
 
-const EVENT_LABELS = {
-  session_started: "Agent session started",
-  session_ended: "Agent session ended",
-  run_started: "Run started",
-  run_failed: "Run failed",
-  idle_unreported: "Agent went idle without reporting",
-  done: "Agent reported done",
-  revision_created: "Revision created",
+const EVENT_META = {
+  session_started: { label: "Agent session started", icon: "▶" },
+  session_ended: { label: "Agent session ended", icon: "■" },
+  run_started: { label: "Run started", icon: "▶" },
+  run_failed: { label: "Agent reported failure", icon: "×", tone: "blocked" },
+  blocked: { label: "Agent reported a blocker", icon: "!", tone: "blocked" },
+  review_blocked: { label: "Review blocked", icon: "!", tone: "blocked" },
+  idle_unreported: { label: "Agent went idle without reporting", icon: "…", tone: "blocked" },
+  done: { label: "Agent reported done", icon: "✓", tone: "success" },
+  revision_created: { label: "Revision created", icon: "↻" },
+  approved: { label: "Plan approved", icon: "✓", tone: "success" },
+  stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
+  implementation_started: { label: "Implementation started", icon: "▶" },
+  committed: { label: "Changes committed", icon: "◆", tone: "success" },
+  pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
+  merged: { label: "Changes merged", icon: "⌁", tone: "success" },
+  abandoned: { label: "Abandoned", icon: "×", tone: "blocked" },
 };
+
+function timeHtml(createdAt) {
+  if (!createdAt) return "";
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "";
+  const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return `<time datetime="${esc(createdAt)}">on ${esc(label)}</time>`;
+}
 
 export function currentRevisionId(thread, artifact) {
   const revisions = (thread && thread.revisions) || [];
@@ -27,25 +45,32 @@ function anchorLabel(anchor) {
 
 function messageHtml(message) {
   const user = message.role === "user";
+  const completion = message.source === "completion";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
     : "";
-  return `<article class="thread-message ${user ? "user" : "agent"}">
-    <div class="thread-message-head"><strong>${user ? "You" : "Agent"}</strong>${status}</div>
-    ${anchorLabel(message.anchor)}
-    <div class="thread-body">${esc(message.body || "").replace(/\n/g, "<br>")}</div>
+  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}${completion ? " thread-completion" : ""}">
+    <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
+    <div class="thread-comment-card">
+      <div class="thread-message-head"><span><strong>${user ? "You" : "Agent"}</strong> ${completion ? "reported completion" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
+      ${anchorLabel(message.anchor)}
+      <div class="thread-body markdown">${renderMarkdown(message.body || "")}</div>
+    </div>
   </article>`;
 }
 
 function eventHtml(event) {
-  const label = EVENT_LABELS[event.event] || String(event.event || "event").replaceAll("_", " ");
+  const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.summary ? esc(event.summary) : "";
-  return `<div class="thread-event"><span>${esc(label)}</span>${detail ? `<span>${detail}</span>` : ""}</div>`;
+    : event.summary ? renderMarkdown(event.summary) : "";
+  return `<div class="thread-event ${meta.tone || ""}">
+    <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
+    <div class="thread-event-content"><div><strong>${esc(meta.label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}</div>
+  </div>`;
 }
 
-function completionHtml(report) {
+function completionBody(report) {
   if (!report) return "";
   const groups = [
     ["Critical files", report.critical_files],
@@ -53,12 +78,11 @@ function completionHtml(report) {
     ["Decisions", report.decisions],
     ["Skipped", report.skips],
   ].filter(([, values]) => values && values.length);
-  return `<article class="thread-message agent thread-completion">
-    <div class="thread-message-head"><strong>Agent</strong></div>
-    <div class="thread-body"><strong>Completion report</strong>${groups
-    .map(([label, values]) => `<div><strong>${label}</strong><ul>${values.map((value) => `<li>${esc(value)}</li>`).join("")}</ul></div>`)
-    .join("")}</div>
-  </article>`;
+  return ["**Completion report**", ...groups.map(([label, values]) => `**${label}**\n${values.map((value) => `- ${value}`).join("\n")}`)].join("\n\n");
+}
+
+function completionHtml(report) {
+  return report ? messageHtml({ role: "agent", source: "completion", body: completionBody(report) }) : "";
 }
 
 function composerHtml(enabled) {
@@ -78,11 +102,12 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const completion = completionHtml(thread && thread.last_completion);
+  const hasSequencedCompletion = sourceItems.some((item) => item.type === "message" && item.data?.source === "completion");
+  const completion = hasSequencedCompletion ? "" : completionHtml(thread && thread.last_completion);
   const itemCount = items.length + (completion ? 1 : 0);
   return `<section class="review-thread">
     <div class="thread-title">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</div>
-    <div class="thread-items">${items.length || completion
+    <div class="thread-items thread-timeline">${items.length || completion
       ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}) : eventHtml(item.data || {})).join("") + completion
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>

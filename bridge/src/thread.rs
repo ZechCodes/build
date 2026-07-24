@@ -27,6 +27,20 @@ pub enum MessageRole {
     Agent,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSource {
+    #[default]
+    Chat,
+    Completion,
+}
+
+impl MessageSource {
+    fn is_chat(source: &Self) -> bool {
+        *source == Self::Chat
+    }
+}
+
 impl MessageRole {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -60,6 +74,8 @@ pub struct ThreadMessage {
     pub id: String,
     pub sequence: u64,
     pub role: MessageRole,
+    #[serde(default, skip_serializing_if = "MessageSource::is_chat")]
+    pub source: MessageSource,
     pub body: String,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,9 +93,18 @@ pub enum ThreadEventKind {
     SessionEnded,
     RunStarted,
     RunFailed,
+    Blocked,
+    ReviewBlocked,
     IdleUnreported,
     Done,
     RevisionCreated,
+    Approved,
+    StageApproved,
+    ImplementationStarted,
+    Committed,
+    Pushed,
+    Merged,
+    Abandoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +254,13 @@ impl Thread {
                 anchor.revision_id = self.current_revision(anchor.artifact).map(|r| r.id.clone());
             }
         }
-        self.post_message(MessageRole::User, body.into(), anchor, now.into())
+        self.post_message(
+            MessageRole::User,
+            MessageSource::Chat,
+            body.into(),
+            anchor,
+            now.into(),
+        )
     }
 
     pub fn post_agent(
@@ -238,12 +269,30 @@ impl Thread {
         anchor: Option<MessageAnchor>,
         now: impl Into<String>,
     ) -> String {
-        self.post_message(MessageRole::Agent, body.into(), anchor, now.into())
+        self.post_message(
+            MessageRole::Agent,
+            MessageSource::Chat,
+            body.into(),
+            anchor,
+            now.into(),
+        )
+    }
+
+    pub fn post_completion(&mut self, report: &CompletionReport, now: impl Into<String>) -> String {
+        self.last_completion = Some(report.clone());
+        self.post_message(
+            MessageRole::Agent,
+            MessageSource::Completion,
+            completion_report_markdown(report),
+            None,
+            now.into(),
+        )
     }
 
     fn post_message(
         &mut self,
         role: MessageRole,
+        source: MessageSource,
         body: String,
         anchor: Option<MessageAnchor>,
         now: String,
@@ -254,6 +303,7 @@ impl Thread {
             id: id.clone(),
             sequence,
             role,
+            source,
             body,
             created_at: now,
             seen_at: None,
@@ -433,6 +483,7 @@ impl Thread {
         let mut lines = Vec::new();
         for item in self.items.iter().rev().take(limit).rev() {
             match item {
+                ThreadItem::Message(message) if message.source == MessageSource::Completion => {}
                 ThreadItem::Message(message) => lines.push(format!(
                     "- {}: {}",
                     message.role.as_str(),
@@ -447,6 +498,29 @@ impl Thread {
         }
         lines.join("\n")
     }
+}
+
+fn completion_report_markdown(report: &CompletionReport) -> String {
+    let mut sections = vec!["**Completion report**".to_string()];
+    for (label, values) in [
+        ("Critical files", &report.critical_files),
+        ("Risks", &report.risk_notes),
+        ("Decisions", &report.decisions),
+        ("Skipped", &report.skips),
+    ] {
+        if values.is_empty() {
+            continue;
+        }
+        sections.push(format!(
+            "**{label}**\n{}",
+            values
+                .iter()
+                .map(|value| format!("- {value}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    sections.join("\n\n")
 }
 
 fn snapshot_contents(contents: &str, max_bytes: usize) -> String {

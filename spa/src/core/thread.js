@@ -144,11 +144,28 @@ function completionHtml(report, agentLabel) {
   return report ? messageHtml({ role: "agent", source: "completion", body: completionBody(report) }, agentLabel) : "";
 }
 
-function composerHtml(enabled) {
-  if (!enabled) return "";
+// The plan composer's historical ids/copy, kept as the `composer: true`
+// defaults so existing callers are unchanged.
+const PLAN_COMPOSER_DEFAULTS = {
+  inputId: "planthreadinput",
+  sendId: "planthreadsend",
+  hintId: "planthreadhint",
+  placeholder: "Send a message to the planning agent…",
+};
+
+// `composer` is falsy (no composer), `true` (plan defaults), or an object
+// overriding ids/placeholder — caller-scoped ids let two thread surfaces (the
+// plan review and the run diff) each mount a composer on one page without
+// colliding.
+function composerHtml(composer) {
+  if (!composer) return "";
+  const { inputId, sendId, hintId, placeholder } = {
+    ...PLAN_COMPOSER_DEFAULTS,
+    ...(composer === true ? {} : composer),
+  };
   return `<div class="thread-composer">
-    <textarea id="planthreadinput" rows="3" placeholder="Send a message to the planning agent…"></textarea>
-    <div class="thread-composer-actions"><span class="hint" id="planthreadhint"></span><button class="btn primary" id="planthreadsend">Send</button></div>
+    <textarea id="${esc(inputId)}" rows="3" placeholder="${esc(placeholder)}"></textarea>
+    <div class="thread-composer-actions"><span class="hint" id="${esc(hintId)}"></span><button class="btn primary" id="${esc(sendId)}">Send</button></div>
   </div>`;
 }
 

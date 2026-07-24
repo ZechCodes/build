@@ -77,6 +77,27 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector("#planthreadsend").textContent).toBe("Send");
   });
 
+  it("renders a caller-scoped composer so two composers can coexist without id collisions", () => {
+    document.body.innerHTML =
+      threadHtml({ items: [] }, { composer: true }) +
+      threadHtml(
+        { items: [] },
+        {
+          composer: {
+            inputId: "diffthreadinput",
+            sendId: "diffthreadsend",
+            hintId: "diffthreadhint",
+            placeholder: "Ask the coding agent…",
+          },
+        },
+      );
+    expect(document.querySelectorAll("#planthreadinput")).toHaveLength(1);
+    expect(document.querySelectorAll("#diffthreadinput")).toHaveLength(1);
+    expect(document.querySelector("#diffthreadinput").placeholder).toBe("Ask the coding agent…");
+    expect(document.querySelector("#diffthreadhint")).not.toBeNull();
+    expect(document.querySelector("#diffthreadsend").textContent).toBe("Send");
+  });
+
   it("does not duplicate a sequenced completion message with the legacy fallback", () => {
     document.body.innerHTML = threadHtml({
       items: [{ type: "message", data: { role: "agent", source: "completion", body: "Completion report\n\nCritical files\n- src/app.rs" } }],

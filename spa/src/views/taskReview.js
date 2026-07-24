@@ -23,6 +23,13 @@ import { watchSelection } from "../selectWatch.js";
 
 export const REVIEW_POLL_MS = 1600;
 
+// Run states whose agent can receive a freeform run.message — mirrors the
+// bridge's message_run gate (orchestrator.rs): a live Building session is
+// redirected, parked states resume. Review/StageGate are refused there (the
+// gates have structured verbs — request changes / dispatch a stage), and
+// terminal runs have no session to message, so no composer is offered.
+export const RUN_MESSAGEABLE_STATES = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
+
 // Each option id maps to a task.git_action call. cleanup is omitted for
 // commit/push (the bridge rejects cleanup on non-merges).
 const GIT_ACTION_RPC = {
@@ -72,6 +79,10 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     diffKey = null,
     lastDiffState = null,
     diffMsg = "";
+  // The conversation composer's draft, held in the plug closure (like plan.js's
+  // threadDraft) and restored into every rebuild — a poll repaint can never eat
+  // a half-typed message.
+  let threadDraft = "";
 
   // Re-review memory (W6), per plug instance (per-session): a stamp of what the
   // reviewer saw at their last Request Changes, the files they have ticked off as
@@ -240,6 +251,49 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     }
   }
 
+  // Wire the conversation composer (run.message): "ask / tell the agent
+  // something" — a message to the agent's session, never a revision dispatch.
+  // The request-changes box below it is the other, distinct verb ("send these
+  // comments and get a revision"); the copy on each keeps them legible.
+  function wireComposer() {
+    const input = q("#diffthreadinput"),
+      send = q("#diffthreadsend"),
+      hint = q("#diffthreadhint");
+    if (!input || !send) return;
+    input.value = threadDraft;
+    input.oninput = () => {
+      threadDraft = input.value;
+      if (hint) hint.textContent = "";
+    };
+    const submit = async () => {
+      const message = input.value.trim();
+      if (!message) {
+        if (hint) hint.textContent = "Type a message first.";
+        input.focus();
+        return;
+      }
+      send.disabled = true;
+      send.textContent = "sending…";
+      try {
+        await callRpc("run.message", { run_id: taskId, message });
+        threadDraft = "";
+        diffKey = null;
+        paint();
+      } catch (e) {
+        send.disabled = false;
+        send.textContent = "Send";
+        notifyError("Message failed", e.message);
+      }
+    };
+    send.onclick = submit;
+    input.onkeydown = (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        submit();
+      }
+    };
+  }
+
   function renderBody(t, files) {
     const editable = t.state === "review" || t.state === "building";
     const working = t.state === "building";
@@ -263,11 +317,23 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
         ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
       ${filesHtml}
-      ${threadHtml(t.thread, { agentLabel: t.harness })}
+      ${threadHtml(t.thread, {
+        agentLabel: t.harness,
+        // The composer shows only when run.message can land (the bridge refuses
+        // it at review gates and on terminal runs) — diff-scoped ids so it can
+        // never collide with the plan composer.
+        composer: RUN_MESSAGEABLE_STATES.includes(t.state) && {
+          inputId: "diffthreadinput",
+          sendId: "diffthreadsend",
+          hintId: "diffthreadhint",
+          placeholder: "Send a message to the coding agent — ask or clarify without requesting a revision…",
+        },
+      })}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
     wireThreadRevisionLinks(host, (revisionId) => callRpc("thread.revision", { entity_id: taskId, revision_id: revisionId }));
+    wireComposer();
 
     // The changed-only filter and the per-file Viewed checkbox live on a delegated
     // change handler: the filter repaints (forcing a rebuild), Viewed collapses the
@@ -363,15 +429,20 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     const threadKey = t.thread && t.thread.items ? t.thread.items.map((item) => item.data && item.data.sequence).join(",") : "";
     const key = t.state + " " + diff.patch + " " + threadKey;
     const general = q("#dgeneral");
+    const composerInput = q("#diffthreadinput");
     // Freeze the diff while the user is actively commenting (pending comments,
     // open popover, or text in the general box) so anchors/selection survive —
     // and skip the rebuild when nothing changed (fold state survives too). A
     // git action in flight freezes too: a rebuild would wipe the busy button.
+    // The conversation composer freezes only while focused (typing must not
+    // lose the caret); its unfocused draft survives a rebuild via threadDraft,
+    // unlike #dgeneral whose content lives only in the DOM.
     const busy =
       gitFlight.active() ||
       diffComments.length > 0 ||
       hasCommentPop() ||
-      (general && (general.value.trim() || document.activeElement === general));
+      (general && (general.value.trim() || document.activeElement === general)) ||
+      (composerInput && document.activeElement === composerInput);
     if (q(".diffbar") && (key === diffKey || busy)) {
       updateActions();
       return;

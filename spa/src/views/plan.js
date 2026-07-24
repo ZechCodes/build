@@ -163,7 +163,14 @@ export async function renderPlan() {
   const updateThread = (p) => {
     const host = $("#planthread");
     if (host) {
-      const composer = p.state === "plan_review" || MESSAGEABLE.includes(p.state);
+      // The plan's own composer ids — passed explicitly so this composer can
+      // never collide with another surface's (e.g. the diff composer's).
+      const composer = (p.state === "plan_review" || MESSAGEABLE.includes(p.state)) && {
+        inputId: "planthreadinput",
+        sendId: "planthreadsend",
+        hintId: "planthreadhint",
+        placeholder: "Send a message to the planning agent…",
+      };
       const key = JSON.stringify({
         goal: p.goal || "",
         state: p.state,

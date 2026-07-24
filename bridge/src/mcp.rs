@@ -336,7 +336,13 @@ impl DoneServer {
                             "inputSchema": { "type": "object", "properties": {} }
                         }, {
                             "name": "post_thread_message",
-                            "description": "Reply in the current Build conversation thread only for a question, necessary pushback or clarification, or an explicit response request. Do not acknowledge directives or recap diffs.",
+                            // Defers by reference to the "Build conversation protocol"
+                            // block that `conversation_prompt` in orchestrator.rs bakes
+                            // into every spawn prompt — that block is canonical. Do not
+                            // restate its bullets here: this description is re-sent on
+                            // every tools/list and outlives context compaction, so a
+                            // restated copy is the one that drifts.
+                            "description": "Reply in the current Build conversation thread only when the conversation policy in your prompt requires a written response.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -552,6 +558,26 @@ mod tests {
         assert_eq!(tools[1]["name"], "post_thread_message");
         assert_eq!(tools[2]["name"], "done");
         assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
+    }
+
+    #[test]
+    fn post_thread_message_description_defers_to_the_conversation_policy() {
+        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let description = v["result"]["tools"][1]["description"].as_str().unwrap();
+        assert!(
+            description.contains("conversation policy"),
+            "the description must defer to the spawn prompt's conversation policy \
+             instead of restating it: {description}"
+        );
+        assert!(
+            !description
+                .to_lowercase()
+                .contains("not acknowledge directives"),
+            "an unqualified 'do not acknowledge directives' contradicts the protocol's \
+             ambiguity carve-out (clarify when a message reads as question-or-directive): \
+             {description}"
+        );
     }
 
     #[test]

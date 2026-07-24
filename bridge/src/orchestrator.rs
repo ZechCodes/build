@@ -506,12 +506,17 @@ const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_m
 fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
+    // This block is the canonical reply policy. The `post_thread_message` tool
+    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT in app.rs defer to
+    // it by reference — never restate these bullets elsewhere, restated copies
+    // drift. The ambiguity rule stays above the silent-directive allowance so
+    // an in-order reader hits the carve-out before committing to silence.
     out.push_str(
         "\n\nBuild conversation protocol:\n\
          - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
-         - You may implement a directive without replying; the next revision is its acknowledgment.\n\
-         - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
+         - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
+         - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
          - Do not post acknowledgments or diff recaps.\n",
     );
     let catch_up = thread.catch_up_markdown(40);
@@ -4221,6 +4226,42 @@ mod tests {
             .message_run(&mut run, "sneak past")
             .expect_err("review gate refuses messages");
         assert!(err.to_string().contains("review gate"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn spawned_plan_and_run_prompts_put_the_ambiguity_rule_before_silent_directives() {
+        let (dir, repo) = init_repo();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
+        let orch = Orchestrator::new(
+            repo.to_path_buf(),
+            dir.path().join("worktrees"),
+            prompt_spy_agent(log.clone()),
+            Templates::default(),
+        );
+        let store = split_store(&dir);
+
+        drafting_plan(&orch, "plan-1", "Add a greeting");
+        let (plan_prompt, _) = log.lock().unwrap().last().unwrap().clone();
+        dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        let (run_prompt, _) = log.lock().unwrap().last().unwrap().clone();
+
+        for (path, prompt) in [("plan", plan_prompt), ("run", run_prompt)] {
+            let ambiguity_rule = prompt
+                .find("either a question or a directive")
+                .unwrap_or_else(|| {
+                    panic!("{path} spawn prompt lacks the ambiguity rule: {prompt}")
+                });
+            let silent_directive_allowance = prompt
+                .find("directive without replying")
+                .unwrap_or_else(|| {
+                    panic!("{path} spawn prompt lacks the silent-directive allowance: {prompt}")
+                });
+            assert!(
+                ambiguity_rule < silent_directive_allowance,
+                "{path}: the ambiguity rule must precede the silent-directive allowance so an \
+                 in-order reader hits the carve-out before committing to silence: {prompt}"
+            );
+        }
     }
 
     #[test]

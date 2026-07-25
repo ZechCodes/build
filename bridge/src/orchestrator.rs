@@ -1113,6 +1113,19 @@ impl Orchestrator {
 
     // ---- Run seams (Plan/Run split) ----------------------------------------
 
+    /// Create a worktree with nothing attached to it — no `.build/` scaffold, no
+    /// run record, no session. The human works in it by hand (a terminal or an
+    /// agent tab); Build only owns the directory and the branch it cut. It sits
+    /// on the same `build/<slug>` naming as run worktrees so teardown, adoption
+    /// and the scan all treat it identically.
+    pub fn create_bare_worktree(
+        &self,
+        slug: &str,
+        base_branch: &str,
+    ) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.create(slug, base_branch)?)
+    }
+
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
     /// (the MCP config carries the run id), and spawn the first build session.
     ///

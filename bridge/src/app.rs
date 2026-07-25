@@ -445,6 +445,11 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// The slug every bare (runless) worktree is cut from: `build/worktree`,
+/// `build/worktree-2`, … The manager de-duplicates the tail, so the affordance
+/// never has to ask the human for a name it does not need.
+const BARE_WORKTREE_SLUG: &str = "worktree";
+
 /// How long a task's `task.list` diffstat is served from cache before the next
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 const TASK_STAT_TTL: Duration = Duration::from_secs(10);
@@ -1930,6 +1935,7 @@ impl AppState {
             "run.delete" => self.run_delete(params),
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
+            "worktree.create" => self.worktree_create(params),
             "worktree.diff" => self.worktree_diff(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
@@ -3072,6 +3078,33 @@ impl AppState {
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
     /// never adopts.
+    /// Mint a bare worktree on a fresh branch off the project's base — no run,
+    /// no agent, no session. It is the "somewhere to work" affordance beside
+    /// issue creation: the human opens a terminal or an agent tab in it, and it
+    /// stays unbound (the scan reports it like any hand-made worktree) until a
+    /// mutating action adopts it.
+    fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let base = self.base_for(&project_id)?;
+        let worktree = self
+            .orch_for(&project_id)?
+            .create_bare_worktree(BARE_WORKTREE_SLUG, &base)
+            .map_err(err)?;
+        // The scan keys worktrees by canonical path; mirror that here so the
+        // caller can navigate to the surface without waiting for a rescan.
+        let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
+        // The new worktree must be visible to the very next board poll, not up
+        // to EXTERNAL_SCAN_INTERVAL later.
+        self.invalidate_external_scan(&project_id);
+        Ok(json!({
+            "project_id": project_id,
+            "worktree_id": crate::worktree::external_worktree_id(&canonical),
+            "branch": worktree.branch,
+            "name": worktree.name,
+            "path": canonical.display().to_string(),
+        }))
+    }
+
     fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let worktree_id = require_str(params, "worktree_id")?;
@@ -10680,5 +10713,53 @@ mod tests {
             json!({ "run_id": run_id, "project_id": "proj-1" }),
         ));
         assert_eq!(both["ok"], false, "{both:?}");
+    }
+
+    /// The rail's worktree affordance (the FAB's smaller sibling): mint a
+    /// worktree with NO run, no agent and no session — a directory the human
+    /// then opens a terminal or an agent tab in. It is unbound, so the scan
+    /// reports it exactly like a worktree made by hand, and the usual
+    /// adopt-on-first-mutation path still applies.
+    #[test]
+    fn worktree_create_mints_an_unbound_worktree_the_scan_can_see() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        let worktree_id = result["worktree_id"].as_str().unwrap().to_string();
+        assert!(
+            result["branch"].as_str().unwrap().starts_with("build/"),
+            "{result:?}"
+        );
+        assert!(std::path::Path::new(result["path"].as_str().unwrap()).is_dir());
+        assert_eq!(result["project_id"], json!(project_id));
+
+        // Nothing was dispatched: no run, no session, no task lifecycle.
+        assert!(state.runs.is_empty(), "a bare worktree is not a run");
+
+        // The scan sees it under the id the create returned, so the client can
+        // navigate straight to its surface.
+        let listed = state.external_worktrees(&project_id, true).unwrap();
+        assert!(
+            listed.iter().any(|w| w.id == worktree_id),
+            "{worktree_id} missing from {listed:?}"
+        );
+
+        // A second one does not collide with the first.
+        let second = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        assert_eq!(second["ok"], true, "{second:?}");
+        assert_ne!(second["result"]["branch"], result["branch"]);
+        assert_ne!(second["result"]["worktree_id"], result["worktree_id"]);
+    }
+
+    #[test]
+    fn worktree_create_rejects_an_unknown_project() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let res = state.handle(req("worktree.create", json!({ "project_id": "proj-nope" })));
+        assert_eq!(res["ok"], false, "{res:?}");
     }
 }

@@ -2,8 +2,9 @@
 //!
 //! A run is *worktree-scoped*: one implementation attempt — a worktree, a
 //! branch, a sequence of build/fix/validation sessions, and a state. A run
-//! optionally implements a plan (`plan_id`); a *quick task* is a run with
-//! `plan_id = None`. This module is the pure domain core — no IO, no git, no
+//! usually implements a plan (`plan_id`); an *adopted* run — one minted around
+//! a worktree that already existed — is the only kind with `plan_id = None`.
+//! This module is the pure domain core — no IO, no git, no
 //! PTY — so the lifecycle rules are testable in isolation.
 //!
 //! The run lifecycle (spec: Plan/Run Split):
@@ -48,8 +49,8 @@ pub enum RunState {
     /// Dispatched, worktree being prepared (plan docs materialized and
     /// committed for a planned run). No session yet.
     Created,
-    /// A build agent is running in a PTY, executing the plan (or the quick
-    /// goal directly).
+    /// A build agent is running in a PTY, executing the plan (or, for an
+    /// adopted run, its derived goal).
     Building,
     /// Multi-stage only: between stages. The previous stage's validation
     /// verdict is in; the human dispatches the next stage or a fix session.
@@ -346,8 +347,8 @@ impl StageProgress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     pub id: RunId,
-    /// The plan this run implements. `None` = a quick task: the goal goes
-    /// straight to a build agent with no plan gate.
+    /// The plan this run implements. `None` = an adopted run: its goal is
+    /// derived from the worktree Build adopted, and there is no plan gate.
     #[serde(default)]
     pub plan_id: Option<PlanId>,
     pub goal: String,
@@ -377,7 +378,7 @@ impl Run {
 mod tests {
     use super::*;
 
-    fn quick_run() -> Run {
+    fn plan_less_run() -> Run {
         Run::new(RunId::new("run-1"), None, "do the thing")
     }
 
@@ -400,15 +401,15 @@ mod tests {
 
     #[test]
     fn new_run_starts_created() {
-        assert_eq!(quick_run().state, RunState::Created);
+        assert_eq!(plan_less_run().state, RunState::Created);
         assert_eq!(planned_run().state, RunState::Created);
     }
 
     #[test]
     fn happy_path_to_merged() {
-        // The machine is identical for quick and planned runs: the plan gate
+        // The machine is identical for plan-less and planned runs: the plan gate
         // lives on the plan now, so every run dispatches straight to building.
-        for run in [quick_run(), planned_run()] {
+        for run in [plan_less_run(), planned_run()] {
             drive(
                 run,
                 &[
@@ -423,7 +424,7 @@ mod tests {
     #[test]
     fn diff_changes_loop() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::BuildReady, RunState::Review),
@@ -438,7 +439,7 @@ mod tests {
     fn request_changes_while_building_redirects_the_agent() {
         // A change request can land while the build agent is still running.
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::RequestChanges, RunState::Building),
@@ -451,7 +452,7 @@ mod tests {
     #[test]
     fn blocked_then_reply_resumes_building() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Blocked, RunState::Blocked),
@@ -463,7 +464,7 @@ mod tests {
     #[test]
     fn failed_then_reply_resumes_building() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Failed, RunState::Failed),
@@ -477,7 +478,7 @@ mod tests {
         // Quiescence never decided anything: the agent was merely quiet, so a
         // later `done` still advances the run.
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::WentIdle, RunState::IdleUnreported),
@@ -489,7 +490,7 @@ mod tests {
     #[test]
     fn idle_unreported_then_reply_resumes_building() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::WentIdle, RunState::IdleUnreported),
@@ -501,7 +502,7 @@ mod tests {
     #[test]
     fn idle_unreported_then_late_blocked_or_failed_is_honored() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::WentIdle, RunState::IdleUnreported),
@@ -509,7 +510,7 @@ mod tests {
             ],
         );
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::WentIdle, RunState::IdleUnreported),
@@ -521,7 +522,7 @@ mod tests {
     #[test]
     fn interrupt_during_building_surfaces_interrupted() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Interrupt, RunState::Interrupted),
@@ -532,7 +533,7 @@ mod tests {
     #[test]
     fn interrupted_reply_redispatches_building() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Interrupt, RunState::Interrupted),
@@ -545,7 +546,7 @@ mod tests {
     fn interrupted_accepts_change_requests_back_to_building() {
         // The user steers instead of merely restarting.
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Interrupt, RunState::Interrupted),
@@ -557,7 +558,7 @@ mod tests {
     #[test]
     fn interrupted_can_be_abandoned() {
         drive(
-            quick_run(),
+            plan_less_run(),
             &[
                 (RunEvent::Dispatch, RunState::Building),
                 (RunEvent::Interrupt, RunState::Interrupted),
@@ -782,7 +783,7 @@ mod tests {
             &[RunEvent::Archive], // → Archived
         ];
         for setup in terminal_setups {
-            let mut r = quick_run();
+            let mut r = plan_less_run();
             for e in *setup {
                 r.apply(*e).expect("setup legal");
             }
@@ -1030,16 +1031,16 @@ mod tests {
 
     #[test]
     fn run_serde_keeps_optional_plan_link() {
-        let quick = quick_run();
-        let json = serde_json::to_string(&quick).unwrap();
-        assert_eq!(serde_json::from_str::<Run>(&json).unwrap(), quick);
+        let plan_less = plan_less_run();
+        let json = serde_json::to_string(&plan_less).unwrap();
+        assert_eq!(serde_json::from_str::<Run>(&json).unwrap(), plan_less);
 
         let planned = planned_run();
         let json = serde_json::to_string(&planned).unwrap();
         let loaded: Run = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.plan_id, Some(PlanId::new("plan-1")));
 
-        // plan_id is #[serde(default)]: a record without one is a quick run.
+        // plan_id is #[serde(default)]: a record without one is an adopted run.
         let bare: Run =
             serde_json::from_str(r#"{"id":"run-3","goal":"g","state":"Created"}"#).unwrap();
         assert_eq!(bare.plan_id, None);

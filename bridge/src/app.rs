@@ -63,6 +63,65 @@ struct StreamState {
     complete: bool,
 }
 
+/// What a user terminal runs. The tab row's `+` offers these three; a client
+/// names a KIND and the daemon owns the argv, so no caller can turn a tab into
+/// an arbitrary command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TermKind {
+    /// The user's own interactive login shell — a window onto their machine.
+    Shell,
+    Claude,
+    Codex,
+}
+
+impl TermKind {
+    /// Parse the optional `kind` param. Absent means `shell` (every terminal
+    /// predating the `+` menu is one), and an unrecognized value is an error
+    /// rather than a silent fallback to a different program than was asked for.
+    fn parse(params: &Value) -> Result<TermKind, String> {
+        match params.get("kind").and_then(Value::as_str) {
+            None | Some("") | Some("shell") => Ok(TermKind::Shell),
+            Some("claude") => Ok(TermKind::Claude),
+            Some("codex") => Ok(TermKind::Codex),
+            Some(other) => Err(format!(
+                "unknown terminal kind {other:?} — expected shell, claude, or codex"
+            )),
+        }
+    }
+
+    /// The wire/label name — round-trips through `term.create` and `term.list`
+    /// so a reloaded client can label the tab by what is actually running in it.
+    fn as_str(&self) -> &'static str {
+        match self {
+            TermKind::Shell => "shell",
+            TermKind::Claude => "claude",
+            TermKind::Codex => "codex",
+        }
+    }
+
+    /// The harness this kind spawns in the scope root.
+    ///
+    /// Shell: `-i -l`, the user's rc files and prompt — their machine, shown
+    /// honestly. Agents: the provider's CLI with its approvals bypass, because
+    /// an agent tab is opened by a human who is watching it; a permission prompt
+    /// they must answer twice (once in the TUI, once in their head) buys nothing
+    /// the worktree boundary does not already give. These tabs carry no `done`
+    /// MCP server: they are conversations the human drives, not dispatched runs
+    /// with a task lifecycle.
+    fn harness_spec(&self, shell: &str) -> HarnessSpec {
+        let spec = match self {
+            TermKind::Shell => HarnessSpec::new(shell).arg("-i").arg("-l"),
+            TermKind::Claude => HarnessSpec::new("claude")
+                .arg("--dangerously-skip-permissions")
+                .unset_all(INHERITED_AGENT_MARKERS),
+            TermKind::Codex => HarnessSpec::new("codex")
+                .arg("--dangerously-bypass-approvals-and-sandbox")
+                .unset_all(INHERITED_AGENT_MARKERS),
+        };
+        spec.env("TERM", "xterm-256color")
+    }
+}
+
 /// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
 /// resolved server-side ONLY (spec §1): ids map to roots through the bridge's own
 /// records — a client-supplied filesystem path is never a scope root.
@@ -237,6 +296,8 @@ impl TermScreen {
 struct TermSession {
     term_id: String,
     scope: TermScope,
+    /// What is running in it — the tab's label survives a client reload.
+    kind: TermKind,
     /// The scope's root directory, resolved server-side at create time.
     scope_root: std::path::PathBuf,
     created_at: String,
@@ -312,10 +373,11 @@ fn path_widens_launchd_default(path: &str) -> bool {
 }
 
 impl TermSession {
-    /// Spawn the user's interactive login shell in a PTY at the scope root,
-    /// returning the session and a receiver for its output (subscribed
-    /// immediately so no early bytes are missed).
+    /// Spawn this kind's program in a PTY at the scope root, returning the
+    /// session and a receiver for its output (subscribed immediately so no early
+    /// bytes are missed). The argv comes from [`TermKind::harness_spec`].
     fn spawn(
+        kind: TermKind,
         shell: &str,
         term_id: String,
         scope: TermScope,
@@ -323,12 +385,7 @@ impl TermSession {
         cols: u16,
         rows: u16,
     ) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
-        // -i -l: interactive login shell — rc files, the user's PATH, the
-        // user's prompt. This is their machine, shown honestly.
-        let spec = HarnessSpec::new(shell)
-            .arg("-i")
-            .arg("-l")
-            .env("TERM", "xterm-256color");
+        let spec = kind.harness_spec(shell);
         let size = PtySize {
             rows,
             cols,
@@ -342,6 +399,7 @@ impl TermSession {
             TermSession {
                 term_id,
                 scope,
+                kind,
                 scope_root,
                 created_at: now_rfc3339(),
                 session,
@@ -964,7 +1022,7 @@ impl AppState {
     /// abandon a native one, both with a reason.
     fn recover_run(&mut self, record: PersistedRun) -> Result<(), String> {
         let run_id = record.id.clone();
-        // Re-derive `plan_path` from the owning plan (recovered first); quick
+        // Re-derive `plan_path` from the owning plan (recovered first); adopted
         // runs and orphaned links fall back to the convention default.
         let plan_path = record
             .plan_id
@@ -1898,6 +1956,7 @@ impl AppState {
                     term_id_suffix(&t.term_id),
                     json!({
                         "term_id": t.term_id,
+                        "kind": t.kind.as_str(),
                         "cols": t.screen.cols,
                         "rows": t.screen.rows,
                         "created_at": t.created_at,
@@ -3064,7 +3123,7 @@ impl AppState {
     }
 
     /// The owning plan's stage-doc manifest for a run (the caller's join by
-    /// `plan_id`): empty for quick runs, single-doc plans, and orphaned links.
+    /// `plan_id`): empty for adopted runs, single-doc plans, and orphaned links.
     fn owning_plan_stage_docs(&self, run: &ActiveRun) -> Vec<StageDoc> {
         run.run
             .plan_id
@@ -3500,15 +3559,14 @@ impl AppState {
 
     // ---- Run surface ----------------------------------------------------------
 
-    /// Create a run: implement an approved plan (`plan_id`) or a plan-less
-    /// quick task (`goal`). Single-active-writer: a second concurrent run of
-    /// the same plan is rejected at dispatch.
+    /// Create a run implementing an approved plan. Single-active-writer: a
+    /// second concurrent run of the same plan is rejected at dispatch.
+    ///
+    /// A run always has a plan behind it: the goal-only dispatch is gone, and an
+    /// unplanned coding session is now an agent tab (`term.create` with `kind`),
+    /// driven by the human who opened it.
     fn run_create(&mut self, params: &Value) -> Result<Value, String> {
-        let plan_id = params
-            .get("plan_id")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        let plan_id = require_str(params, "plan_id")?;
         let source_plan_id = plan_id.clone();
         let requested_choice = model_choice_from(params)?;
         let base_override = params
@@ -3518,7 +3576,7 @@ impl AppState {
             .map(str::to_string);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
 
-        let (project_id, mut active) = if let Some(plan_id) = plan_id {
+        let (project_id, mut active) = {
             if !self.plans.contains_key(&plan_id) {
                 return Err("unknown plan_id".to_string());
             }
@@ -3538,30 +3596,10 @@ impl AppState {
                 .orch_for(&project_id)?
                 .dispatch_run(
                     RunId::new(&run_id),
-                    RunSource::Plan {
+                    RunSource {
                         plan,
                         has_active_run,
                     },
-                    &base,
-                    model_choice,
-                    store,
-                )
-                .map_err(err)?;
-            (project_id, active)
-        } else {
-            let model_choice = requested_choice;
-            let goal = require_str(params, "goal")?;
-            let project_id = match params.get("project_id").and_then(Value::as_str) {
-                Some(p) => p.to_string(),
-                None => self.default_project()?,
-            };
-            let base = base_override.unwrap_or(self.base_for(&project_id)?);
-            let store = self.require_store()?;
-            let active = self
-                .orch_for(&project_id)?
-                .dispatch_run(
-                    RunId::new(&run_id),
-                    RunSource::Quick { goal: &goal },
                     &base,
                     model_choice,
                     store,
@@ -3578,18 +3616,16 @@ impl AppState {
         }
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
-        if let Some(plan_id) = source_plan_id {
-            let mut plan = self.take_plan(&plan_id)?;
-            plan.thread.push_event(
-                crate::thread::ThreadEventKind::ImplementationStarted,
-                Some(format!("Implementation started as {run_id}")),
-                None,
-                None,
-                now_rfc3339(),
-            );
-            let (_, plan_persisted) = self.finish_plan_mutation(plan_id, plan);
-            plan_persisted?;
-        }
+        let mut plan = self.take_plan(&source_plan_id)?;
+        plan.thread.push_event(
+            crate::thread::ThreadEventKind::ImplementationStarted,
+            Some(format!("Implementation started as {run_id}")),
+            None,
+            None,
+            now_rfc3339(),
+        );
+        let (_, plan_persisted) = self.finish_plan_mutation(source_plan_id, plan);
+        plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         Ok(self.run_view(&run_id, active, ThreadDetail::Full))
@@ -3804,7 +3840,7 @@ impl AppState {
             .plan_id
             .as_ref()
             .map(|p| p.0.clone())
-            .ok_or("a quick run has no plan docs to revise")?;
+            .ok_or("this run implements no plan — there are no plan docs to revise")?;
         let mut active = self.take_run(&run_id)?;
         let mut plan = self.plans.remove(&plan_id);
         let outcome = (|| -> Result<(), String> {
@@ -4129,7 +4165,7 @@ impl AppState {
         Ok(json!({ "ok": true }))
     }
 
-    /// Mint a quick run around an existing external worktree (`plan_id` None).
+    /// Mint a plan-less run around an existing external worktree (`plan_id` None).
     fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let worktree_id = require_str(params, "worktree_id")?;
@@ -4671,7 +4707,7 @@ impl AppState {
     }
 
     /// Drive the QA harness while a run is `Building`: a fresh stage runs its
-    /// build+validate; a post-review change or a quick/single-plan build runs
+    /// build+validate; a post-review change or a single-doc-plan build runs
     /// the plain build. Bounded so a non-converging chain fails loudly.
     fn qa_drive_run(
         &self,
@@ -5493,6 +5529,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let scope = TermScope::parse(params)?;
+    let kind = TermKind::parse(params)?;
 
     let (term_id, rx) = {
         let mut s = state.lock().unwrap();
@@ -5506,12 +5543,12 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         s.next_term += 1;
         let shell = s.term_shell.clone();
         let (term, rx) =
-            TermSession::spawn(&shell, term_id.clone(), scope, scope_root, cols, rows)?;
+            TermSession::spawn(kind, &shell, term_id.clone(), scope, scope_root, cols, rows)?;
         s.terms.insert(term_id.clone(), term);
         (term_id, rx)
     };
     spawn_term_pump(Arc::clone(state), term_id.clone(), rx);
-    Ok(json!({ "term_id": term_id, "cols": cols, "rows": rows }))
+    Ok(json!({ "term_id": term_id, "kind": kind.as_str(), "cols": cols, "rows": rows }))
 }
 
 /// Attach this client to an existing keyed terminal: register the caller's
@@ -6423,6 +6460,102 @@ mod tests {
             "reattach snapshot should reflect prior output; got: {snap:?}"
         );
         assert!(b["result"]["cursor"].as_u64().unwrap() > 0);
+    }
+
+    /// The tab row's `+` mints three kinds of tab, and the kind fixes the argv
+    /// server-side (a client only ever names a kind — never a command line). A
+    /// shell tab is the user's own login shell; an agent tab is that provider's
+    /// CLI in YOLO mode, because a human is sitting in front of it.
+    #[test]
+    fn term_kinds_launch_the_login_shell_or_a_coding_agent_cli() {
+        let shell = TermKind::Shell.harness_spec("/bin/zsh");
+        assert_eq!(shell.binary, "/bin/zsh");
+        assert_eq!(shell.args, ["-i", "-l"]);
+
+        let claude = TermKind::Claude.harness_spec("/bin/zsh");
+        assert_eq!(claude.binary, "claude");
+        assert_eq!(claude.args, ["--dangerously-skip-permissions"]);
+
+        let codex = TermKind::Codex.harness_spec("/bin/zsh");
+        assert_eq!(codex.binary, "codex");
+        assert_eq!(codex.args, ["--dangerously-bypass-approvals-and-sandbox"]);
+
+        // An agent tab is its own session, never a continuation of whatever
+        // launched the daemon — the rule dispatched agents already follow.
+        for spec in [claude, codex] {
+            assert!(
+                spec.unset.contains(&"CLAUDECODE".to_string()),
+                "{:?}",
+                spec.unset
+            );
+        }
+    }
+
+    #[test]
+    fn term_kind_defaults_to_the_shell_and_rejects_an_unknown_program() {
+        assert_eq!(TermKind::parse(&json!({})).unwrap(), TermKind::Shell);
+        assert_eq!(
+            TermKind::parse(&json!({ "kind": "shell" })).unwrap(),
+            TermKind::Shell
+        );
+        assert_eq!(
+            TermKind::parse(&json!({ "kind": "claude" })).unwrap(),
+            TermKind::Claude
+        );
+        assert_eq!(
+            TermKind::parse(&json!({ "kind": "codex" })).unwrap(),
+            TermKind::Codex
+        );
+        assert_eq!(
+            TermKind::parse(&json!({ "kind": "sh -c curl evil" })).unwrap_err(),
+            "unknown terminal kind \"sh -c curl evil\" — expected shell, claude, or codex"
+        );
+    }
+
+    /// The kind rides the wire both ways: `term.create` echoes it and `term.list`
+    /// carries it, so a reloaded client can label an agent tab "Claude Code"
+    /// instead of guessing "Terminal".
+    #[tokio::test]
+    async fn term_create_carries_its_kind_onto_the_tab_list() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "kind": "shell" }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["kind"], "shell");
+
+        let listed = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "project_id": project_id })),
+        );
+        let terminals = listed["result"]["terminals"].as_array().unwrap();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0]["kind"], "shell");
+
+        // An unknown kind is refused BEFORE anything is spawned.
+        let bogus = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "kind": "bash -c evil" }),
+            ),
+        );
+        assert_eq!(bogus["ok"], false, "{bogus:?}");
+        assert!(
+            bogus["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown terminal kind"),
+            "{bogus:?}"
+        );
+        assert_eq!(state.lock().unwrap().terms.len(), 1);
     }
 
     #[tokio::test]
@@ -8242,6 +8375,60 @@ mod tests {
             .to_string()
     }
 
+    /// A run in review, minted the only way runs are minted now: author a plan
+    /// with the scripted agent, approve it and both of its stage docs, implement
+    /// stage one, then dispatch stage two (whose validation opens review).
+    /// Returns `(plan_id, run_id)`. The goal-only "Quick task" dispatch this
+    /// replaces is gone — see `run_create_refuses_a_goal_without_a_plan`.
+    fn planned_run_in_review(state: &mut AppState, goal: &str) -> (String, String) {
+        let plan = state.handle(req("plan.create", json!({ "goal": goal })));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            let approved = state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+            assert_eq!(approved["ok"], true, "{approved:?}");
+        }
+        let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        assert_eq!(run["ok"], true, "{run:?}");
+        let run_id = run_id_of(&run);
+        let last_stage = state.handle(req(
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(last_stage["result"]["state"], "review", "{last_stage:?}");
+        (plan_id, run_id)
+    }
+
+    /// A plan-less run: adopt an external worktree. Adoption is the only
+    /// remaining source of runs that implement no plan, so it stands in wherever
+    /// a test just needs a live run with no plan behind it.
+    fn adopted_run(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        branch: &str,
+    ) -> String {
+        add_external_worktree(repo, dir, branch, branch);
+        let project_id = state.projects[0].id.clone();
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .expect("the external worktree is discoverable")
+            .id;
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        run_id_of(&adopted)
+    }
+
     #[test]
     fn plan_create_reaches_review_with_two_stages() {
         let (dir, repo) = init_repo();
@@ -8368,14 +8555,29 @@ mod tests {
         assert!(repo.join("result-second-half.txt").exists());
     }
 
+    /// Every run implements a plan. The goal-only dispatch ("Quick task") is
+    /// gone: an ad-hoc coding session is now a `claude`/`codex` tab the human
+    /// drives (`term.create`), not a task-lifecycle run nobody planned.
     #[test]
-    fn quick_run_builds_reviews_and_merges_with_a_cached_diffstat() {
+    fn run_create_refuses_a_goal_without_a_plan() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let res = state.handle(req("run.create", json!({ "goal": "quick change" })));
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert!(
+            res["error"].as_str().unwrap().contains("plan_id"),
+            "{res:?}"
+        );
+        assert!(state.runs.is_empty(), "nothing was dispatched");
+    }
+
+    #[test]
+    fn planned_run_builds_reviews_and_merges_with_a_cached_diffstat() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "quick change");
+        let res = state.handle(req("run.get", json!({ "run_id": run_id })));
         assert_eq!(res["result"]["state"], "review", "{res:?}");
-        assert_eq!(res["result"]["plan_id"], Value::Null);
-        let run_id = run_id_of(&res);
 
         let entry = |res: &Value| {
             res["result"]["runs"]
@@ -8396,14 +8598,17 @@ mod tests {
             "run.git_action",
             json!({ "run_id": run_id, "action": "commit" }),
         ));
-        assert!(!repo.join("result.txt").exists(), "commit keeps, no merge");
+        assert!(
+            !repo.join("result-first-half.txt").exists(),
+            "commit keeps, no merge"
+        );
 
         let merged = state.handle(req(
             "run.git_action",
             json!({ "run_id": run_id, "action": "merge" }),
         ));
         assert_eq!(merged["result"]["state"], "merged");
-        assert!(repo.join("result.txt").exists());
+        assert!(repo.join("result-first-half.txt").exists());
         let t3 = entry(&state.handle(req("board.list", json!({}))));
         assert!(t3["stat"].is_null(), "merged run has no worktree: {t3:?}");
     }
@@ -8412,8 +8617,7 @@ mod tests {
     fn board_list_carries_plans_runs_and_ride_alongs() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        state.handle(req("plan.create", json!({ "goal": "a plan" })));
-        state.handle(req("run.create", json!({ "goal": "a quick run" })));
+        planned_run_in_review(&mut state, "a plan");
         let board = state.handle(req("board.list", json!({})));
         let r = &board["result"];
         assert_eq!(r["plans"].as_array().unwrap().len(), 1);
@@ -8426,8 +8630,7 @@ mod tests {
     fn board_list_views_carry_state_changed_at_and_run_worktree_path() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "progress facts" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "progress facts");
         state.handle(req("plan.create", json!({ "goal": "a plan" })));
 
         let board = state.handle(req("board.list", json!({})));
@@ -8465,8 +8668,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let plan = state.handle(req("plan.create", json!({ "goal": "digest the board" })));
         let plan_id = plan_id_of(&plan);
-        let run = state.handle(req("run.create", json!({ "goal": "a quick run" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "a run to digest");
         // Seed a real user message into each conversation so the assertions
         // below prove bodies are omitted, not merely absent.
         state.handle(req(
@@ -8517,8 +8719,7 @@ mod tests {
     fn detail_gets_with_a_cursor_ship_only_newer_thread_items() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "cursor the thread" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "cursor the thread");
         state.handle(req(
             "run.request_changes",
             json!({
@@ -8612,8 +8813,7 @@ mod tests {
     fn state_changed_at_moves_on_transitions_but_not_same_state_mutations() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "quick change" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "changed change");
         let entry = |res: &Value| {
             res["result"]["runs"]
                 .as_array()
@@ -8629,10 +8829,13 @@ mod tests {
         let review_updated = at_review["updated_at"].as_str().unwrap().to_string();
 
         // A same-state git mutation advances updated_at but never the stamp.
+        // Every built stage commits its own work, so dirty the worktree first.
         std::thread::sleep(std::time::Duration::from_millis(5));
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        std::fs::write(worktree.join("scratch.txt"), "reviewer edit\n").unwrap();
         let staged = state.handle(req(
             "git.stage",
-            json!({ "run_id": run_id, "paths": ["result.txt"] }),
+            json!({ "run_id": run_id, "paths": ["scratch.txt"] }),
         ));
         assert_eq!(staged["ok"], true, "{staged:?}");
         let committed = state.handle(req(
@@ -8662,8 +8865,7 @@ mod tests {
         let stamp;
         {
             let mut state = qa_state(&repo, dir.path());
-            let run = state.handle(req("run.create", json!({ "goal": "restartable" })));
-            run_id = run_id_of(&run);
+            run_id = planned_run_in_review(&mut state, "restartable").1;
             let got = state.handle(req("run.get", json!({ "run_id": run_id })));
             assert_eq!(got["result"]["state"], "review", "{got:?}");
             stamp = got["result"]["state_changed_at"]
@@ -8931,15 +9133,17 @@ mod tests {
         assert_eq!(second["state"], "planned", "{second:?}");
         assert_eq!(second["open_comments"], 0, "{second:?}");
 
-        // A quick run has no plan to revise.
-        let quick = state.handle(req("run.create", json!({ "goal": "quick thing" })));
-        let quick_id = run_id_of(&quick);
+        // An adopted run implements no plan, so it has nothing to revise.
+        let adopted_id = adopted_run(&mut state, &repo, dir.path(), "adopted-branch");
         let refused = state.handle(req(
             "run.stage_send_notes",
-            json!({ "run_id": quick_id, "stage_id": "second-half" }),
+            json!({ "run_id": adopted_id, "stage_id": "second-half" }),
         ));
         assert!(
-            refused["error"].as_str().unwrap().contains("quick run"),
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("implements no plan"),
             "{refused:?}"
         );
     }
@@ -8980,9 +9184,7 @@ mod tests {
     fn run_request_changes_reruns_building_from_review() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "do work" })));
-        let run_id = run_id_of(&run);
-        assert_eq!(run["result"]["state"], "review");
+        let (_, run_id) = planned_run_in_review(&mut state, "do work");
         let rc = state.handle(req(
             "run.request_changes",
             json!({ "run_id": run_id, "comments": "rename the symbol" }),
@@ -9299,9 +9501,7 @@ mod tests {
     fn thread_post_in_review_posts_unread_and_moves_no_state() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "post-only path" })));
-        let run_id = run_id_of(&run);
-        assert_eq!(run["result"]["state"], "review", "{run:?}");
+        let (_, run_id) = planned_run_in_review(&mut state, "post-only path");
         let generation_before = state.runs[&run_id].session.generation();
 
         let posted = state.handle(req(
@@ -9345,12 +9545,15 @@ mod tests {
     fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "keep building" })));
-        let run_id = run_id_of(&run);
-        // The QA drive parks the run in review with the warm harness still
-        // live; rewind the coarse state to model a mid-build post.
+        let run_id = "run-nudge".to_string();
+        insert_run_with_live_harness(
+            &mut state,
+            &repo,
+            &dir.path().join("side"),
+            &run_id,
+            RunState::Building,
+        );
         let active = state.runs.get_mut(&run_id).unwrap();
-        active.run.state = RunState::Building;
         let generation_before = active.session.generation();
         let mut output = active.session.subscribe().expect("a live session");
 
@@ -9424,7 +9627,9 @@ mod tests {
     ///     keystrokes would redraw, so the remaining fault is below paste
     ///     framing and below the submit key — the bytes are not reaching
     ///     claude's input reader. Cause not yet identified.
+    ///
     /// Do not treat the warm-TUI path as working until this passes.
+    ///
     /// Shortened via BUILD_E2E_WAIT while iterating on the spawn path.
     fn e2e_wait() -> Duration {
         Duration::from_secs(
@@ -9574,9 +9779,14 @@ mod tests {
     fn thread_post_at_a_review_gate_leaves_the_parked_harness_alone() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "parked but live" })));
-        let run_id = run_id_of(&run);
-        assert_eq!(run["result"]["state"], "review", "{run:?}");
+        let run_id = "run-parked".to_string();
+        insert_run_with_live_harness(
+            &mut state,
+            &repo,
+            &dir.path().join("side"),
+            &run_id,
+            RunState::Review,
+        );
         let active = state.runs.get(&run_id).unwrap();
         assert!(
             active.session.subscribe().is_some(),
@@ -9619,8 +9829,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
 
-        let run = state.handle(req("run.create", json!({ "goal": "goes away" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "goes away");
         state.handle(req("run.abandon", json!({ "run_id": run_id })));
         let refused = state.handle(req(
             "thread.post",
@@ -9632,8 +9841,7 @@ mod tests {
             "{refused:?}"
         );
 
-        let archived = state.handle(req("run.create", json!({ "goal": "swept away" })));
-        let archived_id = run_id_of(&archived);
+        let (_, archived_id) = planned_run_in_review(&mut state, "swept away");
         state.runs.get_mut(&archived_id).unwrap().run.state = RunState::Archived;
         let refused_archived = state.handle(req(
             "thread.post",
@@ -9684,8 +9892,7 @@ mod tests {
     fn thread_post_is_not_blocked_by_a_stage_awaiting_validation() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "stage gate wait" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "stage gate wait");
         let active = state.runs.get_mut(&run_id).unwrap();
         active.run.state = RunState::Building;
         active.current_stage_id = Some("stage-1".into());
@@ -9773,6 +9980,112 @@ mod tests {
         );
     }
 
+    /// An approved single-doc plan on a side orchestrator, played by hand (write
+    /// the doc, report `done(phase=plan)`, approve) — the app-level twin of the
+    /// orchestrator's own `approved_plan` fixture. Runs only ever implement a
+    /// plan, so a test that needs a run driven by a PARTICULAR harness builds a
+    /// plan on that harness's orchestrator first.
+    fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
+        let mut plan = orch
+            .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
+            .unwrap();
+        let worktree = plan
+            .worktree
+            .as_ref()
+            .expect("the plan has a planning worktree")
+            .path
+            .clone();
+        std::fs::write(worktree.join(".build/plan.md"), "# Plan\n").unwrap();
+        orch.on_plan_done(
+            &mut plan,
+            store,
+            DoneReport {
+                phase: DonePhase::Plan,
+                status: DoneStatus::Completed,
+                summary: "planned".to_string(),
+                outputs: DoneOutputs {
+                    plan_path: Some(".build/plan.md".to_string()),
+                    ..DoneOutputs::default()
+                },
+            },
+        )
+        .unwrap();
+        orch.approve_plan(&mut plan).unwrap();
+        plan
+    }
+
+    /// A run whose harness is LIVE and idle: a warm PTY that enables
+    /// bracketed-paste mode (so a prompt write's readiness wait resolves) and
+    /// drains stdin like a real TUI. `run_state` is stamped on afterwards
+    /// because the scripted plan/run path ends a stage's session the moment its
+    /// validation lands — a test about the session itself has to keep one alive.
+    /// The plan behind it lives on the side orchestrator, not in `state`.
+    fn run_with_live_harness(
+        repo: &std::path::Path,
+        side_root: &std::path::Path,
+        run_id: &str,
+        run_state: RunState,
+    ) -> ActiveRun {
+        let store = crate::store::Store::new(side_root.join("store"));
+        let side = Orchestrator::new(
+            repo.to_path_buf(),
+            side_root.join("wt"),
+            Agent::Warm(
+                HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("printf '\\033[?2004h'; cat >/dev/null"),
+            ),
+            Templates::default(),
+        );
+        let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
+        let mut active = side
+            .dispatch_run(
+                RunId::new(run_id),
+                RunSource {
+                    plan: &plan,
+                    has_active_run: false,
+                },
+                "main",
+                Default::default(),
+                &store,
+            )
+            .unwrap();
+        // Dispatch writes the build prompt into the PTY, which echoes it back
+        // asynchronously. Drain until the stream has been quiet for a beat, or a
+        // later subscriber would read that echo — the prompt names
+        // `read_unread_messages` — as something the test itself provoked.
+        let mut startup = active.session.subscribe().expect("a live build session");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut last_byte_at = std::time::Instant::now();
+        while std::time::Instant::now() < deadline
+            && last_byte_at.elapsed() < Duration::from_millis(300)
+        {
+            match startup.try_recv() {
+                Ok(_) => last_byte_at = std::time::Instant::now(),
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        active.run.state = run_state;
+        active
+    }
+
+    /// Install such a run in `state` under its first project.
+    fn insert_run_with_live_harness(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        side_root: &std::path::Path,
+        run_id: &str,
+        run_state: RunState,
+    ) {
+        let active = run_with_live_harness(repo, side_root, run_id, run_state);
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert(run_id.to_string(), project_id);
+        state.runs.insert(run_id.to_string(), active);
+    }
+
     #[test]
     fn mark_idle_demotes_a_quiet_plan_and_run() {
         let (dir, repo) = init_repo();
@@ -9786,10 +10099,14 @@ mod tests {
             Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("exit 7")),
             Templates::default(),
         );
+        let plan = approved_side_plan(&side, &store, "plan-idle");
         let active = side
             .dispatch_run(
                 RunId::new("run-idle"),
-                RunSource::Quick { goal: "quiet" },
+                RunSource {
+                    plan: &plan,
+                    has_active_run: false,
+                },
                 "main",
                 Default::default(),
                 &store,
@@ -10124,8 +10441,7 @@ mod tests {
     fn run_delete_is_terminal_only() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "live" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "live");
         let live = state.handle(req("run.delete", json!({ "run_id": run_id })));
         assert!(
             live["error"].as_str().unwrap().contains("terminal runs"),
@@ -10140,8 +10456,7 @@ mod tests {
     fn merge_cleanup_keep_keeps_the_worktree() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "keep it" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "keep it");
         let worktree = state.runs.get(&run_id).unwrap().worktree.path.clone();
         let merged = state.handle(req(
             "run.git_action",
@@ -10170,10 +10485,14 @@ mod tests {
             ),
             Templates::default(),
         );
+        let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let active = side
             .dispatch_run(
                 RunId::new(run_id),
-                RunSource::Quick { goal: "live agent" },
+                RunSource {
+                    plan: &plan,
+                    has_active_run: false,
+                },
                 "main",
                 Default::default(),
                 &store,
@@ -10292,8 +10611,7 @@ mod tests {
     fn git_status_and_commit_scope_to_a_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let run = state.handle(req("run.create", json!({ "goal": "git me" })));
-        let run_id = run_id_of(&run);
+        let (_, run_id) = planned_run_in_review(&mut state, "git me");
         // The run's build wrote result.txt (committed by QA merge path? no — it
         // is committed on review); git.status over the run scope succeeds.
         let status = state.handle(req("git.status", json!({ "run_id": run_id })));

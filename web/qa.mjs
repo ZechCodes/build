@@ -6,8 +6,8 @@
 // bridge. Exercises the Plan/Run split lifecycle: author a project-scoped plan,
 // comment + revise its stage docs, approve it, spin up a worktree-scoped run
 // (materializing the plan), walk the per-stage validation gate, run-all
-// auto-advance, diff inspection, git merge, external-worktree adoption, quick
-// runs, error handling, and parallel runs.
+// auto-advance, diff inspection, git merge, external-worktree adoption, error
+// handling, and parallel runs.
 //
 // Prereqs: skriftapp on API_URL (dummy auth enabled), the Rust relay on
 // RELAY_URL, and a paired bridge with BRIDGE_QA_AGENT=1 connected to it.
@@ -227,17 +227,24 @@ async function main() {
     console.log("· adoption checks skipped (no external worktree in the project repo)");
   }
 
-  // Quick run: a plan-less run (goal directly) → review → merge (no plan phase).
-  const q = await call("run.create", { goal: "Quick fix typo" });
-  check("quick run skips planning (review)", q.state === "review", `state=${q.state}`);
-  check("quick run has no plan", q.plan_id === null, `plan_id=${q.plan_id}`);
-  const qMerged = await call("run.git_action", { run_id: q.run_id, action: "merge" });
-  check("quick run merges", qMerged.state === "merged");
+  // A run only ever implements a plan: the goal-only dispatch ("Quick task") is
+  // gone, so an unplanned session is a claude/codex terminal tab instead.
+  let goalOnlyRefused = false;
+  try {
+    await call("run.create", { goal: "Quick fix typo" });
+  } catch (e) {
+    goalOnlyRefused = /plan_id/.test(e.message);
+  }
+  check("a goal without a plan is refused", goalOnlyRefused);
 
-  // Parallel/independent runs visible on the board. `a` is a quick run we will
-  // abandon; `b` is a plan-backed run left alive at the stage gate — its worktree
-  // and materialized `.build/plan` docs feed the fs/agent surface checks below.
-  const a = await call("run.create", { goal: "Parallel run A" });
+  // Parallel/independent runs visible on the board. `a` is a run we will abandon;
+  // `b` is left alive at the stage gate — its worktree and materialized
+  // `.build/plan` docs feed the fs/agent surface checks below.
+  const aPlan = await call("plan.create", { goal: "Parallel plan A" });
+  await call("plan.approve", { plan_id: aPlan.plan_id });
+  const aStages = await call("plan.stages", { plan_id: aPlan.plan_id });
+  await call("plan.stage_approve", { plan_id: aPlan.plan_id, stage_id: aStages.stages[0].id });
+  const a = await call("run.create", { plan_id: aPlan.plan_id });
   const bPlan = await call("plan.create", { goal: "Parallel plan B" });
   await call("plan.approve", { plan_id: bPlan.plan_id });
   const bBoard = await call("plan.stages", { plan_id: bPlan.plan_id });
@@ -264,7 +271,7 @@ async function main() {
   try {
     await call("run.create", {});
   } catch (e) {
-    badParamsErrored = /goal/.test(e.message);
+    badParamsErrored = /plan_id/.test(e.message);
   }
   check("missing param returns a clean error", badParamsErrored);
 

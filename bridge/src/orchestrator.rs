@@ -17,8 +17,8 @@
 //!   `fix_run_stage`), `run_diff`, the interaction verbs (`message_run` /
 //!   `resume_run` / `run_request_changes`), the git finishers
 //!   (`run_approve_merge` / `run_commit` / `run_push` / `run_merge_and_push`),
-//!   `abandon_run`, and `adopt_run` (a quick run minted around a pre-existing
-//!   worktree, `plan_id` `None`). A quick task is a run with `plan_id = None`.
+//!   `abandon_run`, and `adopt_run` (a run minted around a pre-existing
+//!   worktree, `plan_id` `None` — the only plan-less runs left).
 //!
 //! The caller owns each active entity and hands it back by `&mut` for each
 //! transition, so the orchestrator never hides state. The cross-entity seams —
@@ -378,17 +378,17 @@ impl ActivePlan {
 
 /// One run in flight: one implementation attempt — a worktree on a
 /// `build/<slug>` branch, its lifecycle state, per-stage execution progress,
-/// and the warm session. A quick task is a run whose `run.plan_id` is `None`.
+/// and the warm session. An adopted run is one whose `run.plan_id` is `None`.
 pub struct ActiveRun {
     pub run: Run,
     pub worktree: Worktree,
     /// The "plan: <goal>" materialization commit recorded at dispatch — the
     /// baseline of the run's review diff, keeping the materialized docs out of
-    /// review noise. `None` for quick/adopted/migrated runs (the diff falls
+    /// review noise. `None` for adopted/migrated runs (the diff falls
     /// back to the merge-base).
     pub base_sha: Option<String>,
     /// Worktree-relative path the build prompts point at: the owning plan's
-    /// `plan_path`, or the convention default for quick runs. In-memory only —
+    /// `plan_path`, or the convention default for adopted runs. In-memory only —
     /// the caller re-derives it from the plan record on reattach.
     pub plan_path: String,
     /// Run-side per-stage execution progress, keyed by the plan's stage ids.
@@ -423,7 +423,7 @@ pub struct ActiveRun {
 impl ActiveRun {
     /// Reattach a run recovered from the durable store after a daemon restart:
     /// the worktree survived on disk, the PTY session did not. `plan_path` is
-    /// re-derived by the caller from the owning plan's record (quick runs pass
+    /// re-derived by the caller from the owning plan's record (adopted runs pass
     /// the convention default). The caller (boot recovery) moves a working
     /// state to `Interrupted` itself.
     pub fn reattach(record: &PersistedRun, plan_path: String) -> Self {
@@ -472,20 +472,15 @@ impl ActiveRun {
     }
 }
 
-/// What a run implements: an approved plan (docs materialized from the store)
-/// or a quick goal that goes straight to a build agent.
-pub enum RunSource<'a> {
-    /// A quick task: no plan gate, no materialization; the review diff falls
-    /// back to merge-base semantics.
-    Quick { goal: &'a str },
-    /// Implement an approved plan. `has_active_run` is the caller's
-    /// active-runs view (the orchestrator holds no app-level maps): `true`
-    /// when the plan already has a non-terminal run, which rejects the
+/// What a run implements: an approved plan, whose docs are materialized from the
+/// store into the run's worktree. Every dispatched run has one — an unplanned
+/// coding session is an agent terminal the human drives, not a run.
+pub struct RunSource<'a> {
+    pub plan: &'a ActivePlan,
+    /// The caller's active-runs view (the orchestrator holds no app-level maps):
+    /// `true` when the plan already has a non-terminal run, which rejects the
     /// dispatch — the single-active-writer rule.
-    Plan {
-        plan: &'a ActivePlan,
-        has_active_run: bool,
-    },
+    pub has_active_run: bool,
 }
 
 /// Per-spawn context an interactive harness builder may honor.
@@ -1121,17 +1116,15 @@ impl Orchestrator {
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
     /// (the MCP config carries the run id), and spawn the first build session.
     ///
-    /// A planned run additionally materializes the plan's canonical docs from
-    /// the store into the fresh worktree and commits them ("plan: <goal>" —
-    /// the intent record the scope doc keeps through merge); that commit is
-    /// recorded as the run's `base_sha`, the baseline of the review diff, so
-    /// the materialized docs never show up as review noise. A quick run skips
-    /// materialization and its diff falls back to merge-base semantics.
+    /// The run materializes the plan's canonical docs from the store into the
+    /// fresh worktree and commits them ("plan: <goal>" — the intent record the
+    /// scope doc keeps through merge); that commit is recorded as the run's
+    /// `base_sha`, the baseline of the review diff, so the materialized docs
+    /// never show up as review noise.
     ///
     /// Single-active-writer: at most one active run per plan. The caller owns
-    /// the runs map, so it passes its view via
-    /// [`RunSource::Plan::has_active_run`]; `true` rejects the dispatch before
-    /// anything is created.
+    /// the runs map, so it passes its view via [`RunSource::has_active_run`];
+    /// `true` rejects the dispatch before anything is created.
     ///
     /// A multi-stage plan's first session is its first stage's build — the
     /// plan-level `Approved` gate covers starting stage one; later stages
@@ -1146,65 +1139,52 @@ impl Orchestrator {
         model_choice: ModelChoice,
         store: &Store,
     ) -> Result<ActiveRun, OrchestratorError> {
-        let plan_link = match &source {
-            RunSource::Quick { .. } => None,
-            RunSource::Plan {
-                plan,
-                has_active_run,
-            } => {
-                if plan.plan.state != PlanState::Approved {
-                    return Err(OrchestratorError::Gate(format!(
-                        "only an approved plan can be implemented (plan {} is {:?})",
-                        plan.plan.id.0, plan.plan.state
-                    )));
-                }
-                if *has_active_run {
-                    return Err(OrchestratorError::Gate(format!(
-                        "plan {} already has an active run — a second concurrent run is \
-                         rejected (single-active-writer)",
-                        plan.plan.id.0
-                    )));
-                }
-                // Dispatch spawns the first stage's build session immediately,
-                // so its doc must carry a live approval. `approve_plan` already
-                // guarantees this for natively approved plans; migrated plans
-                // (and revision-staled docs on a re-run) are re-gated here.
-                if let Some(first_stage) = plan.stages.first() {
-                    if first_stage.state != StageDocState::Approved {
-                        return Err(OrchestratorError::Gate(format!(
-                            "cannot implement plan {}: stage {:?} is not approved",
-                            plan.plan.id.0, first_stage.id
-                        )));
-                    }
-                }
-                Some(*plan)
+        let RunSource {
+            plan: plan_link,
+            has_active_run,
+        } = source;
+        if plan_link.plan.state != PlanState::Approved {
+            return Err(OrchestratorError::Gate(format!(
+                "only an approved plan can be implemented (plan {} is {:?})",
+                plan_link.plan.id.0, plan_link.plan.state
+            )));
+        }
+        if has_active_run {
+            return Err(OrchestratorError::Gate(format!(
+                "plan {} already has an active run — a second concurrent run is \
+                 rejected (single-active-writer)",
+                plan_link.plan.id.0
+            )));
+        }
+        // Dispatch spawns the first stage's build session immediately, so its doc
+        // must carry a live approval. `approve_plan` already guarantees this for
+        // natively approved plans; migrated plans (and revision-staled docs on a
+        // re-run) are re-gated here.
+        if let Some(first_stage) = plan_link.stages.first() {
+            if first_stage.state != StageDocState::Approved {
+                return Err(OrchestratorError::Gate(format!(
+                    "cannot implement plan {}: stage {:?} is not approved",
+                    plan_link.plan.id.0, first_stage.id
+                )));
             }
-        };
-        let goal = match (&source, plan_link) {
-            (RunSource::Quick { goal }, _) => goal.to_string(),
-            (_, Some(plan)) => plan.plan.goal.clone(),
-            (RunSource::Plan { .. }, None) => unreachable!("a planned source always links"),
-        };
+        }
+        let goal = plan_link.plan.goal.clone();
 
         let slug = slugify(&goal);
         let worktree = self.worktrees.create(&slug, base_branch)?;
         self.scaffold_build_dir(&worktree, &id.0)?;
-        let base_sha = match plan_link {
-            Some(plan) => {
-                match self.materialize_and_commit_plan_docs(plan, &worktree, &goal, store) {
-                    Ok(sha) => Some(sha),
-                    Err(error) => {
-                        // Nothing has been handed to the caller; don't leak
-                        // the half-prepared worktree.
-                        self.discard_worktree(&worktree);
-                        return Err(error);
-                    }
+        let base_sha =
+            match self.materialize_and_commit_plan_docs(plan_link, &worktree, &goal, store) {
+                Ok(sha) => Some(sha),
+                Err(error) => {
+                    // Nothing has been handed to the caller; don't leak the
+                    // half-prepared worktree.
+                    self.discard_worktree(&worktree);
+                    return Err(error);
                 }
-            }
-            None => None,
-        };
+            };
 
-        let mut run = Run::new(id, plan_link.map(|plan| plan.plan.id.clone()), goal);
+        let mut run = Run::new(id, Some(plan_link.plan.id.clone()), goal);
         run.apply(RunEvent::Dispatch)?;
 
         let thread = crate::thread::Thread::new(&run.id.0);
@@ -1212,9 +1192,7 @@ impl Orchestrator {
             run,
             worktree,
             base_sha,
-            plan_path: plan_link
-                .map(|plan| plan.plan_path.clone())
-                .unwrap_or_else(|| DEFAULT_PLAN_PATH.to_string()),
+            plan_path: plan_link.plan_path.clone(),
             stages: Vec::new(),
             current_stage_id: None,
             revising_stage_id: None,
@@ -1229,18 +1207,23 @@ impl Orchestrator {
         };
 
         // Multi-stage plan → the first stage's build session (progress record
-        // created, stage diff pinned to the materialization commit); anything
-        // else → the whole-plan/quick build prompt.
-        let prompt = match plan_link.filter(|plan| plan.is_multi_stage()) {
-            Some(plan) => {
-                let first_stage = &plan.stages[0];
-                active.current_stage_id = Some(first_stage.id.clone());
-                let mut progress = StageProgress::dispatched(&first_stage.id);
-                progress.start_sha = active.base_sha.clone();
-                active.stages.push(progress);
-                self.render_run_stage(&self.templates.build_stage, &active, &plan.stages, 0, "")
-            }
-            None => self.render_run(&self.templates.build, &active, ""),
+        // created, stage diff pinned to the materialization commit); a
+        // single-doc plan → the whole-plan build prompt.
+        let prompt = if plan_link.is_multi_stage() {
+            let first_stage = &plan_link.stages[0];
+            active.current_stage_id = Some(first_stage.id.clone());
+            let mut progress = StageProgress::dispatched(&first_stage.id);
+            progress.start_sha = active.base_sha.clone();
+            active.stages.push(progress);
+            self.render_run_stage(
+                &self.templates.build_stage,
+                &active,
+                &plan_link.stages,
+                0,
+                "",
+            )
+        } else {
+            self.render_run(&self.templates.build, &active, "")
         };
         self.spawn_run_session(&mut active, &prompt, "build")?;
         Ok(active)
@@ -1266,7 +1249,7 @@ impl Orchestrator {
 
     /// Consume a build-side agent's `done` report for a run. `plan_stage_docs`
     /// is the owning plan's stage-doc manifest (the caller joins by `plan_id`;
-    /// empty for quick runs and single-doc plans), which routes multi-stage
+    /// empty for adopted runs and single-doc plans), which routes multi-stage
     /// reports through the stage pipeline and supplies the validation prompt's
     /// stage metadata.
     ///
@@ -1317,7 +1300,7 @@ impl Orchestrator {
             (DonePhase::Validate, DoneStatus::Completed) => {
                 self.on_run_validation_done(active, plan_stage_docs, &report)?;
             }
-            // Single-plan / quick path: a completed build opens review.
+            // Single-doc plan / adopted path: a completed build opens review.
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => {
                 active.run.apply(RunEvent::BuildReady)?;
             }
@@ -1496,7 +1479,7 @@ impl Orchestrator {
     /// (`base_sha`) when one was recorded — keeping the committed plan docs
     /// out of review noise while still surfacing any build-agent edits to
     /// them — falling back to the merge-base with the base branch for
-    /// quick/adopted/migrated runs.
+    /// adopted/migrated runs.
     pub fn run_diff(&self, active: &ActiveRun) -> Result<WorktreeDiff, OrchestratorError> {
         match &active.base_sha {
             Some(sha) => Ok(diff_against_base(&active.worktree.path, sha)?),
@@ -1737,7 +1720,7 @@ impl Orchestrator {
 
     /// Re-dispatch an interrupted build phase in a fresh session (the run-side
     /// `resume`). `plan_stage_docs` (the caller's join by `plan_id`; empty for a
-    /// quick/single-plan run) routes a multi-stage run by its current stage's
+    /// single-doc/adopted run) routes a multi-stage run by its current stage's
     /// persisted progress. The prompt is routed BEFORE the `Reply` transition
     /// commits, so a routing failure never strands the run out of its
     /// interrupted state.
@@ -1824,7 +1807,7 @@ impl Orchestrator {
         }
     }
 
-    /// Mint a quick run around an existing external worktree (the run-side
+    /// Mint a plan-less run around an existing external worktree (the run-side
     /// `adopt`; `plan_id` is `None`). No agent session is spawned — the run
     /// lands in `Review` (there is work to review). Order matches the fused
     /// path: checkpoint FIRST (pre-Build work stays its own legible commit),
@@ -2702,7 +2685,16 @@ mod tests {
     /// Play the plan agent: write a single plan doc and report done, landing
     /// the plan at PlanReview with its docs ingested into the store.
     fn plan_in_review(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
-        let mut plan = drafting_plan(orch, id, "Add a greeting");
+        plan_in_review_with_goal(orch, store, id, "Add a greeting")
+    }
+
+    fn plan_in_review_with_goal(
+        orch: &Orchestrator,
+        store: &Store,
+        id: &str,
+        goal: &str,
+    ) -> ActivePlan {
+        let mut plan = drafting_plan(orch, id, goal);
         let worktree_path = plan_worktree_path(&plan);
         std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v1\n").unwrap();
         orch.on_plan_done(
@@ -2720,7 +2712,16 @@ mod tests {
     }
 
     fn approved_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
-        let mut plan = plan_in_review(orch, store, id);
+        approved_plan_with_goal(orch, store, id, "Add a greeting")
+    }
+
+    fn approved_plan_with_goal(
+        orch: &Orchestrator,
+        store: &Store,
+        id: &str,
+        goal: &str,
+    ) -> ActivePlan {
+        let mut plan = plan_in_review_with_goal(orch, store, id, goal);
         orch.approve_plan(&mut plan).unwrap();
         plan
     }
@@ -2777,7 +2778,7 @@ mod tests {
     ) -> ActiveRun {
         orch.dispatch_run(
             RunId::new(id),
-            RunSource::Plan {
+            RunSource {
                 plan,
                 has_active_run: false,
             },
@@ -2788,15 +2789,19 @@ mod tests {
         .unwrap()
     }
 
-    fn dispatch_quick_run(orch: &Orchestrator, store: &Store, id: &str, goal: &str) -> ActiveRun {
-        orch.dispatch_run(
-            RunId::new(id),
-            RunSource::Quick { goal },
-            "main",
-            Default::default(),
-            store,
-        )
-        .unwrap()
+    /// A run implementing a single-doc plan: one build session, no stage
+    /// pipeline. This is what the retired goal-only dispatch used to stand in
+    /// for, so it is the fixture for every run-side test that only needs "a run
+    /// the agent is building in". The plan id derives from the run id, so
+    /// repeated calls inside one test never collide.
+    fn dispatch_single_stage_run(
+        orch: &Orchestrator,
+        store: &Store,
+        id: &str,
+        goal: &str,
+    ) -> ActiveRun {
+        let plan = approved_plan_with_goal(orch, store, &format!("plan-of-{id}"), goal);
+        dispatch_planned_run(orch, store, &plan, id)
     }
 
     #[tokio::test]
@@ -3227,7 +3232,7 @@ mod tests {
 
         let Err(error) = orch.dispatch_run(
             RunId::new("run-1"),
-            RunSource::Plan {
+            RunSource {
                 plan: &plan,
                 has_active_run: false,
             },
@@ -3429,15 +3434,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_quick_run_goes_straight_to_building() {
+    async fn dispatch_single_stage_run_goes_straight_to_building() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        let mut run = dispatch_quick_run(&orch, &store, "run-1", "fix typo");
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
         assert_eq!(run.run.state, RunState::Building);
-        assert_eq!(run.run.plan_id, None);
-        assert_eq!(run.base_sha, None, "quick runs diff from the merge-base");
+        assert_eq!(
+            run.run.plan_id.as_ref().map(|id| id.0.as_str()),
+            Some("plan-of-run-1"),
+            "every run implements a plan"
+        );
+        assert!(
+            run.base_sha.is_some(),
+            "the materialized plan doc baselines the review diff"
+        );
         assert!(run.worktree.branch.starts_with("build/"));
         assert!(run.worktree.path.join(".build/mcp.json").exists());
         assert!(run.session.subscribe().is_some(), "build session is warm");
@@ -3521,7 +3533,7 @@ mod tests {
 
         let err = match orch.dispatch_run(
             RunId::new("run-2"),
-            RunSource::Plan {
+            RunSource {
                 plan: &plan,
                 has_active_run: true,
             },
@@ -3544,7 +3556,7 @@ mod tests {
 
         let err = match orch.dispatch_run(
             RunId::new("run-1"),
-            RunSource::Plan {
+            RunSource {
                 plan: &plan,
                 has_active_run: false,
             },
@@ -3724,23 +3736,23 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // A quick run must ignore a validate report outright.
-        let mut quick = dispatch_quick_run(&orch, &store, "run-q", "quick work");
-        orch.on_run_done(&mut quick, &[], done_validate(true, "- ok", ""))
+        // A single-stage run must ignore a validate report outright.
+        let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
+        orch.on_run_done(&mut single, &[], done_validate(true, "- ok", ""))
             .unwrap();
-        assert_eq!(quick.run.state, RunState::Building, "ignored");
+        assert_eq!(single.run.state, RunState::Building, "ignored");
 
         // A run session misusing phase=plan is rejected: plan reports belong
         // to plans, and consuming one here would smuggle manifest edits.
         let err = orch
             .on_run_done(
-                &mut quick,
+                &mut single,
                 &[],
                 done(DonePhase::Plan, DoneStatus::Completed, None),
             )
             .expect_err("plan reports belong to plans");
         assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
-        assert_eq!(quick.run.state, RunState::Building);
+        assert_eq!(single.run.state, RunState::Building);
 
         // A multi-stage run mid-validation must ignore a stray build report —
         // otherwise a rogue done(build) would skip the validation gate.
@@ -3809,7 +3821,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
 
         orch.on_run_idle(&mut run).unwrap();
         assert_eq!(run.run.state, RunState::IdleUnreported);
@@ -4238,17 +4250,17 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // Quick run at review → a change request respawns building.
-        let mut quick = dispatch_quick_run(&orch, &store, "run-q", "quick work");
+        // A single-stage run at review → a change request respawns building.
+        let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
         orch.on_run_done(
-            &mut quick,
+            &mut single,
             &[],
             done(DonePhase::Build, DoneStatus::Completed, None),
         )
         .unwrap();
-        assert_eq!(quick.run.state, RunState::Review);
-        orch.run_request_changes(&mut quick, "tweak it").unwrap();
-        assert_eq!(quick.run.state, RunState::Building);
+        assert_eq!(single.run.state, RunState::Review);
+        orch.run_request_changes(&mut single, "tweak it").unwrap();
+        assert_eq!(single.run.state, RunState::Building);
 
         // A stage awaiting its validation verdict must not be redirected.
         let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
@@ -4283,7 +4295,7 @@ mod tests {
         .with_transcript_probe(std::sync::Arc::new(|_, _| true));
         let store = split_store(&dir);
 
-        let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
         assert!(orch
             .message_run(&mut run, "  ")
             .unwrap_err()
@@ -4326,7 +4338,7 @@ mod tests {
 
         drafting_plan(&orch, "plan-1", "Add a greeting");
         let (plan_prompt, _) = log.lock().unwrap().last().unwrap().clone();
-        dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
         let (run_prompt, _) = log.lock().unwrap().last().unwrap().clone();
 
         for (path, prompt) in [("plan", plan_prompt), ("run", run_prompt)] {
@@ -4364,17 +4376,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_run_redispatches_quick_and_multi_stage_builds() {
+    async fn resume_run_redispatches_single_stage_and_multi_stage_builds() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // Quick run interrupted mid-build → resumes the whole-run build.
-        let mut quick = dispatch_quick_run(&orch, &store, "run-q", "quick work");
-        quick.run.apply(crate::run::RunEvent::Interrupt).unwrap();
-        orch.resume_run(&mut quick, &[]).unwrap();
-        assert_eq!(quick.run.state, RunState::Building);
-        assert!(quick.session.subscribe().is_some());
+        // A single-stage run interrupted mid-build → resumes the whole-run build.
+        let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
+        single.run.apply(crate::run::RunEvent::Interrupt).unwrap();
+        orch.resume_run(&mut single, &[]).unwrap();
+        assert_eq!(single.run.state, RunState::Building);
+        assert!(single.session.subscribe().is_some());
 
         // Multi-stage run interrupted mid stage-build → resumes THAT stage.
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
@@ -4397,7 +4409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adopt_run_lands_in_review_as_a_plan_less_quick_run() {
+    async fn adopt_run_lands_in_review_as_a_plan_less_run() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
@@ -4432,7 +4444,7 @@ mod tests {
         let store = split_store(&dir);
 
         let to_review = |id: &str, file: &str, contents: &str| {
-            let mut run = dispatch_quick_run(&orch, &store, id, "same file");
+            let mut run = dispatch_single_stage_run(&orch, &store, id, "same file");
             std::fs::write(run.worktree.path.join(file), contents).unwrap();
             orch.on_run_done(
                 &mut run,
@@ -4482,7 +4494,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut run = dispatch_quick_run(&orch, &store, "run-1", "quick work");
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
         let branch = run.worktree.branch.clone();
         let path = run.worktree.path.clone();
 

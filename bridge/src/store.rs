@@ -202,13 +202,13 @@ pub struct PersistedPlan {
 }
 
 /// The durable core of one run — the worktree-scoped half of the split. A run
-/// stores `plan_id` instead of plan docs; a quick task is a run with
-/// `plan_id: None`.
+/// stores `plan_id` instead of plan docs; only an adopted (or v1-migrated) run
+/// carries `plan_id: None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedRun {
     pub id: String,
-    /// The plan this run implements. `None` = a quick run: the goal goes
-    /// straight to a build agent with no plan gate.
+    /// The plan this run implements. `None` = an adopted (or v1-migrated) run:
+    /// no plan behind it, so no plan gate.
     #[serde(default)]
     pub plan_id: Option<String>,
     pub goal: String,
@@ -221,8 +221,8 @@ pub struct PersistedRun {
     pub worktree_path: String,
     /// The "plan: <goal>" materialization commit recorded at dispatch — the
     /// baseline of the run's review diff, keeping materialized docs out of
-    /// review noise. `None` for quick, adopted, and migrated runs (the diff
-    /// falls back to the merge-base).
+    /// review noise. `None` for adopted and migrated runs (the diff falls back
+    /// to the merge-base).
     #[serde(default)]
     pub base_sha: Option<String>,
     /// Run-side per-stage execution progress, keyed by the plan's stage ids.
@@ -1647,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_run_round_trips_without_a_plan_link() {
+    fn plan_less_run_round_trips_without_a_plan_link() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks"));
         let mut rec = run_record("run-1", RunState::Building);

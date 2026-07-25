@@ -38,31 +38,59 @@ export function attachConnectionOverlay(host) {
   };
 }
 
-/** Track a surface's open user terminals: list on mount, create on `+`, close on
- *  `×`. Readable ordinal labels come from position in creation/list order. */
+/** What the tab row's `+` can open, in menu order. A tab is a window onto the
+ *  user's machine in this surface's directory — their shell, or a coding agent
+ *  THEY drive. An agent tab is not a run: no plan, no task lifecycle, no `done`
+ *  report; Build only spawns the CLI and streams the PTY. The daemon owns each
+ *  kind's argv (`term.create` takes a kind, never a command line). */
+export const NEW_TAB_KINDS = [
+  { id: "shell", label: "Terminal", description: "your login shell in this directory" },
+  { id: "claude", label: "Claude Code", description: "an interactive claude session you drive" },
+  { id: "codex", label: "Codex", description: "an interactive codex session you drive" },
+];
+
+const KIND_LABELS = Object.fromEntries(NEW_TAB_KINDS.map((kind) => [kind.id, kind.label]));
+
+/** The tab name for a terminal: what runs in it, numbered within its own kind
+ *  ("Terminal 1" beside "Claude Code 1"). An unrecognized kind — a daemon newer
+ *  than this client — labels itself rather than posing as a shell. */
+function kindLabel(kind) {
+  return KIND_LABELS[kind] || kind || "Terminal";
+}
+
+/** Track a surface's open user terminals: list on mount, create from the `+`
+ *  menu, close on `×`. Labels are per-kind ordinals over list/creation order. */
 export function terminalTabsController(scope) {
   const manager = terminalManager();
-  let terms = []; // [{ term_id }] in list/creation order
+  let terms = []; // [{ term_id, kind }] in list/creation order
+  const labelOf = (termId) => {
+    const index = terms.findIndex((t) => t.term_id === termId);
+    if (index < 0) return "";
+    const { kind } = terms[index];
+    const ordinal = terms.slice(0, index + 1).filter((t) => t.kind === kind).length;
+    return `${kindLabel(kind)} ${ordinal}`;
+  };
   return {
     ids: () => terms.map((t) => t.term_id),
-    /** The tab descriptors for the shell: closable, ordinal-labeled. */
-    tabs: () => terms.map((t, i) => ({ id: t.term_id, label: `Terminal ${i + 1}`, closable: true })),
-    label: (termId) => {
-      const i = terms.findIndex((t) => t.term_id === termId);
-      return i < 0 ? "" : `Terminal ${i + 1}`;
-    },
+    /** The tab descriptors for the shell: closable, kind-labeled. */
+    tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), closable: true })),
+    label: labelOf,
     has: (termId) => terms.some((t) => t.term_id === termId),
     async load() {
       try {
-        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id }));
+        // A terminal without a reported kind is a shell — the same reading the
+        // daemon gives an absent `kind`, and what every pre-menu terminal is.
+        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id, kind: t.kind || "shell" }));
       } catch {
         terms = []; // an unknown/unresolvable scope means "no terminals"
       }
       return terms;
     },
-    async create() {
-      const r = await manager.createTerminal(scope, 80, 24);
-      terms.push({ term_id: r.term_id });
+    /** Open a tab of `kind` (default: the user's shell). The daemon's echoed
+     *  kind wins over the requested one — it is the one that actually spawned. */
+    async create(kind = "shell") {
+      const r = await manager.createTerminal(scope, 80, 24, kind);
+      terms.push({ term_id: r.term_id, kind: r.kind || kind });
       return r.term_id;
     },
     async close(termId) {

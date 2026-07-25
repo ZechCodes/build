@@ -2,7 +2,7 @@
 // implementing a plan. Tabs are Stages (multi-stage runs only), Changes (the
 // review diff + request-changes + the merge/git plug), Files, Agent, and one per
 // open terminal. The plan doc left the run entirely — a compact reference header
-// links back to the owning plan (quick runs show their goal). Live-polled every
+// links back to the owning plan (an adopted run shows its goal). Live-polled every
 // 1.6s; the aux tabs (Changes/Files/Agent/terminals) own their own bodies and are
 // never repainted by the poll.
 
@@ -16,7 +16,7 @@ import { confirmAction } from "../core/confirm.js";
 import { openMessageAgent } from "../sheets/message.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab, mountAgentPane } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, mountAgentPane, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
 import { createThreadCache } from "../core/thread.js";
@@ -45,7 +45,7 @@ export async function renderTask() {
   const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
   const isMultiStage = () => !!(last && last.stages && last.stages.length);
   // A run parked between stages opens on Stages; every other state opens on
-  // Changes. A single-stage/quick run never has a Stages tab, so fall back.
+  // Changes. A single-stage run never has a Stages tab, so fall back.
   const defaultTab = () => (isMultiStage() ? defaultRunTab(last) : "changes");
   const staticTabs = () => [
     ...(isMultiStage() ? [{ id: "stages", label: "Stages" }] : []),
@@ -63,12 +63,12 @@ export async function renderTask() {
 
   // The tab bar IS the top of the view; the run's identity lives in the sidebar.
   // The bar carries a compact plan reference (link back to the plan, or the goal
-  // for a quick run), the state chip, and the header actions.
+  // for an adopted run), the state chip, and the header actions.
   const shell = (t) => {
     const m = t || {};
     const planRef = m.plan_id
       ? `<a class="plan-ref" id="planref" title="Open the plan">Plan: ${esc(m.goal || "")} →</a>`
-      : `<span class="plan-ref quick">${esc(m.goal || "")}</span>`;
+      : `<span class="plan-ref planless">${esc(m.goal || "")}</span>`;
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="tabrow"></div>
@@ -94,7 +94,8 @@ export async function renderTask() {
       active: tab,
       onSelect: (tabId) => selectTab(tabId),
       onClose: (tabId) => closeTerminal(tabId),
-      onNewTerminal: () => newTerminal(),
+      newTabOptions: NEW_TAB_KINDS,
+      onNewTab: (kind) => newTerminal(kind),
       back: { title: m.project ? `Back to ${m.project}` : "Back to project" },
       onBack: () => goHome(),
     });
@@ -190,10 +191,10 @@ export async function renderTask() {
     };
   };
 
-  const newTerminal = async () => {
+  const newTerminal = async (kind) => {
     let termId;
     try {
-      termId = await terminals.create();
+      termId = await terminals.create(kind);
     } catch (e) {
       showBanner("error: " + e.message.slice(0, 80));
       return;
@@ -458,7 +459,7 @@ export async function renderTask() {
       replaceTaskHash();
     }
     if (needShell) shell(t);
-    // A stale task Stages URL on a single-stage/quick run (no Stages tab)
+    // A stale task Stages URL on a single-stage run (no Stages tab)
     // falls back to Changes rather than leaving an empty, tab-less body.
     if (tab === "stages" && !isMultiStage()) {
       selectTab("changes");

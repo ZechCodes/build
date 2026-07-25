@@ -84,7 +84,7 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
       : "";
     const anyContent = mine.length || myPlans.length || worktrees.length;
     host.innerHTML = `<div class="project-inbox">
-      ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan or start a quick task.</div>'}
+      ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan to get started.</div>'}
       ${needsYouBucket}
       ${mixedBucket("WORKING", entities.working, true, true)}
       ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}

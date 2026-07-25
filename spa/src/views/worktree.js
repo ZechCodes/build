@@ -20,7 +20,7 @@ import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js"
 import { watchSelection } from "../selectWatch.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -121,10 +121,10 @@ export async function renderWorktree() {
     });
   };
 
-  const newTerminal = async () => {
+  const newTerminal = async (kind) => {
     let termId;
     try {
-      termId = await terminals.create();
+      termId = await terminals.create(kind);
     } catch (e) {
       showError("cannot open a terminal: " + e.message.slice(0, 80));
       return;
@@ -189,7 +189,8 @@ export async function renderWorktree() {
       active: tab,
       onSelect: (tabId) => selectTab(tabId),
       onClose: (tabId) => closeTerminal(tabId),
-      onNewTerminal: () => newTerminal(),
+      newTabOptions: NEW_TAB_KINDS,
+      onNewTab: (kind) => newTerminal(kind),
       back: { title: "Back to project" },
       onBack: () => goHome(),
     });

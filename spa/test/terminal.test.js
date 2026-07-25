@@ -409,14 +409,24 @@ describe("TerminalSocket", () => {
   it("create/list/close carry the scope spread and the right shapes", async () => {
     const { socket, ws, init } = await connected();
 
+    // No kind given → a shell, the same reading the daemon gives an absent one.
     const creating = socket.createTerminal({ project_id: "proj-1" }, 80, 24);
     creating.catch(() => {});
     await tick();
     let p = lastPayload(ws);
     expect(p.method).toBe("term.create");
-    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24 });
-    respond(ws, init, p.id, { term_id: "term-7", cols: 80, rows: 24 });
-    expect(await creating).toEqual({ term_id: "term-7", cols: 80, rows: 24 });
+    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24, kind: "shell" });
+    respond(ws, init, p.id, { term_id: "term-7", kind: "shell", cols: 80, rows: 24 });
+    expect(await creating).toEqual({ term_id: "term-7", kind: "shell", cols: 80, rows: 24 });
+
+    // An agent tab names its kind; the daemon owns the argv behind it.
+    const creatingAgent = socket.createTerminal({ project_id: "proj-1" }, 80, 24, "codex");
+    creatingAgent.catch(() => {});
+    await tick();
+    p = lastPayload(ws);
+    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24, kind: "codex" });
+    respond(ws, init, p.id, { term_id: "term-8", kind: "codex", cols: 80, rows: 24 });
+    expect(await creatingAgent).toEqual({ term_id: "term-8", kind: "codex", cols: 80, rows: 24 });
 
     const listing = socket.listTerminals({ run_id: "run-3" });
     listing.catch(() => {});

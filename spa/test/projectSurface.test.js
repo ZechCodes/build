@@ -13,11 +13,13 @@ describe("project surface chrome", () => {
     ]);
   });
 
-  it("keeps both project creation actions in the persistent surface header", () => {
+  // Authoring a plan is the only way work enters Build; an unplanned coding
+  // session is a claude/codex tab off the tab row's `+`, not a header action.
+  it("keeps plan authoring as the one creation action in the surface header", () => {
     const html = projectSurfaceActionsHtml();
-    expect(html).toContain('id="newquick"');
-    expect(html).toContain("Quick task");
     expect(html).toContain('id="newplan"');
     expect(html).toContain("New plan");
+    expect(html).not.toContain("newquick");
+    expect(html).not.toContain("Quick task");
   });
 });

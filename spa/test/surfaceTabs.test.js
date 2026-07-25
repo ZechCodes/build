@@ -72,6 +72,42 @@ describe("terminalTabsController labels", () => {
     await controller.create();
     expect(controller.label("term-c")).toBe("Terminal 3");
   });
+
+  it("names a tab after what runs in it, numbering each kind on its own", async () => {
+    fakeManager.listTerminals.mockResolvedValue([
+      { term_id: "term-a", kind: "shell" },
+      { term_id: "term-b", kind: "claude" },
+      { term_id: "term-c", kind: "codex" },
+      { term_id: "term-d", kind: "claude" },
+    ]);
+    const controller = terminalTabsController({ project_id: "p1" });
+    await controller.load();
+    expect(controller.tabs().map((tab) => tab.label)).toEqual([
+      "Terminal 1",
+      "Claude Code 1",
+      "Codex 1",
+      "Claude Code 2",
+    ]);
+  });
+
+  it("passes the chosen kind to term.create and labels the new tab by it", async () => {
+    fakeManager.listTerminals.mockResolvedValue([]);
+    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x", kind: "claude" });
+    const controller = terminalTabsController({ run_id: "run-1" });
+    await controller.load();
+    await controller.create("claude");
+    expect(fakeManager.createTerminal).toHaveBeenCalledWith({ run_id: "run-1" }, 80, 24, "claude");
+    expect(controller.label("term-x")).toBe("Claude Code 1");
+  });
+
+  it("trusts the kind the daemon reports over the one that was asked for", async () => {
+    fakeManager.listTerminals.mockResolvedValue([]);
+    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x", kind: "shell" });
+    const controller = terminalTabsController({ run_id: "run-1" });
+    await controller.load();
+    await controller.create("claude");
+    expect(controller.label("term-x")).toBe("Terminal 1");
+  });
 });
 
 describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not blank)", () => {

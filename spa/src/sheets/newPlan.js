@@ -1,9 +1,11 @@
-// The creation sheet, split into the two paths the plan/run model gives us
-// (user-agency principle: name the two behaviours, don't hide one behind a
-// checkbox). "New plan" authors a project-scoped plan you review, then
-// Implement later (plan.create → the plan surface). "Quick task" skips planning
-// and dispatches a plan-less run straight into a worktree (run.create → the run
-// surface). A segmented switch chooses the path; `mode` sets the initial one.
+// The plan-authoring sheet — the one way work enters Build. A plan is
+// project-scoped: Build drafts it, you review it, then Implement mints the run
+// (plan.create → the plan surface).
+//
+// There used to be a second path here ("Quick task") that skipped planning and
+// dispatched a plan-less run straight into a worktree. It is gone: an unplanned
+// coding session is now a claude/codex tab off the tab row's `+`, driven by the
+// human who opened it rather than tracked as a run nobody planned.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -19,16 +21,10 @@ import {
   providerOptionsHtml,
 } from "../core/modelPicker.js";
 
-export async function openNewTask({ projectId, mode = "plan" } = {}) {
-  let path = mode === "quick" ? "quick" : "plan";
-
+export async function openNewPlan({ projectId } = {}) {
   $("#sheet").innerHTML = `
-    <h3>New work</h3>
-    <div class="segmented" id="modeswitch">
-      <button class="btn seg" data-mode="plan" type="button">New plan</button>
-      <button class="btn seg" data-mode="quick" type="button">Quick task</button>
-    </div>
-    <div class="sub" id="modesub"></div>
+    <h3>New plan</h3>
+    <div class="sub">Author a plan at the project level. Build drafts it, you review, then Implement when you're ready.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
     <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
     <div class="field-row" style="display:flex;gap:10px">
@@ -40,7 +36,7 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     <div class="adderr" id="ntkerr"></div>
     <div class="row"><span class="dim mono" id="agentname" style="font-size:11px">${esc("Claude Code")}</span>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
-      <button class="btn primary" id="dispatch">Create</button></div>`;
+      <button class="btn primary" id="dispatch">Create plan</button></div>`;
   $("#scrim").classList.add("show");
   $("#goal").focus();
   $("#cancel").onclick = () => $("#scrim").classList.remove("show");
@@ -48,29 +44,6 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
   // until project.list resolves with at least one project (re-enabled below).
   $("#dispatch").disabled = true;
   $("#goal").oninput = () => ($("#ntkerr").textContent = "");
-
-  // The segmented switch: the two paths are distinct verbs, so each has its own
-  // explanation and its own dispatch. `path` drives the dispatch handler below.
-  const applyMode = () => {
-    $("#modeswitch")
-      .querySelectorAll(".seg")
-      .forEach((b) => b.classList.toggle("primary", b.dataset.mode === path));
-    $("#modesub").textContent =
-      path === "plan"
-        ? "Author a plan at the project level. Build drafts it, you review, then Implement when you're ready."
-        : "Skip planning for a small, unambiguous change. A worktree and coding agent start straight away.";
-    $("#dispatch").textContent = path === "plan" ? "Create plan" : "Start task";
-  };
-  $("#modeswitch")
-    .querySelectorAll(".seg")
-    .forEach(
-      (b) =>
-        (b.onclick = () => {
-          path = b.dataset.mode;
-          applyMode();
-        }),
-    );
-  applyMode();
 
   // Populate the project picker; the bridge picks the first if none chosen.
   const select = $("#project");
@@ -124,7 +97,6 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     // Optimistic close: capture everything, drop the sheet immediately, then
     // await the RPC. On failure the sheet is gone, so a persistent error
     // notification (not a resurrected button label) carries the reason.
-    const currentPath = path;
     const params = {
       goal,
       project_id: select.value || undefined,
@@ -137,15 +109,10 @@ export async function openNewTask({ projectId, mode = "plan" } = {}) {
     };
     $("#scrim").classList.remove("show");
     try {
-      if (currentPath === "quick") {
-        const run = await App.call("run.create", params);
-        go({ name: "task", projectId: run.project_id || params.project_id, id: run.run_id, tab: "changes" });
-      } else {
-        const plan = await App.call("plan.create", params);
-        go({ name: "plan", projectId: plan.project_id || params.project_id, id: plan.plan_id, tab: "review" });
-      }
+      const plan = await App.call("plan.create", params);
+      go({ name: "plan", projectId: plan.project_id || params.project_id, id: plan.plan_id, tab: "review" });
     } catch (e) {
-      notifyError(currentPath === "quick" ? "Couldn't start the task" : "Couldn't create the plan", e.message);
+      notifyError("Couldn't create the plan", e.message);
     }
   };
 }

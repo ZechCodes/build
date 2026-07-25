@@ -7,10 +7,10 @@ import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
-import { openNewTask } from "../sheets/newTask.js";
+import { openNewPlan } from "../sheets/newPlan.js";
 
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "inbox", label: "Inbox" },
@@ -21,7 +21,6 @@ export const projectSurfaceTabs = (terminalTabs = []) => [
 
 export const projectSurfaceActionsHtml = () => `
   <span class="projectactions">
-    <button class="btn mini" id="newquick">Quick task</button>
     <button class="btn mini primary" id="newplan">+ New plan</button>
   </span>`;
 
@@ -65,10 +64,10 @@ export async function renderMain() {
       active: tab,
       onSelect: (id) => selectTab(id),
       onClose: (id) => closeTerminal(id),
-      onNewTerminal: () => newTerminal(),
+      newTabOptions: NEW_TAB_KINDS,
+      onNewTab: (kind) => newTerminal(kind),
     });
-    $("#newplan").onclick = () => openNewTask({ projectId, mode: "plan" });
-    $("#newquick").onclick = () => openNewTask({ projectId, mode: "quick" });
+    $("#newplan").onclick = () => openNewPlan({ projectId });
   };
 
   const selectTab = (id) => {
@@ -112,10 +111,10 @@ export async function renderMain() {
     }
   };
 
-  const newTerminal = async () => {
+  const newTerminal = async (kind) => {
     let termId;
     try {
-      termId = await terminals.create();
+      termId = await terminals.create(kind);
     } catch (e) {
       const body = $("#tabbody");
       if (body) body.innerHTML = `<div class="empty">cannot open a terminal: ${esc((e && e.message) || "error")}</div>`;

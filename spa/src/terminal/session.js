@@ -62,10 +62,11 @@ export class TerminalSocket {
 
   // ---- terminal lifecycle (all ride this one socket) --------------------
 
-  /** term.create — mint a user terminal in the given scope. */
-  async createTerminal(scope, cols, rows) {
+  /** term.create — mint a user terminal in the given scope. `kind` picks what
+   *  runs in it (shell / claude / codex); the daemon owns each kind's argv. */
+  async createTerminal(scope, cols, rows, kind = "shell") {
     await this.whenConnected();
-    return this._call("term.create", { ...scope, cols, rows });
+    return this._call("term.create", { ...scope, cols, rows, kind });
   }
 
   /** term.list — the open user terminals for a scope (never agent ids). */

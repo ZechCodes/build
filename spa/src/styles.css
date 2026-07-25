@@ -101,7 +101,8 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
 .projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
 .project-inbox { width:100%; max-width:1180px; margin:0 auto; }
 /* The run view's compact plan reference: a link back to the owning plan (or the
-   goal for a quick run). Sits left of the state meta, truncating gracefully. */
+   bare goal, for an adopted run that implements none). Sits left of the state
+   meta, truncating gracefully. */
 .plan-ref { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
 a.plan-ref { cursor:pointer; color:var(--accent, #6ea8fe); text-decoration:none; }
@@ -316,6 +317,15 @@ tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !
 .splitbtn { position:relative; display:inline-flex; }
 .splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }
 .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid rgba(255,255,255,.3); padding:8px 9px; }
+/* The tab row's `+` menu (terminal / claude / codex). Positioned in JS from the
+   `+`'s box and mounted on <body>: the tab row scrolls horizontally, so a child
+   popup would be clipped by its own container. Item styling matches .splitmenu. */
+.tabmenu { min-width:240px; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:30; }
+.tabmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+.tabmenu .mi:hover { background:var(--accent-soft); }
+.tabmenu .mi .mt { color:var(--ink); font-weight:550; }
+.tabmenu .mi .md { color:var(--dim); font-size:11px; }
 .splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:25; }
 .splitmenu[hidden] { display:none; }
 .splitmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }

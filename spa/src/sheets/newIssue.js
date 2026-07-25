@@ -22,6 +22,7 @@ import {
   modelParams,
   providerOptionsHtml,
 } from "../core/modelPicker.js";
+import { loadAgentDefaults } from "../core/agentDefaults.js";
 
 export async function openNewIssue({ projectId } = {}) {
   $("#sheet").innerHTML = `
@@ -29,18 +30,32 @@ export async function openNewIssue({ projectId } = {}) {
     <div class="sub">Say what you want. Build drafts the plan to implement it, you discuss and approve that plan, then Implement when you're ready.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
     <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
-    <div class="field-row" style="display:flex;gap:10px">
-      <div class="field" style="flex:1"><label>Agent</label><select id="provider"><option value="claude">Claude Code</option></select></div>
-      <div class="field" style="flex:1"><label>Model</label><select id="model"><option value="">Harness default</option></select></div>
-      <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
+    <div class="advanced" id="advanced" hidden>
+      <div class="field-row" style="display:flex;gap:10px">
+        <div class="field" style="flex:1"><label>Agent</label><select id="provider"><option value="claude">Claude Code</option></select></div>
+        <div class="field" style="flex:1"><label>Model</label><select id="model"><option value="">Harness default</option></select></div>
+        <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
+      </div>
+      <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
+      <div class="dim" style="font-size:11.5px">Defaults come from your account settings.</div>
     </div>
-    <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
     <div class="adderr" id="ntkerr"></div>
-    <div class="row"><span class="dim mono" id="agentname" style="font-size:11px">${esc("Claude Code")}</span>
+    <div class="row">
+      <button class="btn mini advtoggle" id="advtoggle" type="button" aria-expanded="false"
+        title="Agent, model and reasoning effort">${esc("Claude Code")} <span class="advcaret">▸</span></button>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="dispatch">File issue</button></div>`;
   $("#scrim").classList.add("show");
   $("#goal").focus();
+  // Which harness will run is worth SEEING without opening anything; changing it
+  // is rare, so it lives behind this toggle, and the toggle is the label.
+  const advanced = $("#advanced");
+  const toggle = $("#advtoggle");
+  toggle.onclick = () => {
+    advanced.hidden = !advanced.hidden;
+    toggle.setAttribute("aria-expanded", String(!advanced.hidden));
+    toggle.querySelector(".advcaret").textContent = advanced.hidden ? "▸" : "▾";
+  };
   $("#cancel").onclick = () => $("#scrim").classList.remove("show");
   // Guard against dispatching before we know the projects: keep Create disabled
   // until project.list resolves with at least one project (re-enabled below).
@@ -79,16 +94,28 @@ export async function openNewIssue({ projectId } = {}) {
     $("#effort").disabled = !supported;
     if (!supported) $("#effort").value = "";
   };
-  const syncProvider = () => {
+  const syncProvider = (keep = null) => {
     const providerCatalog = catalogForProvider(catalog, $("#provider").value);
-    $("#model").innerHTML = modelOptionsHtml(providerCatalog.models, "");
-    $("#effort").innerHTML = effortOptionsHtml(providerCatalog.efforts, "");
-    $("#agentname").textContent = providerCatalog.label || "Coding agent";
+    $("#model").innerHTML = modelOptionsHtml(providerCatalog.models, (keep && keep.model) || "");
+    $("#effort").innerHTML = effortOptionsHtml(providerCatalog.efforts, (keep && keep.effort) || "");
+    // The toggle carries the harness name — the one thing about this panel worth
+    // knowing while it is shut.
+    toggle.childNodes[0].nodeValue = `${providerCatalog.label || "Coding agent"} `;
     syncModel();
   };
-  $("#provider").onchange = syncProvider;
+  $("#provider").onchange = () => syncProvider();
   $("#model").onchange = syncModel;
-  syncProvider();
+
+  // Start from the account defaults, ignoring any the catalog no longer offers —
+  // a pinned model the daemon has dropped must not silently pin nothing.
+  const defaults = loadAgentDefaults();
+  if (defaults.provider && catalog.providers.some((p) => p.id === defaults.provider)) {
+    $("#provider").value = defaults.provider;
+  }
+  syncProvider(defaults);
+  if (defaults.model) $("#model").value = modelInCatalog(catalogForProvider(catalog, $("#provider").value).models, defaults.model);
+  syncModel();
+  if (defaults.effort && !$("#effort").disabled) $("#effort").value = defaults.effort;
 
   $("#dispatch").onclick = async () => {
     const goal = $("#goal").value.trim();

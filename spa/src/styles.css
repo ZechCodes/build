@@ -543,6 +543,16 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .issue-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:550; }
 .issue-meta { flex:none; font-size:11.5px; color:var(--dim); }
 
+/* The advanced panel in the New issue sheet: hidden by default, and the button
+   that opens it IS the harness name — the one thing about those three selectors
+   worth reading while they are shut. */
+.advtoggle { font-family:var(--mono); font-size:11.5px; color:var(--ink2); padding:5px 9px; }
+.advtoggle:hover { color:var(--accent); border-color:var(--accent); }
+.advtoggle .advcaret { color:var(--dim); font-size:10px; }
+.advanced { margin:4px 0 2px; padding:12px 14px; border:1px solid var(--line); border-radius:11px;
+  display:flex; flex-direction:column; gap:10px; }
+.advanced[hidden] { display:none; }
+
 /* ---- the kind picker (in the new-worktree sheet) ---- */
 .chooser { display:flex; flex-direction:column; gap:10px; }
 .chooser-head { display:none; } /* the sheet's own field label says it */

@@ -12,6 +12,16 @@ import { openSetRemote } from "../sheets/setRemote.js";
 import { openClone } from "../sheets/clone.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
+import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
+import { loadModelCatalog } from "../app.js";
+import {
+  catalogForProvider,
+  effortOptionsHtml,
+  effortSupported,
+  modelInCatalog,
+  modelOptionsHtml,
+  providerOptionsHtml,
+} from "../core/modelPicker.js";
 
 export async function renderSettings() {
   $("#root").innerHTML = `
@@ -40,6 +50,16 @@ export async function renderSettings() {
       <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
       <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+    </div>
+    <div class="panel">
+      <h3>🤖 Agent defaults</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
+      <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="field" style="flex:1;min-width:150px"><label>Agent</label><select id="defprovider"><option>loading…</option></select></div>
+        <div class="field" style="flex:1;min-width:150px"><label>Model</label><select id="defmodel"><option value="">Harness default</option></select></div>
+        <div class="field" style="flex:1;min-width:150px"><label>Reasoning effort</label><select id="defeffort"><option value="">Default effort</option></select></div>
+      </div>
+      <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
     <div class="panel">
       <h3>🔔 Notifications</h3>
@@ -85,7 +105,46 @@ export async function renderSettings() {
     }
   };
   await refresh();
+  await mountAgentDefaults();
   $("#newrepo").onclick = () => openNewRepo(refresh);
+
+  // The agent defaults panel: the same three selectors the New issue sheet hides
+  // behind its harness button, saved on every change (there is no Save button —
+  // a preference with a commit step is a preference people forget to commit).
+  async function mountAgentDefaults() {
+    const providerSelect = $("#defprovider");
+    if (!providerSelect) return;
+    let catalog = { default_provider: "claude", providers: [] };
+    try {
+      catalog = await loadModelCatalog();
+    } catch {
+      providerSelect.innerHTML = '<option value="">(agent catalog unavailable — is your device online?)</option>';
+      return;
+    }
+    let current = loadAgentDefaults();
+    const note = $("#defsaved");
+
+    const paint = () => {
+      providerSelect.innerHTML = providerOptionsHtml(catalog.providers, current.provider || catalog.default_provider);
+      const providerCatalog = catalogForProvider(catalog, providerSelect.value);
+      $("#defmodel").innerHTML = modelOptionsHtml(providerCatalog.models, modelInCatalog(providerCatalog.models, current.model));
+      const supported = effortSupported(providerCatalog.models, $("#defmodel").value);
+      $("#defeffort").innerHTML = effortOptionsHtml(providerCatalog.efforts, supported ? current.effort : "", $("#defmodel").value);
+      $("#defeffort").disabled = !supported;
+    };
+    const store = (next, message) => {
+      current = saveAgentDefaults(next);
+      paint();
+      if (note) note.textContent = message;
+    };
+
+    paint();
+    providerSelect.onchange = () =>
+      store(reconcileAgentDefaults({ ...current, provider: providerSelect.value }, { providerChanged: true }), "Saved.");
+    $("#defmodel").onchange = () =>
+      store(reconcileAgentDefaults({ ...current, model: $("#defmodel").value }, { modelChanged: true }), "Saved.");
+    $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
+  }
 
   // Browse the host filesystem and add the chosen git repo — no typing.
   $("#browseadd").onclick = () =>

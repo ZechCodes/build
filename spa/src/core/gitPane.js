@@ -16,6 +16,7 @@ import {
   gitToolbarHtml,
   gitStateBannerHtml,
   branchMenuHtml,
+  moveActiveIndex,
   AGENT_COMMIT_MESSAGE,
 } from "./gitRender.js";
 import { mountSplitButton } from "./splitButton.js";
@@ -360,6 +361,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   // One input drives the menu: it filters the list fuzzily AND names the branch
   // the "Create …" row would cut. Survives repaints.
   let branchQuery = "";
+  let branchActive = 0; // keyboard cursor over the menu's rows
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -473,7 +475,12 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
           branch: lastStatus.branch,
           showBranchControl: branchControl,
           branchMenuHtml: branchMenuOpen
-            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered, query: branchQuery })
+            ? branchMenuHtml(branchList, {
+                pendingConfirm,
+                forceDeleteOffered,
+                query: branchQuery,
+                activeIndex: branchActive,
+              })
             : "",
         })
       : "";
@@ -543,10 +550,17 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       menu.style.top = `${box.bottom + 4}px`;
       menu.style.minWidth = `${Math.max(box.width, 260)}px`;
     }
+    // Keep the cursor on a row that still exists after a filter narrowed the list.
+    const rows = [...menu.querySelectorAll(".gtbranch-item")];
+    if (branchActive >= rows.length) branchActive = 0;
+    const activeRow = rows[branchActive];
+    if (activeRow && activeRow.scrollIntoView) activeRow.scrollIntoView({ block: "nearest" });
+
     const input = menu.querySelector(".gtbranch-newinput");
     if (!input) return;
     input.oninput = () => {
       branchQuery = input.value;
+      branchActive = 0; // a new query is a new list; start at its best match
       render();
       // The repaint replaces the input, so put the caret back where it was.
       const fresh = container.querySelector(".gtbranch-newinput");
@@ -555,15 +569,27 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         fresh.setSelectionRange(fresh.value.length, fresh.value.length);
       }
     };
+    // The whole menu is driven from this input: it never loses focus, so ↑/↓ move
+    // a cursor through the rows, Enter takes the one under it, and Esc gives up.
     input.onkeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        resetBranchMenu();
+        render();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        branchActive = moveActiveIndex(branchActive, event.key === "ArrowDown" ? 1 : -1, rows.length);
+        render();
+        return;
+      }
       if (event.key !== "Enter") return;
       event.preventDefault();
-      // Enter takes the top row — the branch you were narrowing to, or the
-      // create row when what you typed is not a branch yet.
-      const first = menu.querySelector(".gtbranch-item");
-      if (!first) return;
-      if (first.classList.contains("gtbranch-create")) createBranch();
-      else if (inFlightActions === 0) checkoutBranch(first.dataset.branch);
+      const chosen = rows[branchActive];
+      if (!chosen) return;
+      if (chosen.classList.contains("gtbranch-create")) createBranch();
+      else if (inFlightActions === 0) checkoutBranch(chosen.dataset.branch);
     };
     if (document.activeElement !== input) input.focus();
   };
@@ -887,6 +913,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     branchMenuOpen = false;
     branchList = null;
     branchQuery = "";
+    branchActive = 0;
     forceDeleteOffered.length = 0;
     clearConfirm();
   };

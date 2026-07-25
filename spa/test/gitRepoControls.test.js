@@ -19,6 +19,7 @@ import {
 } from "../src/core/gitPane.js";
 import {
   BRANCH_MENU_LIMIT,
+  moveActiveIndex,
   gitBranchControlHtml,
   gitToolbarHtml,
   gitStateBannerHtml,
@@ -371,6 +372,24 @@ describe("gitStateBannerHtml", () => {
   });
 });
 
+describe("moveActiveIndex", () => {
+  it("wraps at both ends — \u2191 from the top is the fastest way to Create", () => {
+    expect(moveActiveIndex(0, -1, 4)).toBe(3);
+    expect(moveActiveIndex(3, 1, 4)).toBe(0);
+    expect(moveActiveIndex(1, 1, 4)).toBe(2);
+  });
+
+  it("is 0 for an empty list, so callers need no special case", () => {
+    expect(moveActiveIndex(0, 1, 0)).toBe(0);
+    expect(moveActiveIndex(2, -1, 0)).toBe(0);
+  });
+
+  it("treats a missing cursor as the top", () => {
+    expect(moveActiveIndex(undefined, 1, 3)).toBe(1);
+    expect(moveActiveIndex(null, -1, 3)).toBe(2);
+  });
+});
+
 describe("branchMenuHtml", () => {
   const payload = {
     current: "main",
@@ -460,6 +479,17 @@ describe("branchMenuHtml", () => {
     // The payload arrives newest-first, so the cap keeps the newest.
     expect(html).toContain("feat/branch-0");
     expect(html).not.toContain(`feat/branch-${BRANCH_MENU_LIMIT + 3}`);
+  });
+
+  it("marks the keyboard cursor's row, and can put it on the create row", () => {
+    const onFirst = branchMenuHtml(payload, { query: "", activeIndex: 0 });
+    expect(onFirst).toMatch(/gtbranch-item[^"]*active/);
+    // Rows and the create row are ONE list: the index past the last branch is it.
+    const shown = (payload.branches || []).length;
+    const onCreate = branchMenuHtml(payload, { query: "brand-new", activeIndex: 0 });
+    expect(onCreate).toMatch(/gtbranch-create active/);
+    const past = branchMenuHtml(payload, { query: "", activeIndex: shown - 1 });
+    expect((past.match(/ active/g) || []).length).toBe(1);
   });
 
   it("escapes the query everywhere it appears", () => {

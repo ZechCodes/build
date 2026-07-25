@@ -190,12 +190,25 @@ function branchDeleteHtml(branch, pendingConfirm, forceDeleteOffered) {
  *  whole list, not just what is on screen. */
 export const BRANCH_MENU_LIMIT = 8;
 
+/** Move the keyboard cursor by `delta` over `count` rows, wrapping at both ends.
+ *  Wrapping rather than clamping because the list is short and capped: ↑ from the
+ *  top is the fastest way to the "Create …" row at the bottom. Returns 0 for an
+ *  empty list, so the caller never has to special-case it. */
+export function moveActiveIndex(current, delta, count) {
+  if (!count || count < 1) return 0;
+  const from = Number.isInteger(current) ? current : 0;
+  return (((from + delta) % count) + count) % count;
+}
+
 /** The branch dropdown for a git.branches payload: one input that both filters
  *  (fuzzily) and names a new branch, the matching branches under it — capped,
  *  each with optional ahead/behind chips and a delete affordance — and a
  *  "Create …" row whenever what you typed is not already a branch.
  *  `null` payload → a loading placeholder. */
-export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffered = [], query = "" } = {}) {
+export function branchMenuHtml(
+  payload,
+  { pendingConfirm = null, forceDeleteOffered = [], query = "", activeIndex = 0 } = {},
+) {
   if (!payload) return '<div class="gtbranch-menu"><div class="gtbranch-loading">loading…</div></div>';
   const branches = payload.branches || [];
   const search = String(query || "").trim();
@@ -203,9 +216,11 @@ export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffe
   const shown = matches.slice(0, BRANCH_MENU_LIMIT);
   const hidden = matches.length - shown.length;
   const exact = branches.some((b) => b.name === search);
+  // Keyboard cursor: the rows and the create row form ONE list in DOM order, so
+  // ↓ walks from the last branch onto "Create …" without a special case.
   const rows = shown
     .map(
-      (b) => `<div class="gtbranch-item${b.is_current ? " current" : ""}" data-branch="${esc(b.name)}">
+      (b, i) => `<div class="gtbranch-item${b.is_current ? " current" : ""}${i === activeIndex ? " active" : ""}" data-branch="${esc(b.name)}">
         <span class="gtbranch-name">${esc(b.name)}</span>
         ${branchChipsHtml(b)}
         ${branchDeleteHtml(b, pendingConfirm, forceDeleteOffered)}</div>`,
@@ -215,7 +230,7 @@ export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffe
   // rather than in a separate form: no name, no row.
   const createRow =
     search && !exact
-      ? `<div class="gtbranch-item gtbranch-create" data-branch="${esc(search)}">
+      ? `<div class="gtbranch-item gtbranch-create${shown.length === activeIndex ? " active" : ""}" data-branch="${esc(search)}">
           <span class="gtbranch-name">Create <strong>${esc(search)}</strong></span></div>`
       : "";
   // Say why the list is empty even when a create row follows: "no matching

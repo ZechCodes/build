@@ -421,6 +421,9 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .gtbranch-item { display:flex; align-items:center; gap:9px; padding:8px 13px; font-size:13px; cursor:pointer; border-top:1px solid var(--line2); }
 .gtbranch-item:first-child { border-top:0; }
 .gtbranch-item:hover { background:var(--line2); }
+/* The keyboard cursor. Distinct from :hover (the pointer may be anywhere) and
+   from .current (which branch is checked out) — a row can be all three. */
+.gtbranch-item.active { background:var(--accent-soft); box-shadow:inset 2px 0 0 var(--accent); }
 .gtbranch-item.current { background:var(--accent-soft); }
 .gtbranch-item.current .gtbranch-name { color:var(--accent); font-weight:600; }
 .gtbranch-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:12.5px; }

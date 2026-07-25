@@ -502,6 +502,36 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .gp-toolbar, .gp-banner { padding-left:12px; padding-right:12px; }
 }
 
+/* ---- the create FAB (every page inside a project) ---- */
+/* Two ranked verbs in one stack: the issue FAB always visible, the worktree one
+   revealed on hover or keyboard focus. column-reverse so the mini sits ABOVE
+   the primary while the primary keeps DOM (and tab) order first. */
+#fab { position:fixed; right:22px; bottom:22px; z-index:40; }
+.fab-stack { display:flex; flex-direction:column-reverse; align-items:flex-end; gap:10px; }
+.fab { font:inherit; font-weight:650; font-size:14px; color:#fff; background:var(--accent);
+  border:none; border-radius:999px; padding:13px 22px; cursor:pointer;
+  box-shadow:0 6px 20px rgba(91,98,232,.35); }
+.fab:hover { filter:brightness(1.06); }
+.fab:active { transform:translateY(1px); }
+/* Hidden by transform+opacity rather than display, so it animates in and stays
+   reachable to a keyboard: focus-within reveals it exactly like hover. */
+.fab-mini { font:inherit; font-size:13px; color:var(--ink2); background:var(--bg);
+  border:1px solid var(--line); border-radius:999px; padding:8px 14px; cursor:pointer;
+  display:flex; align-items:center; gap:7px; box-shadow:0 4px 14px rgba(24,24,27,.10);
+  opacity:0; transform:translateY(8px); pointer-events:none;
+  transition:opacity .14s ease, transform .14s ease; }
+.fab-stack:hover .fab-mini, .fab-stack:focus-within .fab-mini {
+  opacity:1; transform:translateY(0); pointer-events:auto; }
+.fab-mini:hover { border-color:var(--accent); color:var(--accent); }
+.fab-mini:disabled { opacity:.55; cursor:default; }
+.fab-mini-glyph { font-size:12px; }
+#fab.fab-busy .fab-mini-label::after { content:" \2026"; }
+@media (max-width: 900px) {
+  /* Clear of the mobile sidebar toggle and any sticky action bar. */
+  #fab { right:14px; bottom:14px; }
+  .fab { padding:12px 18px; }
+}
+
 /* ---- project sidebar (every page) ---- */
 #shell { display:flex; align-items:flex-start; }
 #sidebar { flex:0 0 272px; width:272px; position:sticky; top:0; align-self:stretch;

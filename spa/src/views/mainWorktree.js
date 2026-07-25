@@ -10,7 +10,6 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
-import { openNewPlan } from "../sheets/newPlan.js";
 
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "inbox", label: "Inbox" },
@@ -18,11 +17,6 @@ export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "files", label: "Files" },
   ...terminalTabs,
 ];
-
-export const projectSurfaceActionsHtml = () => `
-  <span class="projectactions">
-    <button class="btn mini primary" id="newplan">+ New plan</button>
-  </span>`;
 
 export async function renderMain() {
   const root = $("#root");
@@ -52,7 +46,6 @@ export async function renderMain() {
     root.innerHTML = `
       <div class="surface-bar project-surface">
         <div class="tabrow" id="tabrow"></div>
-        ${projectSurfaceActionsHtml()}
         <div class="surface-meta">
           <span class="mono dim" id="mainbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
           <span class="chip" title="${esc(projectName)}">PROJECT</span>
@@ -67,7 +60,6 @@ export async function renderMain() {
       newTabOptions: NEW_TAB_KINDS,
       onNewTab: (kind) => newTerminal(kind),
     });
-    $("#newplan").onclick = () => openNewPlan({ projectId });
   };
 
   const selectTab = (id) => {

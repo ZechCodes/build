@@ -24,8 +24,13 @@ import {
 import { retargetTerminals } from "./terminal/manager.js";
 import { offlineBannerText } from "./core/text.js";
 
+/// Connection status has no chip of its own any more — the status line under the
+/// rail is the device picker and nothing else. Offline still speaks up loudly
+/// through the banner (#offbar), which is the state that actually needs saying.
+/// Kept as a no-op-when-absent writer so every caller stays unchanged.
 export function setConn(html) {
-  $("#conn").innerHTML = html;
+  const el = $("#conn");
+  if (el) el.innerHTML = html;
 }
 
 export function openAppSession({ preferDeviceId = null, waitForDevice = false } = {}) {

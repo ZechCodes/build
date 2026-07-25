@@ -1,11 +1,13 @@
-// The plan-authoring sheet — the one way work enters Build. A plan is
-// project-scoped: Build drafts it, you review it, then Implement mints the run
-// (plan.create → the plan surface).
+// Filing an issue — the one way work enters Build. An issue is project-scoped
+// and states what you want; Build drafts the plan to implement it, you discuss
+// and approve that plan, then Implement mints the run whose diff you discuss and
+// merge. On the wire it is still plan.create: the issue IS the plan record, and
+// "issue" is what the whole thread of it is called.
 //
 // There used to be a second path here ("Quick task") that skipped planning and
 // dispatched a plan-less run straight into a worktree. It is gone: an unplanned
-// coding session is now a claude/codex tab off the tab row's `+`, driven by the
-// human who opened it rather than tracked as a run nobody planned.
+// coding session is now an agent tab in a worktree, driven by the human who
+// opened it rather than tracked as a run nobody filed.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -21,10 +23,10 @@ import {
   providerOptionsHtml,
 } from "../core/modelPicker.js";
 
-export async function openNewPlan({ projectId } = {}) {
+export async function openNewIssue({ projectId } = {}) {
   $("#sheet").innerHTML = `
-    <h3>New plan</h3>
-    <div class="sub">Author a plan at the project level. Build drafts it, you review, then Implement when you're ready.</div>
+    <h3>New issue</h3>
+    <div class="sub">Say what you want. Build drafts the plan to implement it, you discuss and approve that plan, then Implement when you're ready.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
     <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
     <div class="field-row" style="display:flex;gap:10px">
@@ -36,7 +38,7 @@ export async function openNewPlan({ projectId } = {}) {
     <div class="adderr" id="ntkerr"></div>
     <div class="row"><span class="dim mono" id="agentname" style="font-size:11px">${esc("Claude Code")}</span>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
-      <button class="btn primary" id="dispatch">Create plan</button></div>`;
+      <button class="btn primary" id="dispatch">File issue</button></div>`;
   $("#scrim").classList.add("show");
   $("#goal").focus();
   $("#cancel").onclick = () => $("#scrim").classList.remove("show");
@@ -91,7 +93,7 @@ export async function openNewPlan({ projectId } = {}) {
   $("#dispatch").onclick = async () => {
     const goal = $("#goal").value.trim();
     if (!goal) {
-      $("#ntkerr").textContent = "Enter a goal first.";
+      $("#ntkerr").textContent = "Describe the issue first.";
       return;
     }
     // Optimistic close: capture everything, drop the sheet immediately, then
@@ -112,7 +114,7 @@ export async function openNewPlan({ projectId } = {}) {
       const plan = await App.call("plan.create", params);
       go({ name: "plan", projectId: plan.project_id || params.project_id, id: plan.plan_id, tab: "review" });
     } catch (e) {
-      notifyError("Couldn't create the plan", e.message);
+      notifyError("Couldn't file the issue", e.message);
     }
   };
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { projectSurfaceActionsHtml, projectSurfaceTabs } from "../src/views/mainWorktree.js";
+import { projectSurfaceTabs } from "../src/views/mainWorktree.js";
 
 describe("project surface chrome", () => {
   it("puts Inbox first and keeps checkout and terminal tabs beside it", () => {
@@ -13,13 +13,4 @@ describe("project surface chrome", () => {
     ]);
   });
 
-  // Authoring a plan is the only way work enters Build; an unplanned coding
-  // session is a claude/codex tab off the tab row's `+`, not a header action.
-  it("keeps plan authoring as the one creation action in the surface header", () => {
-    const html = projectSurfaceActionsHtml();
-    expect(html).toContain('id="newplan"');
-    expect(html).toContain("New plan");
-    expect(html).not.toContain("newquick");
-    expect(html).not.toContain("Quick task");
-  });
 });

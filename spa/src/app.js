@@ -11,6 +11,10 @@ import { renderWorktree } from "./views/worktree.js";
 import { renderMain } from "./views/mainWorktree.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
+import { mountFab } from "./core/fab.js";
+import { createWorktreeAndOpen } from "./core/newWorktree.js";
+import { openNewIssue } from "./sheets/newIssue.js";
+import { notifyError } from "./core/notify.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -80,6 +84,31 @@ export function setActiveNav(name) {
   });
 }
 
+/// The create FAB rides every page INSIDE a project (its own surface, a run, a
+/// worktree, an issue) and nothing else — Notifications and Account have no
+/// project to file against. Rebuilt per navigation so it always files into the
+/// project you are looking at.
+function paintFab() {
+  const host = $("#fab");
+  if (!host) return;
+  const projectId = App.route.projectId || null;
+  const inProject = !!projectId && ["project", "main", "task", "worktree", "plan"].includes(App.route.name);
+  if (!inProject || App.gated) {
+    host.innerHTML = "";
+    return;
+  }
+  mountFab(host, {
+    onNewIssue: () => openNewIssue({ projectId }),
+    onNewWorktree: () =>
+      createWorktreeAndOpen({ projectId, callRpc: (method, params) => App.call(method, params), navigate: go }).catch(
+        (error) => {
+          notifyError("Couldn't create the worktree", error.message);
+          throw error;
+        },
+      ),
+  });
+}
+
 export function render() {
   if (App.poll) {
     clearInterval(App.poll);
@@ -98,6 +127,7 @@ export function render() {
   }
   setActiveNav(App.route.name);
   sidebarRouteChanged(); // keep the rail's active row tracking the route
+  paintFab();
   // Worktree-backed surfaces (task/worktree/project) are full-height tab shells;
   // every other view keeps the centered reading column.
   const surfaceRoutes = ["task", "worktree", "main", "project", "plan"];

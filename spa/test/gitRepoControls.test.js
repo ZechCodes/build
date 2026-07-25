@@ -18,6 +18,7 @@ import {
   outsidePressDismisses,
 } from "../src/core/gitPane.js";
 import {
+  BRANCH_MENU_LIMIT,
   gitBranchControlHtml,
   gitToolbarHtml,
   gitStateBannerHtml,
@@ -89,7 +90,7 @@ describe("actionSettleReenables", () => {
 describe("settleReenableSelectors", () => {
   it("covers every toolbar verb", () => {
     const selectors = settleReenableSelectors();
-    for (const sel of [".gtfetch", ".gtbranchbtn", ".gtbranch-create", ".gtsync .btn.primary", ".gtstash .btn.primary"])
+    for (const sel of [".gtfetch", ".gtbranchbtn", ".gtsync .btn.primary", ".gtstash .btn.primary"])
       expect(selectors).toContain(sel);
   });
 
@@ -416,10 +417,55 @@ describe("branchMenuHtml", () => {
     expect(forced).toContain('data-force="1"');
   });
 
-  it("includes a new-branch input and create button", () => {
-    const html = branchMenuHtml(payload);
-    expect(html).toContain("gtbranch-newinput");
+  // One input does both jobs: it narrows the list, and it names the branch the
+  // create row would cut.
+  it("carries the search/name input", () => {
+    expect(branchMenuHtml(payload)).toContain("gtbranch-newinput");
+  });
+
+  it("offers Create only when what was typed is not already a branch", () => {
+    expect(branchMenuHtml(payload, { query: "" })).not.toContain("gtbranch-create");
+    expect(branchMenuHtml(payload, { query: "main" })).not.toContain("gtbranch-create");
+    const novel = branchMenuHtml(payload, { query: "feat/brand-new" });
+    expect(novel).toContain("gtbranch-create");
+    expect(novel).toContain("feat/brand-new");
+  });
+
+  it("filters the list fuzzily and keeps the query in the input", () => {
+    const html = branchMenuHtml(payload, { query: "flo" });
+    expect(html).toContain("feat/login");
+    expect(html).toContain('value="flo"');
+  });
+
+  it("says so when a query matches nothing, and still offers to create it", () => {
+    const html = branchMenuHtml(payload, { query: "zzzz" });
+    expect(html).toContain("no matching branches");
     expect(html).toContain("gtbranch-create");
+  });
+
+  it("caps the list at the most recent few and says how many are hidden", () => {
+    const many = {
+      current: "main",
+      branches: Array.from({ length: BRANCH_MENU_LIMIT + 4 }, (_, i) => ({
+        name: `feat/branch-${i}`,
+        is_current: i === 0,
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+      })),
+    };
+    const html = branchMenuHtml(many);
+    expect((html.match(/gtbranch-item/g) || []).length).toBe(BRANCH_MENU_LIMIT);
+    expect(html).toContain("4 more");
+    // The payload arrives newest-first, so the cap keeps the newest.
+    expect(html).toContain("feat/branch-0");
+    expect(html).not.toContain(`feat/branch-${BRANCH_MENU_LIMIT + 3}`);
+  });
+
+  it("escapes the query everywhere it appears", () => {
+    const html = branchMenuHtml(payload, { query: '"><img src=x>' });
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
   });
 
   it("escapes a malicious branch name", () => {

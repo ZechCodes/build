@@ -4,6 +4,7 @@
 // detail. No DOM — HTML strings only, unit-tested by string assertions. Every
 // git-derived string (subject, body, author, email, branch, path) is esc()d.
 
+import { fuzzyRank } from "./fuzzy.js";
 import { esc, humanAge } from "./text.js";
 import { parseDiff, filterNoiseFiles } from "./diff.js";
 import { diffFilesHtml, diffRowsHtml } from "./diffRender.js";
@@ -183,13 +184,26 @@ function branchDeleteHtml(branch, pendingConfirm, forceDeleteOffered) {
   return `<button class="gtbranch-del${armed ? " armed" : ""}" data-branch="${esc(branch.name)}">${armed ? "Delete?" : "delete"}</button>`;
 }
 
-/** The branch dropdown for a git.branches payload: the current branch marked,
- *  each with optional ahead/behind chips and a delete affordance, plus a
- *  new-branch input + Create row. `null` payload → a loading placeholder. */
-export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffered = [] } = {}) {
+/** How many branches the menu shows at once. The payload arrives current-first
+ *  then most-recently-committed, so this is "the ones you were just on" — a repo
+ *  with fifty branches made a dropdown taller than the window. Typing narrows the
+ *  whole list, not just what is on screen. */
+export const BRANCH_MENU_LIMIT = 8;
+
+/** The branch dropdown for a git.branches payload: one input that both filters
+ *  (fuzzily) and names a new branch, the matching branches under it — capped,
+ *  each with optional ahead/behind chips and a delete affordance — and a
+ *  "Create …" row whenever what you typed is not already a branch.
+ *  `null` payload → a loading placeholder. */
+export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffered = [], query = "" } = {}) {
   if (!payload) return '<div class="gtbranch-menu"><div class="gtbranch-loading">loading…</div></div>';
   const branches = payload.branches || [];
-  const rows = branches
+  const search = String(query || "").trim();
+  const matches = fuzzyRank(branches, search, (b) => b.name);
+  const shown = matches.slice(0, BRANCH_MENU_LIMIT);
+  const hidden = matches.length - shown.length;
+  const exact = branches.some((b) => b.name === search);
+  const rows = shown
     .map(
       (b) => `<div class="gtbranch-item${b.is_current ? " current" : ""}" data-branch="${esc(b.name)}">
         <span class="gtbranch-name">${esc(b.name)}</span>
@@ -197,11 +211,22 @@ export function branchMenuHtml(payload, { pendingConfirm = null, forceDeleteOffe
         ${branchDeleteHtml(b, pendingConfirm, forceDeleteOffered)}</div>`,
     )
     .join("");
+  // The create row is an ANSWER to what was typed, so it sits with the results
+  // rather than in a separate form: no name, no row.
+  const createRow =
+    search && !exact
+      ? `<div class="gtbranch-item gtbranch-create" data-branch="${esc(search)}">
+          <span class="gtbranch-name">Create <strong>${esc(search)}</strong></span></div>`
+      : "";
+  // Say why the list is empty even when a create row follows: "no matching
+  // branches" is the answer to what was typed; Create is what to do about it.
+  const empty = rows ? "" : `<div class="gtbranch-empty">${search ? "no matching branches" : "no branches"}</div>`;
   return `<div class="gtbranch-menu">
-    ${rows || '<div class="gtbranch-empty">no branches</div>'}
-    <div class="gtbranch-newrow">
-      <input class="gtbranch-newinput" type="text" placeholder="new branch name" />
-      <button class="btn mini gtbranch-create">Create</button>
+    <div class="gtbranch-searchrow">
+      <input class="gtbranch-newinput" type="text" placeholder="Search or name a new branch…" value="${esc(search)}" />
     </div>
+    <div class="gtbranch-list">${rows}${empty}</div>
+    ${createRow}
+    ${hidden > 0 ? `<div class="gtbranch-more">${hidden} more — keep typing to narrow</div>` : ""}
   </div>`;
 }

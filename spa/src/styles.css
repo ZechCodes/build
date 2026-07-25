@@ -401,7 +401,22 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .gtpull .btn.primary:not(.caret)::before { content:"↓"; margin-right:6px; }
 .gtpush .btn.primary:not(.caret)::before { content:"↑"; margin-right:6px; }
 .gtstash .btn.primary:not(.caret)::before { content:"↧"; margin-right:6px; }
-.gtbranch-menu { position:absolute; top:calc(100% + 6px); left:0; min-width:260px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:25; }
+/* Fixed to the viewport, placed from the branch button in JS: this menu lives
+   inside the commit rail, which scrolls, and an absolutely-positioned one was
+   clipped on both sides — taking its shadow with it, which is what made an open
+   menu read as part of the rail rather than a layer over it. The shadow is
+   heavier now for the same reason: it has to say "this is on top". */
+.gtbranch-menu { position:fixed; min-width:260px; max-width:min(420px, 92vw);
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  box-shadow:0 16px 44px rgba(24,24,27,.22), 0 2px 6px rgba(24,24,27,.10);
+  overflow:hidden; z-index:60; }
+/* The list scrolls; the search row and the create row stay put. */
+.gtbranch-list { max-height:min(46vh, 380px); overflow-y:auto; }
+.gtbranch-searchrow { padding:9px 10px; border-bottom:1px solid var(--line); }
+.gtbranch-searchrow .gtbranch-newinput { width:100%; }
+.gtbranch-more { padding:8px 13px; font-size:11.5px; color:var(--dim); border-top:1px solid var(--line2); }
+.gtbranch-item.gtbranch-create { border-top:1px solid var(--line); color:var(--accent); }
+.gtbranch-item.gtbranch-create strong { font-family:var(--mono); font-weight:600; }
 .gtbranch-loading, .gtbranch-empty { padding:11px 13px; font-size:12.5px; color:var(--dim); }
 .gtbranch-item { display:flex; align-items:center; gap:9px; padding:8px 13px; font-size:13px; cursor:pointer; border-top:1px solid var(--line2); }
 .gtbranch-item:first-child { border-top:0; }
@@ -413,8 +428,9 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .gtbranch-del { flex:none; font:inherit; font-size:11px; background:transparent; border:0; color:var(--dim); cursor:pointer; padding:2px 6px; border-radius:5px; }
 .gtbranch-del:hover, .gtbranch-del.force { color:var(--red); }
 .gtbranch-del.armed { background:var(--red); color:#fff; }
-.gtbranch-newrow { display:flex; gap:8px; padding:10px 13px; border-top:1px solid var(--line); }
-.gtbranch-newinput { flex:1; min-width:0; }
+.gtbranch-newinput { flex:1; min-width:0; font:inherit; font-size:12.5px; padding:7px 9px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+.gtbranch-newinput:focus { outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color:var(--accent); }
 /* git repo-state banner (merge/rebase in progress) */
 .gitstate { display:flex; align-items:center; gap:12px; background:var(--red-bg); border:1px solid var(--red); color:var(--red); border-radius:9px; padding:10px 13px; font-size:13px; margin-bottom:18px; }
 .gitstate-msg { flex:1; }

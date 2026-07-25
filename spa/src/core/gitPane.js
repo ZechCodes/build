@@ -75,7 +75,6 @@ export function settleReenableSelectors() {
   return [
     ".gtfetch",
     ".gtbranchbtn",
-    ".gtbranch-create",
     ".gtsync .btn.primary",
     ".gtstash .btn.primary",
     ".gitcommit-actions .btn.primary:not(.caret)",
@@ -358,7 +357,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   let branchMenuOpen = false; // the branch dropdown is showing
   let branchList = null; // the last git.branches payload (null until fetched)
   const forceDeleteOffered = []; // branches whose non-force delete failed → offer force
-  let newBranchDraft = ""; // the in-progress "new branch" name (survives repaints)
+  // One input drives the menu: it filters the list fuzzily AND names the branch
+  // the "Create …" row would cut. Survives repaints.
+  let branchQuery = "";
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -472,7 +473,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
           branch: lastStatus.branch,
           showBranchControl: branchControl,
           branchMenuHtml: branchMenuOpen
-            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered })
+            ? branchMenuHtml(branchList, { pendingConfirm, forceDeleteOffered, query: branchQuery })
             : "",
         })
       : "";
@@ -524,9 +525,47 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     // mid-action must not resurrect a live button to double-fire); the action
     // wrapper re-enables them once the RPC settles.
     if (toolbarControlsDisabled(inFlightActions)) disableToolbarControls();
-    const newBranchInput = container.querySelector(".gtbranch-newinput");
-    if (newBranchInput) newBranchInput.oninput = () => (newBranchDraft = newBranchInput.value);
-    if (newBranchInput && newBranchDraft) newBranchInput.value = newBranchDraft;
+    wireBranchMenu();
+  };
+
+  /** The branch menu's input + placement. Typing re-renders the menu (the filter
+   *  IS the list), Enter takes the first row, and the menu is positioned in
+   *  viewport coordinates from the button — it lives inside the rail, which
+   *  scrolls, and an absolutely-positioned menu was clipped on both sides along
+   *  with the shadow that made it read as a layer. */
+  const wireBranchMenu = () => {
+    const menu = container.querySelector(".gtbranch-menu");
+    const button = container.querySelector(".gtbranchbtn");
+    if (!menu || !button) return;
+    if (button.getBoundingClientRect) {
+      const box = button.getBoundingClientRect();
+      menu.style.left = `${box.left}px`;
+      menu.style.top = `${box.bottom + 4}px`;
+      menu.style.minWidth = `${Math.max(box.width, 260)}px`;
+    }
+    const input = menu.querySelector(".gtbranch-newinput");
+    if (!input) return;
+    input.oninput = () => {
+      branchQuery = input.value;
+      render();
+      // The repaint replaces the input, so put the caret back where it was.
+      const fresh = container.querySelector(".gtbranch-newinput");
+      if (fresh) {
+        fresh.focus();
+        fresh.setSelectionRange(fresh.value.length, fresh.value.length);
+      }
+    };
+    input.onkeydown = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      // Enter takes the top row — the branch you were narrowing to, or the
+      // create row when what you typed is not a branch yet.
+      const first = menu.querySelector(".gtbranch-item");
+      if (!first) return;
+      if (first.classList.contains("gtbranch-create")) createBranch();
+      else if (inFlightActions === 0) checkoutBranch(first.dataset.branch);
+    };
+    if (document.activeElement !== input) input.focus();
   };
 
   /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host
@@ -545,7 +584,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   };
 
   const toolbarButtons = () => [
-    ...container.querySelectorAll(".gtfetch, .gtbranchbtn, .gtbranch-create"),
+    ...container.querySelectorAll(".gtfetch, .gtbranchbtn"),
     ...container.querySelectorAll(".gtsync .btn.primary, .gtstash .btn.primary"),
   ];
   const disableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = true));
@@ -847,7 +886,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   const resetBranchMenu = () => {
     branchMenuOpen = false;
     branchList = null;
-    newBranchDraft = "";
+    branchQuery = "";
     forceDeleteOffered.length = 0;
     clearConfirm();
   };
@@ -896,9 +935,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     });
 
   const createBranch = () => {
-    const name = (newBranchDraft || "").trim();
+    const name = (branchQuery || "").trim();
     if (!name) {
-      setHint("Enter a branch name first.");
+      setHint("Type a branch name first.");
       return undefined;
     }
     return checkoutBranch(name, true);
@@ -953,10 +992,6 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       return;
     }
     if (branchMenuOpen) {
-      if (target.closest(".gtbranch-create")) {
-        createBranch();
-        return;
-      }
       const deleteButton = target.closest(".gtbranch-del");
       if (deleteButton) {
         const branch = deleteButton.dataset.branch;
@@ -966,6 +1001,12 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       }
       const item = target.closest(".gtbranch-item");
       if (item) {
+        // The create row wears the item class so it lands in the same list — it
+        // is an answer to the query, not a separate form.
+        if (item.classList.contains("gtbranch-create")) {
+          createBranch();
+          return;
+        }
         // Branch rows are <div>s, so (unlike the disabled toolbar buttons) they
         // stay clickable during an in-flight action — guard the checkout here.
         if (inFlightActions === 0) checkoutBranch(item.dataset.branch);
@@ -1076,7 +1117,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
         keyUnchanged: key === renderedKey,
         draftActive: draftBusy(),
         actionInFlight: inFlightActions > 0,
-        interactionActive: Boolean(pendingConfirm) || branchMenuOpen || Boolean(newBranchDraft),
+        interactionActive: Boolean(pendingConfirm) || branchMenuOpen || Boolean(branchQuery),
       })
     )
       return;

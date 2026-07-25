@@ -445,11 +445,6 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// The slug every bare (runless) worktree is cut from: `build/worktree`,
-/// `build/worktree-2`, … The manager de-duplicates the tail, so the affordance
-/// never has to ask the human for a name it does not need.
-const BARE_WORKTREE_SLUG: &str = "worktree";
-
 /// How long a task's `task.list` diffstat is served from cache before the next
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 const TASK_STAT_TTL: Duration = Duration::from_secs(10);
@@ -3083,12 +3078,25 @@ impl AppState {
     /// issue creation: the human opens a terminal or an agent tab in it, and it
     /// stays unbound (the scan reports it like any hand-made worktree) until a
     /// mutating action adopts it.
+    ///
+    /// `name` is what the human typed, and it decides both the directory and the
+    /// branch. It is UNTRUSTED text on its way to a path and a `git` argv, so it
+    /// goes through the same slugifier every branch name does: ASCII alphanumerics
+    /// and single hyphens, nothing else, so no separator, dot-segment or leading
+    /// dash can survive it. A name that would slugify away to nothing is refused
+    /// rather than silently replaced — being handed a worktree you did not name is
+    /// worse than being told the name will not do.
     fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
+        let name = require_str(params, "name")?;
+        if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return Err("a worktree name needs at least one letter or number".to_string());
+        }
+        let slug = crate::worktree::slugify(&name);
         let base = self.base_for(&project_id)?;
         let worktree = self
             .orch_for(&project_id)?
-            .create_bare_worktree(BARE_WORKTREE_SLUG, &base)
+            .create_bare_worktree(&slug, &base)
             .map_err(err)?;
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
@@ -10726,7 +10734,10 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
-        let created = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
         assert_eq!(created["ok"], true, "{created:?}");
         let result = &created["result"];
         let worktree_id = result["worktree_id"].as_str().unwrap().to_string();
@@ -10749,17 +10760,73 @@ mod tests {
         );
 
         // A second one does not collide with the first.
-        let second = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        let second = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
         assert_eq!(second["ok"], true, "{second:?}");
         assert_ne!(second["result"]["branch"], result["branch"]);
         assert_ne!(second["result"]["worktree_id"], result["worktree_id"]);
+    }
+
+    /// The name the human typed decides the directory and the branch, through the
+    /// same slugifier every other branch name goes through — it is UNTRUSTED text
+    /// on its way to a path and a `git` argv.
+    #[test]
+    fn worktree_create_names_the_branch_after_the_name() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Mascot Model Spike!" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["branch"], "build/mascot-model-spike");
+        assert!(created["result"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("mascot-model-spike"));
+
+        // The same name twice cannot collide on disk or on a ref.
+        let again = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Mascot Model Spike!" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_ne!(again["result"]["branch"], created["result"]["branch"]);
+    }
+
+    /// A name that slugifies to nothing would silently become some fallback word,
+    /// so it is refused instead — the human named it, and the name has to survive.
+    #[test]
+    fn worktree_create_requires_a_usable_name() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        for name in ["", "   ", "***", "!!!"] {
+            let res = state.handle(req(
+                "worktree.create",
+                json!({ "project_id": project_id, "name": name }),
+            ));
+            assert_eq!(res["ok"], false, "{name:?} -> {res:?}");
+        }
+        assert!(
+            state.handle(req("worktree.create", json!({ "project_id": project_id })))["ok"]
+                == false
+        );
     }
 
     #[test]
     fn worktree_create_rejects_an_unknown_project() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let res = state.handle(req("worktree.create", json!({ "project_id": "proj-nope" })));
+        let res = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": "proj-nope", "name": "scratch" }),
+        ));
         assert_eq!(res["ok"], false, "{res:?}");
     }
 }

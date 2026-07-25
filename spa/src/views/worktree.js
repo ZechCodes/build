@@ -20,7 +20,7 @@ import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js"
 import { watchSelection } from "../selectWatch.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab, mountChooserTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
 import {
   catalogForProvider,
@@ -70,22 +70,16 @@ export async function renderWorktree() {
   // The unified tab shell: Diff (the entire existing review content, untouched),
   // Files, then user terminal tabs with `+`. Default tab: changes. Scope:
   // { project_id, worktree_id }.
-  // A worktree Build just minted opens on a chooser instead of an empty diff:
-  // you made it to work in, and the only question is what to run. The mark is
-  // one-shot, so a reload of the same surface lands on Changes like any other.
-  const CHOOSER_TAB = "chooser";
-  let chooserOpen = takeNewWorktreeMark(worktreeId);
-  let tab = chooserOpen ? CHOOSER_TAB : App.route.tab || "changes";
+  // A worktree Build just minted opens on the tool the sheet asked for, not on
+  // an empty diff — that answer was given before the worktree existed. The mark
+  // is one-shot, so a reload of the same surface lands on Changes like any other.
+  const pendingKind = takeNewWorktreeMark(worktreeId);
+  let tab = App.route.tab || "changes";
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
   let aux = null;
-  const isAuxTab = (tabId) => tabId === "files" || tabId === CHOOSER_TAB || /^term-/.test(tabId);
-  const staticTabs = () => [
-    { id: "changes", label: "Changes" },
-    { id: "files", label: "Files" },
-    ...terminals.tabs(),
-    ...(chooserOpen ? [{ id: CHOOSER_TAB, label: "New tab", closable: true }] : []),
-  ];
+  const isAuxTab = (tabId) => tabId === "files" || /^term-/.test(tabId);
+  const staticTabs = () => [{ id: "changes", label: "Changes" }, { id: "files", label: "Files" }, ...terminals.tabs()];
   const replaceWorktreeHash = () => {
     App.route = { name: "worktree", projectId, worktreeId, tab };
     history.replaceState(null, "", hashFromRoute(App.route));
@@ -121,10 +115,6 @@ export async function renderWorktree() {
     // preview pane each scroll internally, so the body owns no padding).
     body.classList.toggle("bare", /^term-/.test(tabId));
     body.classList.toggle("flush", tabId === "files");
-    if (tabId === CHOOSER_TAB) {
-      aux = mountChooserTab(body, { onChoose: (kind) => chooseKind(kind) });
-      return;
-    }
     aux = mountAuxTab(body, tabId, {
       scope,
       callRpc: (method, params) => App.call(method, params),
@@ -134,22 +124,6 @@ export async function renderWorktree() {
         selectTab("changes");
       },
     });
-  };
-
-  // The chooser's answer: mint that kind, retire the chooser tab, and land on
-  // the tab it became. A failure leaves the chooser up (mountChooserTab re-arms)
-  // with the reason in the error bar.
-  const chooseKind = async (kind) => {
-    let termId;
-    try {
-      termId = await terminals.create(kind);
-    } catch (e) {
-      showError("cannot open that tab: " + e.message.slice(0, 80));
-      throw e;
-    }
-    chooserOpen = false;
-    if (shellCtl) shellCtl.setTabs(staticTabs());
-    selectTab(termId);
   };
 
   const newTerminal = async (kind) => {
@@ -162,12 +136,6 @@ export async function renderWorktree() {
     }
     if (shellCtl) shellCtl.setTabs(staticTabs());
     selectTab(termId);
-  };
-
-  const closeChooser = () => {
-    chooserOpen = false;
-    if (shellCtl) shellCtl.setTabs(staticTabs());
-    if (tab === CHOOSER_TAB) selectTab("changes");
   };
 
   const closeTerminal = async (termId) => {
@@ -224,7 +192,7 @@ export async function renderWorktree() {
       tabs: staticTabs(),
       active: tab,
       onSelect: (tabId) => selectTab(tabId),
-      onClose: (tabId) => (tabId === CHOOSER_TAB ? closeChooser() : closeTerminal(tabId)),
+      onClose: (tabId) => closeTerminal(tabId),
       newTabOptions: NEW_TAB_KINDS,
       onNewTab: (kind) => newTerminal(kind),
       back: { title: "Back to project" },
@@ -574,5 +542,8 @@ export async function renderWorktree() {
   replaceWorktreeHash();
   await terminals.load();
   await paint();
+  // The sheet already asked what should run here, so open it — after the first
+  // paint, which is what gives newTerminal a tab row and a body to land in.
+  if (pendingKind) await newTerminal(pendingKind);
   App.poll = setInterval(paint, 1600);
 }

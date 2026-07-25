@@ -118,11 +118,10 @@ export function terminalTabsController(scope) {
   };
 }
 
-/** Pure: the chooser a fresh worktree opens on. Not a menu — a tab body, because
- *  the tab exists before it has anything in it: you made a worktree, and the
- *  only question left is what to run there. Picking answers it and the tab
- *  becomes what was picked. */
-export function chooserTabHtml(options = NEW_TAB_KINDS) {
+/** Pure: the kind cards, as a picker. Used by the new-worktree sheet, where the
+ *  answer is given BEFORE the worktree exists — naming it and saying what runs
+ *  in it are one decision, so they are one form. */
+export function kindCardsHtml(options = NEW_TAB_KINDS) {
   const cards = options
     .map(
       (option) =>
@@ -136,31 +135,6 @@ export function chooserTabHtml(options = NEW_TAB_KINDS) {
     <div class="chooser-head">What do you want running here?</div>
     <div class="chooser-cards">${cards}</div>
   </div>`;
-}
-
-/** Mount the chooser into a tab body. `onChoose(kind)` is awaited; while it runs
- *  the cards are inert and the picked one says so, since a second pick would
- *  spawn a second session in a worktree opened for one. */
-export function mountChooserTab(host, { onChoose, options = NEW_TAB_KINDS } = {}) {
-  host.innerHTML = chooserTabHtml(options);
-  let choosing = false;
-  host.querySelectorAll(".chooser-card").forEach((card) => {
-    card.onclick = async () => {
-      if (choosing) return;
-      choosing = true;
-      host.classList.add("chooser-busy");
-      card.classList.add("chosen");
-      try {
-        await onChoose(card.dataset.kind);
-      } catch {
-        // The caller surfaces the error; re-arm so another kind can be tried.
-        choosing = false;
-        host.classList.remove("chooser-busy");
-        card.classList.remove("chosen");
-      }
-    };
-  });
-  return { dispose() {} };
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */

@@ -12,9 +12,8 @@ import { renderMain } from "./views/mainWorktree.js";
 import { sidebarRouteChanged } from "./views/sidebar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
 import { mountFab } from "./core/fab.js";
-import { createWorktreeAndOpen } from "./core/newWorktree.js";
 import { openNewIssue } from "./sheets/newIssue.js";
-import { notifyError } from "./core/notify.js";
+import { openNewWorktree } from "./sheets/newWorktree.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -99,13 +98,9 @@ function paintFab() {
   }
   mountFab(host, {
     onNewIssue: () => openNewIssue({ projectId }),
-    onNewWorktree: () =>
-      createWorktreeAndOpen({ projectId, callRpc: (method, params) => App.call(method, params), navigate: go }).catch(
-        (error) => {
-          notifyError("Couldn't create the worktree", error.message);
-          throw error;
-        },
-      ),
+    // Both verbs open a sheet: a worktree needs a name (it becomes the branch and
+    // the directory) and a tool, and neither can be guessed.
+    onNewWorktree: () => openNewWorktree({ projectId }),
   });
 }
 

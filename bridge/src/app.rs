@@ -6558,6 +6558,64 @@ mod tests {
         assert_eq!(state.lock().unwrap().terms.len(), 1);
     }
 
+    /// The argv assertions above cannot tell a correctly-built spec from one that
+    /// never reaches a process, so this drives the REAL binary: a `claude` tab in
+    /// a real project scope must paint claude's own UI into the term stream.
+    ///
+    /// Ignored by default — it needs `claude` installed and authenticated, which
+    /// does not belong in `cargo test`. Run it after touching the spawn path:
+    ///
+    /// ```text
+    /// cargo test --lib real_claude_terminal -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "spawns the real claude binary; needs auth"]
+    async fn real_claude_terminal_tab_starts_the_cli() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "kind": "claude", "cols": 100, "rows": 30 }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        let attached = handler(
+            sender,
+            req(
+                "term.attach",
+                json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
+            ),
+        );
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        // claude paints its own chrome within seconds; anything from it proves the
+        // binary resolved, the YOLO flag was accepted, and the PTY is streaming.
+        //
+        // Observed (claude 2.1.219): in a directory claude has not seen, that first
+        // paint is its workspace-trust dialog. Deliberately not pre-trusted here —
+        // an agent tab is opened by a human who is looking at it, and Build writes
+        // trust into claude's shared registry only for worktrees it created itself,
+        // never for the user's own checkout or one they made by hand. Nothing is
+        // injected into these tabs, so no dialog can swallow a prompt (the failure
+        // `pre_trust_worktree_for_claude` exists to prevent on dispatched runs).
+        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
+            let text = output_text(seen, &term_id).to_lowercase();
+            text.contains("claude") || text.contains("welcome") || text.contains("bypassing")
+        })
+        .await;
+        eprintln!(
+            "--- claude tab output ---\n{}",
+            output_text(&seen, &term_id)
+        );
+    }
+
     #[tokio::test]
     async fn term_create_enforces_the_daemon_wide_cap() {
         let (dir, repo) = init_repo();

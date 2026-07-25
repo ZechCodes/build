@@ -85,16 +85,21 @@ export function mountTabShell(host, { tabs, active, newTabOptions, onSelect, onC
     const onKeydown = (event) => {
       if (event.key === "Escape") closeMenu();
     };
+    // Live immediately, no arming tick: this menu opens on `click`, which always
+    // follows its own `pointerdown`, so the gesture that opened it cannot reach
+    // this listener. (Deferring the listener instead loses the race against a
+    // fast real pointer — a trusted click can land before a setTimeout(0) runs.)
+    // A pointerdown on the `+` is left to the `+`, which toggles itself closed.
     const onOutside = (event) => {
-      if (!element.contains(event.target)) closeMenu();
+      if (element.contains(event.target)) return;
+      if (anchor.contains && anchor.contains(event.target)) return;
+      closeMenu();
     };
     document.addEventListener("keydown", onKeydown);
-    // Armed on the next tick so the click that opened the menu cannot close it.
-    const arm = setTimeout(() => document.addEventListener("pointerdown", onOutside), 0);
+    document.addEventListener("pointerdown", onOutside);
     openMenu = {
       element,
       dismiss() {
-        clearTimeout(arm);
         document.removeEventListener("keydown", onKeydown);
         document.removeEventListener("pointerdown", onOutside);
       },

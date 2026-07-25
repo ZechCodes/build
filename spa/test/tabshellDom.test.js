@@ -61,13 +61,25 @@ describe("the + tab menu", () => {
     expect(menu()).toBeNull();
   });
 
-  it("closes on a pointerdown outside without choosing anything", async () => {
+  it("closes on a pointerdown outside without choosing anything", () => {
     const shell = mount();
     click(shell.plus());
-    await tick(); // the outside-close listener arms on the next tick
     document.body.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true }));
     expect(menu()).toBeNull();
     expect(shell.picked).toEqual([]);
+  });
+
+  // A real pointer emits pointerdown BEFORE click. The outside-close listener is
+  // live from the moment the menu opens (no arming tick — a fast trusted click
+  // beats one), so the `+`'s own pointerdown must fall through to the `+`, or the
+  // second click would close-then-reopen instead of toggling shut.
+  it("toggles closed on a full pointer sequence over the +", () => {
+    const shell = mount();
+    click(shell.plus());
+    shell.plus().dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true }));
+    expect(menu()).not.toBeNull();
+    click(shell.plus());
+    expect(menu()).toBeNull();
   });
 
   it("closes on Escape without choosing anything", () => {

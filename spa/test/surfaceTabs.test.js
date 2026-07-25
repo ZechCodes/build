@@ -73,7 +73,10 @@ describe("terminalTabsController labels", () => {
     expect(controller.label("term-c")).toBe("Terminal 3");
   });
 
-  it("names a tab after what runs in it, numbering each kind on its own", async () => {
+  // A tab says WHAT it is — an agent or a shell — not which vendor: the pane
+  // shows that soon enough, and "Agent" beside "Terminal" is the distinction
+  // that matters when you are scanning a row of tabs.
+  it("names a tab Agent or Terminal, numbering each on its own", async () => {
     fakeManager.listTerminals.mockResolvedValue([
       { term_id: "term-a", kind: "shell" },
       { term_id: "term-b", kind: "claude" },
@@ -82,12 +85,14 @@ describe("terminalTabsController labels", () => {
     ]);
     const controller = terminalTabsController({ project_id: "p1" });
     await controller.load();
-    expect(controller.tabs().map((tab) => tab.label)).toEqual([
-      "Terminal 1",
-      "Claude Code 1",
-      "Codex 1",
-      "Claude Code 2",
-    ]);
+    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Agent 1", "Agent 2", "Agent 3"]);
+  });
+
+  it("keeps the provider on the tab's title, where a hover can recover it", async () => {
+    fakeManager.listTerminals.mockResolvedValue([{ term_id: "term-b", kind: "codex" }]);
+    const controller = terminalTabsController({ project_id: "p1" });
+    await controller.load();
+    expect(controller.tabs()[0].title).toBe("Codex");
   });
 
   it("passes the chosen kind to term.create and labels the new tab by it", async () => {
@@ -97,7 +102,7 @@ describe("terminalTabsController labels", () => {
     await controller.load();
     await controller.create("claude");
     expect(fakeManager.createTerminal).toHaveBeenCalledWith({ run_id: "run-1" }, 80, 24, "claude");
-    expect(controller.label("term-x")).toBe("Claude Code 1");
+    expect(controller.label("term-x")).toBe("Agent 1");
   });
 
   it("trusts the kind the daemon reports over the one that was asked for", async () => {

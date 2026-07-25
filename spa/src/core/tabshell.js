@@ -24,7 +24,10 @@ export function tabShellHtml({ tabs, active, newTabOptions, back }) {
   const cells = (tabs || [])
     .map((tab) => {
       const closer = tab.closable ? `<span class="tx" data-close="${esc(tab.id)}" title="Close tab">×</span>` : "";
-      return `<div class="t ${tab.id === active ? "active" : ""}" data-tab="${esc(tab.id)}">${esc(tab.label)}${closer}</div>`;
+      // `title` is where a tab keeps what its label leaves out — an Agent tab's
+      // provider, say. Absent for tabs whose label is the whole story.
+      const hover = tab.title ? ` title="${esc(tab.title)}"` : "";
+      return `<div class="t ${tab.id === active ? "active" : ""}" data-tab="${esc(tab.id)}"${hover}>${esc(tab.label)}${closer}</div>`;
     })
     .join("");
   const plus = (newTabOptions || []).length

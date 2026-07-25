@@ -502,6 +502,20 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .gp-toolbar, .gp-banner { padding-left:12px; padding-right:12px; }
 }
 
+/* ---- the new-worktree chooser (a tab body, not a menu) ---- */
+.chooser { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:18px; height:100%; padding:40px 20px; }
+.chooser-head { font-size:15px; font-weight:600; color:var(--ink2); }
+.chooser-cards { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; }
+.chooser-card { font:inherit; text-align:left; cursor:pointer; width:210px;
+  display:flex; flex-direction:column; gap:4px; padding:16px 18px;
+  background:var(--bg); border:1px solid var(--line); border-radius:12px; }
+.chooser-card:hover { border-color:var(--accent); }
+.chooser-card .chooser-card-label { font-weight:650; color:var(--ink); }
+.chooser-card .chooser-card-desc { font-size:12px; color:var(--dim); }
+.chooser-busy .chooser-card { pointer-events:none; opacity:.5; }
+.chooser-busy .chooser-card.chosen { opacity:1; border-color:var(--accent); }
+
 /* ---- the create FAB (every page inside a project) ---- */
 /* Two ranked verbs in one stack: the issue FAB always visible, the worktree one
    revealed on hover or keyboard focus. column-reverse so the mini sits ABOVE

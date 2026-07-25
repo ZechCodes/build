@@ -51,11 +51,18 @@ export const NEW_TAB_KINDS = [
 
 const KIND_LABELS = Object.fromEntries(NEW_TAB_KINDS.map((kind) => [kind.id, kind.label]));
 
-/** The tab name for a terminal: what runs in it, numbered within its own kind
- *  ("Terminal 1" beside "Claude Code 1"). An unrecognized kind — a daemon newer
- *  than this client — labels itself rather than posing as a shell. */
+/** What a tab of this kind is CALLED in the row: an agent or a shell. The vendor
+ *  (Claude Code / Codex) rides the tab's title instead — the pane shows it soon
+ *  enough, and agent-vs-terminal is the distinction worth scanning for. An
+ *  unrecognized kind — a daemon newer than this client — is an agent, since the
+ *  shell is the one kind this client is certain of. */
 function kindLabel(kind) {
-  return KIND_LABELS[kind] || kind || "Terminal";
+  return kind === "shell" ? "Terminal" : "Agent";
+}
+
+/** The vendor name behind a tab, for its hover title. */
+function kindTitle(kind) {
+  return KIND_LABELS[kind] || kind || "";
 }
 
 /** Track a surface's open user terminals: list on mount, create from the `+`
@@ -63,17 +70,21 @@ function kindLabel(kind) {
 export function terminalTabsController(scope) {
   const manager = terminalManager();
   let terms = []; // [{ term_id, kind }] in list/creation order
+  // Ordinals count within the LABEL, not the kind: a Claude tab and a Codex tab
+  // both read "Agent", so numbering them separately would put two "Agent 1"s in
+  // one row.
   const labelOf = (termId) => {
     const index = terms.findIndex((t) => t.term_id === termId);
     if (index < 0) return "";
-    const { kind } = terms[index];
-    const ordinal = terms.slice(0, index + 1).filter((t) => t.kind === kind).length;
-    return `${kindLabel(kind)} ${ordinal}`;
+    const label = kindLabel(terms[index].kind);
+    const ordinal = terms.slice(0, index + 1).filter((t) => kindLabel(t.kind) === label).length;
+    return `${label} ${ordinal}`;
   };
   return {
     ids: () => terms.map((t) => t.term_id),
     /** The tab descriptors for the shell: closable, kind-labeled. */
-    tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), closable: true })),
+    tabs: () =>
+      terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), title: kindTitle(t.kind), closable: true })),
     label: labelOf,
     has: (termId) => terms.some((t) => t.term_id === termId),
     async load() {
@@ -105,6 +116,51 @@ export function terminalTabsController(scope) {
       terms = terms.filter((t) => t.term_id !== termId);
     },
   };
+}
+
+/** Pure: the chooser a fresh worktree opens on. Not a menu — a tab body, because
+ *  the tab exists before it has anything in it: you made a worktree, and the
+ *  only question left is what to run there. Picking answers it and the tab
+ *  becomes what was picked. */
+export function chooserTabHtml(options = NEW_TAB_KINDS) {
+  const cards = options
+    .map(
+      (option) =>
+        `<button class="chooser-card" type="button" data-kind="${esc(option.id)}">
+          <span class="chooser-card-label">${esc(option.label)}</span>
+          <span class="chooser-card-desc">${esc(option.description || "")}</span>
+        </button>`,
+    )
+    .join("");
+  return `<div class="chooser">
+    <div class="chooser-head">What do you want running here?</div>
+    <div class="chooser-cards">${cards}</div>
+  </div>`;
+}
+
+/** Mount the chooser into a tab body. `onChoose(kind)` is awaited; while it runs
+ *  the cards are inert and the picked one says so, since a second pick would
+ *  spawn a second session in a worktree opened for one. */
+export function mountChooserTab(host, { onChoose, options = NEW_TAB_KINDS } = {}) {
+  host.innerHTML = chooserTabHtml(options);
+  let choosing = false;
+  host.querySelectorAll(".chooser-card").forEach((card) => {
+    card.onclick = async () => {
+      if (choosing) return;
+      choosing = true;
+      host.classList.add("chooser-busy");
+      card.classList.add("chosen");
+      try {
+        await onChoose(card.dataset.kind);
+      } catch {
+        // The caller surfaces the error; re-arm so another kind can be tried.
+        choosing = false;
+        host.classList.remove("chooser-busy");
+        card.classList.remove("chosen");
+      }
+    };
+  });
+  return { dispose() {} };
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */

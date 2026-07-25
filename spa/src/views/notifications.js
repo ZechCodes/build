@@ -67,7 +67,7 @@ export async function renderNotifications() {
     const card = ({ kind, id, goal, e }) => `
       <div class="ncard ${e.primary && App.readIds.has(id) ? "read" : ""}" data-id="${esc(id)}">
         <div class="nhead ${e.tone}"><span class="nicon">${e.icon}</span><span>${e.title}</span></div>
-        <div class="ngoal">${kind === "plan" ? "Plan: " : ""}${esc(goal)}</div>
+        <div class="ngoal">${kind === "plan" ? "Issue: " : ""}${esc(goal)}</div>
         ${e.sub ? `<div class="nmsg">${renderMarkdown(e.sub)}</div><div class="nmsg-toggle">Show more</div>` : ""}
         ${e.branch ? `<div class="nbranch">${esc(e.branch)}</div>` : ""}
         <div class="nact">${notifActionsFor(kind, e).map((a) => actionBtn(a, id)).join("")}</div>

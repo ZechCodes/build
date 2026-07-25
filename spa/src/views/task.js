@@ -13,7 +13,6 @@ import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { canDelete, canAbandon, bannerText, defaultRunTab, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
-import { openMessageAgent } from "../sheets/message.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentPane, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
@@ -66,28 +65,15 @@ export async function renderTask() {
   // for an adopted run), the state chip, and the header actions.
   const shell = (t) => {
     const m = t || {};
-    const planRef = m.plan_id
-      ? `<a class="plan-ref" id="planref" title="Open the plan">Plan: ${esc(m.goal || "")} →</a>`
-      : `<span class="plan-ref planless">${esc(m.goal || "")}</span>`;
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="tabrow"></div>
-        ${planRef}
         <div class="surface-meta">
-          <span id="msgaction"></span>
           ${m.branch ? `<span class="mono dim" title="${esc(m.worktree_path || "")}">${esc(m.branch)}</span>` : ""}
-          <span class="chip ${runChipClass(m.state)}" title="${esc(m.goal || "")}">${RUN_STATE_LABEL[m.state] || m.state || ""}</span>
-          <span class="taskactions" id="taskactions"></span>
         </div>
       </div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div id="tabbody"></div>`;
-    // Both plan entries from a run (the bar's plan-ref link and the Stages
-    // tab's rows) go through openPlan so the plan's back chevron returns HERE
-    // (the plan↔run round trip stamps the sessionStorage marker).
-    const planLink = $("#planref");
-    if (planLink && m.plan_id) planLink.onclick = () => openPlan();
-    wireActions(m);
     showBanner(bannerText(localError, m.last_error));
     shellCtl = mountTabShell($("#tabrow"), {
       tabs: staticTabs(),
@@ -271,6 +257,10 @@ export async function renderTask() {
     },
     isOffline: () => App.offline,
     onMerged: () => goHome(),
+    // State and the verbs that change it live on the conversation now: the chip
+    // rides its title, the lifecycle split button closes its timeline.
+    threadStatus: (t) => ({ label: RUN_STATE_LABEL[t.state] || t.state || "", cls: runChipClass(t.state) }),
+    mountThreadActions: (host, t) => wireActions(host, t),
   });
 
   // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
@@ -298,21 +288,13 @@ export async function renderTask() {
   // (run.delete) for a terminal run; for a live run an Abandon (run.abandon)
   // button — and for a live *adopted* run a split button whose default is the
   // non-destructive Release (run.release, keeps the user's files).
-  const wireActions = (m) => {
-    const el = $("#taskactions");
+  // The run's lifecycle verbs, mounted at the end of its conversation (the bar
+  // holds tabs and a branch only). There is no "Message agent" any more: the
+  // conversation's own composer is the channel, and a second door to the same
+  // room was only ever a way to lose track of which one you spoke through.
+  const wireActions = (el, m) => {
     if (!el) return;
     const state = m && m.state;
-    // Freeform channel to the agent: live sessions redirect, parked ones resume.
-    // Gates keep their structured verbs, so no button there.
-    const msgEl = $("#msgaction");
-    if (msgEl) {
-      const messageable = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
-      msgEl.innerHTML = messageable.includes(state)
-        ? '<button class="btn mini" id="msgagent">Message agent</button>'
-        : "";
-      const msgBtn = $("#msgagent");
-      if (msgBtn) msgBtn.onclick = () => openMessageAgent(m, paint);
-    }
     if (canDelete(state)) {
       el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
       $("#deleteTask").onclick = async () => {

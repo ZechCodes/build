@@ -181,6 +181,21 @@ function composerHtml(composer) {
   </div>`;
 }
 
+/// The conversation's own status + lifecycle strip.
+///
+/// The surface bar carries tabs and a branch and nothing else, so where a run or
+/// an issue STANDS, and what you can do about it, belong to the thread that
+/// records how it got there: the chip rides the conversation's title, and the
+/// verbs sit at the end of the timeline, right above the box you would reply in.
+function statusChipHtml(status) {
+  if (!status || !status.label) return "";
+  return `<span class="chip thread-state ${esc(status.cls || "")}">${esc(status.label)}</span>`;
+}
+
+function threadActionsHtml(actionsId) {
+  return actionsId ? `<div class="thread-actions" id="${esc(actionsId)}"></div>` : "";
+}
+
 export function threadHtml(thread, options = {}) {
   const agentLabel = harnessLabel(thread, options.agentLabel);
   const sourceItems = (thread && thread.items) || [];
@@ -195,11 +210,12 @@ export function threadHtml(thread, options = {}) {
   const completion = hasSequencedCompletion ? "" : completionHtml(thread && thread.last_completion, agentLabel);
   const itemCount = items.length + (completion ? 1 : 0);
   return `<section class="review-thread">
-    <div class="thread-title">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</div>
+    <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
     <div class="thread-items thread-timeline">${items.length || completion
       ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}, agentLabel) : eventHtml(item.data || {}, agentLabel)).join("") + completion
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
+    ${threadActionsHtml(options.actionsId)}
     ${composerHtml(options.composer)}
   </section>`;
 }

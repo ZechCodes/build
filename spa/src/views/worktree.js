@@ -216,7 +216,6 @@ export async function renderWorktree() {
         <div class="tabrow" id="tabrow"></div>
         <div class="surface-meta">
           <span class="mono dim" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
-          <span class="chip" title="Read-only — acting on this worktree adopts it as a task.">WORKTREE</span>
         </div>
       </div>
       <div class="task-error" id="wtError" role="alert" hidden></div>

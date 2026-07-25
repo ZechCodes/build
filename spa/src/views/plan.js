@@ -182,7 +182,15 @@ export async function renderPlan() {
       });
       if (key === threadRenderKey && host.firstChild) return;
       threadRenderKey = key;
-      host.innerHTML = threadHtml(p.thread, { initialMessage: p.goal, composer, agentLabel: p.harness });
+      host.innerHTML = threadHtml(p.thread, {
+        initialMessage: p.goal,
+        composer,
+        agentLabel: p.harness,
+        status: { label: PLAN_STATE_LABEL[p.state] || p.state || "", cls: planChipClass(p.state) },
+        actionsId: "issuelifecycle",
+      });
+      // Re-mounted per render: this body is rebuilt whenever the thread changes.
+      wireActions(p, host.querySelector("#issuelifecycle"));
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
       wireThreadComposer(host, {
         ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
@@ -320,31 +328,25 @@ export async function renderPlan() {
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="plantabs"></div>
-        <div class="surface-meta">
-          <span class="chip ${planChipClass(m.state)}" title="${esc(m.goal || "")}">${PLAN_STATE_LABEL[m.state] || m.state || ""}</span>
-          <span class="taskactions" id="planactions"></span>
-        </div>
       </div>
       <div class="task-error" id="planError" role="alert" hidden></div>
       <div id="tabbody"></div>`;
     wireTabs(p);
-    // Actions/banner/agent only make sense once a real plan is in hand; the
-    // skeleton shell (p null, route entry) shows the bar + a loading body.
-    if (p) {
-      wireActions(p);
-      showBanner(bannerText(localError, p.last_error));
-    }
+    // The banner only makes sense once a real plan is in hand; the skeleton
+    // shell (p null, route entry) shows the bar + a loading body. The action
+    // cluster is mounted by the conversation render, not here.
+    if (p) showBanner(bannerText(localError, p.last_error));
     // A shell rebuild wiped #tabbody — re-mount the active surface so the poll's
     // early-return leaves a live pane/skeleton in place (mirrors task.js).
     if (tab === "agent" && p) mountAgent();
     else mountReviewSkeleton();
   };
 
-  // The bar's action cluster: the gate (Approve plan → Implement, or a link to
-  // the run implementing it) and removal (Abandon/Delete). Agent messages live
-  // in the persistent conversation below the plan.
-  const wireActions = (p) => {
-    const actions = $("#planactions");
+  // The issue's action cluster, mounted at the end of its conversation: the gate
+  // (Approve plan → Implement, or a link to the run implementing it) and removal
+  // (Abandon/Delete). The surface bar carries tabs and nothing else, so the
+  // decisions sit on the record that explains them.
+  const wireActions = (p, actions) => {
     if (!actions) return;
     actions.innerHTML = "";
     wireGate(p, actions);

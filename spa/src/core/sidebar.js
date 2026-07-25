@@ -240,7 +240,7 @@ export function projectHtml(m, ui) {
     .join("");
   return `<div class="${block}">${head}<div class="sproj-body">
     ${section("Needs you", needs)}${section("Running", running)}
-    ${section("Plans", planNeeds + planReady + planDrafting)}
+    ${section("Issues", planNeeds + planReady + planDrafting)}
     ${section("Done recently", done + plansDone)}
     ${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
 }

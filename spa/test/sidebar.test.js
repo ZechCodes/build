@@ -262,7 +262,10 @@ describe("projectHtml", () => {
       planDrafting: [plan({ plan_id: "pl-c", state: "drafting", needs_attention: false })],
     });
     const html = projectHtml(m, ui());
-    expect(html).toContain("Plans");
+    // The rail calls them what the product calls them: an issue is the unit of
+    // work; the plan is what Build drafts to implement one.
+    expect(html).toContain("Issues");
+    expect(html).not.toContain(">Plans<");
     expect(html).toContain('data-plan="pl-a" data-project="p1"');
     expect(html).toContain('data-plan="pl-b"');
     expect(html).toContain('data-plan="pl-c"');

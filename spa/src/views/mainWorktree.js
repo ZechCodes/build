@@ -4,15 +4,17 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
+import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
+import { mountIssuesTab } from "./issues.js";
 
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "inbox", label: "Inbox" },
+  { id: "issues", label: "Issues" },
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
   ...terminalTabs,
@@ -48,7 +50,6 @@ export async function renderMain() {
         <div class="tabrow" id="tabrow"></div>
         <div class="surface-meta">
           <span class="mono dim" id="mainbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
-          <span class="chip" title="${esc(projectName)}">PROJECT</span>
         </div>
       </div>
       <div id="tabbody"></div>`;
@@ -77,6 +78,12 @@ export async function renderMain() {
       aux = mountProjectInbox(body, {
         projectId,
         callRpc: (method, params) => App.call(method, params),
+      });
+    } else if (id === "issues") {
+      aux = mountIssuesTab(body, {
+        projectId,
+        callRpc: (method, params) => App.call(method, params),
+        navigate: go,
       });
     } else if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status

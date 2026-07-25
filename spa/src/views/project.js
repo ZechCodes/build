@@ -37,7 +37,7 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
       ].filter(Boolean);
       return `
       <div class="card ${quiet ? "quiet" : ""}" data-plan="${esc(p.plan_id)}">
-        <div class="top"><span class="title">Plan: ${esc(p.goal)}</span>
+        <div class="top"><span class="title">Issue: ${esc(p.goal)}</span>
           <span class="chip ${planChipClass(p.state)}">${PLAN_STATE_LABEL[p.state] || p.state}</span></div>
         ${meta.length ? `<div class="meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("<span>·</span>")}</div>` : ""}
         ${context ? `<div class="payload${p.state === "drafting" ? " live-claim" : ""}">${esc(context)}</div>` : ""}
@@ -84,7 +84,7 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
       : "";
     const anyContent = mine.length || myPlans.length || worktrees.length;
     host.innerHTML = `<div class="project-inbox">
-      ${anyContent ? "" : '<div class="empty">Nothing here yet — author a plan to get started.</div>'}
+      ${anyContent ? "" : '<div class="empty">Nothing here yet — file an issue to get started.</div>'}
       ${needsYouBucket}
       ${mixedBucket("WORKING", entities.working, true, true)}
       ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}

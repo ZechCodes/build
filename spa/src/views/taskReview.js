@@ -54,8 +54,15 @@ export function reviewMergeOptions(adopted, base) {
 }
 
 /**
- * createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged }) →
+ * createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged,
+ *                    threadStatus, mountThreadActions }) →
  *   { mount(host), unmount() } — the gitPane review plug for a task.
+ *
+ * threadStatus(task) → { label, cls } puts where the run stands on the
+ * conversation's title, and mountThreadActions(host, task) hangs its lifecycle
+ * verbs at the end of the timeline. Both are re-applied on every repaint, since
+ * the poll rebuilds this body: the surface bar carries tabs and a branch only,
+ * so state and the verbs that change it live on the record that explains them.
  *
  * getTask() returns the task view's freshest task.get payload (its own poll
  * keeps it current on every tab); absorbTaskView(view) folds an RPC-returned
@@ -63,7 +70,7 @@ export function reviewMergeOptions(adopted, base) {
  * cursor cache, so the fold and the next cursored poll agree — and returns
  * the merged task; onMerged() navigates away after a successful merge.
  */
-export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged }) {
+export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged, threadStatus, mountThreadActions }) {
   let host = null;
   let timer = null;
   let selDispose = null;
@@ -306,6 +313,8 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       ${filesHtml}
       ${threadHtml(t.thread, {
         agentLabel: t.harness,
+        status: threadStatus ? threadStatus(t) : null,
+        actionsId: mountThreadActions ? "threadlifecycle" : null,
         // The composer shows wherever thread.post can land — the bridge
         // refuses it only once the run is terminal (the conversation is
         // closed), so review and the stage gate get it too. Diff-scoped ids
@@ -322,6 +331,9 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
     wireThreadRevisionLinks(host, (revisionId) => callRpc("thread.revision", { entity_id: taskId, revision_id: revisionId }));
     wireComposer();
+    // Re-mounted per repaint: the poll rebuilds this body wholesale.
+    const lifecycleHost = host.querySelector("#threadlifecycle");
+    if (lifecycleHost && mountThreadActions) mountThreadActions(lifecycleHost, t);
 
     // The changed-only filter and the per-file Viewed checkbox live on a delegated
     // change handler: the filter repaints (forcing a rebuild), Viewed collapses the

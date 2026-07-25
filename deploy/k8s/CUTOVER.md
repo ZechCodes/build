@@ -24,8 +24,9 @@ Cluster context: `do-nyc1-production-hosting`.
   kubectl --context do-nyc1-production-hosting -n 8ly create secret docker-registry ghcr-pull \
     --docker-server=ghcr.io --docker-username=<gh-user> --docker-password=<token-with-read:packages>
   ```
-- Images are published by `.github/workflows/deploy-images.yml` on every push to
-  `main`. For a first manual push:
+- Images are published by the deploy stages of `.github/workflows/ci.yml` on
+  every push to `main`, after that workflow's checks pass. For a first manual
+  push:
 
   ```bash
   podman build --target relay -t ghcr.io/8ly-dev/build-relay:latest -f bridge/Containerfile bridge/

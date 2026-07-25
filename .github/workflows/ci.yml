@@ -1,9 +1,20 @@
-name: CI
+name: CI and deploy
+
+# One pipeline, in order: the checks, then — on a push to main only — the two
+# production images and the rollout. Deploy used to be its own `on: push`
+# workflow racing this one, which is how a commit with a failing check still
+# reached production. `needs` is the gate now: a red check builds no image.
 
 on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/zechcodes
 
 jobs:
   bridge:
@@ -85,3 +96,100 @@ jobs:
           # Scan this branch's history only: gitleaks defaults to --all, which
           # drags in the archived v1 branch (minified libsodium false positives).
           ./gitleaks git --no-banner --redact --verbose --log-opts="--full-history HEAD" .
+
+  # ---- production rollout (push to main only; every check above must pass) ----
+
+  build-app:
+    name: build-app image (skriftapp)
+    needs: [bridge, interop, web-e2e, secrets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          # Repo-root context: the SPA lives at spa/ beside skriftapp/ and is
+          # built in-image (see skriftapp/Containerfile).
+          context: .
+          file: skriftapp/Containerfile
+          build-args: |
+            VITE_RELAY_URL=wss://relay.getbuild.ing
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/build-app:latest
+            ${{ env.REGISTRY }}/build-app:${{ github.sha }}
+
+  build-relay:
+    name: build-relay image (bridge relay bin)
+    needs: [bridge, interop, web-e2e, secrets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: bridge
+          file: bridge/Containerfile
+          target: relay
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/build-relay:latest
+            ${{ env.REGISTRY }}/build-relay:${{ github.sha }}
+
+  deploy:
+    name: Deploy to production (ns 8ly)
+    needs: [build-app, build-relay]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Configure kubectl
+        run: doctl kubernetes cluster kubeconfig save production-hosting
+
+      - name: Deploy SHA-pinned images
+        run: |
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml   | kubectl -n 8ly apply -f -
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
+          kubectl -n 8ly rollout status deployment/build-app --timeout=300s
+          kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
+
+      - name: Verify public endpoints
+        # The ingress needs a moment to switch endpoints after the rollout.
+        run: |
+          verify() {
+            curl -sf -o /dev/null https://getbuild.ing/healthz &&
+            curl -sf -o /dev/null https://relay.getbuild.ing/health &&
+            test "$(curl -s -o /dev/null -w '%{http_code}' https://getbuild.ing/)" = "302"
+          }
+          for i in $(seq 1 12); do verify && exit 0; sleep 5; done
+          verify

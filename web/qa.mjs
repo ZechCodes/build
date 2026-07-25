@@ -100,15 +100,25 @@ async function main() {
   );
   const [first, second] = board.stages;
 
-  // task.plan is retired: a plan's single-doc notes verb (plan.send_notes) now
-  // rejects multi-stage plans, which must revise through per-stage comments.
-  let legacyPlanErrored = false;
-  try {
-    await call("plan.send_notes", { plan_id: plan.plan_id, comments: "rework this" });
-  } catch (e) {
-    legacyPlanErrored = /multi-stage/.test(e.message);
-  }
-  check("legacy single-doc plan.send_notes is retired for multi-stage plans", legacyPlanErrored);
+  // plan.send_notes is the plan-LEVEL conversation write: the message lands in
+  // the plan's thread and the drafting agent revises from it. (It once rejected
+  // multi-stage plans as a retired single-doc verb; that guard was deliberately
+  // dropped when the plan conversation became persistent, and the plan surface's
+  // composer has spoken this verb ever since.) Per-stage comment batches have
+  // their own verb, plan.stage_send_notes, exercised just below.
+  const planNote = "Keep the second stage reversible.";
+  const noted = await call("plan.send_notes", {
+    plan_id: plan.plan_id,
+    messages: [{ body: planNote, anchor: null }],
+  });
+  check("plan.send_notes keeps the plan in review", noted.state === "plan_review", `state=${noted.state}`);
+  check(
+    "plan.send_notes posts the message into the plan thread",
+    (noted.thread?.items || []).some(
+      (item) => item.type === "message" && item.data.role === "user" && item.data.body === planNote
+    ),
+    `${(noted.thread?.items || []).length} thread items`
+  );
 
   const doc = await call("plan.stage_doc", { plan_id: plan.plan_id, stage_id: first.id });
   check("stage doc mentions the goal", doc.contents.includes("Add a greeting banner"));

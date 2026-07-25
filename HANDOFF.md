@@ -89,8 +89,9 @@ and `ghcr.io/8ly-dev/build-relay`, TLS via cert-manager
 `letsencrypt-production`, Postgres on `do-block-storage-retain`). The
 step-by-step runbook — secrets bootstrap, first image push, apply, pre-flip
 verification, the **user-run** zechcodes teardown, rollback — is
-[`deploy/k8s/CUTOVER.md`](deploy/k8s/CUTOVER.md). Images are rebuilt/pushed by
-`.github/workflows/deploy-images.yml` on pushes to `main`.
+[`deploy/k8s/CUTOVER.md`](deploy/k8s/CUTOVER.md). Images are rebuilt/pushed and rolled
+out by the deploy stages of `.github/workflows/ci.yml` on pushes to `main` —
+gated behind that workflow's checks, so a red commit builds no image.
 
 ## What this branch changed (highlights)
 

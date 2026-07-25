@@ -301,8 +301,10 @@ export function commitSplitOptions(agentCommitOptions = []) {
   ];
 }
 
-// Task states with a live/parked agent to message — the same list task.js uses
-// for its "Message agent" header button.
+// Run states with a live/parked agent to reach — the states where the
+// conversation on this surface can still dispatch work ("Ask agent to commit"
+// below). The header button this list was once shared with is gone: talking to
+// an agent belongs to the conversation, on the surfaces that host one.
 const AGENT_MESSAGEABLE_STATES = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
 
 /** The task-scope agent-commit options for a task's state + goal: "Ask agent to

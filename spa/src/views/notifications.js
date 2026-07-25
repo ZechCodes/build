@@ -10,7 +10,6 @@ import { persistReadIds } from "../core/readState.js";
 import { attnRuns, attnPlans, setBadge } from "./shared.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { notifActionsFor } from "../core/notifActions.js";
-import { openMessageAgent, openPlanMessage } from "../sheets/message.js";
 
 // A run's decision card. Runs never carry plan_review — that belongs to a plan.
 function runNotifEvent(t) {
@@ -83,8 +82,9 @@ export async function renderNotifications() {
           : '<div class="allclear big">✓ Nothing needs you.<span class="allclear-sub">Agents will report here when something does.</span></div>'
       }`;
     // Route by entity kind: the open action goes to the run's default tab / the
-    // plan cockpit's review surface; message-agent opens the messaging sheet;
-    // open-agent drops straight into the live PTY.
+    // issue's review surface; open-agent drops straight into the live PTY. There
+    // is no message action here — talking to an agent belongs to the surfaces
+    // that host one, where the conversation is.
     const byId = new Map(events.map((x) => [x.id, x]));
     root.querySelectorAll(".nact button[data-open]").forEach((b) => {
       b.onclick = () => {
@@ -92,14 +92,6 @@ export async function renderNotifications() {
         if (!x) return;
         if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "review" });
         else go({ name: "task", projectId: x.src.project_id, id: x.id, tab: defaultRunTab(x.src) });
-      };
-    });
-    root.querySelectorAll(".nact button[data-message]").forEach((b) => {
-      b.onclick = () => {
-        const x = byId.get(b.dataset.message);
-        if (!x) return;
-        if (x.kind === "plan") openPlanMessage(x.src);
-        else openMessageAgent(x.src);
       };
     });
     root.querySelectorAll(".nact button[data-agent]").forEach((b) => {

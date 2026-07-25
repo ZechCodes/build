@@ -176,14 +176,29 @@ describe("projectHtml", () => {
     expect(html).toContain("&lt;script&gt;");
   });
 
-  it("renders a main row with the branch and a dirty count, wired to the main surface", () => {
-    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "main", files_changed: 2, insertions: 5, deletions: 1 } }), ui());
+  // The checkout line names its BRANCH, never a stand-in word: a row reading
+  // "main" beside a branch called feat/… was read as the branch itself.
+  it("puts the checkout's own branch and dirty count in the header, not a label", () => {
+    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", files_changed: 2, insertions: 5, deletions: 1 } }), ui());
     expect(html).toContain('data-main="p1"');
-    expect(html).toContain("main ");
+    expect(html).toContain("feat/core-moderation");
     expect(html).toContain("2 uncommitted");
+    // The header owns it: it survives collapsing the project.
+    const collapsed = projectHtml(
+      model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", files_changed: 2, insertions: 5, deletions: 1 } }),
+      { ...ui(), closed: new Set(["p1"]) }
+    );
+    expect(collapsed).toContain("feat/core-moderation");
+    expect(collapsed).not.toContain("sproj-body");
   });
 
-  it("omits the dirty count when the main checkout is clean and the main row when unknown", () => {
+  it("never labels the checkout row 'main' when that is not the branch", () => {
+    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } }), ui());
+    expect(html).toContain("trunk");
+    expect(html).not.toMatch(/>\s*main\b/);
+  });
+
+  it("omits the dirty count when the checkout is clean and the row when unknown", () => {
     const clean = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } }), ui());
     expect(clean).toContain("data-main=");
     expect(clean).not.toContain("uncommitted");
@@ -307,9 +322,17 @@ describe("projectHtml", () => {
     expect(html).toContain('title="/tmp/wt/feat-a"');
   });
 
-  it("the main line carries a branch title (W10)", () => {
-    const m = model({ worktrees: [], uncommitted: 0, primary: { branch: "main", files_changed: 0, insertions: 0, deletions: 0 } });
-    expect(projectHtml(m, ui())).toContain('title="main"');
+  it("the checkout line carries a branch title (W10)", () => {
+    const m = model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } });
+    expect(projectHtml(m, ui())).toContain('title="trunk"');
+  });
+
+  // The rect around a project is the block; the route marks the rect itself so
+  // the border can carry the highlight without a :has() dependency.
+  it("marks the project block active, not just its head", () => {
+    const u = ui();
+    u.activeProjectId = "p1";
+    expect(projectHtml(model(), u)).toContain("sproj active");
   });
 });
 

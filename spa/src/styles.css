@@ -1,5 +1,9 @@
 :root {
-  --bg:#fafafa; --panel:#fff; --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa; --line:#e4e4e7;
+  /* Flat by design: --panel is the SAME color as --bg. Every surface (sidebar,
+     tab bar, card, sheet) sits on one background and is separated by borders
+     and spacing, never by a fill. The token stays so a surface can still say
+     which color it wants; it just resolves to the page's. */
+  --bg:#fafafa; --panel:#fafafa; --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa; --line:#e4e4e7;
   --line2:#f1f1f4; --accent:#5b62e8; --accent-soft:#eef0fe; --green:#16a34a; --green-bg:#f0fdf4;
   --red:#dc2626; --red-bg:#fef2f2; --amber:#b45309; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
 }
@@ -90,10 +94,12 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
    drop the padding and let the pane own the whole box. */
 main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
   display:flex; flex-direction:column; overflow:hidden; }
-.surface-bar { display:flex; align-items:center; gap:12px; padding:0 18px;
-  border-bottom:1px solid var(--line); background:var(--panel); flex:none; }
+/* No rule under it: the selected pill marks the tab row, and the surface shares
+   the page background like every other section. */
+.surface-bar { display:flex; align-items:center; gap:12px; padding:4px 18px;
+  background:var(--bg); flex:none; }
 .surface-bar .tabrow { min-width:0; overflow-x:auto; }
-.surface-bar .tabs { border-bottom:none; margin-bottom:0; }
+.surface-bar .tabs { margin-bottom:0; }
 .surface-meta { margin-left:auto; display:flex; gap:10px; align-items:center;
   font-size:12px; color:var(--dim); padding-left:12px; flex:none; }
 .surface-meta .taskactions { display:flex; gap:8px; }
@@ -126,9 +132,13 @@ a.plan-ref:hover { text-decoration:underline; }
 .btn.danger:hover { background:var(--red-bg); }
 .task-error { background:var(--red-bg); color:var(--red); border:1px solid var(--red); border-radius:9px; padding:9px 12px; font-size:13px; margin:0 0 14px; word-break:break-word; }
 .card .cerr { margin-top:8px; color:var(--red); font-size:12px; word-break:break-word; }
-.tabs { display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:18px; }
-.tabs .t { padding:9px 14px; font-size:13px; color:var(--ink2); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; display:flex; gap:7px; align-items:center; }
-.tabs .t.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+/* Pills: no rule under the row, no underline on the active tab — the selected
+   pill carries its own soft fill, everything else is bare. */
+.tabs { display:flex; gap:4px; margin-bottom:18px; }
+.tabs .t { padding:6px 13px; font-size:13px; color:var(--ink2); cursor:pointer; border-radius:999px;
+  display:flex; gap:7px; align-items:center; }
+.tabs .t:hover { background:var(--line2); }
+.tabs .t.active { color:var(--accent); background:var(--accent-soft); font-weight:600; }
 .tabs .t .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; }
 .tabs .t .tx { color:var(--dim); font-size:14px; line-height:1; padding:0 1px; border-radius:4px; }
 .tabs .t .tx:hover { color:var(--red); background:var(--line2); }
@@ -495,20 +505,20 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* ---- project sidebar (every page) ---- */
 #shell { display:flex; align-items:flex-start; }
 #sidebar { flex:0 0 272px; width:272px; position:sticky; top:0; align-self:stretch;
-  height:100vh; display:flex; flex-direction:column; background:var(--panel);
-  border-right:1px solid var(--line); padding:10px 12px 12px; }
+  height:100vh; display:flex; flex-direction:column; background:var(--bg);
+  padding:10px 12px 12px; }
 body.sidebar-collapsed #sidebar { display:none; }
 body.gated #sidebar, body.gated #side-open { display:none !important; }
 #shell main { flex:1; min-width:0; }
 .side-top { display:flex; align-items:center; margin:0 2px 10px; }
 .side-top .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 .side-top .iconbtn { margin-left:auto; }
-.side-nav { margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line2); }
+.side-nav { margin-bottom:14px; }
 .srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }
 .srow.snav.active { background:var(--accent-soft); color:var(--accent); }
 .srow.snav .badge { margin-left:auto; }
 #sidebar-rail { flex:1; min-height:0; overflow-y:auto; padding-bottom:20px; }
-.side-status { border-top:1px solid var(--line2); padding:10px 4px 0; display:flex;
+.side-status { padding:12px 4px 0; display:flex;
   align-items:center; gap:10px; font-size:11.5px; color:var(--ink2); flex-wrap:wrap; }
 .side-status #devpick { max-width:130px; }
 /* the floating reopen toggle — only when the sidebar is collapsed */
@@ -522,10 +532,12 @@ body.sidebar-collapsed #side-open { display:block; }
 .iconbtn:hover { background:var(--line2); color:var(--ink2); }
 .sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }
-/* Generous gap BETWEEN project blocks so each reads as one unit; the internal
-   rhythm (head → body → rows) stays tight. Collapsed projects carry the same
-   margin, so the rail scans evenly whether a project is open or shut. */
-.sproj { margin-bottom:18px; }
+/* Each project is one bordered rect — no fill, so it reads as a container
+   rather than a card stacked on the page. The rect replaces both the old
+   between-block margin and the tree guide that used to hang inside it; the
+   route's project takes the accent on the border it already has. */
+.sproj { margin-bottom:8px; border:1px solid var(--line); border-radius:12px; padding:5px 5px 6px; }
+.sproj.active { border-color:var(--accent); }
 .sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;
   font-size:14px; font-weight:600; }
 .sproj-head.active { background:transparent; }
@@ -539,12 +551,15 @@ body.sidebar-collapsed #side-open { display:block; }
 .sbranch { flex:none; vertical-align:middle; }
 .sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sbadge { margin-left:auto; }
+/* The header's second line: the checkout's branch, aligned under the project
+   name (past the chevron), reading as metadata rather than another entry. */
+.smain-line { margin-left:22px; font-size:12px; }
+.smain-line .stitle { font-size:12px; }
 /* The classic tree guide: a 1px rule hanging from under the head's icon,
    running the body's full height, with the children nested just inside it.
    The row backgrounds sit in the padding gap so hover/active never touch the
    line. */
-.sproj-body { margin-left:16px; padding:2px 0 0 10px; border-left:1px solid var(--line); }
-.sproj-head.active + .sproj-body { border-left:2px solid var(--accent); padding-left:9px; }
+.sproj-body { padding:2px 0 0 22px; }
 .ssec { margin:6px 0 1px; }
 /* Quieter than the head that anchors the block: smaller, tighter tracking,
    lighter weight — a whisper, not a shout. */

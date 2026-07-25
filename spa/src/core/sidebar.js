@@ -125,9 +125,15 @@ function section(label, rowsHtml) {
   return rowsHtml ? `<div class="ssec"><div class="sseclabel">${label}</div>${rowsHtml}</div>` : "";
 }
 
-// The primary-checkout "main" row: branch + a dirty count when the working tree
-// has uncommitted changes. Links to #/project/<projectId>/changes.
-function mainLine(m, ui) {
+// The project's primary checkout, as the second line of its header: the branch
+// it has out, plus a dirty count when the working tree has uncommitted changes.
+// Links to #/project/<projectId>/changes.
+//
+// It carries NO label word. This row used to read "main <branch>", where "main"
+// meant "the checkout, not a worktree" — but next to a branch called feat/…, it
+// read as a branch name that disagreed with the one beside it. The ⌂ glyph makes
+// the same distinction against the worktree rows' fork glyph, silently.
+function checkoutLine(m, ui) {
   if (!m.primary) return "";
   const dirty = m.primary.files_changed
     ? ` <span class="swt-dirty">· ${m.primary.files_changed} uncommitted</span>`
@@ -135,7 +141,7 @@ function mainLine(m, ui) {
   const active = ui.activeMainProjectId === m.project_id ? "active" : "";
   const title = esc(m.primary.branch) + (m.primary.path ? ` — ${esc(m.primary.path)}` : "");
   return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}" title="${title}">
-    <span class="sicon">⌂</span><span class="stitle mono">main <span class="dim">${esc(m.primary.branch)}</span>${dirty}</span></div>`;
+    <span class="sicon">⌂</span><span class="stitle mono">${esc(m.primary.branch)}${dirty}</span></div>`;
 }
 
 function worktreeLine(m, open, ui) {
@@ -170,13 +176,19 @@ const BRANCH_ICON = `<svg class="sbranch" width="12" height="12" viewBox="0 0 16
 export function projectHtml(m, ui) {
   const open = !ui.closed.has(m.project_id);
   const badge = m.unread ? `<span class="badge sbadge">${m.unread}</span>` : "";
-  // Two distinct targets: the chevron expands/collapses; the name opens the
-  // project page (and the wiring expands the project as it navigates).
+  // A two-line header: the project on top, its checkout's branch + status
+  // beneath. Both lines survive collapsing — a shut project still says which
+  // branch it has out and whether that tree is dirty.
+  //
+  // Three distinct targets: the chevron expands/collapses; the name opens the
+  // project page (and the wiring expands the project as it navigates); the
+  // checkout line opens that page's Changes tab.
   const head = `<div class="sproj-head ${ui.activeProjectId === m.project_id ? "active" : ""}">
     <button class="chevbtn" data-chev="${esc(m.project_id)}" title="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>
     <span class="sproj-open" data-open="${esc(m.project_id)}" title="Open project">${FOLDER_ICON}<span class="sproj-name mono">${esc(m.name)}</span></span>
-    ${badge}</div>`;
-  if (!open) return `<div class="sproj">${head}</div>`;
+    ${badge}</div>${checkoutLine(m, ui)}`;
+  const block = `sproj ${ui.activeProjectId === m.project_id ? "active" : ""}`.trim();
+  if (!open) return `<div class="${block}">${head}</div>`;
 
   const active = (r) => (r.run_id === ui.activeRunId ? "active" : "");
   const activePlan = (p) => (p.plan_id === ui.activePlanId ? "active" : "");
@@ -226,11 +238,11 @@ export function projectHtml(m, ui) {
   const plansDone = m.plansDone
     .map((p) => planRow(p, { icon: "×", right: `<span class="sage">${humanAge(p.age_s)}</span>`, cls: "done" }))
     .join("");
-  return `<div class="sproj">${head}<div class="sproj-body">
+  return `<div class="${block}">${head}<div class="sproj-body">
     ${section("Needs you", needs)}${section("Running", running)}
     ${section("Plans", planNeeds + planReady + planDrafting)}
     ${section("Done recently", done + plansDone)}
-    ${mainLine(m, ui)}${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
+    ${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
 }
 
 /** The whole rail. */

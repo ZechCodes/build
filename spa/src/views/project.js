@@ -83,13 +83,21 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
       ? `<div class="bucket"><h2>WORKTREES <span class="n">${worktrees.length}</span></h2>${worktrees.map((w) => externalWorktreeCard(w)).join("")}</div>`
       : "";
     const anyContent = mine.length || myPlans.length || worktrees.length;
+    // Two columns when the pane is wide enough for both, one when it is not.
+    // The split is a CONTAINER query, not a viewport one: collapsing the rail
+    // changes this pane's width without moving the viewport an inch, and the
+    // question here is only ever "does this pane have room".
     host.innerHTML = `<div class="project-inbox">
-      ${anyContent ? "" : '<div class="empty">Nothing here yet — file an issue to get started.</div>'}
-      ${needsYouBucket}
-      ${mixedBucket("WORKING", entities.working, true, true)}
-      ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}
-      ${mixedBucket("DONE", entities.done, true, false)}
-      ${worktreeBucket}</div>`;
+      <div class="inbox-cols">
+        <div class="inbox-main">
+          ${anyContent ? "" : '<div class="empty">Nothing here yet — file an issue to get started.</div>'}
+          ${needsYouBucket}
+          ${mixedBucket("WORKING", entities.working, true, true)}
+          ${planBucket("READY TO IMPLEMENT", entities.readyPlans, false)}
+          ${mixedBucket("DONE", entities.done, true, false)}
+        </div>
+        ${worktreeBucket ? `<aside class="inbox-side">${worktreeBucket}</aside>` : ""}
+      </div></div>`;
     host.querySelectorAll(".card[data-plan]").forEach((c) =>
       (c.onclick = () => go({ name: "plan", projectId, id: c.dataset.plan, tab: "review" })));
     host.querySelectorAll(".card[data-id]").forEach((c) =>

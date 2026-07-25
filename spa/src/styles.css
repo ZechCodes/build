@@ -105,7 +105,20 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
 .surface-meta .taskactions { display:flex; gap:8px; }
 .project-surface .tabrow { flex:1 1 auto; }
 .projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
-.project-inbox { width:100%; max-width:1180px; margin:0 auto; }
+.project-inbox { width:100%; max-width:1180px; margin:0 auto; container-type:inline-size; }
+/* Worktrees ride a right-hand column when this pane can spare the width, and
+   fall back under the main column when it cannot. Containment is scoped to the
+   inbox subtree — putting it on #tabbody would apply layout containment to the
+   terminal and files panes too, which size themselves against it. */
+.inbox-cols { display:flex; flex-direction:column; }
+.inbox-side .bucket { margin-top:0; }
+/* A 320px column is too narrow for a long branch to wrap gracefully — it pushed
+   the card's chip onto a second line. Truncate instead; the full name is still
+   in the card's title attribute. */
+.inbox-side .card .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@container (min-width: 860px) {
+  .inbox-cols { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:26px; align-items:start; }
+}
 /* The run view's compact plan reference: a link back to the owning plan (or the
    bare goal, for an adopted run that implements none). Sits left of the state
    meta, truncating gracefully. */

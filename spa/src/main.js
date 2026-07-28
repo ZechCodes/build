@@ -12,7 +12,13 @@ import { App, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
 import { registerPushWorker } from "./push.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
+import { installTheme } from "./core/theme.js";
 import { boot } from "./views/gate.js";
+
+// Before anything renders: index.html's inline stamp beat the first paint, this
+// takes ownership of the same attribute and keeps following the OS while the
+// preference says "system".
+installTheme();
 
 // Keep the (cache-free) push worker current on every boot so notification
 // clicks keep working after deploys. /app/sw.js only exists on the real app

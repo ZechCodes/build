@@ -72,7 +72,7 @@ function watchForOnline() {
 
 function renderOnboarding() {
   setGate(true);
-  setConn('<span class="dot" style="background:#6e7681"></span>no devices');
+  setConn('<span class="dot" style="background:var(--dim)"></span>no devices');
   const api = location.origin;
   const cmd = `BRIDGE_API_URL=${api} BRIDGE_WEB_URL=${api} BRIDGE_RELAY_URL=${RELAY_URL} BRIDGE_IDENTITY_FILE=/tmp/bld/my-device.json BRIDGE_REPO=/tmp/bld/repo BRIDGE_WORKTREES=/tmp/bld/wt build-bridge serve`;
   $("#root").innerHTML = `
@@ -80,14 +80,14 @@ function renderOnboarding() {
       <h1 style="margin:0 0 6px">Welcome to Build</h1>
       <p class="settings-intro" style="margin:0 0 22px">Your coding agents run on your own devices, end-to-end encrypted. Add a device to begin — only paired devices can read your tasks, plans, and diffs.</p>
       <div class="panel">
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:#2a2c39;color:#c7d0f0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span><div><b>Start a bridge</b> on the machine where your code lives.
+        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span><div><b>Start a bridge</b> on the machine where your code lives.
           <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px">
             <code class="mono" style="flex:1;font-size:11px;line-height:1.5;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</code>
             <button class="btn mini" id="copycmd">Copy</button></div></div></div>
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:#2a2c39;color:#c7d0f0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span><div><b>Enter its pairing code</b> — the bridge prints it on startup.
+        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span><div><b>Enter its pairing code</b> — the bridge prints it on startup.
           <div class="addproj" style="margin-top:6px"><input id="ocode" placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" autofocus />
             <button class="btn primary" id="olookup">Add device</button></div></div></div>
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:#2a2c39;color:#c7d0f0;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span><div><b>Compare the fingerprint</b> with what the bridge printed, then approve.</div></div>
+        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span><div><b>Compare the fingerprint</b> with what the bridge printed, then approve.</div></div>
       </div>
       <div id="opairbox"></div>
       <div class="adderr" id="oerr"></div>
@@ -141,14 +141,14 @@ function paintWaiting(devices) {
       (d) => `
     <div class="projrow"><span class="pname">${esc(d.name)}</span>
       <span class="ppath mono" style="font-size:11px">${esc(d.fingerprint.slice(0, 16))}…</span>
-      <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "#3fb950" : "#6e7681"}"></span> ${esc(d.status)}</span></div>`,
+      <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(d.status)}</span></div>`,
     )
     .join("");
 }
 
 function renderWaiting(devices) {
   setGate(true);
-  setConn('<span class="dot" style="background:#d29922"></span>device offline');
+  setConn('<span class="dot" style="background:var(--amber)"></span>device offline');
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Waiting for your device</h1>
@@ -166,7 +166,7 @@ function renderWaiting(devices) {
 
 export async function boot() {
   setGate(true);
-  setConn('<span class="dot" style="background:#d29922"></span>connecting…');
+  setConn('<span class="dot" style="background:var(--amber)"></span>connecting…');
   const devices = await refreshDevices();
   if (!devices.length) {
     renderOnboarding();

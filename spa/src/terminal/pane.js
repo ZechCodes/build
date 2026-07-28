@@ -5,6 +5,7 @@
 
 import { createTouchScroll, createWheelQuantizer } from "./touchScroll.js";
 import { createWheelReporter } from "./mouseWheel.js";
+import { terminalTheme } from "../core/theme.js";
 
 let ghosttyReady = null; // module-level: boot ghostty-web (wasm inlined) once per page.
 function loadGhostty() {
@@ -28,7 +29,7 @@ function loadGhostty() {
 export async function mountTerminalPane(host, { attach, input, resize, onExit, onInputError }) {
   const { Terminal, FitAddon } = await loadGhostty();
   host.innerHTML = "";
-  const term = new Terminal({ fontSize: 13, theme: { background: "#15161e", foreground: "#a9b1d6" } });
+  const term = new Terminal({ fontSize: 13, theme: terminalTheme() });
   term.open(host);
 
   // A PTY app that tracks the mouse (Claude Code: DECSET 1000 + SGR 1006) gets

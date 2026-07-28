@@ -75,7 +75,7 @@ export function initDevicePicker() {
       await switchDevice(deviceId);
     } catch {
       paintDevicePicker(); // revert the selection
-      setConn('<span class="dot" style="background:#d29922"></span>device unreachable');
+      setConn('<span class="dot" style="background:var(--amber)"></span>device unreachable');
       setTimeout(() => {
         if (!App.offline) setConn('<span class="dot"></span>connected');
       }, 2500);

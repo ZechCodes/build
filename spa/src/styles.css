@@ -1,41 +1,95 @@
+/* ---- theme tokens -----------------------------------------------------------
+   Every colour in this file comes from here, and the two blocks below are the
+   whole theme: `:root` is light, `:root[data-theme="dark"]` is dark, and
+   core/theme.js is the only thing that writes that attribute (it resolves the
+   user's light/dark/system choice on the Account page). A rule that hard-codes
+   a hex is a rule that only works in one theme — reach for a token, and add one
+   here if none of these says what you mean. */
 :root {
+  color-scheme: light;
   /* Flat by design: --panel is the SAME color as --bg. Every surface (sidebar,
      tab bar, card, sheet) sits on one background and is separated by borders
      and spacing, never by a fill. The token stays so a surface can still say
-     which color it wants; it just resolves to the page's. */
-  --bg:#fafafa; --panel:#fafafa; --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa; --line:#e4e4e7;
-  --line2:#f1f1f4; --accent:#5b62e8; --accent-soft:#eef0fe; --green:#16a34a; --green-bg:#f0fdf4;
-  --red:#dc2626; --red-bg:#fef2f2; --amber:#b45309; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+     which color it wants; it just resolves to the page's. --panel2 is the one
+     exception: the faintly recessed fill under a gutter or a quiet card. */
+  --bg:#fafafa; --panel:#fafafa; --panel2:#fcfcfd;
+  --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa;
+  --line:#e4e4e7; --line2:#f1f1f4; --line3:#c7c7ce;
+  --accent:#5b62e8; --accent-soft:#eef0fe; --accent-ink:#fff;
+  --green:#16a34a; --green-bg:#f0fdf4;
+  --red:#dc2626; --red-bg:#fef2f2;
+  /* The waiting tone. Something pending review is not something broken: it is
+     yellow, and --red is kept for what actually went wrong (blocked, failed,
+     a merge left half-done). */
+  --amber:#b45309; --amber-bg:#fffbeb;
+  --violet:#7c3aed;
+  --code-bg:#f4f4f5; --sel:#c7d2fe;
+  --scrim:rgba(24,24,27,.32); --shadow:rgba(0,0,0,.16); --shadow-soft:rgba(0,0,0,.08);
+  /* The comment popover is an inverted chip in BOTH themes, so anything drawn
+     on it needs colours picked against a dark ground, not against --bg. */
+  --pop-bg:#18181b; --pop-ink:#fafafa; --pop-warn:#fbbf24;
+  /* diff: the ink inside an added/removed row, the hunk header, and the
+     scroll-to-line flash */
+  --add-ink:#14532d; --del-ink:#7f1d1d; --hunk-bg:#f6f6fb;
+  --hl-bg:#fef3c7; --hl-ln:#fde68a; --hl-ink:#92400e; --mark:#fde68a;
+  /* A terminal is dark in both themes — that is what a terminal looks like. */
+  --term-bg:#15161e; --term-fg:#a9b1d6;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+/* Dark: easy on the eyes rather than maximum contrast — the page is a soft
+   near-black and the text a warm off-white, so a long review does not glare.
+   The accents are the loud part: neon against that quiet ground, with dark ink
+   on top of a filled accent because near-black on neon is what reads. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#15171c; --panel:#15171c; --panel2:#1b1e25;
+  --ink:#e3e6ee; --ink2:#a6adbb; --dim:#6e7684;
+  --line:#282c35; --line2:#1e222a; --line3:#3b414d;
+  --accent:#7c80ff; --accent-soft:#1f2338; --accent-ink:#101218;
+  --green:#3ddc84; --green-bg:#122318;
+  --red:#ff5c72; --red-bg:#2a1620;
+  --amber:#ffd447; --amber-bg:#2b2210;
+  --violet:#c4a2ff;
+  --code-bg:#1b1e26; --sel:#2f3a6b;
+  --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.62); --shadow-soft:rgba(0,0,0,.45);
+  --pop-bg:#242833; --pop-ink:#e3e6ee; --pop-warn:#ffd447;
+  --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2030;
+  --hl-bg:#3a2f10; --hl-ln:#4a3c12; --hl-ink:#ffd447; --mark:#4a3c12;
+  --term-bg:#15171c; --term-fg:#c3cae0;
 }
 * { box-sizing:border-box; }
+/* The native controls this client does not restyle — checkboxes, the select
+   popup, scrollbars — take their cue from color-scheme on :root; the tick
+   itself takes the accent. */
+input[type=checkbox] { accent-color:var(--accent); }
 body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
 .dim { color:var(--dim); } .ink2 { color:var(--ink2); }
 /* shared chrome bits (used by the sidebar shell and gate/settings views) */
-.badge { background:var(--accent); color:#fff; border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
+.badge { background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
 .dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
 .e2ee { border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-size:11px; }
 /* device picker (multi-device) */
 #devpick { font:inherit; font-size:12px; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px 6px; max-width:180px; }
 #devpick:focus { outline:none; border-color:var(--accent); }
 /* offline banner */
-#offbar { background:#2d2410; color:#e3b341; border-bottom:1px solid #5c4a1e; padding:7px 18px; font-size:12.5px; }
+#offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
 main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
 /* board */
 .board-head { display:flex; align-items:flex-start; margin-bottom:22px; }
 .board-head h1 { font-size:24px; margin:0 0 2px; letter-spacing:-.02em; }
 .board-head p { margin:0; color:var(--ink2); font-size:14px; }
 .btn { font:inherit; font-weight:600; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; cursor:pointer; }
-.btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
 .btn.primary:hover { filter:brightness(1.06); }
 .btn:disabled { opacity:.5; cursor:default; }
 .bucket { margin:26px 0 8px; }
 .bucket h2 { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:8px; align-items:center; }
 .bucket h2 .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 7px; font-size:10px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
-.card:hover { border-color:#d4d4d8; box-shadow:0 1px 3px rgba(0,0,0,.04); }
-.card.quiet { background:#fcfcfd; }
+.card:hover { border-color:var(--line3); box-shadow:0 1px 3px var(--shadow-soft); }
+.card.quiet { background:var(--panel2); }
 .card.external { opacity:.68; }
 .card.external:hover { opacity:1; }
 .card.external .chip { background:transparent; border:1px dashed var(--line); color:var(--dim); }
@@ -45,8 +99,10 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
 .card .payload { margin-top:9px; color:var(--ink2); font-size:13px; }
 .card .facts { font-size:11px; color:var(--dim); margin-top:4px; }
 .chip { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; border-radius:999px; padding:3px 9px; white-space:nowrap; }
-.chip.attn { background:var(--accent-soft); color:var(--accent); }
-.chip.work { background:#f4f4f5; color:var(--ink2); }
+/* Waiting on the human (READY TO REVIEW, an approved stage) is yellow: it is a
+   queue, not a fault. Red stays for .warn — blocked, failed, interrupted. */
+.chip.attn { background:var(--amber-bg); color:var(--amber); }
+.chip.work { background:var(--line2); color:var(--ink2); }
 .chip.done { background:var(--green-bg); color:var(--green); }
 .chip.warn { background:var(--red-bg); color:var(--red); }
 .tis { font-size:11px; color:var(--dim); margin-top:5px; }
@@ -60,7 +116,8 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
 .ncard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; }
 .ncard.read { opacity:.5; }
 .ncard .nhead { display:flex; align-items:center; gap:8px; font-weight:650; font-size:14px; }
-.ncard .nhead .nicon { color:var(--accent); font-size:13px; }
+/* The untoned card is the one asking for review — yellow, like its chip. */
+.ncard .nhead .nicon { color:var(--amber); font-size:13px; }
 .ncard .nhead.muted .nicon { color:var(--green); }
 .ncard .nhead.warn .nicon { color:var(--red); }
 .ncard .ngoal { margin-top:6px; font-size:14px; color:var(--ink); font-weight:550; }
@@ -76,7 +133,7 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
 .ncard .nmsg h1 { font-size:15px; margin:8px 0 4px; } .ncard .nmsg h2 { font-size:14px; margin:8px 0 4px; } .ncard .nmsg h3 { font-size:13px; margin:6px 0 3px; }
 .ncard .nmsg ul,.ncard .nmsg ol { margin:5px 0; padding-left:20px; } .ncard .nmsg li { margin:2px 0; }
 .ncard .nmsg code { font-family:var(--mono); font-size:12px; background:var(--line2); padding:1px 5px; border-radius:5px; }
-.ncard .nmsg pre { background:#f4f4f5; padding:10px 12px; border-radius:8px; overflow:auto; } .ncard .nmsg pre code { background:none; padding:0; }
+.ncard .nmsg pre { background:var(--code-bg); padding:10px 12px; border-radius:8px; overflow:auto; } .ncard .nmsg pre code { background:none; padding:0; }
 .ncard .nmsg-toggle { color:var(--accent); font-size:12px; font-weight:600; cursor:pointer; margin-top:6px; display:none; }
 /* settings stub */
 .settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
@@ -124,13 +181,13 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
    meta, truncating gracefully. */
 .plan-ref { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
-a.plan-ref { cursor:pointer; color:var(--accent, #6ea8fe); text-decoration:none; }
+a.plan-ref { cursor:pointer; color:var(--accent); text-decoration:none; }
 a.plan-ref:hover { text-decoration:underline; }
 /* The single gate action below the run-side stage board. */
 .stageaction { margin-top:12px; }
 .fixbar .fixlabel { font-size:13px; font-weight:600; margin-bottom:6px; }
 /* Plan rows in the rail carry a distinct approved glyph tint. */
-.srow.splan.ready .sicon { color:var(--green, #3fb950); }
+.srow.splan.ready .sicon { color:var(--green); }
 .surface .task-error { margin:10px 18px 0; }
 .surface #tabbody { flex:1; min-height:0; overflow-y:auto; padding:18px 22px 40px; }
 .surface #tabbody.bare { padding:0; overflow:hidden; }
@@ -163,10 +220,10 @@ a.plan-ref:hover { text-decoration:underline; }
 /* plan */
 .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
-.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:#27272a; }
+.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:var(--ink); }
 .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
 .plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
-.plan pre { background:#f4f4f5; padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
+.plan pre { background:var(--code-bg); padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
 .plan-loading { color:var(--dim); min-height:240px; padding:30px; display:flex; align-items:center;
   justify-content:center; gap:9px; text-align:center; font-family:var(--mono); font-size:12.5px; }
 .plan-loading::before { content:"⠋"; color:var(--accent); font-size:18px; line-height:1;
@@ -175,8 +232,8 @@ a.plan-ref:hover { text-decoration:underline; }
   0% { content:"⠋"; } 12.5% { content:"⠙"; } 25% { content:"⠹"; } 37.5% { content:"⠸"; }
   50% { content:"⠼"; } 62.5% { content:"⠴"; } 75% { content:"⠦"; } 87.5% { content:"⠧"; }
 }
-.plan ::selection, .plan::selection { background:#c7d2fe; }
-.plan mark.phl { background:#fde68a; border-radius:2px; padding:0 1px; }
+.plan ::selection, .plan::selection { background:var(--sel); }
+.plan mark.phl { background:var(--mark); color:var(--ink); border-radius:2px; padding:0 1px; }
 /* The plan cockpit's summary: last_summary as markdown, clamped to a few lines
    with an expand affordance shown only when it overflows. */
 .plan-summary { max-width:820px; margin-bottom:16px; }
@@ -235,11 +292,13 @@ a.plan-ref:hover { text-decoration:underline; }
 .commentcard .cc-body { color:var(--ink); display:block; }
 .commentcard .cc-reply { margin-top:6px; font-size:12.5px; color:var(--ink2); border-top:1px dashed var(--line); padding-top:5px; }
 .commentcard .cc-reply .cc-reply-k { font-weight:600; color:var(--green); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-right:5px; }
-.comment-pop { position:fixed; z-index:60; background:#18181b; border-radius:9px; padding:6px; box-shadow:0 8px 24px rgba(0,0,0,.28); display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
-.comment-pop button { font:inherit; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
-.cp-input { font:inherit; border:none; border-radius:6px; padding:6px 9px; min-width:240px; max-width:min(90vw, 360px); resize:none; color:var(--ink); }
-.cp-keep { flex-basis:100%; font-size:10.5px; color:var(--amber); display:block; margin-top:4px; }
-.comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--amber); }
+.comment-pop { position:fixed; z-index:60; background:var(--pop-bg); border-radius:9px; padding:6px; box-shadow:0 8px 24px var(--shadow); display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
+.comment-pop button { font:inherit; background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
+/* The popover is a dark chip in both themes, so the field states its own page
+   colours rather than inheriting the UA's white against dark ink. */
+.cp-input { font:inherit; border:none; border-radius:6px; padding:6px 9px; min-width:240px; max-width:min(90vw, 360px); resize:none; background:var(--bg); color:var(--ink); }
+.cp-keep { flex-basis:100%; font-size:10.5px; color:var(--pop-warn); display:block; margin-top:4px; }
+.comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
 /* The code table scrolls horizontally inside .dscroll while the .file border
@@ -255,10 +314,10 @@ a.plan-ref:hover { text-decoration:underline; }
 .file .fhead .pm { margin-left:auto; font-size:11px; display:inline-flex; gap:6px; white-space:nowrap; flex:none; } .pm .a { color:var(--green); } .pm .d { color:var(--red); }
 .file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
 .file td { padding:0 8px; white-space:pre; vertical-align:top; }
-.file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:#fcfcfd; border-right:1px solid var(--line2); cursor:pointer; }
+.file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:var(--panel2); border-right:1px solid var(--line2); cursor:pointer; }
 .file td.ln:hover { color:var(--accent); }
-.file ::selection { background:#c7d2fe; }
-tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !important; color:#92400e; }
+.file ::selection { background:var(--sel); }
+tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(--hl-ln) !important; color:var(--hl-ink); }
 /* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
 .gitpane .gitsec { margin-bottom:26px; }
 .gitsec-head { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:10px; align-items:center; }
@@ -283,7 +342,7 @@ tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !
 .gp-toolbar { padding:12px 22px; border-bottom:1px solid var(--line); }
 .gp-banner { padding:16px 22px 0; }
 .gp-commit:not(:empty) { flex:none; padding:12px 22px 14px; border-top:1px solid var(--line);
-  background:var(--panel); box-shadow:0 -8px 20px rgba(24,24,27,.04); }
+  background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
 .gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
 .crail { overflow:visible; }
 .crail-branch { position:relative; padding:10px 13px; border-bottom:1px solid var(--line); }
@@ -339,25 +398,25 @@ tr.dhl td { background:#fef3c7 !important; } tr.dhl td.ln { background:#fde68a !
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
 .splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }
-.splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid rgba(255,255,255,.3); padding:8px 9px; }
+.splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid color-mix(in srgb, var(--accent-ink) 30%, transparent); padding:8px 9px; }
 /* The tab row's `+` menu (terminal / claude / codex). Positioned in JS from the
    `+`'s box and mounted on <body>: the tab row scrolls horizontally, so a child
    popup would be clipped by its own container. Item styling matches .splitmenu. */
 .tabmenu { min-width:240px; background:var(--panel); border:1px solid var(--line); border-radius:10px;
-  box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:30; }
+  box-shadow:0 10px 30px var(--shadow); overflow:hidden; z-index:30; }
 .tabmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
 .tabmenu .mi:hover { background:var(--accent-soft); }
 .tabmenu .mi .mt { color:var(--ink); font-weight:550; }
 .tabmenu .mi .md { color:var(--dim); font-size:11px; }
-.splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; z-index:25; }
+.splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px var(--shadow); overflow:hidden; z-index:25; }
 .splitmenu[hidden] { display:none; }
 .splitmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
 .splitmenu .mi:hover { background:var(--accent-soft); }
 .splitmenu .mi .mt { color:var(--ink); font-weight:550; }
 .splitmenu .mi .md { color:var(--dim); font-size:11px; }
-tr.add td { background:var(--green-bg); } tr.add td.code { color:#14532d; }
-tr.del td { background:var(--red-bg); } tr.del td.code { color:#7f1d1d; }
-tr.hunk td { background:#f6f6fb; color:var(--accent); }
+tr.add td { background:var(--green-bg); } tr.add td.code { color:var(--add-ink); }
+tr.del td { background:var(--red-bg); } tr.del td.code { color:var(--del-ink); }
+tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 /* Prism token palette — foreground-only (no backgrounds), so the add/del row
    tints above stay intact. Scoped to the diff code cells and the file-source
    <pre> to out-specify the tr.add/tr.del td.code colors. No Prism theme CSS. */
@@ -377,7 +436,7 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .file td.code .token.boolean, .fsrc .token.boolean,
 .file td.code .token.constant, .fsrc .token.constant { color:var(--amber); }
 .file td.code .token.function, .fsrc .token.function,
-.file td.code .token.class-name, .fsrc .token.class-name { color:#7c3aed; }
+.file td.code .token.class-name, .fsrc .token.class-name { color:var(--violet); }
 .file td.code .token.punctuation, .fsrc .token.punctuation,
 .file td.code .token.operator, .fsrc .token.operator { color:var(--ink2); }
 .actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent); padding:14px 0 4px; display:flex; align-items:center; gap:12px; margin-top:6px; }
@@ -393,9 +452,9 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
 .gtpull, .gtpush, .gtstash { display:inline-flex; }
 .gittoolbar .btn, .gittoolbar .btn.primary { min-height:30px; padding:5px 10px; border-color:var(--line);
-  border-radius:7px; background:var(--panel); color:var(--ink2); box-shadow:0 1px 1px rgba(24,24,27,.03); }
+  border-radius:7px; background:var(--panel); color:var(--ink2); box-shadow:0 1px 1px var(--shadow-soft); }
 .gittoolbar .btn:hover:not(:disabled), .gittoolbar .btn.primary:hover:not(:disabled) {
-  color:var(--ink); border-color:#c7c7ce; background:var(--line2); filter:none; }
+  color:var(--ink); border-color:var(--line3); background:var(--line2); filter:none; }
 .gittoolbar .splitbtn .caret { padding-left:8px; padding-right:8px; border-left-color:var(--line); }
 .gittoolbar .splitbtn .btn.primary:not(.caret) { font-weight:600; }
 .gtpull .btn.primary:not(.caret)::before { content:"↓"; margin-right:6px; }
@@ -408,7 +467,7 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
    heavier now for the same reason: it has to say "this is on top". */
 .gtbranch-menu { position:fixed; min-width:260px; max-width:min(420px, 92vw);
   background:var(--panel); border:1px solid var(--line); border-radius:12px;
-  box-shadow:0 16px 44px rgba(24,24,27,.22), 0 2px 6px rgba(24,24,27,.10);
+  box-shadow:0 16px 44px var(--shadow), 0 2px 6px var(--shadow-soft);
   overflow:hidden; z-index:60; }
 /* The list scrolls; the search row and the create row stay put. */
 .gtbranch-list { max-height:min(46vh, 380px); overflow-y:auto; }
@@ -430,7 +489,7 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 .gtbranch-chips { font-family:var(--mono); font-size:11px; color:var(--dim); flex:none; }
 .gtbranch-del { flex:none; font:inherit; font-size:11px; background:transparent; border:0; color:var(--dim); cursor:pointer; padding:2px 6px; border-radius:5px; }
 .gtbranch-del:hover, .gtbranch-del.force { color:var(--red); }
-.gtbranch-del.armed { background:var(--red); color:#fff; }
+.gtbranch-del.armed { background:var(--red); color:var(--accent-ink); }
 .gtbranch-newinput { flex:1; min-width:0; font:inherit; font-size:12.5px; padding:7px 9px;
   border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
 .gtbranch-newinput:focus { outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color:var(--accent); }
@@ -440,13 +499,13 @@ tr.hunk td { background:#f6f6fb; color:var(--accent); }
 /* per-file discard + armed danger confirms */
 .gitfile .fhead .gitdiscard { margin-left:auto; }
 .gitfile .fhead .pm + .gitdiscard { margin-left:8px; }
-.btn.danger.armed { background:var(--red); border-color:var(--red); color:#fff; }
+.btn.danger.armed { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
 /* new task sheet */
-.scrim { position:fixed; inset:0; background:rgba(24,24,27,.32); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
+.scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
 .scrim.show { display:flex; }
-.sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px rgba(0,0,0,.18); padding:22px 24px; }
+.sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px var(--shadow); padding:22px 24px; }
 .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
-textarea { width:100%; min-height:96px; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
+textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
 .field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
 .field label { font-size:12px; color:var(--ink2); font-weight:600; }
 .sheet select { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
@@ -488,6 +547,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    with .primary (the button base handles the rest). */
 .segmented { display:flex; gap:8px; margin-bottom:12px; }
 .segmented .seg { flex:1; }
+/* The Account page's light/dark/system switch: the same three segments, sized
+   to the words rather than stretched across the panel. */
+#themepick { max-width:340px; margin-bottom:0; }
 /* Mid-session offline: pause bridge-backed actions in the main view. Api-only
    surfaces stay live — the sheet (add-device dialog) and the devices panel. */
 body.offline #root .btn.primary { opacity: .45; pointer-events: none; }
@@ -598,16 +660,17 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-composer-actions { padding-right:var(--fab-clear); }
 .actionbar .right { padding-right:var(--fab-clear); }
 .fab-stack { display:flex; flex-direction:column-reverse; align-items:flex-end; gap:10px; }
-.fab { font:inherit; font-weight:650; font-size:14px; color:#fff; background:var(--accent);
+/* The one place the accent is allowed to glow: its own colour, spread. */
+.fab { font:inherit; font-weight:650; font-size:14px; color:var(--accent-ink); background:var(--accent);
   border:none; border-radius:999px; padding:13px 22px; cursor:pointer;
-  box-shadow:0 6px 20px rgba(91,98,232,.35); }
+  box-shadow:0 6px 20px color-mix(in srgb, var(--accent) 38%, transparent); }
 .fab:hover { filter:brightness(1.06); }
 .fab:active { transform:translateY(1px); }
 /* Hidden by transform+opacity rather than display, so it animates in and stays
    reachable to a keyboard: focus-within reveals it exactly like hover. */
 .fab-mini { font:inherit; font-size:13px; color:var(--ink2); background:var(--bg);
   border:1px solid var(--line); border-radius:999px; padding:8px 14px; cursor:pointer;
-  display:flex; align-items:center; gap:7px; box-shadow:0 4px 14px rgba(24,24,27,.10);
+  display:flex; align-items:center; gap:7px; box-shadow:0 4px 14px var(--shadow-soft);
   opacity:0; transform:translateY(8px); pointer-events:none;
   transition:opacity .14s ease, transform .14s ease; }
 .fab-stack:hover .fab-mini, .fab-stack:focus-within .fab-mini {
@@ -712,7 +775,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .srow:hover { background:var(--line2); }
 .srow.active { background:var(--accent-soft); color:var(--accent); }
 .srow .sicon { flex:0 0 14px; text-align:center; font-size:11px; color:var(--dim); }
-.srow.attn .sicon { color:var(--accent); }
+.srow.attn .sicon { color:var(--amber); }
 .srow.done .sicon { color:var(--green); }
 .srow .stitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .srow .sstat { font-size:11.5px; flex:none; }
@@ -730,11 +793,11 @@ body.sidebar-collapsed #side-open { display:block; }
 #side-scrim { display:none; }
 @media (max-width: 900px) {
   #sidebar { position:fixed; left:0; top:0; bottom:0; height:auto; z-index:40;
-    box-shadow:8px 0 24px rgba(0,0,0,.08); width:min(86vw, 300px); }
+    box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
   /* The open rail overlays content on narrow viewports; a scrim beneath it
      (above the content) taps to dismiss. Hidden while gated (unlock screen). */
   body:not(.sidebar-collapsed):not(.gated) #side-scrim {
-    display:block; position:fixed; inset:0; z-index:35; background:rgba(0,0,0,.35); }
+    display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
 }
 /* project page header */
 .crumb { font-size:12.5px; margin-bottom:2px; }
@@ -775,9 +838,11 @@ body.sidebar-collapsed #side-open { display:block; }
 .fsrc table { min-width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; }
 .fsrc td { vertical-align:top; white-space:pre; }
 .fsrc-ln { width:1%; padding:0 10px 0 4px; text-align:right; color:var(--dim); user-select:none;
-  border-right:1px solid var(--line2); background:#fcfcfd; }
+  border-right:1px solid var(--line2); background:var(--panel2); }
 .fsrc-code { padding:0 8px; }
 .fsrc code { font:inherit; white-space:pre; }
+/* Deliberately theme-blind: the frame renders someone else's HTML, which
+   assumes a white page, and the letterbox behind a video is always black. */
 .fhtml { width:100%; height:64vh; border:1px solid var(--line); border-radius:8px; background:#fff; }
 .fimg { max-width:100%; display:block; }
 .fmedia { display:block; max-width:100%; }
@@ -795,7 +860,7 @@ body.sidebar-collapsed #side-open { display:block; }
 /* ---- Agent + terminal panes ----
    Terminals fill their (bare) tab body edge to edge — the pane's own
    background is the section; no box, no padding, no leftover space below. */
-.termpane { position:relative; height:100%; overflow:hidden; background:#15161e; }
+.termpane { position:relative; height:100%; overflow:hidden; background:var(--term-bg); }
 /* Per-pane connectivity chip (same visual family as .agent-idle) — shown while
    the shared terminal socket is not connected, over a dimmed frozen screen. */
 .term-conn { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:5;
@@ -810,7 +875,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .plan-agentwrap { height:65vh; height:65dvh; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
   background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;
-  font-size:12px; color:var(--dim); box-shadow:0 2px 8px rgba(0,0,0,.08); }
+  font-size:12px; color:var(--dim); box-shadow:0 2px 8px var(--shadow-soft); }
 /* ---- sidebar main (primary checkout) row ---- */
 .smain-line .stitle { font-family:var(--mono); font-size:12px; }
 @media (max-width: 900px) {
@@ -824,7 +889,7 @@ body.sidebar-collapsed #side-open { display:block; }
 
 /* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
    exact steps that will run, then ask Confirm/Cancel. */
-.modal-scrim { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }
+.modal-scrim { position:fixed; inset:0; background:var(--scrim); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }
 .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:440px; width:100%; }
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }
@@ -848,7 +913,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .thread-timeline::before { content:""; position:absolute; top:0; bottom:0; left:18px; width:2px; background:var(--line); }
 .thread-message { position:relative; margin-left:44px; min-width:0; }
 .thread-avatar { position:absolute; left:-44px; top:0; z-index:1; display:grid; place-items:center; width:38px; height:38px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--ink2); font-weight:700; font-size:12px; }
-.thread-message.user .thread-avatar { background:var(--accent); color:white; }
+.thread-message.user .thread-avatar { background:var(--accent); color:var(--accent-ink); }
 .thread-comment-card { overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
 .thread-message-head { display:flex; justify-content:space-between; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); background:color-mix(in srgb, var(--bg) 55%, var(--panel)); color:var(--dim); font-size:12px; }
 .thread-message-head strong { color:var(--ink); }
@@ -894,7 +959,7 @@ body.sidebar-collapsed #side-open { display:block; }
 /* Global notifications (core/notify.js) — errors persist until dismissed,
    successes are transient; detail expands to the full error text. */
 #notices { position:fixed; right:14px; bottom:14px; z-index:200; display:flex; flex-direction:column; gap:8px; max-width:380px; width:calc(100vw - 28px); }
-.notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px rgba(0,0,0,.25); }
+.notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px var(--shadow); }
 .notice.error { border-left-color:var(--red); }
 .notice.success { border-left-color:var(--green); }
 .notice-head { display:flex; align-items:center; gap:8px; }

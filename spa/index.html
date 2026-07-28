@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Build — review is the product</title>
     <link rel="manifest" href="/app/static/manifest.webmanifest" />
-    <meta name="theme-color" content="#5b62e8" />
+    <meta name="theme-color" content="#fafafa" />
+    <!-- Parser-blocking and above the bundle: the module below is deferred, so
+         without this the first paint is the light theme for every dark-theme
+         reader. A file rather than an inline block because the production CSP
+         is script-src 'self' with no unsafe-inline. -->
+    <script src="/app/static/theme-boot.js"></script>
     <link rel="icon" href="/app/static/icon-192.png" />
     <link rel="apple-touch-icon" href="/app/static/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

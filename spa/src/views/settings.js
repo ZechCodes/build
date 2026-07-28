@@ -12,6 +12,7 @@ import { openSetRemote } from "../sheets/setRemote.js";
 import { openClone } from "../sheets/clone.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
+import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { loadModelCatalog } from "../app.js";
 import {
@@ -62,6 +63,11 @@ export async function renderSettings() {
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
     <div class="panel">
+      <h3>🎨 Appearance</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
+      ${themeControlHtml(loadThemePreference())}
+    </div>
+    <div class="panel">
       <h3>🔔 Notifications</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Get a nudge when a task needs you — a plan or diff to review, or an agent that's blocked. Notifications are content-free: they never include your goals, plans, or diffs.</div>
       <div class="addproj">
@@ -106,6 +112,7 @@ export async function renderSettings() {
   };
   await refresh();
   await mountAgentDefaults();
+  bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);
 
   // The agent defaults panel: the same three selectors the New issue sheet hides
@@ -243,7 +250,7 @@ export async function renderSettings() {
               (d) => `
         <div class="projrow"><span class="pname">${esc(d.name)}</span>
           <span class="ppath mono" style="font-size:11px" title="${esc(d.fingerprint)}">${esc(d.fingerprint.slice(0, 16))}…</span>
-          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "#3fb950" : "#6e7681"}"></span> ${esc(d.status)}</span>
+          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(d.status)}</span>
           <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
             )
             .join("")

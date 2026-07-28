@@ -79,7 +79,7 @@ export function goOffline() {
   const name = deviceName(App.session?.deviceId) || "Your device";
   $("#offbar-text").textContent = offlineBannerText(name, App.offlineSince);
   $("#offbar").hidden = false;
-  setConn('<span class="dot" style="background:#d29922"></span>reconnecting…');
+  setConn('<span class="dot" style="background:var(--amber)"></span>reconnecting…');
   resume();
 }
 

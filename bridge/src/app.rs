@@ -445,6 +445,21 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// How recently an agent's PTY must have painted for it to count as WORKING.
+///
+/// Aliveness alone is the wrong signal: an agent tab opened yesterday and left
+/// at its prompt is alive and doing nothing, and a rail that pulses at it
+/// forever teaches you to ignore the pulse. A working agent paints — spinners,
+/// tool output, tokens — so silence means it is waiting for you, which is the
+/// state the dot must NOT claim is progress.
+const AGENT_WORKING_WINDOW: Duration = Duration::from_secs(30);
+
+/// Whether a terminal counts as an agent that is working right now. A shell is
+/// never an agent — it is the human's own hands — however busy it looks.
+fn agent_is_working(kind: TermKind, idle: Duration) -> bool {
+    kind != TermKind::Shell && idle < AGENT_WORKING_WINDOW
+}
+
 /// The verbs that count as the human acting on an entity, and the param naming
 /// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
 /// a queue you triage by reading and reading one IS engaging with it — while a
@@ -2867,6 +2882,15 @@ impl AppState {
             .keys()
             .map(|id| (id.clone(), self.attention_json(id)))
             .collect();
+        let agent_working: std::collections::HashSet<String> = self
+            .terms
+            .values()
+            .filter(|term| agent_is_working(term.kind, term.session.idle_for()))
+            .filter_map(|term| match &term.scope {
+                TermScope::ExternalWorktree { worktree_id, .. } => Some(worktree_id.clone()),
+                _ => None,
+            })
+            .collect();
         let projects: Vec<(String, String, String)> = self
             .projects
             .iter()
@@ -2895,6 +2919,7 @@ impl AppState {
                         "deletions": w.diffstat.deletions,
                     },
                     "adoptable": adoptable,
+                    "agent_working": agent_working.contains(&w.id),
                     // A worktree Build cut carries attention from birth, so it
                     // surfaces in the rail as something waiting for you. One made
                     // outside Build has none until you act on it here, and stays
@@ -11231,6 +11256,72 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         state.handle(req("run.abandon", json!({ "run_id": run_id })));
         assert_eq!(attention_of(&mut state, &run_id)["seen"], false);
+    }
+
+    /// The pulse means "an agent is working here", which is a different claim
+    /// from "a tab is open". A shell is never an agent, and an agent that has
+    /// stopped painting is waiting for you, not working.
+    #[test]
+    fn only_a_recently_painting_agent_counts_as_working() {
+        let just_now = Duration::from_secs(1);
+        let a_while = AGENT_WORKING_WINDOW + Duration::from_secs(1);
+
+        assert!(agent_is_working(TermKind::Claude, just_now));
+        assert!(agent_is_working(TermKind::Codex, just_now));
+        // Left at its prompt overnight: alive, not working.
+        assert!(!agent_is_working(TermKind::Claude, a_while));
+        // The human's own shell is never an agent, however busy it looks.
+        assert!(!agent_is_working(TermKind::Shell, just_now));
+    }
+
+    /// The board reports it per worktree, so a bare worktree — which has no run
+    /// state to read — can still say whether something is happening in it.
+    #[tokio::test]
+    async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "hand-made", "hand-made");
+        let worktree_id = state
+            .lock()
+            .unwrap()
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("hand-made"))
+            .expect("discoverable")
+            .id;
+
+        let entry_of = |state: &Arc<Mutex<AppState>>| {
+            let board = state.lock().unwrap().handle(req("board.list", json!({})));
+            board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["worktree_id"] == json!(worktree_id.clone()))
+                .cloned()
+                .unwrap_or_else(|| panic!("worktree missing: {board:?}"))
+        };
+        assert_eq!(
+            entry_of(&state)["agent_working"],
+            false,
+            "nothing running yet"
+        );
+
+        // A shell is not an agent, so opening one must not start the pulse.
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "kind": "shell" }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(
+            entry_of(&state)["agent_working"],
+            false,
+            "a shell is the human's own hands"
+        );
     }
 
     /// The relay calls `dispatch` directly — `handle` is a test convenience — so

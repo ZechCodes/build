@@ -40,6 +40,7 @@ export function buildSidebarModel({ projects, runs, plans, externalWorktrees, pr
             path: pc.path || null,
             ahead: Number.isFinite(pc.ahead) ? pc.ahead : null,
             behind: Number.isFinite(pc.behind) ? pc.behind : null,
+            upstream: pc.upstream || null,
             files_changed: pc.files_changed || 0,
             insertions: pc.insertions || 0,
             deletions: pc.deletions || 0,
@@ -58,31 +59,46 @@ function dotHtml(entry) {
   }"></span>`;
 }
 
-/** A row's floating git status: how far the branch has diverged, then what the
- *  working tree holds uncommitted. Each part shows only when it has something to
- *  say. The divergence is measured against the branch's upstream when it tracks
- *  one and the base branch otherwise, so — since the same ↑2 means a different
- *  thing either way — the row names which on hover. */
+/** A row's floating git status — the three things worth knowing about a
+ *  checkout at a glance, each shown only when it has something to say:
+ *
+ *    ↑n   work that lives only here (unpushed)
+ *    ↓n   work it has not caught up with (out of date)
+ *    +n −n  work that is not even committed
+ *
+ *  The two counts answer different questions and are measured against different
+ *  refs, so the row spells both out on hover rather than leaving "↑2 ↓1" to be
+ *  guessed at. */
 function entryStatusHtml(status) {
   if (!status) return "";
   const parts = [];
-  if (status.ahead) parts.push(`<span class="ssync">↑${status.ahead}</span>`);
+  if (status.unpushed) parts.push(`<span class="ssync">↑${status.unpushed}</span>`);
   if (status.behind) parts.push(`<span class="ssync">↓${status.behind}</span>`);
   if (status.insertions) parts.push(`<em class="add">+${status.insertions}</em>`);
   if (status.deletions) parts.push(`<em class="del">-${status.deletions}</em>`);
   if (!parts.length) return "";
-  return `<span class="sstat mono"${syncTitle(status)}>${parts.join(" ")}</span>`;
+  return `<span class="sstat mono"${statusTitle(status)}>${parts.join(" ")}</span>`;
 }
 
-/** The ` title="…"` attribute naming what ahead/behind were measured against,
- *  or "" when nothing diverged or the bridge did not say. The ref name comes
- *  from the repo, so it is escaped like every other git-derived string. */
-function syncTitle(status) {
-  if (!status.syncBase || (!status.ahead && !status.behind)) return "";
-  const sides = [status.ahead ? `↑${status.ahead} ahead` : "", status.behind ? `↓${status.behind} behind` : ""]
+/** The ` title="…"` attribute spelling out each part of the status, or "" when
+ *  there is nothing to spell out. Ref names come from the repo, so they are
+ *  escaped like every other git-derived string. */
+function statusTitle(status) {
+  const said = [];
+  if (status.unpushed)
+    said.push(
+      status.upstream
+        ? `↑${status.unpushed} unpushed to ${status.upstream}`
+        : `↑${status.unpushed} unpushed — no upstream`,
+    );
+  if (status.behind) said.push(`↓${status.behind} behind ${status.base || "the base branch"}`);
+  const changes = [status.insertions ? `+${status.insertions}` : "", status.deletions ? `-${status.deletions}` : ""]
     .filter(Boolean)
-    .join(", ");
-  return ` title="${esc(sides)} of ${esc(status.syncBase)}"`;
+    .join(" ");
+  // What the +/− counts is not the same everywhere: a checkout's is what sits
+  // in it uncommitted, a task's is the whole delta it exists to produce.
+  if (changes) said.push(`${changes} ${status.changesLabel || "changed"}`);
+  return said.length ? ` title="${esc(said.join(" · "))}"` : "";
 }
 
 /** The label under a row's name: what a run/issue is, when it has no git status
@@ -108,16 +124,19 @@ function entryRow(entry, ui) {
     ${dotHtml(entry)}<span class="stitle">${esc(label)}</span>${right}</div>`;
 }
 
-/** The checkout's git status, in the order a `git status` would tell it: where
- *  the branch sits against its upstream, then what the working tree holds. Each
- *  part appears only when it has something to say. */
+/** The primary checkout's git status, in the same three parts every other row
+ *  shows. Its upstream IS the branch it works against, so one comparison
+ *  answers both halves: ahead of it is unpushed, behind it is out of date. */
 export function checkoutStatusHtml(primary) {
-  const parts = [];
-  if (primary.ahead) parts.push(`<span class="ssync">↑${primary.ahead}</span>`);
-  if (primary.behind) parts.push(`<span class="ssync">↓${primary.behind}</span>`);
-  if (primary.insertions) parts.push(`<em class="add">+${primary.insertions}</em>`);
-  if (primary.deletions) parts.push(`<em class="del">-${primary.deletions}</em>`);
-  return parts.length ? `<span class="sstat mono">${parts.join(" ")}</span>` : "";
+  return entryStatusHtml({
+    unpushed: primary.ahead,
+    upstream: primary.upstream || null,
+    behind: primary.behind,
+    base: primary.upstream || null,
+    insertions: primary.insertions,
+    deletions: primary.deletions,
+    changesLabel: "uncommitted",
+  });
 }
 
 // The project's primary checkout, as the second line of its header: the branch

@@ -49,11 +49,17 @@ function runEntry(run) {
     needsYou: !!run.needs_attention,
     changedAt: ms(run.state_changed_at) ?? ms(run.updated_at),
     attention: run.attention || {},
+    // Same three-part vocabulary as a worktree row. A run's branch is Build's
+    // own and tracks nothing, so everything past the base is unpushed; its
+    // +/− is the task's whole delta, which is what a task is for.
     status: {
-      ahead: run.stat?.ahead ?? null,
+      unpushed: run.stat?.ahead ?? null,
+      upstream: null,
       behind: run.stat?.behind ?? null,
+      base: run.base_branch || null,
       insertions: run.stat?.insertions ?? 0,
       deletions: run.stat?.deletions ?? 0,
+      changesLabel: "in this task",
     },
     route: { name: "task", projectId: run.project_id, id: run.run_id },
   };
@@ -96,17 +102,19 @@ function worktreeEntry(worktree) {
     needsYou: false,
     changedAt: ms(worktree.attention?.resume_at),
     attention: worktree.attention || {},
-    // What is sitting in the tree unsaved (`uncommitted`), NOT the whole branch
-    // delta (`diffstat`) — the row answers "is there work here I have not
-    // committed", which is what a glance down the rail is asking. How far the
-    // branch itself has travelled is the ahead/behind half, measured against
-    // its upstream when it tracks one.
+    // Three facts, three separate questions: is this worktree out of date with
+    // the branch it works against (behind), is any of its work only here
+    // (unpushed), and is any of it uncommitted (+/−). The bridge measures the
+    // first against the base branch and the second against the upstream, so
+    // one number can never stand in for the other.
     status: {
-      ahead: worktree.ahead ?? null,
-      behind: worktree.behind ?? null,
-      syncBase: worktree.sync_base || null,
+      unpushed: worktree.unpushed ?? null,
+      upstream: worktree.upstream || null,
+      behind: worktree.behind_base ?? null,
+      base: worktree.base_branch || null,
       insertions: worktree.uncommitted?.insertions ?? 0,
       deletions: worktree.uncommitted?.deletions ?? 0,
+      changesLabel: "uncommitted",
     },
     route: { name: "worktree", projectId: worktree.project_id, worktreeId: worktree.worktree_id },
   };

@@ -46,9 +46,12 @@ const worktree = (over) => ({
   branch: "build/spike",
   agent_working: false,
   dirty_files: 0,
-  ahead: 0,
-  behind: 0,
+  unpushed: 0,
+  upstream: null,
+  behind_base: 0,
+  base_branch: "main",
   diffstat: { files_changed: 0, insertions: 0, deletions: 0 },
+  uncommitted: { files_changed: 0, insertions: 0, deletions: 0 },
   attention: { resume_at: null, interacted: false, seen: false },
   ...over,
 });
@@ -98,12 +101,13 @@ describe("buildSidebarModel", () => {
   it("attaches the primary-changes summary, sync counts and all", () => {
     const m = model({
       primaryChanges: [
-        { project_id: "p1", branch: "main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
+        { project_id: "p1", branch: "main", upstream: "origin/main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
       ],
     });
     expect(m.primary).toEqual({
       branch: "main",
       path: null,
+      upstream: "origin/main",
       ahead: 2,
       behind: 0,
       files_changed: 3,
@@ -156,21 +160,39 @@ describe("a project block", () => {
     expect(html).toContain("-26");
   });
 
-  // ↑2 against what? A tracking branch is measured against its upstream and an
-  // untracked one against the base branch, so the row says which on hover.
-  it("names what a worktree's ahead/behind was measured against", () => {
+  // ↑2 ↓1 +3 −1 is three different facts against three different references, so
+  // the row spells each one out rather than leaving them to be guessed at.
+  it("spells out what is unpushed, what it is behind, and what is uncommitted", () => {
     const m = model({
       runs: [],
       plans: [],
       externalWorktrees: [
         worktree({
-          ahead: 2,
-          sync_base: "origin/build/spike",
+          unpushed: 2,
+          upstream: "origin/build/spike",
+          behind_base: 1,
+          base_branch: "main",
+          uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
           attention: { resume_at: iso(1), interacted: true, seen: true },
         }),
       ],
     });
-    expect(projectHtml(m, ui())).toContain('title="↑2 ahead of origin/build/spike"');
+    expect(projectHtml(m, ui())).toContain(
+      'title="↑2 unpushed to origin/build/spike · ↓1 behind main · +3 -1 uncommitted"',
+    );
+  });
+
+  // A branch that tracks nothing has been pushed nowhere — the row must not
+  // imply there is a remote holding this work.
+  it("says an untracked branch has no upstream", () => {
+    const m = model({
+      runs: [],
+      plans: [],
+      externalWorktrees: [
+        worktree({ unpushed: 2, upstream: null, attention: { resume_at: iso(1), interacted: true, seen: true } }),
+      ],
+    });
+    expect(projectHtml(m, ui())).toContain("↑2 unpushed — no upstream");
   });
 
   it("falls back to the branch when a row has no name", () => {
@@ -240,11 +262,14 @@ describe("a project block", () => {
 describe("checkoutStatusHtml", () => {
   it("shows only the parts that have something to say", () => {
     expect(checkoutStatusHtml({ ahead: 0, behind: 0, insertions: 0, deletions: 0 })).toBe("");
-    const busy = checkoutStatusHtml({ ahead: 1, behind: 2, insertions: 3, deletions: 4 });
+    const busy = checkoutStatusHtml({ ahead: 1, behind: 2, upstream: "origin/main", insertions: 3, deletions: 4 });
     expect(busy).toContain("↑1");
     expect(busy).toContain("↓2");
     expect(busy).toContain("+3");
     expect(busy).toContain("-4");
+    // The primary checkout's upstream IS the branch it works against, so the
+    // one comparison answers both halves.
+    expect(busy).toContain("↑1 unpushed to origin/main · ↓2 behind origin/main · +3 -4 uncommitted");
   });
 });
 

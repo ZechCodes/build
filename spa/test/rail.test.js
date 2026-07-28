@@ -37,9 +37,10 @@ const worktree = (over = {}) => ({
   branch: "build/spike",
   agent_working: false,
   dirty_files: 1,
-  ahead: 1,
-  behind: 0,
-  sync_base: "origin/build/spike",
+  unpushed: 1,
+  upstream: "origin/build/spike",
+  behind_base: 2,
+  base_branch: "main",
   diffstat: { files_changed: 1, insertions: 9, deletions: 2 },
   uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
   attention: { resume_at: ago(2), interacted: true, seen: false },
@@ -227,16 +228,25 @@ describe("the row's contents", () => {
     expect(wtRow.name || wtRow.branch).toBe("build/no-name");
   });
 
-  it("carries ahead, behind and the uncommitted diffstat", () => {
+  it("carries a run's unpushed/behind counts and the delta it is building", () => {
     const [entry] = railEntries({ runs: [run()], projectId: "p1", nowMs: NOW });
-    expect(entry.status).toEqual({ ahead: 2, behind: 0, insertions: 4, deletions: 1 });
+    expect(entry.status).toMatchObject({ unpushed: 2, behind: 0, insertions: 4, deletions: 1 });
   });
 
-  // The row answers "what is sitting in this tree unsaved", not "what does this
-  // branch carry" — the branch delta is what the diff surface is for.
-  it("counts a worktree's uncommitted changes, not everything its branch carries", () => {
+  // Three separate questions, three separate answers: is any of this only
+  // here (unpushed, vs the upstream), is it out of date (behind, vs the base
+  // branch), and is any of it uncommitted (+/−, vs HEAD). The branch delta —
+  // 9 insertions here — is the diff surface's business, not the row's.
+  it("answers unpushed, out-of-date and uncommitted separately", () => {
     const [entry] = railEntries({ worktrees: [worktree()], projectId: "p1", nowMs: NOW });
-    expect(entry.status).toEqual({ ahead: 1, behind: 0, syncBase: "origin/build/spike", insertions: 3, deletions: 1 });
+    expect(entry.status).toMatchObject({
+      unpushed: 1,
+      upstream: "origin/build/spike",
+      behind: 2,
+      base: "main",
+      insertions: 3,
+      deletions: 1,
+    });
   });
 
   // An older bridge reports no uncommitted stat at all. Standing in the branch
@@ -247,7 +257,7 @@ describe("the row's contents", () => {
       projectId: "p1",
       nowMs: NOW,
     });
-    expect(entry.status).toEqual({ ahead: 1, behind: 0, syncBase: "origin/build/spike", insertions: 0, deletions: 0 });
+    expect(entry.status).toMatchObject({ unpushed: 1, behind: 2, insertions: 0, deletions: 0 });
   });
 
   it("gives an issue no git status — it has no worktree to have one", () => {

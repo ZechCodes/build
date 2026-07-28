@@ -2913,9 +2913,12 @@ impl AppState {
                     "head_subject": w.head_subject,
                     "head_age_seconds": w.head_age_seconds,
                     "dirty_files": w.dirty_files,
-                    "ahead": w.ahead,
-                    "behind": w.behind,
-                    "sync_base": w.sync_base,
+                    // The three facts a rail row answers: is this out of date,
+                    // is any of it unpushed, is any of it uncommitted.
+                    "behind_base": w.behind_base,
+                    "base_branch": base_branch,
+                    "unpushed": w.unpushed,
+                    "upstream": w.upstream,
                     "diffstat": {
                         "files_changed": w.diffstat.files_changed,
                         "insertions": w.diffstat.insertions,
@@ -2950,30 +2953,36 @@ impl AppState {
     /// per-project failure (unborn HEAD, fs error) logs and contributes
     /// nothing, same posture as `external_worktrees_json`.
     fn primary_changes_json(&mut self) -> Vec<Value> {
-        /// How far HEAD is ahead of / behind its upstream, or (None, None) when
-        /// it has no upstream to be measured against.
-        fn head_sync_counts(repo: &git2::Repository) -> (Option<u64>, Option<u64>) {
+        /// How far HEAD is ahead of / behind its upstream, and which ref that
+        /// is — all `None` when it has no upstream to be measured against.
+        /// Unlike a feature worktree, the primary checkout's upstream IS the
+        /// branch it works against, so one comparison answers both "is any of
+        /// this unpushed" and "is it out of date".
+        type SyncCounts = (Option<String>, Option<u64>, Option<u64>);
+        fn head_sync_counts(repo: &git2::Repository) -> SyncCounts {
+            const NONE: SyncCounts = (None, None, None);
             let head = match repo.head() {
                 Ok(head) if head.is_branch() => head,
-                _ => return (None, None),
+                _ => return NONE,
             };
             let Some(local_oid) = head.target() else {
-                return (None, None);
+                return NONE;
             };
             let Ok(branch) =
                 repo.find_branch(head.shorthand().unwrap_or(""), git2::BranchType::Local)
             else {
-                return (None, None);
+                return NONE;
             };
             let Ok(upstream) = branch.upstream() else {
-                return (None, None);
+                return NONE;
             };
             let Some(upstream_oid) = upstream.get().target() else {
-                return (None, None);
+                return NONE;
             };
+            let name = upstream.name().ok().flatten().map(str::to_string);
             match repo.graph_ahead_behind(local_oid, upstream_oid) {
-                Ok((ahead, behind)) => (Some(ahead as u64), Some(behind as u64)),
-                Err(_) => (None, None),
+                Ok((ahead, behind)) => (name, Some(ahead as u64), Some(behind as u64)),
+                Err(_) => NONE,
             }
         }
 
@@ -2998,17 +3007,18 @@ impl AppState {
             // halves: what the working tree holds (diffstat) and where the branch
             // sits against its upstream. No upstream means no counts — null, not
             // zero, because "nothing to compare against" is not "level with it".
-            let (ahead, behind) = repo
+            let (upstream, ahead, behind) = repo
                 .as_ref()
                 .ok()
                 .map(head_sync_counts)
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
             let summary = match crate::diff::diff_against_head(&project.repo_path) {
                 Ok(diff) => {
                     let stat = diff.stat();
                     Some(json!({
                         "project_id": project_id,
                         "branch": branch,
+                        "upstream": upstream,
                         "ahead": ahead,
                         "behind": behind,
                         "files_changed": stat.files_changed,
@@ -11170,7 +11180,7 @@ mod tests {
         // And the rail sees the commit without waiting out the scan cache.
         let listed = state.external_worktrees(&project_id, false).unwrap();
         let entry = listed.iter().find(|w| w.id == worktree_id).unwrap();
-        assert_eq!(entry.ahead, Some(1));
+        assert_eq!(entry.unpushed, Some(1));
         assert_eq!(entry.uncommitted.files_changed, 0, "committed, so clean");
     }
 

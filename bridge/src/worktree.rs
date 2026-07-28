@@ -191,16 +191,19 @@ pub struct ExternalWorktree {
     pub head_age_seconds: u64,
     /// `git status --porcelain` line count — staged + unstaged + untracked.
     pub dirty_files: usize,
-    /// Commits this worktree has that [`sync_base`](Self::sync_base) does not,
-    /// and vice versa. `None` when nothing could be compared against, which is a
-    /// different thing from being level with it.
-    pub ahead: Option<u64>,
-    pub behind: Option<u64>,
-    /// What `ahead`/`behind` were measured against: the branch's upstream when
-    /// it tracks one — "have I pushed this?" is the question a tracking branch
-    /// asks — otherwise the project's base branch, which is the only thing a
-    /// branch with nowhere to push can be measured by.
-    pub sync_base: Option<String>,
+    /// Work that exists only here: commits the [`upstream`](Self::upstream)
+    /// does not have, or — with no upstream to push to — every commit the
+    /// branch carries past the base, none of which is on a remote. `None` when
+    /// nothing could be compared against, which is not the same as zero.
+    pub unpushed: Option<u64>,
+    /// The upstream `unpushed` was measured against, or `None` when the branch
+    /// tracks nothing (and the count is everything past the base branch).
+    pub upstream: Option<String>,
+    /// How far out of date the worktree is: commits the branch it will merge
+    /// into has that this one does not. Always measured against the base
+    /// branch — that is what "out of date" means — never the upstream, which
+    /// answers the unrelated question above.
+    pub behind_base: Option<u64>,
     /// Roll-up of `diff_against_merge_base(path, base_branch)` (§2).
     pub diffstat: crate::diff::DiffStat,
     /// The working tree's own uncommitted delta: HEAD vs the index and working
@@ -433,7 +436,8 @@ fn parse_worktree_block(
         .ok()?
         .stat();
 
-    let (sync_base, ahead, behind) = sync_counts(repo, &commit, branch.as_deref(), base_branch);
+    let (upstream, unpushed) = unpushed_count(repo, &commit, branch.as_deref(), base_branch);
+    let behind_base = behind_base_count(repo, &commit, base_branch);
 
     Some(ExternalWorktree {
         id: external_worktree_id(&canonical_path),
@@ -444,44 +448,58 @@ fn parse_worktree_block(
         head_subject,
         head_age_seconds,
         dirty_files,
-        ahead,
-        behind,
-        sync_base,
+        unpushed,
+        upstream,
+        behind_base,
         diffstat,
         uncommitted,
     })
 }
 
-/// How far this worktree has diverged, and from what.
+/// Work that exists only here, and the ref that decided it.
 ///
-/// A branch that tracks something is measured against its upstream: the thing
-/// the human wants to know about `feature/x` tracking `origin/feature/x` is
-/// whether it is pushed, not how it compares to main. A branch that tracks
-/// nothing has only the base branch to be measured by — the branch it will
-/// eventually merge into.
-fn sync_counts(
+/// A branch that tracks something is measured against its upstream: what is
+/// unpushed is what `origin/feature-x` has not seen. A branch that tracks
+/// nothing has been pushed nowhere at all, so everything it carries past the
+/// base branch is unpushed.
+fn unpushed_count(
     repo: &git2::Repository,
     head: &git2::Commit,
     branch: Option<&str>,
     base_branch: &str,
-) -> (Option<String>, Option<u64>, Option<u64>) {
+) -> (Option<String>, Option<u64>) {
     if let Some((name, oid)) = branch.and_then(|b| upstream_of(repo, b)) {
-        if let Ok((ahead, behind)) = repo.graph_ahead_behind(head.id(), oid) {
-            return (Some(name), Some(ahead as u64), Some(behind as u64));
+        if let Ok((ahead, _)) = repo.graph_ahead_behind(head.id(), oid) {
+            return (Some(name), Some(ahead as u64));
         }
     }
-    repo.revparse_single(base_branch)
+    let ahead_of_base = resolve_commit(repo, base_branch)
+        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
+        .map(|(ahead, _)| ahead as u64);
+    (None, ahead_of_base)
+}
+
+/// How far the worktree is behind the branch it will merge into — whether it is
+/// out of date. Always the base branch: a tracking branch's upstream is its own
+/// past, not the work it needs to catch up with.
+fn behind_base_count(
+    repo: &git2::Repository,
+    head: &git2::Commit,
+    base_branch: &str,
+) -> Option<u64> {
+    resolve_commit(repo, base_branch)
+        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
+        .map(|(_, behind)| behind as u64)
+}
+
+/// The commit a revspec names, or `None` when it does not resolve.
+fn resolve_commit<'repo>(
+    repo: &'repo git2::Repository,
+    revspec: &str,
+) -> Option<git2::Commit<'repo>> {
+    repo.revparse_single(revspec)
         .ok()
         .and_then(|object| object.peel_to_commit().ok())
-        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
-        .map(|(ahead, behind)| {
-            (
-                Some(base_branch.to_string()),
-                Some(ahead as u64),
-                Some(behind as u64),
-            )
-        })
-        .unwrap_or((None, None, None))
 }
 
 /// A local branch's upstream, as (ref shorthand, tip) — `None` when the branch
@@ -768,8 +786,18 @@ mod tests {
         assert_eq!(entry.uncommitted.files_changed, 1);
     }
 
+    /// Commit `name` in `dir` as a new file of the same name.
+    fn commit_file(dir: &Path, name: &str) {
+        std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-m", name]);
+    }
+
+    /// The two halves answer different questions and a worktree can be in both
+    /// at once: unpushed work is measured against the upstream, staleness
+    /// against the branch it will merge into. One ref cannot answer both.
     #[test]
-    fn a_tracking_branch_is_measured_against_its_upstream() {
+    fn a_tracking_branch_reports_unpushed_and_stale_separately() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("origin.git");
         git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
@@ -790,39 +818,58 @@ mod tests {
             ],
         );
         git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
-        // Two commits past what was pushed — ahead of the upstream, not of main.
-        for n in ["a", "b"] {
-            std::fs::write(wt_path.join(format!("{n}.txt")), "x\n").unwrap();
-            git_in(&wt_path, &["add", "."]);
-            git_in(&wt_path, &["commit", "-m", n]);
-        }
+        // Two commits past what was pushed…
+        commit_file(&wt_path, "a");
+        commit_file(&wt_path, "b");
+        // …while main moved on underneath it.
+        commit_file(&repo, "on-main");
 
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
 
         let entry = &found[0];
-        assert_eq!(entry.sync_base.as_deref(), Some("origin/tracked"));
-        assert_eq!(entry.ahead, Some(2));
-        assert_eq!(entry.behind, Some(0));
+        assert_eq!(entry.upstream.as_deref(), Some("origin/tracked"));
+        assert_eq!(entry.unpushed, Some(2), "two commits the remote lacks");
+        assert_eq!(entry.behind_base, Some(1), "one commit of main it lacks");
     }
 
+    /// A branch that tracks nothing has pushed nothing: every commit it carries
+    /// past the base is unpushed, and there is no upstream to name.
     #[test]
-    fn an_untracked_branch_falls_back_to_the_base_branch() {
+    fn an_untracked_branch_has_all_of_its_work_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-untracked");
         git_in(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
-        std::fs::write(wt_path.join("a.txt"), "x\n").unwrap();
-        git_in(&wt_path, &["add", "."]);
-        git_in(&wt_path, &["commit", "-m", "a"]);
+        commit_file(&wt_path, "a");
+        commit_file(&repo, "on-main");
 
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
 
         let entry = &found[0];
-        assert_eq!(entry.sync_base.as_deref(), Some("main"));
-        assert_eq!(entry.ahead, Some(1));
-        assert_eq!(entry.behind, Some(0));
+        assert_eq!(entry.upstream, None);
+        assert_eq!(entry.unpushed, Some(1));
+        assert_eq!(entry.behind_base, Some(1));
+    }
+
+    /// Nothing to report is reported as nothing — a level, pushed, clean
+    /// worktree has no counts rather than a row of zeroes.
+    #[test]
+    fn a_level_worktree_is_neither_stale_nor_unpushed() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-level");
+        git_in(
+            &repo,
+            &["worktree", "add", wt_path.to_str().unwrap(), "-b", "level"],
+        );
+
+        let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+
+        let entry = &found[0];
+        assert_eq!(entry.unpushed, Some(0));
+        assert_eq!(entry.behind_base, Some(0));
+        assert_eq!(entry.uncommitted.insertions, 0);
     }
 
     #[test]

@@ -6288,33 +6288,45 @@ fn term_attach(
     Ok(attach_to_tab(&mut s, &key, sender, cols, rows))
 }
 
-/// Attach this client to the agent of the worktree an entity is working in.
+/// Attach this client to the agent of a WORKTREE, addressed the way the
+/// calling surface already knows it.
 ///
-/// The same attach as `term.attach`, addressed by ENTITY rather than by wire
-/// id: a surface that knows it is looking at a plan or a run does not have to
-/// learn which worktree that is, or whether an agent has ever run there.
+/// The same attach as `term.attach`, but by what a surface holds rather than by
+/// a wire id it cannot compute: `id` for a surface that is a plan or a run, and
+/// otherwise the scope shapes `term.create`/`term.list` take (`run_id`,
+/// `project_id`+`worktree_id`, `project_id` for the primary checkout). Both
+/// resolve server-side to the same canonical root — the tab registry's key — so
+/// a run and the directory it works in reach one agent, not two.
 ///
 /// **Never errors because no agent is running** — `live: false` with the last
 /// (or a blank) snapshot is the contract, because a tab must still show what
-/// its agent did before it died. An unknown entity errors, and so does an
-/// entity with no worktree (an approved or abandoned plan): its disposable
-/// worktree is gone, so there is no worktree to host an agent and the surface
-/// renders its empty state instead.
+/// its agent did before it died, and because the Agent tab is a fixture on
+/// every worktree surface: mounting it must not spawn anything. An unknown
+/// entity or scope errors, and so does an entity with no worktree (an approved
+/// or abandoned plan): its disposable worktree is gone, so there is no worktree
+/// to host an agent and the surface renders its empty state instead.
 fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
 ) -> Result<Value, String> {
-    // The id is opaque (plan-… / run-…); what it resolves to is a worktree,
-    // because that is what an agent belongs to.
-    let entity_id = require_str(params, "id")?;
     // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
 
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
-    let root = s.entity_worktree_root(&entity_id)?;
+    // The id is opaque (plan-… / run-…); what it resolves to is a worktree,
+    // because that is what an agent belongs to. Without one, the scope params
+    // resolve to the same thing — never a client-supplied path (spec §1).
+    let root = match params
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        Some(entity_id) => s.entity_worktree_root(entity_id)?,
+        None => TermScope::parse(params)?.resolve_root(s)?,
+    };
     let key = TabKey::agent(&root);
     if !s.tabs.contains_key(&key) {
         // No agent has run here yet: a blank, dead screen. The tab opens on the
@@ -12774,6 +12786,91 @@ mod tests {
                 .is_empty(),
             "a dead agent still shows what it last painted"
         );
+    }
+
+    /// The Agent tab is a fixture on every worktree surface, and most of those
+    /// surfaces have no entity to name: an unadopted external worktree and the
+    /// project's primary checkout are directories, not runs. So `agent.attach`
+    /// takes the same scope shapes `term.create`/`term.list` take, resolves
+    /// them server-side, and answers for the tab rooted there — empty when no
+    /// agent has run, the live tab once one has.
+    #[tokio::test]
+    async fn agent_attach_addresses_a_worktree_by_scope_before_any_run_owns_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
+        let external = state
+            .lock()
+            .unwrap()
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("feature-x"))
+            .expect("the external worktree is discoverable");
+
+        // Nothing has ever run here: the tab exists as an empty screen, never
+        // as an error — mounting it must not spawn anything.
+        let empty = handler(
+            SessionSender::detached("s1"),
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "worktree_id": external.id }),
+            ),
+        );
+        assert_eq!(empty["ok"], true, "{empty:?}");
+        assert_eq!(empty["result"]["live"], false);
+        assert_eq!(
+            empty["result"]["term_id"],
+            json!(format!("agent:{}", external.id))
+        );
+
+        // The primary checkout answers to the project scope alone, the same way
+        // its shells do.
+        let primary = handler(
+            SessionSender::detached("s1"),
+            req("agent.attach", json!({ "project_id": project_id })),
+        );
+        assert_eq!(primary["ok"], true, "{primary:?}");
+        assert_eq!(primary["result"]["live"], false);
+        assert_eq!(
+            primary["result"]["term_id"],
+            json!(format!(
+                "agent:{}",
+                crate::worktree::external_worktree_id(&AppState::canonical_root(&repo))
+            ))
+        );
+
+        // Once an agent runs in that worktree, the same scope reaches the tab
+        // itself — one agent, one wire id, whichever shape asked for it.
+        let root = AppState::canonical_root(&external.path);
+        let (tab, rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: "run-x".to_string(),
+                provider: AgentProvider::default(),
+            },
+            &HarnessSpec::new("cat"),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        let wire_id = tab.wire_id();
+        let key = TabKey::agent(&root);
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        spawn_tab_pump(&state, key.clone(), rx);
+
+        let live = handler(
+            SessionSender::detached("s2"),
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "worktree_id": external.id }),
+            ),
+        );
+        assert_eq!(live["ok"], true, "{live:?}");
+        assert_eq!(live["result"]["live"], true);
+        assert_eq!(live["result"]["term_id"], json!(wire_id));
     }
 
     #[tokio::test]

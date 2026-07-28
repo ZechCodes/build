@@ -191,13 +191,23 @@ pub struct ExternalWorktree {
     pub head_age_seconds: u64,
     /// `git status --porcelain` line count — staged + unstaged + untracked.
     pub dirty_files: usize,
-    /// Commits this worktree has that the base branch does not, and vice versa.
-    /// `None` when the two cannot be compared (a base branch that does not
-    /// resolve), which is a different thing from being level with it.
+    /// Commits this worktree has that [`sync_base`](Self::sync_base) does not,
+    /// and vice versa. `None` when nothing could be compared against, which is a
+    /// different thing from being level with it.
     pub ahead: Option<u64>,
     pub behind: Option<u64>,
+    /// What `ahead`/`behind` were measured against: the branch's upstream when
+    /// it tracks one — "have I pushed this?" is the question a tracking branch
+    /// asks — otherwise the project's base branch, which is the only thing a
+    /// branch with nowhere to push can be measured by.
+    pub sync_base: Option<String>,
     /// Roll-up of `diff_against_merge_base(path, base_branch)` (§2).
     pub diffstat: crate::diff::DiffStat,
+    /// The working tree's own uncommitted delta: HEAD vs the index and working
+    /// directory, untracked included. What the rail shows as +/− — "what is
+    /// sitting here unsaved", which is a different question from how far the
+    /// branch has travelled (that is `ahead`/`behind`).
+    pub uncommitted: crate::diff::DiffStat,
 }
 
 /// The stable external-worktree id for a canonical absolute path.
@@ -411,15 +421,19 @@ fn parse_worktree_block(
         .ok()?
         .stat();
 
-    // How far this worktree has diverged from the branch it will merge into —
-    // the other half of "git status" the rail shows beside the diffstat.
-    let (ahead, behind) = repo
-        .revparse_single(base_branch)
-        .ok()
-        .and_then(|object| object.peel_to_commit().ok())
-        .and_then(|base| repo.graph_ahead_behind(commit.id(), base.id()).ok())
-        .map(|(ahead, behind)| (Some(ahead as u64), Some(behind as u64)))
-        .unwrap_or((None, None));
+    // What is sitting in this tree unsaved — the +/− the rail shows. Distinct
+    // from the diffstat above, which is everything the branch carries.
+    let uncommitted = crate::diff::diff_uncommitted(&canonical_path)
+        .inspect_err(|e| {
+            eprintln!(
+                "discover_external_worktrees: uncommitted diff failed for {}: {e}",
+                canonical_path.display()
+            );
+        })
+        .ok()?
+        .stat();
+
+    let (sync_base, ahead, behind) = sync_counts(repo, &commit, branch.as_deref(), base_branch);
 
     Some(ExternalWorktree {
         id: external_worktree_id(&canonical_path),
@@ -432,8 +446,55 @@ fn parse_worktree_block(
         dirty_files,
         ahead,
         behind,
+        sync_base,
         diffstat,
+        uncommitted,
     })
+}
+
+/// How far this worktree has diverged, and from what.
+///
+/// A branch that tracks something is measured against its upstream: the thing
+/// the human wants to know about `feature/x` tracking `origin/feature/x` is
+/// whether it is pushed, not how it compares to main. A branch that tracks
+/// nothing has only the base branch to be measured by — the branch it will
+/// eventually merge into.
+fn sync_counts(
+    repo: &git2::Repository,
+    head: &git2::Commit,
+    branch: Option<&str>,
+    base_branch: &str,
+) -> (Option<String>, Option<u64>, Option<u64>) {
+    if let Some((name, oid)) = branch.and_then(|b| upstream_of(repo, b)) {
+        if let Ok((ahead, behind)) = repo.graph_ahead_behind(head.id(), oid) {
+            return (Some(name), Some(ahead as u64), Some(behind as u64));
+        }
+    }
+    repo.revparse_single(base_branch)
+        .ok()
+        .and_then(|object| object.peel_to_commit().ok())
+        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
+        .map(|(ahead, behind)| {
+            (
+                Some(base_branch.to_string()),
+                Some(ahead as u64),
+                Some(behind as u64),
+            )
+        })
+        .unwrap_or((None, None, None))
+}
+
+/// A local branch's upstream, as (ref shorthand, tip) — `None` when the branch
+/// tracks nothing, or its upstream ref is gone.
+fn upstream_of(repo: &git2::Repository, branch: &str) -> Option<(String, git2::Oid)> {
+    let upstream = repo
+        .find_branch(branch, git2::BranchType::Local)
+        .ok()?
+        .upstream()
+        .ok()?;
+    let name = upstream.name().ok().flatten()?.to_string();
+    let oid = upstream.get().target()?;
+    Some((name, oid))
 }
 
 /// Match a canonicalized worktree path against git's own worktree registry to
@@ -681,6 +742,87 @@ mod tests {
 
         let primary_canonical = std::fs::canonicalize(&repo).unwrap();
         assert!(found.iter().all(|w| w.path != primary_canonical));
+    }
+
+    #[test]
+    fn discovery_separates_what_is_uncommitted_from_what_the_branch_carries() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-mixed");
+        git_in(
+            &repo,
+            &["worktree", "add", wt_path.to_str().unwrap(), "-b", "mixed"],
+        );
+        // One committed line, then two uncommitted ones on top of it.
+        std::fs::write(wt_path.join("committed.txt"), "one\n").unwrap();
+        git_in(&wt_path, &["add", "committed.txt"]);
+        git_in(&wt_path, &["commit", "-m", "committed work"]);
+        std::fs::write(wt_path.join("dirty.txt"), "two\nthree\n").unwrap();
+
+        let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+
+        let entry = &found[0];
+        // The branch delta carries both; the uncommitted stat only what is
+        // sitting in the tree unsaved.
+        assert_eq!(entry.diffstat.insertions, 3);
+        assert_eq!(entry.uncommitted.insertions, 2);
+        assert_eq!(entry.uncommitted.files_changed, 1);
+    }
+
+    #[test]
+    fn a_tracking_branch_is_measured_against_its_upstream() {
+        let (dir, repo) = init_repo();
+        let remote = dir.path().join("origin.git");
+        git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_in(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+
+        let wt_path = dir.path().join("wt-tracked");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "tracked",
+            ],
+        );
+        git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
+        // Two commits past what was pushed — ahead of the upstream, not of main.
+        for n in ["a", "b"] {
+            std::fs::write(wt_path.join(format!("{n}.txt")), "x\n").unwrap();
+            git_in(&wt_path, &["add", "."]);
+            git_in(&wt_path, &["commit", "-m", n]);
+        }
+
+        let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+
+        let entry = &found[0];
+        assert_eq!(entry.sync_base.as_deref(), Some("origin/tracked"));
+        assert_eq!(entry.ahead, Some(2));
+        assert_eq!(entry.behind, Some(0));
+    }
+
+    #[test]
+    fn an_untracked_branch_falls_back_to_the_base_branch() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-untracked");
+        git_in(
+            &repo,
+            &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
+        );
+        std::fs::write(wt_path.join("a.txt"), "x\n").unwrap();
+        git_in(&wt_path, &["add", "."]);
+        git_in(&wt_path, &["commit", "-m", "a"]);
+
+        let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+
+        let entry = &found[0];
+        assert_eq!(entry.sync_base.as_deref(), Some("main"));
+        assert_eq!(entry.ahead, Some(1));
+        assert_eq!(entry.behind, Some(0));
     }
 
     #[test]

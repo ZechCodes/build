@@ -2915,10 +2915,17 @@ impl AppState {
                     "dirty_files": w.dirty_files,
                     "ahead": w.ahead,
                     "behind": w.behind,
+                    "sync_base": w.sync_base,
                     "diffstat": {
                         "files_changed": w.diffstat.files_changed,
                         "insertions": w.diffstat.insertions,
                         "deletions": w.diffstat.deletions,
+                    },
+                    // What is sitting in the tree unsaved — the rail's +/−.
+                    "uncommitted": {
+                        "files_changed": w.uncommitted.files_changed,
+                        "insertions": w.uncommitted.insertions,
+                        "deletions": w.uncommitted.deletions,
                     },
                     "adoptable": adoptable,
                     "agent_working": agent_working.contains(&w.id),
@@ -3061,15 +3068,42 @@ impl AppState {
         }))
     }
 
-    /// Resolve the shared `git.*` scope: exactly one of `project_id` (the
-    /// project's primary checkout) or `task_id` (the task's worktree). The
-    /// repo path always comes from server state — a client can never name a
+    /// Resolve the shared `git.*` scope: the project's primary checkout
+    /// (`project_id` alone), a run's worktree (`run_id`), or one of the
+    /// project's external worktrees (`project_id` + `worktree_id`). The repo
+    /// path always comes from server state — a client can never name a
     /// filesystem path directly.
-    fn resolve_git_scope(&self, params: &Value) -> Result<GitScope, String> {
-        let project_id = params.get("project_id").and_then(Value::as_str);
-        let run_id = params.get("run_id").and_then(Value::as_str);
-        match (project_id, run_id) {
-            (Some(project_id), None) => {
+    fn resolve_git_scope(&mut self, params: &Value) -> Result<GitScope, String> {
+        let project_id = params
+            .get("project_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let run_id = params
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let worktree_id = params
+            .get("worktree_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match (project_id, run_id, worktree_id) {
+            // A worktree is named within its project, so both ids arrive
+            // together — and the worktree, being the narrower of the two, is
+            // what the RPC operates on.
+            (Some(project_id), None, Some(worktree_id)) => {
+                let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
+                let base_branch = self.base_for(&project_id)?;
+                Ok(GitScope {
+                    repo_path: external.path,
+                    project_id: None,
+                    run: None,
+                    worktree: Some(GitScopeWorktree {
+                        project_id,
+                        base_branch,
+                    }),
+                })
+            }
+            (Some(project_id), None, None) => {
                 let project = self
                     .projects
                     .iter()
@@ -3079,23 +3113,28 @@ impl AppState {
                     repo_path: project.repo_path.clone(),
                     project_id: Some(project.id.clone()),
                     run: None,
+                    worktree: None,
                 })
             }
-            (None, Some(run_id)) => {
+            (None, Some(run_id), None) => {
                 let active = self
                     .runs
-                    .get(run_id)
+                    .get(&run_id)
                     .ok_or_else(|| "unknown run_id".to_string())?;
                 Ok(GitScope {
                     repo_path: active.worktree.path.clone(),
                     project_id: None,
                     run: Some(GitScopeRun {
-                        run_id: run_id.to_string(),
+                        run_id,
                         base_branch: active.worktree.base_branch.clone(),
                     }),
+                    worktree: None,
                 })
             }
-            _ => Err("provide exactly one of project_id or run_id".to_string()),
+            _ => Err(
+                "provide exactly one of project_id, run_id, or project_id + worktree_id"
+                    .to_string(),
+            ),
         }
     }
 
@@ -3110,8 +3149,7 @@ impl AppState {
             .unwrap_or(30)
             .clamp(1, 200) as usize;
         let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let mark_ahead_of = scope.run.as_ref().map(|run| run.base_branch.clone());
-        crate::gitgui::log_page(&scope.repo_path, mark_ahead_of.as_deref(), limit, skip)
+        crate::gitgui::log_page(&scope.repo_path, scope.mark_ahead_of(), limit, skip)
     }
 
     /// `git.show` — one commit's metadata, stat, and capped patch. The hash
@@ -3167,9 +3205,9 @@ impl AppState {
 
     /// Drop the cached board summaries a scoped git mutation just invalidated —
     /// the task's diffstat + updated-at for task scope, the project's primary
-    /// uncommitted-changes summary for project scope — so the next `task.list`
-    /// / project poll recomputes instead of serving a stale summary for up to
-    /// its TTL.
+    /// uncommitted-changes summary for project scope, the external-worktree
+    /// scan for worktree scope — so the next `task.list` / project poll
+    /// recomputes instead of serving a stale summary for up to its TTL.
     fn invalidate_git_scope_caches(&mut self, scope: &GitScope) {
         if let Some(run) = &scope.run {
             self.run_stat_cache.remove(&run.run_id);
@@ -3181,23 +3219,39 @@ impl AppState {
                 project.primary_summary = None;
             }
         }
+        if let Some(worktree) = &scope.worktree {
+            let project_id = worktree.project_id.clone();
+            self.invalidate_external_scan(&project_id);
+        }
     }
 
-    /// Resolve a **project-scope-only** git RPC (branch operations): a task
-    /// worktree's branch is owned by the task lifecycle, so a `task_id` is
-    /// refused outright. Returns the project id (for cache invalidation) and
-    /// its primary-checkout path.
-    fn resolve_project_repo(&self, params: &Value) -> Result<(String, std::path::PathBuf), String> {
-        if params.get("task_id").is_some() {
-            return Err("branch operations are project-scope only".to_string());
+    /// Resolve the checkout a branch operation acts on: the project's primary
+    /// checkout, or one of its external worktrees when the caller names one. A
+    /// run worktree's branch is owned by the run lifecycle, so a `run_id` (or
+    /// its legacy `task_id` spelling) is refused outright.
+    fn resolve_branch_scope(&mut self, params: &Value) -> Result<BranchScope, String> {
+        if params.get("task_id").is_some() || params.get("run_id").is_some() {
+            return Err("branch operations are project- or worktree-scope only".to_string());
         }
         let project_id = require_str(params, "project_id")?;
+        if let Some(worktree_id) = params.get("worktree_id").and_then(Value::as_str) {
+            let external = self.resolve_external_worktree(&project_id, worktree_id)?;
+            return Ok(BranchScope {
+                project_id,
+                repo_path: external.path,
+                external_worktree: true,
+            });
+        }
         let project = self
             .projects
             .iter()
             .find(|p| p.id == project_id)
             .ok_or_else(|| "unknown project_id".to_string())?;
-        Ok((project.id.clone(), project.repo_path.clone()))
+        Ok(BranchScope {
+            project_id: project.id.clone(),
+            repo_path: project.repo_path.clone(),
+            external_worktree: false,
+        })
     }
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
@@ -3231,34 +3285,36 @@ impl AppState {
         crate::gitgui::status_payload(&scope.repo_path)
     }
 
-    /// `git.branches` (project scope only) — the local branch list.
+    /// `git.branches` — the local branch list of the scoped checkout (the same
+    /// list either way: branches are the repository's, not one checkout's).
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
-        let (_project_id, repo_path) = self.resolve_project_repo(params)?;
-        crate::gitgui::branch_list(&repo_path)
+        let scope = self.resolve_branch_scope(params)?;
+        crate::gitgui::branch_list(&scope.repo_path)
     }
 
-    /// `git.checkout` (project scope only) — switch to (or create) a branch,
+    /// `git.checkout` — switch the scoped checkout to (or create) a branch,
     /// then the fresh status payload.
     fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
-        let (project_id, repo_path) = self.resolve_project_repo(params)?;
+        let scope = self.resolve_branch_scope(params)?;
         let branch = require_str(params, "branch")?;
         let create = params
             .get("create")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        crate::gitgui::checkout(&repo_path, &branch, create)?;
-        // A branch switch swaps the whole primary tree, so the cached
-        // uncommitted-changes summary is stale.
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+        crate::gitgui::checkout(&scope.repo_path, &branch, create)?;
+        // A branch switch swaps the whole tree, so whichever summary described
+        // it is stale.
+        if scope.external_worktree {
+            self.invalidate_external_scan(&scope.project_id);
+        } else if let Some(project) = self.projects.iter_mut().find(|p| p.id == scope.project_id) {
             project.primary_summary = None;
         }
-        crate::gitgui::status_payload(&repo_path)
+        crate::gitgui::status_payload(&scope.repo_path)
     }
 
-    /// `git.branch_delete` (project scope only) — delete a local branch, then
-    /// the fresh branch list.
+    /// `git.branch_delete` — delete a local branch, then the fresh branch list.
     fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
-        let (_project_id, repo_path) = self.resolve_project_repo(params)?;
+        let repo_path = self.resolve_branch_scope(params)?.repo_path;
         let branch = require_str(params, "branch")?;
         let force = params
             .get("force")
@@ -3371,6 +3427,9 @@ impl AppState {
         Ok(json!({
             "worktree_id": external.id,
             "branch": external.branch,
+            // The branch this diff is anchored on, so the surface can name it
+            // instead of saying "the base branch".
+            "base_branch": base,
             "head_subject": external.head_subject,
             "dirty_files": external.dirty_files,
             "path": external.path.display().to_string(),
@@ -5386,11 +5445,40 @@ struct GitScope {
     /// so mutations can invalidate its cached `primary_changes` summary.
     project_id: Option<String>,
     run: Option<GitScopeRun>,
+    worktree: Option<GitScopeWorktree>,
+}
+
+impl GitScope {
+    /// The branch history is measured against, so `git.log` can mark which
+    /// commits this checkout carries on top of it. The primary checkout has
+    /// none — its history IS the base.
+    fn mark_ahead_of(&self) -> Option<&str> {
+        self.run
+            .as_ref()
+            .map(|run| run.base_branch.as_str())
+            .or_else(|| self.worktree.as_ref().map(|wt| wt.base_branch.as_str()))
+    }
 }
 
 struct GitScopeRun {
     run_id: String,
     base_branch: String,
+}
+
+/// An external worktree's git scope: the project that owns it (so a mutation
+/// invalidates the scan the rail reads) and the branch its history is measured
+/// against.
+struct GitScopeWorktree {
+    project_id: String,
+    base_branch: String,
+}
+
+/// The checkout a branch operation acts on, and which cached summary describes
+/// it: a project's primary checkout, or one of that project's worktrees.
+struct BranchScope {
+    project_id: String,
+    repo_path: std::path::PathBuf,
+    external_worktree: bool,
 }
 
 /// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
@@ -11020,6 +11108,96 @@ mod tests {
             json!({ "run_id": run_id, "project_id": "proj-1" }),
         ));
         assert_eq!(both["ok"], false, "{both:?}");
+    }
+
+    // ---- git scope keyed on an external worktree ------------------------------
+
+    /// Mint an unbound worktree and hand back (project_id, worktree_id, path).
+    fn bare_worktree(state: &mut AppState, name: &str) -> (String, String, PathBuf) {
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": name }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        (
+            project_id,
+            result["worktree_id"].as_str().unwrap().to_string(),
+            PathBuf::from(result["path"].as_str().unwrap()),
+        )
+    }
+
+    /// The whole git GUI — status, staging, commit, history — works on a
+    /// worktree the same way it does on the primary checkout, and reads the
+    /// worktree's own tree rather than the project's.
+    #[test]
+    fn the_git_gui_scopes_to_an_external_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let (project_id, worktree_id, path) = bare_worktree(&mut state, "scratch");
+        let scope = json!({ "project_id": project_id, "worktree_id": worktree_id });
+        std::fs::write(path.join("only-here.txt"), "in the worktree\n").unwrap();
+
+        let status = state.handle(req("git.status", scope.clone()));
+        assert_eq!(status["ok"], true, "{status:?}");
+        assert!(has_file_entry(&status["result"], "only-here.txt"));
+        assert_eq!(status["result"]["branch"], json!("build/scratch"));
+
+        // The project's own checkout is untouched by any of it.
+        let primary = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert!(!has_file_entry(&primary["result"], "only-here.txt"));
+
+        let staged = state.handle(req(
+            "git.stage",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "paths": ["only-here.txt"] }),
+        ));
+        assert_eq!(staged["ok"], true, "{staged:?}");
+        let committed = state.handle(req(
+            "git.commit",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "message": "in the worktree" }),
+        ));
+        assert_eq!(committed["ok"], true, "{committed:?}");
+
+        // History is the worktree's, and the new commit is marked ahead of the
+        // base branch — the same affordance a run's history carries.
+        let log = state.handle(req("git.log", scope.clone()));
+        let commits = log["result"]["commits"].as_array().unwrap();
+        assert_eq!(commits[0]["subject"], json!("in the worktree"));
+        assert_eq!(commits[0]["ahead_of_base"], json!(true));
+        assert_eq!(commits[1]["ahead_of_base"], json!(false));
+
+        // And the rail sees the commit without waiting out the scan cache.
+        let listed = state.external_worktrees(&project_id, false).unwrap();
+        let entry = listed.iter().find(|w| w.id == worktree_id).unwrap();
+        assert_eq!(entry.ahead, Some(1));
+        assert_eq!(entry.uncommitted.files_changed, 0, "committed, so clean");
+    }
+
+    /// Branch operations name a checkout, and a worktree scope means THAT
+    /// worktree — never the project's primary checkout standing in for it.
+    #[test]
+    fn branch_operations_switch_the_worktree_they_are_scoped_to() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let (project_id, worktree_id, path) = bare_worktree(&mut state, "scratch");
+
+        let checked_out = state.handle(req(
+            "git.checkout",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "branch": "side-quest", "create": true }),
+        ));
+        assert_eq!(checked_out["ok"], true, "{checked_out:?}");
+        assert_eq!(checked_out["result"]["branch"], json!("side-quest"));
+
+        // The worktree moved; the project's checkout stayed on main.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "side-quest");
+        let primary = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(primary["result"]["branch"], json!("main"));
     }
 
     /// The rail's worktree affordance (the FAB's smaller sibling): mint a

@@ -443,9 +443,9 @@ impl TabKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TabRole {
     /// The user's own interactive login shell — a window onto their machine.
-    /// (Constructed once user terminals move onto this registry; the pump and
-    /// the cap already read it so the two halves cannot drift apart.)
-    #[allow(dead_code)]
+    /// The daemon-wide terminal cap counts these and never an agent, so a shell
+    /// held here is one of the sixteen from the day user terminals move onto
+    /// this registry rather than from the day someone remembers the cap.
     Shell,
     /// Build's one agent in this worktree. `owner` is the opaque plan/run id
     /// baked into the harness's `mcp --task <id>` argv, so `done` reports route
@@ -7576,30 +7576,184 @@ mod tests {
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
     }
 
-    /// The daemon-wide terminal cap is about the human's own shells. An agent
-    /// tab is Build's, always reachable, and never one of the sixteen — a
-    /// worktree whose agent is unreachable because the human opened shells
-    /// elsewhere would be the invariant's direct negation.
+    /// The daemon-wide terminal cap counts the human's own shells WHEREVER they
+    /// are held — including the tab registry — and never counts an agent tab.
+    ///
+    /// Both halves have teeth. A shell that escapes the cap by living on the
+    /// new registry is the cap quietly doubling; an agent that sixteen open
+    /// shells could crowd out is not "always reachable", which is the
+    /// invariant's direct negation. So the fixture holds one agent tab and one
+    /// shell tab: exactly fifteen more shells must fit, and the sixteenth must
+    /// not.
     #[tokio::test]
-    async fn an_agent_tab_does_not_consume_the_user_terminal_cap() {
+    async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
         let (dir, repo) = init_repo();
         let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-cap");
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         ensure_agent_tab(&state, &root, "run-cap", &ModelChoice::default()).unwrap();
+        // One of the human's own shells, held as a tab rather than in `terms`.
+        let shell_root = AppState::canonical_root(&repo);
+        let shell_key = TabKey {
+            root: shell_root.clone(),
+            tab_id: "term-99".to_string(),
+        };
+        let (shell_tab, _shell_rx) = Tab::spawn(
+            TabRole::Shell,
+            &TermKind::Shell.harness_spec("/bin/bash"),
+            "term-99".to_string(),
+            shell_root,
+            80,
+            24,
+        )
+        .expect("a shell tab spawns");
+        state.lock().unwrap().tabs.insert(shell_key, shell_tab);
 
-        for n in 0..MAX_USER_TERMINALS {
+        // The agent takes none of the sixteen, so fifteen more shells fit
+        // beside the one shell tab...
+        for n in 1..MAX_USER_TERMINALS {
             let created = handler(
                 SessionSender::detached("s1"),
                 req("term.create", json!({ "project_id": project_id })),
             );
-            assert_eq!(created["ok"], true, "shell {n}: {created:?}");
+            assert_eq!(created["ok"], true, "shell {n} of the cap: {created:?}");
         }
+        // ...and the sixteenth does not: the shell tab is one of them.
         let over = handler(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
-        assert_eq!(over["ok"], false, "the cap still bites at 16 shells");
+        assert_eq!(over["ok"], false, "the shell tab is one of the sixteen");
+        assert!(
+            over["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("terminal limit reached"),
+            "{over:?}"
+        );
+    }
+
+    /// An agent tab is a MANAGED agent: the spec it spawns from carries Build's
+    /// `done` MCP server and the owner id that routes reports back through the
+    /// owner lookup. The socket lives inside the harness builder's closure, so
+    /// `agent_harness_spec` is the only way the app layer can reach it — and a
+    /// spec that dropped the config or the owner would open an agent Build
+    /// cannot talk to, in a tab that looks entirely healthy.
+    #[test]
+    fn agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id() {
+        // claude's pre-trust writes a registry; keep it off the developer's own.
+        let config_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", config_dir.path());
+        let orch = Orchestrator::new(
+            "/repo",
+            "/repo/.worktrees",
+            build_agent(false, "/tmp/build mcp.sock".into()),
+            Templates::default(),
+        );
+        let cwd = std::path::Path::new("/repo/.worktrees/wt-1");
+        let claude = ModelChoice {
+            provider: AgentProvider::Claude,
+            model: None,
+            effort: None,
+        };
+        let codex = ModelChoice {
+            provider: AgentProvider::Codex,
+            model: None,
+            effort: None,
+        };
+
+        let spec = orch.agent_harness_spec("run-42", cwd, &claude, false);
+        assert_eq!(spec.binary, "claude");
+        let args = spec.args.join(" ");
+        assert!(
+            args.contains("--mcp-config .build/mcp.json --strict-mcp-config"),
+            "{args}"
+        );
+        assert!(!args.contains("--continue"), "{args}");
+        assert!(
+            spec.env
+                .iter()
+                .any(|(key, value)| key == "BRIDGE_MCP_SOCKET" && value == "/tmp/build mcp.sock"),
+            "{:?}",
+            spec.env
+        );
+        // A replaced tab picks its own conversation back up.
+        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true);
+        assert!(resumed.args.join(" ").contains("--continue"));
+
+        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false);
+        assert_eq!(spec.binary, "codex");
+        let args = spec.args.join(" ");
+        assert!(
+            args.contains(r#"mcp_servers.build.args=["mcp","--task","run-42"]"#),
+            "{args}"
+        );
+        assert!(
+            args.contains(r#"mcp_servers.build.env.BRIDGE_MCP_SOCKET="/tmp/build mcp.sock""#),
+            "{args}"
+        );
+        assert!(
+            args.contains(r#"projects."/repo/.worktrees/wt-1".trust_level="trusted""#),
+            "{args}"
+        );
+        assert!(!args.ends_with("resume --last"), "{args}");
+        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true);
+        assert!(resumed.args.join(" ").ends_with("resume --last"));
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+    }
+
+    /// The tab spawns the spec the orchestrator built FOR IT: the run as
+    /// `owner_id`, the canonical worktree as cwd, and continuation decided by
+    /// the transcript probe — a Build-owned tab replaced after a crash should
+    /// always pick its own conversation back up. The empty prompt is the
+    /// contract too: a turn never rides in argv, it travels through the PTY.
+    #[tokio::test]
+    async fn an_agent_tab_spawns_the_harness_the_orchestrator_built() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-wired");
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    assert!(prompt.is_empty(), "a turn never rides in argv: {prompt:?}");
+                    recorder.lock().unwrap().push(options.clone());
+                    HarnessSpec::new("sh").arg("-c").arg(
+                        "printf 'SPEC-FROM-THE-ORCHESTRATOR'; printf '\\033[?2004h'; cat >/dev/null",
+                    )
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.transcript_probe = Arc::new(|_, _| true);
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        ensure_agent_tab(&state, &root, "run-wired", &ModelChoice::default())
+            .expect("the agent spawns");
+
+        let built = specs_built.lock().unwrap().clone();
+        assert_eq!(built.len(), 1, "one spawn, one spec: {built:?}");
+        assert_eq!(
+            built[0].owner_id, "run-wired",
+            "`done` routes back by owner id"
+        );
+        assert_eq!(
+            built[0].cwd,
+            AppState::canonical_root(&root),
+            "the spec is built for the canonical root"
+        );
+        assert!(
+            built[0].continue_session,
+            "a replaced tab picks its own transcript back up"
+        );
+        let screen = wait_for_agent_screen(&state, &root, "SPEC-FROM-THE-ORCHESTRATOR").await;
+        assert!(
+            screen.contains("SPEC-FROM-THE-ORCHESTRATOR"),
+            "the tab runs the orchestrator's spec: {screen:?}"
+        );
     }
 
     /// The registry key is the CANONICAL worktree path, so the same worktree

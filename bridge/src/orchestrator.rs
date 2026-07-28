@@ -2530,6 +2530,62 @@ mod tests {
         drafting_plan_and_turn(orch, id, goal).0
     }
 
+    /// Assert both halves of the cold/warm rule on a DISPATCHED turn (one whose
+    /// whole content is the rendered prompt: a dispatch, a resume, a validation
+    /// hand-off, a stage fix), and hand back the warm half to assert content on.
+    ///
+    /// Both halves matter equally: the caller cannot know which one will travel
+    /// — that depends on whether it had to spawn a harness — so a turn that
+    /// renders only the half a test happens to look at reaches the other kind of
+    /// agent with nothing.
+    fn dispatch_turn_halves(turn: &AgentTurn, phase: &str) -> String {
+        assert_eq!(turn.phase, phase, "turn phase: {turn:?}");
+        assert!(
+            !turn.warm.is_empty(),
+            "a turn with nothing to say: {turn:?}"
+        );
+        assert!(
+            !turn.warm.contains("Build conversation protocol"),
+            "an agent already in the conversation is not re-taught the protocol: {}",
+            turn.warm
+        );
+        assert!(
+            turn.cold.starts_with(&turn.warm),
+            "cold is the warm instruction plus the conversation it missed — cold {:?}, warm {:?}",
+            turn.cold,
+            turn.warm
+        );
+        assert!(
+            turn.cold.contains("Build conversation protocol"),
+            "a spawned agent gets the protocol: {}",
+            turn.cold
+        );
+        turn.warm.clone()
+    }
+
+    /// Assert both halves of the cold/warm rule on a POSTED turn (a change
+    /// request, a message, a batch of notes): the payload is already durable on
+    /// the thread, so a warm agent hears only `nudge` while a cold one gets the
+    /// same instruction wrapped in the run/plan context it cannot reconstruct.
+    fn posted_turn_halves(turn: &AgentTurn, phase: &str, nudge: &str) -> String {
+        assert_eq!(turn.phase, phase, "turn phase: {turn:?}");
+        assert_eq!(
+            turn.warm, nudge,
+            "an agent already in the conversation hears the instruction alone"
+        );
+        assert!(
+            turn.cold.contains(nudge),
+            "the instruction travels cold too: {}",
+            turn.cold
+        );
+        assert!(
+            turn.cold.contains("Build conversation protocol"),
+            "a spawned agent gets the protocol: {}",
+            turn.cold
+        );
+        turn.cold.clone()
+    }
+
     /// A dispatched plan plus the turn the dispatch wants said to its agent —
     /// the orchestrator's whole output now that it owns no process.
     fn drafting_plan_and_turn(
@@ -2877,13 +2933,21 @@ mod tests {
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         let worktree_path = plan_worktree_path(&plan);
 
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
+        let turn = orch
+            .send_plan_notes(&mut plan, &store, "tighten step 2")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(
             plan_worktree_path(&plan),
             worktree_path,
             "the worktree stays warm through the notes loop"
+        );
+        // The notes are a turn for the agent already drafting in that worktree,
+        // not a prompt for a replacement.
+        let cold = posted_turn_halves(&turn, "revise", "tighten step 2");
+        assert!(
+            cold.contains(".build/plan.md"),
+            "a cold agent is pointed at the doc it must revise: {cold}"
         );
 
         // The revised doc lands in the store on the next done.
@@ -3275,8 +3339,8 @@ mod tests {
         let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, vec!["greeting.txt"]);
 
-        // The build prompt points at the plan's doc.
-        let prompt = turn.cold;
+        // The build prompt points at the plan's doc, warm or cold.
+        let prompt = dispatch_turn_halves(&turn, "build");
         assert!(prompt.contains(".build/plan.md"), "{prompt}");
         assert!(prompt.contains("Add a greeting"), "{prompt}");
 
@@ -3352,7 +3416,7 @@ mod tests {
             "the first stage's diff starts at the materialization commit"
         );
         assert!(run.worktree.path.join(".build/plan/01-first.md").exists());
-        let prompt = turn.cold;
+        let prompt = dispatch_turn_halves(&turn, "build");
         assert!(prompt.contains("Execute ONE stage"), "{prompt}");
         assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
     }
@@ -3384,8 +3448,7 @@ mod tests {
         let hand_off = consumed
             .next
             .expect("a built stage hands itself to validation");
-        assert_eq!(hand_off.phase, "validate");
-        let prompt = hand_off.cold;
+        let prompt = dispatch_turn_halves(&hand_off, "validate");
         let start_sha = run.stages[0].start_sha.clone().unwrap();
         assert!(prompt.contains("VALIDATION"), "{prompt}");
         assert!(prompt.contains(&start_sha), "{prompt}");
@@ -3671,7 +3734,7 @@ mod tests {
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
-        let prompt = turn.cold;
+        let prompt = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
         assert!(prompt.contains("read_unread_messages"), "{prompt}");
         assert!(
             !prompt.contains("[c-1]"),
@@ -3755,10 +3818,13 @@ mod tests {
             .to_string()
             .contains("empty"));
 
-        // Drafting → a live redirect (no state change), fresh session.
-        orch.message_plan(&mut plan, &store, "focus on error paths")
+        // Drafting → a live redirect (no state change): the message is a turn
+        // for the agent already drafting, never a replacement session.
+        let turn = orch
+            .message_plan(&mut plan, &store, "focus on error paths")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
+        posted_turn_halves(&turn, "message", "focus on error paths");
 
         // A blocked plan resumes drafting on reply.
         orch.on_plan_done(
@@ -3768,9 +3834,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.plan.state, PlanState::Blocked);
-        orch.message_plan(&mut plan, &store, "here is the missing detail")
+        let turn = orch
+            .message_plan(&mut plan, &store, "here is the missing detail")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
+        posted_turn_halves(&turn, "message", "here is the missing detail");
 
         // The review gate refuses a side-channel message.
         let mut in_review = plan_in_review(&orch, &store, "plan-2");
@@ -3797,7 +3865,7 @@ mod tests {
         orch.discard_worktree(&stale);
         assert!(!stale.path.exists());
 
-        orch.resume_plan(&mut plan, &store).unwrap();
+        let turn = orch.resume_plan(&mut plan, &store).unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let worktree = plan
             .worktree
@@ -3806,6 +3874,13 @@ mod tests {
         assert!(
             worktree.path.join(".build/plan.md").exists(),
             "docs materialized"
+        );
+        // The re-plan instruction travels whether the re-created worktree's
+        // agent is the one that was interrupted or a fresh replacement.
+        let prompt = dispatch_turn_halves(&turn, "revise");
+        assert!(
+            prompt.contains("Add a greeting"),
+            "resume re-plans the same goal: {prompt}"
         );
     }
 
@@ -3864,7 +3939,7 @@ mod tests {
             Some(worktree_head(&run.worktree.path).as_str()),
             "the stage diff pins to HEAD at dispatch"
         );
-        let prompt = turn.cold;
+        let prompt = dispatch_turn_halves(&turn, "build");
         assert!(prompt.contains(".build/plan/02-second.md"), "{prompt}");
     }
 
@@ -3967,7 +4042,7 @@ mod tests {
             first.start_sha, start_before,
             "the fix keeps the stage's start sha"
         );
-        let prompt = turn.cold;
+        let prompt = dispatch_turn_halves(&turn, "build");
         assert!(
             prompt.contains("- migration missing"),
             "findings drive the fix: {prompt}"
@@ -4011,15 +4086,10 @@ mod tests {
 
         let turn = orch.run_request_changes(&mut single, "tweak it").unwrap();
         assert_eq!(single.run.state, RunState::Building);
-        assert_eq!(turn.phase, "revise");
+        let cold = posted_turn_halves(&turn, "revise", "tweak it");
         assert!(
-            turn.cold.contains("phase=\"revise\"") && turn.cold.contains("tweak it"),
-            "a cold agent gets the whole revise prompt: {}",
-            turn.cold
-        );
-        assert_eq!(
-            turn.warm, "tweak it",
-            "a warm agent gets the instruction alone — the run context it already has"
+            cold.contains("phase=\"revise\""),
+            "a cold agent gets the whole revise prompt: {cold}"
         );
 
         // A stage awaiting its validation verdict must not be redirected.
@@ -4135,21 +4205,7 @@ mod tests {
             .message_run(&mut run, "also handle the empty case")
             .unwrap();
         assert_eq!(run.run.state, RunState::Building);
-        assert_eq!(turn.phase, "message");
-        assert_eq!(
-            turn.warm, "also handle the empty case",
-            "an agent already in the conversation hears the message alone"
-        );
-        assert!(
-            turn.cold.contains("also handle the empty case"),
-            "{}",
-            turn.cold
-        );
-        assert!(
-            turn.cold.contains("Build conversation protocol"),
-            "{}",
-            turn.cold
-        );
+        posted_turn_halves(&turn, "message", "also handle the empty case");
 
         // The review gate refuses a message (request-changes is the verb there).
         orch.on_run_done(
@@ -4171,9 +4227,11 @@ mod tests {
         let store = split_store(&dir);
 
         let (_, plan_turn) = drafting_plan_and_turn(&orch, "plan-1", "Add a greeting");
+        dispatch_turn_halves(&plan_turn, "plan");
         let plan_prompt = plan_turn.cold;
         let plan = approved_plan(&orch, &store, "plan-of-run-1");
         let (_, run_turn) = dispatch_planned_run_and_turn(&orch, &store, &plan, "run-1");
+        dispatch_turn_halves(&run_turn, "build");
         let run_prompt = run_turn.cold;
 
         for (path, prompt) in [("plan", plan_prompt), ("run", run_prompt)] {
@@ -4221,7 +4279,8 @@ mod tests {
         single.run.apply(crate::run::RunEvent::Interrupt).unwrap();
         let turn = orch.resume_run(&mut single, &[]).unwrap();
         assert_eq!(single.run.state, RunState::Building);
-        assert_eq!(turn.phase, "resume");
+        let prompt = dispatch_turn_halves(&turn, "resume");
+        assert!(prompt.contains("single stage work"), "{prompt}");
 
         // Multi-stage run interrupted mid stage-build → resumes THAT stage.
         let orch2 = Orchestrator::new(
@@ -4235,7 +4294,7 @@ mod tests {
         run.run.apply(crate::run::RunEvent::Interrupt).unwrap();
         let turn = orch2.resume_run(&mut run, &plan.stages).unwrap();
         assert_eq!(run.run.state, RunState::Building);
-        let prompt = turn.cold;
+        let prompt = dispatch_turn_halves(&turn, "resume");
         assert!(
             prompt.contains(".build/plan/01-first.md"),
             "resumes stage one: {prompt}"
@@ -4357,10 +4416,18 @@ mod tests {
 
         // The revision runs in the RUN's worktree; the run's coarse state is
         // untouched (it merely lends its worktree).
-        orch.send_run_stage_notes(&mut run, &plan, "second")
+        let turn = orch
+            .send_run_stage_notes(&mut run, &plan, "second")
             .unwrap();
         assert_eq!(run.run.state, RunState::StageGate);
         assert_eq!(run.revising_stage_id.as_deref(), Some("second"));
+        // The revision is a turn for the run worktree's agent — the comments
+        // themselves travel through MCP, so the turn only points at them.
+        let cold = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
+        assert!(
+            cold.contains(".build/plan/02-second.md"),
+            "a cold agent is pointed at the stage doc: {cold}"
+        );
 
         // While a revision is in flight, a revise report must NOT go through
         // on_run_done — it is a store write-back, not a build report.

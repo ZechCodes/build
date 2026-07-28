@@ -5343,7 +5343,11 @@ impl AppState {
     /// a verdict exactly as two real `done` reports would.
     /// The build→validate hand-off turn each `on_run_done` returns is dropped
     /// on purpose here: the scripted agent plays BOTH sides, so it validates
-    /// the stage itself in the next arm rather than asking a harness to.
+    /// the stage itself in the next arm rather than asking a harness to. That
+    /// means NO test driven by this simulator exercises the hand-off delivery —
+    /// `a_built_stage_queues_its_validation_turn_for_the_worktrees_agent` and
+    /// `a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent`
+    /// switch the simulator off precisely so the real path is covered.
     fn qa_simulate_stage_build(
         &self,
         project_id: &str,
@@ -11049,6 +11053,368 @@ mod tests {
             !events.iter().any(|e| e["data"]["event"] == "run_failed"),
             "a report Build cannot apply is not a failure: {events:?}"
         );
+    }
+
+    /// A multi-stage run parked mid-build, waiting on a real `done` — the shape
+    /// production has and the scripted agent never reaches, because it plays
+    /// both sides of a stage itself. Returns `(state, run_id, worktree root)`.
+    fn run_awaiting_a_real_stage_build(
+        state: &mut AppState,
+        goal: &str,
+    ) -> (String, std::path::PathBuf) {
+        let plan = state.handle(req("plan.create", json!({ "goal": goal })));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            let approved = state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+            assert_eq!(approved["ok"], true, "{approved:?}");
+        }
+        let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        // From here the scripted agent must stop answering for the harness:
+        // `qa_simulate_stage_build` consumes the build AND the validation in one
+        // call, so it would swallow the very hand-off under test.
+        state.qa_agent = false;
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        assert_eq!(run["ok"], true, "{run:?}");
+        let run_id = run_id_of(&run);
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.stages[0].state,
+            StageProgressState::Building,
+            "the run is waiting on its stage-build agent"
+        );
+        let root = AppState::canonical_root(&active.worktree.path);
+        (run_id, root)
+    }
+
+    /// A stage that reports its build complete hands ITSELF to validation. The
+    /// orchestrator returns that hand-off as a turn and `on_run_agent_done` is
+    /// the only thing that queues it — a `done` is the one input to the daemon
+    /// that starts a phase without a human verb behind it. Drop the queueing and
+    /// a built stage is simply never asked to validate itself.
+    #[test]
+    fn a_built_stage_queues_its_validation_turn_for_the_worktrees_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, root) = run_awaiting_a_real_stage_build(&mut state, "hand off to validation");
+        state.pending_agent_turns.clear();
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "stage one is built".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        assert_eq!(
+            state.runs[&run_id].stages[0].state,
+            StageProgressState::Validating,
+            "the report moved the stage to its validation gate"
+        );
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a built stage hands itself to validation as a turn");
+        assert_eq!(queued.phase, "validate");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(
+            queued.root, root,
+            "the stage is validated in the worktree it was built in"
+        );
+        assert!(
+            queued.warm.contains("VALIDATION agent"),
+            "the validation instruction travels warm or cold: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "the agent that just reported is not re-taught the protocol: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.starts_with(&queued.warm)
+                && queued.cold.contains("Build conversation protocol"),
+            "a replacement agent gets the same instruction plus the conversation: {}",
+            queued.cold
+        );
+    }
+
+    /// Connect to a unix socket a spawned worker is still binding.
+    async fn connect_when_bound(path: &std::path::Path) -> tokio::net::UnixStream {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(stream) => return stream,
+                Err(error) if std::time::Instant::now() >= deadline => {
+                    panic!("done socket never came up at {}: {error}", path.display())
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+    }
+
+    /// The hand-off has to survive the path it actually travels: a `done` line
+    /// on the daemon's control socket, where the turn is queued while the socket
+    /// worker holds the state lock. Only draining that queue after the lock is
+    /// free gets the validation prompt written — and it must be written to the
+    /// SAME process that just reported the stage built, not a replacement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (run_id, root) = {
+            // The fixture only needs state; the frame handler below is what
+            // delivered the dispatch turn that opened the agent.
+            let mut s = state.lock().unwrap();
+            run_awaiting_a_real_stage_build(&mut s, "hand off over the socket")
+        };
+        // `run.create` above ran on the shared state directly, so its dispatch
+        // turn is still queued; the handler is the thing that delivers.
+        let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
+        assert_eq!(opened["ok"], true, "{opened:?}");
+        let key = TabKey::agent(&root);
+        let build_pid = {
+            let s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .get(&key)
+                .expect("dispatching a stage opens the worktree's agent");
+            tab.session.pid().expect("a live harness has a pid")
+        };
+
+        let socket_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(
+            Arc::clone(&state),
+            socket_path.to_string_lossy().into_owned(),
+        );
+        let mut socket = connect_when_bound(&socket_path).await;
+        let report = json!({
+            "task_id": run_id,
+            "report": {
+                "phase": "build",
+                "status": "completed",
+                "summary": "stage one is built",
+                "outputs": {},
+            },
+        });
+        socket
+            .write_all(format!("{report}\n").as_bytes())
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+
+        let screen = wait_for_agent_screen(&state, &root, "VALIDATION agent").await;
+        assert!(
+            screen.contains("VALIDATION agent"),
+            "the validation turn must reach the agent's PTY: {screen:?}"
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.runs[&run_id].stages[0].state,
+            StageProgressState::Validating
+        );
+        assert_eq!(
+            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            Some(build_pid),
+            "the agent that built the stage is the one asked to validate it"
+        );
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    }
+
+    /// A planning worktree is a worktree, so every plan verb is a turn
+    /// addressed to it — never to the repo, never to a fresh process — and it
+    /// splits cold/warm exactly as the run verbs do: the reviewer's words are
+    /// already durable on the plan's thread, so a warm agent is only told to
+    /// read them, while a cold one gets the same instruction wrapped in the plan
+    /// context it has no way to reconstruct.
+    #[test]
+    fn plan_verbs_are_turns_addressed_to_the_planning_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let notes_plan = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "notes" }))));
+        let stage_plan = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "stages" }))));
+        let comment = state.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": stage_plan, "stage_id": "first-half", "body": "split further" }),
+        ));
+        assert_eq!(comment["ok"], true, "{comment:?}");
+        let planning_root = |state: &AppState, plan_id: &str| {
+            AppState::canonical_root(
+                &state.plans[plan_id]
+                    .worktree
+                    .as_ref()
+                    .expect("a drafting plan has a planning worktree")
+                    .path,
+            )
+        };
+        let notes_root = planning_root(&state, &notes_plan);
+        let stage_root = planning_root(&state, &stage_plan);
+        assert_ne!(
+            notes_root, stage_root,
+            "each plan drafts in its own worktree"
+        );
+        // The scripted agent answers every verb itself and drives the plan back
+        // to its gate; from here each plan must stay where its verb puts it.
+        state.qa_agent = false;
+
+        state.pending_agent_turns.clear();
+        let sent = state.handle(req(
+            "plan.send_notes",
+            json!({ "plan_id": notes_plan, "comments": "make stage two smaller" }),
+        ));
+        assert_eq!(sent["ok"], true, "{sent:?}");
+        assert!(
+            state.tabs.is_empty(),
+            "a verb queues a turn; only delivery — off the state lock — spawns"
+        );
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("plan notes are a turn for the planning worktree's agent");
+        assert_eq!(queued.owner, notes_plan);
+        assert_eq!(
+            queued.root, notes_root,
+            "a plan's turn goes to its planning worktree"
+        );
+        assert_eq!(queued.phase, "revise");
+        assert_eq!(
+            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            "an agent already drafting is only told to read the thread"
+        );
+        assert!(
+            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.cold.contains("Build conversation protocol"),
+            "a cold agent gets the plan context AND the instruction: {}",
+            queued.cold
+        );
+        let durable = state.plans[&notes_plan].thread.items.iter().any(|item| {
+            matches!(item, crate::thread::ThreadItem::Message(m)
+                if m.body == "make stage two smaller")
+        });
+        assert!(durable, "the notes stay durable on the plan's thread");
+
+        // A freeform message reaches the same agent while the plan drafts.
+        state.pending_agent_turns.clear();
+        let messaged = state.handle(req(
+            "plan.message",
+            json!({ "plan_id": notes_plan, "message": "prefer smaller stages" }),
+        ));
+        assert_eq!(messaged["ok"], true, "{messaged:?}");
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a plan message is a turn for the planning worktree's agent");
+        assert_eq!(queued.owner, notes_plan);
+        assert_eq!(queued.root, notes_root);
+        assert_eq!(queued.phase, "message");
+        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+        assert!(
+            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.cold.contains("Build conversation protocol"),
+            "{}",
+            queued.cold
+        );
+        let durable = state.plans[&notes_plan].thread.items.iter().any(|item| {
+            matches!(item, crate::thread::ThreadItem::Message(m)
+                if m.body == "prefer smaller stages")
+        });
+        assert!(durable, "the message stays durable on the plan's thread");
+
+        // A stage's open comments are the payload of a per-stage revision.
+        state.pending_agent_turns.clear();
+        let stage_notes = state.handle(req(
+            "plan.stage_send_notes",
+            json!({ "plan_id": stage_plan, "stage_id": "first-half" }),
+        ));
+        assert_eq!(stage_notes["ok"], true, "{stage_notes:?}");
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("stage notes are a turn for the planning worktree's agent");
+        assert_eq!(queued.owner, stage_plan);
+        assert_eq!(queued.root, stage_root);
+        assert_eq!(queued.phase, "revise");
+        assert!(
+            queued.warm.contains("read_unread_messages"),
+            "the comments travel through MCP; the turn only points at them: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "an agent already drafting is not re-taught the protocol: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.contains(".build/plan/01-first-half.md")
+                && queued.cold.contains("Build conversation protocol"),
+            "a cold agent is pointed at the stage doc it must revise: {}",
+            queued.cold
+        );
+    }
+
+    /// The plan half of "one worktree, one agent": authoring a plan opens the
+    /// planning worktree's agent, and every later plan verb reaches THAT
+    /// process. Same pid, one tab — a plan revision is a turn, not a
+    /// replacement.
+    #[tokio::test]
+    async fn every_plan_verb_reaches_the_planning_worktrees_one_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let plan = call(&handler, "plan.create", json!({ "goal": "one plan agent" }));
+        assert_eq!(plan["ok"], true, "{plan:?}");
+        let plan_id = plan_id_of(&plan);
+        let key = {
+            let s = state.lock().unwrap();
+            TabKey::agent(&AppState::canonical_root(
+                &s.plans[&plan_id]
+                    .worktree
+                    .as_ref()
+                    .expect("a plan at its gate keeps its planning worktree")
+                    .path,
+            ))
+        };
+        let drafting_pid = {
+            let s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .get(&key)
+                .expect("authoring a plan opens the planning worktree's agent");
+            assert!(
+                tab.live && !tab.session.has_exited(),
+                "the plan's agent is running"
+            );
+            tab.session.pid().expect("a live harness has a pid")
+        };
+        // The scripted agent would answer each verb itself and drive the plan
+        // straight back to its gate; from here it must stay where a verb puts it.
+        state.lock().unwrap().qa_agent = false;
+
+        for (method, params) in [
+            (
+                "plan.send_notes",
+                json!({ "plan_id": plan_id, "comments": "make stage two smaller" }),
+            ),
+            (
+                "plan.message",
+                json!({ "plan_id": plan_id, "message": "prefer smaller stages" }),
+            ),
+        ] {
+            let done = call(&handler, method, params);
+            assert_eq!(done["ok"], true, "{method}: {done:?}");
+            let s = state.lock().unwrap();
+            assert_eq!(
+                s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+                Some(drafting_pid),
+                "{method} must reach the process that authored the plan"
+            );
+            assert_eq!(s.tabs.len(), 1, "{method}: one worktree, one agent");
+        }
     }
 
     #[test]

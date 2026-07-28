@@ -63,63 +63,43 @@ struct StreamState {
     complete: bool,
 }
 
-/// What a user terminal runs. The tab row's `+` offers these three; a client
-/// names a KIND and the daemon owns the argv, so no caller can turn a tab into
-/// an arbitrary command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TermKind {
-    /// The user's own interactive login shell — a window onto their machine.
-    Shell,
-    Claude,
-    Codex,
+/// The one kind of program a user terminal runs, on the wire. `term.create`
+/// echoes it and `term.list` carries it, so a reloaded client still labels the
+/// tab by what is actually in it.
+const SHELL_TAB_KIND: &str = "shell";
+
+/// Refuse a `term.create` that asks for anything but the user's shell.
+///
+/// A user terminal used to be able to spawn `claude`/`codex` directly — the
+/// provider's CLI with its approvals bypass and NO `done` MCP server. That was
+/// an agent in a worktree Build could not talk to, could not route a report
+/// from, and did not count as the worktree's one agent: the only way to get a
+/// second agent into a directory. It is gone, so "one worktree, one agent,
+/// Build owns it" is a structural property rather than an intention.
+///
+/// An old client that asks for one is told loudly where the agent lives.
+/// Falling back to a shell would run a different program than was asked for,
+/// silently, which is the failure mode this refusal exists to prevent.
+fn require_shell_kind(params: &Value) -> Result<(), String> {
+    match params.get("kind").and_then(Value::as_str) {
+        None | Some("") | Some(SHELL_TAB_KIND) => Ok(()),
+        Some(named_agent @ ("claude" | "codex")) => Err(format!(
+            "a user terminal cannot run {named_agent} — Build's one agent for a \
+             worktree lives in its Agent tab"
+        )),
+        Some(other) => Err(format!(
+            "unknown terminal kind {other:?} — a user terminal is always the shell"
+        )),
+    }
 }
 
-impl TermKind {
-    /// Parse the optional `kind` param. Absent means `shell` (every terminal
-    /// predating the `+` menu is one), and an unrecognized value is an error
-    /// rather than a silent fallback to a different program than was asked for.
-    fn parse(params: &Value) -> Result<TermKind, String> {
-        match params.get("kind").and_then(Value::as_str) {
-            None | Some("") | Some("shell") => Ok(TermKind::Shell),
-            Some("claude") => Ok(TermKind::Claude),
-            Some("codex") => Ok(TermKind::Codex),
-            Some(other) => Err(format!(
-                "unknown terminal kind {other:?} — expected shell, claude, or codex"
-            )),
-        }
-    }
-
-    /// The wire/label name — round-trips through `term.create` and `term.list`
-    /// so a reloaded client can label the tab by what is actually running in it.
-    fn as_str(&self) -> &'static str {
-        match self {
-            TermKind::Shell => "shell",
-            TermKind::Claude => "claude",
-            TermKind::Codex => "codex",
-        }
-    }
-
-    /// The harness this kind spawns in the scope root.
-    ///
-    /// Shell: `-i -l`, the user's rc files and prompt — their machine, shown
-    /// honestly. Agents: the provider's CLI with its approvals bypass, because
-    /// an agent tab is opened by a human who is watching it; a permission prompt
-    /// they must answer twice (once in the TUI, once in their head) buys nothing
-    /// the worktree boundary does not already give. These tabs carry no `done`
-    /// MCP server: they are conversations the human drives, not dispatched runs
-    /// with a task lifecycle.
-    fn harness_spec(&self, shell: &str) -> HarnessSpec {
-        let spec = match self {
-            TermKind::Shell => HarnessSpec::new(shell).arg("-i").arg("-l"),
-            TermKind::Claude => HarnessSpec::new("claude")
-                .arg("--dangerously-skip-permissions")
-                .unset_all(INHERITED_AGENT_MARKERS),
-            TermKind::Codex => HarnessSpec::new("codex")
-                .arg("--dangerously-bypass-approvals-and-sandbox")
-                .unset_all(INHERITED_AGENT_MARKERS),
-        };
-        spec.env("TERM", "xterm-256color")
-    }
+/// The harness a shell tab spawns in its worktree root: `-i -l`, so the user
+/// gets their own rc files and prompt — their machine, shown honestly.
+fn shell_harness_spec(shell: &str) -> HarnessSpec {
+    HarnessSpec::new(shell)
+        .arg("-i")
+        .arg("-l")
+        .env("TERM", "xterm-256color")
 }
 
 /// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
@@ -168,35 +148,45 @@ impl TermScope {
     /// Resolve to the scope's canonical root directory, server-side only.
     /// `&mut AppState` because the external-worktree arm may refresh the scan
     /// cache; it never accepts a raw path and never canonicalizes client input.
+    ///
+    /// The result goes through [`AppState::canonical_root`] because the same
+    /// directory arrives here in two literal forms — a run's worktree is
+    /// `worktrees_root.join(name)` while the scanner canonicalizes, and on
+    /// macOS `/tmp` is `/private/tmp`. The tab registry is keyed by this path,
+    /// so one un-canonicalized entry point would silently split one worktree
+    /// into two and orphan whatever was already open in it.
     fn resolve_root(&self, state: &mut AppState) -> Result<std::path::PathBuf, String> {
-        match self {
+        let root = match self {
             TermScope::Run { run_id } => {
                 let active = state.runs.get(run_id).ok_or("unknown run_id")?;
                 let root = active.worktree.path.clone();
                 if !root.exists() {
                     return Err("worktree no longer exists".to_string());
                 }
-                Ok(root)
+                root
             }
             TermScope::ExternalWorktree {
                 project_id,
                 worktree_id,
-            } => Ok(state
-                .resolve_external_worktree(project_id, worktree_id)?
-                .path),
+            } => {
+                state
+                    .resolve_external_worktree(project_id, worktree_id)?
+                    .path
+            }
             TermScope::Primary { project_id } => state
                 .projects
                 .iter()
                 .find(|p| &p.id == project_id)
                 .map(|p| p.repo_path.clone())
-                .ok_or_else(|| "unknown project_id".to_string()),
-        }
+                .ok_or_else(|| "unknown project_id".to_string())?,
+        };
+        Ok(AppState::canonical_root(&root))
     }
 }
 
 /// Authoritative server-side screen: vt100 model + attach list + coalescing
-/// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. Shared
-/// by user terminals and the retained agent screens.
+/// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. One
+/// model for every tab — a shell and an agent reconnect the same way.
 struct TermScreen {
     parser: vt100::Parser,
     attached: Vec<SessionSender>,
@@ -215,8 +205,9 @@ const TERM_FLUSH_MS: u64 = 10;
 /// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
 /// and bounds per-frame size. The vt100 model makes this lossless for the screen.
 const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
-/// At most this many user terminals daemon-wide, all scopes combined. Agent
-/// screens don't count (at most one per task, bounded by tasks).
+/// At most this many user terminals daemon-wide, all worktrees combined. An
+/// agent tab never counts against it — there is at most one per worktree, and
+/// it must stay reachable however many shells are open.
 const MAX_USER_TERMINALS: usize = 16;
 /// Source/document previews stay tightly capped; playable media gets a larger
 /// bounded response because browsers cannot decode a truncated data URL.
@@ -290,21 +281,6 @@ impl TermScreen {
     }
 }
 
-/// A live keyed terminal: a real PTY spawned in its scope's root, plus the
-/// authoritative screen model that makes reconnect a *snapshot* (current
-/// screen) rather than a byte replay.
-struct TermSession {
-    term_id: String,
-    scope: TermScope,
-    /// What is running in it — the tab's label survives a client reload.
-    kind: TermKind,
-    /// The scope's root directory, resolved server-side at create time.
-    scope_root: std::path::PathBuf,
-    created_at: String,
-    session: PtySession,
-    screen: TermScreen,
-}
-
 /// The shell user terminals run: `BRIDGE_TERM_SHELL` override → the daemon
 /// env's `SHELL` → the account's passwd shell → bash. Terminals are windows
 /// onto the user's machine — they get the user's own shell and rc files, not
@@ -372,44 +348,6 @@ fn path_widens_launchd_default(path: &str) -> bool {
         .any(|dir| !dir.is_empty() && !LAUNCHD_BARE_PATH.contains(&dir))
 }
 
-impl TermSession {
-    /// Spawn this kind's program in a PTY at the scope root, returning the
-    /// session and a receiver for its output (subscribed immediately so no early
-    /// bytes are missed). The argv comes from [`TermKind::harness_spec`].
-    fn spawn(
-        kind: TermKind,
-        shell: &str,
-        term_id: String,
-        scope: TermScope,
-        scope_root: std::path::PathBuf,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(TermSession, broadcast::Receiver<Vec<u8>>), String> {
-        let spec = kind.harness_spec(shell);
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let session =
-            PtySession::spawn(&spec, Some(scope_root.clone()), size).map_err(|e| e.to_string())?;
-        let rx = session.subscribe();
-        Ok((
-            TermSession {
-                term_id,
-                scope,
-                kind,
-                scope_root,
-                created_at: now_rfc3339(),
-                session,
-                screen: TermScreen::new(cols, rows),
-            },
-            rx,
-        ))
-    }
-}
-
 /// The reserved tab id of a worktree's one Build-owned agent. Every other tab
 /// in a worktree is a `term-<n>` shell the human drives.
 const AGENT_TAB_ID: &str = "agent";
@@ -443,9 +381,9 @@ impl TabKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TabRole {
     /// The user's own interactive login shell — a window onto their machine.
-    /// The daemon-wide terminal cap counts these and never an agent, so a shell
-    /// held here is one of the sixteen from the day user terminals move onto
-    /// this registry rather than from the day someone remembers the cap.
+    /// The daemon-wide terminal cap counts these and never an agent: sixteen
+    /// open shells must not be able to crowd a worktree's agent out of the
+    /// registry they share.
     Shell,
     /// Build's one agent in this worktree. `owner` is the opaque plan/run id
     /// baked into the harness's `mcp --task <id>` argv, so `done` reports route
@@ -463,8 +401,8 @@ struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
     role: TabRole,
-    /// Surfaced by `term.list` once user terminals move onto this registry.
-    #[allow(dead_code)]
+    /// Surfaced by `term.list` so a reloaded client can order the tab row the
+    /// way the human opened it.
     created_at: String,
     session: PtySession,
     screen: TermScreen,
@@ -641,10 +579,18 @@ const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 /// state the dot must NOT claim is progress.
 const AGENT_WORKING_WINDOW: Duration = Duration::from_secs(30);
 
-/// Whether a terminal counts as an agent that is working right now. A shell is
-/// never an agent — it is the human's own hands — however busy it looks.
-fn agent_is_working(kind: TermKind, idle: Duration) -> bool {
-    kind != TermKind::Shell && idle < AGENT_WORKING_WINDOW
+/// Whether a tab holds an agent that is working right now.
+///
+/// Three things have to be true, and each rules out a different lie: the tab
+/// is an agent's (a shell is the human's own hands, however busy it looks),
+/// its process is still alive (a dead agent's retained screen is not a
+/// heartbeat), and it has painted inside [`AGENT_WORKING_WINDOW`] (an agent
+/// parked at its prompt is waiting for you, not working).
+fn agent_is_working(tab: &Tab) -> bool {
+    matches!(tab.role, TabRole::Agent { .. })
+        && tab.live
+        && !tab.session.has_exited()
+        && tab.session.idle_for() < AGENT_WORKING_WINDOW
 }
 
 /// The verbs that count as the human acting on an entity, and the param naming
@@ -1011,11 +957,10 @@ pub struct AppState {
     /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
     term_shell: String,
     streams: HashMap<String, StreamState>,
-    /// Live user terminals, keyed by `term_id` (`term-<n>`).
-    terms: HashMap<String, TermSession>,
-    /// Live tabs, keyed by (canonical worktree root, tab id) — the path-keyed
-    /// registry that replaces both `terms` and `agent_screens` as the surfaces
-    /// move onto it.
+    /// Every live PTY the daemon owns — the human's shells and each worktree's
+    /// one agent alike — keyed by (canonical worktree root, tab id). One
+    /// registry over one id space: there is no second place a terminal can be,
+    /// so no verb has to ask which kind of thing an id names before serving it.
     tabs: HashMap<TabKey, Tab>,
     /// Roots with an agent spawn in flight. The state lock is dropped across
     /// the spawn (it blocks for seconds), so the reservation — taken under the
@@ -1038,8 +983,14 @@ pub struct AppState {
     next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
-    /// Whether the harness has a prior conversation for a worktree cwd — drives
-    /// `--continue` on an adopted task's first session. Never true in QA mode.
+    /// Whether the harness has a prior conversation for a worktree cwd —
+    /// consulted on every agent-tab spawn to decide `--continue`.
+    ///
+    /// It answers exactly one question: is there a conversation here that this
+    /// process did not start? A tab respawned after a daemon restart or a
+    /// crash, and a worktree where the user ran the agent by hand before Build
+    /// looked at it, are the same case, and both want the transcript picked
+    /// back up. Never true in QA mode.
     transcript_probe: TranscriptProbe,
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
@@ -1082,7 +1033,6 @@ impl AppState {
             run_stat_cache: HashMap::new(),
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
-            terms: HashMap::new(),
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
             pending_agent_turns: Vec::new(),
@@ -1651,8 +1601,7 @@ impl AppState {
             worktrees,
             self.agent.clone(),
             Templates::default(),
-        )
-        .with_transcript_probe(self.transcript_probe.clone());
+        );
         self.projects.push(Project {
             id: id.clone(),
             name,
@@ -1745,20 +1694,23 @@ impl AppState {
         tab.screen.push_closed(&wire_id, "closed");
     }
 
-    /// The registry key an agent wire id (`agent:<worktree_id>`) addresses.
+    /// The registry key a wire id addresses — `term-<n>` for a shell,
+    /// `agent:<worktree_id>` for a worktree's agent.
     ///
-    /// A scan, not a map hit: the id names a worktree by its stable external
-    /// id, and there are only ever a handful of live tabs. Every wire-facing
-    /// verb funnels through here, so a stale client asking for a tab that no
-    /// longer exists gets one consistent "unknown term_id" and drops it.
-    fn agent_tab_key(&self, wire_id: &str) -> Option<TabKey> {
-        if !wire_id.starts_with("agent:") {
-            return None;
-        }
+    /// One id space, one resolver. Every wire-facing verb funnels through here,
+    /// so a stale client holding a tab that no longer exists gets one
+    /// consistent "unknown term_id" and drops the tab — rather than a tab that
+    /// attaches and then silently swallows every keystroke, which is what a
+    /// second, half-migrated `starts_with("agent:")` branch would produce.
+    ///
+    /// A scan, not a map hit: the registry is keyed by worktree and there are
+    /// only ever a handful of live tabs.
+    fn tab_key_of_wire_id(&self, wire_id: &str) -> Result<TabKey, String> {
         self.tabs
             .iter()
-            .find(|(key, tab)| key.tab_id == AGENT_TAB_ID && tab.wire_id() == wire_id)
+            .find(|(_, tab)| tab.wire_id() == wire_id)
             .map(|(key, _)| key.clone())
+            .ok_or_else(|| "unknown term_id".to_string())
     }
 
     /// The project's external worktrees. Serves the cache when younger than
@@ -2388,25 +2340,31 @@ impl AppState {
         }
     }
 
-    /// The user terminals whose scope matches the request, ordered by numeric
-    /// id suffix. Agent screens never appear here. An unknown scope id still
-    /// errors (the SPA treats an error as "no terminals").
+    /// The user's shells in the requested scope's worktree, ordered by numeric
+    /// id suffix. The worktree's agent never appears here — it is not one of
+    /// the tabs the human opens and closes. An unknown scope id still errors
+    /// (the SPA treats an error as "no terminals").
+    ///
+    /// The filter is on the resolved canonical ROOT, not on the scope shape
+    /// that was asked with. A client addresses an unadopted worktree as
+    /// `{project_id, worktree_id}` and the same directory as `{run_id}` once a
+    /// run adopts it; filtering by scope made every open shell vanish from the
+    /// tab row at adoption while its process kept running.
     fn term_list(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = TermScope::parse(params)?;
-        scope.resolve_root(self)?;
+        let root = TermScope::parse(params)?.resolve_root(self)?;
         let mut terminals: Vec<(u64, Value)> = self
-            .terms
-            .values()
-            .filter(|t| t.scope == scope)
-            .map(|t| {
+            .tabs
+            .iter()
+            .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
+            .map(|(key, tab)| {
                 (
-                    term_id_suffix(&t.term_id),
+                    term_id_suffix(&key.tab_id),
                     json!({
-                        "term_id": t.term_id,
-                        "kind": t.kind.as_str(),
-                        "cols": t.screen.cols,
-                        "rows": t.screen.rows,
-                        "created_at": t.created_at,
+                        "term_id": tab.tab_id,
+                        "kind": SHELL_TAB_KIND,
+                        "cols": tab.screen.cols,
+                        "rows": tab.screen.rows,
+                        "created_at": tab.created_at,
                     }),
                 )
             })
@@ -2420,41 +2378,38 @@ impl AppState {
     /// zombie-prevention contract), and tell every attached client.
     fn term_close(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
-        if term_id.starts_with("agent:") {
-            // Agent PTY lifetime belongs to the orchestrator, not the tab's ×.
+        let key = self.tab_key_of_wire_id(&term_id)?;
+        if key.tab_id == AGENT_TAB_ID {
+            // The agent tab is not one of the human's tabs to close: it is
+            // always reachable, and its life is bound to the worktree.
             return Err("cannot close an agent terminal".to_string());
         }
-        let term = self.terms.remove(&term_id).ok_or("unknown term_id")?;
-        term.session.kill_and_reap();
-        term.screen.push_closed(&term_id, "closed");
+        let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
+        tab.session.kill_and_reap();
+        tab.screen.push_closed(&term_id, "closed");
         Ok(json!({ "ok": true }))
     }
 
-    /// Write client keystrokes (base64) to a terminal's PTY, by id. `agent:`
-    /// ids route to the task's live session — input is allowed by design (the
-    /// agent PTY is a full terminal on the user's machine; the terminal is the
-    /// basement), and a dead session surfaces "no active agent session".
+    /// Write client keystrokes (base64) to a tab's PTY, by id. Input to the
+    /// agent tab is allowed by design — its PTY is a full terminal on the
+    /// user's machine and the terminal is the basement — and an agent whose
+    /// process has ended surfaces "no active agent session" rather than
+    /// swallowing the keystrokes.
     fn term_input(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let data = b64decode(&require_str(params, "data")?)?;
-        if term_id.starts_with("agent:") {
-            let key = self.agent_tab_key(&term_id).ok_or("unknown term_id")?;
-            let tab = &self.tabs[&key];
-            if !tab.live || tab.session.has_exited() {
-                return Err("no active agent session".to_string());
-            }
-            tab.session.write_input(&data).map_err(|e| e.to_string())?;
-            return Ok(json!({ "ok": true }));
+        let key = self.tab_key_of_wire_id(&term_id)?;
+        let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
+        if !tab.live || tab.session.has_exited() {
+            return Err("no active agent session".to_string());
         }
-        let term = self.terms.get(&term_id).ok_or("unknown term_id")?;
-        term.session.write_input(&data).map_err(|e| e.to_string())?;
+        tab.session.write_input(&data).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": true }))
     }
 
-    /// Resize a terminal's PTY and screen model, by id. For `agent:` ids the
-    /// resize only applies while a session is live (`live: true`); a dead
-    /// resize is a no-op `live: false` so the retained last screen is never
-    /// garbled.
+    /// Resize a tab's PTY and screen model, by id. The resize only applies
+    /// while the session is live; a dead resize is a no-op `live: false` so a
+    /// retained last screen is never garbled.
     fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
@@ -2465,36 +2420,19 @@ impl AppState {
             pixel_width: 0,
             pixel_height: 0,
         };
-        if term_id.starts_with("agent:") {
-            let key = self.agent_tab_key(&term_id).ok_or("unknown term_id")?;
-            let tab = self
-                .tabs
-                .get_mut(&key)
-                .expect("the key came from the registry");
-            let live = tab.live && !tab.session.has_exited();
-            if live {
-                tab.session.resize(size).map_err(|e| e.to_string())?;
-                // Keep the retained agent screen in step with the live PTY; a
-                // dead resize touches nothing (the last screen stays intact).
-                tab.screen.set_size(cols, rows);
-            }
-            return Ok(json!({ "ok": true, "live": live }));
+        let key = self.tab_key_of_wire_id(&term_id)?;
+        let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
+        let live = tab.live && !tab.session.has_exited();
+        if live {
+            tab.session.resize(size).map_err(|e| e.to_string())?;
+            tab.screen.set_size(cols, rows);
         }
-        let term = self.terms.get_mut(&term_id).ok_or("unknown term_id")?;
-        term.session.resize(size).map_err(|e| e.to_string())?;
-        term.screen.set_size(cols, rows);
-        Ok(json!({ "ok": true, "live": true }))
+        Ok(json!({ "ok": true, "live": live }))
     }
 
-    /// A session ended: detach it from every terminal so the pumps stop
-    /// encrypting (and serializing) output frames into a session the relay
-    /// will just drop.
+    /// A session ended: detach it from every tab so the pumps stop encrypting
+    /// (and serializing) output frames into a session the relay will just drop.
     fn drop_session(&mut self, session_id: &str) {
-        for term in self.terms.values_mut() {
-            term.screen
-                .attached
-                .retain(|snd| snd.session_id() != session_id);
-        }
         for tab in self.tabs.values_mut() {
             tab.screen
                 .attached
@@ -2502,37 +2440,29 @@ impl AppState {
         }
     }
 
-    /// Close every user terminal whose scope no longer resolves (spec §2.6.3):
-    /// its task record is gone, its project is unregistered, or its worktree
-    /// vanished from disk. Every close kills AND reaps. Returns the closed ids.
-    /// Called at the tail of `finish_mutation` (prompt closure right after
-    /// abandon/delete/merge-prune) and by the periodic reaper loop (out-of-band
-    /// disappearance, e.g. a user `rm -rf`ing an external worktree).
+    /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
+    /// AND reaping each one, and tell every attached client. Returns the closed
+    /// wire ids. Called at the tail of `finish_mutation` (prompt closure right
+    /// after abandon/delete/merge-prune) and by the periodic reaper loop
+    /// (out-of-band disappearance, e.g. a user `rm -rf`ing a worktree).
+    ///
+    /// A tab lives as long as the WORKTREE it is rooted in — not as long as the
+    /// entity that happens to own it. That is one rule for shells and agents
+    /// alike, and it is the right one for both: a merged run kept with
+    /// `cleanup=keep` keeps its directory and everything open in it, and
+    /// releasing or deleting an adopted run leaves the human's worktree exactly
+    /// where it was. The two verbs that remove a run while keeping its worktree
+    /// close Build's agent themselves ([`AppState::close_agent_tab`]), because
+    /// an agent whose owner is gone reports `done` into the unknown-entity log
+    /// forever.
     fn reap_orphaned_terminals(&mut self) -> Vec<String> {
-        let orphaned: Vec<String> = self
-            .terms
-            .values()
-            .filter(|term| !self.term_scope_resolves(term))
-            .map(|term| term.term_id.clone())
-            .collect();
-        for term_id in &orphaned {
-            let Some(term) = self.terms.remove(term_id) else {
-                continue;
-            };
-            term.session.kill_and_reap();
-            term.screen.push_closed(term_id, "reaped");
-        }
-        // A tab lives as long as the WORKTREE it is rooted in — not as long as
-        // the entity that happens to own it. Releasing or deleting an adopted
-        // run leaves the human's worktree, and the agent working in it, exactly
-        // where they were; only a worktree that is gone from disk takes its
-        // agent with it.
         let vanished: Vec<TabKey> = self
             .tabs
             .keys()
             .filter(|key| !key.root.exists())
             .cloned()
             .collect();
+        let mut reaped = Vec::new();
         for key in vanished {
             let Some(tab) = self.tabs.remove(&key) else {
                 continue;
@@ -2540,34 +2470,21 @@ impl AppState {
             let wire_id = tab.wire_id();
             tab.session.kill_and_reap();
             tab.screen.push_closed(&wire_id, "reaped");
+            reaped.push(wire_id);
         }
-        orphaned
+        reaped
     }
 
-    /// Whether a terminal's scope still maps to a live surface. The check is
-    /// cheap: a map lookup and/or one `Path::exists` over ≤ 16 entries.
-    fn term_scope_resolves(&self, term: &TermSession) -> bool {
-        match &term.scope {
-            // A merged run with cleanup=keep keeps its worktree → terminals stay.
-            TermScope::Run { run_id } => self.runs.contains_key(run_id) && term.scope_root.exists(),
-            // An adopted worktree's path survives adoption — its terminal lives on.
-            TermScope::ExternalWorktree { .. } => term.scope_root.exists(),
-            TermScope::Primary { project_id } => {
-                self.projects.iter().any(|p| &p.id == project_id) && term.scope_root.exists()
-            }
-        }
-    }
-
-    /// Periodically close terminals whose scope vanished out-of-band (nothing
-    /// went through `finish_*_mutation` — e.g. the user deleted an external
-    /// worktree by hand). Runs beside `spawn_idle_monitor`.
+    /// Periodically close tabs whose worktree vanished out-of-band (nothing
+    /// went through `finish_*_mutation` — e.g. the user deleted a worktree by
+    /// hand). Runs beside `spawn_idle_monitor`.
     pub fn spawn_terminal_reaper(state: Arc<Mutex<AppState>>, interval: Duration) {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
                 let reaped = state.lock().unwrap().reap_orphaned_terminals();
                 for term_id in reaped {
-                    eprintln!("terminal reaper: closed {term_id} (scope gone)");
+                    eprintln!("terminal reaper: closed {term_id} (worktree gone)");
                 }
             }
         });
@@ -3128,14 +3045,15 @@ impl AppState {
             .keys()
             .map(|id| (id.clone(), self.attention_json(id)))
             .collect();
+        // Read off the tab registry, which is where an agent can be — there is
+        // no longer anywhere else for one to run. The worktree id is derived
+        // from the tab's root, so a worktree reports its own agent whatever
+        // entity (or none) currently owns it.
         let agent_working: std::collections::HashSet<String> = self
-            .terms
+            .tabs
             .values()
-            .filter(|term| agent_is_working(term.kind, term.session.idle_for()))
-            .filter_map(|term| match &term.scope {
-                TermScope::ExternalWorktree { worktree_id, .. } => Some(worktree_id.clone()),
-                _ => None,
-            })
+            .filter(|tab| agent_is_working(tab))
+            .map(|tab| crate::worktree::external_worktree_id(&tab.root))
             .collect();
         let projects: Vec<(String, String, String)> = self
             .projects
@@ -6295,50 +6213,70 @@ fn term_id_suffix(term_id: &str) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// Create a keyed terminal: parse + resolve the scope server-side (never a
-/// client path), enforce the cap, spawn `bash` in the scope root, and start
-/// its pump immediately — the screen model accumulates even before the first
-/// attach.
+/// Create one of the human's shells: parse + resolve the scope server-side
+/// (never a client path), enforce the cap, spawn their login shell in the
+/// worktree root, and start its pump immediately — the screen model
+/// accumulates even before the first attach.
+///
+/// Only a shell. A worktree's agent is not created here; it is
+/// [`ensure_agent_tab`]'s, and it is the only agent the worktree gets.
 fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let scope = TermScope::parse(params)?;
-    let kind = TermKind::parse(params)?;
+    require_shell_kind(params)?;
 
-    let (term_id, rx) = {
+    let (key, rx) = {
         let mut s = state.lock().unwrap();
-        let scope_root = scope.resolve_root(&mut s)?;
-        if s.terms.len() + s.shell_tab_count() >= MAX_USER_TERMINALS {
+        let root = scope.resolve_root(&mut s)?;
+        // The cap counts the human's shells and never an agent: sixteen open
+        // terminals must not be able to crowd a worktree's agent out of a
+        // registry they now share.
+        if s.shell_tab_count() >= MAX_USER_TERMINALS {
             return Err(format!(
                 "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
             ));
         }
-        let term_id = format!("term-{}", s.next_term);
+        let tab_id = format!("term-{}", s.next_term);
         s.next_term += 1;
         let shell = s.term_shell.clone();
-        let (term, rx) =
-            TermSession::spawn(kind, &shell, term_id.clone(), scope, scope_root, cols, rows)?;
-        s.terms.insert(term_id.clone(), term);
-        (term_id, rx)
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: tab_id.clone(),
+        };
+        let (tab, rx) = Tab::spawn(
+            TabRole::Shell,
+            &shell_harness_spec(&shell),
+            tab_id,
+            root,
+            cols,
+            rows,
+        )?;
+        s.tabs.insert(key.clone(), tab);
+        (key, rx)
     };
-    spawn_term_pump(Arc::clone(state), term_id.clone(), rx);
-    Ok(json!({ "term_id": term_id, "kind": kind.as_str(), "cols": cols, "rows": rows }))
+    spawn_tab_pump(state, key.clone(), rx);
+    Ok(json!({
+        "term_id": key.tab_id,
+        "kind": SHELL_TAB_KIND,
+        "cols": cols,
+        "rows": rows,
+    }))
 }
 
-/// Attach this client to an existing keyed terminal: register the caller's
-/// [`SessionSender`] for live output and return the current **screen
-/// snapshot** + cursor. Reconnect is just another attach — a new session
-/// re-registers and gets a fresh snapshot. Creation is `term.create`'s job;
-/// `agent:` ids belong to `agent.attach`.
+/// Attach this client to a tab by its wire id — `term-<n>` or
+/// `agent:<worktree_id>`, one verb over one id space.
+///
+/// Registers the caller's [`SessionSender`] for live output and returns the
+/// current **screen snapshot** + cursor. Reconnect is just another attach: a
+/// new session re-registers and gets a fresh snapshot. Creation is
+/// `term.create`'s (a shell) or a delivery's (the agent) job.
 fn term_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
 ) -> Result<Value, String> {
     let term_id = require_str(params, "term_id")?;
-    if term_id.starts_with("agent:") {
-        return Err("use agent.attach".to_string());
-    }
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
 
@@ -6346,32 +6284,15 @@ fn term_attach(
     // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
     // dupe across a reconnect.
     let mut s = state.lock().unwrap();
-    let term = s.terms.get_mut(&term_id).ok_or("unknown term_id")?;
-
-    // Match the PTY + screen model to this client's viewport, or TUIs (which draw
-    // to the reported size) render to the wrong width and garble.
-    if term.screen.cols != cols || term.screen.rows != rows {
-        let _ = term.session.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        term.screen.set_size(cols, rows);
-    }
-    term.screen.register(sender);
-    Ok(json!({
-        "term_id": term.term_id,
-        "snapshot": term.screen.snapshot(),
-        "cursor": term.screen.total,
-        "cols": term.screen.cols,
-        "rows": term.screen.rows,
-    }))
+    let key = s.tab_key_of_wire_id(&term_id)?;
+    Ok(attach_to_tab(&mut s, &key, sender, cols, rows))
 }
 
-/// Attach this client to the agent of the worktree an entity is working in:
-/// register the sender on the tab's screen and return the current snapshot +
-/// cursor + `live`.
+/// Attach this client to the agent of the worktree an entity is working in.
+///
+/// The same attach as `term.attach`, addressed by ENTITY rather than by wire
+/// id: a surface that knows it is looking at a plan or a run does not have to
+/// learn which worktree that is, or whether an agent has ever run there.
 ///
 /// **Never errors because no agent is running** — `live: false` with the last
 /// (or a blank) snapshot is the contract, because a tab must still show what
@@ -6395,7 +6316,7 @@ fn agent_attach(
     let s = &mut *guard;
     let root = s.entity_worktree_root(&entity_id)?;
     let key = TabKey::agent(&root);
-    let Some(tab) = s.tabs.get_mut(&key) else {
+    if !s.tabs.contains_key(&key) {
         // No agent has run here yet: a blank, dead screen. The tab opens on the
         // first delivery.
         return Ok(json!({
@@ -6406,28 +6327,49 @@ fn agent_attach(
             "cols": cols,
             "rows": rows,
         }));
-    };
+    }
+    Ok(attach_to_tab(s, &key, sender, cols, rows))
+}
+
+/// Register `sender` on a tab's screen and describe what it should render.
+///
+/// The one attach body both verbs run: match the PTY and screen model to this
+/// client's viewport (a TUI draws to the size it was told, so a mismatch
+/// garbles), then hand back the snapshot and the monotonic cursor the pump
+/// will push from. A DEAD tab is never resized — its retained screen is the
+/// last thing its agent painted and must stay legible.
+///
+/// The caller holds the state lock across this, which is what makes the
+/// snapshot and the registration atomic: no bytes land between them.
+fn attach_to_tab(
+    state: &mut AppState,
+    key: &TabKey,
+    sender: &SessionSender,
+    cols: u16,
+    rows: u16,
+) -> Value {
+    let tab = state
+        .tabs
+        .get_mut(key)
+        .expect("the key came from the registry");
     if tab.live && (tab.screen.cols != cols || tab.screen.rows != rows) {
-        // Mid-session resize is allowed — it is a full PTY on the user's
-        // machine; TUIs repaint. A dead agent's retained screen is left
-        // untouched, so the last thing it painted stays legible.
-        tab.screen.set_size(cols, rows);
         let _ = tab.session.resize(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         });
+        tab.screen.set_size(cols, rows);
     }
     tab.screen.register(sender);
-    Ok(json!({
+    json!({
         "term_id": tab.wire_id(),
         "live": tab.live,
         "snapshot": tab.screen.snapshot(),
         "cursor": tab.screen.total,
         "cols": tab.screen.cols,
         "rows": tab.screen.rows,
-    }))
+    })
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
@@ -6693,53 +6635,6 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     let mut s = state.lock().unwrap();
                     let Some(tab) = s.tabs.get_mut(&key) else { return; };
                     tab.screen.flush(&term_id);
-                }
-            }
-        }
-    });
-}
-
-/// Pump one terminal's PTY output into its screen model, coalescing bytes and
-/// flushing one keyed frame per ~`TERM_FLUSH_MS` to every attached client. A
-/// huge burst collapses to a screen snapshot so frame size/rate stay bounded
-/// and control frames (the liveness ping) are never head-of-line-blocked
-/// behind megabytes of output. One pump task per terminal: flush timing stays
-/// independent (one flooding terminal never delays another's flush) and the
-/// task terminates naturally on PTY EOF.
-fn spawn_term_pump(
-    state: Arc<Mutex<AppState>>,
-    term_id: String,
-    mut rx: broadcast::Receiver<Vec<u8>>,
-) {
-    tokio::spawn(async move {
-        let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
-        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                recv = rx.recv() => match recv {
-                    // Update the authoritative screen as bytes arrive; buffer raw
-                    // bytes for the next flush.
-                    Ok(chunk) => {
-                        let mut s = state.lock().unwrap();
-                        // Closed under the pump (term.close / reaper): done.
-                        let Some(term) = s.terms.get_mut(&term_id) else { return; };
-                        term.screen.process(&chunk);
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // PTY EOF — the shell exited on its own. Reap the exit
-                        // status (no zombies) and tell every attached client.
-                        let mut s = state.lock().unwrap();
-                        let Some(term) = s.terms.remove(&term_id) else { return; };
-                        term.session.kill_and_reap();
-                        term.screen.push_closed(&term_id, "exited");
-                        return;
-                    }
-                },
-                _ = flush.tick() => {
-                    let mut s = state.lock().unwrap();
-                    let Some(term) = s.terms.get_mut(&term_id) else { return; };
-                    term.screen.flush(&term_id);
                 }
             }
         }
@@ -7256,6 +7151,13 @@ mod tests {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
+    /// The OS pid behind a tab, addressed the way a client addresses it.
+    fn tab_pid(state: &Arc<Mutex<AppState>>, wire_id: &str) -> Option<u32> {
+        let s = state.lock().unwrap();
+        let key = s.tab_key_of_wire_id(wire_id).ok()?;
+        s.tabs[&key].session.pid()
+    }
+
     /// True once `pid` is fully gone from the process table (killed AND reaped —
     /// a zombie still shows up in `ps` with state Z).
     fn process_reaped(pid: u32) -> bool {
@@ -7326,7 +7228,7 @@ mod tests {
 
         // Close: the PTY is killed AND reaped, the entry is gone, and every
         // attached client hears term.closed{reason:"closed"}.
-        let pid = state.lock().unwrap().terms["term-1"].session.pid().unwrap();
+        let pid = tab_pid(&state, "term-1").expect("the shell is registered");
         let closed = handler(
             SessionSender::detached("s1"),
             req("term.close", json!({ "term_id": "term-1" })),
@@ -7337,7 +7239,7 @@ mod tests {
         })
         .await;
         assert!(!seen.is_empty());
-        assert!(state.lock().unwrap().terms.is_empty());
+        assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
         assert!(process_reaped(pid), "the shell must be killed and reaped");
 
         let relisted = handler(
@@ -7395,59 +7297,152 @@ mod tests {
         assert!(b["result"]["cursor"].as_u64().unwrap() > 0);
     }
 
-    /// The tab row's `+` mints three kinds of tab, and the kind fixes the argv
-    /// server-side (a client only ever names a kind — never a command line). A
-    /// shell tab is the user's own login shell; an agent tab is that provider's
-    /// CLI in YOLO mode, because a human is sitting in front of it.
+    /// A terminal belongs to the WORKTREE it was opened in, not to whichever
+    /// entity happened to name that worktree when it was created.
+    ///
+    /// The client addresses an unadopted worktree as `{project_id,
+    /// worktree_id}` and an adopted one as `{run_id}` — two scope shapes over
+    /// one directory. Keying the registry by the canonical root is what makes
+    /// adoption invisible to an open shell; keying it by scope made the shell
+    /// vanish from the tab row while its process kept running.
+    #[tokio::test]
+    async fn term_list_follows_a_worktree_across_adoption() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
+        let worktree_id = state
+            .lock()
+            .unwrap()
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("feature-x"))
+            .expect("the external worktree is discoverable")
+            .id;
+
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "worktree_id": worktree_id }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        let shell_pid = tab_pid(&state, &term_id).expect("the shell is registered");
+
+        let adopted = handler(
+            SessionSender::detached("s1"),
+            req(
+                "run.adopt",
+                json!({ "project_id": project_id, "worktree_id": worktree_id }),
+            ),
+        );
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+
+        let listed = handler(
+            SessionSender::detached("s1"),
+            req("term.list", json!({ "run_id": run_id })),
+        );
+        let terminals = listed["result"]["terminals"].as_array().unwrap();
+        assert_eq!(
+            terminals.len(),
+            1,
+            "the shell survives adoption on the run scope: {listed:?}"
+        );
+        assert_eq!(terminals[0]["term_id"], json!(term_id));
+        // The SAME shell, not a fresh one: adoption is a record change, and the
+        // process the human was typing into never noticed it.
+        assert_eq!(
+            tab_pid(&state, &term_id),
+            Some(shell_pid),
+            "adoption must not restart the human's shell"
+        );
+    }
+
+    /// One attach verb over one id space. A client holds a row of tabs — some
+    /// shells, one agent — and must not need to know which RPC each one
+    /// answers to; the id says everything.
+    #[tokio::test]
+    async fn one_attach_verb_serves_shells_and_the_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-attach");
+        let (agent_wire_id, _) =
+            ensure_agent_tab(&state, &root, "run-attach", &ModelChoice::default()).unwrap();
+
+        let attached = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.attach",
+                json!({ "term_id": agent_wire_id, "cols": 120, "rows": 40 }),
+            ),
+        );
+        assert_eq!(
+            attached["ok"], true,
+            "term.attach serves an agent id too: {attached:?}"
+        );
+        assert_eq!(attached["result"]["term_id"], json!(agent_wire_id));
+        assert_eq!(attached["result"]["live"], true);
+        assert!(attached["result"]["snapshot"].is_string());
+        assert!(attached["result"]["cursor"].is_u64());
+
+        // A well-formed agent id for a worktree with no tab is still "unknown
+        // term_id", so a stale client drops the tab instead of hanging on one
+        // that swallows every keystroke.
+        let stale = handler(
+            SessionSender::detached("s1"),
+            req("term.attach", json!({ "term_id": "agent:nope" })),
+        );
+        assert_eq!(stale["ok"], false, "{stale:?}");
+        assert_eq!(stale["error"], "unknown term_id");
+    }
+
+    /// A user terminal is the user's own login shell and nothing else. The
+    /// daemon owns the argv, so a client naming a kind can never turn a tab
+    /// into an arbitrary command line.
     #[test]
-    fn term_kinds_launch_the_login_shell_or_a_coding_agent_cli() {
-        let shell = TermKind::Shell.harness_spec("/bin/zsh");
+    fn a_user_terminal_only_ever_launches_the_login_shell() {
+        let shell = shell_harness_spec("/bin/zsh");
         assert_eq!(shell.binary, "/bin/zsh");
         assert_eq!(shell.args, ["-i", "-l"]);
+    }
 
-        let claude = TermKind::Claude.harness_spec("/bin/zsh");
-        assert_eq!(claude.binary, "claude");
-        assert_eq!(claude.args, ["--dangerously-skip-permissions"]);
+    /// The `+` menu no longer offers to start an agent, and the daemon refuses
+    /// to if asked.
+    ///
+    /// A `claude`/`codex` tab carried the provider's approvals bypass and NO
+    /// `done` MCP server: an agent in a worktree that Build could not talk to,
+    /// could not route a report from, and did not count as the worktree's one
+    /// agent. It was the only way to get a second agent into a worktree, so
+    /// removing it is what makes "one worktree, one agent, Build owns it" true
+    /// rather than merely intended. An old client asking must fail loudly and
+    /// be told where the agent actually lives — never fall back to a shell,
+    /// which would silently run a different program than was asked for.
+    #[test]
+    fn a_terminal_kind_naming_an_agent_is_refused_and_points_at_the_agent_tab() {
+        assert!(require_shell_kind(&json!({})).is_ok());
+        assert!(require_shell_kind(&json!({ "kind": "" })).is_ok());
+        assert!(require_shell_kind(&json!({ "kind": "shell" })).is_ok());
 
-        let codex = TermKind::Codex.harness_spec("/bin/zsh");
-        assert_eq!(codex.binary, "codex");
-        assert_eq!(codex.args, ["--dangerously-bypass-approvals-and-sandbox"]);
-
-        // An agent tab is its own session, never a continuation of whatever
-        // launched the daemon — the rule dispatched agents already follow.
-        for spec in [claude, codex] {
+        for named_agent in ["claude", "codex"] {
+            let refused = require_shell_kind(&json!({ "kind": named_agent })).unwrap_err();
             assert!(
-                spec.unset.contains(&"CLAUDECODE".to_string()),
-                "{:?}",
-                spec.unset
+                refused.contains("Agent tab"),
+                "{named_agent}: {refused:?} must name where the agent lives"
             );
         }
-    }
-
-    #[test]
-    fn term_kind_defaults_to_the_shell_and_rejects_an_unknown_program() {
-        assert_eq!(TermKind::parse(&json!({})).unwrap(), TermKind::Shell);
         assert_eq!(
-            TermKind::parse(&json!({ "kind": "shell" })).unwrap(),
-            TermKind::Shell
-        );
-        assert_eq!(
-            TermKind::parse(&json!({ "kind": "claude" })).unwrap(),
-            TermKind::Claude
-        );
-        assert_eq!(
-            TermKind::parse(&json!({ "kind": "codex" })).unwrap(),
-            TermKind::Codex
-        );
-        assert_eq!(
-            TermKind::parse(&json!({ "kind": "sh -c curl evil" })).unwrap_err(),
-            "unknown terminal kind \"sh -c curl evil\" — expected shell, claude, or codex"
+            require_shell_kind(&json!({ "kind": "sh -c curl evil" })).unwrap_err(),
+            "unknown terminal kind \"sh -c curl evil\" — a user terminal is always the shell"
         );
     }
 
-    /// The kind rides the wire both ways: `term.create` echoes it and `term.list`
-    /// carries it, so a reloaded client can label an agent tab "Claude Code"
-    /// instead of guessing "Terminal".
+    /// The kind rides the wire both ways: `term.create` echoes it and
+    /// `term.list` carries it, so a reloaded client labels the tab by what is
+    /// actually running in it. There is only one answer now — `shell` — and it
+    /// stays on the wire because the SPA reads it.
     #[tokio::test]
     async fn term_create_carries_its_kind_onto_the_tab_list() {
         let (dir, repo) = init_repo();
@@ -7488,65 +7483,7 @@ mod tests {
                 .contains("unknown terminal kind"),
             "{bogus:?}"
         );
-        assert_eq!(state.lock().unwrap().terms.len(), 1);
-    }
-
-    /// The argv assertions above cannot tell a correctly-built spec from one that
-    /// never reaches a process, so this drives the REAL binary: a `claude` tab in
-    /// a real project scope must paint claude's own UI into the term stream.
-    ///
-    /// Ignored by default — it needs `claude` installed and authenticated, which
-    /// does not belong in `cargo test`. Run it after touching the spawn path:
-    ///
-    /// ```text
-    /// cargo test --lib real_claude_terminal -- --ignored --nocapture
-    /// ```
-    #[tokio::test]
-    #[ignore = "spawns the real claude binary; needs auth"]
-    async fn real_claude_terminal_tab_starts_the_cli() {
-        let (dir, repo) = init_repo();
-        let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        let project_id = state.lock().unwrap().projects[0].id.clone();
-
-        let created = handler(
-            SessionSender::detached("s1"),
-            req(
-                "term.create",
-                json!({ "project_id": project_id, "kind": "claude", "cols": 100, "rows": 30 }),
-            ),
-        );
-        assert_eq!(created["ok"], true, "{created:?}");
-        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
-
-        let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let attached = handler(
-            sender,
-            req(
-                "term.attach",
-                json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
-            ),
-        );
-        assert_eq!(attached["ok"], true, "{attached:?}");
-
-        // claude paints its own chrome within seconds; anything from it proves the
-        // binary resolved, the YOLO flag was accepted, and the PTY is streaming.
-        //
-        // Observed (claude 2.1.219): in a directory claude has not seen, that first
-        // paint is its workspace-trust dialog. Deliberately not pre-trusted here —
-        // an agent tab is opened by a human who is looking at it, and Build writes
-        // trust into claude's shared registry only for worktrees it created itself,
-        // never for the user's own checkout or one they made by hand. Nothing is
-        // injected into these tabs, so no dialog can swallow a prompt (the failure
-        // `pre_trust_worktree_for_claude` exists to prevent on dispatched runs).
-        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
-            let text = output_text(seen, &term_id).to_lowercase();
-            text.contains("claude") || text.contains("welcome") || text.contains("bypassing")
-        })
-        .await;
-        eprintln!(
-            "--- claude tab output ---\n{}",
-            output_text(&seen, &term_id)
-        );
+        assert_eq!(state.lock().unwrap().shell_tab_count(), 1);
     }
 
     #[tokio::test]
@@ -7585,7 +7522,7 @@ mod tests {
         );
         let (sender, mut pushes, key) = SessionSender::observable("s1");
         handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
-        let pid = state.lock().unwrap().terms["term-1"].session.pid().unwrap();
+        let pid = tab_pid(&state, "term-1").expect("the shell is registered");
 
         // The user types `exit`: the shell ends on its own (PTY EOF).
         handler(
@@ -7599,7 +7536,7 @@ mod tests {
             p["type"] == "term.closed" && p["term_id"] == "term-1" && p["reason"] == "exited"
         })
         .await;
-        assert!(state.lock().unwrap().terms.is_empty());
+        assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
         assert!(process_reaped(pid), "an exited shell must still be reaped");
     }
 
@@ -7905,7 +7842,7 @@ mod tests {
         };
         let (shell_tab, _shell_rx) = Tab::spawn(
             TabRole::Shell,
-            &TermKind::Shell.harness_spec("/bin/bash"),
+            &shell_harness_spec("/bin/bash"),
             "term-99".to_string(),
             shell_root,
             80,
@@ -8084,23 +8021,31 @@ mod tests {
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
     }
 
+    /// One registry, one detach loop: a closed relay session must come off
+    /// EVERY tab's screen — the agent's as much as a shell's. A pump still
+    /// encrypting output into a session the relay has dropped fails silently
+    /// and shows up only as CPU.
     #[tokio::test]
     async fn a_close_frame_detaches_the_sessions_terminal_sender() {
         let (dir, repo) = init_repo();
-        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-detach");
         let project_id = state.lock().unwrap().projects[0].id.clone();
+        let (agent_wire_id, _) =
+            ensure_agent_tab(&state, &root, "run-detach", &ModelChoice::default()).unwrap();
         handler(
             SessionSender::detached("s-live"),
             req("term.create", json!({ "project_id": project_id })),
         );
-        handler(
-            SessionSender::detached("s-live"),
-            req("term.attach", json!({ "term_id": "term-1" })),
-        );
-        handler(
-            SessionSender::detached("s-dead"),
-            req("term.attach", json!({ "term_id": "term-1" })),
-        );
+        for session_id in ["s-live", "s-dead"] {
+            handler(
+                SessionSender::detached(session_id),
+                req("term.attach", json!({ "term_id": "term-1" })),
+            );
+            handler(
+                SessionSender::detached(session_id),
+                req("term.attach", json!({ "term_id": agent_wire_id.clone() })),
+            );
+        }
 
         let close = Frame {
             session_id: "s-dead".into(),
@@ -8114,16 +8059,26 @@ mod tests {
         assert_eq!(response["ok"], true);
 
         let s = state.lock().unwrap();
-        let attached: Vec<&str> = s.terms["term-1"]
-            .screen
-            .attached
-            .iter()
-            .map(SessionSender::session_id)
-            .collect();
+        let attached_to = |wire_id: &str| -> Vec<String> {
+            s.tabs
+                .values()
+                .find(|tab| tab.wire_id() == wire_id)
+                .expect("the tab is still registered")
+                .screen
+                .attached
+                .iter()
+                .map(|snd| snd.session_id().to_string())
+                .collect()
+        };
         assert_eq!(
-            attached,
-            vec!["s-live"],
-            "only the closed session's sender is dropped"
+            attached_to("term-1"),
+            vec!["s-live".to_string()],
+            "only the closed session's sender is dropped from a shell"
+        );
+        assert_eq!(
+            attached_to(&agent_wire_id),
+            vec!["s-live".to_string()],
+            "…and from the agent tab too"
         );
     }
 
@@ -13241,19 +13196,48 @@ mod tests {
     }
 
     /// The pulse means "an agent is working here", which is a different claim
-    /// from "a tab is open". A shell is never an agent, and an agent that has
-    /// stopped painting is waiting for you, not working.
-    #[test]
-    fn only_a_recently_painting_agent_counts_as_working() {
-        let just_now = Duration::from_secs(1);
-        let a_while = AGENT_WORKING_WINDOW + Duration::from_secs(1);
+    /// from "a tab is open". A shell is never an agent; an agent that has
+    /// stopped painting is waiting for you, not working; and a dead agent's
+    /// retained screen is not a heartbeat.
+    ///
+    /// The signal is read off the worktree's agent TAB now, not off a
+    /// terminal's kind — a tab is the only place an agent can be, so there is
+    /// nowhere else for the pulse to come from.
+    #[tokio::test]
+    async fn only_a_recently_painting_agent_counts_as_working() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-pulse");
+        ensure_agent_tab(&state, &root, "run-pulse", &ModelChoice::default()).unwrap();
 
-        assert!(agent_is_working(TermKind::Claude, just_now));
-        assert!(agent_is_working(TermKind::Codex, just_now));
+        let key = TabKey::agent(&AppState::canonical_root(&root));
+        let mut s = state.lock().unwrap();
+        let agent = s.tabs.get(&key).expect("the agent tab");
+        assert!(
+            agent_is_working(agent),
+            "a freshly spawned agent has just painted"
+        );
+
         // Left at its prompt overnight: alive, not working.
-        assert!(!agent_is_working(TermKind::Claude, a_while));
+        let dead = {
+            let agent = s.tabs.get_mut(&key).unwrap();
+            agent.live = false;
+            agent_is_working(agent)
+        };
+        assert!(!dead, "a dead agent's retained screen is not a heartbeat");
+
         // The human's own shell is never an agent, however busy it looks.
-        assert!(!agent_is_working(TermKind::Shell, just_now));
+        let shell_root = AppState::canonical_root(&repo);
+        let (shell, _rx) = Tab::spawn(
+            TabRole::Shell,
+            &shell_harness_spec("/bin/bash"),
+            "term-77".to_string(),
+            shell_root.clone(),
+            80,
+            24,
+        )
+        .expect("a shell tab spawns");
+        assert!(!agent_is_working(&shell));
+        shell.session.kill_and_reap();
     }
 
     /// The board reports it per worktree, so a bare worktree — which has no run

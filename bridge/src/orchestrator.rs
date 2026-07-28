@@ -380,8 +380,11 @@ pub struct ActiveRun {
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
     pub adopted: bool,
-    /// Warm-session continuation flag: set at adoption, consumed by the first
-    /// session spawn afterwards.
+    /// VESTIGIAL. Set at adoption, and nothing reads it: continuation is now
+    /// decided per spawn by the transcript probe, because a Build-owned tab
+    /// respawned after a crash should always pick its own conversation back up
+    /// — not only the first time after an adoption. Kept because it is on every
+    /// `PersistedRun` on disk and dropping it needs a store migration.
     pub pending_continuation: bool,
     /// Which model/effort this run's agents run on (None = harness default).
     pub model_choice: ModelChoice,
@@ -474,13 +477,17 @@ pub struct SpawnOptions {
 /// Builds an interactive harness command for a rendered prompt + model + context.
 ///
 /// The prompt is supplied so test and custom adapters can inspect the turn being
-/// dispatched, but it is always submitted through the spawned PTY by
-/// [`spawn_into_slot`](Orchestrator::spawn_into_slot), never baked into argv.
+/// dispatched, but it is always submitted through the tab's PTY, never baked
+/// into argv.
 pub type WarmBuilder =
     std::sync::Arc<dyn Fn(&str, &ModelChoice, &SpawnOptions) -> HarnessSpec + Send + Sync>;
 
 /// Whether the harness has an existing conversation transcript for a worktree
-/// cwd. Injectable so tests never touch the real home directory.
+/// cwd — the one question `--continue` turns on. Its whole job is picking a
+/// conversation back up that Build did not start in this process: a tab
+/// respawned after a daemon restart or a crash, or an agent the user ran in
+/// the worktree by hand before Build ever looked at it. Injectable so tests
+/// never touch the real home directory.
 pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
 
 const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
@@ -565,9 +572,6 @@ pub struct Orchestrator {
     agent: Agent,
     templates: Templates,
     pty_size: PtySize,
-    /// Decides whether an adopted task's first session may continue the
-    /// harness's prior conversation. Defaults to "never" — the app layer opts in.
-    transcript_probe: TranscriptProbe,
 }
 
 impl Orchestrator {
@@ -594,15 +598,7 @@ impl Orchestrator {
                 pixel_width: 0,
                 pixel_height: 0,
             },
-            transcript_probe: std::sync::Arc::new(|_, _| false),
         }
-    }
-
-    /// Opt in to harness-conversation continuation for adopted tasks: `probe`
-    /// answers whether a transcript exists for a worktree cwd.
-    pub fn with_transcript_probe(mut self, probe: TranscriptProbe) -> Self {
-        self.transcript_probe = probe;
-        self
     }
 
     /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize

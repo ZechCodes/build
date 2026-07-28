@@ -7,17 +7,21 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
 import { mountIssuesTab } from "./issues.js";
 import { openNewIssue } from "../sheets/newIssue.js";
 
+/** The project surface's tabs, in row order. The primary checkout is a worktree
+ *  like any other, so it carries the same Agent fixture — the one agent that
+ *  can run in the repo root, always reachable, never started by opening it. */
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "inbox", label: "Inbox" },
   { id: "issues", label: "Issues" },
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
+  AGENT_TAB,
   ...terminalTabs,
 ];
 
@@ -60,7 +64,7 @@ export async function renderMain() {
       onSelect: (id) => selectTab(id),
       onClose: (id) => closeTerminal(id),
       newTabOptions: NEW_TAB_KINDS,
-      onNewTab: (kind) => newTerminal(kind),
+      onNewTab: () => newTerminal(),
     });
   };
 
@@ -73,9 +77,17 @@ export async function renderMain() {
     const body = $("#tabbody");
     // Terminal tabs go edge-to-edge; Changes/Files run flush (their own rail +
     // detail panes each scroll internally, so the body owns no padding/scroll).
-    body.classList.toggle("bare", /^term-/.test(id));
+    body.classList.toggle("bare", id === "agent" || /^term-/.test(id));
     body.classList.toggle("flush", id === "changes" || id === "files");
-    if (id === "inbox") {
+    if (id === "agent") {
+      // The primary checkout's own agent, addressed by the project scope. Build
+      // dispatches its runs into their own worktrees, so this is normally empty
+      // — but a worktree the human works in directly can hold one, and the tab
+      // is where it shows up.
+      aux = mountAgentTab(body, scope, {
+        idleLabel: "no agent is running in this checkout",
+      });
+    } else if (id === "inbox") {
       aux = mountProjectInbox(body, {
         projectId,
         callRpc: (method, params) => App.call(method, params),
@@ -112,10 +124,10 @@ export async function renderMain() {
     }
   };
 
-  const newTerminal = async (kind) => {
+  const newTerminal = async () => {
     let termId;
     try {
-      termId = await terminals.create(kind);
+      termId = await terminals.create();
     } catch (e) {
       const body = $("#tabbody");
       if (body) body.innerHTML = `<div class="empty">cannot open a terminal: ${esc((e && e.message) || "error")}</div>`;

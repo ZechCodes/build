@@ -172,6 +172,71 @@ describe("TerminalSocket", () => {
     socket.close();
   });
 
+  // An agent belongs to a WORKTREE, and its wire id (`agent:<worktree_id>`) is a
+  // hash the client cannot compute. So a surface attaches by what it holds — a
+  // run/plan id, or the scope of the directory it is showing — and the bridge
+  // answers with the id every later frame, keystroke and resize is keyed by.
+  it("attachAgent sends the surface's own address and keys the screen by the id the bridge answers with", async () => {
+    const { socket, ws, init } = await connected();
+    const outputs = [];
+    const attaching = socket.attachAgent(
+      { project_id: "p1", worktree_id: "wt-9" },
+      { cols: 120, rows: 40, onSnapshot: () => {}, onOutput: (b) => outputs.push(dec(b)), onLive: () => {} },
+    );
+    attaching.catch(() => {});
+    await tick();
+    const attach = lastPayload(ws);
+    expect(attach.method).toBe("agent.attach");
+    expect(attach.params).toEqual({ project_id: "p1", worktree_id: "wt-9", cols: 120, rows: 40 });
+    const result = await (respond(ws, init, attach.id, {
+      term_id: "agent:wt-9",
+      snapshot: b64(""),
+      cursor: 0,
+      live: true,
+    }),
+    attaching);
+    // The caller learns the wire id from the attach — it is what term.input and
+    // term.resize address, and what the pane must keep.
+    expect(result.term_id).toBe("agent:wt-9");
+
+    push(ws, init, { type: "term.output", term_id: "agent:wt-9", cursor: 1, data: b64("painting") });
+    await tick();
+    expect(outputs).toEqual(["painting"]);
+    socket.close();
+  });
+
+  // The bridge registers this client under its state lock and enqueues the
+  // response afterwards, so a pump flush can slip in between. Those bytes carry
+  // the real wire id, which the client does not learn until the response lands —
+  // dropping them would lose output permanently (the cursor only moves forward).
+  it("keeps agent frames that outran the attach response, then replays them in order", async () => {
+    const { socket, ws, init } = await connected();
+    const snapshots = [];
+    const outputs = [];
+    const attaching = socket.attachAgent(
+      { id: "run-3" },
+      {
+        cols: 120, rows: 40,
+        onSnapshot: (b) => snapshots.push(dec(b)),
+        onOutput: (b) => outputs.push(dec(b)),
+        onLive: () => {},
+      },
+    );
+    attaching.catch(() => {});
+    await tick();
+    const attach = lastPayload(ws);
+
+    // Bytes for an id this client cannot yet have registered.
+    push(ws, init, { type: "term.output", term_id: "agent:wt-7", cursor: 6, data: b64("outran") });
+    await tick();
+    respond(ws, init, attach.id, { term_id: "agent:wt-7", snapshot: b64("SCREEN"), cursor: 5, live: true });
+    await attaching;
+    await tick();
+    expect(snapshots).toEqual(["SCREEN"]);
+    expect(outputs).toEqual(["outran"]);
+    socket.close();
+  });
+
   it("term.closed deregisters a user terminal but retains an agent screen on session-end", async () => {
     const { socket, ws, init } = await connected();
     const userClosed = [];
@@ -184,14 +249,14 @@ describe("TerminalSocket", () => {
     respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
     await at1;
 
-    const at2 = socket.attachAgent("task-5", {
+    const at2 = socket.attachAgent({ id: "task-5" }, {
       cols: 120, rows: 40,
       onSnapshot: () => {}, onOutput: (x) => agentOut.push(dec(x)),
       onClosed: (r) => agentClosed.push(r), onLive: () => {},
     });
     at2.catch(() => {});
     await tick();
-    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0, live: true });
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-5", snapshot: b64(""), cursor: 0, live: true });
     await at2;
 
     // User terminal exits → onClosed + deregister (a later frame is ignored).
@@ -203,11 +268,11 @@ describe("TerminalSocket", () => {
     await tick();
 
     // Agent session ends → onClosed fires but the screen stays registered.
-    push(ws, init, { type: "term.closed", term_id: "agent:task-5", reason: "agent_session_ended" });
+    push(ws, init, { type: "term.closed", term_id: "agent:wt-5", reason: "agent_session_ended" });
     await tick();
     expect(agentClosed).toEqual(["agent_session_ended"]);
     // A new session's output still routes to the retained agent screen.
-    push(ws, init, { type: "term.output", term_id: "agent:task-5", cursor: 1, data: b64("next") });
+    push(ws, init, { type: "term.output", term_id: "agent:wt-5", cursor: 1, data: b64("next") });
     await tick();
     expect(agentOut.slice(outsBefore)).toEqual(["next"]);
     socket.close();
@@ -226,10 +291,10 @@ describe("TerminalSocket", () => {
     respond(ws, init, lastPayload(ws).id, { snapshot: b64("U1"), cursor: 3 });
     await at1;
 
-    const at2 = socket.attachAgent("task-5", { cols: 120, rows: 40, onSnapshot: (b) => agentSnaps.push(dec(b)), onLive: (l) => lives.push(l) });
+    const at2 = socket.attachAgent({ id: "task-5" }, { cols: 120, rows: 40, onSnapshot: (b) => agentSnaps.push(dec(b)), onLive: (l) => lives.push(l) });
     at2.catch(() => {});
     await tick();
-    respond(ws, init, lastPayload(ws).id, { snapshot: b64("A1"), cursor: 10, live: true });
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-5", snapshot: b64("A1"), cursor: 10, live: true });
     await at2;
     expect(lives).toEqual([true]);
 
@@ -253,7 +318,7 @@ describe("TerminalSocket", () => {
     p = lastPayload(ws2);
     expect(p.method).toBe("agent.attach");
     expect(p.params).toEqual({ id: "task-5", cols: 120, rows: 40 });
-    respond(ws2, init2, p.id, { snapshot: b64("A2"), cursor: 20, live: false });
+    respond(ws2, init2, p.id, { term_id: "agent:wt-5", snapshot: b64("A2"), cursor: 20, live: false });
     await tick();
     expect(agentSnaps).toEqual(["A1", "A2"]);
     expect(lives).toEqual([true, false]);
@@ -269,7 +334,7 @@ describe("TerminalSocket", () => {
     // term.reset{cursor: total} — resets never advance `total`, so the cursor is
     // EQUAL to the attach cursor. The wipe must still apply or the new session's
     // bytes garble over the old screen.
-    const at = socket.attachAgent("task-9", {
+    const at = socket.attachAgent({ id: "task-9" }, {
       cols: 120, rows: 40,
       onSnapshot: (b) => snaps.push(dec(b)),
       onOutput: (b) => outputs.push(dec(b)),
@@ -277,12 +342,12 @@ describe("TerminalSocket", () => {
     });
     at.catch(() => {});
     await tick();
-    respond(ws, init, lastPayload(ws).id, { snapshot: b64("OLD SCREEN"), cursor: 42, live: true });
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-9", snapshot: b64("OLD SCREEN"), cursor: 42, live: true });
     await at;
     expect(snaps).toEqual(["OLD SCREEN"]);
 
-    push(ws, init, { type: "term.reset", term_id: "agent:task-9", cursor: 42, data: b64("") });
-    push(ws, init, { type: "term.output", term_id: "agent:task-9", cursor: 50, data: b64("new session") });
+    push(ws, init, { type: "term.reset", term_id: "agent:wt-9", cursor: 42, data: b64("") });
+    push(ws, init, { type: "term.output", term_id: "agent:wt-9", cursor: 50, data: b64("new session") });
     await tick();
     expect(snaps).toEqual(["OLD SCREEN", ""]);
     expect(outputs).toEqual(["new session"]);
@@ -293,31 +358,31 @@ describe("TerminalSocket", () => {
     const { socket, ws, init } = await connected();
     const lives = [];
     const closed = [];
-    const at = socket.attachAgent("task-4", {
+    const at = socket.attachAgent({ id: "task-4" }, {
       cols: 120, rows: 40,
       onSnapshot: () => {}, onOutput: () => {},
       onLive: (l) => lives.push(l), onClosed: (r) => closed.push(r),
     });
     at.catch(() => {});
     await tick();
-    respond(ws, init, lastPayload(ws).id, { snapshot: b64("LAST"), cursor: 10, live: false });
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-4", snapshot: b64("LAST"), cursor: 10, live: false });
     await at;
     expect(lives).toEqual([false]);
 
     // A new session starts while the tab stays mounted: the pump's reset +
     // output arrive with no new attach. The screen must report live again so
     // the "no active agent session" chip clears.
-    push(ws, init, { type: "term.reset", term_id: "agent:task-4", cursor: 10, data: b64("") });
+    push(ws, init, { type: "term.reset", term_id: "agent:wt-4", cursor: 10, data: b64("") });
     await tick();
     expect(lives).toEqual([false, true]);
     // Further frames do not re-report (no chip-toggling spam).
-    push(ws, init, { type: "term.output", term_id: "agent:task-4", cursor: 12, data: b64("x") });
+    push(ws, init, { type: "term.output", term_id: "agent:wt-4", cursor: 12, data: b64("x") });
     await tick();
     expect(lives).toEqual([false, true]);
 
     // Session ends (screen retained) → the NEXT session's frames re-report live.
-    push(ws, init, { type: "term.closed", term_id: "agent:task-4", reason: "agent_session_ended" });
-    push(ws, init, { type: "term.output", term_id: "agent:task-4", cursor: 20, data: b64("y") });
+    push(ws, init, { type: "term.closed", term_id: "agent:wt-4", reason: "agent_session_ended" });
+    push(ws, init, { type: "term.output", term_id: "agent:wt-4", cursor: 20, data: b64("y") });
     await tick();
     expect(closed).toEqual(["agent_session_ended"]);
     expect(lives).toEqual([false, true, true]);
@@ -375,10 +440,10 @@ describe("TerminalSocket", () => {
   it("reconnect reaps an agent screen whose task is gone (no eternal retry)", async () => {
     const { socket, ws, init } = await connected();
     const closed = [];
-    const at = socket.attachAgent("task-7", { cols: 120, rows: 40, onSnapshot: () => {}, onLive: () => {}, onClosed: (r) => closed.push(r) });
+    const at = socket.attachAgent({ id: "task-7" }, { cols: 120, rows: 40, onSnapshot: () => {}, onLive: () => {}, onClosed: (r) => closed.push(r) });
     at.catch(() => {});
     await tick();
-    respond(ws, init, lastPayload(ws).id, { snapshot: b64("A"), cursor: 1, live: false });
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-7", snapshot: b64("A"), cursor: 1, live: false });
     await at;
 
     // The task is deleted while we are away; the re-attach is rejected.
@@ -409,24 +474,17 @@ describe("TerminalSocket", () => {
   it("create/list/close carry the scope spread and the right shapes", async () => {
     const { socket, ws, init } = await connected();
 
-    // No kind given → a shell, the same reading the daemon gives an absent one.
+    // term.create asks for a scope and a grid, and nothing else: every terminal
+    // the human opens is their shell. The one agent of a worktree is Build's,
+    // and it is started by a delivery into its own tab — never from here.
     const creating = socket.createTerminal({ project_id: "proj-1" }, 80, 24);
     creating.catch(() => {});
     await tick();
     let p = lastPayload(ws);
     expect(p.method).toBe("term.create");
-    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24, kind: "shell" });
+    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24 });
     respond(ws, init, p.id, { term_id: "term-7", kind: "shell", cols: 80, rows: 24 });
     expect(await creating).toEqual({ term_id: "term-7", kind: "shell", cols: 80, rows: 24 });
-
-    // An agent tab names its kind; the daemon owns the argv behind it.
-    const creatingAgent = socket.createTerminal({ project_id: "proj-1" }, 80, 24, "codex");
-    creatingAgent.catch(() => {});
-    await tick();
-    p = lastPayload(ws);
-    expect(p.params).toEqual({ project_id: "proj-1", cols: 80, rows: 24, kind: "codex" });
-    respond(ws, init, p.id, { term_id: "term-8", kind: "codex", cols: 80, rows: 24 });
-    expect(await creatingAgent).toEqual({ term_id: "term-8", kind: "codex", cols: 80, rows: 24 });
 
     const listing = socket.listTerminals({ run_id: "run-3" });
     listing.catch(() => {});

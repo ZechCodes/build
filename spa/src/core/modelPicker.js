@@ -10,6 +10,26 @@ export function providerOptionsHtml(providers, selectedId) {
     .join("");
 }
 
+/** Pure: the providers as a card picker. Used where the choice is made BEFORE
+ *  the thing it configures exists (the new-worktree sheet), so there is nothing
+ *  yet to hang a `<select>` off. `selectedId` marks the chosen card. */
+export function providerCardsHtml(providers, selectedId) {
+  const cards = (providers || [])
+    .map(
+      (provider) =>
+        `<button class="chooser-card${provider.id === selectedId ? " chosen" : ""}" type="button" data-provider="${esc(provider.id)}">
+          <span class="chooser-card-label">${esc(provider.label)}</span>${
+            provider.description ? `<span class="chooser-card-desc">${esc(provider.description)}</span>` : ""
+          }
+        </button>`,
+    )
+    .join("");
+  return `<div class="chooser">
+    <div class="chooser-head">Which agent works here?</div>
+    <div class="chooser-cards">${cards}</div>
+  </div>`;
+}
+
 export function catalogForProvider(catalog, providerId) {
   const providers = catalog.providers || [];
   return providers.find((provider) => provider.id === providerId) || providers[0] || { models: [], efforts: [] };

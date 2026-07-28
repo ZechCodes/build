@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-// Naming a worktree: the picker cards, the branch preview, and the one-shot
-// hand-off that opens the chosen tool when the surface mounts.
+// Naming a worktree: the agent picker, the branch preview, and the one-shot
+// hand-off that opens the Agent tab when the surface mounts.
 
 import { describe, it, expect } from "vitest";
-import { kindCardsHtml, NEW_TAB_KINDS } from "../src/core/surfaceTabs.js";
+import { providerCardsHtml } from "../src/core/modelPicker.js";
 import { markNewWorktree, takeNewWorktreeMark } from "../src/core/newWorktree.js";
 import { slugPreview } from "../src/sheets/newWorktree.js";
 
@@ -16,17 +16,28 @@ const memoryStorage = () => {
   };
 };
 
-describe("kindCardsHtml", () => {
-  it("offers every kind as a card carrying its id", () => {
-    const html = kindCardsHtml();
-    for (const kind of NEW_TAB_KINDS) {
-      expect(html).toContain(`data-kind="${kind.id}"`);
-      expect(html).toContain(kind.label);
-    }
+// The sheet asks WHICH AGENT works in this worktree — not which tool to open a
+// terminal on. A worktree has one agent; the answer rides along as the run's
+// provider when the first turn adopts it.
+describe("providerCardsHtml", () => {
+  it("offers every provider the daemon knows as a card carrying its id", () => {
+    const html = providerCardsHtml([
+      { id: "claude", label: "Claude Code" },
+      { id: "codex", label: "Codex" },
+    ]);
+    expect(html).toContain('data-provider="claude"');
+    expect(html).toContain('data-provider="codex"');
+    expect(html).toContain("Claude Code");
   });
 
-  it("escapes option strings", () => {
-    const html = kindCardsHtml([{ id: "x", label: "<b>x</b>", description: "<img src=x>" }]);
+  it("marks the chosen one, so the answer survives a re-render", () => {
+    const html = providerCardsHtml([{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }], "codex");
+    expect(html).toMatch(/chooser-card chosen[^>]*data-provider="codex"/);
+    expect(html).not.toMatch(/chooser-card chosen[^>]*data-provider="claude"/);
+  });
+
+  it("escapes everything a catalog supplies", () => {
+    const html = providerCardsHtml([{ id: "x", label: "<b>x</b>", description: "<img src=x>" }]);
     expect(html).not.toContain("<b>x</b>");
     expect(html).not.toContain("<img");
   });
@@ -56,14 +67,14 @@ describe("slugPreview", () => {
 });
 
 describe("the new-worktree hand-off", () => {
-  it("carries the chosen tool to the surface exactly once", () => {
+  it("carries the chosen agent to the surface exactly once", () => {
     const storage = memoryStorage();
     markNewWorktree("wt-1", "codex", storage);
     expect(takeNewWorktreeMark("wt-1", storage)).toBe("codex");
     expect(takeNewWorktreeMark("wt-1", storage)).toBeNull();
   });
 
-  it("marks nothing without both a worktree and a tool", () => {
+  it("marks nothing without both a worktree and an agent", () => {
     const storage = memoryStorage();
     markNewWorktree("wt-1", null, storage);
     markNewWorktree(null, "claude", storage);
@@ -80,7 +91,7 @@ describe("the new-worktree hand-off", () => {
       },
       removeItem() {},
     };
-    expect(() => markNewWorktree("wt-1", "shell", hostile)).not.toThrow();
+    expect(() => markNewWorktree("wt-1", "claude", hostile)).not.toThrow();
     expect(takeNewWorktreeMark("wt-1", hostile)).toBeNull();
   });
 });

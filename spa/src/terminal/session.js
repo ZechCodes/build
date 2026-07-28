@@ -22,6 +22,11 @@ const b64decodeBytes = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt
 const timeout = (ms, msg) => new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
 const noop = () => {};
 
+/** How many frames one not-yet-named agent screen may hold while its attach is
+ *  in flight. A repainting TUI is a handful of coalesced frames in that window;
+ *  the cap is what keeps a pathological flood from growing without bound. */
+const ORPHAN_FRAME_LIMIT = 64;
+
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     if (typeof getPinnedDeviceKey !== "function") {
@@ -41,10 +46,16 @@ export class TerminalSocket {
     this._onStatus = noop;
     this._closed = false;
     this._backoff = 400;
-    // termId → { kind, taskId?, cols, rows, lastCursor, onOutput, onSnapshot, onClosed, onLive }
+    // termId → { kind, attachParams, cols, rows, lastCursor, onOutput, onSnapshot, onClosed, onLive }
     this._terms = new Map();
     this._connected = false;
     this._connectWaiters = [];
+    // Agent frames that arrived before their attach response named the wire id
+    // they belong to: term_id → [frame]. Only ever non-empty while an agent
+    // attach is in flight (see _bufferOrphanFrame).
+    this._orphanFrames = new Map();
+    this._agentAttachesInFlight = 0;
+    this._agentAttachSeq = 0;
   }
 
   onStatus(fn) { this._onStatus = fn; } // 'connecting'|'connected'|'disconnected'
@@ -62,14 +73,15 @@ export class TerminalSocket {
 
   // ---- terminal lifecycle (all ride this one socket) --------------------
 
-  /** term.create — mint a user terminal in the given scope. `kind` picks what
-   *  runs in it (shell / claude / codex); the daemon owns each kind's argv. */
-  async createTerminal(scope, cols, rows, kind = "shell") {
+  /** term.create — mint one of the user's shells in the given scope. Only a
+   *  shell: a worktree's agent is Build's, lives in its Agent tab, and is
+   *  started by a delivery rather than by opening a terminal. */
+  async createTerminal(scope, cols, rows) {
     await this.whenConnected();
-    return this._call("term.create", { ...scope, cols, rows, kind });
+    return this._call("term.create", { ...scope, cols, rows });
   }
 
-  /** term.list — the open user terminals for a scope (never agent ids). */
+  /** term.list — the user's open shells for a scope (never the agent). */
   async listTerminals(scope) {
     await this.whenConnected();
     const r = await this._call("term.list", { ...scope });
@@ -101,20 +113,76 @@ export class TerminalSocket {
     return r;
   }
 
-  /** Register a task's agent screen and attach — never errors on a dead session. */
-  async attachAgent(taskId, opts = {}) {
+  /**
+   * Register a worktree's agent screen and attach — never errors on a dead
+   * session. `target` is how the calling surface addresses that worktree:
+   * `{ id }` for a run or plan, or the same scope shapes the shells use
+   * (`{ run_id }`, `{ project_id, worktree_id }`, `{ project_id }`).
+   *
+   * An agent's wire id is `agent:<worktree_id>`, a hash of the canonical root
+   * that no client can compute, so the registration starts under a provisional
+   * key and is re-keyed to the id the bridge answers with. The caller reads
+   * that id off the result: it is what term.input/term.resize address.
+   */
+  async attachAgent(target, opts = {}) {
     await this.whenConnected();
-    const termId = `agent:${taskId}`;
-    const entry = this._register(termId, "agent", taskId, opts);
+    const attachParams = { ...(target || {}) };
+    const provisionalId = `agent:pending-${++this._agentAttachSeq}`;
+    const entry = this._register(provisionalId, "agent", attachParams, opts);
+    this._agentAttachesInFlight += 1;
     let r;
     try {
-      r = await this._call("agent.attach", { id: taskId, cols: entry.cols, rows: entry.rows });
+      r = await this._call("agent.attach", { ...attachParams, cols: entry.cols, rows: entry.rows });
     } catch (e) {
-      this._deregisterFailedAttach(termId, entry);
+      this._deregisterFailedAttach(provisionalId, entry);
+      this._agentAttachSettled();
       throw e;
     }
+    this._rekeyAgent(provisionalId, entry, r.term_id);
+    this._agentAttachSettled();
     this._applyAttachResult(entry, r);
     return r;
+  }
+
+  /** Move an agent registration onto the wire id the bridge just named, and
+   *  hand it whatever frames arrived under that id while it was unknown. */
+  _rekeyAgent(currentId, entry, wireId) {
+    if (!wireId || wireId === currentId) return;
+    if (this._terms.get(currentId) === entry) this._terms.delete(currentId);
+    this._terms.set(wireId, entry);
+    const outran = this._orphanFrames.get(wireId);
+    if (outran) {
+      this._orphanFrames.delete(wireId);
+      entry.preAttach.unshift(...outran);
+    }
+  }
+
+  /** One agent attach finished (either way). With none left in flight, nothing
+   *  can claim a buffered frame, so the buffer is dropped rather than grown. */
+  _agentAttachSettled() {
+    this._agentAttachesInFlight -= 1;
+    if (this._agentAttachesInFlight <= 0) {
+      this._agentAttachesInFlight = 0;
+      this._orphanFrames.clear();
+    }
+  }
+
+  /** Hold a frame for an agent id no registration answers to YET.
+   *
+   *  The bridge registers this client under its state lock and enqueues the
+   *  attach response after the handler returns, so a pump flush can land in
+   *  between — carrying the very wire id the response is about to reveal.
+   *  Dropping those bytes loses them for good (the cursor only moves forward),
+   *  so they wait here for the attach that is already in flight to claim them.
+   *  Nothing is buffered outside that window. */
+  _bufferOrphanFrame(p) {
+    if (this._agentAttachesInFlight <= 0) return;
+    if (!String(p.term_id).startsWith("agent:")) return;
+    if (p.type !== "term.output" && p.type !== "term.reset") return;
+    const held = this._orphanFrames.get(p.term_id) || [];
+    if (held.length >= ORPHAN_FRAME_LIMIT) return;
+    held.push(p);
+    this._orphanFrames.set(p.term_id, held);
   }
 
   /** An attach that never took must not leave its registration behind — a dead
@@ -154,9 +222,9 @@ export class TerminalSocket {
     await this._call("term.resize", { term_id: termId, cols, rows });
   }
 
-  _register(termId, kind, taskId, opts) {
+  _register(termId, kind, attachParams, opts) {
     const entry = {
-      kind, taskId,
+      kind, attachParams,
       cols: opts.cols || 80,
       rows: opts.rows || 24,
       lastCursor: 0,
@@ -290,8 +358,12 @@ export class TerminalSocket {
       entry.preAttach = [];
       try {
         const r = entry.kind === "agent"
-          ? await this._call("agent.attach", { id: entry.taskId, cols: entry.cols, rows: entry.rows })
+          ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
           : await this._call("term.attach", { term_id: termId, cols: entry.cols, rows: entry.rows });
+        // A worktree that moved (or an agent that opened while we were away)
+        // answers with a different wire id: follow it rather than stream into
+        // an id nothing pushes to.
+        if (entry.kind === "agent") this._rekeyAgent(termId, entry, r.term_id);
         this._applyAttachResult(entry, r);
       } catch (e) {
         if (/unknown (term_id|id)/.test(e.message || "")) {
@@ -328,7 +400,12 @@ export class TerminalSocket {
       }
       if (!p || !p.term_id) continue;
       const entry = this._terms.get(p.term_id);
-      if (!entry) continue; // a frame for a term we don't render — drop it
+      if (!entry) {
+        // Either a term we don't render (drop it) or an agent whose wire id an
+        // in-flight attach is about to reveal (hold it for that attach).
+        this._bufferOrphanFrame(p);
+        continue;
+      }
       if (p.type === "term.output" || p.type === "term.reset") {
         if (entry.attached) this._applyStreamFrame(entry, p);
         else entry.preAttach.push(p); // outran the attach response — replay after it

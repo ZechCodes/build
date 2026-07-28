@@ -6,10 +6,11 @@
 // Markup reuses the existing `.tabs > .t.active` classes; closable tabs append a
 // `<span class="tx">×</span>`; the `+` is a `<div class="t tplus">`.
 //
-// The `+` is a menu, not a single verb: a new tab can be a shell, or a coding
-// agent the human drives (see NEW_TAB_KINDS in surfaceTabs.js). Its menu is
-// mounted on `document.body` and positioned from the `+`'s box, because the row
-// itself scrolls horizontally and would clip a child popup.
+// The `+` offers whatever kinds the surface passes (NEW_TAB_KINDS in
+// surfaceTabs.js): with several it opens a menu, with one it opens that one
+// directly — a dropdown is how a control offers a CHOICE. The menu is mounted
+// on `document.body` and positioned from the `+`'s box, because the row itself
+// scrolls horizontally and would clip a child popup.
 
 import { esc } from "./text.js";
 
@@ -141,6 +142,14 @@ export function mountTabShell(host, { tabs, active, newTabOptions, onSelect, onC
     if (plus && onNewTab) {
       plus.onclick = (event) => {
         event.stopPropagation();
+        // A dropdown is how a control offers a choice; with one thing to open,
+        // the `+` IS that thing. (A worktree's agent is not on this menu — it
+        // has its own permanent tab — so today the only kind is the shell.)
+        if ((newTabOptions || []).length < 2) {
+          closeMenu();
+          onNewTab(newTabOptions && newTabOptions[0] ? newTabOptions[0].id : "shell");
+          return;
+        }
         if (openMenu) closeMenu();
         else openNewTabMenu(plus);
       };

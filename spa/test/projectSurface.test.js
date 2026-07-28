@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 import { projectSurfaceTabs } from "../src/views/mainWorktree.js";
 
 describe("project surface chrome", () => {
-  it("puts Inbox first, then Issues, then the checkout and terminal tabs", () => {
+  it("puts Inbox first, then Issues, then the checkout, its agent, and terminal tabs", () => {
     expect(projectSurfaceTabs([{ id: "term-1", label: "Terminal 1", closable: true }])).toEqual([
       { id: "inbox", label: "Inbox" },
       { id: "issues", label: "Issues" },
       { id: "changes", label: "Changes" },
       { id: "files", label: "Files" },
+      { id: "agent", label: "Agent" },
       { id: "term-1", label: "Terminal 1", closable: true },
     ]);
   });

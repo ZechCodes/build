@@ -38,70 +38,50 @@ export function attachConnectionOverlay(host) {
   };
 }
 
-/** What the tab row's `+` can open, in menu order. A tab is a window onto the
- *  user's machine in this surface's directory — their shell, or a coding agent
- *  THEY drive. An agent tab is not a run: no plan, no task lifecycle, no `done`
- *  report; Build only spawns the CLI and streams the PTY. The daemon owns each
- *  kind's argv (`term.create` takes a kind, never a command line). */
+/** The one Build-owned agent of a worktree, as a tab.
+ *
+ *  A FIXTURE on every worktree surface: never closable, never minted by the
+ *  human, present whether or not an agent has ever run there. It is where every
+ *  human→agent path lands, so it must always be somewhere you can look. */
+export const AGENT_TAB = { id: "agent", label: "Agent" };
+
+/** What the tab row's `+` can open: the user's login shell, and nothing else.
+ *
+ *  A worktree has exactly one agent, Build owns it, and it lives in the Agent
+ *  tab — so the `+` cannot mint a second one. It used to offer an unmanaged
+ *  claude/codex session here: an agent with no `done` tool, no owner and no
+ *  lifecycle, running in the same directory as the real one. */
 export const NEW_TAB_KINDS = [
   { id: "shell", label: "Terminal", description: "your login shell in this directory" },
-  { id: "claude", label: "Claude Code", description: "an interactive claude session you drive" },
-  { id: "codex", label: "Codex", description: "an interactive codex session you drive" },
 ];
 
-const KIND_LABELS = Object.fromEntries(NEW_TAB_KINDS.map((kind) => [kind.id, kind.label]));
-
-/** What a tab of this kind is CALLED in the row: an agent or a shell. The vendor
- *  (Claude Code / Codex) rides the tab's title instead — the pane shows it soon
- *  enough, and agent-vs-terminal is the distinction worth scanning for. An
- *  unrecognized kind — a daemon newer than this client — is an agent, since the
- *  shell is the one kind this client is certain of. */
-function kindLabel(kind) {
-  return kind === "shell" ? "Terminal" : "Agent";
-}
-
-/** The vendor name behind a tab, for its hover title. */
-function kindTitle(kind) {
-  return KIND_LABELS[kind] || kind || "";
-}
-
-/** Track a surface's open user terminals: list on mount, create from the `+`
- *  menu, close on `×`. Labels are per-kind ordinals over list/creation order. */
+/** Track a surface's open user terminals: list on mount, create from the `+`,
+ *  close on `×`. Labels are ordinals over list/creation order. */
 export function terminalTabsController(scope) {
   const manager = terminalManager();
-  let terms = []; // [{ term_id, kind }] in list/creation order
-  // Ordinals count within the LABEL, not the kind: a Claude tab and a Codex tab
-  // both read "Agent", so numbering them separately would put two "Agent 1"s in
-  // one row.
+  let terms = []; // [{ term_id }] in list/creation order
   const labelOf = (termId) => {
     const index = terms.findIndex((t) => t.term_id === termId);
-    if (index < 0) return "";
-    const label = kindLabel(terms[index].kind);
-    const ordinal = terms.slice(0, index + 1).filter((t) => kindLabel(t.kind) === label).length;
-    return `${label} ${ordinal}`;
+    return index < 0 ? "" : `Terminal ${index + 1}`;
   };
   return {
     ids: () => terms.map((t) => t.term_id),
-    /** The tab descriptors for the shell: closable, kind-labeled. */
-    tabs: () =>
-      terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), title: kindTitle(t.kind), closable: true })),
+    /** The tab descriptors for the shell: closable, ordinal-labeled. */
+    tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), closable: true })),
     label: labelOf,
     has: (termId) => terms.some((t) => t.term_id === termId),
     async load() {
       try {
-        // A terminal without a reported kind is a shell — the same reading the
-        // daemon gives an absent `kind`, and what every pre-menu terminal is.
-        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id, kind: t.kind || "shell" }));
+        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id }));
       } catch {
         terms = []; // an unknown/unresolvable scope means "no terminals"
       }
       return terms;
     },
-    /** Open a tab of `kind` (default: the user's shell). The daemon's echoed
-     *  kind wins over the requested one — it is the one that actually spawned. */
-    async create(kind = "shell") {
-      const r = await manager.createTerminal(scope, 80, 24, kind);
-      terms.push({ term_id: r.term_id, kind: r.kind || kind });
+    /** Open one of the user's shells in this surface's directory. */
+    async create() {
+      const r = await manager.createTerminal(scope, 80, 24);
+      terms.push({ term_id: r.term_id });
       return r.term_id;
     },
     async close(termId) {
@@ -118,25 +98,6 @@ export function terminalTabsController(scope) {
   };
 }
 
-/** Pure: the kind cards, as a picker. Used by the new-worktree sheet, where the
- *  answer is given BEFORE the worktree exists — naming it and saying what runs
- *  in it are one decision, so they are one form. */
-export function kindCardsHtml(options = NEW_TAB_KINDS) {
-  const cards = options
-    .map(
-      (option) =>
-        `<button class="chooser-card" type="button" data-kind="${esc(option.id)}">
-          <span class="chooser-card-label">${esc(option.label)}</span>
-          <span class="chooser-card-desc">${esc(option.description || "")}</span>
-        </button>`,
-    )
-    .join("");
-  return `<div class="chooser">
-    <div class="chooser-head">What do you want running here?</div>
-    <div class="chooser-cards">${cards}</div>
-  </div>`;
-}
-
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
 export function mountUserTerminalPane(host, termId, { onExit }) {
   const manager = terminalManager();
@@ -148,17 +109,30 @@ export function mountUserTerminalPane(host, termId, { onExit }) {
   });
 }
 
-/** Mount a task's agent pane. `onLive(bool)` reports session liveness (for the
- *  quiet idle chip); `onExit(reason)` reacts to closures. Input is allowed — a
- *  live PTY on the user's machine; the resize/input RPCs no-op harmlessly when
- *  no session is live and surface their error to the caller. */
-export function mountAgentPane(host, taskId, { onLive, onExit }) {
+/** Mount a worktree's agent pane.
+ *
+ *  `target` is how the calling surface addresses that worktree: `{ id }` for a
+ *  run or plan, or the scope of the directory itself (`{ run_id }`,
+ *  `{ project_id, worktree_id }`, `{ project_id }`). The WIRE id comes back from
+ *  the attach — it is `agent:<worktree_id>`, a hash of the canonical root that
+ *  no client can compute — and every keystroke, resize and detach after that
+ *  uses it. `onLive(bool)` reports session liveness (for the quiet idle chip);
+ *  `onExit(reason)` reacts to closures. Input is allowed — a live PTY on the
+ *  user's machine. */
+export function mountAgentPane(host, target, { onLive, onExit }) {
   const manager = terminalManager();
-  const termId = `agent:${taskId}`;
+  let termId = null; // learned from the attach; null until then, and after a failed one
   return mountTerminalPane(host, {
-    attach: (opts) => manager.attachAgent(taskId, { ...opts, onLive }),
-    input: (data) => manager.input(termId, data),
-    resize: (cols, rows) => manager.resize(termId, cols, rows),
+    attach: (opts) =>
+      manager.attachAgent(target, { ...opts, onLive }).then((r) => {
+        termId = r.term_id;
+        return r;
+      }),
+    // Before the attach lands there is no screen to type into. Rejecting (rather
+    // than dropping) routes through onInputError, so the idle chip shows instead
+    // of the keystroke silently vanishing.
+    input: (data) => (termId ? manager.input(termId, data) : Promise.reject(new Error("no active agent session"))),
+    resize: (cols, rows) => (termId ? manager.resize(termId, cols, rows) : Promise.resolve()),
     onExit,
     // A keystroke rejected by the bridge means the session is gone — surface it
     // as the idle state (the same reason a live session's close reports), so the
@@ -174,9 +148,49 @@ export function mountAgentPane(host, taskId, { onLive, onExit }) {
       dispose() {
         conn.dispose();
         pane.dispose();
+        // Deregister the screen the attach named — the server PTY keeps running.
+        if (termId) manager.detach(termId);
       },
     };
   });
+}
+
+/** Mount the Agent tab's BODY for a worktree: its one agent as a full PTY, with
+ *  a quiet chip whenever no session is live.
+ *
+ *  The same body on every worktree surface (task, external worktree, primary
+ *  checkout, plan). Mounting it starts NOTHING: a worktree no agent has run in
+ *  attaches to an empty screen and shows `idleLabel`. An agent begins when a
+ *  human→agent verb delivers a turn, never because a tab was opened.
+ *
+ *  Returns { dispose() } — tears down the client view only. */
+export function mountAgentTab(host, target, { idleLabel = "no active agent session" } = {}) {
+  host.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
+  const chip = host.querySelector("#agentIdle");
+  const setIdle = (on) => {
+    if (!chip) return;
+    chip.textContent = on ? idleLabel : "";
+    chip.hidden = !on;
+  };
+  let pane = null;
+  let disposed = false;
+  mountAgentPane(host.querySelector("#agentpane"), target, {
+    onLive: (live) => setIdle(!live),
+    onExit: (reason) => {
+      if (reason === "agent_session_ended") setIdle(true);
+    },
+  }).then(
+    (p) => (disposed ? p.dispose() : (pane = p)),
+    // An unresolvable address (a plan whose worktree is gone, a deleted run) is
+    // the empty state too — the chip alone, the surface intact.
+    () => setIdle(true),
+  );
+  return {
+    dispose() {
+      disposed = true;
+      if (pane) pane.dispose();
+    },
+  };
 }
 
 /**

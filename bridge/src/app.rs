@@ -13288,6 +13288,30 @@ mod tests {
             false,
             "a shell is the human's own hands"
         );
+
+        // Build's agent starts in that same worktree: the pulse is on, and it
+        // is reported against the WORKTREE — the run that owns the agent is
+        // not what the board asked about.
+        let root = {
+            let mut s = state.lock().unwrap();
+            let owner = "run-in-the-worktree".to_string();
+            s.entity_project.insert(owner, project_id.clone());
+            s.resolve_external_worktree(&project_id, &worktree_id)
+                .unwrap()
+                .path
+        };
+        ensure_agent_tab(
+            &state,
+            &root,
+            "run-in-the-worktree",
+            &ModelChoice::default(),
+        )
+        .expect("the agent spawns");
+        assert_eq!(
+            entry_of(&state)["agent_working"],
+            true,
+            "an agent painting in this worktree is the pulse"
+        );
     }
 
     /// The relay calls `dispatch` directly — `handle` is a test convenience — so

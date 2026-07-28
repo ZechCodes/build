@@ -28,8 +28,8 @@ use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneRe
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, Agent, Orchestrator, OrchestratorError, RunSource, SessionSlot,
-    SpawnOptions, TranscriptProbe,
+    ActivePlan, ActiveRun, Agent, AgentTurn, Orchestrator, OrchestratorError, ReportOutcome,
+    RunSource, SessionSlot, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -546,6 +546,44 @@ enum Spawned {
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
 
+/// An [`AgentTurn`] addressed to a worktree, waiting for the state lock to be
+/// free.
+///
+/// Every lifecycle verb runs inside `state.lock().unwrap().dispatch(..)`, and
+/// [`deliver`] takes that same lock and holds nothing while it blocks for
+/// seconds spawning a cold harness. So a verb records what it wants said and
+/// [`dispatch_frame`] — which holds the `Arc` and no guard — sends it the moment
+/// the verb returns.
+struct PendingAgentTurn {
+    /// The worktree whose one agent hears this turn.
+    root: std::path::PathBuf,
+    /// The plan/run the harness reports `done` for.
+    owner: String,
+    model_choice: ModelChoice,
+    /// For a tab that had to be spawned: the full run context.
+    cold: String,
+    /// For a tab already in the conversation: the bare instruction.
+    warm: String,
+    /// The phase recorded on the conversation's session lineage if the turn
+    /// turns out to be cold — a cold delivery is a new agent process.
+    phase: &'static str,
+}
+
+impl PendingAgentTurn {
+    /// Address a run's turn to the run's worktree. Canonical, because the same
+    /// worktree reaches the tab registry under several scope shapes.
+    fn for_run(owner: &str, active: &ActiveRun, turn: AgentTurn) -> Self {
+        PendingAgentTurn {
+            root: AppState::canonical_root(&active.worktree.path),
+            owner: owner.to_string(),
+            model_choice: active.model_choice.clone(),
+            cold: turn.cold,
+            warm: turn.warm,
+            phase: turn.phase,
+        }
+    }
+}
+
 /// The retained screen of a task's agent PTY stream. Created on first
 /// `agent.attach`, retained until the task record is removed (reaper), so the
 /// tab can show the last screen between sessions.
@@ -971,6 +1009,11 @@ pub struct AppState {
     /// same lock acquisition that observed the tab's absence — is what keeps a
     /// second delivery from starting a second harness in one worktree.
     agent_spawns_in_flight: std::collections::HashSet<std::path::PathBuf>,
+    /// Turns queued by the verbs running under the state lock, drained by
+    /// [`dispatch_frame`] once that lock is free. The synchronous test entry
+    /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
+    /// the queue for the test to inspect instead.
+    pending_agent_turns: Vec<PendingAgentTurn>,
     /// Retained agent screens, keyed by task id (pushed as `agent:<task_id>`).
     agent_screens: HashMap<String, AgentScreen>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
@@ -1032,6 +1075,7 @@ impl AppState {
             terms: HashMap::new(),
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
+            pending_agent_turns: Vec::new(),
             agent_screens: HashMap::new(),
             next_term: 1,
             self_handle: None,
@@ -1477,6 +1521,35 @@ impl AppState {
         self.reap_orphaned_terminals();
         self.ensure_agent_pumps();
         (view, persisted)
+    }
+
+    /// A cold delivery started a new harness for `turn.owner`: open the
+    /// conversation's session lineage for it, exactly as the phase spawner used
+    /// to. A warm delivery never calls this — the session it continues is
+    /// already open, and a second `start_session` would read back as an agent
+    /// restart that never happened.
+    fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
+        let Ok(mut active) = self.take_run(&turn.owner) else {
+            return;
+        };
+        let session_id = active.thread.start_session(
+            turn.model_choice.provider.label(),
+            turn.model_choice.model.as_deref(),
+            turn.model_choice.effort.as_deref(),
+            turn.phase,
+            &now_rfc3339(),
+        );
+        active.thread.push_event(
+            crate::thread::ThreadEventKind::RunStarted,
+            Some(format!("{} run started", turn.phase)),
+            Some(session_id),
+            None,
+            now_rfc3339(),
+        );
+        let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
+        if let Err(error) = persisted {
+            eprintln!("record_agent_session_start {}: {error}", turn.owner);
+        }
     }
 
     /// Move `entity_state_changed_at` only when the entity's wire state
@@ -1946,14 +2019,22 @@ impl AppState {
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
         let report_for_thread = report.clone();
-        let outcome = (|| -> Result<(), String> {
+        let outcome = (|| -> Result<ReportOutcome, String> {
             let project_id = self.project_of(run_id)?;
             self.orch_for(&project_id)?
                 .on_run_done(&mut active, &plan_docs, report)
                 .map_err(err)
         })();
-        if let Err(e) = &outcome {
-            eprintln!("on_agent_done {run_id}: {e}");
+        match &outcome {
+            Err(e) => eprintln!("on_agent_done {run_id}: {e}"),
+            // Build's agent is persistent, so it reports whenever it finishes a
+            // turn — including one the human started at a review gate, which no
+            // lifecycle event accepts. Enforcement is by observation: the report
+            // is recorded on the conversation below and nothing moves.
+            Ok(ReportOutcome::OutOfPhase(illegal)) => {
+                eprintln!("on_agent_done {run_id}: out-of-phase report ({illegal}); recorded only")
+            }
+            Ok(ReportOutcome::Applied) => {}
         }
         record_report_in_thread(
             &mut active.thread,
@@ -4263,6 +4344,11 @@ impl AppState {
     }
 
     /// Send diff comments to the coding agent — from `review` or `building`.
+    ///
+    /// The comments land on the durable thread first, so the turn that travels
+    /// is only ever an instruction to read them: a warm agent gets exactly that,
+    /// and a cold one gets it wrapped in enough run context to act on. The
+    /// worktree's agent is delivered to, never killed and replaced.
     fn run_request_changes(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Diff, "comments")?;
@@ -4274,9 +4360,12 @@ impl AppState {
         let mut active = self.take_run(&run_id)?;
         append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .run_request_changes(&mut active, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
+            self.pending_agent_turns
+                .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let (view, persisted) = self.finish_run_mutation(run_id, active);
@@ -5206,7 +5295,8 @@ impl AppState {
                     outputs: DoneOutputs::default(),
                 },
             )
-            .map_err(err)
+            .map_err(err)?;
+        Ok(())
     }
 
     /// Simulate one stage's build session and — since that hands off to a
@@ -5881,12 +5971,14 @@ fn parse_thread_post_input(
 /// Tell a live harness session, in place, that unread thread messages await.
 ///
 /// Only call this when the agent acting on them can actually be CONSUMED — a
-/// run that is `building`, a plan that is `drafting`. A harness parked at a
-/// review gate is still alive (nothing ends the session at the gate), so waking
-/// it there dispatches work whose `done` is an illegal transition: the report is
-/// rejected, nothing moves, and the conversation gains a bogus failure event.
-/// Everywhere else the post is simply durable, and the next session's catch-up
-/// packet carries it.
+/// run that is `building`, a plan that is `drafting`. Waking a harness parked at
+/// a review gate dispatches work whose `done` the run machine does not accept;
+/// that report is now recorded as out-of-phase rather than rejected as a
+/// failure, but it still moves nothing, so the post is left durable here and the
+/// next session's catch-up packet carries it.
+///
+/// PERIPHERY: this is the phase-session predecessor of [`deliver`]'s warm
+/// branch, and retires with the last `SessionSlot`.
 ///
 /// A dead slot swallows the write, and a write failure against an exiting
 /// harness is logged, never surfaced: the message is durable either way.
@@ -6110,7 +6202,14 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         }
         "term.attach" => term_attach(state, &sender, &params),
         "agent.attach" => agent_attach(state, &sender, &params),
-        _ => state.lock().unwrap().dispatch(&method, &params),
+        _ => {
+            let dispatched = state.lock().unwrap().dispatch(&method, &params);
+            // A verb speaks to a worktree's agent by queuing a turn: it runs
+            // under the state lock and `deliver` needs that lock free (a cold
+            // spawn blocks for seconds on the harness's readiness wait).
+            deliver_pending_agent_turns(state);
+            dispatched
+        }
     };
     match result {
         Ok(result) => json!({ "id": id, "ok": true, "result": result }),
@@ -6407,8 +6506,9 @@ fn ensure_agent_tab(
 /// is decided by whether the tab had to be spawned: `cold` for an agent with no
 /// context to read messages into, `warm` for one already in the conversation,
 /// whose messages are already durable in the thread for `read_unread_messages`
-/// to pull. Returns the tab's wire id.
-#[allow(dead_code)] // the human→agent verbs move onto this in the next step
+/// to pull. Returns the tab's wire id and which half travelled — a `Fresh`
+/// delivery is a new agent process, which the conversation records as the start
+/// of a session.
 fn deliver(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
@@ -6416,7 +6516,7 @@ fn deliver(
     model_choice: &ModelChoice,
     cold: &str,
     warm: &str,
-) -> Result<String, String> {
+) -> Result<(String, Spawned), String> {
     let (wire_id, spawned) = ensure_agent_tab(state, root, owner, model_choice)?;
     let prompt = match spawned {
         Spawned::Fresh => cold,
@@ -6431,7 +6531,33 @@ fn deliver(
     tab.session
         .write_prompt(prompt)
         .map_err(|e| e.to_string())?;
-    Ok(wire_id)
+    Ok((wire_id, spawned))
+}
+
+/// Send every turn the verbs that just ran queued, now that the state lock is
+/// free.
+///
+/// A cold delivery starts a new harness process, so it opens the conversation's
+/// session lineage — the record the thread reads back as "the revise agent
+/// started here". A warm delivery continues the session already open.
+fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
+    let queued = std::mem::take(&mut state.lock().unwrap().pending_agent_turns);
+    for turn in queued {
+        match deliver(
+            state,
+            &turn.root,
+            &turn.owner,
+            &turn.model_choice,
+            &turn.cold,
+            &turn.warm,
+        ) {
+            Ok((_, Spawned::Fresh)) => state.lock().unwrap().record_agent_session_start(&turn),
+            Ok((_, Spawned::Warm)) => {}
+            // The turn is already durable on the thread; the agent picks it up
+            // with `read_unread_messages` the next time a tab opens.
+            Err(error) => eprintln!("deliver to {}: {error}", turn.owner),
+        }
+    }
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
@@ -7637,7 +7763,7 @@ mod tests {
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-deliver");
         let choice = ModelChoice::default();
 
-        let cold_id = deliver(
+        let (cold_id, cold_spawned) = deliver(
             &state,
             &root,
             "run-deliver",
@@ -7646,6 +7772,7 @@ mod tests {
             "WARM-NUDGE-PROMPT",
         )
         .expect("a cold delivery spawns and submits");
+        assert_eq!(cold_spawned, Spawned::Fresh);
         let cold_screen = wait_for_agent_screen(&state, &root, "COLD-CONTEXT-PROMPT").await;
         assert!(
             cold_screen.contains("COLD-CONTEXT-PROMPT"),
@@ -7656,7 +7783,7 @@ mod tests {
             "a fresh tab must NOT hear the nudge: {cold_screen:?}"
         );
 
-        let warm_id = deliver(
+        let (warm_id, warm_spawned) = deliver(
             &state,
             &root,
             "run-deliver",
@@ -7665,6 +7792,7 @@ mod tests {
             "WARM-NUDGE-PROMPT",
         )
         .expect("a warm delivery reuses the tab");
+        assert_eq!(warm_spawned, Spawned::Warm);
         assert_eq!(warm_id, cold_id, "both deliveries address one tab");
         let warm_screen = wait_for_agent_screen(&state, &root, "WARM-NUDGE-PROMPT").await;
         assert!(
@@ -9626,6 +9754,25 @@ mod tests {
         .unwrap()
     }
 
+    /// A QA daemon behind the shared `Arc` plus its frame handler — the entry
+    /// point the relay uses, and the only one that delivers the agent turns a
+    /// verb queues while it holds the state lock.
+    fn shared_qa_state_and_handler(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler) {
+        let mut app = qa_state(repo, dir);
+        app.term_shell = "/bin/bash".into();
+        let state = app.shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        (state, handler)
+    }
+
+    /// One RPC over the frame handler.
+    fn call(handler: &FrameHandler, method: &str, params: Value) -> Value {
+        handler(SessionSender::detached("qa"), req(method, params))
+    }
+
     fn plan_id_of(res: &Value) -> String {
         res["result"]["plan_id"]
             .as_str()
@@ -10445,16 +10592,46 @@ mod tests {
             .all(|s| s["state"] == "validated_passed"));
     }
 
+    /// Requesting changes talks to the worktree's agent instead of killing it
+    /// and spawning a replacement: the comments land on the durable thread, a
+    /// turn is queued for the worktree's one agent, and the run's phase-session
+    /// slot is never touched.
     #[test]
-    fn run_request_changes_reruns_building_from_review() {
+    fn run_request_changes_delivers_to_the_agent_instead_of_respawning() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "do work");
+        let generation_at_review = state.runs[&run_id].session.generation();
+        let worktree_root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
         let rc = state.handle(req(
             "run.request_changes",
             json!({ "run_id": run_id, "comments": "rename the symbol" }),
         ));
         assert_eq!(rc["result"]["state"], "review", "{rc:?}");
+        assert_eq!(
+            state.runs[&run_id].session.generation(),
+            generation_at_review,
+            "requesting changes must not spawn a replacement harness"
+        );
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a change request is a turn for the worktree's agent");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(
+            queued.root, worktree_root,
+            "the turn is addressed to the worktree, not to the run"
+        );
+        assert_eq!(
+            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            "an agent already in the conversation is only told to read the thread"
+        );
+        assert!(
+            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.cold.contains("rename the symbol"),
+            "a cold agent gets the run context AND the reviewer's words: {}",
+            queued.cold
+        );
         let structured = state.handle(req(
             "run.request_changes",
             json!({
@@ -10484,6 +10661,113 @@ mod tests {
         assert!(
             bad["error"].as_str().unwrap().contains("comments"),
             "{bad:?}"
+        );
+    }
+
+    /// The agent Build talks to is one process for the worktree's life. A
+    /// second round of comments reaches the SAME harness — same pid, one tab —
+    /// because a warm tab is delivered to, never replaced.
+    #[tokio::test]
+    async fn a_second_request_changes_reaches_the_same_agent_process() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        // The fixture only needs state, so it goes through the synchronous
+        // path; the change requests below go through the frame handler, which
+        // is what actually delivers a queued turn.
+        let (_, run_id) = planned_run_in_review(&mut state.lock().unwrap(), "keep the agent");
+        let root = {
+            let s = state.lock().unwrap();
+            AppState::canonical_root(&s.runs[&run_id].worktree.path)
+        };
+        let key = TabKey::agent(&root);
+
+        let first = call(
+            &handler,
+            "run.request_changes",
+            json!({
+                "run_id": run_id, "comments": "rename the symbol"
+            }),
+        );
+        assert_eq!(first["ok"], true, "{first:?}");
+        let first_pid = {
+            let s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .get(&key)
+                .expect("a change request opens the worktree's agent");
+            assert!(
+                tab.live && !tab.session.has_exited(),
+                "the agent is running"
+            );
+            tab.session.pid().expect("a live harness has a pid")
+        };
+
+        let generation_after_first = state.lock().unwrap().runs[&run_id].session.generation();
+
+        let second = call(
+            &handler,
+            "run.request_changes",
+            json!({
+                "run_id": run_id, "comments": "and inline the helper"
+            }),
+        );
+        assert_eq!(second["ok"], true, "{second:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+        assert_eq!(
+            s.runs[&run_id].session.generation(),
+            generation_after_first,
+            "no phase harness may be spawned beside the tab's agent"
+        );
+        assert_eq!(
+            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            Some(first_pid),
+            "the second request must reach the process the first one woke"
+        );
+    }
+
+    /// A persistent agent outlives the phase it was dispatched for: talk to it
+    /// at a review gate and it reports `done` from a state the run machine does
+    /// not accept. Enforcement is by observation, not permission — the report
+    /// is recorded on the conversation and moves nothing, rather than landing
+    /// as a failure the human never caused.
+    #[test]
+    fn an_out_of_phase_done_is_recorded_and_moves_nothing() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "already reviewed");
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Tidied the imports you mentioned".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            got["result"]["state"], "review",
+            "an out-of-phase report moves nothing: {got:?}"
+        );
+        let events: Vec<&Value> = got["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "event")
+            .collect();
+        assert!(
+            events.iter().any(|e| {
+                e["data"]["event"] == "done"
+                    && e["data"]["summary"] == "Tidied the imports you mentioned"
+            }),
+            "the report is recorded: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e["data"]["event"] == "run_failed"),
+            "a report Build cannot apply is not a failure: {events:?}"
         );
     }
 

@@ -136,6 +136,43 @@ fn merge_stage_docs(stages: &mut Vec<StageDoc>, entries: &[StageManifestEntry]) 
     *stages = merged;
 }
 
+/// What a lifecycle move wants said to the worktree's agent.
+///
+/// The orchestrator owns lifecycle, thread, stages, base_sha, and worktree; it
+/// does not own the process the words travel to. A transition that used to end
+/// a session and spawn a replacement now applies the transition and returns the
+/// turn; the caller, which owns the worktree's agent tab, delivers it — picking
+/// `cold` or `warm` from whether it had to spawn a harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTurn {
+    /// The full rendered run prompt, for an agent with no context: it has
+    /// nothing to read the reviewer's messages into.
+    pub cold: String,
+    /// The bare instruction, for an agent already in the conversation. The
+    /// reviewer's words are already durable in the thread and the agent pulls
+    /// them with `read_unread_messages`, so the run context would be a repeat.
+    pub warm: String,
+    /// The phase label recorded on the thread's session lineage when a COLD
+    /// delivery starts a new agent process.
+    pub phase: &'static str,
+}
+
+/// What a `done` report did to the run.
+///
+/// A persistent agent outlives the phase it was dispatched for: talk to it at a
+/// review gate and it will report `done` from a state the run machine does not
+/// accept. Build's rule is enforcement by observation, not permission — such a
+/// report moves nothing and is handed back to the caller to record on the
+/// conversation, rather than rejected as a failure the human never caused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportOutcome {
+    /// The report was consumed: it moved the run, or the stage pipeline took it.
+    Applied,
+    /// The report arrived from a state that does not accept it. Nothing moved —
+    /// not the run, not the stage, not `last_summary`.
+    OutOfPhase(IllegalRunTransition),
+}
+
 /// Warm-session bookkeeping shared by [`ActivePlan`] and [`ActiveRun`]: the
 /// live PTY session for the current phase plus the spawn generation the
 /// agent-screen pump keys on. (The fused [`ActiveTask`] keeps its own copy of
@@ -1315,21 +1352,31 @@ impl Orchestrator {
     /// PERIPHERY: a mid-run stage-revision `done` (`revising_stage_id` set)
     /// must ingest the revised docs back into the store and reset the
     /// plan-side doc state — that write-back lands with the stage flows.
+    ///
+    /// A report the run's current state does not accept is
+    /// [`ReportOutcome::OutOfPhase`], not an error: Build's agent is persistent,
+    /// so it reports whenever it finishes a turn — including turns the human
+    /// started at a review gate. Such a report moves nothing and leaves no
+    /// trace on the run; the caller records it on the conversation.
     pub fn on_run_done(
         &self,
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
         report: DoneReport,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<ReportOutcome, OrchestratorError> {
         match (report.phase, report.status) {
             // A blocked/failed report from any session — stage build, fix,
             // validation, or single-plan — parks the run and disarms run-all.
             (_, DoneStatus::Blocked) => {
-                active.run.apply(RunEvent::Blocked)?;
+                if let Err(illegal) = active.run.apply(RunEvent::Blocked) {
+                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                }
                 active.auto_advance = false;
             }
             (_, DoneStatus::Failed) => {
-                active.run.apply(RunEvent::Failed)?;
+                if let Err(illegal) = active.run.apply(RunEvent::Failed) {
+                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                }
                 active.auto_advance = false;
             }
             (DonePhase::Plan, DoneStatus::Completed) => {
@@ -1354,20 +1401,30 @@ impl Orchestrator {
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed)
                 if !plan_stage_docs.is_empty() =>
             {
-                self.on_run_stage_session_done(active, plan_stage_docs)?;
+                if let out_of_phase @ ReportOutcome::OutOfPhase(_) =
+                    self.on_run_stage_session_done(active, plan_stage_docs)?
+                {
+                    return Ok(out_of_phase);
+                }
             }
             (DonePhase::Validate, DoneStatus::Completed) => {
-                self.on_run_validation_done(active, plan_stage_docs, &report)?;
+                if let out_of_phase @ ReportOutcome::OutOfPhase(_) =
+                    self.on_run_validation_done(active, plan_stage_docs, &report)?
+                {
+                    return Ok(out_of_phase);
+                }
             }
             // Single-doc plan / adopted path: a completed build opens review.
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => {
-                active.run.apply(RunEvent::BuildReady)?;
+                if let Err(illegal) = active.run.apply(RunEvent::BuildReady) {
+                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                }
             }
         }
         // Only a consumed report leaves a trace (same discipline as plans).
         active.last_summary = Some(report.summary.clone());
         active.last_error = None;
-        Ok(())
+        Ok(ReportOutcome::Applied)
     }
 
     /// A stage build/fix session reported done(completed): commit the stage's
@@ -1377,14 +1434,14 @@ impl Orchestrator {
         &self,
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<ReportOutcome, OrchestratorError> {
         let Some(stage_id) = active.current_stage_id.clone() else {
             eprintln!(
                 "on_run_done {}: build report for a multi-stage run with no current stage; \
                  ignoring",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         };
         // Resolve both sides of the stage join up front, so a mismatch between
         // the plan's manifest and the run's progress rejects before mutation.
@@ -1399,16 +1456,17 @@ impl Orchestrator {
                 "on_run_done {}: no progress record for stage {stage_id}; ignoring",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         };
         match active.stages[progress_index].state {
             StageProgressState::Building => {
                 // Coarse-state legality before ANY mutation: a report landing
-                // while the run is Blocked/Failed must be rejected atomically —
-                // the stage advance, commit, and session swap below would
-                // otherwise leave the run and stage machines incoherent (the
-                // caller persists the run even on Err).
-                run_transition(&active.run.state, RunEvent::BuildReady)?;
+                // while the run is Blocked/Failed is out of phase — the stage
+                // advance, commit, and session swap below would otherwise leave
+                // the run and stage machines incoherent.
+                if let Err(illegal) = run_transition(&active.run.state, RunEvent::BuildReady) {
+                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                }
             }
             // A build report while the validation agent runs would skip the
             // gate; only a `validate` report may move a Validating stage.
@@ -1418,14 +1476,16 @@ impl Orchestrator {
                      non-validate report",
                     active.run.id.0
                 );
-                return Ok(());
+                return Ok(ReportOutcome::Applied);
             }
             // Post-review change requests run while the current stage is
             // already validated; their `done` closes the loop exactly as on
             // the single-plan path.
             StageProgressState::Validated { .. } => {
-                active.run.apply(RunEvent::BuildReady)?;
-                return Ok(());
+                if let Err(illegal) = active.run.apply(RunEvent::BuildReady) {
+                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                }
+                return Ok(ReportOutcome::Applied);
             }
         }
         active.stages[progress_index].apply(StageProgressEvent::BuildDone)?;
@@ -1447,7 +1507,7 @@ impl Orchestrator {
             "",
         );
         self.spawn_run_session(active, &prompt, "validate")?;
-        Ok(())
+        Ok(ReportOutcome::Applied)
     }
 
     /// The validation agent's verdict. Pass: the final stage opens merge
@@ -1462,20 +1522,20 @@ impl Orchestrator {
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
         report: &DoneReport,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<ReportOutcome, OrchestratorError> {
         if plan_stage_docs.is_empty() {
             eprintln!(
                 "on_run_done {}: validate report for a run without stages; ignoring",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         }
         let Some(stage_id) = active.current_stage_id.clone() else {
             eprintln!(
                 "on_run_done {}: validate report with no current stage; ignoring",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         };
         let doc_index = plan_stage_docs
             .iter()
@@ -1488,14 +1548,14 @@ impl Orchestrator {
                 "on_run_done {}: no progress record for stage {stage_id}; ignoring",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         };
         if active.stages[progress_index].state != StageProgressState::Validating {
             eprintln!(
                 "on_run_done {}: stage {stage_id} is not validating; ignoring a validate report",
                 active.run.id.0
             );
-            return Ok(());
+            return Ok(ReportOutcome::Applied);
         }
         // The mcp layer guarantees outputs.validation on validate/completed,
         // but reports also arrive over the daemon socket as raw JSON (a
@@ -1514,10 +1574,12 @@ impl Orchestrator {
             RunEvent::ValidationFailed
         };
         // Coarse-state legality before ANY mutation: a verdict landing while
-        // the run is Blocked/Failed must be rejected atomically — advancing
-        // the stage to its terminal Validated and killing the session here
-        // would strand the run (the caller persists it even on Err).
-        run_transition(&active.run.state, verdict)?;
+        // the run is Blocked/Failed or already past its gate is out of phase —
+        // advancing the stage to its terminal Validated and killing the session
+        // here would strand the run.
+        if let Err(illegal) = run_transition(&active.run.state, verdict) {
+            return Ok(ReportOutcome::OutOfPhase(illegal));
+        }
         active.stages[progress_index].apply(StageProgressEvent::ValidationDone { passed })?;
         active.stages[progress_index].validation = Some(validation);
         active.session.end();
@@ -1525,7 +1587,7 @@ impl Orchestrator {
         if !passed {
             active.auto_advance = false;
         }
-        Ok(())
+        Ok(ReportOutcome::Applied)
     }
 
     /// The quiescence timer fired without a `done`: demote to `idle_unreported`.
@@ -1681,16 +1743,20 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Submit a batch of diff comments: address them in a fresh build session
-    /// (the run-side `request_changes`). Valid both from `Review` (agent done)
-    /// and `Building` (agent still running). A stage awaiting its validation
-    /// verdict is refused — only a `validate` report may move it, so redirecting
-    /// it here would hang the run.
+    /// Submit a batch of diff comments (the run-side `request_changes`): put the
+    /// run back to work and hand the caller the turn to deliver. Valid both from
+    /// `Review` (agent parked) and `Building` (agent still working). A stage
+    /// awaiting its validation verdict is refused — only a `validate` report may
+    /// move it, so redirecting it here would hang the run.
+    ///
+    /// The worktree's agent is never ended and never replaced: the reviewer is
+    /// mid conversation with a process, and killing it to say something to it
+    /// throws away the context that made the review worth having.
     pub fn run_request_changes(
         &self,
         active: &mut ActiveRun,
         comments: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         if let Some(stage_id) = active.current_stage_id.clone() {
             if let Some(progress) = active.stage_progress(&stage_id) {
                 if matches!(
@@ -1706,10 +1772,14 @@ impl Orchestrator {
         }
         active.run.apply(RunEvent::RequestChanges)?;
         active.last_error = None;
-        active.session.end();
-        let prompt = self.render_run(&self.templates.review_changes, active, comments);
-        self.spawn_run_session(active, &prompt, "revise")?;
-        Ok(())
+        Ok(AgentTurn {
+            cold: conversation_prompt(
+                &self.render_run(&self.templates.review_changes, active, comments),
+                &active.thread,
+            ),
+            warm: comments.to_string(),
+            phase: "revise",
+        })
     }
 
     /// A freeform human message to the run's agent (the run-side `message`). A
@@ -3845,8 +3915,11 @@ mod tests {
         assert_eq!(run.stages[0].state, StageProgressState::Validating);
     }
 
+    /// A late completion arriving after the run was blocked is out of phase:
+    /// recorded by the caller, but atomically inert here — no stage advance, no
+    /// checkpoint commit, no session swap.
     #[tokio::test]
-    async fn run_blocked_then_late_reports_are_rejected_without_mutation() {
+    async fn run_blocked_then_late_reports_move_nothing() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
@@ -3864,18 +3937,21 @@ mod tests {
         assert_eq!(run.stages[0].state, StageProgressState::Building);
         assert!(!run.auto_advance, "blocked disarms run-all");
 
-        // A completed build report while Blocked must be rejected atomically:
-        // no stage advance, no commit, no session swap.
+        // A completed build report while Blocked is out of phase, and inert
+        // atomically: no stage advance, no commit, no session swap.
         let before = last_commit_subject(&run.worktree.path);
         std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-        let err = orch
+        let outcome = orch
             .on_run_done(
                 &mut run,
                 &plan.stages,
                 done(DonePhase::Build, DoneStatus::Completed, None),
             )
-            .expect_err("late completion while blocked is rejected");
-        assert!(matches!(err, OrchestratorError::RunTransition(_)), "{err}");
+            .expect("a late completion is out of phase, not an error");
+        assert!(
+            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            "{outcome:?}"
+        );
         assert_eq!(run.run.state, RunState::Blocked);
         assert_eq!(run.stages[0].state, StageProgressState::Building);
         assert_eq!(last_commit_subject(&run.worktree.path), before);
@@ -4313,13 +4389,18 @@ mod tests {
         assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
     }
 
+    /// Requesting changes hands the caller a turn to deliver; it never ends the
+    /// worktree's agent nor spawns a replacement. The turn carries both halves
+    /// of the cold/warm rule: the full run-context prompt for an agent that had
+    /// to be spawned, and the caller's bare instruction for one already in the
+    /// conversation.
     #[tokio::test]
-    async fn run_request_changes_respawns_from_review_and_is_gated_while_validating() {
+    async fn run_request_changes_returns_a_revise_turn_and_never_respawns() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // A single-stage run at review → a change request respawns building.
+        // A single-stage run at review, with the build session still warm.
         let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
         orch.on_run_done(
             &mut single,
@@ -4328,8 +4409,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(single.run.state, RunState::Review);
-        orch.run_request_changes(&mut single, "tweak it").unwrap();
+        let generation_at_review = single.session.generation();
+        let pid_at_review = single.session.harness_pid();
+        assert!(pid_at_review.is_some(), "the review gate keeps its harness");
+
+        let turn = orch.run_request_changes(&mut single, "tweak it").unwrap();
         assert_eq!(single.run.state, RunState::Building);
+        assert_eq!(turn.phase, "revise");
+        assert!(
+            turn.cold.contains("phase=\"revise\"") && turn.cold.contains("tweak it"),
+            "a cold agent gets the whole revise prompt: {}",
+            turn.cold
+        );
+        assert_eq!(
+            turn.warm, "tweak it",
+            "a warm agent gets the instruction alone — the run context it already has"
+        );
+        assert_eq!(
+            single.session.generation(),
+            generation_at_review,
+            "requesting changes must not spawn a second harness"
+        );
+        assert_eq!(
+            single.session.harness_pid(),
+            pid_at_review,
+            "the agent the reviewer is talking to must survive the request"
+        );
 
         // A stage awaiting its validation verdict must not be redirected.
         let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
@@ -4349,6 +4454,81 @@ mod tests {
             .run_request_changes(&mut run, "no")
             .expect_err("cannot redirect a validating stage");
         assert!(err.to_string().contains("awaiting validation"), "{err}");
+    }
+
+    /// A persistent agent outlives the phase it was dispatched for: talk to it
+    /// at a review gate and it will report `done` from a state the run machine
+    /// does not accept. That report is out of phase, not a failure — nothing
+    /// moves, nothing is rejected, and the caller is told so it can record the
+    /// report on the conversation instead of a bogus failure event.
+    #[tokio::test]
+    async fn an_out_of_phase_done_moves_nothing_and_is_not_an_error() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+
+        // Single-doc run parked at review: BuildReady is not legal from there.
+        let mut single = dispatch_single_stage_run(&orch, &store, "run-late", "late report");
+        orch.on_run_done(
+            &mut single,
+            &[],
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(single.run.state, RunState::Review);
+        single.last_summary = Some("the report that opened review".into());
+
+        let outcome = orch
+            .on_run_done(
+                &mut single,
+                &[],
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .expect("an out-of-phase report is not an error");
+        assert!(
+            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(single.run.state, RunState::Review, "nothing moved");
+        assert_eq!(
+            single.last_summary.as_deref(),
+            Some("the report that opened review"),
+            "an unconsumed report leaves no trace on the run"
+        );
+
+        // A multi-stage run at the between-stages gate: same rule, through the
+        // stage pipeline (the stage must not advance either).
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-late", 2);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-staged");
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        orch.on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(run.run.state, RunState::StageGate);
+        let stage_state = run.stage_progress("first").unwrap().state;
+
+        let outcome = orch
+            .on_run_done(
+                &mut run,
+                &plan.stages,
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .expect("an out-of-phase stage report is not an error");
+        assert!(
+            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(run.run.state, RunState::StageGate, "nothing moved");
+        assert_eq!(
+            run.stage_progress("first").unwrap().state,
+            stage_state,
+            "the stage machine did not move either"
+        );
     }
 
     #[tokio::test]

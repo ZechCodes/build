@@ -30,7 +30,7 @@ dryoc = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"

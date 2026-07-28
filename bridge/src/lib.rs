@@ -34,6 +34,7 @@
 //! old serde shapes solely for that translation).
 
 pub mod app;
+pub mod attention;
 pub mod backoff;
 pub mod config;
 pub mod diff;

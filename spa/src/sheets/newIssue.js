@@ -29,12 +29,13 @@ export async function openNewIssue({ projectId } = {}) {
     <h3>New issue</h3>
     <div class="sub">Say what you want. Build drafts the plan to implement it, you discuss and approve that plan, then Implement when you're ready.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
-    <div class="field"><label>Project</label><select id="project"><option>loading…</option></select></div>
     <div class="advanced" id="advanced" hidden>
-      <div class="field-row" style="display:flex;gap:10px">
-        <div class="field" style="flex:1"><label>Agent</label><select id="provider"><option value="claude">Claude Code</option></select></div>
-        <div class="field" style="flex:1"><label>Model</label><select id="model"><option value="">Harness default</option></select></div>
-        <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
+      <div class="field"><label>Harness</label>
+        <div class="field-row" style="display:flex;gap:10px">
+          <div class="field" style="flex:1"><label>Agent</label><select id="provider"><option value="claude">Claude Code</option></select></div>
+          <div class="field" style="flex:1"><label>Model</label><select id="model"><option value="">Harness default</option></select></div>
+          <div class="field" style="flex:1"><label>Reasoning effort</label><select id="effort"><option value="">Default effort</option></select></div>
+        </div>
       </div>
       <div class="yolo">Agents run on your machine in YOLO mode (no sandbox). A worktree isolates the branch, not the machine.</div>
       <div class="dim" style="font-size:11.5px">Defaults come from your account settings.</div>
@@ -44,38 +45,21 @@ export async function openNewIssue({ projectId } = {}) {
       <button class="btn mini advtoggle" id="advtoggle" type="button" aria-expanded="false"
         title="Agent, model and reasoning effort">${esc("Claude Code")} <span class="advcaret">▸</span></button>
       <button class="btn" id="cancel" style="margin-left:auto">Cancel</button>
-      <button class="btn primary" id="dispatch">File issue</button></div>`;
+      <button class="btn primary" id="dispatch">Create</button></div>`;
   $("#scrim").classList.add("show");
   $("#goal").focus();
   // Which harness will run is worth SEEING without opening anything; changing it
-  // is rare, so it lives behind this toggle, and the toggle is the label.
+  // is rare, so it lives behind this button — and the button IS the harness name.
+  // Opening retires it: the panel it summons says everything it said, so leaving
+  // it behind would be two labels for one fact.
   const advanced = $("#advanced");
   const toggle = $("#advtoggle");
   toggle.onclick = () => {
-    advanced.hidden = !advanced.hidden;
-    toggle.setAttribute("aria-expanded", String(!advanced.hidden));
-    toggle.querySelector(".advcaret").textContent = advanced.hidden ? "▸" : "▾";
+    advanced.hidden = false;
+    toggle.hidden = true;
   };
   $("#cancel").onclick = () => $("#scrim").classList.remove("show");
-  // Guard against dispatching before we know the projects: keep Create disabled
-  // until project.list resolves with at least one project (re-enabled below).
-  $("#dispatch").disabled = true;
   $("#goal").oninput = () => ($("#ntkerr").textContent = "");
-
-  // Populate the project picker; the bridge picks the first if none chosen.
-  const select = $("#project");
-  try {
-    const { projects } = await App.call("project.list");
-    select.innerHTML = projects.length
-      ? projects.map((p) => `<option value="${esc(p.project_id)}">${esc(p.name)} · ${esc(p.base_branch)}</option>`).join("")
-      : '<option value="">(no projects — add one in Settings)</option>';
-    if (projectId && projects.some((p) => p.project_id === projectId)) select.value = projectId;
-    // Only enable Create once we actually have a project to dispatch into; the
-    // zero-project placeholder keeps it disabled and explains why.
-    if (projects.length) $("#dispatch").disabled = false;
-  } catch {
-    select.innerHTML = '<option value="">(could not load projects)</option>';
-  }
 
   // Model + effort selectors from the bridge's catalog (never hardcoded here).
   let catalog = { default_provider: "claude", providers: [] };
@@ -128,7 +112,9 @@ export async function openNewIssue({ projectId } = {}) {
     // notification (not a resurrected button label) carries the reason.
     const params = {
       goal,
-      project_id: select.value || undefined,
+      // The FAB files against the project whose page you are on; the bridge falls
+      // back to its default project if the route somehow carried none.
+      project_id: projectId || undefined,
       ...modelParams(
         catalogForProvider(catalog, $("#provider").value).models,
         $("#model").value,

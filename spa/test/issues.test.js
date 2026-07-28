@@ -52,8 +52,13 @@ describe("issuesHtml", () => {
     expect(html).toContain("implementing");
   });
 
-  it("has an empty state that points at the way to file one", () => {
-    expect(issuesHtml({ open: [], closed: [] })).toContain("No issues yet");
+  // A UI that gives directions to its own buttons has already lost: the empty
+  // state carries the verb, it does not point at where the verb lives.
+  it("offers the verb itself in the empty state", () => {
+    const html = issuesHtml({ open: [], closed: [] });
+    expect(html).toContain("No issues yet");
+    expect(html).toContain("data-newissue");
+    expect(html).not.toMatch(/corner|button in the/i);
   });
 
   it("escapes issue text", () => {
@@ -64,6 +69,20 @@ describe("issuesHtml", () => {
 });
 
 describe("mountIssuesTab", () => {
+  it("wires the empty state's button to the issue sheet", async () => {
+    const host = document.createElement("div");
+    const opened = [];
+    mountIssuesTab(host, {
+      projectId: "p1",
+      callRpc: async () => ({ plans: [] }),
+      navigate: () => {},
+      onNewIssue: () => opened.push("sheet"),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.querySelector("[data-newissue]").click();
+    expect(opened).toEqual(["sheet"]);
+  });
+
   it("routes a click to that issue's surface and stops polling on dispose", async () => {
     vi.useFakeTimers();
     const host = document.createElement("div");

@@ -151,7 +151,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .tabs .t { padding:6px 13px; font-size:13px; color:var(--ink2); cursor:pointer; border-radius:999px;
   display:flex; gap:7px; align-items:center; }
 .tabs .t:hover { background:var(--line2); }
-.tabs .t.active { color:var(--accent); background:var(--accent-soft); font-weight:600; }
+.tabs .t.active { color:var(--accent); font-weight:600; }
 .tabs .t .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; }
 .tabs .t .tx { color:var(--dim); font-size:14px; line-height:1; padding:0 1px; border-radius:4px; }
 .tabs .t .tx:hover { color:var(--red); background:var(--line2); }
@@ -536,6 +536,13 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 
 /* ---- the project's Issues tab ---- */
 .issues { width:100%; max-width:1180px; margin:0 auto; }
+/* An empty tab has nothing to scroll, so its message owns the pane: centred on
+   both axes, with the verb itself rather than directions to it. */
+.issues-empty { height:100%; display:grid; place-items:center; }
+.emptystate { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
+.emptystate-title { font-size:15px; font-weight:650; color:var(--ink2); }
+.emptystate-sub { font-size:13px; color:var(--dim); max-width:36ch; }
+.emptystate .btn { margin-top:6px; }
 .issue-section { margin-bottom:22px; }
 .issue-section h2 { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; margin:0 0 6px; }
@@ -552,8 +559,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .advtoggle { font-family:var(--mono); font-size:11.5px; color:var(--ink2); padding:5px 9px; }
 .advtoggle:hover { color:var(--accent); border-color:var(--accent); }
 .advtoggle .advcaret { color:var(--dim); font-size:10px; }
-.advanced { margin:4px 0 2px; padding:12px 14px; border:1px solid var(--line); border-radius:11px;
-  display:flex; flex-direction:column; gap:10px; }
+/* No box: it is another field group in the sheet, titled like Project. The
+   border was drawing a container around three selects that were already grouped
+   by their own label. */
+.advanced { display:flex; flex-direction:column; gap:10px; }
 .advanced[hidden] { display:none; }
 
 /* ---- the kind picker (in the new-worktree sheet) ---- */

@@ -46,10 +46,17 @@ const issueRow = (p) => {
 const section = (label, rows) =>
   rows.length ? `<div class="issue-section"><h2>${label} <span class="n">${rows.length}</span></h2>${rows.map(issueRow).join("")}</div>` : "";
 
-/** Pure: the tab body for a project's issues. */
+/** Pure: the tab body for a project's issues. The empty state offers the verb
+ *  itself rather than pointing at where the verb lives — a UI that has to give
+ *  directions to its own buttons has already lost. */
 export function issuesHtml({ open, closed }) {
   if (!open.length && !closed.length) {
-    return '<div class="issues"><div class="empty">No issues yet — file one with the button in the corner.</div></div>';
+    return `<div class="issues issues-empty">
+      <div class="emptystate">
+        <div class="emptystate-title">No issues yet</div>
+        <div class="emptystate-sub">Say what you want done and Build drafts the plan to do it.</div>
+        <button class="btn primary" type="button" data-newissue="1">New issue</button>
+      </div></div>`;
   }
   return `<div class="issues">${section("OPEN", open)}${section("CLOSED", closed)}</div>`;
 }
@@ -58,13 +65,15 @@ export function issuesHtml({ open, closed }) {
  * Mount the Issues tab. Polls board.list on the inbox's cadence and routes a
  * click to that issue's surface. Returns { dispose() }.
  */
-export function mountIssuesTab(host, { projectId, callRpc, navigate, pollMs = 2500 }) {
+export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue, pollMs = 2500 }) {
   let disposed = false;
   const draw = (plans) => {
     host.innerHTML = issuesHtml(bucketIssues(plans, projectId));
     host.querySelectorAll(".issue-row[data-plan]").forEach((row) => {
       row.onclick = () => navigate({ name: "plan", projectId, id: row.dataset.plan, tab: "review" });
     });
+    const newIssue = host.querySelector("[data-newissue]");
+    if (newIssue && onNewIssue) newIssue.onclick = () => onNewIssue();
   };
   const load = async () => {
     try {

@@ -11,6 +11,7 @@ import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surf
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
 import { mountIssuesTab } from "./issues.js";
+import { openNewIssue } from "../sheets/newIssue.js";
 
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "inbox", label: "Inbox" },
@@ -84,6 +85,7 @@ export async function renderMain() {
         projectId,
         callRpc: (method, params) => App.call(method, params),
         navigate: go,
+        onNewIssue: () => openNewIssue({ projectId }),
       });
     } else if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status

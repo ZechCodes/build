@@ -67,7 +67,15 @@ export function buildSidebarModel({ projects, runs, plans, externalWorktrees, pr
       worktrees,
       uncommitted: worktrees.filter((w) => (w.dirty_files || 0) > 0).length,
       primary: pc
-        ? { branch: pc.branch, path: pc.path || null, files_changed: pc.files_changed || 0, insertions: pc.insertions || 0, deletions: pc.deletions || 0 }
+        ? {
+            branch: pc.branch,
+            path: pc.path || null,
+            ahead: Number.isFinite(pc.ahead) ? pc.ahead : null,
+            behind: Number.isFinite(pc.behind) ? pc.behind : null,
+            files_changed: pc.files_changed || 0,
+            insertions: pc.insertions || 0,
+            deletions: pc.deletions || 0,
+          }
         : null,
     };
   });
@@ -125,23 +133,33 @@ function section(label, rowsHtml) {
   return rowsHtml ? `<div class="ssec"><div class="sseclabel">${label}</div>${rowsHtml}</div>` : "";
 }
 
+/** The checkout's git status, in the order a `git status` would tell it: where
+ *  the branch sits against its upstream, then what the working tree holds. Each
+ *  part appears only when it has something to say — no upstream, no arrows; a
+ *  clean tree, no diffstat. */
+export function checkoutStatusHtml(primary) {
+  const parts = [];
+  if (primary.ahead) parts.push(`<span class="ssync">↑${primary.ahead}</span>`);
+  if (primary.behind) parts.push(`<span class="ssync">↓${primary.behind}</span>`);
+  if (primary.insertions) parts.push(`<em class="add">+${primary.insertions}</em>`);
+  if (primary.deletions) parts.push(`<em class="del">-${primary.deletions}</em>`);
+  return parts.length ? `<span class="sstat mono">${parts.join(" ")}</span>` : "";
+}
+
 // The project's primary checkout, as the second line of its header: the branch
-// it has out, plus a dirty count when the working tree has uncommitted changes.
-// Links to #/project/<projectId>/changes.
+// it has out and that branch's git status. Links to #/project/<id>/changes.
 //
-// It carries NO label word. This row used to read "main <branch>", where "main"
-// meant "the checkout, not a worktree" — but next to a branch called feat/…, it
-// read as a branch name that disagreed with the one beside it. The ⌂ glyph makes
-// the same distinction against the worktree rows' fork glyph, silently.
+// No glyph and no label word. This row used to read "main <branch>", where
+// "main" meant "the checkout, not a worktree" — but next to a branch called
+// feat/…, it read as a branch name that disagreed with the one beside it. Its
+// place under the project name says which checkout it is; the status says the
+// rest.
 function checkoutLine(m, ui) {
   if (!m.primary) return "";
-  const dirty = m.primary.files_changed
-    ? ` <span class="swt-dirty">· ${m.primary.files_changed} uncommitted</span>`
-    : "";
   const active = ui.activeMainProjectId === m.project_id ? "active" : "";
   const title = esc(m.primary.branch) + (m.primary.path ? ` — ${esc(m.primary.path)}` : "");
   return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}" title="${title}">
-    <span class="sicon">⌂</span><span class="stitle mono">${esc(m.primary.branch)}${dirty}</span></div>`;
+    <span class="stitle mono">${esc(m.primary.branch)}</span>${checkoutStatusHtml(m.primary)}</div>`;
 }
 
 function worktreeLine(m, open, ui) {
@@ -166,9 +184,6 @@ function worktreeLine(m, open, ui) {
     <span class="sicon">${BRANCH_ICON}</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
 }
 
-/** An outline folder, sized for the rail (the mock's project glyph). */
-const FOLDER_ICON = `<svg class="sfolder" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.5 1.75h6.9a1 1 0 0 1 1 1v6.75a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1V4.25z"/></svg>`;
-
 /** A branch glyph for the worktree rows (the mock's fork), in the FOLDER_ICON style. */
 const BRANCH_ICON = `<svg class="sbranch" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="6" r="1.7"/><path d="M4 5.7v4.6M12 7.7c0 2.3-3 2.3-5.3 2.6"/></svg>`;
 
@@ -185,7 +200,7 @@ export function projectHtml(m, ui) {
   // checkout line opens that page's Changes tab.
   const head = `<div class="sproj-head ${ui.activeProjectId === m.project_id ? "active" : ""}">
     <button class="chevbtn" data-chev="${esc(m.project_id)}" title="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>
-    <span class="sproj-open" data-open="${esc(m.project_id)}" title="Open project">${FOLDER_ICON}<span class="sproj-name mono">${esc(m.name)}</span></span>
+    <span class="sproj-open" data-open="${esc(m.project_id)}" title="Open project"><span class="sproj-name mono">${esc(m.name)}</span></span>
     ${badge}</div>${checkoutLine(m, ui)}`;
   const block = `sproj ${ui.activeProjectId === m.project_id ? "active" : ""}`.trim();
   if (!open) return `<div class="${block}">${head}</div>`;

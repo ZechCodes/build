@@ -103,9 +103,11 @@ describe("buildSidebarModel — unread and worktrees", () => {
   });
 
   it("attaches the primary-changes summary per project (null when absent)", () => {
-    const primaryChanges = [{ project_id: "p1", branch: "main", files_changed: 3, insertions: 12, deletions: 4 }];
+    const primaryChanges = [
+      { project_id: "p1", branch: "main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
+    ];
     const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
-    expect(p1.primary).toEqual({ branch: "main", path: null, files_changed: 3, insertions: 12, deletions: 4 });
+    expect(p1.primary).toEqual({ branch: "main", path: null, ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 });
     expect(p2.primary).toBeNull();
   });
 });
@@ -178,14 +180,17 @@ describe("projectHtml", () => {
 
   // The checkout line names its BRANCH, never a stand-in word: a row reading
   // "main" beside a branch called feat/… was read as the branch itself.
-  it("puts the checkout's own branch and dirty count in the header, not a label", () => {
-    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", files_changed: 2, insertions: 5, deletions: 1 } }), ui());
+  it("puts the checkout's own branch and git status in the header, not a label", () => {
+    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", ahead: 3, behind: 1, files_changed: 2, insertions: 5, deletions: 1 } }), ui());
     expect(html).toContain('data-main="p1"');
     expect(html).toContain("feat/core-moderation");
-    expect(html).toContain("2 uncommitted");
+    expect(html).toContain("↑3");
+    expect(html).toContain("↓1");
+    expect(html).toContain("+5");
+    expect(html).toContain("-1");
     // The header owns it: it survives collapsing the project.
     const collapsed = projectHtml(
-      model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", files_changed: 2, insertions: 5, deletions: 1 } }),
+      model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", ahead: 3, behind: 1, files_changed: 2, insertions: 5, deletions: 1 } }),
       { ...ui(), closed: new Set(["p1"]) }
     );
     expect(collapsed).toContain("feat/core-moderation");
@@ -198,10 +203,26 @@ describe("projectHtml", () => {
     expect(html).not.toMatch(/>\s*main\b/);
   });
 
-  it("omits the dirty count when the checkout is clean and the row when unknown", () => {
-    const clean = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } }), ui());
+  // Each half of the status speaks only when it has something to say: no
+  // upstream means no arrows, a clean tree means no diffstat.
+  it("shows only the parts of the status that exist, and no row at all when unknown", () => {
+    const clean = projectHtml(
+      model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", ahead: null, behind: null, files_changed: 0, insertions: 0, deletions: 0 } }),
+      ui()
+    );
+    // Scoped to the checkout row: run rows carry diffstats of their own.
+    const checkoutRow = (html) => html.slice(html.indexOf("smain-line"), html.indexOf("</div>", html.indexOf("smain-line")));
     expect(clean).toContain("data-main=");
-    expect(clean).not.toContain("uncommitted");
+    expect(checkoutRow(clean)).not.toContain("↑");
+    expect(checkoutRow(clean)).not.toContain("↓");
+    expect(checkoutRow(clean)).not.toContain("sstat");
+    const levelWithUpstream = projectHtml(
+      model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", ahead: 0, behind: 0, files_changed: 1, insertions: 4, deletions: 0 } }),
+      ui()
+    );
+    expect(checkoutRow(levelWithUpstream)).not.toContain("↑");
+    expect(checkoutRow(levelWithUpstream)).toContain("+4");
+    expect(checkoutRow(levelWithUpstream)).not.toContain("-0");
     const none = projectHtml(model({ worktrees: [], uncommitted: 0, primary: null }), ui());
     expect(none).not.toContain("data-main=");
   });
@@ -216,8 +237,9 @@ describe("projectHtml", () => {
     const html = projectHtml(model(), ui());
     expect(html).toContain('data-chev="p1"');
     expect(html).toContain('data-open="p1"');
-    expect(html).toContain("sfolder"); // folder icon, not a box glyph
-    expect(html).not.toContain("▣");
+    // Just the name — the folder glyph said only "this is a project", which the
+    // rail's whole shape already said.
+    expect(html).not.toContain("sfolder");
   });
 
   it("highlights the project whose page is open", () => {

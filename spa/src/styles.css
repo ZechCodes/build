@@ -657,30 +657,32 @@ body.sidebar-collapsed #side-open { display:block; }
    rather than a card stacked on the page. The rect replaces both the old
    between-block margin and the tree guide that used to hang inside it; the
    route's project takes the accent on the border it already has. */
-.sproj { margin-bottom:8px; border:1px solid var(--line); border-radius:12px; padding:5px 5px 6px; }
+.sproj { margin-bottom:8px; border:1px solid var(--line); border-radius:12px; padding:5px 8px 7px 4px; }
 .sproj.active { border-color:var(--accent); }
 .sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;
   font-size:14px; font-weight:600; }
 .sproj-head.active { background:transparent; }
-.chevbtn { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:6px; width:26px; height:26px; flex:none; cursor:pointer; display:grid; place-items:center; }
+.chevbtn { font:inherit; font-size:11px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:6px; width:16px; height:22px; flex:none; cursor:pointer; display:grid; place-items:center; padding:0; }
 .chevbtn:hover { background:var(--line2); color:var(--ink2); }
 .sproj-open { display:flex; align-items:center; gap:7px; flex:1; min-width:0; cursor:pointer;
-  padding:4px 6px; border-radius:6px; }
+  padding:3px 5px; border-radius:6px; }
 .sproj-open:hover { background:var(--line2); }
 .sfolder { color:var(--ink2); flex:none; }
 .sbranch { flex:none; vertical-align:middle; }
 .sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sbadge { margin-left:auto; }
-/* The header's second line: the checkout's branch, aligned under the project
-   name (past the chevron), reading as metadata rather than another entry. */
-.smain-line { margin-left:22px; font-size:12px; }
-.smain-line .stitle { font-size:12px; }
+/* The header's second line: the checkout's branch and its git status, aligned
+   under the project name, reading as metadata rather than another entry. */
+.smain-line { margin-left:16px; font-size:12px; gap:6px; }
+.smain-line .stitle { font-size:12px; flex:0 1 auto; }
+.smain-line .sstat { margin-left:auto; }
+.ssync { color:var(--ink2); }
 /* The classic tree guide: a 1px rule hanging from under the head's icon,
    running the body's full height, with the children nested just inside it.
    The row backgrounds sit in the padding gap so hover/active never touch the
    line. */
-.sproj-body { padding:2px 0 0 22px; }
+.sproj-body { padding:2px 0 0 16px; }
 .ssec { margin:6px 0 1px; }
 /* Quieter than the head that anchors the block: smaller, tighter tracking,
    lighter weight — a whisper, not a shout. */

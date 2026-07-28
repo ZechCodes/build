@@ -2749,6 +2749,33 @@ impl AppState {
     /// per-project failure (unborn HEAD, fs error) logs and contributes
     /// nothing, same posture as `external_worktrees_json`.
     fn primary_changes_json(&mut self) -> Vec<Value> {
+        /// How far HEAD is ahead of / behind its upstream, or (None, None) when
+        /// it has no upstream to be measured against.
+        fn head_sync_counts(repo: &git2::Repository) -> (Option<u64>, Option<u64>) {
+            let head = match repo.head() {
+                Ok(head) if head.is_branch() => head,
+                _ => return (None, None),
+            };
+            let Some(local_oid) = head.target() else {
+                return (None, None);
+            };
+            let Ok(branch) =
+                repo.find_branch(head.shorthand().unwrap_or(""), git2::BranchType::Local)
+            else {
+                return (None, None);
+            };
+            let Ok(upstream) = branch.upstream() else {
+                return (None, None);
+            };
+            let Some(upstream_oid) = upstream.get().target() else {
+                return (None, None);
+            };
+            match repo.graph_ahead_behind(local_oid, upstream_oid) {
+                Ok((ahead, behind)) => (Some(ahead as u64), Some(behind as u64)),
+                Err(_) => (None, None),
+            }
+        }
+
         let mut entries = Vec::new();
         for i in 0..self.projects.len() {
             if let Some((computed_at, cached)) = &self.projects[i].primary_summary {
@@ -2766,12 +2793,23 @@ impl AppState {
                 .and_then(|r| r.head().ok())
                 .and_then(|h| h.shorthand().map(str::to_string))
                 .unwrap_or_else(|| "HEAD".to_string());
+            // The rail shows this checkout as "branch + git status", which is both
+            // halves: what the working tree holds (diffstat) and where the branch
+            // sits against its upstream. No upstream means no counts — null, not
+            // zero, because "nothing to compare against" is not "level with it".
+            let (ahead, behind) = repo
+                .as_ref()
+                .ok()
+                .map(head_sync_counts)
+                .unwrap_or((None, None));
             let summary = match crate::diff::diff_against_head(&project.repo_path) {
                 Ok(diff) => {
                     let stat = diff.stat();
                     Some(json!({
                         "project_id": project_id,
                         "branch": branch,
+                        "ahead": ahead,
+                        "behind": behind,
                         "files_changed": stat.files_changed,
                         "insertions": stat.insertions,
                         "deletions": stat.deletions,
@@ -10828,5 +10866,35 @@ mod tests {
             json!({ "project_id": "proj-nope", "name": "scratch" }),
         ));
         assert_eq!(res["ok"], false, "{res:?}");
+    }
+
+    /// The rail shows a project's checkout as its branch plus its git status, so
+    /// the summary has to carry the sync counts too — not only the working-tree
+    /// diffstat. No upstream means no counts, which is a different thing from
+    /// "level with upstream" and is reported as such.
+    #[test]
+    fn primary_changes_carries_ahead_behind_beside_the_diffstat() {
+        let (dir, repo, origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+
+        // A local commit that origin has not seen: ahead 1, behind 0.
+        std::fs::write(repo.join("ahead.txt"), "local\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "local only"]);
+        // …and an uncommitted edit, so both halves are non-zero at once.
+        std::fs::write(repo.join("dirty.txt"), "wip\n").unwrap();
+
+        let board = state.handle(req("board.list", json!({})));
+        let entry = board["result"]["primary_changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["branch"] == "main")
+            .cloned()
+            .unwrap_or_else(|| panic!("no primary entry: {board:?}"));
+        assert_eq!(entry["ahead"], 1, "{entry:?}");
+        assert_eq!(entry["behind"], 0, "{entry:?}");
+        assert!(entry["files_changed"].as_u64().unwrap() >= 1, "{entry:?}");
+        let _ = origin;
     }
 }

@@ -55,7 +55,7 @@ export function issuesHtml({ open, closed }) {
       <div class="emptystate">
         <div class="emptystate-title">No issues yet</div>
         <div class="emptystate-sub">Say what you want done and Build drafts the plan to do it.</div>
-        <button class="btn primary" type="button" data-newissue="1">New issue</button>
+        <button class="btn" type="button" data-newissue="1">New issue</button>
       </div></div>`;
   }
   return `<div class="issues">${section("OPEN", open)}${section("CLOSED", closed)}</div>`;

@@ -28,8 +28,8 @@ use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneRe
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, Agent, AgentTurn, Orchestrator, OrchestratorError, ReportOutcome,
-    RunSource, SessionSlot, SpawnOptions, TranscriptProbe,
+    ActivePlan, ActiveRun, Agent, AgentTurn, Orchestrator, OrchestratorError, ReportConsumed,
+    ReportOutcome, RunSource, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -472,6 +472,14 @@ struct Tab {
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
     live: bool,
+    /// When Build last submitted a turn here.
+    ///
+    /// The quiescence rule ("silence is an anomaly, never completion") used to
+    /// read a phase session that was killed at every gate, so silence really
+    /// was anomalous. A tab's agent outlives every phase and spends most of its
+    /// life idle at a prompt, so silence only means something measured from the
+    /// last thing Build asked of it.
+    last_delivered_at: Option<std::time::Instant>,
 }
 
 impl Tab {
@@ -520,6 +528,7 @@ impl Tab {
                 session,
                 screen: TermScreen::new(cols, rows),
                 live: true,
+                last_delivered_at: None,
             },
             rx,
         ))
@@ -582,18 +591,22 @@ impl PendingAgentTurn {
             phase: turn.phase,
         }
     }
-}
 
-/// The retained screen of a task's agent PTY stream. Created on first
-/// `agent.attach`, retained until the task record is removed (reaper), so the
-/// tab can show the last screen between sessions.
-struct AgentScreen {
-    screen: TermScreen,
-    /// The owning entity's (`ActivePlan`/`ActiveRun`) session generation this
-    /// screen's pump is consuming. 0 = no pump has ever run.
-    pumped_generation: u64,
-    /// Whether a live pump is currently feeding this screen.
-    live: bool,
+    /// Address a plan's turn to its disposable planning worktree. `None` once
+    /// that worktree is gone (approve/abandon tear it down): a plan with no
+    /// worktree has no agent, and every plan surface renders the empty state
+    /// rather than a tab that cannot exist.
+    fn for_plan(owner: &str, active: &ActivePlan, turn: AgentTurn) -> Option<Self> {
+        let worktree = active.worktree.as_ref()?;
+        Some(PendingAgentTurn {
+            root: AppState::canonical_root(&worktree.path),
+            owner: owner.to_string(),
+            model_choice: active.model_choice.clone(),
+            cold: turn.cold,
+            warm: turn.warm,
+            phase: turn.phase,
+        })
+    }
 }
 
 /// One registered project: a git repo, its base branch, and the orchestrator that
@@ -1014,15 +1027,12 @@ pub struct AppState {
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
     /// the queue for the test to inspect instead.
     pending_agent_turns: Vec<PendingAgentTurn>,
-    /// Retained agent screens, keyed by task id (pushed as `agent:<task_id>`).
-    agent_screens: HashMap<String, AgentScreen>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
     /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
-    /// hooks (`ensure_agent_pumps` at the `finish_mutation` tail) can spawn
-    /// pump tasks that need the `Arc`. Dispatch paths that run in tests
-    /// without an Arc simply skip pump spawning (they assert on state, not
-    /// pushes).
+    /// hooks can spawn pump tasks that need the `Arc`. Dispatch paths that run
+    /// in tests without an Arc simply skip pump spawning (they assert on
+    /// state, not pushes).
     self_handle: Option<std::sync::Weak<Mutex<AppState>>>,
     next_stream: u64,
     next_project: u64,
@@ -1076,7 +1086,6 @@ impl AppState {
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
             pending_agent_turns: Vec::new(),
-            agent_screens: HashMap::new(),
             next_term: 1,
             self_handle: None,
             next_stream: 1,
@@ -1495,7 +1504,6 @@ impl AppState {
         self.push_notify_plan(&plan_id, active.plan.state);
         self.plans.insert(plan_id, active);
         self.reap_orphaned_terminals();
-        self.ensure_agent_pumps();
         (view, persisted)
     }
 
@@ -1519,7 +1527,6 @@ impl AppState {
         self.push_notify_run(&run_id, active.run.state);
         self.runs.insert(run_id, active);
         self.reap_orphaned_terminals();
-        self.ensure_agent_pumps();
         (view, persisted)
     }
 
@@ -1529,23 +1536,22 @@ impl AppState {
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
     fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
+        // Plan and run ids are disjoint, so the owner lookup is the router.
+        if self.plans.contains_key(&turn.owner) {
+            let Ok(mut active) = self.take_plan(&turn.owner) else {
+                return;
+            };
+            open_session_lineage(&mut active.thread, turn);
+            let (_, persisted) = self.finish_plan_mutation(turn.owner.clone(), active);
+            if let Err(error) = persisted {
+                eprintln!("record_agent_session_start {}: {error}", turn.owner);
+            }
+            return;
+        }
         let Ok(mut active) = self.take_run(&turn.owner) else {
             return;
         };
-        let session_id = active.thread.start_session(
-            turn.model_choice.provider.label(),
-            turn.model_choice.model.as_deref(),
-            turn.model_choice.effort.as_deref(),
-            turn.phase,
-            &now_rfc3339(),
-        );
-        active.thread.push_event(
-            crate::thread::ThreadEventKind::RunStarted,
-            Some(format!("{} run started", turn.phase)),
-            Some(session_id),
-            None,
-            now_rfc3339(),
-        );
+        open_session_lineage(&mut active.thread, turn);
         let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
         if let Err(error) = persisted {
             eprintln!("record_agent_session_start {}: {error}", turn.owner);
@@ -1701,51 +1707,58 @@ impl AppState {
             .count()
     }
 
-    /// Whether an id (plan or run) names a live entity in either map.
-    fn contains_entity(&self, entity_id: &str) -> bool {
-        self.plans.contains_key(entity_id) || self.runs.contains_key(entity_id)
-    }
-
-    /// Subscribe to an entity's warm agent session (plan or run), with its
-    /// generation — the entity-agnostic shim the agent-screen machinery rides.
-    fn entity_subscribe_with_generation(
-        &self,
-        entity_id: &str,
-    ) -> Option<(u64, broadcast::Receiver<Vec<u8>>)> {
+    /// The canonical worktree an entity (plan or run) is working in — the key
+    /// its agent is registered under.
+    ///
+    /// A plan whose disposable planning worktree has been torn down (approved,
+    /// abandoned) has no worktree and therefore no agent; that is a refusal,
+    /// not a blank tab, because there is nothing for an agent to run in.
+    fn entity_worktree_root(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
         if let Some(plan) = self.plans.get(entity_id) {
-            return plan.session.subscribe_with_generation();
+            return plan
+                .worktree
+                .as_ref()
+                .map(|w| Self::canonical_root(&w.path))
+                .ok_or_else(|| "the plan has no worktree, so it has no agent".to_string());
         }
         if let Some(run) = self.runs.get(entity_id) {
-            return run.session.subscribe_with_generation();
+            return Ok(Self::canonical_root(&run.worktree.path));
         }
-        None
+        Err("unknown id".to_string())
     }
 
-    /// Write bytes into an entity's live agent PTY (plan or run).
-    fn entity_write_input(&self, entity_id: &str, data: &[u8]) -> Result<(), String> {
-        if let Some(plan) = self.plans.get(entity_id) {
-            return plan.session.write_input_strict(data);
-        }
-        if let Some(run) = self.runs.get(entity_id) {
-            return run.session.write_input_strict(data);
-        }
-        Err("unknown term_id".to_string())
+    /// Kill, reap, and forget a worktree's agent, telling every attached client
+    /// the tab is gone.
+    ///
+    /// An agent whose owner no longer exists is worse than no agent: it keeps
+    /// working and reports `done` into the unknown-entity log forever. So the
+    /// two verbs that remove a run while KEEPING its worktree — release
+    /// (un-adopt) and delete — close it here. A worktree that vanishes takes
+    /// its agent with it through the reaper instead.
+    fn close_agent_tab(&mut self, root: &std::path::Path) {
+        let key = TabKey::agent(&Self::canonical_root(root));
+        let Some(tab) = self.tabs.remove(&key) else {
+            return;
+        };
+        let wire_id = tab.wire_id();
+        tab.session.kill_and_reap();
+        tab.screen.push_closed(&wire_id, "closed");
     }
 
-    /// Resize an entity's live agent PTY (plan or run); returns whether a live
-    /// session was resized.
-    fn entity_resize_session(
-        &self,
-        entity_id: &str,
-        size: PtySize,
-    ) -> Result<bool, OrchestratorError> {
-        if let Some(plan) = self.plans.get(entity_id) {
-            return plan.session.resize(size);
+    /// The registry key an agent wire id (`agent:<worktree_id>`) addresses.
+    ///
+    /// A scan, not a map hit: the id names a worktree by its stable external
+    /// id, and there are only ever a handful of live tabs. Every wire-facing
+    /// verb funnels through here, so a stale client asking for a tab that no
+    /// longer exists gets one consistent "unknown term_id" and drops it.
+    fn agent_tab_key(&self, wire_id: &str) -> Option<TabKey> {
+        if !wire_id.starts_with("agent:") {
+            return None;
         }
-        if let Some(run) = self.runs.get(entity_id) {
-            return run.session.resize(size);
-        }
-        Ok(false)
+        self.tabs
+            .iter()
+            .find(|(key, tab)| key.tab_id == AGENT_TAB_ID && tab.wire_id() == wire_id)
+            .map(|(key, _)| key.clone())
     }
 
     /// The project's external worktrees. Serves the cache when younger than
@@ -1899,6 +1912,11 @@ impl AppState {
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
                             state.lock().unwrap().on_agent_done(entity_id, report);
+                            // A report can start the next phase (a built stage
+                            // hands itself to validation). The turn is queued
+                            // under the lock above; sending it needs the lock
+                            // free, exactly as on the relay's frame path.
+                            deliver_pending_agent_turns(&state);
                             continue;
                         }
                         if let Ok(action) = serde_json::from_value::<BridgeAction>(
@@ -2019,23 +2037,37 @@ impl AppState {
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
         let report_for_thread = report.clone();
-        let outcome = (|| -> Result<ReportOutcome, String> {
+        let consumed = (|| -> Result<ReportConsumed, String> {
             let project_id = self.project_of(run_id)?;
             self.orch_for(&project_id)?
                 .on_run_done(&mut active, &plan_docs, report)
                 .map_err(err)
         })();
-        match &outcome {
-            Err(e) => eprintln!("on_agent_done {run_id}: {e}"),
+        let outcome = match consumed {
+            Err(e) => {
+                eprintln!("on_agent_done {run_id}: {e}");
+                Err(e)
+            }
             // Build's agent is persistent, so it reports whenever it finishes a
             // turn — including one the human started at a review gate, which no
             // lifecycle event accepts. Enforcement is by observation: the report
             // is recorded on the conversation below and nothing moves.
-            Ok(ReportOutcome::OutOfPhase(illegal)) => {
-                eprintln!("on_agent_done {run_id}: out-of-phase report ({illegal}); recorded only")
+            Ok(ReportConsumed { outcome, next }) => {
+                if let ReportOutcome::OutOfPhase(illegal) = &outcome {
+                    eprintln!(
+                        "on_agent_done {run_id}: out-of-phase report ({illegal}); recorded only"
+                    );
+                }
+                // A stage that built hands itself to validation: the same
+                // agent, a new turn. Queued rather than written here — the done
+                // socket holds the state lock and a cold delivery needs it free.
+                if let Some(turn) = next {
+                    self.pending_agent_turns
+                        .push(PendingAgentTurn::for_run(run_id, &active, turn));
+                }
+                Ok(outcome)
             }
-            Ok(ReportOutcome::Applied) => {}
-        }
+        };
         record_report_in_thread(
             &mut active.thread,
             &report_for_thread,
@@ -2405,8 +2437,13 @@ impl AppState {
     fn term_input(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let data = b64decode(&require_str(params, "data")?)?;
-        if let Some(entity_id) = term_id.strip_prefix("agent:") {
-            self.entity_write_input(entity_id, &data)?;
+        if term_id.starts_with("agent:") {
+            let key = self.agent_tab_key(&term_id).ok_or("unknown term_id")?;
+            let tab = &self.tabs[&key];
+            if !tab.live || tab.session.has_exited() {
+                return Err("no active agent session".to_string());
+            }
+            tab.session.write_input(&data).map_err(|e| e.to_string())?;
             return Ok(json!({ "ok": true }));
         }
         let term = self.terms.get(&term_id).ok_or("unknown term_id")?;
@@ -2428,17 +2465,18 @@ impl AppState {
             pixel_width: 0,
             pixel_height: 0,
         };
-        if let Some(entity_id) = term_id.strip_prefix("agent:") {
-            if !self.contains_entity(entity_id) {
-                return Err("unknown term_id".to_string());
-            }
-            let live = self.entity_resize_session(entity_id, size).map_err(err)?;
+        if term_id.starts_with("agent:") {
+            let key = self.agent_tab_key(&term_id).ok_or("unknown term_id")?;
+            let tab = self
+                .tabs
+                .get_mut(&key)
+                .expect("the key came from the registry");
+            let live = tab.live && !tab.session.has_exited();
             if live {
+                tab.session.resize(size).map_err(|e| e.to_string())?;
                 // Keep the retained agent screen in step with the live PTY; a
                 // dead resize touches nothing (the last screen stays intact).
-                if let Some(agent) = self.agent_screens.get_mut(entity_id) {
-                    agent.screen.set_size(cols, rows);
-                }
+                tab.screen.set_size(cols, rows);
             }
             return Ok(json!({ "ok": true, "live": live }));
         }
@@ -2457,9 +2495,8 @@ impl AppState {
                 .attached
                 .retain(|snd| snd.session_id() != session_id);
         }
-        for agent in self.agent_screens.values_mut() {
-            agent
-                .screen
+        for tab in self.tabs.values_mut() {
+            tab.screen
                 .attached
                 .retain(|snd| snd.session_id() != session_id);
         }
@@ -2485,69 +2522,26 @@ impl AppState {
             term.session.kill_and_reap();
             term.screen.push_closed(term_id, "reaped");
         }
-        // Retained agent screens live exactly as long as their owning entity.
-        let AppState {
-            agent_screens,
-            plans,
-            runs,
-            ..
-        } = self;
-        agent_screens
-            .retain(|entity_id, _| plans.contains_key(entity_id) || runs.contains_key(entity_id));
+        // A tab lives as long as the WORKTREE it is rooted in — not as long as
+        // the entity that happens to own it. Releasing or deleting an adopted
+        // run leaves the human's worktree, and the agent working in it, exactly
+        // where they were; only a worktree that is gone from disk takes its
+        // agent with it.
+        let vanished: Vec<TabKey> = self
+            .tabs
+            .keys()
+            .filter(|key| !key.root.exists())
+            .cloned()
+            .collect();
+        for key in vanished {
+            let Some(tab) = self.tabs.remove(&key) else {
+                continue;
+            };
+            let wire_id = tab.wire_id();
+            tab.session.kill_and_reap();
+            tab.screen.push_closed(&wire_id, "reaped");
+        }
         orphaned
-    }
-
-    /// Proactively capture every task's agent PTY into a retained screen from
-    /// the moment its session spawns — independent of any client attach. The
-    /// server-side screen model must exist for the life of the task (spec: the
-    /// Agent tab shows the running-or-last agent even for an unattended,
-    /// overnight run), so an unattended session's broadcast output is never
-    /// dropped for want of a subscriber. Runs at the `finish_mutation` tail via
-    /// the weak self-handle; without a handle or a runtime (sync unit tests)
-    /// pump spawning is skipped.
-    fn ensure_agent_pumps(&mut self) {
-        let Some(state_arc) = self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) else {
-            return;
-        };
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
-        // Every entity (plan or run) with a live session gets a screen + a
-        // running pump from session spawn — get-or-create at the agent PTY's
-        // default grid (120×40, matching agent_attach). The generation guard
-        // (set under the lock, before spawning) means a screen is never
-        // double-pumped, so the proactive pump here and agent_attach's own
-        // pump-start stay idempotent. Plan and run ids are disjoint.
-        let mut live: Vec<(String, u64, broadcast::Receiver<Vec<u8>>)> = Vec::new();
-        for (id, active) in self.plans.iter() {
-            if let Some((generation, rx)) = active.session.subscribe_with_generation() {
-                live.push((id.clone(), generation, rx));
-            }
-        }
-        for (id, active) in self.runs.iter() {
-            if let Some((generation, rx)) = active.session.subscribe_with_generation() {
-                live.push((id.clone(), generation, rx));
-            }
-        }
-        let mut pumps = Vec::new();
-        for (entity_id, generation, rx) in live {
-            let agent = self
-                .agent_screens
-                .entry(entity_id.clone())
-                .or_insert_with(|| AgentScreen {
-                    screen: TermScreen::new(120, 40),
-                    pumped_generation: 0,
-                    live: false,
-                });
-            if generation != agent.pumped_generation {
-                agent.pumped_generation = generation;
-                agent.live = true;
-                pumps.push((entity_id, generation, rx));
-            }
-        }
-        for (entity_id, generation, rx) in pumps {
-            spawn_agent_pump(Arc::clone(&state_arc), entity_id, generation, rx);
-        }
     }
 
     /// Whether a terminal's scope still maps to a live surface. The check is
@@ -2589,13 +2583,25 @@ impl AppState {
         // which code) versus merely fell silent — an exited harness gets the
         // "agent exited unexpectedly (exit code N)" last_error so the crash is
         // legible; a quiet-but-alive one does not.
-        let idle_check = |exited: bool, code: Option<i32>, idle: Option<Duration>| {
-            if exited {
-                Some(Some(code.unwrap_or(-1)))
-            } else if idle.is_some_and(|d| d >= quiet_threshold) {
-                Some(None)
-            } else {
+        //
+        // The signal comes from the worktree's agent TAB, and silence is
+        // measured from the last turn Build submitted there. A tab's agent
+        // survives every phase boundary, so raw PTY silence would demote a run
+        // the moment it was re-dispatched after a long quiet review.
+        let idle_check = |tab: Option<&Tab>| {
+            let tab = tab?;
+            if tab.session.has_exited() {
+                return Some(Some(tab.session.exit_code().unwrap_or(-1)));
+            }
+            let quiet_for = quiet_threshold;
+            let painted_recently = tab.session.idle_for() < quiet_for;
+            let spoken_to_recently = tab
+                .last_delivered_at
+                .is_some_and(|at| at.elapsed() < quiet_for);
+            if painted_recently || spoken_to_recently {
                 None
+            } else {
+                Some(None)
             }
         };
         let idle_plans: Vec<(String, Option<i32>)> = self
@@ -2603,12 +2609,8 @@ impl AppState {
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
             .filter_map(|(id, a)| {
-                idle_check(
-                    a.session.harness_exited(),
-                    a.session.harness_exit_code(),
-                    a.session.harness_idle_for(),
-                )
-                .map(|code| (id.clone(), code))
+                let root = a.worktree.as_ref().map(|w| Self::canonical_root(&w.path))?;
+                idle_check(self.tabs.get(&TabKey::agent(&root))).map(|code| (id.clone(), code))
             })
             .collect();
         let idle_runs: Vec<(String, Option<i32>)> = self
@@ -2616,12 +2618,8 @@ impl AppState {
             .iter()
             .filter(|(_, a)| a.run.state.is_working())
             .filter_map(|(id, a)| {
-                idle_check(
-                    a.session.harness_exited(),
-                    a.session.harness_exit_code(),
-                    a.session.harness_idle_for(),
-                )
-                .map(|code| (id.clone(), code))
+                let root = Self::canonical_root(&a.worktree.path);
+                idle_check(self.tabs.get(&TabKey::agent(&root))).map(|code| (id.clone(), code))
             })
             .collect();
 
@@ -3732,6 +3730,15 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Queue a plan's turn for its planning worktree's agent. A plan whose
+    /// worktree is gone has no agent to hear it; the turn is dropped rather
+    /// than delivered somewhere it does not belong.
+    fn queue_plan_turn(&mut self, plan_id: &str, active: &ActivePlan, turn: AgentTurn) {
+        if let Some(pending) = PendingAgentTurn::for_plan(plan_id, active, turn) {
+            self.pending_agent_turns.push(pending);
+        }
+    }
+
     /// The default project id when the client doesn't choose one (the first
     /// registered project).
     fn default_project(&self) -> Result<String, String> {
@@ -3755,12 +3762,13 @@ impl AppState {
         let model_choice = model_choice_from(params)?;
         self.require_store()?;
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-        let mut active = self
+        let (mut active, turn) = self
             .orch_for(&project_id)?
             .dispatch_plan(PlanId::new(&plan_id), goal, &base, model_choice)
             .map_err(err)?;
         self.entity_project
             .insert(plan_id.clone(), project_id.clone());
+        self.queue_plan_turn(&plan_id, &active, turn);
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
         }
@@ -3901,9 +3909,11 @@ impl AppState {
         append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .send_plan_notes(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
+            self.queue_plan_turn(&plan_id, &active, turn);
             if self.qa_agent {
                 self.qa_simulate_plan(&project_id, &mut active)?;
             }
@@ -3966,9 +3976,11 @@ impl AppState {
         }
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .send_plan_stage_notes(&mut active, store, &stage_id)
                 .map_err(err)?;
+            self.queue_plan_turn(&plan_id, &active, turn);
             if self.qa_agent {
                 self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
             }
@@ -3989,9 +4001,11 @@ impl AppState {
         active.thread.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .message_plan(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
+            self.queue_plan_turn(&plan_id, &active, turn);
             if self.qa_agent && active.plan.state == PlanState::Drafting {
                 if active.revising_stage_id.is_some() {
                     self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
@@ -4175,7 +4189,7 @@ impl AppState {
             .map(str::to_string);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
 
-        let (project_id, mut active) = {
+        let (project_id, mut active, turn) = {
             if !self.plans.contains_key(&plan_id) {
                 return Err("unknown plan_id".to_string());
             }
@@ -4191,7 +4205,7 @@ impl AppState {
             } else {
                 plan.model_choice.clone()
             };
-            let active = self
+            let (active, turn) = self
                 .orch_for(&project_id)?
                 .dispatch_run(
                     RunId::new(&run_id),
@@ -4204,11 +4218,13 @@ impl AppState {
                     store,
                 )
                 .map_err(err)?;
-            (project_id, active)
+            (project_id, active, turn)
         };
 
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
+        self.pending_agent_turns
+            .push(PendingAgentTurn::for_run(&run_id, &active, turn));
         if self.qa_agent {
             let plan_docs = self.owning_plan_stage_docs(&active);
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
@@ -4295,7 +4311,9 @@ impl AppState {
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
             if matches!(active.plan.state, PlanState::Drafting) {
-                nudge_live_session(&active.session, &entity_id);
+                if let Some(worktree) = &active.worktree {
+                    nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
+                }
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             persisted?;
@@ -4312,7 +4330,7 @@ impl AppState {
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
             if matches!(active.run.state, RunState::Building) {
-                nudge_live_session(&active.session, &entity_id);
+                nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
             }
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
@@ -4389,9 +4407,12 @@ impl AppState {
         };
         let mut active = self.take_run(&run_id)?;
         let outcome = (|| -> Result<(), String> {
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .dispatch_run_stage(&mut active, &plan_docs, &stage_id, model_override)
                 .map_err(err)?;
+            self.pending_agent_turns
+                .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
@@ -4417,9 +4438,12 @@ impl AppState {
         };
         let mut active = self.take_run(&run_id)?;
         let outcome = (|| -> Result<(), String> {
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .fix_run_stage(&mut active, &plan_docs, &stage_id, &note)
                 .map_err(err)?;
+            self.pending_agent_turns
+                .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
@@ -4465,9 +4489,12 @@ impl AppState {
                 .collect();
             append_stage_comments_to_thread(&mut active.thread, &stage, &comments);
             append_stage_comments_to_thread(&mut plan.thread, &stage, &comments);
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .send_run_stage_notes(&mut active, plan, &stage_id)
                 .map_err(err)?;
+            self.pending_agent_turns
+                .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             if self.qa_agent {
                 self.qa_simulate_run_stage_revise(&project_id, &mut active, plan)?;
             }
@@ -4537,9 +4564,12 @@ impl AppState {
                 return;
             };
             let outcome = (|| -> Result<(), String> {
-                self.orch_for(&project_id)?
+                let turn = self
+                    .orch_for(&project_id)?
                     .dispatch_run_stage(&mut active, &plan_docs, &next, None)
                     .map_err(err)?;
+                self.pending_agent_turns
+                    .push(PendingAgentTurn::for_run(run_id, &active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
             })();
             let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
@@ -4677,9 +4707,12 @@ impl AppState {
         let mut active = self.take_run(&run_id)?;
         active.thread.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
-            self.orch_for(&project_id)?
+            let turn = self
+                .orch_for(&project_id)?
                 .message_run(&mut active, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
+            self.pending_agent_turns
+                .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             if self.qa_agent && active.run.state == RunState::Building {
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
             }
@@ -4740,8 +4773,12 @@ impl AppState {
                 .map_err(|e| format!("run store: {e}"))?;
         }
 
-        let mut active = self.runs.remove(&run_id).expect("checked above");
-        active.session.end();
+        let active = self.runs.remove(&run_id).expect("checked above");
+        // The run is gone, so its agent's `done` reports would have no owner to
+        // route to. Close the worktree's agent — the worktree itself survives
+        // (deleting an adopted run's card must never touch the user's files),
+        // and reopening the Agent tab there re-adopts.
+        self.close_agent_tab(&active.worktree.path);
 
         // A failed run still holds its worktree; deleting an adopted run's card
         // must never delete the user's files (delete removes the card, not the
@@ -4816,8 +4853,11 @@ impl AppState {
                 .delete_run(&run_id)
                 .map_err(|e| format!("run store: {e}"))?;
         }
-        let mut active = self.runs.remove(&run_id).expect("checked above");
-        active.session.end();
+        let active = self.runs.remove(&run_id).expect("checked above");
+        // Un-adopting hands the worktree back to the human; Build's agent in it
+        // reported `done` to a run that no longer exists, so it goes with the
+        // run. Reopening the Agent tab there adopts again.
+        self.close_agent_tab(&active.worktree.path);
         let project_id = self.entity_project.remove(&run_id);
         self.entity_project_path.remove(&run_id);
         self.entity_created_at.remove(&run_id);
@@ -4893,7 +4933,6 @@ impl AppState {
             };
             match active.run.apply(RunEvent::Archive) {
                 Ok(_) => {
-                    active.session.end();
                     self.prune_worktree_records(&run_id);
                     eprintln!(
                         "archived {run_id}: its worktree {} was deleted outside Build",
@@ -5302,6 +5341,9 @@ impl AppState {
     /// Simulate one stage's build session and — since that hands off to a
     /// validation session — the validation too, so one call lands the stage on
     /// a verdict exactly as two real `done` reports would.
+    /// The build→validate hand-off turn each `on_run_done` returns is dropped
+    /// on purpose here: the scripted agent plays BOTH sides, so it validates
+    /// the stage itself in the next arm rather than asking a harness to.
     fn qa_simulate_stage_build(
         &self,
         project_id: &str,
@@ -5968,29 +6010,53 @@ fn parse_thread_post_input(
     parse_thread_inputs(&wrapped, artifact, "body")
 }
 
-/// Tell a live harness session, in place, that unread thread messages await.
+/// Tell the worktree's agent, in place, that unread thread messages await.
 ///
-/// Only call this when the agent acting on them can actually be CONSUMED — a
-/// run that is `building`, a plan that is `drafting`. Waking a harness parked at
-/// a review gate dispatches work whose `done` the run machine does not accept;
-/// that report is now recorded as out-of-phase rather than rejected as a
-/// failure, but it still moves nothing, so the post is left durable here and the
-/// next session's catch-up packet carries it.
+/// [`deliver`]'s warm branch without the cold half, and deliberately so:
+/// `thread.post` never starts a process. Only call it when the agent acting on
+/// the messages can actually be CONSUMED — a run that is `building`, a plan
+/// that is `drafting`. Waking an agent parked at a review gate produces work
+/// whose `done` the run machine does not accept; that report is recorded as
+/// out-of-phase rather than rejected as a failure, but it still moves nothing,
+/// so the post is left durable and the next turn's catch-up packet carries it.
 ///
-/// PERIPHERY: this is the phase-session predecessor of [`deliver`]'s warm
-/// branch, and retires with the last `SessionSlot`.
-///
-/// A dead slot swallows the write, and a write failure against an exiting
-/// harness is logged, never surfaced: the message is durable either way.
-fn nudge_live_session(session: &SessionSlot, entity_id: &str) {
+/// No tab, or a tab whose process has ended, swallows the nudge, and a write
+/// failure against an exiting harness is logged, never surfaced: the message is
+/// durable either way.
+fn nudge_live_agent_tab(tabs: &HashMap<TabKey, Tab>, root: &std::path::Path, entity_id: &str) {
+    let Some(tab) = tabs.get(&TabKey::agent(&AppState::canonical_root(root))) else {
+        return;
+    };
+    if !tab.live || tab.session.has_exited() {
+        return;
+    }
     // Through write_prompt, not a raw write with a hardcoded Enter: the nudge is
     // a turn, so it must honor the harness's SubmitKey and paste framing exactly
     // as a dispatched prompt does. Hardcoding \r submits into a SubmitKey::None
     // harness that never asked for it, and leaves the notification unframed —
     // safe today only because it happens to be one line.
-    if let Err(error) = session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
-        eprintln!("thread.post {entity_id}: live-session notify failed: {error}");
+    if let Err(error) = tab.session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
+        eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }
+}
+
+/// Open a conversation's session lineage for a newly spawned agent process,
+/// chaining it off the previous session so the thread still reads as a chain.
+fn open_session_lineage(thread: &mut crate::thread::Thread, turn: &PendingAgentTurn) {
+    let session_id = thread.start_session(
+        turn.model_choice.provider.label(),
+        turn.model_choice.model.as_deref(),
+        turn.model_choice.effort.as_deref(),
+        turn.phase,
+        &now_rfc3339(),
+    );
+    thread.push_event(
+        crate::thread::ThreadEventKind::RunStarted,
+        Some(format!("{} run started", turn.phase)),
+        Some(session_id),
+        None,
+        now_rfc3339(),
+    );
 }
 
 fn append_user_thread_messages(
@@ -6299,19 +6365,23 @@ fn term_attach(
     }))
 }
 
-/// Attach this client to a task's agent screen: get-or-create the retained
-/// screen, start a pump when a live session isn't being pumped yet, register
-/// the sender, and return the current snapshot + cursor + `live`.
-/// **Never errors because no session is running** — `live: false` with the
-/// last (or blank) snapshot is the contract; only an unknown task errors (the
-/// SPA falls back to its quiet state).
+/// Attach this client to the agent of the worktree an entity is working in:
+/// register the sender on the tab's screen and return the current snapshot +
+/// cursor + `live`.
+///
+/// **Never errors because no agent is running** — `live: false` with the last
+/// (or a blank) snapshot is the contract, because a tab must still show what
+/// its agent did before it died. An unknown entity errors, and so does an
+/// entity with no worktree (an approved or abandoned plan): its disposable
+/// worktree is gone, so there is no worktree to host an agent and the surface
+/// renders its empty state instead.
 fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
 ) -> Result<Value, String> {
-    // The agent screen belongs to whichever entity — plan or run — owns the
-    // session; the id is opaque (plan-… / run-…).
+    // The id is opaque (plan-… / run-…); what it resolves to is a worktree,
+    // because that is what an agent belongs to.
     let entity_id = require_str(params, "id")?;
     // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
@@ -6319,67 +6389,41 @@ fn agent_attach(
 
     let mut guard = state.lock().unwrap();
     let s = &mut *guard;
-    if !s.contains_entity(&entity_id) {
-        return Err("unknown id".to_string());
-    }
-    let live_session = s.entity_subscribe_with_generation(&entity_id);
-
-    let AppState {
-        agent_screens,
-        plans,
-        runs,
-        ..
-    } = s;
-    let agent = agent_screens
-        .entry(entity_id.clone())
-        .or_insert_with(|| AgentScreen {
-            screen: TermScreen::new(cols, rows),
-            pumped_generation: 0,
-            live: false,
-        });
-
-    let mut pump = None;
-    if let Some((generation, rx)) = live_session {
-        if generation != agent.pumped_generation {
-            agent.pumped_generation = generation;
-            agent.live = true;
-            pump = Some((generation, rx));
-        }
+    let root = s.entity_worktree_root(&entity_id)?;
+    let key = TabKey::agent(&root);
+    let Some(tab) = s.tabs.get_mut(&key) else {
+        // No agent has run here yet: a blank, dead screen. The tab opens on the
+        // first delivery.
+        return Ok(json!({
+            "term_id": format!("agent:{}", crate::worktree::external_worktree_id(&root)),
+            "live": false,
+            "snapshot": TermScreen::new(cols, rows).snapshot(),
+            "cursor": 0,
+            "cols": cols,
+            "rows": rows,
+        }));
+    };
+    if tab.live && (tab.screen.cols != cols || tab.screen.rows != rows) {
         // Mid-session resize is allowed — it is a full PTY on the user's
-        // machine; TUIs repaint. With no session live the retained last
-        // screen is left untouched. Resize via disjoint-field access so it
-        // never conflicts with the `agent` borrow of `agent_screens`.
-        if agent.screen.cols != cols || agent.screen.rows != rows {
-            agent.screen.set_size(cols, rows);
-            let size = PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            };
-            if let Some(plan) = plans.get(&entity_id) {
-                let _ = plan.session.resize(size);
-            } else if let Some(run) = runs.get(&entity_id) {
-                let _ = run.session.resize(size);
-            }
-        }
+        // machine; TUIs repaint. A dead agent's retained screen is left
+        // untouched, so the last thing it painted stays legible.
+        tab.screen.set_size(cols, rows);
+        let _ = tab.session.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
-
-    agent.screen.register(sender);
-    let response = json!({
-        "term_id": format!("agent:{entity_id}"),
-        "live": agent.live,
-        "snapshot": agent.screen.snapshot(),
-        "cursor": agent.screen.total,
-        "cols": agent.screen.cols,
-        "rows": agent.screen.rows,
-    });
-    drop(guard);
-
-    if let Some((generation, rx)) = pump {
-        spawn_agent_pump(Arc::clone(state), entity_id, generation, rx);
-    }
-    Ok(response)
+    tab.screen.register(sender);
+    Ok(json!({
+        "term_id": tab.wire_id(),
+        "live": tab.live,
+        "snapshot": tab.screen.snapshot(),
+        "cursor": tab.screen.total,
+        "cols": tab.screen.cols,
+        "rows": tab.screen.rows,
+    }))
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
@@ -6523,14 +6567,27 @@ fn deliver(
         Spawned::Warm => warm,
     };
     let key = TabKey::agent(&AppState::canonical_root(root));
-    let s = state.lock().unwrap();
+    let mut s = state.lock().unwrap();
     let tab = s
         .tabs
-        .get(&key)
+        .get_mut(&key)
         .ok_or("the agent tab closed before its turn could be delivered")?;
-    tab.session
-        .write_prompt(prompt)
-        .map_err(|e| e.to_string())?;
+    if let Err(error) = tab.session.write_prompt(prompt) {
+        // A harness that exits immediately still owns its tab: PTYs return EIO
+        // once the child's side is closed, and the child closes it BEFORE the
+        // OS makes its exit status reapable, so a single poll here races the
+        // kernel. The bounded wait covers that lag; a genuinely wedged PTY
+        // (live but unwritable) still surfaces its error.
+        if !tab
+            .session
+            .exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE)
+        {
+            return Err(error.to_string());
+        }
+    }
+    // The quiescence clock restarts here: whatever the agent was silent about
+    // before, it now has something to answer for.
+    tab.last_delivered_at = Some(std::time::Instant::now());
     Ok((wire_id, spawned))
 }
 
@@ -6632,94 +6689,6 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     let mut s = state.lock().unwrap();
                     let Some(tab) = s.tabs.get_mut(&key) else { return; };
                     tab.screen.flush(&term_id);
-                }
-            }
-        }
-    });
-}
-
-/// Pump one agent session's PTY stream into the task's retained screen — the
-/// same coalescing loop as user terminals, keyed `agent:<task_id>`, with two
-/// differences. Start-of-session: reset the parser to a blank screen of the
-/// current grid and push `term.reset` (clients wipe; the new session starts
-/// clean) — `total` is NEVER reset, cursor monotonicity is what client dedupe
-/// rides on. Session end (`Closed`): the screen is RETAINED as the tab's
-/// "last screen" (`live = false`, `term.closed{reason:"agent_session_ended"}`)
-/// instead of removed. A newer generation's pump supersedes this one — the
-/// generation filter makes the stale task return.
-fn spawn_agent_pump(
-    state: Arc<Mutex<AppState>>,
-    entity_id: String,
-    generation: u64,
-    mut rx: broadcast::Receiver<Vec<u8>>,
-) {
-    tokio::spawn(async move {
-        let term_id = format!("agent:{entity_id}");
-        {
-            let mut s = state.lock().unwrap();
-            let Some(agent) = s
-                .agent_screens
-                .get_mut(&entity_id)
-                .filter(|a| a.pumped_generation == generation)
-            else {
-                return;
-            };
-            agent.screen.parser = vt100::Parser::new(agent.screen.rows, agent.screen.cols, 2000);
-            agent.screen.pending.clear();
-            let payload = json!({
-                "type": "term.reset",
-                "term_id": term_id,
-                "data": agent.screen.snapshot(),
-                "cursor": agent.screen.total,
-            });
-            agent
-                .screen
-                .attached
-                .retain(|snd| snd.push(payload.clone()));
-        }
-        let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
-        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                recv = rx.recv() => match recv {
-                    Ok(chunk) => {
-                        let mut s = state.lock().unwrap();
-                        let Some(agent) = s
-                            .agent_screens
-                            .get_mut(&entity_id)
-                            .filter(|a| a.pumped_generation == generation)
-                        else {
-                            return;
-                        };
-                        agent.screen.process(&chunk);
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // The phase ended / harness exited: retain the screen.
-                        let mut s = state.lock().unwrap();
-                        let Some(agent) = s
-                            .agent_screens
-                            .get_mut(&entity_id)
-                            .filter(|a| a.pumped_generation == generation)
-                        else {
-                            return;
-                        };
-                        agent.live = false;
-                        agent.screen.flush(&term_id);
-                        agent.screen.push_closed(&term_id, "agent_session_ended");
-                        return;
-                    }
-                },
-                _ = flush.tick() => {
-                    let mut s = state.lock().unwrap();
-                    let Some(agent) = s
-                        .agent_screens
-                        .get_mut(&entity_id)
-                        .filter(|a| a.pumped_generation == generation)
-                    else {
-                        return;
-                    };
-                    agent.screen.flush(&term_id);
                 }
             }
         }
@@ -7800,6 +7769,112 @@ mod tests {
             "a warm tab hears the nudge: {warm_screen:?}"
         );
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    }
+
+    /// Point a QA state's only project at a different agent — the seam every
+    /// test that cares about what actually gets spawned goes through.
+    fn use_agent(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, wt: PathBuf, agent: Agent) {
+        state.lock().unwrap().projects[0].orch =
+            Orchestrator::new(repo.to_path_buf(), wt, agent, Templates::default());
+    }
+
+    /// The rendered turn is always multi-line (the conversation protocol block
+    /// is appended), so through a real TUI it must arrive as ONE bracketed
+    /// paste. The capture harness never paints, so this also proves the
+    /// readiness grace expires into a write rather than a silently lost prompt.
+    #[tokio::test]
+    async fn a_delivered_turn_reaches_a_silent_harness_as_one_bracketed_paste() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-paste");
+        let capture = dir.path().join("agent-stdin.txt");
+        let capture_for_builder = capture.clone();
+        use_agent(
+            &state,
+            &repo,
+            dir.path().join("wt2"),
+            Agent::WarmBuilder(std::sync::Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    HarnessSpec::new("sh")
+                        .arg("-c")
+                        .arg("cat > \"$1\"")
+                        .arg("build-agent-capture")
+                        .arg(capture_for_builder.to_string_lossy())
+                },
+            )),
+        );
+
+        deliver(
+            &state,
+            &root,
+            "run-paste",
+            &ModelChoice::default(),
+            "Paste framing marker\nsecond line",
+            "warm",
+        )
+        .expect("the delivery reaches a silent harness");
+
+        let captured = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&capture) {
+                    if contents.contains("\u{1b}[201~") {
+                        return contents;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the framed turn should reach the harness despite its silence");
+
+        assert!(
+            captured.starts_with("\u{1b}[200~"),
+            "the turn opens as a bracketed paste: {captured:?}"
+        );
+        assert!(
+            captured.contains("Paste framing marker"),
+            "the rendered turn rides inside the frame: {captured:?}"
+        );
+    }
+
+    /// The prompt-write race, end to end: a harness that exits instantly closes
+    /// its PTY (the write fails with EIO) *before* the OS makes its exit status
+    /// reapable, so a single `has_exited` poll says "running". That must not
+    /// fail the delivery — the tab is still the agent's tab, and the crash is
+    /// the idle monitor's to report, not the delivery's.
+    #[tokio::test]
+    async fn a_harness_that_exits_under_the_prompt_write_still_keeps_its_tab() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-exits");
+        use_agent(&state, &repo, dir.path().join("wt2"), instant_exit_agent());
+
+        let delivered = deliver(
+            &state,
+            &root,
+            "run-exits",
+            &ModelChoice::default(),
+            "cold",
+            "warm",
+        );
+
+        assert!(
+            delivered.is_ok(),
+            "a write against an exiting harness is benign: {delivered:?}"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs
+                .contains_key(&TabKey::agent(&AppState::canonical_root(&root))),
+            "the tab is retained so the crash is legible"
+        );
+    }
+
+    /// An agent that is gone before it reads a byte.
+    fn instant_exit_agent() -> Agent {
+        Agent::WarmBuilder(std::sync::Arc::new(
+            |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+            },
+        ))
     }
 
     /// The daemon-wide terminal cap counts the human's own shells WHEREVER they
@@ -9773,6 +9848,32 @@ mod tests {
         handler(SessionSender::detached("qa"), req(method, params))
     }
 
+    /// [`planned_run_in_review`] over the frame handler — the entry point that
+    /// actually delivers the turn each verb queues. A conversation only gains
+    /// its session lineage when a turn is delivered COLD (a new agent process),
+    /// so a test about what the thread carries has to go this way.
+    fn planned_run_in_review_delivered(handler: &FrameHandler, goal: &str) -> (String, String) {
+        let plan = call(handler, "plan.create", json!({ "goal": goal }));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            call(
+                handler,
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            );
+        }
+        call(handler, "plan.approve", json!({ "plan_id": plan_id }));
+        let run = call(handler, "run.create", json!({ "plan_id": plan_id }));
+        let run_id = run_id_of(&run);
+        let last_stage = call(
+            handler,
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        );
+        assert_eq!(last_stage["result"]["state"], "review", "{last_stage:?}");
+        (plan_id, run_id)
+    }
+
     fn plan_id_of(res: &Value) -> String {
         res["result"]["plan_id"]
             .as_str()
@@ -10074,31 +10175,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_surfaces_carry_thread_digests_without_message_bodies() {
+    #[tokio::test]
+    async fn list_surfaces_carry_thread_digests_without_message_bodies() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let plan = state.handle(req("plan.create", json!({ "goal": "digest the board" })));
+        let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let plan = call(
+            &handler,
+            "plan.create",
+            json!({ "goal": "digest the board" }),
+        );
         let plan_id = plan_id_of(&plan);
-        let (_, run_id) = planned_run_in_review(&mut state, "a run to digest");
+        let (_, run_id) = planned_run_in_review_delivered(&handler, "a run to digest");
         // Seed a real user message into each conversation so the assertions
         // below prove bodies are omitted, not merely absent.
-        state.handle(req(
+        call(
+            &handler,
             "plan.send_notes",
             json!({
                 "plan_id": plan_id,
                 "messages": [{ "body": "plan-only-body-marker", "anchor": null }]
             }),
-        ));
-        state.handle(req(
+        );
+        call(
+            &handler,
             "run.request_changes",
             json!({
                 "run_id": run_id,
                 "messages": [{ "body": "run-only-body-marker", "anchor": null }]
             }),
-        ));
+        );
 
-        let board = state.handle(req("board.list", json!({})));
+        let board = call(&handler, "board.list", json!({}));
         for thread in [
             &board["result"]["plans"][0]["thread"],
             &board["result"]["runs"][0]["thread"],
@@ -10112,7 +10219,7 @@ mod tests {
         assert!(!serialized_board.contains("plan-only-body-marker"));
         assert!(!serialized_board.contains("run-only-body-marker"));
 
-        let listed = state.handle(req("plan.list", json!({})));
+        let listed = call(&handler, "plan.list", json!({}));
         assert!(
             listed["result"]["plans"][0]["thread"]
                 .get("items")
@@ -10121,27 +10228,28 @@ mod tests {
         );
 
         // The detail surfaces must not regress: full threads, bodies intact.
-        let plan_view = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let plan_view = call(&handler, "plan.get", json!({ "plan_id": plan_id }));
         assert!(plan_view.to_string().contains("plan-only-body-marker"));
-        let run_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let run_view = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert!(run_view.to_string().contains("run-only-body-marker"));
     }
 
-    #[test]
-    fn detail_gets_with_a_cursor_ship_only_newer_thread_items() {
+    #[tokio::test]
+    async fn detail_gets_with_a_cursor_ship_only_newer_thread_items() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let (_, run_id) = planned_run_in_review(&mut state, "cursor the thread");
-        state.handle(req(
+        let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review_delivered(&handler, "cursor the thread");
+        call(
+            &handler,
             "run.request_changes",
             json!({
                 "run_id": run_id,
                 "messages": [{ "body": "tighten the loop", "anchor": null }]
             }),
-        ));
+        );
 
         // Without a cursor the wire is exactly as before: every item, no totals.
-        let full = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let full = call(&handler, "run.get", json!({ "run_id": run_id }));
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(full_items.len() >= 2, "{full:?}");
         assert!(full["result"]["thread"].get("thread_total").is_none());
@@ -10153,10 +10261,11 @@ mod tests {
             .as_u64()
             .unwrap();
 
-        let delta = state.handle(req(
+        let delta = call(
+            &handler,
             "run.get",
             json!({ "run_id": run_id, "thread_after_sequence": cursor }),
-        ));
+        );
         let delta_thread = &delta["result"]["thread"];
         let delta_items = delta_thread["items"].as_array().unwrap();
         assert!(!delta_items.is_empty(), "{delta:?}");
@@ -10167,10 +10276,11 @@ mod tests {
         assert_eq!(delta_thread["thread_last_sequence"], last_sequence);
 
         // A cursor past the end is an empty delta, never an error.
-        let drained = state.handle(req(
+        let drained = call(
+            &handler,
             "run.get",
             json!({ "run_id": run_id, "thread_after_sequence": last_sequence + 100 }),
-        ));
+        );
         assert_eq!(drained["ok"], true, "{drained:?}");
         assert_eq!(
             drained["result"]["thread"]["items"]
@@ -10182,10 +10292,11 @@ mod tests {
         assert_eq!(drained["result"]["thread"]["thread_total"], total);
 
         // A garbage cursor is treated as absent: the full backward-compatible thread.
-        let garbage = state.handle(req(
+        let garbage = call(
+            &handler,
             "run.get",
             json!({ "run_id": run_id, "thread_after_sequence": "junk" }),
-        ));
+        );
         assert_eq!(garbage["ok"], true, "{garbage:?}");
         assert_eq!(
             garbage["result"]["thread"]["items"]
@@ -10197,24 +10308,29 @@ mod tests {
         assert!(garbage["result"]["thread"].get("thread_total").is_none());
     }
 
-    #[test]
-    fn plan_get_honors_the_thread_cursor() {
+    #[tokio::test]
+    async fn plan_get_honors_the_thread_cursor() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let plan = state.handle(req("plan.create", json!({ "goal": "cursor the plan" })));
+        let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let plan = call(
+            &handler,
+            "plan.create",
+            json!({ "goal": "cursor the plan" }),
+        );
         let plan_id = plan_id_of(&plan);
 
-        let full = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let full = call(&handler, "plan.get", json!({ "plan_id": plan_id }));
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(!full_items.is_empty(), "{full:?}");
         let last_sequence = full_items.last().unwrap()["data"]["sequence"]
             .as_u64()
             .unwrap();
 
-        let delta = state.handle(req(
+        let delta = call(
+            &handler,
             "plan.get",
             json!({ "plan_id": plan_id, "thread_after_sequence": last_sequence }),
-        ));
+        );
         let delta_thread = &delta["result"]["thread"];
         assert_eq!(delta_thread["items"].as_array().unwrap().len(), 0);
         assert_eq!(delta_thread["thread_total"], full_items.len() as u64);
@@ -10601,17 +10717,15 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "do work");
-        let generation_at_review = state.runs[&run_id].session.generation();
         let worktree_root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
         let rc = state.handle(req(
             "run.request_changes",
             json!({ "run_id": run_id, "comments": "rename the symbol" }),
         ));
         assert_eq!(rc["result"]["state"], "review", "{rc:?}");
-        assert_eq!(
-            state.runs[&run_id].session.generation(),
-            generation_at_review,
-            "requesting changes must not spawn a replacement harness"
+        assert!(
+            state.tabs.is_empty(),
+            "a verb queues a turn; only delivery — off the state lock — spawns"
         );
         let queued = state
             .pending_agent_turns
@@ -10664,6 +10778,179 @@ mod tests {
         );
     }
 
+    /// A freeform message to a working run's agent talks to the process the
+    /// reviewer is already in conversation with. The words land on the durable
+    /// thread, the turn is addressed to the WORKTREE, and the run's phase
+    /// session is never ended or replaced.
+    #[test]
+    fn run_message_delivers_to_the_agent_instead_of_respawning() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-message",
+            RunState::Building,
+        );
+
+        let sent = state.handle(req(
+            "run.message",
+            json!({ "run_id": "run-message", "message": "prefer the smaller helper" }),
+        ));
+        assert_eq!(sent["ok"], true, "{sent:?}");
+        assert!(
+            state.tabs.is_empty(),
+            "messaging the agent must not spawn a harness under the state lock"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a message is a turn for the worktree's agent");
+        assert_eq!(queued.owner, "run-message");
+        assert_eq!(
+            queued.root, root,
+            "the turn is addressed to the worktree, not to the run"
+        );
+        assert_eq!(
+            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            "an agent already in the conversation is only told to read the thread"
+        );
+        assert!(
+            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.cold.contains("Build conversation protocol"),
+            "a cold agent gets the run context and the conversation protocol: {}",
+            queued.cold
+        );
+        let posted = state.runs["run-message"].thread.items.iter().any(|item| {
+            matches!(item, crate::thread::ThreadItem::Message(m)
+                if m.body == "prefer the smaller helper")
+        });
+        assert!(posted, "the reviewer's words stay durable on the thread");
+    }
+
+    /// Dispatching a stage is a turn, not a new process. The stage prompt is
+    /// queued for the worktree's one agent; a warm agent hears the stage
+    /// instruction alone (it lived the conversation), a cold one hears the same
+    /// instruction wrapped in the conversation protocol and catch-up packet.
+    #[test]
+    fn dispatching_a_stage_queues_its_prompt_for_the_worktrees_one_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "two stages" })));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        let run_id = run_id_of(&run);
+        let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
+        state.pending_agent_turns.clear();
+
+        let dispatched = state.handle(req(
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        assert!(
+            state.tabs.is_empty(),
+            "dispatching a stage must not spawn a harness under the state lock"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .first()
+            .expect("a stage dispatch is a turn for the worktree's agent");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(queued.root, root);
+        assert!(
+            queued.warm.contains("Second half"),
+            "the stage instruction travels whether the agent is warm or cold: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "a warm agent is not re-taught the protocol it is already following: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.starts_with(&queued.warm)
+                && queued.cold.contains("Build conversation protocol"),
+            "a cold agent gets the same instruction plus the conversation it missed: {}",
+            queued.cold
+        );
+    }
+
+    /// Every phase of a multi-stage run — the first stage's build, the
+    /// validation hand-off its `done` triggers, and the next stage's build —
+    /// reaches ONE process in the run's worktree. The phase boundary stopped
+    /// being a process boundary: that is the whole point of the tab.
+    #[tokio::test]
+    async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let plan = call(&handler, "plan.create", json!({ "goal": "one agent" }));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            call(
+                &handler,
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            );
+        }
+        call(&handler, "plan.approve", json!({ "plan_id": plan_id }));
+        let run = call(&handler, "run.create", json!({ "plan_id": plan_id }));
+        assert_eq!(run["ok"], true, "{run:?}");
+        let run_id = run_id_of(&run);
+        let key = {
+            let s = state.lock().unwrap();
+            TabKey::agent(&AppState::canonical_root(&s.runs[&run_id].worktree.path))
+        };
+        let first_pid = {
+            let s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .get(&key)
+                .expect("dispatching a run opens the worktree's agent");
+            assert!(
+                tab.live && !tab.session.has_exited(),
+                "the agent is running"
+            );
+            tab.session.pid().expect("a live harness has a pid")
+        };
+
+        let next = call(
+            &handler,
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        );
+        assert_eq!(next["ok"], true, "{next:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            Some(first_pid),
+            "every phase must reach the process the dispatch woke"
+        );
+        assert_eq!(
+            s.tabs
+                .keys()
+                .filter(|k| k.tab_id == AGENT_TAB_ID && k.root == key.root)
+                .count(),
+            1,
+            "one worktree, one agent"
+        );
+        assert_eq!(
+            s.tabs.len(),
+            1,
+            "no harness may be spawned beside the tab's agent"
+        );
+    }
+
     /// The agent Build talks to is one process for the worktree's life. A
     /// second round of comments reaches the SAME harness — same pid, one tab —
     /// because a warm tab is delivered to, never replaced.
@@ -10702,8 +10989,6 @@ mod tests {
             tab.session.pid().expect("a live harness has a pid")
         };
 
-        let generation_after_first = state.lock().unwrap().runs[&run_id].session.generation();
-
         let second = call(
             &handler,
             "run.request_changes",
@@ -10714,11 +10999,6 @@ mod tests {
         assert_eq!(second["ok"], true, "{second:?}");
         let s = state.lock().unwrap();
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
-        assert_eq!(
-            s.runs[&run_id].session.generation(),
-            generation_after_first,
-            "no phase harness may be spawned beside the tab's agent"
-        );
         assert_eq!(
             s.tabs.get(&key).and_then(|tab| tab.session.pid()),
             Some(first_pid),
@@ -11051,7 +11331,6 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "post-only path");
-        let generation_before = state.runs[&run_id].session.generation();
 
         let posted = state.handle(req(
             "thread.post",
@@ -11074,11 +11353,7 @@ mod tests {
 
         let active = state.runs.get(&run_id).unwrap();
         assert_eq!(active.run.state, RunState::Review, "no state transition");
-        assert_eq!(
-            active.session.generation(),
-            generation_before,
-            "no session respawn"
-        );
+        assert!(state.tabs.is_empty(), "a post starts no agent");
 
         let unread = state
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
@@ -11086,25 +11361,25 @@ mod tests {
         assert_eq!(unread["messages"][0]["body"], "just a review note");
     }
 
-    /// A mid-build post must leave the live harness session running (same
-    /// generation, still subscribable) and nudge it in place through its PTY —
-    /// the PTY echoes written input back to its reader, so the nudge is
-    /// observable on the session's output stream.
+    /// A mid-build post must leave the worktree's agent running (same process,
+    /// same tab) and nudge it in place through its PTY — the PTY echoes written
+    /// input back to its reader, so the nudge is observable on the tab's output
+    /// stream.
     #[test]
     fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = "run-nudge".to_string();
-        insert_run_with_live_harness(
+        let key = insert_run_with_agent_tab(
             &mut state,
             &repo,
             &dir.path().join("side"),
             &run_id,
             RunState::Building,
+            warm_tui_spec(),
         );
-        let active = state.runs.get_mut(&run_id).unwrap();
-        let generation_before = active.session.generation();
-        let mut output = active.session.subscribe().expect("a live session");
+        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
+        let mut output = state.tabs[&key].session.subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -11115,13 +11390,13 @@ mod tests {
         let active = state.runs.get(&run_id).unwrap();
         assert_eq!(active.run.state, RunState::Building, "no state transition");
         assert_eq!(
-            active.session.generation(),
-            generation_before,
-            "the live session must not be respawned"
+            state.tabs[&key].session.pid(),
+            Some(pid_before),
+            "the worktree's agent must not be respawned"
         );
         assert!(
-            active.session.subscribe().is_some(),
-            "the live session must not be ended"
+            !state.tabs[&key].session.has_exited(),
+            "the worktree's agent must not be ended"
         );
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -11239,7 +11514,7 @@ mod tests {
         // guards against fires precisely because the directory is brand new.
         let spec = build(prompt, &choice, &options);
 
-        // The three lines under test, mirroring Orchestrator::spawn_into_slot.
+        // The three lines under test, mirroring ensure_agent_tab + deliver.
         let session = PtySession::spawn(
             &spec,
             Some(workspace.clone()),
@@ -11318,30 +11593,30 @@ mod tests {
         );
     }
 
-    /// A post at a review gate must NOT wake the harness. The session outlives
-    /// `done` (nothing ends it at the gate), so nudging it to "act on every
-    /// unread message" dispatches work whose `done` is an illegal transition
-    /// from `review` — the report is rejected, the run does not move, and the
-    /// conversation gains a bogus failure event. Post-only means the message
-    /// waits for the next dispatch's catch-up.
+    /// A post at a review gate must NOT wake the agent. The agent outlives the
+    /// phase it was dispatched for — that is now the rule, not the exception —
+    /// so nudging it to "act on every unread message" produces work whose
+    /// `done` is an illegal transition from `review`: recorded as out of phase,
+    /// moving nothing. Post-only means the message waits for the gate's own
+    /// verb to carry it.
     #[test]
     fn thread_post_at_a_review_gate_leaves_the_parked_harness_alone() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = "run-parked".to_string();
-        insert_run_with_live_harness(
+        let key = insert_run_with_agent_tab(
             &mut state,
             &repo,
             &dir.path().join("side"),
             &run_id,
             RunState::Review,
+            warm_tui_spec(),
         );
-        let active = state.runs.get(&run_id).unwrap();
         assert!(
-            active.session.subscribe().is_some(),
-            "precondition: the harness is still live at the gate"
+            !state.tabs[&key].session.has_exited(),
+            "precondition: the agent is still live at the gate"
         );
-        let mut output = active.session.subscribe().unwrap();
+        let mut output = state.tabs[&key].session.subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -11535,7 +11810,7 @@ mod tests {
     /// plan, so a test that needs a run driven by a PARTICULAR harness builds a
     /// plan on that harness's orchestrator first.
     fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
-        let mut plan = orch
+        let (mut plan, _turn) = orch
             .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
             .unwrap();
         let worktree = plan
@@ -11563,31 +11838,26 @@ mod tests {
         plan
     }
 
-    /// A run whose harness is LIVE and idle: a warm PTY that enables
-    /// bracketed-paste mode (so a prompt write's readiness wait resolves) and
-    /// drains stdin like a real TUI. `run_state` is stamped on afterwards
-    /// because the scripted plan/run path ends a stage's session the moment its
-    /// validation lands — a test about the session itself has to keep one alive.
-    /// The plan behind it lives on the side orchestrator, not in `state`.
-    fn run_with_live_harness(
+    /// A run built on a side orchestrator (its plan lives there, not in
+    /// `state`), installed under `state`'s first project with `run_state`
+    /// stamped on. No process: a worktree's agent lives on the tab registry, so
+    /// a test that needs one asks for [`insert_run_with_agent_tab`].
+    fn insert_run(
+        state: &mut AppState,
         repo: &std::path::Path,
         side_root: &std::path::Path,
         run_id: &str,
         run_state: RunState,
-    ) -> ActiveRun {
+    ) -> std::path::PathBuf {
         let store = crate::store::Store::new(side_root.join("store"));
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
-            Agent::Warm(
-                HarnessSpec::new("sh")
-                    .arg("-c")
-                    .arg("printf '\\033[?2004h'; cat >/dev/null"),
-            ),
+            Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let mut active = side
+        let (mut active, _turn) = side
             .dispatch_run(
                 RunId::new(run_id),
                 RunSource {
@@ -11599,71 +11869,101 @@ mod tests {
                 &store,
             )
             .unwrap();
-        // Dispatch writes the build prompt into the PTY, which echoes it back
-        // asynchronously. Drain until the stream has been quiet for a beat, or a
-        // later subscriber would read that echo — the prompt names
-        // `read_unread_messages` — as something the test itself provoked.
-        let mut startup = active.session.subscribe().expect("a live build session");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut last_byte_at = std::time::Instant::now();
-        while std::time::Instant::now() < deadline
-            && last_byte_at.elapsed() < Duration::from_millis(300)
-        {
-            match startup.try_recv() {
-                Ok(_) => last_byte_at = std::time::Instant::now(),
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
-                Err(_) => break,
-            }
-        }
         active.run.state = run_state;
-        active
+        let root = AppState::canonical_root(&active.worktree.path);
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert(run_id.to_string(), project_id);
+        state.runs.insert(run_id.to_string(), active);
+        root
     }
 
-    /// Install such a run in `state` under its first project.
-    fn insert_run_with_live_harness(
+    /// Such a run PLUS the live agent tab its worktree owns, running `spec`.
+    /// Returns the tab's key. This is the shape the daemon actually holds: the
+    /// run carries lifecycle and thread, the worktree carries the process.
+    fn insert_run_with_agent_tab(
         state: &mut AppState,
         repo: &std::path::Path,
         side_root: &std::path::Path,
         run_id: &str,
         run_state: RunState,
-    ) {
-        let active = run_with_live_harness(repo, side_root, run_id, run_state);
-        let project_id = state.projects[0].id.clone();
-        state.entity_project.insert(run_id.to_string(), project_id);
-        state.runs.insert(run_id.to_string(), active);
+        spec: HarnessSpec,
+    ) -> TabKey {
+        let root = insert_run(state, repo, side_root, run_id, run_state);
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            &spec,
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        let key = TabKey::agent(&root);
+        state.tabs.insert(key.clone(), tab);
+        key
+    }
+
+    /// The warm stand-in for a real TUI: it enables bracketed-paste mode (so a
+    /// prompt write's readiness wait resolves) and drains stdin forever.
+    fn warm_tui_spec() -> HarnessSpec {
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf '\\033[?2004h'; cat >/dev/null")
+    }
+
+    /// Silence is an anomaly only when measured from the last thing Build
+    /// asked. A tab's agent outlives every phase and idles at a prompt between
+    /// them, so raw PTY silence would demote a run the instant it is
+    /// re-dispatched after a long quiet review — the agent has said nothing for
+    /// an hour because nobody spoke to it.
+    #[test]
+    fn an_agent_is_only_quiet_if_it_has_been_silent_since_the_last_turn() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-quiet",
+            RunState::Building,
+            warm_tui_spec(),
+        );
+        // Long enough that the PTY has been silent past the threshold below.
+        std::thread::sleep(Duration::from_millis(200));
+
+        state.tabs.get_mut(&key).unwrap().last_delivered_at = Some(std::time::Instant::now());
+        assert!(
+            state.mark_idle_tasks(Duration::from_millis(50)).is_empty(),
+            "an agent that was just given a turn is working, not quiet"
+        );
+        assert_eq!(state.runs["run-quiet"].run.state, RunState::Building);
+
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(1));
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_millis(50)),
+            vec!["run-quiet".to_string()],
+            "silence that outlasts the turn that provoked it is an anomaly"
+        );
     }
 
     #[test]
     fn mark_idle_demotes_a_quiet_plan_and_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        // A Building run whose harness exits immediately → demoted, with the
-        // exit code recorded (the quiescence rule: silence is never completion).
-        let store = crate::store::Store::new(dir.path().join("side-store"));
-        let side = Orchestrator::new(
-            repo.clone(),
-            dir.path().join("side-wt"),
-            Agent::Warm(HarnessSpec::new("sh").arg("-c").arg("exit 7")),
-            Templates::default(),
+        // A Building run whose agent exits immediately → demoted, with the exit
+        // code recorded (the quiescence rule: silence is never completion).
+        insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-idle",
+            RunState::Building,
+            HarnessSpec::new("sh").arg("-c").arg("exit 7"),
         );
-        let plan = approved_side_plan(&side, &store, "plan-idle");
-        let active = side
-            .dispatch_run(
-                RunId::new("run-idle"),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
-        let project_id = state.projects[0].id.clone();
-        state.entity_project.insert("run-idle".into(), project_id);
-        state.runs.insert("run-idle".into(), active);
         std::thread::sleep(Duration::from_millis(300));
         let demoted = state.mark_idle_tasks(Duration::from_secs(3600));
         assert!(demoted.contains(&"run-idle".to_string()), "{demoted:?}");
@@ -11980,10 +12280,38 @@ mod tests {
         assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
         assert_eq!(adopted["result"]["adopted"], true);
         let run_id = run_id_of(&adopted);
+        // Build's agent in that worktree reports `done` for THIS run.
+        let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &warm_tui_spec(),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .unwrap();
+        let agent_pid = tab.session.pid().expect("a live agent");
+        state.tabs.insert(TabKey::agent(&root), tab);
+
         // Release drops the record, keeps the files.
         let released = state.handle(req("run.release", json!({ "run_id": run_id })));
         assert_eq!(released["ok"], true, "{released:?}");
         assert!(!state.runs.contains_key(&run_id));
+        assert!(
+            root.exists(),
+            "un-adopting must never touch the user's files"
+        );
+        // …and takes Build's agent with it: an agent whose owner is gone would
+        // report `done` into the unknown-entity log forever.
+        assert!(
+            !state.tabs.contains_key(&TabKey::agent(&root)),
+            "releasing a run closes the agent it owned"
+        );
+        assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
     }
 
     #[test]
@@ -12017,25 +12345,24 @@ mod tests {
 
     // ---- terminals + agent screens over runs ---------------------------------
 
+    /// A run in `state` whose WORKTREE has a live agent tab, painting steadily
+    /// — the shape an attaching client meets. Returns the tab's key and the
+    /// wire id it is addressed by.
     fn insert_live_run(
         state: &Arc<Mutex<AppState>>,
         repo: &std::path::Path,
         side_root: std::path::PathBuf,
         run_id: &str,
-    ) {
+    ) -> (TabKey, String) {
         let store = crate::store::Store::new(side_root.join("store"));
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
-            Agent::Warm(
-                HarnessSpec::new("sh")
-                    .arg("-c")
-                    .arg("printf '\\033[?2004h'; (while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null"),
-            ),
+            Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let active = side
+        let (active, _turn) = side
             .dispatch_run(
                 RunId::new(run_id),
                 RunSource {
@@ -12047,17 +12374,42 @@ mod tests {
                 &store,
             )
             .unwrap();
-        let mut s = state.lock().unwrap();
-        let project_id = s.projects[0].id.clone();
-        s.entity_project.insert(run_id.to_string(), project_id);
-        s.runs.insert(run_id.to_string(), active);
+        let root = AppState::canonical_root(&active.worktree.path);
+        let (tab, rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            &HarnessSpec::new("sh").arg("-c").arg(
+                "printf '\\033[?2004h'; (while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null",
+            ),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        let key = TabKey::agent(&root);
+        let wire_id = tab.wire_id();
+        {
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.entity_project.insert(run_id.to_string(), project_id);
+            s.runs.insert(run_id.to_string(), active);
+            s.tabs.insert(key.clone(), tab);
+        }
+        spawn_tab_pump(state, key.clone(), rx);
+        (key, wire_id)
     }
 
+    /// Attaching to an entity's agent finds the tab of the WORKTREE it works
+    /// in, streams it, and — when that agent's process ends — retains the last
+    /// screen with `live: false` rather than erroring or going blank.
     #[tokio::test]
     async fn agent_attach_streams_a_live_run_and_retains_the_last_screen() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        insert_live_run(&state, &repo, dir.path().join("side"), "run-9");
+        let (tab_key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-9");
 
         let (sender, mut pushes, key) = SessionSender::observable("s1");
         let res = handler(
@@ -12068,27 +12420,24 @@ mod tests {
             ),
         );
         assert_eq!(res["ok"], true, "{res:?}");
-        assert_eq!(res["result"]["term_id"], "agent:run-9");
+        assert_eq!(
+            res["result"]["term_id"], wire_id,
+            "an agent is addressed by its worktree, not by the run that owns it"
+        );
         assert_eq!(res["result"]["live"], true);
 
         let seen = wait_for_pushes(&mut pushes, &key, |seen| {
-            output_text(seen, "agent:run-9").contains("agent-beat")
+            output_text(seen, &wire_id).contains("agent-beat")
         })
         .await;
         assert_eq!(seen[0]["type"], "term.reset", "{seen:?}");
 
-        // End the session → clients hear agent_session_ended, screen retained.
-        state
-            .lock()
-            .unwrap()
-            .runs
-            .get_mut("run-9")
-            .unwrap()
-            .session
-            .end();
+        // The agent's process ends → clients hear agent_session_ended and the
+        // tab keeps showing the last screen.
+        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
         wait_for_push(&mut pushes, &key, |p| {
             p["type"] == "term.closed"
-                && p["term_id"] == "agent:run-9"
+                && p["term_id"] == wire_id
                 && p["reason"] == "agent_session_ended"
         })
         .await;
@@ -12098,6 +12447,12 @@ mod tests {
             req("agent.attach", json!({ "id": "run-9" })),
         );
         assert_eq!(again["result"]["live"], false, "{again:?}");
+        assert!(
+            !b64decode(again["result"]["snapshot"].as_str().unwrap())
+                .unwrap()
+                .is_empty(),
+            "a dead agent still shows what it last painted"
+        );
     }
 
     #[tokio::test]

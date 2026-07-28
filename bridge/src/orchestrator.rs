@@ -46,7 +46,7 @@ use crate::plan::{
     IllegalStageDocTransition, Plan, PlanEvent, PlanId, PlanState,
     StageComment as PlanStageComment, StageDoc, StageDocEvent, StageDocState, StageManifestEntry,
 };
-use crate::pty::{HarnessSpec, PtyError, PtySession};
+use crate::pty::{HarnessSpec, PtyError};
 use crate::run::{
     run_transition, IllegalRunTransition, IllegalStageProgressTransition, Run, RunEvent, RunId,
     RunState, StageProgress, StageProgressEvent, StageProgressState,
@@ -157,6 +157,70 @@ pub struct AgentTurn {
     pub phase: &'static str,
 }
 
+impl AgentTurn {
+    /// A turn whose whole content is the rendered prompt — a dispatch, a
+    /// resume, a validation hand-off, a stage fix. The instruction travels
+    /// either way; only the conversation protocol and the catch-up packet are
+    /// cold-only, because a warm agent has already lived them.
+    fn dispatched(
+        rendered: String,
+        thread: &crate::thread::Thread,
+        phase: &'static str,
+    ) -> AgentTurn {
+        AgentTurn {
+            cold: conversation_prompt(&rendered, thread),
+            warm: rendered,
+            phase,
+        }
+    }
+
+    /// A turn whose content is already durable on the thread — a change
+    /// request, a message, a batch of notes. A warm agent is told to read it
+    /// (`nudge`); a cold one gets the same instruction wrapped in the run/plan
+    /// context it has no way to reconstruct.
+    fn posted(
+        rendered: String,
+        thread: &crate::thread::Thread,
+        nudge: &str,
+        phase: &'static str,
+    ) -> AgentTurn {
+        AgentTurn {
+            cold: conversation_prompt(&rendered, thread),
+            warm: nudge.to_string(),
+            phase,
+        }
+    }
+}
+
+/// What a `done` report did to the run, and what Build says next because of it.
+#[derive(Debug)]
+pub struct ReportConsumed {
+    pub outcome: ReportOutcome,
+    /// The build→validate hand-off's turn: the same worktree agent that just
+    /// reported its stage built is asked to validate it. `None` for every other
+    /// report — no other `done` starts a phase.
+    pub next: Option<AgentTurn>,
+}
+
+impl ReportConsumed {
+    /// A report that moved the run (or was absorbed by the stage pipeline) with
+    /// nothing more to say.
+    fn applied() -> ReportConsumed {
+        ReportConsumed {
+            outcome: ReportOutcome::Applied,
+            next: None,
+        }
+    }
+
+    /// A report the run's state does not accept: nothing moved, nothing is said.
+    fn out_of_phase(illegal: IllegalRunTransition) -> ReportConsumed {
+        ReportConsumed {
+            outcome: ReportOutcome::OutOfPhase(illegal),
+            next: None,
+        }
+    }
+}
+
 /// What a `done` report did to the run.
 ///
 /// A persistent agent outlives the phase it was dispatched for: talk to it at a
@@ -171,128 +235,6 @@ pub enum ReportOutcome {
     /// The report arrived from a state that does not accept it. Nothing moved —
     /// not the run, not the stage, not `last_summary`.
     OutOfPhase(IllegalRunTransition),
-}
-
-/// Warm-session bookkeeping shared by [`ActivePlan`] and [`ActiveRun`]: the
-/// live PTY session for the current phase plus the spawn generation the
-/// agent-screen pump keys on. (The fused [`ActiveTask`] keeps its own copy of
-/// these methods until the periphery retires it.)
-#[derive(Default)]
-pub struct SessionSlot {
-    /// Counts session spawns (1-based; 0 = never spawned). The agent-screen
-    /// pump keys off it so a viewer attached across a phase boundary gets
-    /// exactly one pump per session, never a duplicate for the same one.
-    generation: u64,
-    /// The warm PTY session (None before dispatch / after end / after reattach).
-    session: Option<PtySession>,
-}
-
-impl SessionSlot {
-    /// The current spawn generation (0 = never spawned).
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Subscribe to the live terminal stream, if a session is warm.
-    pub fn subscribe(&self) -> Option<tokio::sync::broadcast::Receiver<Vec<u8>>> {
-        self.session.as_ref().map(|s| s.subscribe())
-    }
-
-    /// The live session's generation + a fresh subscription, if one is warm —
-    /// the agent-screen pump records the generation so the same session is
-    /// never pumped twice.
-    pub fn subscribe_with_generation(
-        &self,
-    ) -> Option<(u64, tokio::sync::broadcast::Receiver<Vec<u8>>)> {
-        self.session
-            .as_ref()
-            .map(|s| (self.generation, s.subscribe()))
-    }
-
-    /// Write raw bytes (attached-terminal keystrokes) to the warm session; a
-    /// dead session swallows them silently (the idle monitor's contract).
-    pub fn write_input(&self, bytes: &[u8]) -> Result<(), OrchestratorError> {
-        if let Some(session) = &self.session {
-            session.write_input(bytes)?;
-        }
-        Ok(())
-    }
-
-    /// Submit a prompt turn to the warm session, honoring the harness's own
-    /// submit key and paste framing; a dead session swallows it (the message
-    /// stays durable and the next session's catch-up carries it).
-    ///
-    /// Distinct from [`write_input`](Self::write_input) on purpose: raw input is
-    /// the user's keystrokes, where Build must not decide what a turn is. Build
-    /// speaking to a live agent is a turn, and it must travel the same way a
-    /// dispatched prompt does — otherwise the two paths drift and one of them
-    /// submits a multi-line body as N fragmented turns.
-    pub fn write_prompt(&self, prompt: &str) -> Result<(), OrchestratorError> {
-        if let Some(session) = &self.session {
-            session.write_prompt(prompt)?;
-        }
-        Ok(())
-    }
-
-    /// Like [`write_input`](Self::write_input) but a dead session is an error —
-    /// the agent-tab contract surfaces "no active agent session" to the typer.
-    pub fn write_input_strict(&self, bytes: &[u8]) -> Result<(), String> {
-        match &self.session {
-            Some(session) => session.write_input(bytes).map_err(|e| e.to_string()),
-            None => Err("no active agent session".to_string()),
-        }
-    }
-
-    /// Resize the live session's PTY, returning whether one was live. A dead
-    /// session is a no-op `false` — the retained last agent screen must never
-    /// be garbled by a dead resize.
-    pub fn resize(&self, size: PtySize) -> Result<bool, OrchestratorError> {
-        match &self.session {
-            Some(session) => {
-                session.resize(size)?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-
-    /// Whether the phase's harness process has exited (crashed or finished
-    /// without a `done`). `false` when no session is live (nothing to watch).
-    pub fn harness_exited(&self) -> bool {
-        self.session.as_ref().is_some_and(PtySession::has_exited)
-    }
-
-    /// The exit code of the phase's harness once it has exited. `None` while
-    /// it is still running or no session is live.
-    pub fn harness_exit_code(&self) -> Option<i32> {
-        self.session.as_ref().and_then(PtySession::exit_code)
-    }
-
-    /// How long the phase's PTY has been silent, if a session is live — the
-    /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
-    pub fn harness_idle_for(&self) -> Option<std::time::Duration> {
-        self.session.as_ref().map(PtySession::idle_for)
-    }
-
-    /// The harness's OS process id, if a session is live and running.
-    pub fn harness_pid(&self) -> Option<u32> {
-        self.session.as_ref().and_then(PtySession::pid)
-    }
-
-    /// Kill AND reap the phase's harness, dropping the session. Kill alone
-    /// leaves a zombie per phase transition, which over a long-lived daemon
-    /// exhausts the process table.
-    pub fn end(&mut self) {
-        if let Some(session) = self.session.take() {
-            session.kill_and_reap();
-        }
-    }
-
-    /// Take ownership of a freshly spawned session, bumping the generation.
-    fn install(&mut self, session: PtySession) {
-        self.generation += 1;
-        self.session = Some(session);
-    }
 }
 
 /// One plan in flight: its lifecycle state, its disposable planning worktree
@@ -330,8 +272,6 @@ pub struct ActivePlan {
     /// The most recent failure surfaced to the reviewer (unpersisted docs,
     /// harness crash). Cleared whenever the plan advances again.
     pub last_error: Option<String>,
-    /// The warm PTY session for the current planning phase.
-    pub session: SessionSlot,
 }
 
 impl ActivePlan {
@@ -374,7 +314,6 @@ impl ActivePlan {
             thread,
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
-            session: SessionSlot::default(),
         }
     }
 
@@ -453,8 +392,6 @@ pub struct ActiveRun {
     /// The most recent failure surfaced to the reviewer (merge failure,
     /// harness crash). Cleared whenever the run advances again.
     pub last_error: Option<String>,
-    /// The warm PTY session for the current build phase.
-    pub session: SessionSlot,
 }
 
 impl ActiveRun {
@@ -495,7 +432,6 @@ impl ActiveRun {
             thread,
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
-            session: SessionSlot::default(),
         }
     }
 
@@ -554,7 +490,8 @@ const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `re
 /// cover the kernel's close-fds-then-reap lag for a harness that exited
 /// under the write; short enough that a genuinely wedged PTY still surfaces
 /// its write error promptly.
-const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
+    std::time::Duration::from_millis(250);
 
 /// How long a fresh spawn waits for the harness's first output before writing
 /// the prompt into its PTY. Real harnesses are interactive TUIs: injecting the
@@ -729,7 +666,7 @@ impl Orchestrator {
         goal: impl Into<String>,
         base_branch: &str,
         model_choice: ModelChoice,
-    ) -> Result<ActivePlan, OrchestratorError> {
+    ) -> Result<(ActivePlan, AgentTurn), OrchestratorError> {
         let goal = goal.into();
         let slug = slugify(&goal);
         let worktree = self.plan_worktrees.create(&slug, base_branch)?;
@@ -744,7 +681,7 @@ impl Orchestrator {
         let now = crate::store::now_rfc3339();
         thread.post_user(plan.goal.clone(), None, &now);
         let _ = thread.read_unread(&now);
-        let mut active = ActivePlan {
+        let active = ActivePlan {
             plan,
             worktree: Some(worktree),
             base_branch: base_branch.to_string(),
@@ -756,11 +693,10 @@ impl Orchestrator {
             thread,
             last_summary: None,
             last_error: None,
-            session: SessionSlot::default(),
         };
         let prompt = self.render_plan(&self.templates.plan, &active, "");
-        self.spawn_plan_session(&mut active, &prompt, "plan")?;
-        Ok(active)
+        let turn = AgentTurn::dispatched(prompt, &active.thread, "plan");
+        Ok((active, turn))
     }
 
     /// Consume a plan agent's `done` report. Doc persistence is TRANSACTIONAL:
@@ -916,7 +852,6 @@ impl Orchestrator {
         // while an earlier stage builds); the dispatch seams re-gate each doc
         // at the moment its build session would spawn.
         plan_transition(&active.plan.state, PlanEvent::Approve)?;
-        active.session.end();
         if let Some(worktree) = &active.worktree {
             self.worktrees.remove(worktree, /* keep_branch */ false)?;
         }
@@ -926,25 +861,25 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Submit a batch of plan notes: re-plan against them in a **fresh**
-    /// session (cold-agent discipline, as everywhere). The planning worktree
-    /// is kept warm through the notes loop; when it was torn down or vanished
-    /// (interrupted plans), a fresh disposable worktree is created and the
-    /// canonical docs are re-materialized from the store first.
+    /// Submit a batch of plan notes: re-plan against them and hand the caller
+    /// the turn to deliver. A planning worktree is a worktree, so it hosts one
+    /// agent under the same rule as a run's — the notes reach the process the
+    /// reviewer has been reading, never a replacement. The worktree is kept
+    /// through the notes loop; when it was torn down or vanished (interrupted
+    /// plans), a fresh disposable one is created and the canonical docs are
+    /// re-materialized from the store first.
     pub fn send_plan_notes(
         &self,
         active: &mut ActivePlan,
         store: &Store,
         notes: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
         self.ensure_planning_worktree(active, store)?;
         active.plan.apply(PlanEvent::SendNotes)?;
         active.last_error = None;
-        active.session.end();
         let prompt = self.render_plan(&self.templates.revise, active, notes);
-        self.spawn_plan_session(active, &prompt, "revise")?;
-        Ok(())
+        Ok(AgentTurn::posted(prompt, &active.thread, notes, "revise"))
     }
 
     /// Make sure the plan has a live planning worktree, re-creating one (with
@@ -1022,11 +957,11 @@ impl Orchestrator {
         active: &mut ActivePlan,
         store: &Store,
         stage_id: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         let index = active
             .stage_doc_index(stage_id)
             .map_err(OrchestratorError::Gate)?;
-        // Pure legality first — nothing is spawned for an illegal revise.
+        // Pure legality first — nothing is dispatched for an illegal revise.
         plan_transition(&active.plan.state, PlanEvent::SendNotes)
             .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
         let open: Vec<PlanStageComment> = active
@@ -1043,30 +978,33 @@ impl Orchestrator {
         active.plan.apply(PlanEvent::SendNotes)?;
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        active.session.end();
         let prompt = self.render_plan_stage(
             &self.templates.revise_stage,
             active,
             index,
             THREAD_NOTIFICATION,
         );
-        self.spawn_plan_session(active, &prompt, "revise")?;
-        Ok(())
+        Ok(AgentTurn::posted(
+            prompt,
+            &active.thread,
+            THREAD_NOTIFICATION,
+            "revise",
+        ))
     }
 
     /// A freeform human message to the plan's agent (the plan-side `message`).
     /// A live `Drafting` session is redirected; parked states (blocked / failed
     /// / idle / interrupted) resume drafting with the message as the steer. The
-    /// review gate is refused — `PlanReview` has the structured send-notes verb,
-    /// and a side channel there would bypass the batched-review contract. Plans
-    /// always start cold (no harness continuation), so the message is always
-    /// wrapped in the message template with full plan context.
+    /// review gate is refused — `PlanReview` has the structured send-notes
+    /// verb, and a freeform channel that moved the plan back to drafting would
+    /// bypass the batched-review contract (`thread.post` is how you reach a
+    /// plan agent at its gate without moving anything).
     pub fn message_plan(
         &self,
         active: &mut ActivePlan,
         store: &Store,
         message: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         if message.trim().is_empty() {
             return Err(OrchestratorError::Gate("message must not be empty".into()));
         }
@@ -1097,9 +1035,12 @@ impl Orchestrator {
             active.plan.apply(event)?;
         }
         active.last_error = None;
-        active.session.end();
-        self.spawn_plan_session(active, &prompt, "message")?;
-        Ok(())
+        Ok(AgentTurn::posted(
+            prompt,
+            &active.thread,
+            message,
+            "message",
+        ))
     }
 
     /// Re-dispatch an interrupted plan phase in a fresh session (the plan-side
@@ -1113,7 +1054,7 @@ impl Orchestrator {
         &self,
         active: &mut ActivePlan,
         store: &Store,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::Reply)?;
         self.ensure_planning_worktree(active, store)?;
         let prompt = match active.revising_stage_id.clone() {
@@ -1132,9 +1073,7 @@ impl Orchestrator {
         };
         active.plan.apply(PlanEvent::Reply)?;
         active.last_error = None;
-        active.session.end();
-        self.spawn_plan_session(active, &prompt, "revise")?;
-        Ok(())
+        Ok(AgentTurn::dispatched(prompt, &active.thread, "revise"))
     }
 
     /// Abandon a plan from any non-terminal state: kill the plan agent, mark the
@@ -1144,7 +1083,6 @@ impl Orchestrator {
     /// either way.
     pub fn abandon_plan(&self, active: &mut ActivePlan) -> Result<(), OrchestratorError> {
         active.plan.apply(PlanEvent::Abandon)?;
-        active.session.end();
         if let Some(worktree) = &active.worktree {
             if let Err(cleanup) = self.worktrees.remove(worktree, /* keep_branch */ false) {
                 eprintln!(
@@ -1234,7 +1172,7 @@ impl Orchestrator {
         base_branch: &str,
         model_choice: ModelChoice,
         store: &Store,
-    ) -> Result<ActiveRun, OrchestratorError> {
+    ) -> Result<(ActiveRun, AgentTurn), OrchestratorError> {
         let RunSource {
             plan: plan_link,
             has_active_run,
@@ -1299,7 +1237,6 @@ impl Orchestrator {
             thread,
             last_summary: None,
             last_error: None,
-            session: SessionSlot::default(),
         };
 
         // Multi-stage plan → the first stage's build session (progress record
@@ -1321,8 +1258,8 @@ impl Orchestrator {
         } else {
             self.render_run(&self.templates.build, &active, "")
         };
-        self.spawn_run_session(&mut active, &prompt, "build")?;
-        Ok(active)
+        let turn = AgentTurn::dispatched(prompt, &active.thread, "build");
+        Ok((active, turn))
     }
 
     /// Materialize a plan's canonical docs into a fresh run worktree and
@@ -1363,19 +1300,20 @@ impl Orchestrator {
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
         report: DoneReport,
-    ) -> Result<ReportOutcome, OrchestratorError> {
+    ) -> Result<ReportConsumed, OrchestratorError> {
+        let mut next = None;
         match (report.phase, report.status) {
             // A blocked/failed report from any session — stage build, fix,
             // validation, or single-plan — parks the run and disarms run-all.
             (_, DoneStatus::Blocked) => {
                 if let Err(illegal) = active.run.apply(RunEvent::Blocked) {
-                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                    return Ok(ReportConsumed::out_of_phase(illegal));
                 }
                 active.auto_advance = false;
             }
             (_, DoneStatus::Failed) => {
                 if let Err(illegal) = active.run.apply(RunEvent::Failed) {
-                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                    return Ok(ReportConsumed::out_of_phase(illegal));
                 }
                 active.auto_advance = false;
             }
@@ -1401,47 +1339,55 @@ impl Orchestrator {
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed)
                 if !plan_stage_docs.is_empty() =>
             {
-                if let out_of_phase @ ReportOutcome::OutOfPhase(_) =
-                    self.on_run_stage_session_done(active, plan_stage_docs)?
-                {
-                    return Ok(out_of_phase);
+                let consumed = self.on_run_stage_session_done(active, plan_stage_docs)?;
+                if matches!(consumed.outcome, ReportOutcome::OutOfPhase(_)) {
+                    return Ok(consumed);
                 }
+                next = consumed.next;
             }
             (DonePhase::Validate, DoneStatus::Completed) => {
                 if let out_of_phase @ ReportOutcome::OutOfPhase(_) =
                     self.on_run_validation_done(active, plan_stage_docs, &report)?
                 {
-                    return Ok(out_of_phase);
+                    return Ok(ReportConsumed {
+                        outcome: out_of_phase,
+                        next: None,
+                    });
                 }
             }
             // Single-doc plan / adopted path: a completed build opens review.
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => {
                 if let Err(illegal) = active.run.apply(RunEvent::BuildReady) {
-                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                    return Ok(ReportConsumed::out_of_phase(illegal));
                 }
             }
         }
         // Only a consumed report leaves a trace (same discipline as plans).
         active.last_summary = Some(report.summary.clone());
         active.last_error = None;
-        Ok(ReportOutcome::Applied)
+        Ok(ReportConsumed {
+            outcome: ReportOutcome::Applied,
+            next,
+        })
     }
 
     /// A stage build/fix session reported done(completed): commit the stage's
-    /// work and hand it to a fresh validation session. No run-level event —
-    /// the run stays `Building` until validation's verdict moves it.
+    /// work and hand the stage to validation. No run-level event — the run
+    /// stays `Building` until validation's verdict moves it — and no new
+    /// process: the hand-off is a turn for the same worktree agent, returned to
+    /// the caller to deliver.
     fn on_run_stage_session_done(
         &self,
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
-    ) -> Result<ReportOutcome, OrchestratorError> {
+    ) -> Result<ReportConsumed, OrchestratorError> {
         let Some(stage_id) = active.current_stage_id.clone() else {
             eprintln!(
                 "on_run_done {}: build report for a multi-stage run with no current stage; \
                  ignoring",
                 active.run.id.0
             );
-            return Ok(ReportOutcome::Applied);
+            return Ok(ReportConsumed::applied());
         };
         // Resolve both sides of the stage join up front, so a mismatch between
         // the plan's manifest and the run's progress rejects before mutation.
@@ -1456,16 +1402,16 @@ impl Orchestrator {
                 "on_run_done {}: no progress record for stage {stage_id}; ignoring",
                 active.run.id.0
             );
-            return Ok(ReportOutcome::Applied);
+            return Ok(ReportConsumed::applied());
         };
         match active.stages[progress_index].state {
             StageProgressState::Building => {
                 // Coarse-state legality before ANY mutation: a report landing
                 // while the run is Blocked/Failed is out of phase — the stage
-                // advance, commit, and session swap below would otherwise leave
-                // the run and stage machines incoherent.
+                // advance, commit, and hand-off below would otherwise leave the
+                // run and stage machines incoherent.
                 if let Err(illegal) = run_transition(&active.run.state, RunEvent::BuildReady) {
-                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                    return Ok(ReportConsumed::out_of_phase(illegal));
                 }
             }
             // A build report while the validation agent runs would skip the
@@ -1476,16 +1422,16 @@ impl Orchestrator {
                      non-validate report",
                     active.run.id.0
                 );
-                return Ok(ReportOutcome::Applied);
+                return Ok(ReportConsumed::applied());
             }
             // Post-review change requests run while the current stage is
             // already validated; their `done` closes the loop exactly as on
             // the single-plan path.
             StageProgressState::Validated { .. } => {
                 if let Err(illegal) = active.run.apply(RunEvent::BuildReady) {
-                    return Ok(ReportOutcome::OutOfPhase(illegal));
+                    return Ok(ReportConsumed::out_of_phase(illegal));
                 }
-                return Ok(ReportOutcome::Applied);
+                return Ok(ReportConsumed::applied());
             }
         }
         active.stages[progress_index].apply(StageProgressEvent::BuildDone)?;
@@ -1498,7 +1444,6 @@ impl Orchestrator {
             &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
         )?;
         active.stages[progress_index].apply(StageProgressEvent::StartValidation)?;
-        active.session.end();
         let prompt = self.render_run_stage(
             &self.templates.validate,
             active,
@@ -1506,8 +1451,10 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        self.spawn_run_session(active, &prompt, "validate")?;
-        Ok(ReportOutcome::Applied)
+        Ok(ReportConsumed {
+            outcome: ReportOutcome::Applied,
+            next: Some(AgentTurn::dispatched(prompt, &active.thread, "validate")),
+        })
     }
 
     /// The validation agent's verdict. Pass: the final stage opens merge
@@ -1575,14 +1522,16 @@ impl Orchestrator {
         };
         // Coarse-state legality before ANY mutation: a verdict landing while
         // the run is Blocked/Failed or already past its gate is out of phase —
-        // advancing the stage to its terminal Validated and killing the session
-        // here would strand the run.
+        // advancing the stage to its terminal Validated here would strand the
+        // run.
         if let Err(illegal) = run_transition(&active.run.state, verdict) {
             return Ok(ReportOutcome::OutOfPhase(illegal));
         }
         active.stages[progress_index].apply(StageProgressEvent::ValidationDone { passed })?;
         active.stages[progress_index].validation = Some(validation);
-        active.session.end();
+        // The verdict parks the run at a gate; the worktree's agent stays live
+        // and idle in its tab, which is the point of the tab — the reviewer
+        // arrives at the gate already in conversation with a running process.
         active.run.apply(verdict)?;
         if !passed {
             active.auto_advance = false;
@@ -1625,7 +1574,7 @@ impl Orchestrator {
         plan_stage_docs: &[StageDoc],
         stage_id: &str,
         model_override: Option<ModelChoice>,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         let doc_index = plan_stage_docs
             .iter()
             .position(|doc| doc.id == stage_id)
@@ -1683,7 +1632,6 @@ impl Orchestrator {
             active.model_choice = choice;
         }
         active.last_error = None;
-        active.session.end();
         let prompt = self.render_run_stage(
             &self.templates.build_stage,
             active,
@@ -1691,8 +1639,7 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        self.spawn_run_session(active, &prompt, "build")?;
-        Ok(())
+        Ok(AgentTurn::dispatched(prompt, &active.thread, "build"))
     }
 
     /// Send a validation-failed stage back to a fresh fix session (the run-side
@@ -1705,7 +1652,7 @@ impl Orchestrator {
         plan_stage_docs: &[StageDoc],
         stage_id: &str,
         note: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         let doc_index = plan_stage_docs
             .iter()
             .position(|doc| doc.id == stage_id)
@@ -1731,7 +1678,6 @@ impl Orchestrator {
         active.stages[progress_index].apply(StageProgressEvent::Dispatch)?;
         active.current_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        active.session.end();
         let prompt = self.render_run_stage(
             &self.templates.fix_stage,
             active,
@@ -1739,8 +1685,7 @@ impl Orchestrator {
             doc_index,
             note,
         );
-        self.spawn_run_session(active, &prompt, "build")?;
-        Ok(())
+        Ok(AgentTurn::dispatched(prompt, &active.thread, "build"))
     }
 
     /// Submit a batch of diff comments (the run-side `request_changes`): put the
@@ -1772,29 +1717,33 @@ impl Orchestrator {
         }
         active.run.apply(RunEvent::RequestChanges)?;
         active.last_error = None;
-        Ok(AgentTurn {
-            cold: conversation_prompt(
-                &self.render_run(&self.templates.review_changes, active, comments),
-                &active.thread,
-            ),
-            warm: comments.to_string(),
-            phase: "revise",
-        })
+        Ok(AgentTurn::posted(
+            self.render_run(&self.templates.review_changes, active, comments),
+            &active.thread,
+            comments,
+            "revise",
+        ))
     }
 
     /// A freeform human message to the run's agent (the run-side `message`). A
-    /// live `Building` session is redirected; parked states (blocked / failed /
-    /// idle / interrupted) resume building. Review gates (`Review`, `StageGate`)
-    /// are refused — they have structured verbs. Like the fused path, a live
-    /// session with an existing harness transcript continues that conversation
-    /// (`--continue`) with the message as its next turn; otherwise a fresh
-    /// session gets it wrapped in full run context. A stage awaiting its
-    /// validation verdict is refused (the same invariant as `run_request_changes`).
+    /// working run keeps working; parked states (blocked / failed / idle /
+    /// interrupted) resume building.
+    ///
+    /// Review gates (`Review`, `StageGate`) are still refused, but the reason
+    /// narrowed when the agent became persistent. It is no longer "there is no
+    /// session to talk to" — there is, and `thread.post` reaches it at a gate
+    /// without moving anything. It is that `run.message` MOVES the run back to
+    /// `Building`, and what reopens a gate is the gate's own structured verb
+    /// (request changes, dispatch a stage). A freeform side channel that
+    /// restarts the build would bypass the batched-review contract.
+    ///
+    /// A stage awaiting its validation verdict is refused for the same reason
+    /// as in `run_request_changes`: only a `validate` report may move it.
     pub fn message_run(
         &self,
         active: &mut ActiveRun,
         message: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         if message.trim().is_empty() {
             return Err(OrchestratorError::Gate("message must not be empty".into()));
         }
@@ -1823,7 +1772,7 @@ impl Orchestrator {
             }
             S::Created | S::Merged | S::Abandoned | S::Archived => {
                 return Err(OrchestratorError::Gate(
-                    "no agent session to message".into(),
+                    "the run's conversation is closed — there is nothing to message".into(),
                 ))
             }
         };
@@ -1831,20 +1780,17 @@ impl Orchestrator {
             // Pure legality first — the caller persists the run even on Err.
             run_transition(&active.run.state, event)?;
         }
-        let prompt = if (self.transcript_probe)(&active.worktree.path, active.model_choice.provider)
-        {
-            message.to_string()
-        } else {
-            self.render_run(&self.templates.message, active, message)
-        };
+        let prompt = self.render_run(&self.templates.message, active, message);
         if let Some(event) = event {
             active.run.apply(event)?;
         }
         active.last_error = None;
-        active.session.end();
-        active.pending_continuation = true;
-        self.spawn_run_session(active, &prompt, "message")?;
-        Ok(())
+        Ok(AgentTurn::posted(
+            prompt,
+            &active.thread,
+            message,
+            "message",
+        ))
     }
 
     /// Re-dispatch an interrupted build phase in a fresh session (the run-side
@@ -1857,7 +1803,7 @@ impl Orchestrator {
         &self,
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         run_transition(&active.run.state, RunEvent::Reply)?;
         let prompt = if plan_stage_docs.is_empty() {
             self.render_run(&self.templates.build, active, "")
@@ -1866,9 +1812,7 @@ impl Orchestrator {
         };
         active.run.apply(RunEvent::Reply)?;
         active.last_error = None;
-        active.session.end();
-        self.spawn_run_session(active, &prompt, "resume")?;
-        Ok(())
+        Ok(AgentTurn::dispatched(prompt, &active.thread, "resume"))
     }
 
     /// An interrupted multi-stage build phase, routed by the current stage's
@@ -2003,7 +1947,6 @@ impl Orchestrator {
             thread,
             last_summary: None,
             last_error: None,
-            session: SessionSlot::default(),
         })
     }
 
@@ -2022,7 +1965,6 @@ impl Orchestrator {
             .map_err(as_merge_failure)?;
         active.run.apply(RunEvent::ApproveMerge)?;
         active.last_error = None;
-        active.session.end();
         Ok(())
     }
 
@@ -2062,7 +2004,6 @@ impl Orchestrator {
     /// abandon (the lifecycle verdict is what must persist).
     pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
         active.run.apply(RunEvent::Abandon)?;
-        active.session.end();
         if let Err(cleanup) = self
             .worktrees
             .remove(&active.worktree, /* keep_branch */ true)
@@ -2089,7 +2030,7 @@ impl Orchestrator {
         active: &mut ActiveRun,
         plan: &ActivePlan,
         stage_id: &str,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<AgentTurn, OrchestratorError> {
         if active.run.state != RunState::StageGate {
             return Err(OrchestratorError::Gate(format!(
                 "stage-doc revisions run from the stage gate (run is {:?})",
@@ -2111,7 +2052,6 @@ impl Orchestrator {
         }
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
-        active.session.end();
         let prompt = self.render_run_stage(
             &self.templates.revise_stage,
             active,
@@ -2119,8 +2059,12 @@ impl Orchestrator {
             doc_index,
             THREAD_NOTIFICATION,
         );
-        self.spawn_run_session(active, &prompt, "revise")?;
-        Ok(())
+        Ok(AgentTurn::posted(
+            prompt,
+            &active.thread,
+            THREAD_NOTIFICATION,
+            "revise",
+        ))
     }
 
     /// Consume a mid-run stage-doc revision's `done(revise)`: ingest the revised
@@ -2267,147 +2211,6 @@ impl Orchestrator {
                 prior_notes,
             },
         )
-    }
-
-    /// Spawn the plan's next session in its disposable worktree. Plans never
-    /// carry a continuation flag — every planning session starts cold.
-    fn spawn_plan_session(
-        &self,
-        active: &mut ActivePlan,
-        prompt: &str,
-        phase: &str,
-    ) -> Result<(), OrchestratorError> {
-        let cwd = active
-            .worktree
-            .as_ref()
-            .ok_or_else(|| {
-                OrchestratorError::Gate(
-                    "the plan has no planning worktree to run a session in".to_string(),
-                )
-            })?
-            .path
-            .clone();
-        let model_choice = active.model_choice.clone();
-        let prompt = conversation_prompt(prompt, &active.thread);
-        self.spawn_into_slot(
-            &mut active.session,
-            &cwd,
-            &active.plan.id.0,
-            &model_choice,
-            false,
-            &prompt,
-        )?;
-        let session_id = active.thread.start_session(
-            active.model_choice.provider.label(),
-            active.model_choice.model.as_deref(),
-            active.model_choice.effort.as_deref(),
-            phase,
-            &crate::store::now_rfc3339(),
-        );
-        active.thread.push_event(
-            crate::thread::ThreadEventKind::RunStarted,
-            Some(format!("{phase} run started")),
-            Some(session_id),
-            None,
-            crate::store::now_rfc3339(),
-        );
-        Ok(())
-    }
-
-    /// Spawn the run's next session, consuming the warm-session continuation flag:
-    /// the first spawn after adoption probes for an existing harness
-    /// transcript in the worktree and asks the TUI builder to continue it.
-    fn spawn_run_session(
-        &self,
-        active: &mut ActiveRun,
-        prompt: &str,
-        phase: &str,
-    ) -> Result<(), OrchestratorError> {
-        let continue_session = active.pending_continuation
-            && (self.transcript_probe)(&active.worktree.path, active.model_choice.provider);
-        active.pending_continuation = false;
-        let cwd = active.worktree.path.clone();
-        let model_choice = active.model_choice.clone();
-        let prompt = conversation_prompt(prompt, &active.thread);
-        self.spawn_into_slot(
-            &mut active.session,
-            &cwd,
-            &active.run.id.0,
-            &model_choice,
-            continue_session,
-            &prompt,
-        )?;
-        let session_id = active.thread.start_session(
-            active.model_choice.provider.label(),
-            active.model_choice.model.as_deref(),
-            active.model_choice.effort.as_deref(),
-            phase,
-            &crate::store::now_rfc3339(),
-        );
-        active.thread.push_event(
-            crate::thread::ThreadEventKind::RunStarted,
-            Some(format!("{phase} run started")),
-            Some(session_id),
-            None,
-            crate::store::now_rfc3339(),
-        );
-        Ok(())
-    }
-
-    /// The shared spawn tail for both split entities: build the harness
-    /// command, spawn it in `cwd`, and install it in the slot (bumping the
-    /// generation). Mirrors [`spawn_session`](Self::spawn_session), which the
-    /// periphery retires with the fused path.
-    fn spawn_into_slot(
-        &self,
-        slot: &mut SessionSlot,
-        cwd: &Path,
-        owner_id: &str,
-        model_choice: &ModelChoice,
-        continue_session: bool,
-        prompt: &str,
-    ) -> Result<(), OrchestratorError> {
-        let options = SpawnOptions {
-            continue_session,
-            owner_id: owner_id.to_string(),
-            cwd: cwd.to_path_buf(),
-        };
-        let spec = match &self.agent {
-            // Fixed warm harnesses take the prompt over the PTY and never
-            // need provider/model-specific SpawnOptions.
-            Agent::Warm(spec) => spec.clone(),
-            Agent::WarmBuilder(build) => build(prompt, model_choice, &options),
-        };
-        let session = PtySession::spawn(&spec, Some(cwd.to_path_buf()), self.pty_size)?;
-        // Wait (bounded) for the TUI's first output before injecting the
-        // prompt; on expiry or an early exit, write anyway — the exit-race
-        // guard below decides whether a failed write is benign.
-        session.ready_within(HARNESS_READY_GRACE);
-        if let Err(error) = session.write_prompt(prompt) {
-            Self::absorb_prompt_write_failure_of_exiting_harness(&session, error)?;
-        }
-        slot.install(session);
-        Ok(())
-    }
-
-    /// Decide whether a failed prompt write into a fresh session is benign. A
-    /// harness that exits immediately is still a session the idle/crash
-    /// observer must retain and report — PTYs return EIO once the child's side
-    /// is closed — so an exiting harness keeps its session and the write error
-    /// is swallowed. The child closes the PTY *before* the OS makes its exit
-    /// status reapable, so a single `has_exited` poll here races the kernel
-    /// and can fail the spawn for a harness that is already gone; the bounded
-    /// wait covers that reap lag while still surfacing the write error for a
-    /// genuinely wedged (live but unwritable) PTY.
-    fn absorb_prompt_write_failure_of_exiting_harness(
-        session: &PtySession,
-        error: PtyError,
-    ) -> Result<(), OrchestratorError> {
-        if session.exited_within(PROMPT_WRITE_EXIT_GRACE) {
-            Ok(())
-        } else {
-            Err(error.into())
-        }
     }
 
     /// Write the per-entity MCP config under `.build/` so it never trips
@@ -2601,89 +2404,6 @@ mod tests {
         }
     }
 
-    /// A warm agent builder that records every spawn's prompt and continue flag.
-    fn prompt_spy_agent(log: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>) -> Agent {
-        Agent::WarmBuilder(std::sync::Arc::new(
-            move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
-                log.lock()
-                    .unwrap()
-                    .push((prompt.to_string(), options.continue_session));
-                HarnessSpec::new("sh").arg("-c").arg("exit 0")
-            },
-        ))
-    }
-
-    // ---- The prompt-write race ----
-
-    #[tokio::test]
-    async fn prompt_write_failure_is_absorbed_while_the_exit_is_not_yet_reapable() {
-        // The race, deterministically: a dying harness closes its PTY (the
-        // write fails with EIO) *before* the OS makes its exit reapable, so a
-        // single `has_exited` poll says "running" and the old guard failed
-        // the spawn. A child that is un-reapable now but exits shortly after
-        // is that kernel window with the lag under test control.
-        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 0.15");
-        let session = PtySession::spawn(
-            &spec,
-            None,
-            PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            },
-        )
-        .unwrap();
-        assert!(
-            !session.has_exited(),
-            "precondition: the exit status must not be reapable yet"
-        );
-        let write_error = PtyError::Io(std::io::Error::from_raw_os_error(libc_eio()));
-
-        let verdict =
-            Orchestrator::absorb_prompt_write_failure_of_exiting_harness(&session, write_error);
-
-        assert!(
-            verdict.is_ok(),
-            "a write failure against an exiting harness is benign: {verdict:?}"
-        );
-    }
-
-    /// EIO — the errno a PTY write returns once the child's side is closed.
-    fn libc_eio() -> i32 {
-        5
-    }
-
-    #[tokio::test]
-    async fn dispatch_survives_a_harness_that_exits_before_the_prompt_write() {
-        // End-to-end: an instantly exiting harness must still yield a spawned,
-        // installed session (the idle/crash observer retains and reports it),
-        // never a failed dispatch.
-        let (dir, repo) = init_repo();
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            Agent::WarmBuilder(std::sync::Arc::new(
-                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                    HarnessSpec::new("sh").arg("-c").arg("exit 0")
-                },
-            )),
-            Templates::default(),
-        );
-
-        let plan = orch
-            .dispatch_plan(
-                PlanId::new("plan-1"),
-                "Add a greeting",
-                "main",
-                Default::default(),
-            )
-            .expect("an instantly exiting harness must not fail the dispatch");
-
-        assert_eq!(plan.session.generation(), 1, "the session was installed");
-        assert!(plan.session.subscribe().is_some());
-    }
-
     // ---- Worktree adoption ----
 
     use crate::worktree::discover_external_worktrees;
@@ -2772,16 +2492,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A warm agent builder that records every rendered prompt it is asked to spawn.
-    fn prompt_recording_agent(log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Agent {
-        Agent::WarmBuilder(std::sync::Arc::new(
-            move |prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                log.lock().unwrap().push(prompt.to_string());
-                HarnessSpec::new("sh").arg("-c").arg("exit 0")
-            },
-        ))
-    }
-
     // ---- Multi-stage: per-stage revision, fix sessions, and resume routing ----
 
     // ---- Multi-stage: ActiveTask bookkeeping ----
@@ -2817,6 +2527,16 @@ mod tests {
     }
 
     fn drafting_plan(orch: &Orchestrator, id: &str, goal: &str) -> ActivePlan {
+        drafting_plan_and_turn(orch, id, goal).0
+    }
+
+    /// A dispatched plan plus the turn the dispatch wants said to its agent —
+    /// the orchestrator's whole output now that it owns no process.
+    fn drafting_plan_and_turn(
+        orch: &Orchestrator,
+        id: &str,
+        goal: &str,
+    ) -> (ActivePlan, AgentTurn) {
         orch.dispatch_plan(PlanId::new(id), goal, "main", Default::default())
             .unwrap()
     }
@@ -2915,6 +2635,16 @@ mod tests {
         plan: &ActivePlan,
         id: &str,
     ) -> ActiveRun {
+        dispatch_planned_run_and_turn(orch, store, plan, id).0
+    }
+
+    /// A dispatched run plus the turn the dispatch wants said to its agent.
+    fn dispatch_planned_run_and_turn(
+        orch: &Orchestrator,
+        store: &Store,
+        plan: &ActivePlan,
+        id: &str,
+    ) -> (ActiveRun, AgentTurn) {
         orch.dispatch_run(
             RunId::new(id),
             RunSource {
@@ -2957,100 +2687,10 @@ mod tests {
             worktree.branch
         );
         assert!(worktree.path.join("README.md").exists());
-        assert!(plan.session.subscribe().is_some(), "plan session is warm");
 
         // The scaffolded MCP config routes `done` reports back to THIS plan.
         let mcp = std::fs::read_to_string(worktree.path.join(".build/mcp.json")).unwrap();
         assert!(mcp.contains("plan-1"), "{mcp}");
-    }
-
-    #[tokio::test]
-    async fn warm_builder_receives_the_rendered_prompt_through_its_pty() {
-        let (dir, repo) = init_repo();
-        let capture = dir.path().join("warm-prompt.txt");
-        let capture_for_builder = capture.clone();
-        let agent = Agent::WarmBuilder(std::sync::Arc::new(
-            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                // The startup byte signals readiness like a real TUI's first paint.
-                HarnessSpec::new("sh")
-                    .arg("-c")
-                    .arg("printf ready; cat > \"$1\"")
-                    .arg("build-warm-capture")
-                    .arg(capture_for_builder.to_string_lossy())
-            },
-        ));
-        let orch = Orchestrator::new(
-            repo,
-            dir.path().join("worktrees"),
-            agent,
-            Templates::default(),
-        );
-
-        let plan = drafting_plan(&orch, "plan-warm", "Warm prompt marker");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if std::fs::read_to_string(&capture)
-                    .is_ok_and(|contents| contents.contains("Warm prompt marker"))
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("rendered prompt should be written into the warm PTY");
-
-        assert!(plan.session.subscribe().is_some());
-    }
-
-    #[tokio::test]
-    async fn dispatch_paste_frames_the_prompt_and_writes_even_without_readiness() {
-        // The rendered dispatch prompt is always multi-line (conversation_prompt
-        // appends the protocol block), so through a real TUI it must arrive as
-        // ONE bracketed paste. The capture harness never produces output, so
-        // this also proves the readiness grace expires into a write rather
-        // than a silently lost prompt.
-        let (dir, repo) = init_repo();
-        let capture = dir.path().join("warm-stdin.txt");
-        let capture_for_builder = capture.clone();
-        let agent = Agent::WarmBuilder(std::sync::Arc::new(
-            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                HarnessSpec::new("sh")
-                    .arg("-c")
-                    .arg("cat > \"$1\"")
-                    .arg("build-warm-capture")
-                    .arg(capture_for_builder.to_string_lossy())
-            },
-        ));
-        let orch = Orchestrator::new(
-            repo,
-            dir.path().join("worktrees"),
-            agent,
-            Templates::default(),
-        );
-
-        drafting_plan(&orch, "plan-paste", "Paste framing marker");
-        let captured = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if let Ok(contents) = std::fs::read_to_string(&capture) {
-                    if contents.contains("\u{1b}[201~") {
-                        return contents;
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the framed prompt should reach the harness despite its silence");
-
-        assert!(
-            captured.starts_with("\u{1b}[200~"),
-            "the prompt opens as a bracketed paste: {captured:?}"
-        );
-        assert!(
-            captured.contains("Paste framing marker"),
-            "the rendered prompt rides inside the frame: {captured:?}"
-        );
     }
 
     #[tokio::test]
@@ -3245,7 +2885,6 @@ mod tests {
             worktree_path,
             "the worktree stays warm through the notes loop"
         );
-        assert!(plan.session.subscribe().is_some(), "fresh revise session");
 
         // The revised doc lands in the store on the next done.
         std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v2\n").unwrap();
@@ -3285,9 +2924,8 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(new_path.join(".build/plan.md")).unwrap(),
             "# Plan v1\n",
-            "docs re-materialized from the store before the session"
+            "docs re-materialized from the store before the turn is delivered"
         );
-        assert!(plan.session.subscribe().is_some());
     }
 
     #[tokio::test]
@@ -3330,7 +2968,6 @@ mod tests {
                 .is_err(),
             "the plan/ branch is deleted with the worktree"
         );
-        assert!(plan.session.subscribe().is_none(), "session ended");
         // The canonical docs survive the teardown.
         assert_eq!(
             store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
@@ -3510,8 +3147,6 @@ mod tests {
         );
         assert_eq!(active.comments.len(), 1);
         assert_eq!(active.last_error.as_deref(), Some("boom"));
-        assert_eq!(active.session.generation(), 0);
-        assert!(active.session.subscribe().is_none());
 
         // A record whose worktree was torn down reattaches without one.
         let torn_down = PersistedPlan {
@@ -3568,8 +3203,6 @@ mod tests {
         assert!(active.adopted);
         assert!(active.pending_continuation);
         assert_eq!(active.model_choice.effort.as_deref(), Some("high"));
-        assert_eq!(active.session.generation(), 0);
-        assert!(active.session.subscribe().is_none());
     }
 
     #[tokio::test]
@@ -3591,7 +3224,6 @@ mod tests {
         );
         assert!(run.worktree.branch.starts_with("build/"));
         assert!(run.worktree.path.join(".build/mcp.json").exists());
-        assert!(run.session.subscribe().is_some(), "build session is warm");
 
         std::fs::write(run.worktree.path.join("fix.txt"), "fixed\n").unwrap();
         orch.on_run_done(
@@ -3608,17 +3240,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_planned_run_materializes_commits_and_baselines_the_diff() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_plan(&orch, &store, "plan-1");
 
-        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        let (mut run, turn) = dispatch_planned_run_and_turn(&orch, &store, &plan, "run-1");
         assert_eq!(run.run.state, RunState::Building);
         assert_eq!(
             run.run.plan_id.as_ref().map(|p| p.0.as_str()),
@@ -3650,7 +3276,7 @@ mod tests {
         assert_eq!(paths, vec!["greeting.txt"]);
 
         // The build prompt points at the plan's doc.
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(prompt.contains(".build/plan.md"), "{prompt}");
         assert!(prompt.contains("Add a greeting"), "{prompt}");
 
@@ -3712,17 +3338,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_multi_stage_run_starts_the_first_stage() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
 
-        let run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        let (run, turn) = dispatch_planned_run_and_turn(&orch, &store, &plan, "run-1");
         assert_eq!(run.run.state, RunState::Building);
         assert_eq!(run.current_stage_id.as_deref(), Some("first"));
         assert_eq!(run.stages.len(), 1);
@@ -3732,7 +3352,7 @@ mod tests {
             "the first stage's diff starts at the materialization commit"
         );
         assert!(run.worktree.path.join(".build/plan/01-first.md").exists());
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(prompt.contains("Execute ONE stage"), "{prompt}");
         assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
     }
@@ -3740,24 +3360,19 @@ mod tests {
     #[tokio::test]
     async fn run_stage_build_done_commits_and_hands_off_to_validation() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
 
         std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
-        orch.on_run_done(
-            &mut run,
-            &plan.stages,
-            done(DonePhase::Build, DoneStatus::Completed, None),
-        )
-        .unwrap();
+        let consumed = orch
+            .on_run_done(
+                &mut run,
+                &plan.stages,
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .unwrap();
         assert_eq!(run.run.state, RunState::Building, "validation is running");
         assert_eq!(run.stages[0].state, StageProgressState::Validating);
         let subject = last_commit_subject(&run.worktree.path);
@@ -3765,7 +3380,12 @@ mod tests {
             subject.contains("stage first"),
             "stage work committed before validation: {subject:?}"
         );
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        // The hand-off is a turn for the SAME agent, not a new process.
+        let hand_off = consumed
+            .next
+            .expect("a built stage hands itself to validation");
+        assert_eq!(hand_off.phase, "validate");
+        let prompt = hand_off.cold;
         let start_sha = run.stages[0].start_sha.clone().unwrap();
         assert!(prompt.contains("VALIDATION"), "{prompt}");
         assert!(prompt.contains(&start_sha), "{prompt}");
@@ -3949,16 +3569,12 @@ mod tests {
             )
             .expect("a late completion is out of phase, not an error");
         assert!(
-            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            matches!(outcome.outcome, ReportOutcome::OutOfPhase(_)),
             "{outcome:?}"
         );
         assert_eq!(run.run.state, RunState::Blocked);
         assert_eq!(run.stages[0].state, StageProgressState::Building);
         assert_eq!(last_commit_subject(&run.worktree.path), before);
-        assert!(
-            run.session.subscribe().is_some(),
-            "session kept for the reply"
-        );
     }
 
     #[tokio::test]
@@ -4041,13 +3657,7 @@ mod tests {
     #[tokio::test]
     async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
         plan.stages[0].state = StageDocState::Approved;
@@ -4056,12 +3666,12 @@ mod tests {
             plan_comment("c-2", "second", PlanCommentState::Open),
         ];
 
-        orch.send_plan_stage_notes(&mut plan, &store, "first")
+        let turn = orch
+            .send_plan_stage_notes(&mut plan, &store, "first")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
-        assert!(plan.session.subscribe().is_some(), "revise session is warm");
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(prompt.contains("read_unread_messages"), "{prompt}");
         assert!(
             !prompt.contains("[c-1]"),
@@ -4149,7 +3759,6 @@ mod tests {
         orch.message_plan(&mut plan, &store, "focus on error paths")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
-        assert!(plan.session.subscribe().is_some());
 
         // A blocked plan resumes drafting on reply.
         orch.on_plan_done(
@@ -4198,10 +3807,6 @@ mod tests {
             worktree.path.join(".build/plan.md").exists(),
             "docs materialized"
         );
-        assert!(
-            plan.session.subscribe().is_some(),
-            "a fresh plan session is warm"
-        );
     }
 
     #[tokio::test]
@@ -4226,13 +3831,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_run_stage_enforces_the_sequential_gate_and_pins_start_sha() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
@@ -4253,7 +3852,8 @@ mod tests {
 
         // Approve it → the sequential gate opens (stage one validated).
         orch.approve_plan_stage(&mut plan, "second").unwrap();
-        orch.dispatch_run_stage(&mut run, &plan.stages, "second", None)
+        let turn = orch
+            .dispatch_run_stage(&mut run, &plan.stages, "second", None)
             .unwrap();
         assert_eq!(run.run.state, RunState::Building);
         assert_eq!(run.current_stage_id.as_deref(), Some("second"));
@@ -4264,7 +3864,7 @@ mod tests {
             Some(worktree_head(&run.worktree.path).as_str()),
             "the stage diff pins to HEAD at dispatch"
         );
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(prompt.contains(".build/plan/02-second.md"), "{prompt}");
     }
 
@@ -4338,13 +3938,7 @@ mod tests {
     #[tokio::test]
     async fn fix_run_stage_respawns_with_findings_and_keeps_the_start_sha() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_recording_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
@@ -4363,7 +3957,8 @@ mod tests {
         .unwrap();
         let start_before = run.stage_progress("first").unwrap().start_sha.clone();
 
-        orch.fix_run_stage(&mut run, &plan.stages, "first", "add the migration")
+        let turn = orch
+            .fix_run_stage(&mut run, &plan.stages, "first", "add the migration")
             .unwrap();
         assert_eq!(run.run.state, RunState::Building);
         let first = run.stage_progress("first").unwrap();
@@ -4372,7 +3967,7 @@ mod tests {
             first.start_sha, start_before,
             "the fix keeps the stage's start sha"
         );
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(
             prompt.contains("- migration missing"),
             "findings drive the fix: {prompt}"
@@ -4400,18 +3995,19 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // A single-stage run at review, with the build session still warm.
         let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
-        orch.on_run_done(
-            &mut single,
-            &[],
-            done(DonePhase::Build, DoneStatus::Completed, None),
-        )
-        .unwrap();
+        let consumed = orch
+            .on_run_done(
+                &mut single,
+                &[],
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .unwrap();
         assert_eq!(single.run.state, RunState::Review);
-        let generation_at_review = single.session.generation();
-        let pid_at_review = single.session.harness_pid();
-        assert!(pid_at_review.is_some(), "the review gate keeps its harness");
+        assert!(
+            consumed.next.is_none(),
+            "opening review says nothing to the agent — it is the human's move"
+        );
 
         let turn = orch.run_request_changes(&mut single, "tweak it").unwrap();
         assert_eq!(single.run.state, RunState::Building);
@@ -4424,16 +4020,6 @@ mod tests {
         assert_eq!(
             turn.warm, "tweak it",
             "a warm agent gets the instruction alone — the run context it already has"
-        );
-        assert_eq!(
-            single.session.generation(),
-            generation_at_review,
-            "requesting changes must not spawn a second harness"
-        );
-        assert_eq!(
-            single.session.harness_pid(),
-            pid_at_review,
-            "the agent the reviewer is talking to must survive the request"
         );
 
         // A stage awaiting its validation verdict must not be redirected.
@@ -4486,7 +4072,7 @@ mod tests {
             )
             .expect("an out-of-phase report is not an error");
         assert!(
-            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            matches!(outcome.outcome, ReportOutcome::OutOfPhase(_)),
             "{outcome:?}"
         );
         assert_eq!(single.run.state, RunState::Review, "nothing moved");
@@ -4520,7 +4106,7 @@ mod tests {
             )
             .expect("an out-of-phase stage report is not an error");
         assert!(
-            matches!(outcome, ReportOutcome::OutOfPhase(_)),
+            matches!(outcome.outcome, ReportOutcome::OutOfPhase(_)),
             "{outcome:?}"
         );
         assert_eq!(run.run.state, RunState::StageGate, "nothing moved");
@@ -4534,14 +4120,7 @@ mod tests {
     #[tokio::test]
     async fn message_run_redirects_building_continues_and_refuses_gates() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_spy_agent(log.clone()),
-            Templates::default(),
-        )
-        .with_transcript_probe(std::sync::Arc::new(|_, _| true));
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
         let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
@@ -4551,14 +4130,26 @@ mod tests {
             .to_string()
             .contains("empty"));
 
-        // Building → live redirect that rides the harness's own conversation.
-        orch.message_run(&mut run, "also handle the empty case")
+        // Building → the run keeps working and the message becomes a turn.
+        let turn = orch
+            .message_run(&mut run, "also handle the empty case")
             .unwrap();
         assert_eq!(run.run.state, RunState::Building);
-        let (prompt, continued) = log.lock().unwrap().last().unwrap().clone();
-        assert!(continued, "the message continues the conversation");
-        assert!(prompt.starts_with("also handle the empty case"));
-        assert!(prompt.contains("Build conversation protocol"));
+        assert_eq!(turn.phase, "message");
+        assert_eq!(
+            turn.warm, "also handle the empty case",
+            "an agent already in the conversation hears the message alone"
+        );
+        assert!(
+            turn.cold.contains("also handle the empty case"),
+            "{}",
+            turn.cold
+        );
+        assert!(
+            turn.cold.contains("Build conversation protocol"),
+            "{}",
+            turn.cold
+        );
 
         // The review gate refuses a message (request-changes is the verb there).
         orch.on_run_done(
@@ -4576,19 +4167,14 @@ mod tests {
     #[tokio::test]
     async fn spawned_plan_and_run_prompts_put_the_ambiguity_rule_before_silent_directives() {
         let (dir, repo) = init_repo();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
-        let orch = Orchestrator::new(
-            repo.to_path_buf(),
-            dir.path().join("worktrees"),
-            prompt_spy_agent(log.clone()),
-            Templates::default(),
-        );
+        let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        drafting_plan(&orch, "plan-1", "Add a greeting");
-        let (plan_prompt, _) = log.lock().unwrap().last().unwrap().clone();
-        dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
-        let (run_prompt, _) = log.lock().unwrap().last().unwrap().clone();
+        let (_, plan_turn) = drafting_plan_and_turn(&orch, "plan-1", "Add a greeting");
+        let plan_prompt = plan_turn.cold;
+        let plan = approved_plan(&orch, &store, "plan-of-run-1");
+        let (_, run_turn) = dispatch_planned_run_and_turn(&orch, &store, &plan, "run-1");
+        let run_prompt = run_turn.cold;
 
         for (path, prompt) in [("plan", plan_prompt), ("run", run_prompt)] {
             let ambiguity_rule = prompt
@@ -4633,24 +4219,23 @@ mod tests {
         // A single-stage run interrupted mid-build → resumes the whole-run build.
         let mut single = dispatch_single_stage_run(&orch, &store, "run-q", "single stage work");
         single.run.apply(crate::run::RunEvent::Interrupt).unwrap();
-        orch.resume_run(&mut single, &[]).unwrap();
+        let turn = orch.resume_run(&mut single, &[]).unwrap();
         assert_eq!(single.run.state, RunState::Building);
-        assert!(single.session.subscribe().is_some());
+        assert_eq!(turn.phase, "resume");
 
         // Multi-stage run interrupted mid stage-build → resumes THAT stage.
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let orch2 = Orchestrator::new(
             repo.to_path_buf(),
             dir.path().join("worktrees2"),
-            prompt_recording_agent(log.clone()),
+            Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
         );
         let plan = approved_multi_stage_plan(&orch2, &store, "plan-1", 2);
         let mut run = dispatch_planned_run(&orch2, &store, &plan, "run-1");
         run.run.apply(crate::run::RunEvent::Interrupt).unwrap();
-        orch2.resume_run(&mut run, &plan.stages).unwrap();
+        let turn = orch2.resume_run(&mut run, &plan.stages).unwrap();
         assert_eq!(run.run.state, RunState::Building);
-        let prompt = log.lock().unwrap().last().unwrap().clone();
+        let prompt = turn.cold;
         assert!(
             prompt.contains(".build/plan/01-first.md"),
             "resumes stage one: {prompt}"
@@ -4676,10 +4261,6 @@ mod tests {
         );
         assert!(run.adopted);
         assert!(run.pending_continuation);
-        assert!(
-            run.session.subscribe().is_none(),
-            "adoption spawns no session"
-        );
         assert_eq!(
             last_commit_subject(&external.path),
             "Checkpoint: adopted by Build"
@@ -4780,7 +4361,6 @@ mod tests {
             .unwrap();
         assert_eq!(run.run.state, RunState::StageGate);
         assert_eq!(run.revising_stage_id.as_deref(), Some("second"));
-        assert!(run.session.subscribe().is_some());
 
         // While a revision is in flight, a revise report must NOT go through
         // on_run_done — it is a store write-back, not a build report.

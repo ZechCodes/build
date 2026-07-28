@@ -17,8 +17,63 @@ env:
   REGISTRY: ghcr.io/zechcodes
 
 jobs:
+  # Which tier this push actually touched. Everything below is gated on this,
+  # for one reason that matters more than the wasted minutes: the deploy step
+  # re-pins BOTH manifests to the new commit SHA, and the relay's Deployment is
+  # `strategy: Recreate` (a single in-memory broker — see deploy/k8s/relay.yaml).
+  # So an unfiltered rollout tore down every device and browser WebSocket to
+  # ship a stylesheet, which is exactly what splitting the relay out as the
+  # stable tier was supposed to prevent.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      relay: ${{ steps.filter.outputs.relay }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Anything we cannot diff with confidence counts as "everything moved",
+          # so the failure mode is a redundant deploy and never a skipped one:
+          # a pull_request run (which never deploys anyway), a branch's first
+          # push, or a force push whose old head is already gone.
+          if [ "$EVENT" != "push" ] || [ -z "${BEFORE:-}" ] \
+             || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            files="ALL"
+          else
+            files="$(git diff --name-only "$BEFORE" "$AFTER")"
+          fi
+          touched() {
+            [ "$files" = "ALL" ] && return 0
+            printf '%s\n' "$files" | grep -Eq "$1"
+          }
+          touched '^(spa|skriftapp)/|^deploy/k8s/app\.yaml$' && app=true || app=false
+          touched '^bridge/|^deploy/k8s/relay\.yaml$' && relay=true || relay=false
+          # The end-to-end job also has to run when the harness itself moves —
+          # the QA client under web/ or the compose stack it drives — or a
+          # change to the test would skip the test.
+          if [ "$app" = true ] || [ "$relay" = true ] \
+             || touched '^web/|^deploy/compose\.real\.yml$'; then e2e=true; else e2e=false; fi
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+          echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
+          echo "app=$app relay=$relay e2e=$e2e"
+
   bridge:
     name: Rust bridge
+    needs: [changes]
+    if: ${{ needs.changes.outputs.relay == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,6 +106,8 @@ jobs:
 
   interop:
     name: Crypto interop (Rust ↔ Python)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.relay == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -68,6 +125,10 @@ jobs:
 
   web-e2e:
     name: Browser client end-to-end
+    needs: [changes]
+    # Exercises the whole stack, so it runs for either tier (and for its own
+    # harness) — but not for a docs- or workflow-only push, which ships nothing.
+    if: ${{ needs.changes.outputs.e2e == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -97,12 +158,25 @@ jobs:
           # drags in the archived v1 branch (minified libsodium false positives).
           ./gitleaks git --no-banner --redact --verbose --log-opts="--full-history HEAD" .
 
-  # ---- production rollout (push to main only; every check above must pass) ----
+  # ---- production rollout (push to main only) ----
+  #
+  # Each image job builds only when its tier moved, and no check above may have
+  # failed. The conditions spell that out rather than leaning on the default
+  # `success()`, because a gated check that was SKIPPED must not read as a
+  # failure — while a real failure must still build nothing. `secrets` is
+  # ungated, so it is the one that has to have actually succeeded.
 
   build-app:
     name: build-app image (skriftapp)
-    needs: [bridge, interop, web-e2e, secrets]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, bridge, interop, web-e2e, secrets]
+    if: >-
+      ${{ !cancelled()
+          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && needs.changes.outputs.app == 'true'
+          && needs.bridge.result != 'failure'
+          && needs.interop.result != 'failure'
+          && needs['web-e2e'].result == 'success'
+          && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -133,8 +207,15 @@ jobs:
 
   build-relay:
     name: build-relay image (bridge relay bin)
-    needs: [bridge, interop, web-e2e, secrets]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, bridge, interop, web-e2e, secrets]
+    if: >-
+      ${{ !cancelled()
+          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && needs.changes.outputs.relay == 'true'
+          && needs.bridge.result == 'success'
+          && needs.interop.result == 'success'
+          && needs['web-e2e'].result == 'success'
+          && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -162,8 +243,13 @@ jobs:
 
   deploy:
     name: Deploy to production (ns 8ly)
-    needs: [build-app, build-relay]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, build-app, build-relay]
+    if: >-
+      ${{ !cancelled()
+          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && (needs.changes.outputs.app == 'true' || needs.changes.outputs.relay == 'true')
+          && needs['build-app'].result != 'failure' && needs['build-app'].result != 'cancelled'
+          && needs['build-relay'].result != 'failure' && needs['build-relay'].result != 'cancelled' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -176,11 +262,20 @@ jobs:
       - name: Configure kubectl
         run: doctl kubernetes cluster kubeconfig save production-hosting
 
-      - name: Deploy SHA-pinned images
+      # One manifest per tier, each applied ONLY when its image job ran. Applying
+      # a manifest whose image was never built would pin the Deployment to a
+      # :SHA tag that does not exist in the registry — an ImagePullBackOff in
+      # production, and for the relay a Recreate that never comes back.
+      - name: Roll the app (spa + skriftapp)
+        if: needs.changes.outputs.app == 'true'
         run: |
-          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml   | kubectl -n 8ly apply -f -
-          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml | kubectl -n 8ly apply -f -
           kubectl -n 8ly rollout status deployment/build-app --timeout=300s
+
+      - name: Roll the relay (bridge)
+        if: needs.changes.outputs.relay == 'true'
+        run: |
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
           kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
 
       - name: Verify public endpoints

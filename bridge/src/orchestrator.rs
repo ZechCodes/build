@@ -529,7 +529,7 @@ const PROMPT_WRITE_EXIT_GRACE: std::time::Duration = std::time::Duration::from_m
 /// exceed a real TUI's full startup — claude 2.1.219 settles at ~1.8s, plus its
 /// declared settle window — or the wait expires and the prompt is written into
 /// a still-painting screen, which is the failure it exists to prevent.
-const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(6000);
+pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(6000);
 
 fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
@@ -629,6 +629,52 @@ impl Orchestrator {
     pub fn with_transcript_probe(mut self, probe: TranscriptProbe) -> Self {
         self.transcript_probe = probe;
         self
+    }
+
+    /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize
+    /// it to their own viewport; this is what it paints into until one does.
+    pub fn pty_size(&self) -> PtySize {
+        self.pty_size
+    }
+
+    /// The harness command for an agent tab rooted at `cwd` and owned by
+    /// `owner_id`. The MCP socket lives inside the [`Agent::WarmBuilder`]
+    /// closure, so this is the only way the app layer can build a spec that
+    /// reaches Build's `done` / `read_unread_messages` server.
+    ///
+    /// The builder is handed an empty prompt on purpose: the prompt is never
+    /// baked into argv — every turn travels through the PTY.
+    pub fn agent_harness_spec(
+        &self,
+        owner_id: &str,
+        cwd: &Path,
+        model_choice: &ModelChoice,
+        continue_session: bool,
+    ) -> HarnessSpec {
+        let options = SpawnOptions {
+            continue_session,
+            owner_id: owner_id.to_string(),
+            cwd: cwd.to_path_buf(),
+        };
+        match &self.agent {
+            // A fixed warm harness (the QA agent) is provider-unaware: it takes
+            // its prompt over the PTY and needs no SpawnOptions.
+            Agent::Warm(spec) => spec.clone(),
+            Agent::WarmBuilder(build) => build("", model_choice, &options),
+        }
+    }
+
+    /// Write `.build/mcp.json` + `.build/.gitignore` into a worktree that is
+    /// about to host an agent. Idempotent, and required before every spawn:
+    /// under `--strict-mcp-config` claude exits before reading a byte of the
+    /// prompt when the config is missing, so a worktree that never hosted a run
+    /// (or whose `.build/` was deleted) would open a tab that paints nothing.
+    pub fn scaffold_agent_worktree(
+        &self,
+        worktree_path: &Path,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        self.write_build_dir(worktree_path, owner_id)
     }
 
     // ---- Plan seams (Plan/Run split) --------------------------------------
@@ -2304,7 +2350,17 @@ impl Orchestrator {
         worktree: &Worktree,
         owner_id: &str,
     ) -> Result<(), OrchestratorError> {
-        let build_dir = worktree.path.join(".build");
+        self.write_build_dir(&worktree.path, owner_id)
+    }
+
+    /// The scaffold itself, over a bare path — an agent tab may be opened in a
+    /// worktree Build has no [`Worktree`] record for yet.
+    fn write_build_dir(
+        &self,
+        worktree_path: &Path,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        let build_dir = worktree_path.join(".build");
         std::fs::create_dir_all(&build_dir)?;
         // A hard guard so the AGENT's own commits can never capture mcp.json: the
         // build templates now instruct the agent to commit its work, and a routine

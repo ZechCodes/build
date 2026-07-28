@@ -410,6 +410,142 @@ impl TermSession {
     }
 }
 
+/// The reserved tab id of a worktree's one Build-owned agent. Every other tab
+/// in a worktree is a `term-<n>` shell the human drives.
+const AGENT_TAB_ID: &str = "agent";
+
+/// A tab's identity: the canonical worktree it is rooted in, and which tab of
+/// that worktree it is.
+///
+/// Canonical because the same worktree reaches the daemon under three different
+/// scope shapes (run / external / primary) and, on macOS, under two different
+/// literal paths (`/tmp` is `/private/tmp`). Keying by path rather than by
+/// entity id is what makes "one worktree, one agent" a structural property
+/// instead of a rule every call site has to remember.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TabKey {
+    root: std::path::PathBuf,
+    tab_id: String,
+}
+
+impl TabKey {
+    /// The key of `root`'s one agent tab. `root` must already be canonical —
+    /// see [`AppState::canonical_root`].
+    fn agent(root: &std::path::Path) -> TabKey {
+        TabKey {
+            root: root.to_path_buf(),
+            tab_id: AGENT_TAB_ID.to_string(),
+        }
+    }
+}
+
+/// What is running in a tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TabRole {
+    /// The user's own interactive login shell — a window onto their machine.
+    /// (Constructed once user terminals move onto this registry; the pump and
+    /// the cap already read it so the two halves cannot drift apart.)
+    #[allow(dead_code)]
+    Shell,
+    /// Build's one agent in this worktree. `owner` is the opaque plan/run id
+    /// baked into the harness's `mcp --task <id>` argv, so `done` reports route
+    /// back through the owner lookup; `provider` is what was spawned.
+    Agent {
+        owner: String,
+        provider: AgentProvider,
+    },
+}
+
+/// A live tab: a real PTY rooted in a worktree, plus the authoritative screen
+/// model that makes reconnect a snapshot (current screen + cursor) rather than
+/// a byte replay.
+struct Tab {
+    tab_id: String,
+    root: std::path::PathBuf,
+    role: TabRole,
+    /// Surfaced by `term.list` once user terminals move onto this registry.
+    #[allow(dead_code)]
+    created_at: String,
+    session: PtySession,
+    screen: TermScreen,
+    /// False once the PTY stream has ended. An agent tab is RETAINED after its
+    /// process dies so the tab still shows the last screen; a shell tab is
+    /// removed by its pump instead, so this is only ever false for an agent.
+    live: bool,
+}
+
+impl Tab {
+    /// The wire id this tab is demuxed by on the shared terminal socket:
+    /// `term-<n>` for a shell, `agent:<worktree_id>` for an agent. An agent is
+    /// addressed by its WORKTREE, never by the run that happens to own it —
+    /// that is what lets adoption, release, and re-adoption leave the human's
+    /// tab where it was.
+    fn wire_id(&self) -> String {
+        match self.role {
+            TabRole::Shell => self.tab_id.clone(),
+            TabRole::Agent { .. } => {
+                format!(
+                    "agent:{}",
+                    crate::worktree::external_worktree_id(&self.root)
+                )
+            }
+        }
+    }
+
+    /// Spawn `role`'s program in a PTY at `root`, returning the tab and a
+    /// receiver subscribed before the first byte can be missed.
+    fn spawn(
+        role: TabRole,
+        spec: &HarnessSpec,
+        tab_id: String,
+        root: std::path::PathBuf,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Tab, broadcast::Receiver<Vec<u8>>), String> {
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let session =
+            PtySession::spawn(spec, Some(root.clone()), size).map_err(|e| e.to_string())?;
+        let rx = session.subscribe();
+        Ok((
+            Tab {
+                tab_id,
+                root,
+                role,
+                created_at: now_rfc3339(),
+                session,
+                screen: TermScreen::new(cols, rows),
+                live: true,
+            },
+            rx,
+        ))
+    }
+}
+
+/// Whether [`ensure_agent_tab`] found the tab or created it — the ONE input to
+/// the cold/warm decision. Coldness is never re-derived from a transcript
+/// probe: a transcript can exist while the process is dead, and a context-free
+/// nudge into a resumed session whose structured state has moved is exactly the
+/// failure this replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spawned {
+    /// The tab already existed and its process is live: the agent is mid
+    /// conversation and the thread messages are already durable.
+    Warm,
+    /// The tab was just created (or its dead process was replaced): the agent
+    /// has no context to read messages into.
+    Fresh,
+}
+
+/// How long a caller that lost the spawn race waits for the winner's tab before
+/// giving up. Comfortably past a harness's own readiness grace, because the
+/// winner holds the reservation across it.
+const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
+
 /// The retained screen of a task's agent PTY stream. Created on first
 /// `agent.attach`, retained until the task record is removed (reaper), so the
 /// tab can show the last screen between sessions.
@@ -826,6 +962,15 @@ pub struct AppState {
     streams: HashMap<String, StreamState>,
     /// Live user terminals, keyed by `term_id` (`term-<n>`).
     terms: HashMap<String, TermSession>,
+    /// Live tabs, keyed by (canonical worktree root, tab id) — the path-keyed
+    /// registry that replaces both `terms` and `agent_screens` as the surfaces
+    /// move onto it.
+    tabs: HashMap<TabKey, Tab>,
+    /// Roots with an agent spawn in flight. The state lock is dropped across
+    /// the spawn (it blocks for seconds), so the reservation — taken under the
+    /// same lock acquisition that observed the tab's absence — is what keeps a
+    /// second delivery from starting a second harness in one worktree.
+    agent_spawns_in_flight: std::collections::HashSet<std::path::PathBuf>,
     /// Retained agent screens, keyed by task id (pushed as `agent:<task_id>`).
     agent_screens: HashMap<String, AgentScreen>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
@@ -885,6 +1030,8 @@ impl AppState {
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             terms: HashMap::new(),
+            tabs: HashMap::new(),
+            agent_spawns_in_flight: std::collections::HashSet::new(),
             agent_screens: HashMap::new(),
             next_term: 1,
             self_handle: None,
@@ -1459,6 +1606,26 @@ impl AppState {
                     .map(|w| canonical(&w.path)),
             )
             .collect()
+    }
+
+    /// The canonical form of a worktree root — the tab registry's key. Every
+    /// entry point funnels through this: a run's worktree arrives as
+    /// `worktrees_root/<name>` and is NOT canonical, while an external
+    /// worktree's path already is, and on macOS the same directory has two
+    /// literal spellings. Falls back to the raw path when the directory is
+    /// gone, so a vanished worktree still keys consistently for the reaper.
+    fn canonical_root(path: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// How many of the human's own shells the tab registry holds. The
+    /// daemon-wide terminal cap counts these and never an agent tab: an agent
+    /// is Build's, always reachable, and must not be crowded out by shells.
+    fn shell_tab_count(&self) -> usize {
+        self.tabs
+            .values()
+            .filter(|tab| tab.role == TabRole::Shell)
+            .count()
     }
 
     /// Whether an id (plan or run) names a live entity in either map.
@@ -5874,7 +6041,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
     let (term_id, rx) = {
         let mut s = state.lock().unwrap();
         let scope_root = scope.resolve_root(&mut s)?;
-        if s.terms.len() >= MAX_USER_TERMINALS {
+        if s.terms.len() + s.shell_tab_count() >= MAX_USER_TERMINALS {
             return Err(format!(
                 "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
             ));
@@ -6016,6 +6183,235 @@ fn agent_attach(
         spawn_agent_pump(Arc::clone(state), entity_id, generation, rx);
     }
     Ok(response)
+}
+
+/// Find-or-create the one agent tab rooted at `root`.
+///
+/// Idempotent per root: the find half and the in-flight reservation are taken
+/// under the SAME lock acquisition, so two concurrent callers produce one
+/// harness — two agents in one worktree would both report `done` for the same
+/// owner, and the second report is an illegal transition that lands on the
+/// thread as a bogus failure. A tab whose process has died is replaced (a dead
+/// agent is not an agent), and that replacement reports `Fresh` while carrying
+/// the retained screen — and its monotonic cursor — forward.
+///
+/// The create half needs an owner for the MCP `--task` argv, so it requires a
+/// bound plan/run: `owner` resolves the project whose orchestrator builds the
+/// spec (the MCP socket lives inside that closure and is unreachable from here).
+fn ensure_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    root: &std::path::Path,
+    owner: &str,
+    model_choice: &ModelChoice,
+) -> Result<(String, Spawned), String> {
+    let root = AppState::canonical_root(root);
+    let key = TabKey::agent(&root);
+    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
+    loop {
+        // Under the lock: hand back a live tab, or reserve the spawn. The lock
+        // is dropped across the spawn below (it blocks for seconds on the
+        // harness's readiness wait, and every terminal pump needs this lock),
+        // so the reservation is what the losing caller waits on.
+        let reserved = {
+            let mut s = state.lock().unwrap();
+            if let Some(tab) = s.tabs.get(&key) {
+                if tab.live && !tab.session.has_exited() {
+                    return Ok((tab.wire_id(), Spawned::Warm));
+                }
+            }
+            if s.agent_spawns_in_flight.contains(&root) {
+                None
+            } else {
+                let carried = s.tabs.remove(&key).map(|dead| {
+                    dead.session.kill_and_reap();
+                    dead.screen
+                });
+                let project_id = s.project_of(owner)?;
+                let orch = s.orch_for(&project_id)?;
+                // Unconditional: under `--strict-mcp-config` a missing config
+                // kills the harness before it reads a byte of the prompt, and
+                // the scaffold is idempotent.
+                orch.scaffold_agent_worktree(&root, owner).map_err(err)?;
+                // A Build-owned tab respawned after a crash should always pick
+                // its own transcript back up, so the probe is unconditional too.
+                let continue_session = (s.transcript_probe)(&root, model_choice.provider);
+                let spec = orch.agent_harness_spec(owner, &root, model_choice, continue_session);
+                let size = orch.pty_size();
+                s.agent_spawns_in_flight.insert(root.clone());
+                Some((spec, size, carried))
+            }
+        };
+
+        let Some((spec, size, carried)) = reserved else {
+            // Someone else is spawning this root's agent: wait for their tab
+            // rather than start a second harness beside it.
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for the agent starting in {}",
+                    root.display()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+            continue;
+        };
+
+        let spawned = Tab::spawn(
+            TabRole::Agent {
+                owner: owner.to_string(),
+                provider: model_choice.provider,
+            },
+            &spec,
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            size.cols,
+            size.rows,
+        );
+        let (mut tab, rx) = match spawned {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                state.lock().unwrap().agent_spawns_in_flight.remove(&root);
+                return Err(error);
+            }
+        };
+        if let Some(screen) = carried {
+            // Reconnect is snapshot + cursor: a replacement process must never
+            // rewind that cursor, and clients already attached stay attached.
+            // The new PTY takes the retained screen's grid so the two agree.
+            let _ = tab.session.resize(PtySize {
+                rows: screen.rows,
+                cols: screen.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+            tab.screen = screen;
+        }
+        // An interactive TUI must be servicing its PTY before a turn is written
+        // into it, or the prompt lands on a startup screen.
+        tab.session
+            .ready_within(crate::orchestrator::HARNESS_READY_GRACE);
+
+        let wire_id = tab.wire_id();
+        {
+            let mut s = state.lock().unwrap();
+            s.tabs.insert(key.clone(), tab);
+            s.agent_spawns_in_flight.remove(&root);
+        }
+        spawn_tab_pump(state, key, rx);
+        return Ok((wire_id, Spawned::Fresh));
+    }
+}
+
+/// The one pipe from Build to a worktree's agent.
+///
+/// Ensures the tab exists, then submits exactly one turn through
+/// [`PtySession::write_prompt`] — the harness's own submit key and bracketed
+/// paste framing, never a raw write with a hardcoded `\r`. Which text travels
+/// is decided by whether the tab had to be spawned: `cold` for an agent with no
+/// context to read messages into, `warm` for one already in the conversation,
+/// whose messages are already durable in the thread for `read_unread_messages`
+/// to pull. Returns the tab's wire id.
+#[allow(dead_code)] // the human→agent verbs move onto this in the next step
+fn deliver(
+    state: &Arc<Mutex<AppState>>,
+    root: &std::path::Path,
+    owner: &str,
+    model_choice: &ModelChoice,
+    cold: &str,
+    warm: &str,
+) -> Result<String, String> {
+    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, model_choice)?;
+    let prompt = match spawned {
+        Spawned::Fresh => cold,
+        Spawned::Warm => warm,
+    };
+    let key = TabKey::agent(&AppState::canonical_root(root));
+    let s = state.lock().unwrap();
+    let tab = s
+        .tabs
+        .get(&key)
+        .ok_or("the agent tab closed before its turn could be delivered")?;
+    tab.session
+        .write_prompt(prompt)
+        .map_err(|e| e.to_string())?;
+    Ok(wire_id)
+}
+
+/// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
+/// flushing one keyed frame to every attached client.
+///
+/// Start of session: the parser is reset to a blank screen of the current grid
+/// and `term.reset` is pushed (clients wipe; a replacement process starts
+/// clean) — `screen.total` is NEVER reset, because client dedupe rides the
+/// monotonic cursor. On EOF a Shell tab is removed, reaped, and pushed
+/// `term.closed{exited}`; an Agent tab is RETAINED with `live = false` and
+/// pushed `term.closed{agent_session_ended}`, because the tab must still show
+/// the last screen.
+///
+/// One pump per tab for the tab's whole life: with one PTY per worktree there
+/// is no phase boundary to generation-guard against — a missing tab is the
+/// only stop condition.
+fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::Receiver<Vec<u8>>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Sync unit tests drive the registry without a runtime; there is
+        // nothing to spawn the pump onto and nothing attached to feed.
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        let term_id = {
+            let mut s = state.lock().unwrap();
+            let Some(tab) = s.tabs.get_mut(&key) else {
+                return;
+            };
+            let term_id = tab.wire_id();
+            tab.screen.parser = vt100::Parser::new(tab.screen.rows, tab.screen.cols, 2000);
+            tab.screen.pending.clear();
+            let payload = json!({
+                "type": "term.reset",
+                "term_id": term_id,
+                "data": tab.screen.snapshot(),
+                "cursor": tab.screen.total,
+            });
+            tab.screen.attached.retain(|snd| snd.push(payload.clone()));
+            term_id
+        };
+        let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                recv = rx.recv() => match recv {
+                    Ok(chunk) => {
+                        let mut s = state.lock().unwrap();
+                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
+                        tab.screen.process(&chunk);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        let mut s = state.lock().unwrap();
+                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
+                        match tab.role {
+                            TabRole::Agent { .. } => {
+                                tab.live = false;
+                                tab.screen.flush(&term_id);
+                                tab.screen.push_closed(&term_id, "agent_session_ended");
+                            }
+                            TabRole::Shell => {
+                                let Some(tab) = s.tabs.remove(&key) else { return; };
+                                tab.session.kill_and_reap();
+                                tab.screen.push_closed(&term_id, "exited");
+                            }
+                        }
+                        return;
+                    }
+                },
+                _ = flush.tick() => {
+                    let mut s = state.lock().unwrap();
+                    let Some(tab) = s.tabs.get_mut(&key) else { return; };
+                    tab.screen.flush(&term_id);
+                }
+            }
+        }
+    });
 }
 
 /// Pump one agent session's PTY stream into the task's retained screen — the
@@ -7008,6 +7404,225 @@ mod tests {
         .await;
         assert!(state.lock().unwrap().terms.is_empty());
         assert!(process_reaped(pid), "an exited shell must still be reaped");
+    }
+
+    // ---- the agent tab primitive: a path-keyed, tab-backed PTY --------------
+
+    /// A shared QA state, a worktree-like root to run an agent in, and an owner
+    /// id bound to the state's project — the three things an agent tab needs
+    /// (the owner resolves the project whose orchestrator builds the harness).
+    fn agent_tab_fixture(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        owner: &str,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler, PathBuf) {
+        let (state, handler) = shared_state_and_handler(repo, dir);
+        let root = dir.join("agent-root");
+        std::fs::create_dir_all(&root).unwrap();
+        {
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.entity_project.insert(owner.to_string(), project_id);
+        }
+        (state, handler, root)
+    }
+
+    /// The agent tab's screen, rendered — what an attaching client would see.
+    fn agent_screen_text(state: &Arc<Mutex<AppState>>, root: &std::path::Path) -> String {
+        let key = TabKey::agent(&AppState::canonical_root(root));
+        let s = state.lock().unwrap();
+        let Some(tab) = s.tabs.get(&key) else {
+            return String::new();
+        };
+        String::from_utf8_lossy(&b64decode(&tab.screen.snapshot()).unwrap()).into_owned()
+    }
+
+    /// Poll the agent tab's screen until it shows `needle` (the pump feeds it),
+    /// returning what was on screen at the end either way.
+    async fn wait_for_agent_screen(
+        state: &Arc<Mutex<AppState>>,
+        root: &std::path::Path,
+        needle: &str,
+    ) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = agent_screen_text(state, root);
+            if text.contains(needle) || std::time::Instant::now() >= deadline {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// One worktree, one agent: find-or-create keyed by the canonical root, so
+    /// a second call hands back the SAME tab (warm) rather than a second
+    /// harness in the same directory.
+    #[tokio::test]
+    async fn ensure_agent_tab_is_idempotent_for_one_root() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-one-agent");
+        let choice = ModelChoice::default();
+
+        let (first_id, first) =
+            ensure_agent_tab(&state, &root, "run-one-agent", &choice).expect("the agent spawns");
+        let (second_id, second) =
+            ensure_agent_tab(&state, &root, "run-one-agent", &choice).expect("the agent is found");
+
+        assert_eq!(first, Spawned::Fresh, "the first call creates the tab");
+        assert_eq!(second, Spawned::Warm, "the second call finds it");
+        assert_eq!(first_id, second_id, "both calls address one tab");
+        assert_eq!(
+            first_id,
+            format!(
+                "agent:{}",
+                crate::worktree::external_worktree_id(&std::fs::canonicalize(&root).unwrap())
+            ),
+            "an agent tab is addressed by its worktree, not by its owner"
+        );
+
+        let s = state.lock().unwrap();
+        assert_eq!(s.tabs.len(), 1, "exactly one tab in the registry");
+        assert!(
+            s.agent_spawns_in_flight.is_empty(),
+            "the spawn reservation is released"
+        );
+        // Under --strict-mcp-config a missing config kills the harness before it
+        // reads a byte of the prompt, so the scaffold is part of the spawn.
+        assert!(root.join(".build/mcp.json").exists());
+    }
+
+    /// Two deliveries racing on one worktree must produce ONE harness: the find
+    /// and the in-flight reservation are taken under the same lock, so the
+    /// loser waits for the winner's tab instead of spawning a second agent
+    /// (two agents in one worktree both report `done` for the same owner, and
+    /// the second report lands as a bogus failure on the thread).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_ensure_agent_tab_spawns_one_agent() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-race");
+
+        let mut racers = Vec::new();
+        for _ in 0..4 {
+            let state = Arc::clone(&state);
+            let root = root.clone();
+            racers.push(tokio::task::spawn_blocking(move || {
+                ensure_agent_tab(&state, &root, "run-race", &ModelChoice::default())
+            }));
+        }
+        let mut outcomes = Vec::new();
+        for racer in racers {
+            outcomes.push(racer.await.unwrap().expect("every racer gets the tab"));
+        }
+
+        let fresh = outcomes
+            .iter()
+            .filter(|(_, spawned)| *spawned == Spawned::Fresh)
+            .count();
+        assert_eq!(fresh, 1, "exactly one caller spawned: {outcomes:?}");
+        assert!(
+            outcomes.iter().all(|(id, _)| id == &outcomes[0].0),
+            "every caller addresses the same tab: {outcomes:?}"
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+        assert!(s.agent_spawns_in_flight.is_empty());
+    }
+
+    /// The cold/warm rule: a tab that had to be spawned gets the full prompt (a
+    /// cold agent has no context to read messages into), and a tab that was
+    /// already alive gets the short nudge — the messages are already durable in
+    /// the thread. The PTY echoes what is written to it, so the tab's screen is
+    /// the proof of which one travelled.
+    #[tokio::test]
+    async fn deliver_sends_the_cold_prompt_on_a_fresh_tab_and_the_nudge_on_a_warm_one() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-deliver");
+        let choice = ModelChoice::default();
+
+        let cold_id = deliver(
+            &state,
+            &root,
+            "run-deliver",
+            &choice,
+            "COLD-CONTEXT-PROMPT",
+            "WARM-NUDGE-PROMPT",
+        )
+        .expect("a cold delivery spawns and submits");
+        let cold_screen = wait_for_agent_screen(&state, &root, "COLD-CONTEXT-PROMPT").await;
+        assert!(
+            cold_screen.contains("COLD-CONTEXT-PROMPT"),
+            "a fresh tab hears the cold prompt: {cold_screen:?}"
+        );
+        assert!(
+            !cold_screen.contains("WARM-NUDGE-PROMPT"),
+            "a fresh tab must NOT hear the nudge: {cold_screen:?}"
+        );
+
+        let warm_id = deliver(
+            &state,
+            &root,
+            "run-deliver",
+            &choice,
+            "COLD-CONTEXT-PROMPT",
+            "WARM-NUDGE-PROMPT",
+        )
+        .expect("a warm delivery reuses the tab");
+        assert_eq!(warm_id, cold_id, "both deliveries address one tab");
+        let warm_screen = wait_for_agent_screen(&state, &root, "WARM-NUDGE-PROMPT").await;
+        assert!(
+            warm_screen.contains("WARM-NUDGE-PROMPT"),
+            "a warm tab hears the nudge: {warm_screen:?}"
+        );
+        assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    }
+
+    /// The daemon-wide terminal cap is about the human's own shells. An agent
+    /// tab is Build's, always reachable, and never one of the sixteen — a
+    /// worktree whose agent is unreachable because the human opened shells
+    /// elsewhere would be the invariant's direct negation.
+    #[tokio::test]
+    async fn an_agent_tab_does_not_consume_the_user_terminal_cap() {
+        let (dir, repo) = init_repo();
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-cap");
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        ensure_agent_tab(&state, &root, "run-cap", &ModelChoice::default()).unwrap();
+
+        for n in 0..MAX_USER_TERMINALS {
+            let created = handler(
+                SessionSender::detached("s1"),
+                req("term.create", json!({ "project_id": project_id })),
+            );
+            assert_eq!(created["ok"], true, "shell {n}: {created:?}");
+        }
+        let over = handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(over["ok"], false, "the cap still bites at 16 shells");
+    }
+
+    /// The registry key is the CANONICAL worktree path, so the same worktree
+    /// reaching the daemon by a different spelling — a run scope hands back
+    /// `worktrees_root/<name>` uncanonicalized while an external worktree is
+    /// already canonical, and on macOS `/tmp` is `/private/tmp` — is one tab,
+    /// not two agents in one directory.
+    #[tokio::test]
+    async fn the_agent_tab_key_survives_the_same_root_by_another_path() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-alias");
+        let alias = dir.path().join("alias-root");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+
+        let (direct_id, direct) =
+            ensure_agent_tab(&state, &root, "run-alias", &ModelChoice::default()).unwrap();
+        let (aliased_id, aliased) =
+            ensure_agent_tab(&state, &alias, "run-alias", &ModelChoice::default()).unwrap();
+
+        assert_eq!(direct, Spawned::Fresh);
+        assert_eq!(aliased, Spawned::Warm, "the alias finds the same tab");
+        assert_eq!(direct_id, aliased_id);
+        assert_eq!(state.lock().unwrap().tabs.len(), 1);
     }
 
     #[tokio::test]

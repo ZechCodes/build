@@ -2913,6 +2913,8 @@ impl AppState {
                     "head_subject": w.head_subject,
                     "head_age_seconds": w.head_age_seconds,
                     "dirty_files": w.dirty_files,
+                    "ahead": w.ahead,
+                    "behind": w.behind,
                     "diffstat": {
                         "files_changed": w.diffstat.files_changed,
                         "insertions": w.diffstat.insertions,
@@ -4756,6 +4758,22 @@ impl AppState {
                 return stat.clone();
             }
         }
+        // Ahead/behind rides the same cached computation as the diffstat: the
+        // rail shows both halves of a worktree's git status, and doing them
+        // apart would double this poll's git work.
+        let (ahead, behind) = git2::Repository::open(&active.worktree.path)
+            .ok()
+            .and_then(|repo| {
+                let head = repo.head().ok()?.peel_to_commit().ok()?;
+                let base = repo
+                    .revparse_single(&active.worktree.base_branch)
+                    .ok()?
+                    .peel_to_commit()
+                    .ok()?;
+                repo.graph_ahead_behind(head.id(), base.id()).ok()
+            })
+            .map(|(ahead, behind)| (Some(ahead as u64), Some(behind as u64)))
+            .unwrap_or((None, None));
         let stat =
             crate::diff::diff_against_base(&active.worktree.path, &active.worktree.base_branch)
                 .map(|diff| {
@@ -4764,6 +4782,8 @@ impl AppState {
                         "files_changed": s.files_changed,
                         "insertions": s.insertions,
                         "deletions": s.deletions,
+                        "ahead": ahead,
+                        "behind": behind,
                     })
                 })
                 .unwrap_or(Value::Null);

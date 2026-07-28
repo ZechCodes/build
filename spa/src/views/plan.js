@@ -50,6 +50,8 @@ const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 export async function renderPlan() {
   const root = $("#root");
   const id = App.route.id;
+  // Looking at an issue is seeing it — the dot settles until it moves again.
+  App.call("entity.seen", { entity_id: id }).catch(() => {});
   let projectId = App.route.projectId || null;
   // If the user entered this plan from a run (task.js's openPlan stamped the
   // marker), the back chevron returns to that run's Stages tab (the plan↔run

@@ -49,6 +49,9 @@ export async function renderWorktree() {
   const root = $("#root");
   const projectId = App.route.projectId;
   const worktreeId = App.route.worktreeId;
+  // Seeing a worktree settles its dot. It does NOT count as interacting with it
+  // — a hand-made worktree still needs a real action before it joins the rail.
+  App.call("entity.seen", { entity_id: worktreeId }).catch(() => {});
   const adopting = createAdoptingCall((method, params) => App.call(method, params), projectId, worktreeId);
   const scope = { project_id: projectId, worktree_id: worktreeId };
   let agentCatalog = normalizeModelCatalog({});

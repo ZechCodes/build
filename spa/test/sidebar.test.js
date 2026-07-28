@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { buildSidebarModel, projectHtml, sidebarHtml } from "../src/core/sidebar.js";
+// The rail's rendering. WHICH entries appear and in what order is rail.js's job
+// (and rail.test.js's); this covers the shape of a project block: the two header
+// lines, the entry rows, and the Worktrees row beneath them.
 
-const NOW = Date.parse("2026-07-11T12:00:00Z");
+import { describe, it, expect } from "vitest";
+import { buildSidebarModel, projectHtml, sidebarHtml, checkoutStatusHtml } from "../src/core/sidebar.js";
+
+const NOW = Date.parse("2026-07-28T12:00:00Z");
 const iso = (hoursAgo) => new Date(NOW - hoursAgo * 3600 * 1000).toISOString();
 
 const projects = [
@@ -13,10 +17,13 @@ const run = (over) => ({
   run_id: "r1",
   project_id: "p1",
   goal: "Fix the thing",
+  branch: "build/fix-the-thing",
   state: "review",
   needs_attention: true,
-  stat: { files_changed: 2, insertions: 42, deletions: 26 },
+  stat: { files_changed: 2, insertions: 42, deletions: 26, ahead: 3, behind: 1 },
+  state_changed_at: iso(1),
   updated_at: iso(1),
+  attention: { resume_at: iso(2), interacted: true, seen: false },
   ...over,
 });
 
@@ -26,338 +33,201 @@ const plan = (over) => ({
   goal: "Design the thing",
   state: "plan_review",
   needs_attention: true,
+  state_changed_at: iso(1),
   updated_at: iso(1),
+  attention: { resume_at: iso(3), interacted: true, seen: true },
   ...over,
 });
 
-const ui = () => ({ closed: new Set(), wtOpen: new Set(), activeRunId: null });
-
-describe("buildSidebarModel — runs", () => {
-  it("groups runs by project into needs-you / running / done-recently", () => {
-    const runs = [
-      run({ run_id: "a", state: "review", needs_attention: true }),
-      run({ run_id: "b", state: "building", needs_attention: false }),
-      run({ run_id: "c", state: "merged", needs_attention: false, updated_at: iso(5) }),
-      run({ run_id: "elsewhere", project_id: "p2", state: "building", needs_attention: false }),
-    ];
-    const [p1, p2] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.needsYou.map((r) => r.run_id)).toEqual(["a"]);
-    expect(p1.running.map((r) => r.run_id)).toEqual(["b"]);
-    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["c"]);
-    expect(p2.running.map((r) => r.run_id)).toEqual(["elsewhere"]);
-  });
-
-  it("archived runs are terminal — done-recently, never running or needs-you", () => {
-    const runs = [run({ run_id: "x", state: "archived", needs_attention: false, updated_at: iso(5) })];
-    const [p1] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["x"]);
-    expect(p1.running).toEqual([]);
-    expect(p1.unread).toBe(0);
-  });
-
-  it("done-recently is capped at 3, newest first, and windowed to 7 days", () => {
-    const runs = [4, 1, 30 * 24, 2, 3].map((h, i) =>
-      run({ run_id: `d${i}`, state: "merged", needs_attention: false, updated_at: iso(h) })
-    );
-    const [p1] = buildSidebarModel({ projects, runs, plans: [], externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.doneRecently.map((r) => r.run_id)).toEqual(["d1", "d3", "d4"]); // 1h, 2h, 3h — 30d dropped, capped at 3
-  });
+const worktree = (over) => ({
+  worktree_id: "w1",
+  project_id: "p1",
+  name: "spike",
+  branch: "build/spike",
+  agent_working: false,
+  dirty_files: 0,
+  ahead: 0,
+  behind: 0,
+  diffstat: { files_changed: 0, insertions: 0, deletions: 0 },
+  attention: { resume_at: null, interacted: false, seen: false },
+  ...over,
 });
 
-describe("buildSidebarModel — plans", () => {
-  it("groups plans by project into needs-you / approved / drafting / done", () => {
-    const plans = [
-      plan({ plan_id: "a", state: "plan_review", needs_attention: true }),
-      plan({ plan_id: "b", state: "approved", needs_attention: false }),
-      plan({ plan_id: "c", state: "drafting", needs_attention: false }),
-      plan({ plan_id: "d", state: "abandoned", needs_attention: false, updated_at: iso(5) }),
-      plan({ plan_id: "elsewhere", project_id: "p2", state: "drafting", needs_attention: false }),
-    ];
-    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans, externalWorktrees: [], readIds: new Set(), nowMs: NOW });
-    expect(p1.planNeedsYou.map((p) => p.plan_id)).toEqual(["a"]);
-    expect(p1.planApproved.map((p) => p.plan_id)).toEqual(["b"]);
-    expect(p1.planDrafting.map((p) => p.plan_id)).toEqual(["c"]);
-    expect(p1.plansDone.map((p) => p.plan_id)).toEqual(["d"]);
-    expect(p2.planDrafting.map((p) => p.plan_id)).toEqual(["elsewhere"]);
-  });
-});
-
-describe("buildSidebarModel — unread and worktrees", () => {
-  it("unread counts needs-you runs and plans not yet read", () => {
-    const runs = [run({ run_id: "a" }), run({ run_id: "b" }), run({ run_id: "c", needs_attention: false, state: "building" })];
-    const plans = [plan({ plan_id: "pa" }), plan({ plan_id: "pb", needs_attention: false, state: "approved" })];
-    const [p1] = buildSidebarModel({ projects, runs, plans, externalWorktrees: [], readIds: new Set(["a"]), nowMs: NOW });
-    expect(p1.unread).toBe(2); // b (run) + pa (plan); a is read, c/pb not needing attention
-  });
-
-  it("counts worktrees and uncommitted per project", () => {
-    const wts = [
-      { worktree_id: "w1", project_id: "p1", branch: "feat-a", dirty_files: 2 },
-      { worktree_id: "w2", project_id: "p1", branch: "feat-b", dirty_files: 0 },
-      { worktree_id: "w3", project_id: "p2", branch: "other", dirty_files: 1 },
-    ];
-    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: wts, readIds: new Set(), nowMs: NOW });
-    expect(p1.worktrees.length).toBe(2);
-    expect(p1.uncommitted).toBe(1);
-    expect(p2.uncommitted).toBe(1);
-  });
-
-  it("attaches the primary-changes summary per project (null when absent)", () => {
-    const primaryChanges = [
-      { project_id: "p1", branch: "main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
-    ];
-    const [p1, p2] = buildSidebarModel({ projects, runs: [], plans: [], externalWorktrees: [], primaryChanges, readIds: new Set(), nowMs: NOW });
-    expect(p1.primary).toEqual({ branch: "main", path: null, ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 });
-    expect(p2.primary).toBeNull();
-  });
-});
-
-describe("projectHtml", () => {
-  const model = (over = {}) => ({
-    project_id: "p1",
-    name: "relaydb",
-    unread: 1,
-    needsYou: [run({ run_id: "a" })],
-    running: [run({ run_id: "b", state: "building", needs_attention: false, stat: null, last_error: null })],
-    doneRecently: [run({ run_id: "c", state: "merged", age_s: 5 * 3600 })],
-    planNeedsYou: [],
-    planApproved: [],
-    planDrafting: [],
-    plansDone: [],
-    worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "feat-a", dirty_files: 1 }],
-    uncommitted: 1,
+const model = (over = {}) =>
+  buildSidebarModel({
+    projects,
+    runs: [run()],
+    plans: [plan()],
+    externalWorktrees: [],
+    primaryChanges: [],
+    readIds: new Set(),
+    nowMs: NOW,
     ...over,
-  });
+  })[0];
 
-  it("renders sections, badge, diffstat, age, and the worktree line", () => {
-    const html = projectHtml(model(), ui());
-    expect(html).toContain("relaydb");
-    expect(html).toContain('class="badge sbadge">1<');
-    expect(html).toContain("+42");
-    expect(html).toContain("-26");
-    expect(html).toContain("building"); // running run with no stat shows its state
-    expect(html).toContain("5h ago");
-    expect(html).toContain("1 worktree");
-    expect(html).toContain("1 uncommitted");
-  });
+const ui = (over = {}) => ({
+  closed: new Set(),
+  wtOpen: new Set(),
+  activeRunId: null,
+  activePlanId: null,
+  activeWorktreeId: null,
+  activeProjectId: null,
+  activeMainProjectId: null,
+  ...over,
+});
 
-  it("run rows are keyed by run_id and route to the run surface", () => {
-    const html = projectHtml(model(), ui());
-    expect(html).toContain('data-run="a" data-project="p1"');
-    expect(html).toContain('data-tab="changes"');
-  });
-
-  it("a stage_gate run row opens on Stages (defaultRunTab — matching the board/notifications)", () => {
-    const m = model({ needsYou: [run({ run_id: "sg", state: "stage_gate" })], running: [], doneRecently: [] });
-    const html = projectHtml(m, ui());
-    expect(html).toContain('data-run="sg"');
-    expect(html).toContain('data-tab="stages"');
-  });
-
-  it("collapsed projects render only the header", () => {
-    const u = ui();
-    u.closed.add("p1");
-    const html = projectHtml(model(), u);
-    expect(html).toContain("relaydb");
-    expect(html).not.toContain("Needs you");
-    expect(html).toContain("▸");
-  });
-
-  it("escapes external strings (goals, branch names, project names)", () => {
-    const m = model({
-      name: "<img src=x>",
-      needsYou: [run({ run_id: "a", goal: "<script>alert(1)</script>" })],
-      worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "<b>evil</b>", dirty_files: 0 }],
+describe("buildSidebarModel", () => {
+  it("keeps each project's own work", () => {
+    const [p1, p2] = buildSidebarModel({
+      projects,
+      runs: [run(), run({ run_id: "elsewhere", project_id: "p2" })],
+      plans: [],
+      externalWorktrees: [],
+      primaryChanges: [],
+      readIds: new Set(),
+      nowMs: NOW,
     });
-    const u = ui();
-    u.wtOpen.add("p1");
-    const html = projectHtml(m, u);
-    expect(html).not.toContain("<script>");
-    expect(html).not.toContain("<img");
-    expect(html).not.toContain("<b>evil</b>");
-    expect(html).toContain("&lt;script&gt;");
+    expect(p1.entries.map((e) => e.id)).toEqual(["r1"]);
+    expect(p2.entries.map((e) => e.id)).toEqual(["elsewhere"]);
   });
 
-  // The checkout line names its BRANCH, never a stand-in word: a row reading
-  // "main" beside a branch called feat/… was read as the branch itself.
-  it("puts the checkout's own branch and git status in the header, not a label", () => {
-    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", ahead: 3, behind: 1, files_changed: 2, insertions: 5, deletions: 1 } }), ui());
+  it("counts unread work-that-needs-you for the badge", () => {
+    expect(model({ readIds: new Set(["r1"]) }).unread).toBe(1); // the plan is still unread
+  });
+
+  it("attaches the primary-changes summary, sync counts and all", () => {
+    const m = model({
+      primaryChanges: [
+        { project_id: "p1", branch: "main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
+      ],
+    });
+    expect(m.primary).toEqual({
+      branch: "main",
+      path: null,
+      ahead: 2,
+      behind: 0,
+      files_changed: 3,
+      insertions: 12,
+      deletions: 4,
+    });
+  });
+
+  it("hands worktrees the entries did not show to the Worktrees row", () => {
+    const m = model({
+      externalWorktrees: [
+        worktree({ worktree_id: "shown", name: "shown", attention: { resume_at: iso(1), interacted: true, seen: true } }),
+        worktree({ worktree_id: "hidden", name: "hidden" }),
+      ],
+    });
+    expect(m.entries.map((e) => e.id)).toContain("shown");
+    expect(m.worktrees.map((w) => w.id)).toEqual(["hidden"]);
+  });
+});
+
+describe("a project block", () => {
+  it("carries the name, then the checkout's branch and status", () => {
+    const html = projectHtml(
+      model({ primaryChanges: [{ project_id: "p1", branch: "main", ahead: 2, behind: 1, files_changed: 1, insertions: 5, deletions: 0 }] }),
+      ui(),
+    );
+    expect(html).toContain("relaydb");
     expect(html).toContain('data-main="p1"');
-    expect(html).toContain("feat/core-moderation");
-    expect(html).toContain("↑3");
+    expect(html).toContain("↑2");
     expect(html).toContain("↓1");
     expect(html).toContain("+5");
-    expect(html).toContain("-1");
-    // The header owns it: it survives collapsing the project.
-    const collapsed = projectHtml(
-      model({ worktrees: [], uncommitted: 0, primary: { branch: "feat/core-moderation", ahead: 3, behind: 1, files_changed: 2, insertions: 5, deletions: 1 } }),
-      { ...ui(), closed: new Set(["p1"]) }
+  });
+
+  it("keeps both header lines when collapsed, and drops the body", () => {
+    const html = projectHtml(
+      model({ primaryChanges: [{ project_id: "p1", branch: "main", files_changed: 0, insertions: 0, deletions: 0 }] }),
+      ui({ closed: new Set(["p1"]) }),
     );
-    expect(collapsed).toContain("feat/core-moderation");
-    expect(collapsed).not.toContain("sproj-body");
+    expect(html).toContain("relaydb");
+    expect(html).toContain("main");
+    expect(html).not.toContain("sproj-body");
   });
 
-  it("never labels the checkout row 'main' when that is not the branch", () => {
-    const html = projectHtml(model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } }), ui());
-    expect(html).toContain("trunk");
-    expect(html).not.toMatch(/>\s*main\b/);
-  });
-
-  // Each half of the status speaks only when it has something to say: no
-  // upstream means no arrows, a clean tree means no diffstat.
-  it("shows only the parts of the status that exist, and no row at all when unknown", () => {
-    const clean = projectHtml(
-      model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", ahead: null, behind: null, files_changed: 0, insertions: 0, deletions: 0 } }),
-      ui()
-    );
-    // Scoped to the checkout row: run rows carry diffstats of their own.
-    const checkoutRow = (html) => html.slice(html.indexOf("smain-line"), html.indexOf("</div>", html.indexOf("smain-line")));
-    expect(clean).toContain("data-main=");
-    expect(checkoutRow(clean)).not.toContain("↑");
-    expect(checkoutRow(clean)).not.toContain("↓");
-    expect(checkoutRow(clean)).not.toContain("sstat");
-    const levelWithUpstream = projectHtml(
-      model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", ahead: 0, behind: 0, files_changed: 1, insertions: 4, deletions: 0 } }),
-      ui()
-    );
-    expect(checkoutRow(levelWithUpstream)).not.toContain("↑");
-    expect(checkoutRow(levelWithUpstream)).toContain("+4");
-    expect(checkoutRow(levelWithUpstream)).not.toContain("-0");
-    const none = projectHtml(model({ worktrees: [], uncommitted: 0, primary: null }), ui());
-    expect(none).not.toContain("data-main=");
-  });
-
-  it("marks the route's active run", () => {
-    const u = ui();
-    u.activeRunId = "a";
-    expect(projectHtml(model(), u)).toContain('class="srow attn active"');
-  });
-
-  it("splits the header into a chevron toggle and a name that opens the project", () => {
+  it("renders a row as dot, name, then floating git status", () => {
     const html = projectHtml(model(), ui());
-    expect(html).toContain('data-chev="p1"');
-    expect(html).toContain('data-open="p1"');
-    // Just the name — the folder glyph said only "this is a project", which the
-    // rail's whole shape already said.
-    expect(html).not.toContain("sfolder");
+    expect(html).toContain("sdot");
+    expect(html).toContain("Fix the thing");
+    expect(html).toContain("↑3");
+    expect(html).toContain("+42");
+    expect(html).toContain("-26");
   });
 
-  it("highlights the project whose page is open", () => {
-    const u = ui();
-    u.activeProjectId = "p1";
-    expect(projectHtml(model(), u)).toContain("sproj-head active");
-  });
-
-  it("the main-checkout row highlights when its surface is the route", () => {
-    const m = model({ primary: { branch: "main", files_changed: 0, insertions: 0, deletions: 0 } });
-    const off = projectHtml(m, ui());
-    expect(off).not.toContain("smain-line active");
-    const u = ui();
-    u.activeMainProjectId = "p1";
-    expect(projectHtml(m, u)).toContain("smain-line active");
-  });
-
-  it("an open worktree row highlights when its surface is the route", () => {
-    const u = ui();
-    u.wtOpen = new Set(["p1"]);
-    u.activeWorktreeId = "w1";
-    const html = projectHtml(model(), u);
-    expect(html).toContain("swt-item active");
-    // The collapsed summary line takes the highlight instead when the list is closed.
-    u.wtOpen = new Set();
-    const closed = projectHtml(model(), u);
-    expect(closed).not.toContain("swt-item active");
-    expect(closed).toContain("swt-line active");
-  });
-
-  it("blocked runs in needs-you carry the warning icon", () => {
-    const m = model({ needsYou: [run({ run_id: "a", state: "blocked" })] });
-    expect(projectHtml(m, ui())).toContain("▲");
-  });
-
-  it("renders plan rows keyed by plan_id and routing to the plan cockpit (never a run)", () => {
+  it("falls back to the branch when a row has no name", () => {
     const m = model({
-      needsYou: [],
-      running: [],
-      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })],
-      planApproved: [plan({ plan_id: "pl-b", state: "approved", needs_attention: false })],
-      planDrafting: [plan({ plan_id: "pl-c", state: "drafting", needs_attention: false })],
+      runs: [],
+      plans: [],
+      externalWorktrees: [
+        worktree({ name: "", branch: "build/nameless", attention: { resume_at: iso(1), interacted: true, seen: true } }),
+      ],
+    });
+    expect(projectHtml(m, ui())).toContain("build/nameless");
+  });
+
+  it("pulses a working entry, warns on an unseen finished one, settles a seen one", () => {
+    expect(projectHtml(model({ runs: [run({ state: "building" })], plans: [] }), ui())).toContain("sdot-working");
+    expect(projectHtml(model({ runs: [run({ state: "review" })], plans: [] }), ui())).toContain("sdot-unseen");
+    const seen = projectHtml(
+      model({ runs: [run({ state: "review", attention: { resume_at: iso(2), interacted: true, seen: true } })], plans: [] }),
+      ui(),
+    );
+    expect(seen).toContain("sdot-seen");
+  });
+
+  it("marks the row whose surface is open", () => {
+    expect(projectHtml(model(), ui({ activeRunId: "r1" }))).toContain('class="srow sentry active"');
+  });
+
+  it("routes each kind of row to its own surface", () => {
+    const m = model({
+      externalWorktrees: [worktree({ attention: { resume_at: iso(1), interacted: true, seen: true } })],
     });
     const html = projectHtml(m, ui());
-    // The rail calls them what the product calls them: an issue is the unit of
-    // work; the plan is what Build drafts to implement one.
-    expect(html).toContain("Issues");
-    expect(html).not.toContain(">Plans<");
-    expect(html).toContain('data-plan="pl-a" data-project="p1"');
-    expect(html).toContain('data-plan="pl-b"');
-    expect(html).toContain('data-plan="pl-c"');
-    expect(html).toContain("Design the thing"); // the plan goal
-    expect(html).not.toContain('data-run="pl-a"'); // plan rows never carry a run handle
+    expect(html).toContain('data-run="r1"');
+    expect(html).toContain('data-plan="pl1"');
+    expect(html).toContain('data-wt="w1"');
   });
 
-  it("marks the route's active plan", () => {
-    const u = ui();
-    u.activePlanId = "pl-a";
-    const m = model({ needsYou: [], running: [], planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })] });
-    expect(projectHtml(m, u)).toContain('class="srow splan attn active"');
+  it("shows the Worktrees row folded, and its contents when open", () => {
+    const m = model({ externalWorktrees: [worktree({ worktree_id: "hidden", name: "hidden" })] });
+    const folded = projectHtml(m, ui());
+    expect(folded).toContain('data-wtline="p1"');
+    expect(folded).not.toContain('data-wt="hidden"');
+    expect(projectHtml(m, ui({ wtOpen: new Set(["p1"]) }))).toContain('data-wt="hidden"');
   });
 
-  it("run rows carry a title with the goal and the state label (W10)", () => {
-    const html = projectHtml(model(), ui());
-    expect(html).toContain('title="Fix the thing — READY TO REVIEW"');
+  it("omits the Worktrees row when there is nothing behind it", () => {
+    expect(projectHtml(model(), ui())).not.toContain("data-wtline");
   });
 
-  it("plan rows carry a title with the goal and the state label (W10)", () => {
-    const m = model({ needsYou: [], running: [], planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })] });
-    expect(projectHtml(m, ui())).toContain('title="Design the thing — READY TO REVIEW"');
+  it("says so when a project has nothing running", () => {
+    expect(projectHtml(model({ runs: [], plans: [] }), ui())).toContain("Nothing running.");
   });
 
-  it("plan rows carry a short state word like run rows do (W10)", () => {
+  it("escapes every string it renders", () => {
     const m = model({
-      needsYou: [],
-      running: [],
-      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review" })],
-      planApproved: [plan({ plan_id: "pl-b", state: "approved", needs_attention: false })],
-      planDrafting: [plan({ plan_id: "pl-c", state: "drafting", needs_attention: false })],
+      projects: [{ project_id: "p1", name: "<script>evil</script>" }],
+      runs: [run({ goal: '<img src=x onerror="alert(1)">' })],
+      plans: [],
     });
     const html = projectHtml(m, ui());
-    expect(html).toContain('<span class="sstate">review</span>');
-    expect(html).toContain('<span class="sstate">ready</span>');
-    expect(html).toContain('<span class="sstate">drafting</span>');
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;");
   });
+});
 
-  it("open-comments count wins over the state word when present (W10)", () => {
-    const m = model({
-      needsYou: [],
-      running: [],
-      planNeedsYou: [plan({ plan_id: "pl-a", state: "plan_review", stages: [{ open_comments: 2 }] })],
-    });
-    const html = projectHtml(m, ui());
-    expect(html).toContain("2 💬");
-    expect(html).not.toContain('<span class="sstate">review</span>');
-  });
-
-  it("worktree rows use a branch glyph, not the ⌥ option glyph, and carry a path/branch title (W10)", () => {
-    const u = ui();
-    u.wtOpen.add("p1");
-    const m = model({ worktrees: [{ worktree_id: "w1", project_id: "p1", branch: "feat-a", path: "/tmp/wt/feat-a", dirty_files: 1 }], uncommitted: 1 });
-    const html = projectHtml(m, u);
-    expect(html).not.toContain("⌥");
-    expect(html).toContain('class="sbranch"');
-    expect(html).toContain('title="/tmp/wt/feat-a"');
-  });
-
-  it("the checkout line carries a branch title (W10)", () => {
-    const m = model({ worktrees: [], uncommitted: 0, primary: { branch: "trunk", files_changed: 0, insertions: 0, deletions: 0 } });
-    expect(projectHtml(m, ui())).toContain('title="trunk"');
-  });
-
-  // The rect around a project is the block; the route marks the rect itself so
-  // the border can carry the highlight without a :has() dependency.
-  it("marks the project block active, not just its head", () => {
-    const u = ui();
-    u.activeProjectId = "p1";
-    expect(projectHtml(model(), u)).toContain("sproj active");
+describe("checkoutStatusHtml", () => {
+  it("shows only the parts that have something to say", () => {
+    expect(checkoutStatusHtml({ ahead: 0, behind: 0, insertions: 0, deletions: 0 })).toBe("");
+    const busy = checkoutStatusHtml({ ahead: 1, behind: 2, insertions: 3, deletions: 4 });
+    expect(busy).toContain("↑1");
+    expect(busy).toContain("↓2");
+    expect(busy).toContain("+3");
+    expect(busy).toContain("-4");
   });
 });
 
@@ -365,8 +235,6 @@ describe("sidebarHtml", () => {
   it("renders the header actions and an empty state", () => {
     const html = sidebarHtml([], ui());
     expect(html).toContain('id="side-add"');
-    // the collapse toggle lives in the static shell (index.html), not the rail
-    expect(html).not.toContain('id="side-collapse"');
     expect(html).toContain("No projects yet");
   });
 });

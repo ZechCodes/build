@@ -657,6 +657,26 @@ body.sidebar-collapsed #side-open { display:block; }
    rather than a card stacked on the page. The rect replaces both the old
    between-block margin and the tree guide that used to hang inside it; the
    route's project takes the accent on the border it already has. */
+/* A rail row: dot, name, floating git status. */
+.srow.sentry { gap:9px; }
+.srow.sentry .stitle { font-size:13px; }
+/* The dot carries an entry's whole state, so it has to read at a glance and be
+   honest at rest: a pulse ONLY while an agent works, yellow while something
+   finished waits to be looked at, grey once it has been. */
+.sdot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; background:var(--dim); }
+.sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
+.sdot-unseen { background:var(--amber); }
+.sdot-seen { background:var(--line); border:1px solid var(--dim); }
+@keyframes sdot-pulse {
+  0%, 100% { opacity:1; box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  50% { opacity:.55; box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+/* Respect a reader who asked for stillness — the colour still says working. */
+@media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
+/* The Worktrees row is a fold, not an entry: quieter, with its own count. */
+.swt-line { color:var(--dim); }
+.swt-line .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; margin-left:4px; }
+.swt-caret { color:var(--dim); font-size:11px; margin-left:auto; }
 .sproj { margin-bottom:8px; border:1px solid var(--line); border-radius:12px; padding:5px 8px 7px 4px; }
 .sproj.active { border-color:var(--accent); }
 .sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;

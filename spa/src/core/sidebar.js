@@ -1,71 +1,39 @@
 // The project sidebar: pure model + HTML builders (no DOM, unit-testable).
-// Every page shows this rail — projects with unread badges, the plans authored
-// in each project, what needs you, what's running, what just finished, and the
-// project's worktrees. The plan/run split means each project carries both its
-// plans (project-scoped) and its runs (worktree-scoped; "Tasks" in the UI).
+//
+// Each project is one block: its name, the branch its checkout has out with that
+// branch's git status, the rail entries, and a Worktrees row holding whatever the
+// entries did not show. WHICH entries appear and in what order is rail.js — this
+// module is how they look.
 
-import { esc, humanAge } from "./text.js";
+import { esc } from "./text.js";
 import { defaultRunTab } from "./taskActions.js";
 import { RUN_STATE_LABEL, PLAN_STATE_LABEL } from "./entityPresentation.js";
+import { dotState, railEntries, railWorktrees } from "./rail.js";
 
-/** Truncation is CSS's job (ellipsis); classification is ours. */
-const RUN_TERMINAL = new Set(["merged", "abandoned", "archived"]);
-const PLAN_TERMINAL = new Set(["abandoned"]);
-const DONE_RECENTLY_CAP = 3;
-const DONE_RECENTLY_WINDOW_MS = 7 * 24 * 3600 * 1000;
-
-function ageSeconds(iso, nowMs) {
-  const t = Date.parse(iso || "");
-  return Number.isFinite(t) ? Math.max(0, (nowMs - t) / 1000) : null;
-}
-
-// The recently-finished tail of a terminal collection: windowed to 7 days,
-// newest first, capped. Shared by runs and plans (each supplies its own id).
-function doneRecently(items, nowMs) {
-  return items
-    .map((x) => ({ ...x, age_s: ageSeconds(x.updated_at, nowMs) }))
-    .filter((x) => x.age_s !== null && x.age_s * 1000 <= DONE_RECENTLY_WINDOW_MS)
-    .sort((a, b) => a.age_s - b.age_s)
-    .slice(0, DONE_RECENTLY_CAP);
-}
-
-/** Group the feed into the per-project sidebar model. Runs bucket as
- *  needs-you / running / done-recently; plans bucket as needs-you / drafting /
- *  approved / done. `primaryChanges` is board.list's cached primary-checkout
- *  summary, attached per project as `m.primary`. */
 export function buildSidebarModel({ projects, runs, plans, externalWorktrees, primaryChanges, readIds, nowMs }) {
   return (projects || []).map((p) => {
     const myRuns = (runs || []).filter((r) => r.project_id === p.project_id);
-    const needsYou = myRuns.filter((r) => r.needs_attention && !RUN_TERMINAL.has(r.state));
-    const running = myRuns.filter((r) => !r.needs_attention && !RUN_TERMINAL.has(r.state));
-    const runsDone = doneRecently(myRuns.filter((r) => RUN_TERMINAL.has(r.state)), nowMs);
-
     const myPlans = (plans || []).filter((pl) => pl.project_id === p.project_id);
-    const planNeedsYou = myPlans.filter((pl) => pl.needs_attention && !PLAN_TERMINAL.has(pl.state));
-    const planApproved = myPlans.filter((pl) => pl.state === "approved");
-    const planDrafting = myPlans.filter(
-      (pl) => !pl.needs_attention && !PLAN_TERMINAL.has(pl.state) && pl.state !== "approved"
-    );
-    const plansDone = doneRecently(myPlans.filter((pl) => PLAN_TERMINAL.has(pl.state)), nowMs);
-
     const worktrees = (externalWorktrees || []).filter((w) => w.project_id === p.project_id);
+    const entries = railEntries({
+      runs: myRuns,
+      plans: myPlans,
+      worktrees,
+      projectId: p.project_id,
+      nowMs,
+    });
     const pc = (primaryChanges || []).find((c) => c.project_id === p.project_id) || null;
+    // The badge counts what is waiting on you and unread — the same question the
+    // yellow dot answers, so the two can never disagree.
     const unread =
-      needsYou.filter((r) => !readIds.has(r.run_id)).length +
-      planNeedsYou.filter((pl) => !readIds.has(pl.plan_id)).length;
+      myRuns.filter((r) => r.needs_attention && !readIds.has(r.run_id)).length +
+      myPlans.filter((pl) => pl.needs_attention && !readIds.has(pl.plan_id)).length;
     return {
       project_id: p.project_id,
       name: p.name,
       unread,
-      needsYou,
-      running,
-      doneRecently: runsDone,
-      planNeedsYou,
-      planApproved,
-      planDrafting,
-      plansDone,
-      worktrees,
-      uncommitted: worktrees.filter((w) => (w.dirty_files || 0) > 0).length,
+      entries,
+      worktrees: railWorktrees({ worktrees, entries, projectId: p.project_id }),
       primary: pc
         ? {
             branch: pc.branch,
@@ -81,62 +49,53 @@ export function buildSidebarModel({ projects, runs, plans, externalWorktrees, pr
   });
 }
 
-const statHtml = (stat) =>
-  stat
-    ? `<span class="sstat mono"><em class="add">+${stat.insertions}</em> <em class="del">-${stat.deletions}</em></span>`
-    : "";
-
-// A run row ("Tasks" in the UI), keyed by run_id, routing to the run surface's
-// default tab — Stages for a run parked at the stage gate, Changes otherwise —
-// so the sidebar opens the same tab notifications does (defaultRunTab).
-function runRow(r, { icon, right, cls = "" }) {
-  const title = `${esc(r.goal)} — ${esc(RUN_STATE_LABEL[r.state] || r.state || "")}`;
-  return `<div class="srow ${cls}" data-run="${esc(r.run_id)}" data-project="${esc(r.project_id)}" data-tab="${defaultRunTab(r)}" title="${title}">
-    <span class="sicon">${icon}</span><span class="stitle">${esc(r.goal)}</span>${right}</div>`;
+/** The dot: a pulse while an agent works, yellow when something finished and you
+ *  have not looked since, grey once seen. Three states, one glance. */
+function dotHtml(entry) {
+  const state = dotState(entry);
+  return `<span class="sdot sdot-${state}" title="${
+    state === "working" ? "an agent is working" : state === "unseen" ? "finished — not seen yet" : "seen"
+  }"></span>`;
 }
 
-const doneIcon = (r) => (r.state === "merged" ? "✓" : "×");
-
-// The plan's short rail state word (like the run rows' state span). Terse
-// lowercase so the rail stays scannable; the full label rides the row's title.
-const PLAN_STATE_WORD = {
-  plan_review: "review",
-  drafting: "drafting",
-  created: "drafting",
-  approved: "ready",
-  blocked: "blocked",
-  failed: "failed",
-  idle_unreported: "idle",
-  interrupted: "interrupted",
-  abandoned: "abandoned",
-};
-export const planStateWord = (state) => PLAN_STATE_WORD[state] || state || "";
-
-// A plan row (project-scoped), keyed by plan_id, routing to the plan cockpit.
-// Plans and runs share the rail, so a plan row carries its own glyph set and a
-// distinct data attribute — never a data-run — keeping the two click paths apart.
-// When the caller supplies no `right` (e.g. no open comments), the plan's state
-// word fills that slot so a plan row is as legible as a run row.
-function planRow(p, { icon, right = "", cls = "" }) {
-  const title = `${esc(p.goal)} — ${esc(PLAN_STATE_LABEL[p.state] || p.state || "")}`;
-  const rightHtml = right || `<span class="sstate">${esc(planStateWord(p.state))}</span>`;
-  return `<div class="srow splan ${cls}" data-plan="${esc(p.plan_id)}" data-project="${esc(p.project_id)}" title="${title}">
-    <span class="sicon">${icon}</span><span class="stitle">${esc(p.goal)}</span>${rightHtml}</div>`;
+/** A row's floating git status: how far the branch has diverged, then what the
+ *  working tree holds. Each part shows only when it has something to say. */
+function entryStatusHtml(status) {
+  if (!status) return "";
+  const parts = [];
+  if (status.ahead) parts.push(`<span class="ssync">↑${status.ahead}</span>`);
+  if (status.behind) parts.push(`<span class="ssync">↓${status.behind}</span>`);
+  if (status.insertions) parts.push(`<em class="add">+${status.insertions}</em>`);
+  if (status.deletions) parts.push(`<em class="del">-${status.deletions}</em>`);
+  return parts.length ? `<span class="sstat mono">${parts.join(" ")}</span>` : "";
 }
 
-const openCommentsRight = (p) => {
-  const n = (p.stages || []).reduce((sum, s) => sum + (s.open_comments || 0), 0);
-  return n ? `<span class="sstate">${n} 💬</span>` : "";
-};
+/** The label under a row's name: what a run/issue is, when it has no git status
+ *  of its own to show. */
+const STATE_LABELS = { ...RUN_STATE_LABEL, ...PLAN_STATE_LABEL };
 
-function section(label, rowsHtml) {
-  return rowsHtml ? `<div class="ssec"><div class="sseclabel">${label}</div>${rowsHtml}</div>` : "";
+/** One rail row: `[dot] name [git status]`. The name falls back to the branch —
+ *  a worktree with nothing filed behind it is still its branch. */
+function entryRow(entry, ui) {
+  const activeId =
+    entry.kind === "run" ? ui.activeRunId : entry.kind === "plan" ? ui.activePlanId : ui.activeWorktreeId;
+  const label = entry.name || entry.branch || "(untitled)";
+  const right = entry.status
+    ? entryStatusHtml(entry.status)
+    : `<span class="sstate">${esc(STATE_LABELS[entry.state] || entry.state || "")}</span>`;
+  const data =
+    entry.kind === "run"
+      ? `data-run="${esc(entry.id)}" data-tab="${defaultRunTab({ state: entry.state })}"`
+      : entry.kind === "plan"
+        ? `data-plan="${esc(entry.id)}"`
+        : `data-wt="${esc(entry.id)}"`;
+  return `<div class="srow sentry ${entry.id === activeId ? "active" : ""}" ${data} data-project="${esc(entry.project_id)}" title="${esc(label)}">
+    ${dotHtml(entry)}<span class="stitle">${esc(label)}</span>${right}</div>`;
 }
 
 /** The checkout's git status, in the order a `git status` would tell it: where
  *  the branch sits against its upstream, then what the working tree holds. Each
- *  part appears only when it has something to say — no upstream, no arrows; a
- *  clean tree, no diffstat. */
+ *  part appears only when it has something to say. */
 export function checkoutStatusHtml(primary) {
   const parts = [];
   if (primary.ahead) parts.push(`<span class="ssync">↑${primary.ahead}</span>`);
@@ -147,13 +106,8 @@ export function checkoutStatusHtml(primary) {
 }
 
 // The project's primary checkout, as the second line of its header: the branch
-// it has out and that branch's git status. Links to #/project/<id>/changes.
-//
-// No glyph and no label word. This row used to read "main <branch>", where
-// "main" meant "the checkout, not a worktree" — but next to a branch called
-// feat/…, it read as a branch name that disagreed with the one beside it. Its
-// place under the project name says which checkout it is; the status says the
-// rest.
+// it has out and that branch's git status. No glyph and no label word — its
+// place under the project name says which checkout it is.
 function checkoutLine(m, ui) {
   if (!m.primary) return "";
   const active = ui.activeMainProjectId === m.project_id ? "active" : "";
@@ -162,42 +116,35 @@ function checkoutLine(m, ui) {
     <span class="stitle mono">${esc(m.primary.branch)}</span>${checkoutStatusHtml(m.primary)}</div>`;
 }
 
+/** The `Worktrees ›` row: everything the entries above did not already show —
+ *  worktrees you made outside Build, and ones that have fallen out of the recent
+ *  list. A place to look something up, so it is ordered by name. */
 function worktreeLine(m, open, ui) {
   if (!m.worktrees.length) return "";
-  const label = `${m.worktrees.length} worktree${m.worktrees.length === 1 ? "" : "s"}`;
-  const dirty = m.uncommitted ? ` <span class="swt-dirty">· ${m.uncommitted} uncommitted</span>` : "";
-  const activeInProject = m.worktrees.some((w) => w.worktree_id === ui.activeWorktreeId);
   const list = open
     ? `<div class="swt-list">${m.worktrees
         .map(
-          (w) => `<div class="srow swt-item ${w.worktree_id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.worktree_id)}" data-project="${esc(w.project_id)}" title="${esc(w.path || w.branch || "")}">
-      <span class="sicon">${BRANCH_ICON}</span><span class="stitle mono">${esc(w.branch || "(detached)")}</span>${
-        (w.dirty_files || 0) > 0 ? '<span class="swt-dirty">●</span>' : ""
-      }</div>`
+          (w) => `<div class="srow swt-item ${w.id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.id)}" data-project="${esc(w.project_id)}" title="${esc(w.branch || w.name || "")}">
+      <span class="stitle mono">${esc(w.name || w.branch || "(detached)")}</span>${entryStatusHtml(w.status)}</div>`,
         )
         .join("")}</div>`
     : "";
-  // A collapsed list still shows where you are: the summary line takes the
-  // highlight when it hides the active worktree.
-  const lineActive = activeInProject && !open ? "active" : "";
-  return `<div class="srow swt-line ${lineActive}" data-wtline="${esc(m.project_id)}">
-    <span class="sicon">${BRANCH_ICON}</span><span class="stitle dim">${label}${dirty}</span></div>${list}`;
+  const activeInside = m.worktrees.some((w) => w.id === ui.activeWorktreeId);
+  return `<div class="srow swt-line ${activeInside && !open ? "active" : ""}" data-wtline="${esc(m.project_id)}">
+    <span class="stitle dim">Worktrees <span class="n">${m.worktrees.length}</span></span>
+    <span class="swt-caret">${open ? "▾" : "›"}</span></div>${list}`;
 }
 
-/** A branch glyph for the worktree rows (the mock's fork), in the FOLDER_ICON style. */
-const BRANCH_ICON = `<svg class="sbranch" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="4" cy="4" r="1.7"/><circle cx="4" cy="12" r="1.7"/><circle cx="12" cy="6" r="1.7"/><path d="M4 5.7v4.6M12 7.7c0 2.3-3 2.3-5.3 2.6"/></svg>`;
-
-/** One project's block. `ui`: { closed:Set, wtOpen:Set, activeRunId, activeProjectId } */
+/** One project's block: name, its checkout's branch + status, the rail entries,
+ *  then the Worktrees row holding everything not shown above.
+ *  `ui`: { closed:Set, wtOpen:Set, activeRunId, activePlanId, activeWorktreeId,
+ *  activeProjectId, activeMainProjectId } */
 export function projectHtml(m, ui) {
   const open = !ui.closed.has(m.project_id);
   const badge = m.unread ? `<span class="badge sbadge">${m.unread}</span>` : "";
-  // A two-line header: the project on top, its checkout's branch + status
-  // beneath. Both lines survive collapsing — a shut project still says which
-  // branch it has out and whether that tree is dirty.
-  //
-  // Three distinct targets: the chevron expands/collapses; the name opens the
-  // project page (and the wiring expands the project as it navigates); the
-  // checkout line opens that page's Changes tab.
+  // Two lines that survive collapsing: a shut project still says which branch it
+  // has out and whether that tree is dirty. The chevron toggles, the name opens
+  // the project, the checkout line opens its Changes tab.
   const head = `<div class="sproj-head ${ui.activeProjectId === m.project_id ? "active" : ""}">
     <button class="chevbtn" data-chev="${esc(m.project_id)}" title="${open ? "Collapse" : "Expand"}">${open ? "▾" : "▸"}</button>
     <span class="sproj-open" data-open="${esc(m.project_id)}" title="Open project"><span class="sproj-name mono">${esc(m.name)}</span></span>
@@ -205,62 +152,12 @@ export function projectHtml(m, ui) {
   const block = `sproj ${ui.activeProjectId === m.project_id ? "active" : ""}`.trim();
   if (!open) return `<div class="${block}">${head}</div>`;
 
-  const active = (r) => (r.run_id === ui.activeRunId ? "active" : "");
-  const activePlan = (p) => (p.plan_id === ui.activePlanId ? "active" : "");
-  const needs = m.needsYou
-    .map((r) =>
-      runRow(r, {
-        icon: r.state === "blocked" || r.state === "failed" ? '<span class="warn">▲</span>' : "✦",
-        right: statHtml(r.stat),
-        cls: `attn ${active(r)}`,
-      })
-    )
-    .join("");
-  const running = m.running
-    .map((r) =>
-      runRow(r, {
-        icon: "●",
-        right:
-          (r.last_error ? '<span class="warn">▲</span> ' : "") +
-          (r.stat && r.stat.files_changed ? statHtml(r.stat) : `<span class="sstate">${esc(r.state)}</span>`),
-        cls: `work ${active(r)}`,
-      })
-    )
-    .join("");
-  // Plans (project-scoped): the ones needing you carry the attn styling and the
-  // review/parked glyph; approved plans are ready to Implement; drafting plans
-  // are still being authored.
-  const planNeeds = m.planNeedsYou
-    .map((p) =>
-      planRow(p, {
-        icon: p.state === "blocked" || p.state === "failed" ? '<span class="warn">▲</span>' : "✦",
-        right: openCommentsRight(p),
-        cls: `attn ${activePlan(p)}`,
-      })
-    )
-    .join("");
-  const planReady = m.planApproved.map((p) => planRow(p, { icon: "◆", right: openCommentsRight(p), cls: `ready ${activePlan(p)}` })).join("");
-  const planDrafting = m.planDrafting.map((p) => planRow(p, { icon: "✎", cls: `work ${activePlan(p)}` })).join("");
-  const done = m.doneRecently
-    .map((r) =>
-      runRow(r, {
-        icon: doneIcon(r),
-        right: `<span class="sage">${humanAge(r.age_s)}</span>`,
-        cls: "done",
-      })
-    )
-    .join("");
-  const plansDone = m.plansDone
-    .map((p) => planRow(p, { icon: "×", right: `<span class="sage">${humanAge(p.age_s)}</span>`, cls: "done" }))
-    .join("");
+  const entries = m.entries.map((entry) => entryRow(entry, ui)).join("");
   return `<div class="${block}">${head}<div class="sproj-body">
-    ${section("Needs you", needs)}${section("Running", running)}
-    ${section("Issues", planNeeds + planReady + planDrafting)}
-    ${section("Done recently", done + plansDone)}
+    ${entries || '<div class="sempty dim">Nothing running.</div>'}
     ${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
 }
 
-/** The whole rail. */
 export function sidebarHtml(model, ui) {
   const projects = model.map((m) => projectHtml(m, ui)).join("");
   return `<div class="side-head"><span class="sseclabel">Projects</span>

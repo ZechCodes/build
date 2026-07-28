@@ -7,8 +7,8 @@
 // implemented it; everything else is open, which is what you came here to see.
 
 import { esc, humanAge } from "../core/text.js";
-import { PLAN_STATE_LABEL, planChipClass } from "./shared.js";
-import { planStateWord } from "../core/sidebar.js";
+import { PLAN_STATE_LABEL, planChipClass, planStateWord } from "./shared.js";
+
 
 const CLOSED_STATES = new Set(["abandoned"]);
 

@@ -60,6 +60,21 @@ export const PLAN_STATE_LABEL = {
   abandoned: "ABANDONED",
 };
 
+/** A plan's terse rail/list word — lowercase so a dense list stays scannable;
+ *  the full label (PLAN_STATE_LABEL) rides the row's title instead. */
+const PLAN_STATE_WORD = {
+  plan_review: "review",
+  drafting: "drafting",
+  created: "drafting",
+  approved: "ready",
+  blocked: "blocked",
+  failed: "failed",
+  idle_unreported: "idle",
+  interrupted: "interrupted",
+  abandoned: "abandoned",
+};
+export const planStateWord = (state) => PLAN_STATE_WORD[state] || state || "";
+
 export function planChipClass(state) {
   if (state === "blocked" || state === "failed" || state === "idle_unreported" || state === "interrupted") return "warn";
   if (state === "approved") return "done";

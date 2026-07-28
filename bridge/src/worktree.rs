@@ -191,6 +191,11 @@ pub struct ExternalWorktree {
     pub head_age_seconds: u64,
     /// `git status --porcelain` line count — staged + unstaged + untracked.
     pub dirty_files: usize,
+    /// Commits this worktree has that the base branch does not, and vice versa.
+    /// `None` when the two cannot be compared (a base branch that does not
+    /// resolve), which is a different thing from being level with it.
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
     /// Roll-up of `diff_against_merge_base(path, base_branch)` (§2).
     pub diffstat: crate::diff::DiffStat,
 }
@@ -406,6 +411,16 @@ fn parse_worktree_block(
         .ok()?
         .stat();
 
+    // How far this worktree has diverged from the branch it will merge into —
+    // the other half of "git status" the rail shows beside the diffstat.
+    let (ahead, behind) = repo
+        .revparse_single(base_branch)
+        .ok()
+        .and_then(|object| object.peel_to_commit().ok())
+        .and_then(|base| repo.graph_ahead_behind(commit.id(), base.id()).ok())
+        .map(|(ahead, behind)| (Some(ahead as u64), Some(behind as u64)))
+        .unwrap_or((None, None));
+
     Some(ExternalWorktree {
         id: external_worktree_id(&canonical_path),
         name,
@@ -415,6 +430,8 @@ fn parse_worktree_block(
         head_subject,
         head_age_seconds,
         dirty_files,
+        ahead,
+        behind,
         diffstat,
     })
 }

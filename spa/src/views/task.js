@@ -28,6 +28,10 @@ export async function renderTask() {
   let projectId = App.route.projectId || null;
   let tab = App.route.tab || "changes";
 
+  // Looking at it IS seeing it: the dot settles to grey until the run moves
+  // again. Fire-and-forget — a missed stamp costs one stale dot, not an action.
+  App.call("entity.seen", { entity_id: id }).catch(() => {});
+
   const replaceTaskHash = () => {
     App.route = { name: "task", ...(projectId ? { projectId } : {}), id, tab };
     history.replaceState(null, "", hashFromRoute(App.route));

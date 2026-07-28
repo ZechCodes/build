@@ -156,6 +156,23 @@ describe("a project block", () => {
     expect(html).toContain("-26");
   });
 
+  // ↑2 against what? A tracking branch is measured against its upstream and an
+  // untracked one against the base branch, so the row says which on hover.
+  it("names what a worktree's ahead/behind was measured against", () => {
+    const m = model({
+      runs: [],
+      plans: [],
+      externalWorktrees: [
+        worktree({
+          ahead: 2,
+          sync_base: "origin/build/spike",
+          attention: { resume_at: iso(1), interacted: true, seen: true },
+        }),
+      ],
+    });
+    expect(projectHtml(m, ui())).toContain('title="↑2 ahead of origin/build/spike"');
+  });
+
   it("falls back to the branch when a row has no name", () => {
     const m = model({
       runs: [],

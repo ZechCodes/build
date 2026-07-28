@@ -47,8 +47,9 @@ export function syncChipState(status) {
   return { ahead, behind };
 }
 
-/** Branch switching is main-worktree (project scope) only — a run worktree's
- *  branch is owned by the run lifecycle, so sessions show it as static text. */
+/** Branch switching belongs to the checkouts the human owns — the project's
+ *  primary one and its worktrees. A run worktree's branch is owned by the run
+ *  lifecycle, so sessions show it as static text instead. */
 export function showBranchControl(scope) {
   return Boolean(scope && scope.project_id && !scope.run_id);
 }
@@ -230,9 +231,13 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
 
 /** The stash key for a scope's in-progress commit-message draft: drafts live in
  *  a module-level Map so tab switches and view-shell rebuilds (which remount the
- *  pane from scratch) restore them transparently. */
+ *  pane from scratch) restore them transparently. Keyed on the narrowest id the
+ *  scope carries — a worktree scope names its project too, and keying on that
+ *  would pool every worktree's draft with the project's own. */
 export function gitDraftKey(scope) {
-  return scope.run_id ? `run:${scope.run_id}` : `project:${scope.project_id || ""}`;
+  if (scope.run_id) return `run:${scope.run_id}`;
+  if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
+  return `project:${scope.project_id || ""}`;
 }
 
 // scope draft key -> the commit message typed so far. Module-level on purpose:
@@ -262,7 +267,8 @@ export function commitVariantClearsDraft(optionId) {
 const PERMANENT_GIT_SCOPE_ERRORS = [
   "unknown project_id",
   "unknown run_id",
-  "provide exactly one of project_id or run_id",
+  "unknown worktree_id",
+  "provide exactly one of project_id",
 ];
 
 /** True only for the bridge's permanent scope errors — every other poll failure
@@ -923,7 +929,9 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     render();
   };
 
-  /** Open the branch dropdown and load git.branches (project scope only). A
+  /** Open the branch dropdown and load git.branches. Every branch RPC carries
+   *  the whole scope: on a worktree surface the switch belongs to THAT
+   *  checkout, and sending the project id alone would move the project's. A
    *  second click on the branch button closes it. */
   const toggleBranchMenu = async () => {
     if (branchMenuOpen) {
@@ -936,7 +944,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     render(); // the loading placeholder shows immediately
     let payload;
     try {
-      payload = await callRpc("git.branches", { project_id: scope.project_id });
+      payload = await callRpc("git.branches", { ...scope });
     } catch (e) {
       if (!disposed) actionError(e);
       branchMenuOpen = false;
@@ -952,7 +960,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     runGuarded(async () => {
       let status;
       try {
-        status = await callRpc("git.checkout", { project_id: scope.project_id, branch, create });
+        status = await callRpc("git.checkout", { ...scope, branch, create });
       } catch (e) {
         if (!disposed) actionError(e);
         return;
@@ -974,7 +982,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     runGuarded(async () => {
       let payload;
       try {
-        payload = await callRpc("git.branch_delete", { project_id: scope.project_id, branch, force });
+        payload = await callRpc("git.branch_delete", { ...scope, branch, force });
       } catch (e) {
         if (!disposed) {
           actionError(e);

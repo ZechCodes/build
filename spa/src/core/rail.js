@@ -96,11 +96,17 @@ function worktreeEntry(worktree) {
     needsYou: false,
     changedAt: ms(worktree.attention?.resume_at),
     attention: worktree.attention || {},
+    // What is sitting in the tree unsaved (`uncommitted`), NOT the whole branch
+    // delta (`diffstat`) — the row answers "is there work here I have not
+    // committed", which is what a glance down the rail is asking. How far the
+    // branch itself has travelled is the ahead/behind half, measured against
+    // its upstream when it tracks one.
     status: {
       ahead: worktree.ahead ?? null,
       behind: worktree.behind ?? null,
-      insertions: worktree.diffstat?.insertions ?? 0,
-      deletions: worktree.diffstat?.deletions ?? 0,
+      syncBase: worktree.sync_base || null,
+      insertions: worktree.uncommitted?.insertions ?? 0,
+      deletions: worktree.uncommitted?.deletions ?? 0,
     },
     route: { name: "worktree", projectId: worktree.project_id, worktreeId: worktree.worktree_id },
   };

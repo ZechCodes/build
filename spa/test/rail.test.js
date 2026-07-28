@@ -39,7 +39,9 @@ const worktree = (over = {}) => ({
   dirty_files: 1,
   ahead: 1,
   behind: 0,
+  sync_base: "origin/build/spike",
   diffstat: { files_changed: 1, insertions: 9, deletions: 2 },
+  uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
   attention: { resume_at: ago(2), interacted: true, seen: false },
   ...over,
 });
@@ -228,6 +230,24 @@ describe("the row's contents", () => {
   it("carries ahead, behind and the uncommitted diffstat", () => {
     const [entry] = railEntries({ runs: [run()], projectId: "p1", nowMs: NOW });
     expect(entry.status).toEqual({ ahead: 2, behind: 0, insertions: 4, deletions: 1 });
+  });
+
+  // The row answers "what is sitting in this tree unsaved", not "what does this
+  // branch carry" — the branch delta is what the diff surface is for.
+  it("counts a worktree's uncommitted changes, not everything its branch carries", () => {
+    const [entry] = railEntries({ worktrees: [worktree()], projectId: "p1", nowMs: NOW });
+    expect(entry.status).toEqual({ ahead: 1, behind: 0, syncBase: "origin/build/spike", insertions: 3, deletions: 1 });
+  });
+
+  // An older bridge reports no uncommitted stat at all. Standing in the branch
+  // delta there would answer a different question under the same label.
+  it("shows no counts for a worktree the bridge sent none for", () => {
+    const [entry] = railEntries({
+      worktrees: [worktree({ uncommitted: undefined })],
+      projectId: "p1",
+      nowMs: NOW,
+    });
+    expect(entry.status).toEqual({ ahead: 1, behind: 0, syncBase: "origin/build/spike", insertions: 0, deletions: 0 });
   });
 
   it("gives an issue no git status — it has no worktree to have one", () => {

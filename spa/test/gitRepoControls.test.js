@@ -67,6 +67,12 @@ describe("showBranchControl", () => {
     expect(showBranchControl({ run_id: "t1" })).toBe(false);
     expect(showBranchControl({ project_id: "p1", run_id: "t1" })).toBe(false);
   });
+
+  // A worktree is a checkout the human owns — switching its branch is theirs to
+  // do, and the bridge scopes the switch to that worktree, never the project's.
+  it("shows the interactive control for a worktree scope", () => {
+    expect(showBranchControl({ project_id: "p1", worktree_id: "wt-1" })).toBe(true);
+  });
 });
 
 describe("toolbarControlsDisabled", () => {

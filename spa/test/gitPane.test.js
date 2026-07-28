@@ -94,6 +94,13 @@ describe("gitDraftKey", () => {
     expect(gitDraftKey({ project_id: "p1" })).toBe("project:p1");
   });
 
+  // A worktree surface carries its project's id too, so keying on that alone
+  // would hand every worktree of a project the project's own commit draft.
+  it("keys worktree scope by worktree_id, not the project it belongs to", () => {
+    expect(gitDraftKey({ project_id: "p1", worktree_id: "wt-1" })).toBe("worktree:wt-1");
+    expect(gitDraftKey({ project_id: "p1", worktree_id: "wt-1" })).not.toBe(gitDraftKey({ project_id: "p1" }));
+  });
+
   it("never collides across scope kinds sharing an id", () => {
     expect(gitDraftKey({ run_id: "x" })).not.toBe(gitDraftKey({ project_id: "x" }));
   });
@@ -150,7 +157,8 @@ describe("isPermanentGitScopeError", () => {
   it.each([
     "unknown project_id",
     "unknown run_id",
-    "provide exactly one of project_id or run_id",
+    "unknown worktree_id: wt-abc",
+    "provide exactly one of project_id, run_id, or project_id + worktree_id",
   ])("treats %s as terminal", (message) => {
     expect(isPermanentGitScopeError(message)).toBe(true);
   });

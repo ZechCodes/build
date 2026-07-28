@@ -1,49 +1,23 @@
-// The read-only external-worktree browse view: shows a worktree's dirty diff
-// (merge-base anchored) without adopting it. The first mutating action — Request
-// Changes, a Merge variant, or Abandon — transparently adopts the worktree as a
-// task (createAdoptingCall) and then proceeds. Everything rendered from the
-// worktree's branch, subject, path, and diff is UNTRUSTED and escaped.
+// The external-worktree surface: the same shell every other worktree-shaped
+// surface has — Changes, Files, and one tab per terminal. Changes is the full
+// git GUI (commit rail, uncommitted staging, history, branch and sync verbs)
+// scoped to this worktree, with the review diff plugged in as its pinned "All
+// changes" entry. Nothing here adopts the worktree except the review plug's own
+// verbs (Request Changes, Merge, Abandon), which bind it to a task first.
+//
+// Everything rendered from the worktree's branch and path is UNTRUSTED and
+// escaped.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { parseDiff, filterNoiseFiles } from "../core/diff.js";
-import { diffFilesHtml } from "../core/diffRender.js";
-import { diffThreadMessages } from "../core/notes.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
-import { mountSplitButton } from "../core/splitButton.js";
-import { createAdoptingCall } from "../core/adoption.js";
-import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
-import { confirmAction } from "../core/confirm.js";
-import { notifyError } from "../core/notify.js";
-import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
-import { watchSelection } from "../selectWatch.js";
-import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
+import { mountGitPane } from "../core/gitPane.js";
+import { createAdoptingCall } from "../core/adoption.js";
+import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
-import {
-  catalogForProvider,
-  effortOptionsHtml,
-  modelInCatalog,
-  modelOptionsHtml,
-  modelParams,
-  normalizeModelCatalog,
-  providerOptionsHtml,
-} from "../core/modelPicker.js";
-
-// The adopted-task merge set for the browse view: prune / keep / release only
-// (no commit/push/merge_push here — those belong to a task already in review).
-const WORKTREE_MERGE_OPTIONS = [
-  { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: "commit, merge into the base branch, remove the worktree + branch", busyLabel: "merging…" },
-  { id: "merge_keep", menuLabel: "Merge & keep worktree", description: "merge into the base branch, keep the worktree and branch", busyLabel: "merging…" },
-  { id: "merge_release", menuLabel: "Merge & release", description: "merge into the base branch, then un-adopt — keep the worktree and branch, drop the task", busyLabel: "merging…" },
-];
-const MERGE_RPC = {
-  merge_prune: { action: "merge", cleanup: "prune" },
-  merge_keep: { action: "merge", cleanup: "keep" },
-  merge_release: { action: "merge", cleanup: "release" },
-};
 
 export async function renderWorktree() {
   const root = $("#root");
@@ -54,25 +28,7 @@ export async function renderWorktree() {
   App.call("entity.seen", { entity_id: worktreeId }).catch(() => {});
   const adopting = createAdoptingCall((method, params) => App.call(method, params), projectId, worktreeId);
   const scope = { project_id: projectId, worktree_id: worktreeId };
-  let agentCatalog = normalizeModelCatalog({});
-  const agentChoice = { provider: "claude", model: "", effort: "" };
-  loadModelCatalog().then((catalog) => {
-    agentCatalog = normalizeModelCatalog(catalog);
-    agentChoice.provider = agentCatalog.default_provider || "claude";
-    updateActions();
-  });
 
-  // Review-comment state, preserved across the 1.6s poll (same discipline as the
-  // task diff tab). Comments only accrue on an adoptable worktree.
-  const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
-  let dcid = 0,
-    diffKey = null,
-    diffSelDispose = null,
-    shellState = null;
-
-  // The unified tab shell: Diff (the entire existing review content, untouched),
-  // Files, then user terminal tabs with `+`. Default tab: changes. Scope:
-  // { project_id, worktree_id }.
   // A worktree Build just minted opens on the tool the sheet asked for, not on
   // an empty diff — that answer was given before the worktree existed. The mark
   // is one-shot, so a reload of the same surface lands on Changes like any other.
@@ -81,7 +37,12 @@ export async function renderWorktree() {
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
   let aux = null;
-  const isAuxTab = (tabId) => tabId === "files" || /^term-/.test(tabId);
+  let meta = { branch: "", path: "" };
+  // Latched once this surface has handed the worktree over (adopted into a task,
+  // merged, abandoned) or found it gone: a late RPC rejection must not repaint
+  // over the destination.
+  let leaving = false;
+
   const staticTabs = () => [{ id: "changes", label: "Changes" }, { id: "files", label: "Files" }, ...terminals.tabs()];
   const replaceWorktreeHash = () => {
     App.route = { name: "worktree", projectId, worktreeId, tab };
@@ -94,30 +55,131 @@ export async function renderWorktree() {
     }
   };
 
+  const goHome = () => {
+    leaving = true;
+    go({ name: "project", projectId });
+  };
+
+  // Once adoption has succeeded this worktree is bound to a task, so every
+  // worktree-scoped RPC (and poll) will report "unknown worktree_id" — that is
+  // the EXPECTED post-adoption state, not "the worktree vanished". Hand off to
+  // the freshly minted task, which now holds any merge_failed reason.
+  const handoffToTask = () => {
+    leaving = true;
+    go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
+  };
+
+  const renderNotFound = () => {
+    leaving = true;
+    disposeAux();
+    root.innerHTML = `
+      <div class="back" id="back">← Project</div>
+      <div class="empty">This worktree is no longer available — it may have been adopted or removed.</div>`;
+    $("#back").onclick = () => go({ name: "project", projectId });
+  };
+
+  // The worktree stopped resolving: either this surface adopted it (hand off to
+  // the task that now owns it) or it was genuinely removed.
+  const worktreeGone = () => {
+    if (leaving) return;
+    if (adopting.adoptedRunId()) handoffToTask();
+    else renderNotFound();
+  };
+
+  // Every worktree-scoped RPC goes through here: git.status keeps the bar's
+  // branch current (the git pane polls it anyway, so the header needs no poll of
+  // its own), and a worktree that stops resolving ends the surface.
+  const callRpc = async (method, params) => {
+    try {
+      const res = await App.call(method, params);
+      if (method === "git.status") refreshHeader(res);
+      return res;
+    } catch (e) {
+      if (String(e && e.message).includes("unknown worktree_id")) worktreeGone();
+      throw e;
+    }
+  };
+
+  // The review surface (the Changes rail's "All changes" entry). ONE instance
+  // for the view's whole life, so pending review comments survive tab switches
+  // and the rail selection moving away and back.
+  const reviewPlug = createWorktreeReview({
+    projectId,
+    worktreeId,
+    callRpc: (method, params) => App.call(method, params),
+    adopting,
+    isOffline: () => App.offline,
+    onAdopted: () => handoffToTask(),
+    onFinished: () => goHome(),
+    onGone: () => worktreeGone(),
+    onMeta: (m) => refreshHeader(m),
+  });
+
+  // The tab bar is the top of the view; the worktree's identity (branch) rides
+  // the bar's right cluster, path on hover.
+  const shell = () => {
+    root.innerHTML = `
+      <div class="surface-bar">
+        <div class="tabrow" id="tabrow"></div>
+        <div class="surface-meta">
+          <span class="mono dim" id="wtbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
+        </div>
+      </div>
+      <div id="tabbody"></div>`;
+    shellCtl = mountTabShell($("#tabrow"), {
+      tabs: staticTabs(),
+      active: tab,
+      onSelect: (tabId) => selectTab(tabId),
+      onClose: (tabId) => closeTerminal(tabId),
+      newTabOptions: NEW_TAB_KINDS,
+      onNewTab: (kind) => newTerminal(kind),
+      back: { title: "Back to project" },
+      onBack: () => goHome(),
+    });
+  };
+
+  // Keep the bar's branch/path current from whatever reported it last — the git
+  // pane's status polls on Changes, the review plug's diff elsewhere. Guarded
+  // against departure: a response resolving after navigation must not overwrite
+  // the next view's header (#root now belongs to it).
+  const refreshHeader = (source) => {
+    if (leaving || !source) return;
+    const next = { branch: source.branch || "", path: source.path || meta.path || "" };
+    if (next.branch === meta.branch && next.path === meta.path) return;
+    meta = next;
+    const branchEl = root.querySelector("#wtbranch");
+    if (branchEl) {
+      branchEl.textContent = meta.branch || "(detached)";
+      branchEl.title = meta.path || "";
+    }
+  };
+
   const selectTab = (tabId) => {
     tab = tabId;
     replaceWorktreeHash();
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
-    if (tabId === "changes") {
-      const body = $("#tabbody");
-      if (body) body.classList.remove("bare", "flush");
-      diffKey = null;
-      shellState = null; // force a shell rebuild + body repaint on the next paint
-      paint();
-    } else {
-      mountAux(tabId);
-    }
-  };
-
-  const mountAux = (tabId) => {
-    disposeAux();
     const body = $("#tabbody");
     if (!body) return;
-    // Terminal tabs go edge-to-edge; the Files browser runs flush (tree rail +
-    // preview pane each scroll internally, so the body owns no padding).
+    // Terminal tabs go edge-to-edge; Changes and Files run flush (their own rail
+    // + detail panes each scroll internally, so the body owns no padding).
     body.classList.toggle("bare", /^term-/.test(tabId));
-    body.classList.toggle("flush", tabId === "files");
+    body.classList.toggle("flush", tabId === "changes" || tabId === "files");
+    if (tabId === "changes") {
+      // The git surface for this worktree: the commit rail on the left, the
+      // review diff ("All changes", the review plug), staging, or a commit's
+      // detail on the right. The pane owns its own 1.6s poll.
+      aux = mountGitPane(body, {
+        scope,
+        callRpc,
+        review: {
+          getBase: () => reviewPlug.getBase(),
+          mount: (host) => reviewPlug.mount(host),
+          unmount: () => reviewPlug.unmount(),
+        },
+      });
+      return;
+    }
     aux = mountAuxTab(body, tabId, {
       scope,
       callRpc: (method, params) => App.call(method, params),
@@ -134,7 +196,8 @@ export async function renderWorktree() {
     try {
       termId = await terminals.create(kind);
     } catch (e) {
-      showError("cannot open a terminal: " + e.message.slice(0, 80));
+      const body = $("#tabbody");
+      if (body) body.innerHTML = `<div class="empty">cannot open a terminal: ${esc((e && e.message) || "error")}</div>`;
       return;
     }
     if (shellCtl) shellCtl.setTabs(staticTabs());
@@ -151,402 +214,27 @@ export async function renderWorktree() {
     if (tab === termId) selectTab("changes");
   };
 
-  const goHome = () => go({ name: "project", projectId });
-
-  const renderNotFound = () => {
-    root.innerHTML = `
-      <div class="back" id="back">← Project</div>
-      <div class="empty">This worktree is no longer available — it may have been adopted or removed.</div>`;
-    $("#back").onclick = () => goHome();
+  // Tear down the mounted pane (and, with it, the review plug's poll) when the
+  // user navigates away.
+  App.viewDispose = () => {
+    leaving = true;
+    disposeAux();
   };
-
-  const stopPolling = () => {
-    if (App.poll) {
-      clearInterval(App.poll);
-      App.poll = null;
-    }
-  };
-  const startPolling = () => {
-    if (!App.poll) App.poll = setInterval(paint, 1600);
-  };
-  // Once adoption has succeeded this worktree is bound to a task, so worktree.diff
-  // (and the poll) will report "unknown worktree_id" — that is the EXPECTED
-  // post-adoption state, not "the worktree vanished". Hand off to the freshly
-  // minted task (which now holds any merge_failed reason) instead of wiping the
-  // view with the "no longer available" empty state.
-  const handoffToTask = () => {
-    stopPolling();
-    go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
-  };
-
-  // The tab bar is the top of the view; the worktree's identity (branch) rides
-  // the bar's right cluster, path on hover.
-  const shell = (meta) => {
-    root.innerHTML = `
-      <div class="surface-bar">
-        <div class="tabrow" id="tabrow"></div>
-        <div class="surface-meta">
-          <span class="mono dim" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
-        </div>
-      </div>
-      <div class="task-error" id="wtError" role="alert" hidden></div>
-      <div id="tabbody"></div>`;
-    shellCtl = mountTabShell($("#tabrow"), {
-      tabs: staticTabs(),
-      active: tab,
-      onSelect: (tabId) => selectTab(tabId),
-      onClose: (tabId) => closeTerminal(tabId),
-      newTabOptions: NEW_TAB_KINDS,
-      onNewTab: (kind) => newTerminal(kind),
-      back: { title: "Back to project" },
-      onBack: () => goHome(),
-    });
-    // A shell rebuild wiped #tabbody — re-mount an aux tab so the poll's
-    // early-return leaves a live Files/terminal pane in place.
-    if (isAuxTab(tab)) mountAux(tab);
-  };
-
-  const showError = (message) => {
-    const el = $("#wtError");
-    if (!el) return;
-    el.textContent = message || "";
-    el.hidden = !message;
-  };
-
-  // The <tr> (with a line number) containing a selection/click node.
-  const rowOf = (node, table) => {
-    let element = node && node.nodeType === 3 ? node.parentElement : node;
-    while (element && element !== table && element.tagName !== "TR") element = element.parentElement;
-    return element && element.tagName === "TR" && element.dataset.ln ? element : null;
-  };
-
-  const applyHighlights = () => {
-    const body = $("#tabbody");
-    if (!body) return;
-    body.querySelectorAll("tr.dhl").forEach((r) => r.classList.remove("dhl"));
-    diffComments.forEach((c) => {
-      const fileEl = Array.from(body.querySelectorAll(".file")).find((element) => element.dataset.file === c.file);
-      if (!fileEl) return;
-      fileEl.querySelectorAll("tr[data-ln]").forEach((tr) => {
-        const ln = +tr.dataset.ln;
-        if (ln >= c.lnA && ln <= c.lnB) tr.classList.add("dhl");
-      });
-    });
-  };
-  const addComment = (file, lnA, lnB, snippet, comment) => {
-    diffComments.push({ id: ++dcid, file, lnA: lnA || lnB, lnB: lnB || lnA, snippet: snippet.trim().slice(0, 400), comment });
-    window.getSelection().removeAllRanges();
-    applyHighlights();
-    refreshFeedback();
-  };
-  const removeComment = (idc) => {
-    const i = diffComments.findIndex((c) => c.id === idc);
-    if (i >= 0) diffComments.splice(i, 1);
-    applyHighlights();
-    refreshFeedback();
-  };
-
-  const refreshFeedback = () => {
-    const list = $("#wdifflist");
-    if (list) {
-      list.innerHTML = diffComments
-        .map((c) => {
-          const location = c.lnA === 0 && c.lnB === 0 ? "" : c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
-          return `<div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
-            <span class="psnip">${esc(c.file)}${esc(location)} · ${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 90))}</span>
-            <span class="pctext">${esc(c.comment)}</span></div>`;
-        })
-        .join("");
-      list.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeComment(+x.dataset.id)));
-    }
-    updateActions();
-  };
-
-  const updateActions = () => {
-    const actions = $("#wdiffactions"),
-      hint = $("#wdiffhint");
-    if (!actions) return;
-    const general = $("#wgeneral") ? $("#wgeneral").value.trim() : "";
-    if (diffComments.length || general) {
-      hint.textContent = "Your comments adopt this worktree as a task and are sent to the coding agent.";
-      const providerCatalog = catalogForProvider(agentCatalog, agentChoice.provider);
-      const selectedModel = modelInCatalog(providerCatalog.models, agentChoice.model);
-      actions.innerHTML = `<select class="mini" id="wprovider" title="Coding agent">${providerOptionsHtml(agentCatalog.providers, agentChoice.provider)}</select>
-        <select class="mini" id="wmodel" title="Coding agent model">${modelOptionsHtml(providerCatalog.models, agentChoice.model)}</select>
-        <select class="mini" id="weffort" title="Reasoning effort">${effortOptionsHtml(providerCatalog.efforts, agentChoice.effort, selectedModel)}</select>
-        <button class="btn" id="wclear">Clear</button><button class="btn primary" id="wrequest">Request Changes</button>`;
-      $("#wprovider").onchange = (event) => {
-        agentChoice.provider = event.target.value;
-        agentChoice.model = "";
-        agentChoice.effort = "";
-        updateActions();
-      };
-      $("#wmodel").onchange = (event) => {
-        agentChoice.model = event.target.value;
-        agentChoice.effort = "";
-        updateActions();
-      };
-      $("#weffort").onchange = (event) => {
-        agentChoice.effort = event.target.value;
-      };
-      $("#wclear").onclick = () => {
-        diffComments.length = 0;
-        if ($("#wgeneral")) $("#wgeneral").value = "";
-        applyHighlights();
-        refreshFeedback();
-      };
-      $("#wrequest").onclick = async () => {
-        const btn = $("#wrequest");
-        btn.disabled = true;
-        btn.textContent = "requesting…";
-        // Suspend the poll: this action adopts the worktree (binding it to a task),
-        // after which the poll's worktree.diff would resolve to "unknown
-        // worktree_id" and race us to renderNotFound.
-        stopPolling();
-        const messages = diffThreadMessages(diffComments, $("#wgeneral") ? $("#wgeneral").value : "", null);
-        try {
-          const selectedCatalog = catalogForProvider(agentCatalog, agentChoice.provider);
-          adopting.setAdoptParams(
-            modelParams(selectedCatalog.models, agentChoice.model, agentChoice.effort, agentChoice.provider),
-          );
-          await adopting.runCall("run.request_changes", { messages });
-          hideCommentPop();
-          go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
-        } catch (e) {
-          if (adopting.adoptedRunId()) {
-            // Adoption succeeded but the follow-up failed: the task now owns this
-            // worktree and its error — hand off to it rather than stranding the
-            // user on a route the poll is about to blank.
-            hideCommentPop();
-            handoffToTask();
-            return;
-          }
-          btn.disabled = false;
-          btn.textContent = "Request Changes";
-          showError("error: " + e.message.slice(0, 80));
-          startPolling();
-        }
-      };
-      return;
-    }
-    // No pending comments: the finish-the-worktree affordances. A non-adoptable
-    // worktree (detached HEAD, or the base branch itself) only browses.
-    if (!shellState || !shellState.adoptable) {
-      hint.textContent = shellState && shellState.branch
-        ? "This is the base branch — check out a feature branch to adopt."
-        : "Detached HEAD — check out a branch to adopt.";
-      actions.innerHTML = "";
-      return;
-    }
-    hint.textContent = "Comment on the diff to request changes, or finish the worktree.";
-    const mergeHost = document.createElement("span");
-    const abandon = document.createElement("button"); // quiet (plain) — the confirm guards it
-    abandon.className = "btn";
-    abandon.id = "wabandon";
-    abandon.textContent = "Abandon & delete";
-    actions.innerHTML = "";
-    actions.appendChild(mergeHost);
-    actions.appendChild(abandon);
-    mountSplitButton(mergeHost, {
-      options: WORKTREE_MERGE_OPTIONS,
-      run: async (optionId) => {
-        const { action, cleanup } = MERGE_RPC[optionId];
-        // Confirm the exact step outline BEFORE stopping the poll or adopting —
-        // a cancel leaves the browse view live and untouched. The base branch
-        // is unknown on this surface, so the outline names it generically.
-        const confirmPlan = gitActionConfirm(optionId, {
-          branch: (shellState && shellState.branch) || "the branch",
-          base: "the base branch",
-        });
-        if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
-        stopPolling(); // adoption binds the worktree; the poll must not race us
-        try {
-          await adopting.runCall("run.git_action", { action, cleanup });
-          goHome();
-        } catch (e) {
-          // A merge failure persists as an expandable notice (full message in
-          // the detail) alongside the surface banner.
-          const reason = mergeFailureReason(e.message);
-          notifyError(reason ? "Merge failed: " + reason.split("\n")[0] : "Action failed", e.message);
-          if (adopting.adoptedRunId()) {
-            // Adopted, then the merge failed (a conflict is the common case for a
-            // stale external worktree): hand off to the task holding merge_failed.
-            handoffToTask();
-            return;
-          }
-          showError("error: " + e.message.slice(0, 80));
-          startPolling();
-          throw e;
-        }
-      },
-    });
-    abandon.onclick = async () => {
-      // adopted: true — this surface deletes files Build did not create.
-      const confirmed = await confirmAction(
-        abandonConfirm({ adopted: true, branch: (shellState && shellState.branch) || "the branch" }),
-      );
-      if (!confirmed) return;
-      abandon.disabled = true;
-      abandon.textContent = "abandoning…";
-      stopPolling(); // adoption binds the worktree; the poll must not race us
-      try {
-        await adopting.runCall("run.abandon", {});
-        goHome();
-      } catch (e) {
-        if (adopting.adoptedRunId()) {
-          handoffToTask();
-          return;
-        }
-        abandon.disabled = false;
-        abandon.textContent = "Abandon & delete";
-        showError("error: " + e.message.slice(0, 80));
-        startPolling();
-      }
-    };
-  };
-
-  const renderBody = (meta, files) => {
-    const body = $("#tabbody");
-    const totalIns = files.reduce((a, f) => a + f.add, 0),
-      totalDel = files.reduce((a, f) => a + f.del, 0);
-    const editable = !!meta.adoptable;
-    body.innerHTML = `
-      <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span></div>
-      ${files.length ? diffFilesHtml(files, { commentable: editable }) : '<div class="empty">No file changes yet.</div>'}
-      ${editable ? `<div class="plan-feedback" id="wdiff-feedback"><div id="wdifflist"></div>
-        <textarea id="wgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
-      <div class="actionbar"><span class="hint" id="wdiffhint"></span><div class="right" id="wdiffactions"></div></div>`;
-    if (editable) {
-      if (diffSelDispose) diffSelDispose();
-      diffSelDispose = watchSelection(body, (sel) => {
-        const fileEl = rowOf(sel.anchorNode, body)?.closest(".file");
-        if (!fileEl) return;
-        const file = fileEl.dataset.file,
-          table = fileEl.querySelector("table");
-        const startRow = rowOf(sel.anchorNode, table),
-          endRow = rowOf(sel.focusNode, table);
-        if (!startRow && !endRow) return;
-        let a = +(startRow || endRow).dataset.ln,
-          b = +(endRow || startRow).dataset.ln;
-        if (a > b) [a, b] = [b, a];
-        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addComment(file, a, b, sel.toString(), comment));
-      });
-      $("#wgeneral").oninput = updateActions;
-    }
-    // One delegated handler: diff folding always (capped body expands, the
-    // filename bar toggles collapse), commenting only when adoptable.
-    body.onclick = (e) => {
-      if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
-      const commentButton = e.target.closest(".fcmt");
-      if (commentButton) {
-        const fileEl = commentButton.closest(".file");
-        if (fileEl)
-          showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
-            addComment(fileEl.dataset.file, 0, 0, "(entire file)", comment),
-          );
-        return;
-      }
-      const fhead = e.target.closest(".fhead");
-      if (fhead && !e.target.closest("button, input, label")) {
-        const file = fhead.closest(".file");
-        if (file) {
-          file.classList.toggle("collapsed");
-          file.classList.remove("capped");
-        }
-        return;
-      }
-      const capped = e.target.closest(".file.capped");
-      if (capped) {
-        capped.classList.remove("capped");
-        return;
-      }
-      if (!editable) return;
-      const sel = window.getSelection();
-      if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
-      const fileEl = e.target.closest(".file");
-      const tr = e.target.closest("tr[data-ln]");
-      if (!fileEl || !tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
-      const ln = +tr.dataset.ln,
-        snippet = tr.querySelector(".code").textContent;
-      showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment));
-    };
-    applyHighlights();
-    refreshFeedback();
-  };
-
-  const paint = async () => {
-    if (App.offline) return;
-    // Adopted already? The worktree lives on as a task now — never poll it (the
-    // diff would 404) — hand off so its outcome/error is where the user can see it.
-    if (adopting.adoptedRunId()) {
-      handoffToTask();
-      return;
-    }
-    let res;
-    try {
-      res = await App.call("worktree.diff", { project_id: projectId, worktree_id: worktreeId });
-    } catch (e) {
-      if (String(e && e.message).includes("unknown worktree_id")) {
-        // Bound to a task since the last poll → hand off; otherwise it was
-        // genuinely removed and the not-found state is correct.
-        if (adopting.adoptedRunId()) {
-          handoffToTask();
-        } else {
-          stopPolling();
-          renderNotFound();
-        }
-      }
-      return; // transient — the poll retries
-    }
-    const meta = {
-      branch: res.branch,
-      head_subject: res.head_subject,
-      path: res.path,
-      dirty_files: res.dirty_files,
-      adoptable: res.adoptable,
-    };
-    const files = filterNoiseFiles(parseDiff(res.patch));
-    const key = String(res.adoptable) + " " + res.patch;
-    const general = $("#wgeneral");
-    const busy =
-      diffComments.length > 0 || hasCommentPop() || (general && (general.value.trim() || document.activeElement === general));
-    // The shell rebuild wipes #tabbody (the in-progress general comment + its
-    // focus live only there), so it obeys the SAME freeze-while-commenting
-    // discipline as the body repaint below — never rebuild while the reviewer
-    // is mid-comment. Only the fields the bar actually shows are keyed; the
-    // churny ones (dirty_files, head_subject) no longer render anywhere.
-    const shellKey = `${meta.branch}|${meta.adoptable}|${meta.path}`;
-    // Rebuild the header on first paint always; afterward only while the Changes
-    // tab is active — an aux tab (Files/terminal) owns #tabbody and must not be
-    // wiped by a churny header refresh (dirty_files/head_subject move as the user
-    // edits their own live checkout). Switching back to Changes resets shellState.
-    if (!busy && (shellState === null || (tab === "changes" && shellState.key !== shellKey))) {
-      shell(meta);
-      shellState = { ...meta, key: shellKey };
-      diffKey = null; // shell wiped #tabbody — force a body repaint below
-    }
-    // Files and terminal tabs are fetch-/push-driven — the poll keeps only the
-    // header current (and watches for the worktree vanishing) for them.
-    if (tab !== "changes") return;
-    if ($("#wdiff-feedback") && (key === diffKey || busy)) {
-      updateActions();
-      return;
-    }
-    // A non-adoptable worktree has no feedback box; still repaint when the patch
-    // changes (no comment state can be frozen there).
-    if (!meta.adoptable && $("#tabbody") && key === diffKey) return;
-    diffKey = key;
-    renderBody(meta, files);
-  };
-
-  // Tear down any mounted terminal/files pane when navigating away.
-  App.viewDispose = () => disposeAux();
 
   replaceWorktreeHash();
+  // Paint the surface first: neither the header seed nor the terminal list is
+  // worth an empty screen while a socket answers.
+  shell();
+  selectTab(tab);
+  // Seed the header so the bar names the branch even on a tab that never polls
+  // git.status. A rejection here is the worktree not resolving, which callRpc
+  // has already turned into the gone/handoff path.
+  callRpc("git.status", { ...scope }).catch(() => {});
+  // Then the worktree's open terminals, as tabs beside Changes and Files.
   await terminals.load();
-  await paint();
+  if (leaving) return;
+  if (shellCtl) shellCtl.setTabs(staticTabs());
   // The sheet already asked what should run here, so open it — after the first
   // paint, which is what gives newTerminal a tab row and a body to land in.
   if (pendingKind) await newTerminal(pendingKind);
-  App.poll = setInterval(paint, 1600);
 }

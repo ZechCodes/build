@@ -59,7 +59,10 @@ function dotHtml(entry) {
 }
 
 /** A row's floating git status: how far the branch has diverged, then what the
- *  working tree holds. Each part shows only when it has something to say. */
+ *  working tree holds uncommitted. Each part shows only when it has something to
+ *  say. The divergence is measured against the branch's upstream when it tracks
+ *  one and the base branch otherwise, so — since the same ↑2 means a different
+ *  thing either way — the row names which on hover. */
 function entryStatusHtml(status) {
   if (!status) return "";
   const parts = [];
@@ -67,7 +70,19 @@ function entryStatusHtml(status) {
   if (status.behind) parts.push(`<span class="ssync">↓${status.behind}</span>`);
   if (status.insertions) parts.push(`<em class="add">+${status.insertions}</em>`);
   if (status.deletions) parts.push(`<em class="del">-${status.deletions}</em>`);
-  return parts.length ? `<span class="sstat mono">${parts.join(" ")}</span>` : "";
+  if (!parts.length) return "";
+  return `<span class="sstat mono"${syncTitle(status)}>${parts.join(" ")}</span>`;
+}
+
+/** The ` title="…"` attribute naming what ahead/behind were measured against,
+ *  or "" when nothing diverged or the bridge did not say. The ref name comes
+ *  from the repo, so it is escaped like every other git-derived string. */
+function syncTitle(status) {
+  if (!status.syncBase || (!status.ahead && !status.behind)) return "";
+  const sides = [status.ahead ? `↑${status.ahead} ahead` : "", status.behind ? `↓${status.behind} behind` : ""]
+    .filter(Boolean)
+    .join(", ");
+  return ` title="${esc(sides)} of ${esc(status.syncBase)}"`;
 }
 
 /** The label under a row's name: what a run/issue is, when it has no git status

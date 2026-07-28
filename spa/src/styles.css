@@ -865,7 +865,50 @@ body.sidebar-collapsed #side-open { display:block; }
 /* ---- Agent + terminal panes ----
    Terminals fill their (bare) tab body edge to edge — the pane's own
    background is the section; no box, no padding, no leftover space below. */
-.termpane { position:relative; height:100%; overflow:hidden; background:var(--term-bg); }
+.termpane { position:relative; height:100%; overflow:hidden; background:var(--term-bg);
+  display:flex; flex-direction:column; }
+/* The screen is a box of its own inside the pane so the touch key bar can sit
+   BELOW it rather than over it — an overlaid bar would cover the bottom rows,
+   which is where the prompt lives. */
+.term-screen { flex:1 1 auto; min-height:0; position:relative; }
+/* ---- touch key bar (terminal/keyBar.js) ----
+   The keys a phone's soft keyboard does not have. Everything here is mixed out
+   of --term-bg/--term-fg rather than tokenized separately: the bar belongs to
+   the terminal, not to the page, so it should follow the terminal's colours in
+   whichever theme without a second set of tokens to keep in step. The armed and
+   locked states are the exception — they are affordances, and they take the
+   page's --accent so they read as the app's own.
+
+   One row that SHRINKS to fit rather than wrapping or scrolling: wrapping costs
+   a second row of the vertical space the terminal needs most, and scrolling
+   hides exactly the keys at the end of the row (→, ^C) that the row exists to
+   provide. The overflow rule is only the safety valve below ~330px, where
+   shrinking bottoms out at the keys' minimum width. */
+.termkeys { flex:0 0 auto; z-index:6; display:flex; align-items:center; gap:4px; flex-wrap:nowrap;
+  padding:6px calc(6px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px))
+          calc(6px + env(safe-area-inset-left, 0px));
+  background:color-mix(in srgb, var(--term-fg) 7%, var(--term-bg));
+  border-top:1px solid color-mix(in srgb, var(--term-fg) 18%, var(--term-bg));
+  overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+  scrollbar-width:none; touch-action:pan-x; }
+.termkeys::-webkit-scrollbar { display:none; }
+/* touch-action:pan-x, not the default: the press handler calls preventDefault on
+   pointerdown (to keep focus, and the keyboard, on the terminal), which would
+   otherwise also cancel a sideways drag started on a key. */
+.termkey { flex:0 1 auto; min-width:30px; height:40px; padding:0 6px;
+  background:color-mix(in srgb, var(--term-fg) 14%, var(--term-bg));
+  border:1px solid color-mix(in srgb, var(--term-fg) 26%, var(--term-bg));
+  border-radius:8px; color:var(--term-fg);
+  font-family:var(--mono); font-size:13px; line-height:1; white-space:nowrap; cursor:pointer;
+  touch-action:pan-x; user-select:none; -webkit-tap-highlight-color:transparent; }
+.termkey:active { background:color-mix(in srgb, var(--term-fg) 28%, var(--term-bg)); }
+/* Armed applies to the next key; locked applies until pressed off — one tap
+   apart, so they have to read differently at a glance, not just brighter: armed
+   is an accent-tinted key, locked is a filled one. */
+.termkey-mod.armed { background:color-mix(in srgb, var(--accent) 30%, var(--term-bg));
+  border-color:var(--accent); color:var(--term-fg); }
+.termkey-mod.locked { background:var(--accent); border-color:var(--accent);
+  color:var(--accent-ink); font-weight:700; }
 /* Per-pane connectivity chip (same visual family as .agent-idle) — shown while
    the shared terminal socket is not connected, over a dimmed frozen screen. */
 .term-conn { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:5;

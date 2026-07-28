@@ -6,6 +6,8 @@
 import { createTouchScroll, createWheelQuantizer } from "./touchScroll.js";
 import { createWheelReporter } from "./mouseWheel.js";
 import { terminalTheme } from "../core/theme.js";
+import { coarsePointer, mountKeyBar } from "./keyBar.js";
+import { applyModifiers, createStickyModifiers } from "./touchKeys.js";
 
 let ghosttyReady = null; // module-level: boot ghostty-web (wasm inlined) once per page.
 function loadGhostty() {
@@ -25,12 +27,20 @@ function loadGhostty() {
  *            no-op (user terminals swallow it). The agent pane passes a handler
  *            so a keystroke into a dead session surfaces "no active agent
  *            session" instead of silently doing nothing.
+ *   isTouchDevice — () => bool (optional): whether to grow the touch key bar.
+ *            Defaults to the pointer type; injected by tests.
  */
-export async function mountTerminalPane(host, { attach, input, resize, onExit, onInputError }) {
+export async function mountTerminalPane(host, { attach, input, resize, onExit, onInputError, isTouchDevice = coarsePointer }) {
   const { Terminal, FitAddon } = await loadGhostty();
   host.innerHTML = "";
+  // The terminal gets its own box rather than the whole host, so the touch key
+  // bar can be a sibling below it: a bar overlaid on the screen would cover the
+  // bottom rows, which is exactly where a shell's prompt lives.
+  const screen = document.createElement("div");
+  screen.className = "term-screen";
+  host.appendChild(screen);
   const term = new Terminal({ fontSize: 13, theme: terminalTheme() });
-  term.open(host);
+  term.open(screen);
 
   // A PTY app that tracks the mouse (Claude Code: DECSET 1000 + SGR 1006) gets
   // real scroll reports; without this, ghostty's alt-screen fallback turns the
@@ -44,32 +54,32 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
     },
     send: (data) => input(data).catch(() => {}), // a dead session drops scrolls quietly
   });
-  term.attachCustomWheelEventHandler?.((event) => wheelReporter(event, host.getBoundingClientRect()));
+  term.attachCustomWheelEventHandler?.((event) => wheelReporter(event, screen.getBoundingClientRect()));
 
   // ghostty-web registers only mouse/wheel listeners on the host, so on touch
   // devices a drag does nothing. Translate one-finger drags into synthetic
   // pixel-mode wheel events at the host — ghostty's own handleWheel then scrolls
   // scrollback on the normal screen and emits arrow keys on the alternate screen.
   // touch-action:none set here (not CSS) so it travels with every mount site.
-  host.style.touchAction = "none";
+  screen.style.touchAction = "none";
   const touchScroll = createTouchScroll({
     dispatchWheel: createWheelQuantizer({
       isAltScreen: () => term.buffer.active.type === "alternate",
       // Same fallback as ghostty's own pixel→line conversion when metrics are absent.
       getCellHeight: () => term.renderer?.getMetrics?.()?.height ?? 20,
-      emit: (deltaY) => host.dispatchEvent(new WheelEvent("wheel", {
+      emit: (deltaY) => screen.dispatchEvent(new WheelEvent("wheel", {
         deltaY, deltaMode: WheelEvent.DOM_DELTA_PIXEL, bubbles: true, cancelable: true,
       })),
     }),
     requestFrame: (cb) => window.requestAnimationFrame(cb),
     cancelFrame: (id) => window.cancelAnimationFrame(id),
   });
-  host.addEventListener("touchstart", touchScroll.onTouchStart, { passive: true });
-  host.addEventListener("touchmove", touchScroll.onTouchMove, { passive: false });
+  screen.addEventListener("touchstart", touchScroll.onTouchStart, { passive: true });
+  screen.addEventListener("touchmove", touchScroll.onTouchMove, { passive: false });
   // Capture: after a scroll drag, onTouchEnd stops propagation before ghostty's
   // canvas touchend handler focuses the textarea (which would pop the keyboard).
-  host.addEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
-  host.addEventListener("touchcancel", touchScroll.onTouchCancel);
+  screen.addEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
+  screen.addEventListener("touchcancel", touchScroll.onTouchCancel);
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -87,20 +97,37 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
   };
 
+  // The sticky Ctrl/Alt latch. It is shared with the key bar rather than owned
+  // by it, because a modifier armed on the bar has to apply to the keystroke
+  // that follows — and that keystroke comes from the SOFT KEYBOARD, through
+  // onData, which the bar never sees. Armed on the bar, spent here.
+  const sticky = createStickyModifiers();
+  const send = (data) => input(data).catch((err) => onInputError && onInputError(err));
+
   // A rejected input RPC on a live session is unexpected; on a DEAD session it
   // means the keystroke hit an ended agent — surface it (onInputError) rather
   // than swallow, so the caller can show the idle state. No handler → swallow
   // (a user terminal's transient failures self-heal on the next re-attach).
-  term.onData((data) => input(data).catch((err) => onInputError && onInputError(err)));
+  term.onData((data) => {
+    send(applyModifiers(data, sticky.pressed()));
+    sticky.consume();
+  });
   // A resize RPC that the bridge rejects on a healthy connection leaves the PTY
   // grid diverged from the rendering, so don't swallow it silently — log it
   // (disconnect/timeout failures still self-heal on the next reconnect's re-attach).
   term.onResize(({ cols, rows }) => resize(cols, rows).catch((err) => console.warn("terminal resize failed:", err)));
 
+  // Esc, Tab and the modifiers are simply absent from a phone's soft keyboard,
+  // so a touch device gets them as a bar under the screen. A pointer device has
+  // a real keyboard and gets nothing.
+  const keyBar = isTouchDevice()
+    ? mountKeyBar(host, { send, sticky, applicationCursor: () => term.getMode?.(1) ?? false })
+    : null;
+
   // Expose the most-recently-mounted/focused pane for the QA harness.
   const claim = () => { window.__buildTerminal = term; };
   claim();
-  host.addEventListener("focusin", claim);
+  screen.addEventListener("focusin", claim);
 
   await attach({
     cols: term.cols,
@@ -111,7 +138,7 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
   });
 
   const resizeObserver = new ResizeObserver(() => fit());
-  resizeObserver.observe(host);
+  resizeObserver.observe(screen);
   window.addEventListener("resize", fit);
 
   return {
@@ -120,12 +147,13 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
     dispose() {
       resizeObserver.disconnect();
       window.removeEventListener("resize", fit);
-      host.removeEventListener("focusin", claim);
-      host.removeEventListener("touchstart", touchScroll.onTouchStart);
-      host.removeEventListener("touchmove", touchScroll.onTouchMove);
-      host.removeEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
-      host.removeEventListener("touchcancel", touchScroll.onTouchCancel);
+      screen.removeEventListener("focusin", claim);
+      screen.removeEventListener("touchstart", touchScroll.onTouchStart);
+      screen.removeEventListener("touchmove", touchScroll.onTouchMove);
+      screen.removeEventListener("touchend", touchScroll.onTouchEnd, { capture: true });
+      screen.removeEventListener("touchcancel", touchScroll.onTouchCancel);
       touchScroll.dispose();
+      if (keyBar) keyBar.dispose();
       try { term.dispose?.(); } catch { /* ignore */ }
       host.innerHTML = "";
     },

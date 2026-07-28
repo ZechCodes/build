@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- interactive-widget: the on-screen keyboard shrinks the LAYOUT viewport, not
+         just the visual one, so a full-height surface (the terminal and its key bar)
+         resizes above the keyboard instead of being covered by it. Browsers that
+         ignore it are handled by the key bar's own visualViewport lift. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
     <title>Build — review is the product</title>
     <link rel="manifest" href="/app/static/manifest.webmanifest" />
     <meta name="theme-color" content="#fafafa" />

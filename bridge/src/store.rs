@@ -29,10 +29,12 @@
 //! reconstructable observation, not state. What is durable is what the review
 //! surfaces need — the lifecycle position and where the files live.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::attention::Attention;
 use crate::legacy::{Phase, Stage, StageComment, StageState, TaskKind, TaskState};
 use crate::models::AgentProvider;
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc, StageDocState};
@@ -284,6 +286,44 @@ impl Store {
     /// Where a task's record lives.
     pub fn path_for(&self, task_id: &str) -> PathBuf {
         self.dir.join(format!("{task_id}.json"))
+    }
+
+    /// Where the attention map lives: ONE file for runs, plans and worktrees
+    /// alike. A bare worktree has no record of its own — it is discovered by
+    /// scanning, not persisted — so attention cannot live on the entity, and
+    /// splitting it across two homes would mean two prune rules and two round
+    /// trips for one fact.
+    fn attention_path(&self) -> PathBuf {
+        // In its own directory, like runs/ and plans/: the store ROOT is scanned
+        // for legacy task records, and a store-level file sitting there would be
+        // read as a corrupt task on every boot.
+        self.dir.join("attention").join("map.json")
+    }
+
+    /// The attention map. A missing or unparseable file reads as empty: this is
+    /// ordering and colour, never correctness, and losing it costs one badly
+    /// sorted rail rather than a task.
+    pub fn load_attention(&self) -> HashMap<String, Attention> {
+        std::fs::read_to_string(self.attention_path())
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persist the attention map atomically, pruned to `live` — ids that no
+    /// longer exist (a deleted run, a removed worktree) drop out, so the file
+    /// tracks the world rather than growing forever.
+    pub fn save_attention(
+        &self,
+        attention: &HashMap<String, Attention>,
+        live: &HashSet<String>,
+    ) -> Result<(), StoreError> {
+        let kept: HashMap<&String, &Attention> = attention
+            .iter()
+            .filter(|(id, _)| live.contains(*id))
+            .collect();
+        let json = serde_json::to_string_pretty(&kept).expect("attention always serializes");
+        write_record_atomically(&self.attention_path(), &json)
     }
 
     /// Persist one legacy task record atomically and durably.
@@ -2403,5 +2443,48 @@ mod tests {
             tasks.join("task-x.json").is_file(),
             "the corrupt file is left in place for the human"
         );
+    }
+
+    /// Attention is ordering and colour, never correctness: it round-trips, it
+    /// prunes to the world that still exists, and a corrupt file costs a badly
+    /// sorted rail rather than a task.
+    #[test]
+    fn attention_round_trips_and_prunes_to_the_living() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        assert!(
+            store.load_attention().is_empty(),
+            "nothing until something is stamped"
+        );
+
+        let mut map = HashMap::new();
+        let mut run = Attention::default();
+        run.interact("2026-07-27T09:00:00Z");
+        run.see("2026-07-27T09:00:00Z");
+        map.insert("run-1".to_string(), run.clone());
+        let mut gone = Attention::default();
+        gone.interact("2026-07-20T09:00:00Z");
+        map.insert("wt-deleted".to_string(), gone);
+
+        let live: HashSet<String> = ["run-1".to_string()].into_iter().collect();
+        store.save_attention(&map, &live).unwrap();
+
+        let loaded = store.load_attention();
+        assert_eq!(
+            loaded.len(),
+            1,
+            "the deleted worktree dropped out: {loaded:?}"
+        );
+        assert_eq!(loaded.get("run-1"), Some(&run));
+    }
+
+    #[test]
+    fn a_corrupt_attention_file_reads_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join("attention")).unwrap();
+        std::fs::write(dir.path().join("attention").join("map.json"), "{not json").unwrap();
+        assert!(store.load_attention().is_empty());
     }
 }

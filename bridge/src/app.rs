@@ -445,6 +445,36 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// The verbs that count as the human acting on an entity, and the param naming
+/// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
+/// a queue you triage by reading and reading one IS engaging with it — while a
+/// worktree needs an action, since looking at a diff is not the same as doing
+/// something about it. An agent's own work never appears here; if it did, the
+/// rail would reorder itself while you watched.
+const INTERACTION_VERBS: &[(&str, &str)] = &[
+    ("plan.stage_doc", "plan_id"),
+    ("plan.approve", "plan_id"),
+    ("plan.stage_approve", "plan_id"),
+    ("plan.send_notes", "plan_id"),
+    ("plan.stage_send_notes", "plan_id"),
+    ("plan.comment_add", "plan_id"),
+    ("plan.comment_resolve", "plan_id"),
+    ("plan.message", "plan_id"),
+    ("plan.resume", "plan_id"),
+    ("plan.abandon", "plan_id"),
+    ("run.request_changes", "run_id"),
+    ("run.message", "run_id"),
+    ("run.git_action", "run_id"),
+    ("run.stage_dispatch", "run_id"),
+    ("run.stage_send_notes", "run_id"),
+    ("run.set_auto_advance", "run_id"),
+    ("run.resume", "run_id"),
+    ("run.abandon", "run_id"),
+    ("run.release", "run_id"),
+    ("run.adopt", "worktree_id"),
+    ("thread.post", "entity_id"),
+];
+
 /// How long a task's `task.list` diffstat is served from cache before the next
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 const TASK_STAT_TTL: Duration = Duration::from_secs(10);
@@ -766,6 +796,10 @@ pub struct AppState {
     /// entity id → the RFC 3339 time of its last *state transition* (vs
     /// `entity_updated_at`, which moves on every mutation).
     entity_state_changed_at: HashMap<String, String>,
+    /// When the human last touched each entity, and whether they have seen where
+    /// it got to — the rail's ordering and colour. Keyed by run id, plan id, or
+    /// worktree id alike (a bare worktree has no record of its own).
+    attention: HashMap<String, crate::attention::Attention>,
     /// entity id → the wire state string last seen by a mutation tail, so
     /// `entity_state_changed_at` only moves on real transitions.
     entity_last_state: HashMap<String, String>,
@@ -830,6 +864,7 @@ impl AppState {
             entity_created_at: HashMap::new(),
             entity_updated_at: HashMap::new(),
             entity_state_changed_at: HashMap::new(),
+            attention: HashMap::new(),
             entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
             term_shell: resolve_term_shell(),
@@ -930,6 +965,8 @@ impl AppState {
         store.migrate_legacy_tasks().map_err(|e| e.to_string())?;
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
+        // Attention survives a restart, or Monday would look like a fresh install.
+        self.attention = store.load_attention();
         self.store = Some(store);
         // Plans first: a run re-derives its `plan_path` from the owning plan's
         // record, so the plan must already be in the map.
@@ -1860,7 +1897,120 @@ impl AppState {
         }
     }
 
+    /// Stamp the entity a successful verb acted on, if that verb counts as an
+    /// interaction. One table rather than fifteen call sites: the policy is the
+    /// kind of thing that drifts when it lives next to the code it describes.
+    fn stamp_interaction_for(&mut self, method: &str, params: &Value, result: &Value) {
+        let param = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_string);
+        let mut touched: Vec<String> = INTERACTION_VERBS
+            .iter()
+            .filter(|(verb, _)| *verb == method)
+            .filter_map(|(_, key)| param(key))
+            .collect();
+        // Implementing an issue is an interaction with BOTH: the plan you acted
+        // on and the run you just made.
+        if method == "run.create" {
+            touched.extend(param("plan_id"));
+            touched.extend(
+                result
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            );
+        }
+        // A worktree Build itself cut enters the rail as already-interacted: you
+        // made it on purpose, and it is waiting for you to do something in it.
+        // (A worktree made outside Build stays in the Worktrees row until you
+        // act on it here — nothing stamps it, so nothing surfaces it.)
+        if method == "worktree.create" {
+            touched.extend(
+                result
+                    .get("worktree_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            );
+        }
+        for id in touched {
+            self.touch_attention(&id);
+        }
+    }
+
+    /// Record that the human acted on `id`, now.
+    fn touch_attention(&mut self, id: &str) {
+        let now = now_rfc3339();
+        self.attention
+            .entry(id.to_string())
+            .or_default()
+            .interact(&now);
+        self.persist_attention();
+    }
+
+    /// Record that the human has seen `id` as of its current state clock.
+    fn see_attention(&mut self, id: &str) {
+        let Some(state_changed_at) = self.entity_state_clock(id) else {
+            return;
+        };
+        self.attention
+            .entry(id.to_string())
+            .or_default()
+            .see(&state_changed_at);
+        self.persist_attention();
+    }
+
+    /// The entity's state clock — what a `seen` stamp is versioned against. A
+    /// bare worktree has no lifecycle of its own, so seeing it is simply now.
+    fn entity_state_clock(&self, id: &str) -> Option<String> {
+        Some(
+            self.entity_state_changed_at
+                .get(id)
+                .cloned()
+                .unwrap_or_else(now_rfc3339),
+        )
+    }
+
+    /// Write the attention map, pruned to the entities that still exist. Cheap
+    /// (one small file) and done on every stamp, so a crash costs at most the
+    /// action in flight rather than the day's ordering.
+    fn persist_attention(&mut self) {
+        let Ok(store) = self.require_store() else {
+            return;
+        };
+        let live: std::collections::HashSet<String> = self
+            .runs
+            .keys()
+            .chain(self.plans.keys())
+            .cloned()
+            .chain(self.attention_worktree_ids())
+            .collect();
+        if let Err(e) = store.save_attention(&self.attention, &live) {
+            eprintln!("attention: {e}");
+        }
+    }
+
+    /// Worktree ids worth keeping attention for: every one the scan can still
+    /// see. Their records live nowhere else, so the scan IS the liveness test.
+    fn attention_worktree_ids(&self) -> Vec<String> {
+        self.projects
+            .iter()
+            .filter_map(|p| p.external_scan.as_ref())
+            .flat_map(|cache| cache.worktrees.iter().map(|w| w.id.clone()))
+            .collect()
+    }
+
+    /// Route a verb, then record it if it counts as the human touching
+    /// something. Wrapped here rather than in `handle` because the relay calls
+    /// `dispatch` directly — `handle` is a test convenience, so stamping there
+    /// would have worked in every test and in no real session.
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+        let outcome = self.route(method, params);
+        if let Ok(result) = &outcome {
+            // Only a verb that SUCCEEDED counts: a rejected action never happened.
+            self.stamp_interaction_for(method, params, result);
+        }
+        outcome
+    }
+
+    fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "ping" => Ok(json!({ "pong": true })),
             "models.list" => Ok(json!({
@@ -1931,6 +2081,7 @@ impl AppState {
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
             "worktree.create" => self.worktree_create(params),
+            "entity.seen" => self.entity_seen(params),
             "worktree.diff" => self.worktree_diff(params),
             "stream.events" => self.stream_events(params),
             "stream.state" => self.stream_state(params),
@@ -2709,6 +2860,13 @@ impl AppState {
     /// registration order. A per-project scan failure is already logged inside
     /// `external_worktrees`; it just contributes nothing here.
     fn external_worktrees_json(&mut self) -> Vec<Value> {
+        // Resolved up front: the loop below holds a &mut borrow of the scan
+        // cache, and attention_json needs &self.
+        let attention_of: std::collections::HashMap<String, Value> = self
+            .attention
+            .keys()
+            .map(|id| (id.clone(), self.attention_json(id)))
+            .collect();
         let projects: Vec<(String, String, String)> = self
             .projects
             .iter()
@@ -2737,6 +2895,15 @@ impl AppState {
                         "deletions": w.diffstat.deletions,
                     },
                     "adoptable": adoptable,
+                    // A worktree Build cut carries attention from birth, so it
+                    // surfaces in the rail as something waiting for you. One made
+                    // outside Build has none until you act on it here, and stays
+                    // in the Worktrees row until then.
+                    "attention": attention_of.get(&w.id).cloned().unwrap_or_else(|| json!({
+                        "resume_at": Value::Null,
+                        "interacted": false,
+                        "seen": false,
+                    })),
                 }));
             }
         }
@@ -3149,6 +3316,15 @@ impl AppState {
             "name": worktree.name,
             "path": canonical.display().to_string(),
         }))
+    }
+
+    /// `entity.seen` — the human has looked at this run/plan/worktree as it
+    /// stands. Versioned against the entity's state clock, so a later change
+    /// makes it unseen again rather than staying read forever.
+    fn entity_seen(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        self.see_attention(&entity_id);
+        Ok(json!({ "ok": true }))
     }
 
     fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -4411,6 +4587,29 @@ impl AppState {
     /// id of its active run if any (single-active-writer → at most one).
     /// `thread_detail` picks a bounded digest (list surfaces) or the full
     /// conversation (detail surfaces + mutation responses).
+    /// The rail's two facts about an entity: when this stretch of work on it
+    /// began (its sort key) and whether the human has seen where it got to. The
+    /// seen comparison happens HERE, against the state clock, so every surface
+    /// agrees on it rather than each re-deriving it.
+    fn attention_json(&self, id: &str) -> Value {
+        let attention = self.attention.get(id).cloned().unwrap_or_default();
+        let created_at = self
+            .entity_created_at
+            .get(id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        let state_changed_at = self
+            .entity_state_changed_at
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| created_at.clone());
+        json!({
+            "resume_at": attention.sort_key(&created_at),
+            "interacted": attention.last_interaction_at.is_some(),
+            "seen": attention.has_seen(&state_changed_at),
+        })
+    }
+
     fn plan_view(&self, plan_id: &str, active: &ActivePlan, thread_detail: ThreadDetail) -> Value {
         let project_id = self
             .entity_project
@@ -4433,6 +4632,7 @@ impl AppState {
             "goal": active.plan.goal,
             "state": plan_state_str(&active.plan.state),
             "needs_attention": active.plan.state.needs_attention(),
+            "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
             "project": project,
@@ -4485,6 +4685,7 @@ impl AppState {
             "goal": active.run.goal,
             "state": run_state_str(&active.run.state),
             "needs_attention": active.run.state.needs_attention(),
+            "attention": self.attention_json(run_id),
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
             "base_sha": active.base_sha,
@@ -5581,7 +5782,22 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
 
     let result = match method.as_str() {
         "stream.start" => stream_start(state, &params),
-        "term.create" => term_create(state, &params),
+        // Opening a terminal or an agent in a worktree IS interacting with it in
+        // Build — it is the reason a hand-made worktree graduates out of the
+        // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
+        "term.create" => {
+            let created = term_create(state, &params);
+            if created.is_ok() {
+                if let Some(scope_id) = params
+                    .get("run_id")
+                    .or_else(|| params.get("worktree_id"))
+                    .and_then(Value::as_str)
+                {
+                    state.lock().unwrap().touch_attention(scope_id);
+                }
+            }
+            created
+        }
         "term.attach" => term_attach(state, &sender, &params),
         "agent.attach" => agent_attach(state, &sender, &params),
         _ => state.lock().unwrap().dispatch(&method, &params),
@@ -10896,5 +11112,169 @@ mod tests {
         assert_eq!(entry["behind"], 0, "{entry:?}");
         assert!(entry["files_changed"].as_u64().unwrap() >= 1, "{entry:?}");
         let _ = origin;
+    }
+
+    // ---- attention: what the rail orders and colours itself by ---------------
+
+    fn attention_of(state: &mut AppState, id: &str) -> Value {
+        let board = state.handle(req("board.list", json!({})));
+        for key in ["runs", "plans", "external_worktrees"] {
+            if let Some(list) = board["result"][key].as_array() {
+                for entry in list {
+                    let entry_id = entry["run_id"]
+                        .as_str()
+                        .or_else(|| entry["plan_id"].as_str())
+                        .or_else(|| entry["worktree_id"].as_str());
+                    if entry_id == Some(id) {
+                        return entry["attention"].clone();
+                    }
+                }
+            }
+        }
+        panic!("{id} not on the board: {board:?}");
+    }
+
+    /// Reading a stage doc IS engaging with an issue — they are a queue you
+    /// triage by reading — so it stamps. A run needs an action.
+    #[test]
+    fn opening_a_stage_counts_as_touching_an_issue_but_reading_a_run_does_not() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "attention");
+
+        // A fresh run made by implementing: the implement stamped it.
+        assert_eq!(attention_of(&mut state, &run_id)["interacted"], true);
+
+        // Reading the run changes nothing about interaction.
+        let before = attention_of(&mut state, &run_id);
+        state.handle(req("run.get", json!({ "run_id": run_id })));
+        state.handle(req("run.diff", json!({ "run_id": run_id })));
+        assert_eq!(
+            attention_of(&mut state, &run_id),
+            before,
+            "reading is not acting"
+        );
+
+        // Opening a stage doc stamps the issue.
+        let mut fresh = qa_state(&repo, dir.path());
+        let plan = fresh.handle(req("plan.create", json!({ "goal": "queue item" })));
+        let queued = plan_id_of(&plan);
+        assert_eq!(attention_of(&mut fresh, &queued)["interacted"], false);
+        fresh.handle(req(
+            "plan.stage_doc",
+            json!({ "plan_id": queued, "stage_id": "first-half" }),
+        ));
+        assert_eq!(attention_of(&mut fresh, &queued)["interacted"], true);
+        let _ = plan_id;
+    }
+
+    /// A rejected verb never happened, so it cannot count as touching anything.
+    #[test]
+    fn a_refused_action_does_not_stamp() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "never approved" })));
+        let plan_id = plan_id_of(&plan);
+        let refused = state.handle(req(
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "no-such-stage" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(attention_of(&mut state, &plan_id)["interacted"], false);
+    }
+
+    /// A worktree Build cut is something you asked for, so it arrives already
+    /// touched and surfaces in the rail. One made outside Build waits in the
+    /// Worktrees row until you act on it here.
+    #[test]
+    fn a_build_made_worktree_arrives_touched_and_a_hand_made_one_does_not() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "spike" }),
+        ));
+        let build_made = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
+        state.external_worktrees(&project_id, true).unwrap();
+        let hand_made = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("by-hand"))
+            .expect("the hand-made worktree is discoverable")
+            .id;
+
+        assert_eq!(attention_of(&mut state, &build_made)["interacted"], true);
+        assert_eq!(attention_of(&mut state, &hand_made)["interacted"], false);
+    }
+
+    /// Seen is versioned: looking at something does not make it seen forever.
+    #[test]
+    fn seeing_an_entity_lasts_only_until_it_moves() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "seen versioning");
+
+        assert_eq!(attention_of(&mut state, &run_id)["seen"], false);
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        assert_eq!(attention_of(&mut state, &run_id)["seen"], true);
+
+        // It moves on: unseen again, without anyone clearing a flag.
+        std::thread::sleep(Duration::from_millis(1100));
+        state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(attention_of(&mut state, &run_id)["seen"], false);
+    }
+
+    /// The relay calls `dispatch` directly — `handle` is a test convenience — so
+    /// a stamp wired into `handle` would pass every test and fire in no real
+    /// session. This drives the wire path the daemon actually uses.
+    #[tokio::test]
+    async fn stamping_happens_on_the_path_the_relay_uses() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "worktree.create",
+                json!({ "project_id": project_id, "name": "over the wire" }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let worktree_id = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            state.lock().unwrap().attention.contains_key(&worktree_id),
+            "the wire path must stamp too"
+        );
+    }
+
+    /// Attention outlives the daemon, or Monday would look like a fresh install.
+    #[test]
+    fn attention_survives_a_restart() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let (_, id) = planned_run_in_review(&mut state, "durable attention");
+            run_id = id;
+            state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+            assert_eq!(attention_of(&mut state, &run_id)["seen"], true);
+        }
+        let mut reloaded = qa_state(&repo, dir.path());
+        let after = attention_of(&mut reloaded, &run_id);
+        assert_eq!(after["seen"], true, "{after:?}");
+        assert_eq!(after["interacted"], true, "{after:?}");
     }
 }

@@ -45,15 +45,20 @@
   --bg:#15171c; --panel:#15171c; --panel2:#1b1e25;
   --ink:#e3e6ee; --ink2:#a6adbb; --dim:#6e7684;
   --line:#282c35; --line2:#1e222a; --line3:#3b414d;
-  --accent:#7c80ff; --accent-soft:#1f2338; --accent-ink:#101218;
+  /* Neon green, kept to the cool side of green on purpose: the lime side runs
+     into --amber (pending review), and it has to stay louder than --green
+     (merged, passed) so an affordance never reads as a state. */
+  --accent:#2bff88; --accent-soft:#102a1c; --accent-ink:#06170e;
   --green:#3ddc84; --green-bg:#122318;
   --red:#ff5c72; --red-bg:#2a1620;
   --amber:#ffd447; --amber-bg:#2b2210;
   --violet:#c4a2ff;
-  --code-bg:#1b1e26; --sel:#2f3a6b;
+  /* Selection is an accent surface — it follows the accent's hue, as the light
+     theme's indigo-tinted --sel follows its own. */
+  --code-bg:#1b1e26; --sel:#1c4a35;
   --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.62); --shadow-soft:rgba(0,0,0,.45);
   --pop-bg:#242833; --pop-ink:#e3e6ee; --pop-warn:#ffd447;
-  --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2030;
+  --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2028;
   --hl-bg:#3a2f10; --hl-ln:#4a3c12; --hl-ink:#ffd447; --mark:#4a3c12;
   --term-bg:#15171c; --term-fg:#c3cae0;
 }

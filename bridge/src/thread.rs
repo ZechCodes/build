@@ -307,6 +307,16 @@ impl Thread {
         self.last_completion = Some(report.clone());
     }
 
+    pub fn post_completion(&mut self, summary: impl Into<String>, now: impl Into<String>) {
+        self.post_message(
+            MessageRole::Agent,
+            MessageSource::Completion,
+            summary.into(),
+            None,
+            now.into(),
+        );
+    }
+
     fn post_message(
         &mut self,
         role: MessageRole,

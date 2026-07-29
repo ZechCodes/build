@@ -142,33 +142,14 @@ function eventHtml(event, agentLabel = "Agent") {
   </div>`;
 }
 
-function conciseLine(value, fallback) {
-  return String(value || "")
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line && !/^[-*]\s/.test(line)) || fallback;
-}
-
-function completionHtml(request, summary, agentLabel, createdAt) {
-  const body = `**Requested**\n${conciseLine(request, "Complete the current task.")}\n\n**Done**\n${conciseLine(summary, "Completed.")}`;
-  return messageHtml({ role: "agent", source: "completion", body, created_at: createdAt }, agentLabel);
-}
-
-function timelineHtml(items, agentLabel, initialRequest) {
-  let currentRequest = initialRequest;
-  const rendered = [];
-  for (const item of items) {
-    if (item.type === "message") {
-      const message = item.data || {};
-      if (message.role === "user" && String(message.body || "").trim()) currentRequest = message.body.trim();
-      if (message.source !== "completion") rendered.push(messageHtml(message, agentLabel));
-      continue;
-    }
-    const event = item.data || {};
-    rendered.push(eventHtml(event, agentLabel));
-    if (event.event === "done") rendered.push(completionHtml(currentRequest, event.summary, agentLabel, event.created_at));
-  }
-  return rendered;
+function timelineHtml(items, agentLabel) {
+  return items.flatMap((item) => {
+    if (item.type !== "message") return [eventHtml(item.data || {}, agentLabel)];
+    const message = item.data || {};
+    // Old bridges persisted the noisy structured handoff as a chat message.
+    if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
+    return [messageHtml(message, agentLabel)];
+  });
 }
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
@@ -221,7 +202,7 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const renderedItems = timelineHtml(items, agentLabel, initialMessage);
+  const renderedItems = timelineHtml(items, agentLabel);
   const itemCount = renderedItems.length;
   return `<section class="review-thread">
     <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>

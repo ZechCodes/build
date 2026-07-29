@@ -51,10 +51,13 @@ describe("conversation thread rendering", () => {
     expect(document.querySelectorAll(".thread-event-icon")).toHaveLength(3);
   });
 
-  it("keeps done as status and renders one concise requested/done message", () => {
+  it("keeps done as status and renders the agent-authored completion message", () => {
     const html = threadHtml(
       {
-        items: [{ type: "event", data: { event: "done", summary: "Implemented persistent review conversations.\n- Changed four files\n- Ran every test" } }],
+        items: [
+          { type: "event", data: { event: "done", summary: "Implemented persistent review conversations." } },
+          { type: "message", data: { role: "agent", source: "completion", body: "Implemented persistent review conversations." } },
+        ],
         last_completion: {
           critical_files: ["src/plan.js"],
           risk_notes: ["Keep the durable thread intact."],
@@ -62,7 +65,7 @@ describe("conversation thread rendering", () => {
           skips: [],
         },
       },
-      { initialMessage: "Make review conversations persistent\n- include every implementation detail", composer: true },
+      { initialMessage: "Make review conversations persistent", composer: true },
     );
 
     document.body.innerHTML = html;
@@ -70,12 +73,7 @@ describe("conversation thread rendering", () => {
     expect(messages[0].classList.contains("user")).toBe(true);
     expect(messages[0].textContent).toContain("Make review conversations persistent");
     expect(messages.at(-1).classList.contains("agent")).toBe(true);
-    expect(messages.at(-1).textContent).toContain("Requested");
-    expect(messages.at(-1).textContent).toContain("Make review conversations persistent");
-    expect(messages.at(-1).textContent).not.toContain("include every implementation detail");
-    expect(messages.at(-1).textContent).toContain("Done");
     expect(messages.at(-1).textContent).toContain("Implemented persistent review conversations.");
-    expect(messages.at(-1).textContent).not.toContain("Changed four files");
     expect(messages.at(-1).textContent).not.toContain("Critical files");
     expect(messages.at(-1).textContent).not.toContain("src/plan.js");
     expect(document.querySelector(".thread-event").textContent).toContain("Agent reported done");
@@ -114,8 +112,7 @@ describe("conversation thread rendering", () => {
       ],
       last_completion: { critical_files: ["src/app.rs"], risk_notes: [], decisions: [], skips: [] },
     }, { initialMessage: "Fix the bug" });
-    expect(document.querySelectorAll(".thread-completion")).toHaveLength(1);
-    expect(document.querySelector(".thread-completion").textContent).not.toContain("src/app.rs");
+    expect(document.querySelectorAll(".thread-completion")).toHaveLength(0);
   });
 
   it("identifies the harness that reported completion", () => {
@@ -124,7 +121,7 @@ describe("conversation thread rendering", () => {
       items: [
         { type: "event", data: { event: "session_started" } },
         { type: "event", data: { event: "done", summary: "Finished the task." } },
-        { type: "message", data: { role: "agent", source: "completion", body: "Done" } },
+        { type: "message", data: { role: "agent", source: "completion", body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
     const completionHead = document.querySelector(".thread-completion .thread-message-head").textContent;

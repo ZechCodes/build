@@ -6869,6 +6869,9 @@ fn record_report_in_thread(
         _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
     };
     thread.push_event(event, Some(summary), None, None, &now);
+    if event == crate::thread::ThreadEventKind::Done {
+        thread.post_completion(&report.summary, &now);
+    }
     if let Some(completion) = &report.outputs.completion_report {
         thread.remember_completion(completion);
     }
@@ -12992,7 +12995,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_records_status_details_without_completion_report_messages() {
+    fn conversation_records_status_details_and_agent_authored_done_messages() {
         let mut thread = crate::thread::Thread::new("run-activity");
         record_report_in_thread(
             &mut thread,
@@ -13048,6 +13051,24 @@ mod tests {
             thread.last_completion.as_ref().unwrap().critical_files,
             vec!["src/app.rs"]
         );
+
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Fixed and deployed the renderer.".into(),
+                outputs: DoneOutputs::default(),
+            },
+            None,
+        );
+        assert!(thread.items.iter().any(|item| matches!(
+            item,
+            crate::thread::ThreadItem::Message(message)
+                if message.role == crate::thread::MessageRole::Agent
+                    && message.source == crate::thread::MessageSource::Completion
+                    && message.body == "Fixed and deployed the renderer."
+        )));
     }
 
     #[test]

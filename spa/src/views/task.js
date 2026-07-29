@@ -8,7 +8,6 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { mountSplitButton } from "../core/splitButton.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { canDelete, canAbandon, bannerText, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
@@ -33,6 +32,15 @@ export const taskSurfaceTabs = ({ multiStage = false, terminalTabs = [] } = {}) 
   AGENT_TAB,
   ...terminalTabs,
 ];
+
+export function taskRemovalAction(model = {}) {
+  if (!canAbandon(model.state)) return null;
+  return {
+    id: "abandonTask",
+    label: model.adopted ? "Abandon & delete" : "Abandon",
+    busyLabel: "abandoning…",
+  };
+}
 
 export async function renderTask() {
   const root = $("#root");
@@ -257,14 +265,10 @@ export async function renderTask() {
     }
   };
 
-  // Removal actions, mapped to the bridge RPCs by the run's state: Delete
-  // (run.delete) for a terminal run; for a live run an Abandon (run.abandon)
-  // button — and for a live *adopted* run a split button whose default is the
-  // non-destructive Release (run.release, keeps the user's files).
-  // The run's lifecycle verbs, mounted at the end of its conversation (the bar
-  // holds tabs and a branch only). There is no "Message agent" any more: the
-  // conversation's own composer is the channel, and a second door to the same
-  // room was only ever a way to lose track of which one you spoke through.
+  // Removal actions live quietly at the end of the conversation. Terminal runs
+  // can be deleted; live runs can be abandoned. Adopted runs deliberately do
+  // not offer Release here: keeping that housekeeping verb as the bright
+  // default action overwhelmed the actual conversation.
   const wireActions = (el, m) => {
     if (!el) return;
     const state = m && m.state;
@@ -288,45 +292,29 @@ export async function renderTask() {
       };
       return;
     }
-    if (!canAbandon(state)) {
+
+    const action = taskRemovalAction(m);
+    if (!action) {
       el.innerHTML = "";
       return;
     }
-    const options = m.adopted
-      ? [
-          { id: "release", label: "Release", description: "un-adopt: drop the task, keep the worktree, branch, and all files", busyLabel: "releasing…" },
-          { id: "abandon_delete", label: "Abandon & delete", description: "delete the worktree and branch; the task stays as history", busyLabel: "abandoning…", danger: true },
-        ]
-      : [{ id: "abandon_delete", label: "Abandon", description: "delete the worktree and branch; the task stays as history", busyLabel: "abandoning…" }];
-    const run = async (optionId) => {
-      if (optionId === "release") {
-        // Release is non-destructive — no modal.
-        localError = null; // a fresh action clears any stale local error
-        try {
-          await App.call("run.release", { run_id: id });
-          goHome();
-        } catch (e) {
-          localError = "error: " + e.message.slice(0, 80);
-          showBanner(localError);
-          throw e;
-        }
-        return;
-      }
-      // The step-outline modal replaces window.confirm; a cancel throws before
-      // the RPC (and before touching localError) so the split button restores
-      // and the view stays untouched.
-      if (!(await confirmAction(abandonConfirm({ adopted: m.adopted, branch: m.branch })))) throw new Error("cancelled");
-      localError = null; // a fresh action clears any stale local error
+    el.innerHTML = `<button class="btn danger mini" id="${esc(action.id)}">${esc(action.label)}</button>`;
+    const btn = el.querySelector("button");
+    btn.onclick = async () => {
+      if (!(await confirmAction(abandonConfirm({ adopted: m.adopted, branch: m.branch })))) return;
+      localError = null;
+      btn.disabled = true;
+      btn.textContent = action.busyLabel;
       try {
         await App.call("run.abandon", { run_id: id });
         paint();
       } catch (e) {
+        btn.disabled = false;
+        btn.textContent = action.label;
         localError = "error: " + e.message.slice(0, 80);
         showBanner(localError);
-        throw e;
       }
     };
-    mountSplitButton(el, { options, run });
   };
 
   loadModelCatalog(); // warm the selector catalog before the Stages Start control needs it

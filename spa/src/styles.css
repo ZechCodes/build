@@ -657,12 +657,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    composer (it sits in the scroll, so lifting it clears the FAB at rest),
    horizontal for the action bar (pinned to the bottom, so it can only move in). */
 :root { --fab-clear:184px; }
-/* Sideways, not upwards: lifting the composer only worked until the mini FAB
-   was revealed above the primary, which reaches higher than any margin worth
-   spending. Moving the buttons left of the FAB's column clears both at rest and
-   on hover, and costs no vertical space. */
+/* The centered conversation column ends before the desktop FAB begins. Keep
+   only a little breathing room below its compact composer; sticky action bars
+   still need explicit horizontal clearance because they span the viewport. */
 .thread-composer { margin-bottom:26px; }
-.thread-composer-actions { padding-right:var(--fab-clear); }
 .actionbar .right { padding-right:var(--fab-clear); }
 .fab-stack { display:flex; flex-direction:column-reverse; align-items:flex-end; gap:10px; }
 /* The one place the accent is allowed to glow: its own colour, spread. */
@@ -956,7 +954,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .confirm-steps { margin:12px 0; padding-left:20px; font-size:13px; color:var(--ink2); display:flex; flex-direction:column; gap:6px; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
-.review-thread { margin:18px 0; background:transparent; }
+.review-thread { width:min(100%, 920px); margin:18px auto; background:transparent; }
 #planthread { max-width:820px; }
 .thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; font-weight:650; }
 /* Where the entity stands, on the record that explains how it got there.
@@ -966,7 +964,7 @@ body.sidebar-collapsed #side-open { display:block; }
    same place the decision would be made in a conversation. */
 .thread-actions:empty { display:none; }
 .thread-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px;
-  margin:14px 0 14px 44px; padding-top:14px; border-top:1px solid var(--line); }
+  margin:10px 0 8px 44px; padding-top:10px; border-top:1px solid var(--line); }
 .thread-title span { color:var(--dim); font-size:11px; font-weight:500; }
 .thread-timeline { position:relative; display:flex; flex-direction:column; gap:18px; padding:18px 0; }
 .thread-timeline::before { content:""; position:absolute; top:0; bottom:0; left:18px; width:2px; background:var(--line); }
@@ -1008,10 +1006,14 @@ body.sidebar-collapsed #side-open { display:block; }
 .thread-revision-head button { border:0; background:none; color:var(--dim); cursor:pointer; font-size:16px; }
 .thread-revision-view pre { margin:0; padding:12px; max-height:52vh; overflow:auto; border-top:1px solid var(--line2); font:11px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
 .thread-completion .thread-comment-card { border-color:color-mix(in srgb, var(--accent) 35%, var(--line)); }
-.thread-composer { margin-left:44px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
-.thread-composer textarea { display:block; width:100%; min-height:72px; resize:vertical; border:1px solid var(--line); border-radius:8px; padding:9px 10px; background:var(--bg); color:var(--ink); font:13px/1.45 var(--sans); }
+.thread-composer { margin-left:44px; }
+.thread-composer textarea { display:block; width:100%; min-height:54px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:11px 12px; background:var(--bg); color:var(--ink); font:13px/1.45 var(--sans); }
 .thread-composer textarea:focus { outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color:var(--accent); }
-.thread-composer-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
+.thread-composer-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:7px; }
+@media (max-width: 900px) {
+  /* On narrow screens the centered column reaches the fixed create button. */
+  .thread-composer-actions { padding-right:var(--fab-clear); }
+}
 @media (max-width: 640px) {
   .thread-timeline::before { left:15px; }
   .thread-message, .thread-composer, .thread-revision-view { margin-left:38px; }

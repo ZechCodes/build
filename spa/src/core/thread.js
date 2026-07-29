@@ -246,8 +246,8 @@ function composerHtml(composer) {
     ...(composer === true ? {} : composer),
   };
   return `<div class="thread-composer">
-    <textarea id="${esc(inputId)}" rows="3" placeholder="${esc(placeholder)}"></textarea>
-    <div class="thread-composer-actions"><span class="hint" id="${esc(hintId)}"></span><button class="btn primary" id="${esc(sendId)}">Send</button></div>
+    <textarea id="${esc(inputId)}" rows="2" placeholder="${esc(placeholder)}"></textarea>
+    <div class="thread-composer-actions"><span class="hint" id="${esc(hintId)}"></span><button class="btn primary mini" id="${esc(sendId)}">Send</button></div>
   </div>`;
 }
 

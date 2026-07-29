@@ -124,8 +124,10 @@ describe("conversation thread rendering", () => {
     expect(document.querySelectorAll("#planthreadinput")).toHaveLength(1);
     expect(document.querySelectorAll("#diffthreadinput")).toHaveLength(1);
     expect(document.querySelector("#diffthreadinput").placeholder).toBe("Ask the coding agent…");
+    expect(document.querySelector("#diffthreadinput").rows).toBe(2);
     expect(document.querySelector("#diffthreadhint")).not.toBeNull();
     expect(document.querySelector("#diffthreadsend").textContent).toBe("Send");
+    expect(document.querySelector("#diffthreadsend").classList.contains("mini")).toBe(true);
   });
 
   it("does not duplicate a sequenced completion message with the legacy fallback", () => {

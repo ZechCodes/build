@@ -149,6 +149,40 @@ jobs:
         if: failure()
         run: docker compose -f deploy/compose.real.yml logs --tail 150
 
+  # The app tier's own gate, and the reason it no longer waits on Rust. The web
+  # client had NO unit job here at all: its 800+ vitest tests ran only on a
+  # developer's machine, while its deploy was gated on a bridge compile that
+  # cannot fail because of anything in spa/. This inverts that — fast checks on
+  # the tier that changed, heavy ones on the tier that needs them.
+  spa:
+    name: Web client unit tests
+    needs: [changes]
+    if: ${{ needs.changes.outputs.app == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: spa/package-lock.json
+      # `@build/secure-transport` is `file:../../build-secure-transport/js` — a
+      # SIBLING of the repo root, the same convention skriftapp/Containerfile
+      # satisfies by cloning it next to the source. npm resolves the path at
+      # install time, so it has to exist on disk before the install runs.
+      - name: Clone build-secure-transport beside the checkout
+        run: |
+          git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git \
+            "${{ github.workspace }}/../build-secure-transport"
+          npm install --no-audit --no-fund \
+            --prefix "${{ github.workspace }}/../build-secure-transport/js"
+      - name: Install
+        working-directory: spa
+        run: npm install --no-audit --no-fund
+      - name: vitest
+        working-directory: spa
+        run: npx vitest run
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -173,17 +207,19 @@ jobs:
   # failure — while a real failure must still build nothing. `secrets` is
   # ungated, so it is the one that has to have actually succeeded.
 
+  # Gated on the app's OWN checks only. `bridge`, `interop` and `web-e2e` all
+  # compile Rust — `web-e2e` builds the whole stack in Docker — and none of them
+  # can go red because of a change under spa/. Waiting on them cost ~10 minutes
+  # per stylesheet. They still gate `build-relay`, which is the tier they test.
   build-app:
     name: build-app image (skriftapp)
-    needs: [changes, bridge, interop, web-e2e, secrets]
+    needs: [changes, spa, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
-          && needs.bridge.result != 'failure'
-          && needs.interop.result != 'failure'
-          && needs['web-e2e'].result == 'success'
+          && needs.spa.result == 'success'
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -250,16 +286,28 @@ jobs:
             ${{ env.REGISTRY }}/build-relay:latest
             ${{ env.REGISTRY }}/build-relay:${{ github.sha }}
 
-  deploy:
-    name: Deploy to production (ns 8ly)
-    needs: [changes, build-app, build-relay]
+  # One rollout job per tier, not one job holding both. A single deploy job has
+  # to wait for BOTH image jobs before it starts, so the app — whose image is
+  # ready in ~3 min — sat waiting on a relay build it shares nothing with. Split,
+  # the web client ships as soon as its own image exists.
+  #
+  # Each still applies its manifest ONLY when its image job actually succeeded.
+  # Applying a manifest whose image was never built pins the Deployment to a
+  # :SHA tag that is not in the registry — an ImagePullBackOff in production,
+  # and for the relay a Recreate that never comes back. The gate is the image
+  # job's own result, NOT "did this tier change": `changes.outputs.app` only says
+  # the tier moved, and the image job can still be SKIPPED by a red check above
+  # it. On 2026-07-29 those two facts took getbuild.ing down — web-e2e went red,
+  # build-app was skipped, the roll applied `:<sha>` anyway, and the rollout
+  # replaced a serving pod with one that could not pull.
+  deploy-app:
+    name: Deploy the app (ns 8ly)
+    needs: [changes, build-app]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
-          && (needs.changes.outputs.app == 'true' || needs.changes.outputs.relay == 'true')
-          && needs['build-app'].result != 'failure' && needs['build-app'].result != 'cancelled'
-          && needs['build-relay'].result != 'failure' && needs['build-relay'].result != 'cancelled' }}
+          && needs['build-app'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -272,36 +320,50 @@ jobs:
       - name: Configure kubectl
         run: doctl kubernetes cluster kubeconfig save production-hosting
 
-      # One manifest per tier, each applied ONLY when its image job ran. Applying
-      # a manifest whose image was never built would pin the Deployment to a
-      # :SHA tag that does not exist in the registry — an ImagePullBackOff in
-      # production, and for the relay a Recreate that never comes back.
-      # The gate is the image job's own result, NOT "did this tier change".
-      # `changes.outputs.app` only says the tier moved; the image job can still
-      # be SKIPPED (a red check upstream), and the job-level `if` deliberately
-      # tolerates skipped so a push touching one tier can deploy that tier. On
-      # 2026-07-29 those two facts combined took getbuild.ing down: web-e2e went
-      # red, build-app was skipped, this step applied `:<sha>` anyway, and the
-      # rollout replaced a serving pod with an ImagePullBackOff.
       - name: Roll the app (spa + skriftapp)
-        if: needs['build-app'].result == 'success'
         run: |
           sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml | kubectl -n 8ly apply -f -
           kubectl -n 8ly rollout status deployment/build-app --timeout=300s
 
-      - name: Roll the relay (bridge)
-        if: needs['build-relay'].result == 'success'
-        run: |
-          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
-          kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
-
-      - name: Verify public endpoints
+      - name: Verify the app is serving
         # The ingress needs a moment to switch endpoints after the rollout.
         run: |
           verify() {
             curl -sf -o /dev/null https://getbuild.ing/healthz &&
-            curl -sf -o /dev/null https://relay.getbuild.ing/health &&
             test "$(curl -s -o /dev/null -w '%{http_code}' https://getbuild.ing/)" = "302"
           }
           for i in $(seq 1 12); do verify && exit 0; sleep 5; done
           verify
+
+  deploy-relay:
+    name: Deploy the relay (ns 8ly)
+    needs: [changes, build-relay]
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
+          && needs['build-relay'].result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Configure kubectl
+        run: doctl kubernetes cluster kubeconfig save production-hosting
+
+      - name: Roll the relay (bridge)
+        run: |
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
+          kubectl -n 8ly rollout status deployment/build-relay --timeout=300s
+
+      - name: Verify the relay is serving
+        run: |
+          for i in $(seq 1 12); do
+            curl -sf -o /dev/null https://relay.getbuild.ing/health && exit 0
+            sleep 5
+          done
+          curl -sf -o /dev/null https://relay.getbuild.ing/health

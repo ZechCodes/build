@@ -117,9 +117,11 @@ function entryRow(entry, ui) {
   const done =
     entry.kind === "plan" && entry.can_archive
       ? `<button class="btn mini" data-done-plan="${esc(entry.id)}" type="button" aria-label="Archive plan ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
-      : entry.kind === "worktree" && entry.can_finish
-        ? `<button class="btn mini" data-done-worktree="${esc(entry.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
-        : "";
+      : entry.kind === "run" && entry.can_finish
+        ? `<button class="btn mini" data-done-run="${esc(entry.id)}" type="button" aria-label="Finish task ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
+        : entry.kind === "worktree" && entry.can_finish
+          ? `<button class="btn mini" data-done-worktree="${esc(entry.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
+          : "";
   return `<div class="srow sentry ${entry.id === activeId ? "active" : ""}" ${data} data-project="${esc(entry.project_id)}" title="${esc(label)}">
     ${dotHtml(entry)}<span class="stitle">${esc(label)}</span>${right}${done}</div>`;
 }

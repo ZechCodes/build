@@ -138,8 +138,8 @@ pub enum RunEvent {
     Reply,
     /// Abandon the run from any non-terminal state.
     Abandon,
-    /// The run's worktree disappeared from disk (deleted by the user outside
-    /// Build). Raised by the archive sweep, never by a human action.
+    /// The run's worktree disappeared from disk, either outside Build or when
+    /// the human used Done to finish and archive its checkout.
     Archive,
     /// The validation agent reported done(phase=validate, completed,
     /// passed=true). `last_stage` = the validated stage is the manifest's
@@ -219,8 +219,9 @@ pub fn run_transition(state: &RunState, event: RunEvent) -> Result<RunState, Ill
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
 
-        // Archive (the worktree vanished from disk) likewise — the user
-        // deleted the files themselves, so the run retires to quiet history.
+        // Archive when the worktree vanishes, including Done after a merge
+        // whose cleanup policy kept the checkout around.
+        (Merged, E::Archive) => Ok(Archived),
         (s, E::Archive) if !s.is_terminal() => Ok(Archived),
 
         // Terminal states and every other pairing are rejected.
@@ -772,7 +773,19 @@ mod tests {
     }
 
     #[test]
-    fn terminal_states_reject_all_events() {
+    fn merged_run_can_be_archived_when_done_cleans_up_its_kept_worktree() {
+        let mut run = plan_less_run();
+        run.apply(RunEvent::Dispatch).unwrap();
+        run.apply(RunEvent::BuildReady).unwrap();
+        run.apply(RunEvent::ApproveMerge).unwrap();
+
+        run.apply(RunEvent::Archive)
+            .expect("Done retires merged lineage after worktree cleanup");
+        assert_eq!(run.state, RunState::Archived);
+    }
+
+    #[test]
+    fn terminal_states_reject_all_other_events() {
         let terminal_setups: &[&[RunEvent]] = &[
             &[
                 RunEvent::Dispatch,
@@ -799,7 +812,6 @@ mod tests {
                 RunEvent::Interrupt,
                 RunEvent::Reply,
                 RunEvent::Abandon,
-                RunEvent::Archive,
                 RunEvent::ValidationPassed { last_stage: true },
                 RunEvent::ValidationFailed,
             ] {
@@ -808,6 +820,9 @@ mod tests {
                     "{e:?} should be rejected from {:?}",
                     r.state
                 );
+            }
+            if r.state != RunState::Merged {
+                assert!(run_transition(&r.state, RunEvent::Archive).is_err());
             }
         }
     }

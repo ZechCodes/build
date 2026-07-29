@@ -20,6 +20,7 @@ const run = (over) => ({
   branch: "build/fix-the-thing",
   state: "review",
   needs_attention: true,
+  can_finish: false,
   stat: {
     files_changed: 2,
     insertions: 420,
@@ -241,9 +242,9 @@ describe("a project block", () => {
     expect(html).toContain('data-wt="w1"');
   });
 
-  it("renders compact Done controls only for eligible plans and external worktrees", () => {
+  it("renders compact Done controls for every eligible rail entry", () => {
     const m = model({
-      runs: [run()],
+      runs: [run({ can_finish: true })],
       plans: [plan({ can_archive: true })],
       externalWorktrees: [
         worktree({
@@ -254,8 +255,8 @@ describe("a project block", () => {
     });
     const html = projectHtml(m, ui());
     expect(html).toContain('class="btn mini" data-done-plan="pl1"');
+    expect(html).toContain('class="btn mini" data-done-run="r1"');
     expect(html).toContain('class="btn mini" data-done-worktree="w1"');
-    expect(html).not.toContain('data-done-run="r1"');
   });
 
   it("renders Done for an eligible worktree inside the expanded Worktrees row", () => {
@@ -270,6 +271,7 @@ describe("a project block", () => {
 
   it("omits Done for ineligible plans and worktrees", () => {
     const m = model({
+      runs: [run({ can_finish: false })],
       plans: [plan({ can_archive: false })],
       externalWorktrees: [
         worktree({
@@ -279,6 +281,7 @@ describe("a project block", () => {
       ],
     });
     const html = projectHtml(m, ui());
+    expect(html).not.toContain("data-done-run");
     expect(html).not.toContain("data-done-plan");
     expect(html).not.toContain("data-done-worktree");
   });

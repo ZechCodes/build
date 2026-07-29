@@ -49,6 +49,7 @@ function runEntry(run) {
     needsYou: !!run.needs_attention,
     changedAt: ms(run.state_changed_at) ?? ms(run.updated_at),
     attention: run.attention || {},
+    can_finish: !!run.can_finish,
     // Ahead and behind always use the same selected ref. +/- is only the dirty
     // working-tree delta; the task's full diff stays on its review surfaces.
     status: {

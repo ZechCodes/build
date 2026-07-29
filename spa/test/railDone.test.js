@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   planArchiveConfirm,
+  runFinishWorktree,
   worktreeFinishActions,
   worktreeFinishConfirm,
   worktreeFinishSheetHtml,
@@ -16,6 +17,31 @@ const worktree = (over = {}) => ({
   dirty_files: 3,
   unpushed: 2,
   ...over,
+});
+
+describe("run Done metadata", () => {
+  it("uses the checked-out branch and live git status for the shared finish actions", () => {
+    expect(runFinishWorktree({
+      run_id: "r1",
+      project_id: "p1",
+      goal: "latex support",
+      branch: "stale/branch",
+      base_branch: "main",
+      stat: {
+        branch: "build/latex-renderer-ready",
+        upstream: "origin/build/latex-renderer-ready",
+        ahead: 0,
+        uncommitted: { files_changed: 0 },
+      },
+    })).toMatchObject({
+      run_id: "r1",
+      name: "latex support",
+      branch: "build/latex-renderer-ready",
+      upstream: "origin/build/latex-renderer-ready",
+      dirty_files: 0,
+      unpushed: 0,
+    });
+  });
 });
 
 describe("worktree Done action matrix", () => {

@@ -1,4 +1,4 @@
-// Done controls for plans and external worktrees: pure action/confirmation
+// Done controls for plans and worktree-backed entries: pure action/confirmation
 // builders plus thin, dependency-injected DOM wiring for the persistent rail.
 
 import { esc } from "./text.js";
@@ -14,6 +14,21 @@ export function planArchiveConfirm() {
     actions: ["Move the plan and its documents to Project Archive"],
     confirmLabel: "Archive plan",
     danger: false,
+  };
+}
+
+/** A finished run owns a worktree, so it uses the same safe finish choices.
+ *  Prefer the live git status over the run's dispatch-time branch metadata. */
+export function runFinishWorktree(run) {
+  return {
+    run_id: run.run_id,
+    project_id: run.project_id,
+    name: run.goal || run.branch || "task worktree",
+    branch: run.stat?.branch || run.branch || null,
+    base_branch: run.base_branch || "main",
+    upstream: run.stat?.upstream || null,
+    dirty_files: run.stat?.uncommitted?.files_changed ?? 0,
+    unpushed: run.stat?.ahead ?? null,
   };
 }
 
@@ -183,7 +198,7 @@ async function invokeMutation(button, { confirmation, method, params, callRpc, c
 /** Wire all rendered Done controls without owning row navigation handlers. */
 export function wireRailDoneControls(
   rail,
-  { plans = [], worktrees = [], callRpc, confirm, refresh, openChooser = openWorktreeFinishSheet },
+  { plans = [], runs = [], worktrees = [], callRpc, confirm, refresh, openChooser = openWorktreeFinishSheet },
 ) {
   rail.querySelectorAll("[data-done-plan]").forEach((button) => {
     button.onclick = (event) => {
@@ -198,6 +213,27 @@ export function wireRailDoneControls(
         confirm,
         refresh,
       });
+    };
+  });
+
+  rail.querySelectorAll("[data-done-run]").forEach((button) => {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      const run = runs.find((candidate) => candidate.run_id === button.dataset.doneRun);
+      if (!run?.can_finish) return;
+      const worktree = runFinishWorktree(run);
+      const actions = worktreeFinishActions(worktree);
+      const invoke = (action) =>
+        invokeMutation(button, {
+          confirmation: worktreeFinishConfirm(action, worktree),
+          method: "run.finish",
+          params: { run_id: run.run_id, action },
+          callRpc,
+          confirm,
+          refresh,
+        });
+      if (actions.length === 1) invoke(actions[0].id);
+      else openChooser(worktree, actions, invoke);
     };
   });
 

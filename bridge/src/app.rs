@@ -2499,6 +2499,7 @@ impl AppState {
             "run.delete" => self.run_delete(params),
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
+            "run.finish" => self.run_finish(params),
             "worktree.create" => self.worktree_create(params),
             "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
@@ -5224,6 +5225,93 @@ impl AppState {
         Ok(view)
     }
 
+    /// Finish a completed run through the same durable worktree archive path as
+    /// a bare worktree's Done control. The run is removed from the active map
+    /// only while the server resolves and executes the id-only finish request;
+    /// a pre-mutation failure restores it for retry.
+    fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
+        let run_id = require_str(params, "run_id")?;
+        let action_name = require_str(params, "action")?;
+        parse_worktree_finish_action(&action_name)?;
+        let project_id = self.project_of(&run_id)?;
+        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        if !matches!(active.run.state, RunState::Review | RunState::Merged) {
+            return Err(format!(
+                "run.finish: run is {} — Done requires completed work",
+                run_state_str(&active.run.state)
+            ));
+        }
+        if !active.worktree.path.exists() {
+            if active.run.state != RunState::Merged {
+                return Err("run.finish: worktree no longer exists".to_string());
+            }
+            let mut active = self.runs.remove(&run_id).expect("checked above");
+            active
+                .run
+                .apply(RunEvent::Archive)
+                .map_err(|error| error.to_string())?;
+            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            persisted?;
+            return Ok(json!({ "archived": true }));
+        }
+
+        let root = Self::canonical_root(&active.worktree.path);
+        let worktree_id = crate::worktree::external_worktree_id(&root);
+        let mut active = self.runs.remove(&run_id).expect("checked above");
+        self.run_stat_cache.remove(&run_id);
+        self.close_agent_tab(&root);
+        self.invalidate_external_scan(&project_id);
+
+        let archived_worktree = match self.worktree_finish(&json!({
+            "project_id": project_id,
+            "worktree_id": worktree_id,
+            "action": action_name,
+        })) {
+            Ok(archived) => archived,
+            Err(error) => {
+                if root.exists() {
+                    self.runs.insert(run_id.clone(), active);
+                    self.invalidate_external_scan(&project_id);
+                } else {
+                    eprintln!("run.finish {run_id}: worktree vanished after failure: {error}");
+                }
+                return Err(error);
+            }
+        };
+
+        if active.run.plan_id.is_some() {
+            // Plans determine their own Done eligibility from retained run
+            // lineage. Keep this run internally as Archived while board.list
+            // filters it out; deleting it would make a completed plan look
+            // incomplete again.
+            active
+                .run
+                .apply(RunEvent::Archive)
+                .map_err(|error| error.to_string())?;
+            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            persisted?;
+            self.reap_orphaned_terminals();
+            return Ok(archived_worktree);
+        }
+
+        if let Some(store) = &self.store {
+            if let Err(error) = store.delete_run(&run_id) {
+                // The durable worktree archive is already complete. A stale run
+                // record self-heals to Archived on restart because its checkout
+                // is gone; do not resurrect it in the live rail now.
+                eprintln!("run.finish {run_id}: stale run record: {error}");
+            }
+        }
+        self.entity_project.remove(&run_id);
+        self.entity_project_path.remove(&run_id);
+        self.entity_created_at.remove(&run_id);
+        self.entity_updated_at.remove(&run_id);
+        self.entity_state_changed_at.remove(&run_id);
+        self.entity_last_state.remove(&run_id);
+        self.reap_orphaned_terminals();
+        Ok(archived_worktree)
+    }
+
     /// Un-adopt: drop the run record and its binding, leaving every file
     /// untouched. Legal on adopted runs in any non-terminal state.
     fn run_release(&mut self, params: &Value) -> Result<Value, String> {
@@ -5550,6 +5638,8 @@ impl AppState {
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
+            "can_finish": active.run.state == RunState::Merged
+                || (active.run.state == RunState::Review && active.worktree.path.exists()),
             "created_at": self.entity_created_at.get(run_id),
             "updated_at": self.entity_updated_at.get(run_id),
             "state_changed_at": self.entity_state_changed_at.get(run_id),
@@ -5576,19 +5666,22 @@ impl AppState {
                 return stat.clone();
             }
         }
-        let comparison = git2::Repository::open(&active.worktree.path)
+        let git_state = git2::Repository::open(&active.worktree.path)
             .ok()
             .and_then(|repo| {
                 let head_ref = repo.head().ok()?;
                 let checked_out_branch = head_ref.shorthand().map(str::to_string);
                 let head = head_ref.peel_to_commit().ok()?;
-                Some(crate::worktree::branch_comparison(
+                let comparison = crate::worktree::branch_comparison(
                     &repo,
                     &head,
                     checked_out_branch.as_deref(),
                     &active.worktree.base_branch,
-                ))
+                );
+                Some((checked_out_branch, comparison))
             });
+        let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
+        let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
         let uncommitted = crate::diff::diff_uncommitted(&active.worktree.path)
             .map(|diff| {
                 let stat = diff.stat();
@@ -5599,23 +5692,23 @@ impl AppState {
                 })
             })
             .unwrap_or(Value::Null);
-        let stat = crate::diff::diff_against_base(
-            &active.worktree.path,
-            &active.worktree.base_branch,
-        )
-        .map(|diff| {
-            let s = diff.stat();
-            json!({
-                "files_changed": s.files_changed,
-                "insertions": s.insertions,
-                "deletions": s.deletions,
-                "comparison_ref": comparison.as_ref().and_then(|value| value.reference.as_deref()),
-                "ahead": comparison.as_ref().and_then(|value| value.ahead),
-                "behind": comparison.as_ref().and_then(|value| value.behind),
-                "uncommitted": uncommitted,
-            })
-        })
-        .unwrap_or(Value::Null);
+        let stat =
+            crate::diff::diff_against_base(&active.worktree.path, &active.worktree.base_branch)
+                .map(|diff| {
+                    let s = diff.stat();
+                    json!({
+                        "files_changed": s.files_changed,
+                        "insertions": s.insertions,
+                        "deletions": s.deletions,
+                        "branch": checked_out_branch,
+                        "comparison_ref": comparison.and_then(|value| value.reference.as_deref()),
+                        "upstream": comparison.and_then(|value| value.upstream.as_deref()),
+                        "ahead": comparison.and_then(|value| value.ahead),
+                        "behind": comparison.and_then(|value| value.behind),
+                        "uncommitted": uncommitted,
+                    })
+                })
+                .unwrap_or(Value::Null);
         self.run_stat_cache.insert(
             run_id.to_string(),
             (std::time::Instant::now(), stat.clone()),
@@ -14885,6 +14978,133 @@ mod tests {
             "releasing a run closes the agent it owned"
         );
         assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
+    }
+
+    #[test]
+    fn adopted_review_run_is_finishable_from_the_rail() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "finishable-run");
+
+        let board = state.handle(req("board.list", json!({})));
+        let run = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["run_id"] == run_id)
+            .unwrap();
+        assert_eq!(run["state"], "review", "{run:?}");
+        assert_eq!(run["can_finish"], true, "{run:?}");
+        assert_eq!(run["stat"]["branch"], "finishable-run", "{run:?}");
+    }
+
+    #[test]
+    fn run_finish_cleans_up_and_archives_the_bound_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "archive-finished-run");
+        let project_id = state.projects[0].id.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        git_in_dir(&worktree, &["add", "-A"]);
+        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(!state.runs.contains_key(&run_id));
+        assert!(!worktree.exists(), "Done removes the finished checkout");
+        assert!(
+            repo.join(".git/refs/heads/archive-finished-run").exists(),
+            "cleanup preserves the branch"
+        );
+
+        let archive = state.handle(req("archive.list", json!({ "project_id": project_id })));
+        let archived = archive["result"]["worktrees"].as_array().unwrap();
+        assert_eq!(archived.len(), 1, "{archive:?}");
+        assert_eq!(archived[0]["action"], "cleanup", "{archive:?}");
+    }
+
+    #[test]
+    fn finishing_a_planned_run_keeps_archived_lineage_for_plan_done() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "archive planned run");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        git_in_dir(&worktree, &["add", "-A"]);
+        let staged = git_stdout(&worktree, &["diff", "--cached", "--name-only"]).unwrap();
+        if !staged.trim().is_empty() {
+            git_in_dir(&worktree, &["commit", "-m", "Finish planned work"]);
+        }
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
+        assert!(!worktree.exists());
+
+        let plan = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert_eq!(plan["result"]["can_archive"], true, "{plan:?}");
+    }
+
+    #[test]
+    fn merged_run_with_no_checkout_still_gets_done_to_leave_the_rail() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "dismiss merged run");
+        let merged = state.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": "merge" }),
+        ));
+        assert_eq!(merged["result"]["state"], "merged", "{merged:?}");
+        assert!(!state.runs[&run_id].worktree.path.exists());
+
+        let board = state.handle(req("board.list", json!({})));
+        let run = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["run_id"] == run_id)
+            .unwrap();
+        assert_eq!(run["can_finish"], true, "{run:?}");
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
+        let board = state.handle(req("board.list", json!({})));
+        assert!(board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|run| run["run_id"] != run_id));
+    }
+
+    #[test]
+    fn failed_run_finish_restores_the_live_run_for_retry() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "retry-finish-run");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        // QA adoption writes .build/.gitignore, so cleanup must refuse this
+        // dirty tree before any destructive step.
+        let failed = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires no uncommitted"));
+        assert!(state.runs.contains_key(&run_id), "the rail entry survives");
+        assert!(worktree.exists(), "the checkout survives");
     }
 
     #[test]

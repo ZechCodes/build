@@ -8,6 +8,20 @@ import { requestSheetDismiss } from "../src/core/sheetDismiss.js";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const plan = { plan_id: "pl1", project_id: "p1", can_archive: true };
+const run = {
+  run_id: "r1",
+  project_id: "p1",
+  can_finish: true,
+  goal: "feature run",
+  branch: "feat/rail",
+  base_branch: "main",
+  stat: {
+    branch: "feat/rail",
+    upstream: "origin/feat/rail",
+    ahead: 1,
+    uncommitted: { files_changed: 2 },
+  },
+};
 const worktree = {
   worktree_id: "w1",
   project_id: "p1",
@@ -28,6 +42,7 @@ function railHtml(button) {
 function dependencies(over = {}) {
   return {
     plans: [plan],
+    runs: [run],
     worktrees: [worktree],
     callRpc: vi.fn().mockResolvedValue({ ok: true }),
     confirm: vi.fn().mockResolvedValue(true),
@@ -53,6 +68,25 @@ describe("rail Done controls (DOM)", () => {
 
     expect(rowClick).not.toHaveBeenCalled();
     expect(deps.callRpc).toHaveBeenCalledWith("plan.archive", { plan_id: "pl1" });
+    expect(deps.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("finishes a run through the same chooser and archive workflow", async () => {
+    const rail = railHtml('<button class="btn mini" data-done-run="r1">Done</button>');
+    const openChooser = vi.fn((_worktree, actions, choose) => {
+      expect(actions.map((action) => action.id)).toEqual(["push", "merge", "delete"]);
+      choose("push");
+    });
+    const deps = dependencies({ openChooser });
+    wireRailDoneControls(rail, deps);
+
+    rail.querySelector("[data-done-run]").click();
+    await tick();
+
+    expect(deps.callRpc).toHaveBeenCalledWith("run.finish", {
+      run_id: "r1",
+      action: "push",
+    });
     expect(deps.refresh).toHaveBeenCalledOnce();
   });
 

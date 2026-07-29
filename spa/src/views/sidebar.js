@@ -142,6 +142,7 @@ function draw() {
   });
   wireRailDoneControls(aside, {
     plans: lastFeed.plans,
+    runs: lastFeed.runs,
     worktrees: lastFeed.externalWorktrees,
     callRpc: (method, params) => App.call(method, params),
     confirm: confirmAction,

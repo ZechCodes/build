@@ -967,6 +967,17 @@ pub struct AppState {
     /// same lock acquisition that observed the tab's absence — is what keeps a
     /// second delivery from starting a second harness in one worktree.
     agent_spawns_in_flight: std::collections::HashSet<std::path::PathBuf>,
+    /// Canonical worktree root → the screen its Agent tab shows before any
+    /// agent has ever run there.
+    ///
+    /// The Agent tab is a fixture on every worktree surface, so clients attach
+    /// to worktrees whose agent does not exist yet — the state every worktree
+    /// is in after a daemon restart. They register HERE, and
+    /// [`ensure_agent_tab`] carries the screen onto the tab it spawns, so the
+    /// session's first frames reach a client that mounted the tab long before
+    /// it: the alternative is a screen that stays blank until the human
+    /// unmounts and remounts. An entry lives only until that first spawn.
+    agent_screens_awaiting_spawn: HashMap<std::path::PathBuf, TermScreen>,
     /// Turns queued by the verbs running under the state lock, drained by
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
@@ -1042,6 +1053,7 @@ impl AppState {
             streams: HashMap::new(),
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
+            agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
             agent_turns_in_flight: HashMap::new(),
             next_term: 1,
@@ -2524,6 +2536,23 @@ impl AppState {
             let wire_id = tab.wire_id();
             tab.session.kill_and_reap();
             tab.screen.push_closed(&wire_id, "reaped");
+            reaped.push(wire_id);
+        }
+        // The screens waiting for a first spawn go the same way: a worktree
+        // that is gone will never host the agent their clients are watching
+        // for, and a screen nothing can ever paint is not one to keep.
+        let orphaned: Vec<std::path::PathBuf> = self
+            .agent_screens_awaiting_spawn
+            .keys()
+            .filter(|root| !root.exists())
+            .cloned()
+            .collect();
+        for root in orphaned {
+            let Some(screen) = self.agent_screens_awaiting_spawn.remove(&root) else {
+                continue;
+            };
+            let wire_id = format!("agent:{}", crate::worktree::external_worktree_id(&root));
+            screen.push_closed(&wire_id, "reaped");
             reaped.push(wire_id);
         }
         reaped
@@ -6401,15 +6430,26 @@ fn agent_attach(
     };
     let key = TabKey::agent(&root);
     if !s.tabs.contains_key(&key) {
-        // No agent has run here yet: a blank, dead screen. The tab opens on the
-        // first delivery.
+        // No agent has run here yet: a blank, dead screen, and the tab opens on
+        // the first delivery. The client still registers — on the screen this
+        // worktree's agent will be born onto — because it must go live where it
+        // stands when that delivery comes, not sit blank until the human
+        // unmounts and remounts the tab.
+        let screen = s
+            .agent_screens_awaiting_spawn
+            .entry(root.clone())
+            .or_insert_with(|| TermScreen::new(cols, rows));
+        if screen.cols != cols || screen.rows != rows {
+            screen.set_size(cols, rows);
+        }
+        screen.register(sender);
         return Ok(json!({
             "term_id": format!("agent:{}", crate::worktree::external_worktree_id(&root)),
             "live": false,
-            "snapshot": TermScreen::new(cols, rows).snapshot(),
-            "cursor": 0,
-            "cols": cols,
-            "rows": rows,
+            "snapshot": screen.snapshot(),
+            "cursor": screen.total,
+            "cols": screen.cols,
+            "rows": screen.rows,
         }));
     }
     Ok(attach_to_tab(s, &key, sender, cols, rows))
@@ -6564,6 +6604,26 @@ fn ensure_agent_tab(
         let wire_id = tab.wire_id();
         {
             let mut s = state.lock().unwrap();
+            // Clients that mounted the Agent tab before this worktree had one
+            // are attached to a screen with no PTY. Carry them — and the
+            // viewport they render at, the same rule an attach to a live tab
+            // follows — onto the real screen, under the SAME lock acquisition
+            // that publishes the tab, so a client attaching during the spawn is
+            // on one screen or the other and never between them. The waiting
+            // screen's cursor is not carried: it painted nothing, while a
+            // retained screen's cursor is the one that must never rewind.
+            if let Some(waiting) = s.agent_screens_awaiting_spawn.remove(&root) {
+                let _ = tab.session.resize(PtySize {
+                    rows: waiting.rows,
+                    cols: waiting.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+                tab.screen.set_size(waiting.cols, waiting.rows);
+                for client in &waiting.attached {
+                    tab.screen.register(client);
+                }
+            }
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&root);
         }
@@ -13478,6 +13538,204 @@ mod tests {
         assert_eq!(live["ok"], true, "{live:?}");
         assert_eq!(live["result"]["live"], true);
         assert_eq!(live["result"]["term_id"], json!(wire_id));
+    }
+
+    /// The Agent tab is a fixture on every worktree surface, so clients mount
+    /// it long before anything has ever run there — the state EVERY worktree is
+    /// in right after a daemon restart. Such a client is attached to a screen
+    /// with no PTY, and when the agent finally starts it must go live WHERE IT
+    /// STANDS: the session's first frames reach it without an unmount and
+    /// remount. The viewport it attached at is the one the new PTY is sized to,
+    /// the same rule a live attach follows.
+    #[tokio::test]
+    async fn a_client_attached_before_the_first_spawn_streams_the_session_it_waited_for() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-waited-for");
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let wire_id = format!(
+            "agent:{}",
+            crate::worktree::external_worktree_id(&AppState::canonical_root(&repo))
+        );
+
+        // Nothing has ever run in the primary checkout: a blank, dead screen.
+        let (sender, mut pushes, key) = SessionSender::observable("s1");
+        let empty = handler(
+            sender,
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "cols": 100, "rows": 30 }),
+            ),
+        );
+        assert_eq!(empty["ok"], true, "{empty:?}");
+        assert_eq!(empty["result"]["live"], false);
+        assert_eq!(empty["result"]["term_id"], json!(wire_id));
+        assert_eq!(
+            empty["result"]["cursor"], 0,
+            "a screen that has painted nothing starts the cursor at zero"
+        );
+
+        // The agent starts later, from a delivery. This client never re-attached.
+        let (delivered_to, spawned) = deliver(
+            &state,
+            &repo,
+            "run-waited-for",
+            &ModelChoice::default(),
+            "COLD-PROMPT-FOR-A-WAITING-CLIENT",
+            "WARM-NUDGE",
+        )
+        .expect("the delivery spawns the worktree's agent");
+        assert_eq!(spawned, Spawned::Fresh);
+        assert_eq!(delivered_to, wire_id);
+
+        let seen = wait_for_pushes(&mut pushes, &key, |seen| {
+            output_text(seen, &wire_id).contains("COLD-PROMPT-FOR-A-WAITING-CLIENT")
+        })
+        .await;
+        assert_eq!(
+            seen[0]["type"], "term.reset",
+            "the waiting client hears the session start: {seen:?}"
+        );
+        assert_eq!(
+            seen[0]["cursor"], 0,
+            "the opening reset lands at the cursor the attach handed out — \
+             no gap, and the client applies it rather than deduping it away"
+        );
+        let mut cursor = 0;
+        for push in &seen {
+            let pushed = push["cursor"].as_u64().expect("every frame carries one");
+            assert!(pushed >= cursor, "the cursor never rewinds: {seen:?}");
+            cursor = pushed;
+        }
+        assert!(
+            cursor > 0,
+            "the session's output moved the cursor: {seen:?}"
+        );
+
+        let s = state.lock().unwrap();
+        let screen = &s.tabs[&TabKey::agent(&AppState::canonical_root(&repo))].screen;
+        assert_eq!(
+            (screen.cols, screen.rows),
+            (100, 30),
+            "the spawned agent is sized to the viewport of the client already watching it"
+        );
+    }
+
+    /// The window inside a respawn: the reservation has taken the dead tab out
+    /// of the registry, so a client mounting the Agent tab right then lands on
+    /// a waiting screen even though this worktree HAS a retained screen with a
+    /// cursor. That client must be carried onto the replacement — but its
+    /// screen must not be: the retained cursor is what reconnect dedupes on and
+    /// it never rewinds, so the waiting screen contributes its clients and
+    /// nothing else.
+    #[tokio::test]
+    async fn a_client_attaching_inside_a_respawn_is_carried_without_rewinding_the_cursor() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-respawn-race");
+        let choice = ModelChoice::default();
+        let canonical = AppState::canonical_root(&root);
+        let key = TabKey::agent(&canonical);
+
+        // A first session paints, then dies: its screen and cursor are retained.
+        deliver(
+            &state,
+            &root,
+            "run-respawn-race",
+            &choice,
+            "FIRST-SESSION",
+            "warm",
+        )
+        .expect("the first delivery spawns");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        let retained_total = loop {
+            {
+                let s = state.lock().unwrap();
+                let tab = &s.tabs[&key];
+                if !tab.live {
+                    break tab.screen.total;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(retained_total > 0, "the dead session left a cursor behind");
+
+        // The state a client that attached inside the spawn window is in.
+        let (sender, mut pushes, session_key) = SessionSender::observable("late");
+        {
+            let mut s = state.lock().unwrap();
+            let mut waiting = TermScreen::new(90, 25);
+            waiting.register(&sender);
+            s.agent_screens_awaiting_spawn
+                .insert(canonical.clone(), waiting);
+        }
+
+        let (wire_id, spawned) = deliver(
+            &state,
+            &root,
+            "run-respawn-race",
+            &choice,
+            "SECOND-SESSION",
+            "warm",
+        )
+        .expect("a dead agent is replaced");
+        assert_eq!(spawned, Spawned::Fresh, "a dead agent is not an agent");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            output_text(seen, &wire_id).contains("SECOND-SESSION")
+        })
+        .await;
+        let opening = seen
+            .iter()
+            .find(|push| push["type"] == "term.reset")
+            .expect("the waiting client hears the new session start");
+        assert!(
+            opening["cursor"].as_u64().unwrap() >= retained_total,
+            "the retained cursor is carried forward, never rewound to the \
+             waiting screen's zero: {seen:?}"
+        );
+    }
+
+    /// A client can be waiting on the Agent tab of a worktree that is then
+    /// deleted out from under it. The reaper closes the tabs of a vanished
+    /// worktree; the screen its agent was going to be born onto is the same
+    /// thing one step earlier, so it goes the same way — the client hears
+    /// `reaped` instead of waiting forever on a directory that is gone, and no
+    /// future spawn inherits it.
+    #[test]
+    fn the_reaper_drops_an_agent_screen_whose_worktree_vanished_before_a_spawn() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let vanishing = dir.path().join("vanishing");
+        std::fs::create_dir_all(&vanishing).unwrap();
+        let root = AppState::canonical_root(&vanishing);
+        let wire_id = format!("agent:{}", crate::worktree::external_worktree_id(&root));
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("s1");
+        {
+            let mut s = state.lock().unwrap();
+            let mut waiting = TermScreen::new(80, 24);
+            waiting.register(&sender);
+            s.agent_screens_awaiting_spawn.insert(root.clone(), waiting);
+        }
+        std::fs::remove_dir_all(&vanishing).unwrap();
+
+        let reaped = state.lock().unwrap().reap_orphaned_terminals();
+        assert_eq!(reaped, vec![wire_id.clone()]);
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .agent_screens_awaiting_spawn
+                .is_empty(),
+            "a screen for a directory that is gone is never handed to a future spawn"
+        );
+        let closed = SessionSender::decrypt_push(
+            &session_key,
+            &pushes.try_recv().expect("the client hears its tab is gone"),
+        );
+        assert_eq!(closed["type"], "term.closed", "{closed:?}");
+        assert_eq!(closed["term_id"], wire_id);
+        assert_eq!(closed["reason"], "reaped");
     }
 
     #[tokio::test]

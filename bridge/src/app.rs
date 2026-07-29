@@ -5556,11 +5556,13 @@ impl AppState {
         let comparison = git2::Repository::open(&active.worktree.path)
             .ok()
             .and_then(|repo| {
-                let head = repo.head().ok()?.peel_to_commit().ok()?;
+                let head_ref = repo.head().ok()?;
+                let checked_out_branch = head_ref.shorthand().map(str::to_string);
+                let head = head_ref.peel_to_commit().ok()?;
                 Some(crate::worktree::branch_comparison(
                     &repo,
                     &head,
-                    Some(&active.worktree.branch),
+                    checked_out_branch.as_deref(),
                     &active.worktree.base_branch,
                 ))
             });
@@ -11293,6 +11295,38 @@ mod tests {
         assert!(repo.join("result-first-half.txt").exists());
         let t3 = entry(&state.handle(req("board.list", json!({}))));
         assert!(t3["stat"].is_null(), "merged run has no worktree: {t3:?}");
+    }
+
+    #[test]
+    fn run_stat_uses_the_checked_out_branch_upstream_after_a_rename() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "renamed branch");
+        let worktree_path = state.runs[&run_id].worktree.path.clone();
+        let original_branch = state.runs[&run_id].worktree.branch.clone();
+        git_in_dir(&worktree_path, &["push", "-u", "origin", &original_branch]);
+        git_in_dir(
+            &worktree_path,
+            &["branch", "-m", "build/actually-checked-out"],
+        );
+        git_in_dir(
+            &worktree_path,
+            &["push", "-u", "origin", "build/actually-checked-out"],
+        );
+
+        let board = state.handle(req("board.list", json!({})));
+        let run = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["run_id"] == run_id)
+            .unwrap();
+        assert_eq!(
+            run["stat"]["comparison_ref"], "origin/build/actually-checked-out",
+            "{run:?}"
+        );
+        assert_eq!(run["stat"]["ahead"], 0, "{run:?}");
+        assert_eq!(run["stat"]["behind"], 0, "{run:?}");
     }
 
     #[test]

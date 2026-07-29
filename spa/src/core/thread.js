@@ -21,12 +21,58 @@ const EVENT_META = {
   abandoned: { label: "Abandoned", icon: "×", tone: "blocked" },
 };
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+function ordinal(day) {
+  const lastTwoDigits = day % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 13) return `${day}th`;
+  return `${day}${({ 1: "st", 2: "nd", 3: "rd" })[day % 10] || "th"}`;
+}
+
+function calendarDayNumber(date) {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
+}
+
+export function formatRelativeDate(value, nowValue = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(now.getTime())) return "";
+
+  const elapsed = now.getTime() - date.getTime();
+  if (elapsed >= 0 && elapsed < MINUTE_MS) return "Just now";
+  if (elapsed >= 0 && elapsed < HOUR_MS) {
+    const minutes = Math.floor(elapsed / MINUTE_MS);
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  if (elapsed >= 0 && elapsed < DAY_MS) {
+    const hours = Math.floor(elapsed / HOUR_MS);
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+
+  const daysAgo = calendarDayNumber(now) - calendarDayNumber(date);
+  if (daysAgo === 1) {
+    const options = date.getMinutes()
+      ? { hour: "numeric", minute: "2-digit" }
+      : { hour: "numeric" };
+    const time = date.toLocaleTimeString("en-US", options).replace(/\s/g, "").toLowerCase();
+    return `Yesterday at ${time}`;
+  }
+  if (daysAgo > 1 && daysAgo < 7) {
+    return date.toLocaleDateString("en-US", { weekday: "long" });
+  }
+
+  const month = date.toLocaleDateString("en-US", { month: "long" });
+  const label = `${month} ${ordinal(date.getDate())}`;
+  return date.getFullYear() === now.getFullYear() ? label : `${label}, ${date.getFullYear()}`;
+}
+
 function timeHtml(createdAt) {
   if (!createdAt) return "";
-  const date = new Date(createdAt);
-  if (Number.isNaN(date.getTime())) return "";
-  const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
-  return `<time datetime="${esc(createdAt)}">on ${esc(label)}</time>`;
+  const label = formatRelativeDate(createdAt);
+  if (!label) return "";
+  return `<time datetime="${esc(createdAt)}">${esc(label)}</time>`;
 }
 
 // Client half of the thread cursor: the detail polls (plan.get / run.get every

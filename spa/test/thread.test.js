@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createThreadCache, currentRevisionId, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
@@ -25,7 +25,7 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-items").classList.contains("thread-timeline")).toBe(true);
     expect(document.querySelectorAll(".thread-comment")).toHaveLength(2);
     expect(document.querySelectorAll(".thread-avatar")).toHaveLength(2);
-    expect(document.querySelector("time").textContent).toContain("Jul 24, 2026");
+    expect(document.querySelector("time").dateTime).toBe("2026-07-24T12:00:00Z");
     wireThreadRevisionLinks(document.body, async (revisionId) => ({ revision_id: revisionId, contents: "+renamed" }));
     document.querySelector(".thread-revision-link").click();
     await Promise.resolve();
@@ -153,6 +153,33 @@ describe("conversation thread rendering", () => {
     expect(completionHead).not.toContain("Agent completed the request");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
+  });
+});
+
+describe("relative conversation dates", () => {
+  const localDate = (year, month, day, hour = 12, minute = 0) =>
+    new Date(year, month - 1, day, hour, minute);
+  const now = localDate(2026, 7, 29, 21);
+
+  it.each([
+    [new Date(now.getTime() - 30_000), "Just now"],
+    [new Date(now.getTime() - 5 * 60_000), "5 minutes ago"],
+    [new Date(now.getTime() - 4 * 60 * 60_000), "4 hours ago"],
+    [localDate(2026, 7, 28, 20), "Yesterday at 8pm"],
+    [localDate(2026, 7, 27), "Monday"],
+    [localDate(2026, 5, 5), "May 5th"],
+    [localDate(2025, 6, 7), "June 7th, 2025"],
+  ])("formats %s as %s", (date, expected) => {
+    expect(formatRelativeDate(date, now)).toBe(expected);
+  });
+
+  it("uses the relative date in rendered thread timestamps", () => {
+    const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "approved", created_at: createdAt } }],
+    });
+
+    expect(document.querySelector("time").textContent).toBe("5 minutes ago");
   });
 });
 

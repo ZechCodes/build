@@ -2535,12 +2535,23 @@ impl AppState {
 
     /// A session ended: detach it from every tab so the pumps stop encrypting
     /// (and serializing) output frames into a session the relay will just drop.
+    ///
+    /// A screen waiting for its first spawn is a tab one step early and follows
+    /// the same rule: [`ensure_agent_tab`] carries its clients onto the real
+    /// screen, so a session left behind here would be pushed to for the life of
+    /// that tab. Such a screen exists only to hold clients and the viewport
+    /// they render at — with the last one gone there is nothing to hold, and
+    /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
         for tab in self.tabs.values_mut() {
             tab.screen
                 .attached
                 .retain(|snd| snd.session_id() != session_id);
         }
+        self.agent_screens_awaiting_spawn.retain(|_, screen| {
+            screen.attached.retain(|snd| snd.session_id() != session_id);
+            !screen.attached.is_empty()
+        });
     }
 
     /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
@@ -14239,6 +14250,65 @@ mod tests {
         assert_eq!(closed["type"], "term.closed", "{closed:?}");
         assert_eq!(closed["term_id"], wire_id);
         assert_eq!(closed["reason"], "reaped");
+    }
+
+    /// A human can close the browser while waiting on the Agent tab of a
+    /// worktree whose agent has not started yet. `drop_session` detaches an
+    /// ended session from every tab so the pumps stop encrypting frames into a
+    /// session the relay will only drop — and a screen waiting for its first
+    /// spawn is a tab one step early, so it goes the same way. Otherwise the
+    /// spawn that finally comes carries a dead client onto the real screen and
+    /// pushes to it for the life of the tab, and sizes the new PTY to a
+    /// viewport nobody is looking at.
+    #[tokio::test]
+    async fn a_session_that_ended_while_waiting_is_not_carried_onto_the_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-closed-client");
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let (sender, _pushes, _key) = SessionSender::observable("closing");
+        let waiting = handler(
+            sender,
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "cols": 90, "rows": 25 }),
+            ),
+        );
+        assert_eq!(waiting["ok"], true, "{waiting:?}");
+        assert_eq!(waiting["result"]["live"], false, "nothing runs here yet");
+
+        state.lock().unwrap().drop_session("closing");
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .agent_screens_awaiting_spawn
+                .values()
+                .all(|screen| screen.attached.is_empty()),
+            "an ended session is detached from the screen it was waiting on"
+        );
+
+        deliver(
+            &state,
+            &repo,
+            "run-closed-client",
+            &ModelChoice::default(),
+            "COLD-PROMPT",
+            "WARM-NUDGE",
+        )
+        .expect("the delivery spawns the worktree's agent");
+
+        let s = state.lock().unwrap();
+        let tab = &s.tabs[&TabKey::agent(&AppState::canonical_root(&repo))];
+        assert!(
+            tab.screen.attached.is_empty(),
+            "a session that ended is never carried onto the agent it waited for"
+        );
+        assert_eq!(
+            (tab.screen.cols, tab.screen.rows),
+            (120, 40),
+            "with nobody left waiting, the spawn keeps the size Build chose"
+        );
     }
 
     #[tokio::test]

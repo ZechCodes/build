@@ -71,6 +71,25 @@ describe("rail Done controls (DOM)", () => {
     expect(deps.refresh).toHaveBeenCalledOnce();
   });
 
+  it("removes a confirmed row before the background RPC finishes", async () => {
+    const rail = railHtml('<button class="btn mini" data-done-plan="pl1">Done</button>');
+    let finishRpc;
+    const callRpc = vi.fn(() => new Promise((resolve) => { finishRpc = resolve; }));
+    const deps = dependencies({ callRpc });
+    wireRailDoneControls(rail, deps);
+
+    rail.querySelector("[data-done-plan]").click();
+    await tick();
+
+    expect(callRpc).toHaveBeenCalledOnce();
+    expect(document.getElementById("row")).toBeNull();
+    expect(deps.refresh).not.toHaveBeenCalled();
+
+    finishRpc({ ok: true });
+    await tick();
+    expect(deps.refresh).toHaveBeenCalledOnce();
+  });
+
   it("finishes a run through the same chooser and archive workflow", async () => {
     const rail = railHtml('<button class="btn mini" data-done-run="r1">Done</button>');
     const openChooser = vi.fn((_worktree, actions, choose) => {

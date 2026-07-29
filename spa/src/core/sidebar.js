@@ -10,11 +10,27 @@ import { defaultRunTab } from "./taskActions.js";
 import { RUN_STATE_LABEL, PLAN_STATE_LABEL } from "./entityPresentation.js";
 import { dotState, railEntries, railWorktrees } from "./rail.js";
 
-export function buildSidebarModel({ projects, runs, plans, externalWorktrees, primaryChanges, readIds, nowMs }) {
+export function buildSidebarModel({
+  projects,
+  runs,
+  plans,
+  externalWorktrees,
+  primaryChanges,
+  readIds,
+  nowMs,
+  pendingDone = new Set(),
+}) {
+  const visible = (kind, id) => !pendingDone.has(`${kind}:${id}`);
   return (projects || []).map((p) => {
-    const myRuns = (runs || []).filter((r) => r.project_id === p.project_id);
-    const myPlans = (plans || []).filter((pl) => pl.project_id === p.project_id);
-    const worktrees = (externalWorktrees || []).filter((w) => w.project_id === p.project_id);
+    const myRuns = (runs || []).filter(
+      (r) => r.project_id === p.project_id && visible("run", r.run_id),
+    );
+    const myPlans = (plans || []).filter(
+      (pl) => pl.project_id === p.project_id && visible("plan", pl.plan_id),
+    );
+    const worktrees = (externalWorktrees || []).filter(
+      (w) => w.project_id === p.project_id && visible("worktree", w.worktree_id),
+    );
     const entries = railEntries({
       runs: myRuns,
       plans: myPlans,

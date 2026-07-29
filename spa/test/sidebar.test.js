@@ -110,6 +110,16 @@ describe("buildSidebarModel", () => {
     expect(model({ readIds: new Set(["r1"]) }).unread).toBe(1); // the plan is still unread
   });
 
+  it("omits entries whose confirmed Done work is still running in the background", () => {
+    const m = model({
+      externalWorktrees: [worktree()],
+      pendingDone: new Set(["run:r1", "plan:pl1", "worktree:w1"]),
+    });
+    expect(m.entries).toEqual([]);
+    expect(m.worktrees).toEqual([]);
+    expect(m.unread).toBe(0);
+  });
+
   it("attaches the primary-changes summary, sync counts and all", () => {
     const m = model({
       primaryChanges: [

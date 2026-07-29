@@ -178,27 +178,60 @@ function rowError(button, message) {
   error.hidden = !message;
 }
 
-async function invokeMutation(button, { confirmation, method, params, callRpc, confirm, refresh }) {
+/** Remove the row immediately while retaining enough DOM state to restore an
+ * RPC failure. The sidebar supplies a feed-aware version so polling cannot
+ * paint stale server state back over the optimistic dismissal. */
+function dismissRow(button) {
+  const row = button.closest(".srow");
+  const parent = row?.parentNode;
+  const next = row?.nextSibling;
+  if (!row || !parent) return (message) => rowError(button, message);
+  row.remove();
+  return (message) => {
+    parent.insertBefore(row, next?.parentNode === parent ? next : null);
+    rowError(button, message);
+  };
+}
+
+async function invokeMutation(
+  button,
+  { entity, confirmation, method, params, callRpc, confirm, refresh, optimisticDismiss },
+) {
   if (button.disabled) return;
   button.disabled = true;
   rowError(button, "");
-  let succeeded = false;
+  let mutationSucceeded = false;
+  let rollback = null;
   try {
     if (!(await confirm(confirmation))) return;
+    // Confirmation is the user's decisive moment. Reflect it now; git cleanup,
+    // pushing, merging, and the follow-up feed refresh continue asynchronously.
+    rollback = optimisticDismiss(button, entity);
     await callRpc(method, params);
-    succeeded = true;
+    mutationSucceeded = true;
     await refresh();
   } catch (error) {
-    rowError(button, error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (!mutationSucceeded && rollback) rollback(message);
+    else rowError(button, message);
   } finally {
-    if (!succeeded) button.disabled = false;
+    if (!mutationSucceeded) button.disabled = false;
   }
 }
 
 /** Wire all rendered Done controls without owning row navigation handlers. */
 export function wireRailDoneControls(
   rail,
-  { plans = [], runs = [], worktrees = [], callRpc, confirm, refresh, openChooser = openWorktreeFinishSheet },
+  {
+    plans = [],
+    runs = [],
+    worktrees = [],
+    callRpc,
+    confirm,
+    refresh,
+    openChooser = openWorktreeFinishSheet,
+    optimisticDismiss = dismissRow,
+  },
 ) {
   rail.querySelectorAll("[data-done-plan]").forEach((button) => {
     button.onclick = (event) => {
@@ -206,12 +239,14 @@ export function wireRailDoneControls(
       const plan = plans.find((candidate) => candidate.plan_id === button.dataset.donePlan);
       if (!plan?.can_archive) return;
       invokeMutation(button, {
+        entity: { kind: "plan", id: plan.plan_id },
         confirmation: planArchiveConfirm(),
         method: "plan.archive",
         params: { plan_id: plan.plan_id },
         callRpc,
         confirm,
         refresh,
+        optimisticDismiss,
       });
     };
   });
@@ -225,12 +260,14 @@ export function wireRailDoneControls(
       const actions = worktreeFinishActions(worktree);
       const invoke = (action) =>
         invokeMutation(button, {
+          entity: { kind: "run", id: run.run_id },
           confirmation: worktreeFinishConfirm(action, worktree),
           method: "run.finish",
           params: { run_id: run.run_id, action },
           callRpc,
           confirm,
           refresh,
+          optimisticDismiss,
         });
       if (actions.length === 1) invoke(actions[0].id);
       else openChooser(worktree, actions, invoke);
@@ -245,12 +282,14 @@ export function wireRailDoneControls(
       const actions = worktreeFinishActions(worktree);
       const invoke = (action) =>
         invokeMutation(button, {
+          entity: { kind: "worktree", id: worktree.worktree_id },
           confirmation: worktreeFinishConfirm(action, worktree),
           method: "worktree.finish",
           params: { project_id: worktree.project_id, worktree_id: worktree.worktree_id, action },
           callRpc,
           confirm,
           refresh,
+          optimisticDismiss,
         });
       if (actions.length === 1) invoke(actions[0].id);
       else openChooser(worktree, actions, invoke);

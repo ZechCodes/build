@@ -17,7 +17,51 @@ const CLOSED_KEY = "build.sidebar.closedProjects";
 
 const closedProjects = new Set(JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"));
 const wtOpen = new Set(); // per-session: which projects' worktree lists are unfolded
+const pendingDone = new Set();
+const doneErrors = new Map();
 let lastFeed = null;
+
+const doneKey = ({ kind, id }) => `${kind}:${id}`;
+
+function feedHasDoneEntity(feed, key) {
+  const separator = key.indexOf(":");
+  const kind = key.slice(0, separator);
+  const id = key.slice(separator + 1);
+  if (kind === "run") return (feed.runs || []).some((item) => item.run_id === id);
+  if (kind === "plan") return (feed.plans || []).some((item) => item.plan_id === id);
+  return (feed.externalWorktrees || []).some((item) => item.worktree_id === id);
+}
+
+/** Keep a confirmed row out of stale two-second feed paints until the daemon
+ * finishes. A failed mutation calls the returned rollback and paints the row's
+ * retryable error again. */
+function dismissDoneInBackground(_button, entity) {
+  const key = doneKey(entity);
+  pendingDone.add(key);
+  doneErrors.delete(key);
+  draw();
+  return (message) => {
+    pendingDone.delete(key);
+    doneErrors.set(key, message);
+    draw();
+  };
+}
+
+function paintDoneErrors(aside) {
+  for (const [key, message] of doneErrors) {
+    const separator = key.indexOf(":");
+    const kind = key.slice(0, separator);
+    const id = key.slice(separator + 1);
+    const attribute = `data-done-${kind}`;
+    const button = [...aside.querySelectorAll(`[${attribute}]`)].find(
+      (candidate) => candidate.getAttribute(attribute) === id,
+    );
+    const error = button?.closest(".srow")?.querySelector("[data-done-error]");
+    if (!error) continue;
+    error.textContent = message;
+    error.hidden = false;
+  }
+}
 
 function persistClosed() {
   localStorage.setItem(CLOSED_KEY, JSON.stringify([...closedProjects]));
@@ -89,6 +133,7 @@ function draw() {
     primaryChanges: lastFeed.primaryChanges,
     readIds: App.readIds,
     nowMs: Date.now(),
+    pendingDone,
   });
   const scroll = aside.scrollTop;
   aside.innerHTML = sidebarHtml(model, {
@@ -101,7 +146,10 @@ function draw() {
     activeWorktreeId: activeWorktreeId(),
   });
   aside.scrollTop = scroll;
-  setBadge(lastFeed.runs, lastFeed.plans);
+  setBadge(
+    lastFeed.runs.filter((run) => !pendingDone.has(`run:${run.run_id}`)),
+    lastFeed.plans.filter((plan) => !pendingDone.has(`plan:${plan.plan_id}`)),
+  );
 
   $("#side-add").onclick = openAddProjectMenu;
   // The chevron toggles; the name navigates to the project page and expands it.
@@ -147,7 +195,9 @@ function draw() {
     callRpc: (method, params) => App.call(method, params),
     confirm: confirmAction,
     refresh: refreshFeed,
+    optimisticDismiss: dismissDoneInBackground,
   });
+  paintDoneErrors(aside);
 }
 
 /** The + menu: the three existing add flows, reused as-is. */
@@ -208,6 +258,15 @@ export function initSidebar() {
   if (scrim) scrim.onclick = () => setSidebarCollapsed(true);
   subscribeFeed((feed) => {
     lastFeed = feed;
+    // A stale poll while git cleanup is running keeps the optimistic row hidden.
+    // Once a feed no longer contains it, the server has caught up and the
+    // suppression can be forgotten.
+    for (const key of pendingDone) {
+      if (!feedHasDoneEntity(feed, key)) pendingDone.delete(key);
+    }
+    for (const key of doneErrors.keys()) {
+      if (!feedHasDoneEntity(feed, key)) doneErrors.delete(key);
+    }
     draw();
   });
 }

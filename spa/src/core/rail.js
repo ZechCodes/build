@@ -49,17 +49,15 @@ function runEntry(run) {
     needsYou: !!run.needs_attention,
     changedAt: ms(run.state_changed_at) ?? ms(run.updated_at),
     attention: run.attention || {},
-    // Same three-part vocabulary as a worktree row. A run's branch is Build's
-    // own and tracks nothing, so everything past the base is unpushed; its
-    // +/− is the task's whole delta, which is what a task is for.
+    // Ahead and behind always use the same selected ref. +/- is only the dirty
+    // working-tree delta; the task's full diff stays on its review surfaces.
     status: {
-      unpushed: run.stat?.ahead ?? null,
-      upstream: null,
+      ahead: run.stat?.ahead ?? null,
       behind: run.stat?.behind ?? null,
-      base: run.base_branch || null,
-      insertions: run.stat?.insertions ?? 0,
-      deletions: run.stat?.deletions ?? 0,
-      changesLabel: "in this task",
+      comparisonRef: run.stat?.comparison_ref || null,
+      insertions: run.stat?.uncommitted?.insertions ?? 0,
+      deletions: run.stat?.uncommitted?.deletions ?? 0,
+      changesLabel: "uncommitted",
     },
     route: { name: "task", projectId: run.project_id, id: run.run_id },
   };
@@ -111,16 +109,11 @@ function worktreeEntry(worktree) {
     upstream: worktree.upstream || null,
     unpushed: worktree.unpushed ?? null,
     uncommitted: worktree.uncommitted || null,
-    // Three facts, three separate questions: is this worktree out of date with
-    // the branch it works against (behind), is any of its work only here
-    // (unpushed), and is any of it uncommitted (+/−). The bridge measures the
-    // first against the base branch and the second against the upstream, so
-    // one number can never stand in for the other.
+    // Both commit counts use one selected ref; +/- is only uncommitted work.
     status: {
-      unpushed: worktree.unpushed ?? null,
-      upstream: worktree.upstream || null,
-      behind: worktree.behind_base ?? null,
-      base: worktree.base_branch || null,
+      ahead: worktree.ahead ?? null,
+      behind: worktree.behind ?? null,
+      comparisonRef: worktree.comparison_ref || null,
       insertions: worktree.uncommitted?.insertions ?? 0,
       deletions: worktree.uncommitted?.deletions ?? 0,
       changesLabel: "uncommitted",

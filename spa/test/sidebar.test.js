@@ -20,7 +20,15 @@ const run = (over) => ({
   branch: "build/fix-the-thing",
   state: "review",
   needs_attention: true,
-  stat: { files_changed: 2, insertions: 42, deletions: 26, ahead: 3, behind: 1 },
+  stat: {
+    files_changed: 2,
+    insertions: 420,
+    deletions: 260,
+    comparison_ref: "origin/build/fix-the-thing",
+    ahead: 3,
+    behind: 1,
+    uncommitted: { files_changed: 2, insertions: 42, deletions: 26 },
+  },
   state_changed_at: iso(1),
   updated_at: iso(1),
   attention: { resume_at: iso(2), interacted: true, seen: false },
@@ -47,9 +55,10 @@ const worktree = (over) => ({
   branch: "build/spike",
   agent_working: false,
   dirty_files: 0,
-  unpushed: 0,
+  ahead: 0,
+  behind: 0,
+  comparison_ref: "main",
   upstream: null,
-  behind_base: 0,
   base_branch: "main",
   diffstat: { files_changed: 0, insertions: 0, deletions: 0 },
   uncommitted: { files_changed: 0, insertions: 0, deletions: 0 },
@@ -103,13 +112,14 @@ describe("buildSidebarModel", () => {
   it("attaches the primary-changes summary, sync counts and all", () => {
     const m = model({
       primaryChanges: [
-        { project_id: "p1", branch: "main", upstream: "origin/main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
+        { project_id: "p1", branch: "main", upstream: "origin/main", comparison_ref: "origin/main", ahead: 2, behind: 0, files_changed: 3, insertions: 12, deletions: 4 },
       ],
     });
     expect(m.primary).toEqual({
       branch: "main",
       path: null,
       upstream: "origin/main",
+      comparison_ref: "origin/main",
       ahead: 2,
       behind: 0,
       files_changed: 3,
@@ -160,41 +170,40 @@ describe("a project block", () => {
     expect(html).toContain("↑3");
     expect(html).toContain("+42");
     expect(html).toContain("-26");
+    expect(html).not.toContain("+420");
+    expect(html).not.toContain("-260");
+    expect(html).toContain("+42 -26 uncommitted");
   });
 
-  // ↑2 ↓1 +3 −1 is three different facts against three different references, so
-  // the row spells each one out rather than leaving them to be guessed at.
-  it("spells out what is unpushed, what it is behind, and what is uncommitted", () => {
+  it("spells out the shared comparison ref and what is uncommitted", () => {
     const m = model({
       runs: [],
       plans: [],
       externalWorktrees: [
         worktree({
-          unpushed: 2,
+          ahead: 2,
+          behind: 1,
+          comparison_ref: "origin/build/spike",
           upstream: "origin/build/spike",
-          behind_base: 1,
-          base_branch: "main",
           uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
           attention: { resume_at: iso(1), interacted: true, seen: true },
         }),
       ],
     });
     expect(projectHtml(m, ui())).toContain(
-      'title="↑2 unpushed to origin/build/spike · ↓1 behind main · +3 -1 uncommitted"',
+      'title="↑2 ahead of origin/build/spike · ↓1 behind origin/build/spike · +3 -1 uncommitted"',
     );
   });
 
-  // A branch that tracks nothing has been pushed nowhere — the row must not
-  // imply there is a remote holding this work.
-  it("says an untracked branch has no upstream", () => {
+  it("names local main when an untracked branch falls back to it", () => {
     const m = model({
       runs: [],
       plans: [],
       externalWorktrees: [
-        worktree({ unpushed: 2, upstream: null, attention: { resume_at: iso(1), interacted: true, seen: true } }),
+        worktree({ ahead: 2, comparison_ref: "main", upstream: null, attention: { resume_at: iso(1), interacted: true, seen: true } }),
       ],
     });
-    expect(projectHtml(m, ui())).toContain("↑2 unpushed — no upstream");
+    expect(projectHtml(m, ui())).toContain("↑2 ahead of main");
   });
 
   it("falls back to the branch when a row has no name", () => {
@@ -313,7 +322,7 @@ describe("checkoutStatusHtml", () => {
     expect(busy).toContain("-4");
     // The primary checkout's upstream IS the branch it works against, so the
     // one comparison answers both halves.
-    expect(busy).toContain("↑1 unpushed to origin/main · ↓2 behind origin/main · +3 -4 uncommitted");
+    expect(busy).toContain("↑1 ahead of origin/main · ↓2 behind origin/main · +3 -4 uncommitted");
   });
 });
 

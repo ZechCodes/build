@@ -41,6 +41,7 @@ export function buildSidebarModel({ projects, runs, plans, externalWorktrees, pr
             ahead: Number.isFinite(pc.ahead) ? pc.ahead : null,
             behind: Number.isFinite(pc.behind) ? pc.behind : null,
             upstream: pc.upstream || null,
+            comparison_ref: pc.comparison_ref || null,
             files_changed: pc.files_changed || 0,
             insertions: pc.insertions || 0,
             deletions: pc.deletions || 0,
@@ -62,17 +63,14 @@ function dotHtml(entry) {
 /** A row's floating git status — the three things worth knowing about a
  *  checkout at a glance, each shown only when it has something to say:
  *
- *    ↑n   work that lives only here (unpushed)
+ *    ↑n   commits ahead of the selected comparison ref
  *    ↓n   work it has not caught up with (out of date)
  *    +n −n  work that is not even committed
- *
- *  The two counts answer different questions and are measured against different
- *  refs, so the row spells both out on hover rather than leaving "↑2 ↓1" to be
- *  guessed at. */
+ */
 function entryStatusHtml(status) {
   if (!status) return "";
   const parts = [];
-  if (status.unpushed) parts.push(`<span class="ssync">↑${status.unpushed}</span>`);
+  if (status.ahead) parts.push(`<span class="ssync">↑${status.ahead}</span>`);
   if (status.behind) parts.push(`<span class="ssync">↓${status.behind}</span>`);
   if (status.insertions) parts.push(`<em class="add">+${status.insertions}</em>`);
   if (status.deletions) parts.push(`<em class="del">-${status.deletions}</em>`);
@@ -85,13 +83,9 @@ function entryStatusHtml(status) {
  *  escaped like every other git-derived string. */
 function statusTitle(status) {
   const said = [];
-  if (status.unpushed)
-    said.push(
-      status.upstream
-        ? `↑${status.unpushed} unpushed to ${status.upstream}`
-        : `↑${status.unpushed} unpushed — no upstream`,
-    );
-  if (status.behind) said.push(`↓${status.behind} behind ${status.base || "the base branch"}`);
+  const comparisonRef = status.comparisonRef || "the comparison branch";
+  if (status.ahead) said.push(`↑${status.ahead} ahead of ${comparisonRef}`);
+  if (status.behind) said.push(`↓${status.behind} behind ${comparisonRef}`);
   const changes = [status.insertions ? `+${status.insertions}` : "", status.deletions ? `-${status.deletions}` : ""]
     .filter(Boolean)
     .join(" ");
@@ -130,15 +124,13 @@ function entryRow(entry, ui) {
     ${dotHtml(entry)}<span class="stitle">${esc(label)}</span>${right}${done}</div>`;
 }
 
-/** The primary checkout's git status, in the same three parts every other row
- *  shows. Its upstream IS the branch it works against, so one comparison
- *  answers both halves: ahead of it is unpushed, behind it is out of date. */
+/** The primary checkout's git status, using its upstream when tracked and the
+ *  local base branch otherwise, plus its uncommitted working-tree delta. */
 export function checkoutStatusHtml(primary) {
   return entryStatusHtml({
-    unpushed: primary.ahead,
-    upstream: primary.upstream || null,
+    ahead: primary.ahead,
     behind: primary.behind,
-    base: primary.upstream || null,
+    comparisonRef: primary.comparison_ref || primary.upstream || null,
     insertions: primary.insertions,
     deletions: primary.deletions,
     changesLabel: "uncommitted",

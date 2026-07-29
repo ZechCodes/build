@@ -191,19 +191,17 @@ pub struct ExternalWorktree {
     pub head_age_seconds: u64,
     /// `git status --porcelain` line count — staged + unstaged + untracked.
     pub dirty_files: usize,
-    /// Work that exists only here: commits the [`upstream`](Self::upstream)
-    /// does not have, or — with no upstream to push to — every commit the
-    /// branch carries past the base, none of which is on a remote. `None` when
-    /// nothing could be compared against, which is not the same as zero.
+    /// Commits ahead of [`comparison_ref`](Self::comparison_ref). Retained for
+    /// finish-action warnings that describe work the selected ref does not have.
     pub unpushed: Option<u64>,
-    /// The upstream `unpushed` was measured against, or `None` when the branch
-    /// tracks nothing (and the count is everything past the base branch).
+    /// The configured upstream, or `None` when comparison falls back to the
+    /// project's local base branch.
     pub upstream: Option<String>,
-    /// How far out of date the worktree is: commits the branch it will merge
-    /// into has that this one does not. Always measured against the base
-    /// branch — that is what "out of date" means — never the upstream, which
-    /// answers the unrelated question above.
-    pub behind_base: Option<u64>,
+    /// The one ref both commit-direction counts are measured against: upstream
+    /// when configured, otherwise the project's local base branch.
+    pub comparison_ref: Option<String>,
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
     /// Roll-up of `diff_against_merge_base(path, base_branch)` (§2).
     pub diffstat: crate::diff::DiffStat,
     /// The working tree's own uncommitted delta: HEAD vs the index and working
@@ -436,8 +434,7 @@ fn parse_worktree_block(
         .ok()?
         .stat();
 
-    let (upstream, unpushed) = unpushed_count(repo, &commit, branch.as_deref(), base_branch);
-    let behind_base = behind_base_count(repo, &commit, base_branch);
+    let comparison = branch_comparison(repo, &commit, branch.as_deref(), base_branch);
 
     Some(ExternalWorktree {
         id: external_worktree_id(&canonical_path),
@@ -448,48 +445,49 @@ fn parse_worktree_block(
         head_subject,
         head_age_seconds,
         dirty_files,
-        unpushed,
-        upstream,
-        behind_base,
+        unpushed: comparison.ahead,
+        upstream: comparison.upstream,
+        comparison_ref: comparison.reference,
+        ahead: comparison.ahead,
+        behind: comparison.behind,
         diffstat,
         uncommitted,
     })
 }
 
-/// Work that exists only here, and the ref that decided it.
-///
-/// A branch that tracks something is measured against its upstream: what is
-/// unpushed is what `origin/feature-x` has not seen. A branch that tracks
-/// nothing has been pushed nowhere at all, so everything it carries past the
-/// base branch is unpushed.
-fn unpushed_count(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BranchComparison {
+    pub reference: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
+}
+
+/// Compare HEAD in both directions with its configured upstream, falling back
+/// to the local base branch only when there is no upstream.
+pub(crate) fn branch_comparison(
     repo: &git2::Repository,
     head: &git2::Commit,
     branch: Option<&str>,
     base_branch: &str,
-) -> (Option<String>, Option<u64>) {
+) -> BranchComparison {
     if let Some((name, oid)) = branch.and_then(|b| upstream_of(repo, b)) {
-        if let Ok((ahead, _)) = repo.graph_ahead_behind(head.id(), oid) {
-            return (Some(name), Some(ahead as u64));
-        }
+        let counts = repo.graph_ahead_behind(head.id(), oid).ok();
+        return BranchComparison {
+            reference: Some(name.clone()),
+            upstream: Some(name),
+            ahead: counts.map(|(ahead, _)| ahead as u64),
+            behind: counts.map(|(_, behind)| behind as u64),
+        };
     }
-    let ahead_of_base = resolve_commit(repo, base_branch)
-        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
-        .map(|(ahead, _)| ahead as u64);
-    (None, ahead_of_base)
-}
-
-/// How far the worktree is behind the branch it will merge into — whether it is
-/// out of date. Always the base branch: a tracking branch's upstream is its own
-/// past, not the work it needs to catch up with.
-fn behind_base_count(
-    repo: &git2::Repository,
-    head: &git2::Commit,
-    base_branch: &str,
-) -> Option<u64> {
-    resolve_commit(repo, base_branch)
-        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok())
-        .map(|(_, behind)| behind as u64)
+    let counts = resolve_commit(repo, base_branch)
+        .and_then(|base| repo.graph_ahead_behind(head.id(), base.id()).ok());
+    BranchComparison {
+        reference: counts.map(|_| base_branch.to_string()),
+        upstream: None,
+        ahead: counts.map(|(ahead, _)| ahead as u64),
+        behind: counts.map(|(_, behind)| behind as u64),
+    }
 }
 
 /// The commit a revspec names, or `None` when it does not resolve.
@@ -793,11 +791,10 @@ mod tests {
         git_in(dir, &["commit", "-m", name]);
     }
 
-    /// The two halves answer different questions and a worktree can be in both
-    /// at once: unpushed work is measured against the upstream, staleness
-    /// against the branch it will merge into. One ref cannot answer both.
+    /// A tracked branch compares both directions with its upstream. Movement on
+    /// the local base is irrelevant until the branch stops tracking upstream.
     #[test]
-    fn a_tracking_branch_reports_unpushed_and_stale_separately() {
+    fn a_tracking_branch_compares_both_directions_with_its_upstream() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("origin.git");
         git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
@@ -818,18 +815,42 @@ mod tests {
             ],
         );
         git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
-        // Two commits past what was pushed…
+        let other = dir.path().join("other");
+        git_in(
+            dir.path(),
+            &[
+                "clone",
+                "--branch",
+                "tracked",
+                remote.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        git_in(&other, &["config", "user.email", "other@build.ing"]);
+        git_in(&other, &["config", "user.name", "Other"]);
+
+        // Two local commits past the shared tip, and one remote commit the local
+        // branch does not have.
         commit_file(&wt_path, "a");
         commit_file(&wt_path, "b");
-        // …while main moved on underneath it.
+        commit_file(&other, "remote");
+        git_in(&other, &["push", "origin", "tracked"]);
+        git_in(&repo, &["fetch", "origin"]);
+        // Main moves twice to prove it is not the selected comparison ref.
         commit_file(&repo, "on-main");
+        commit_file(&repo, "on-main-again");
 
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
 
         let entry = &found[0];
         assert_eq!(entry.upstream.as_deref(), Some("origin/tracked"));
-        assert_eq!(entry.unpushed, Some(2), "two commits the remote lacks");
-        assert_eq!(entry.behind_base, Some(1), "one commit of main it lacks");
+        assert_eq!(entry.comparison_ref.as_deref(), Some("origin/tracked"));
+        assert_eq!(entry.ahead, Some(2), "two commits the remote lacks");
+        assert_eq!(
+            entry.behind,
+            Some(1),
+            "one remote commit is missing locally"
+        );
     }
 
     /// A branch that tracks nothing has pushed nothing: every commit it carries
@@ -849,8 +870,9 @@ mod tests {
 
         let entry = &found[0];
         assert_eq!(entry.upstream, None);
-        assert_eq!(entry.unpushed, Some(1));
-        assert_eq!(entry.behind_base, Some(1));
+        assert_eq!(entry.comparison_ref.as_deref(), Some("main"));
+        assert_eq!(entry.ahead, Some(1));
+        assert_eq!(entry.behind, Some(1));
     }
 
     /// Nothing to report is reported as nothing — a level, pushed, clean
@@ -867,8 +889,9 @@ mod tests {
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
 
         let entry = &found[0];
-        assert_eq!(entry.unpushed, Some(0));
-        assert_eq!(entry.behind_base, Some(0));
+        assert_eq!(entry.comparison_ref.as_deref(), Some("main"));
+        assert_eq!(entry.ahead, Some(0));
+        assert_eq!(entry.behind, Some(0));
         assert_eq!(entry.uncommitted.insertions, 0);
     }
 

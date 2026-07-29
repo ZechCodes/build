@@ -3288,9 +3288,11 @@ impl AppState {
                     "head_subject": w.head_subject,
                     "head_age_seconds": w.head_age_seconds,
                     "dirty_files": w.dirty_files,
-                    // The three facts a rail row answers: is this out of date,
-                    // is any of it unpushed, is any of it uncommitted.
-                    "behind_base": w.behind_base,
+                    // Ahead and behind always share one comparison ref. The
+                    // working-tree delta is reported separately below.
+                    "comparison_ref": w.comparison_ref,
+                    "ahead": w.ahead,
+                    "behind": w.behind,
                     "base_branch": base_branch,
                     "unpushed": w.unpushed,
                     "upstream": w.upstream,
@@ -3329,37 +3331,27 @@ impl AppState {
     /// per-project failure (unborn HEAD, fs error) logs and contributes
     /// nothing, same posture as `external_worktrees_json`.
     fn primary_changes_json(&mut self) -> Vec<Value> {
-        /// How far HEAD is ahead of / behind its upstream, and which ref that
-        /// is — all `None` when it has no upstream to be measured against.
-        /// Unlike a feature worktree, the primary checkout's upstream IS the
-        /// branch it works against, so one comparison answers both "is any of
-        /// this unpushed" and "is it out of date".
-        type SyncCounts = (Option<String>, Option<u64>, Option<u64>);
-        fn head_sync_counts(repo: &git2::Repository) -> SyncCounts {
-            const NONE: SyncCounts = (None, None, None);
+        type SyncCounts = (Option<String>, Option<String>, Option<u64>, Option<u64>);
+        fn head_sync_counts(repo: &git2::Repository, base_branch: &str) -> SyncCounts {
+            const NONE: SyncCounts = (None, None, None, None);
             let head = match repo.head() {
                 Ok(head) if head.is_branch() => head,
                 _ => return NONE,
             };
-            let Some(local_oid) = head.target() else {
+            let Some(branch) = head.shorthand() else {
                 return NONE;
             };
-            let Ok(branch) =
-                repo.find_branch(head.shorthand().unwrap_or(""), git2::BranchType::Local)
-            else {
+            let Ok(commit) = head.peel_to_commit() else {
                 return NONE;
             };
-            let Ok(upstream) = branch.upstream() else {
-                return NONE;
-            };
-            let Some(upstream_oid) = upstream.get().target() else {
-                return NONE;
-            };
-            let name = upstream.name().ok().flatten().map(str::to_string);
-            match repo.graph_ahead_behind(local_oid, upstream_oid) {
-                Ok((ahead, behind)) => (name, Some(ahead as u64), Some(behind as u64)),
-                Err(_) => NONE,
-            }
+            let comparison =
+                crate::worktree::branch_comparison(repo, &commit, Some(branch), base_branch);
+            (
+                comparison.upstream,
+                comparison.reference,
+                comparison.ahead,
+                comparison.behind,
+            )
         }
 
         let mut entries = Vec::new();
@@ -3379,15 +3371,11 @@ impl AppState {
                 .and_then(|r| r.head().ok())
                 .and_then(|h| h.shorthand().map(str::to_string))
                 .unwrap_or_else(|| "HEAD".to_string());
-            // The rail shows this checkout as "branch + git status", which is both
-            // halves: what the working tree holds (diffstat) and where the branch
-            // sits against its upstream. No upstream means no counts — null, not
-            // zero, because "nothing to compare against" is not "level with it".
-            let (upstream, ahead, behind) = repo
+            let (upstream, comparison_ref, ahead, behind) = repo
                 .as_ref()
                 .ok()
-                .map(head_sync_counts)
-                .unwrap_or((None, None, None));
+                .map(|repo| head_sync_counts(repo, &project.base_branch))
+                .unwrap_or((None, None, None, None));
             let summary = match crate::diff::diff_against_head(&project.repo_path) {
                 Ok(diff) => {
                     let stat = diff.stat();
@@ -3395,6 +3383,7 @@ impl AppState {
                         "project_id": project_id,
                         "branch": branch,
                         "upstream": upstream,
+                        "comparison_ref": comparison_ref,
                         "ahead": ahead,
                         "behind": behind,
                         "files_changed": stat.files_changed,
@@ -5564,35 +5553,44 @@ impl AppState {
                 return stat.clone();
             }
         }
-        // Ahead/behind rides the same cached computation as the diffstat: the
-        // rail shows both halves of a worktree's git status, and doing them
-        // apart would double this poll's git work.
-        let (ahead, behind) = git2::Repository::open(&active.worktree.path)
+        let comparison = git2::Repository::open(&active.worktree.path)
             .ok()
             .and_then(|repo| {
                 let head = repo.head().ok()?.peel_to_commit().ok()?;
-                let base = repo
-                    .revparse_single(&active.worktree.base_branch)
-                    .ok()?
-                    .peel_to_commit()
-                    .ok()?;
-                repo.graph_ahead_behind(head.id(), base.id()).ok()
-            })
-            .map(|(ahead, behind)| (Some(ahead as u64), Some(behind as u64)))
-            .unwrap_or((None, None));
-        let stat =
-            crate::diff::diff_against_base(&active.worktree.path, &active.worktree.base_branch)
-                .map(|diff| {
-                    let s = diff.stat();
-                    json!({
-                        "files_changed": s.files_changed,
-                        "insertions": s.insertions,
-                        "deletions": s.deletions,
-                        "ahead": ahead,
-                        "behind": behind,
-                    })
+                Some(crate::worktree::branch_comparison(
+                    &repo,
+                    &head,
+                    Some(&active.worktree.branch),
+                    &active.worktree.base_branch,
+                ))
+            });
+        let uncommitted = crate::diff::diff_uncommitted(&active.worktree.path)
+            .map(|diff| {
+                let stat = diff.stat();
+                json!({
+                    "files_changed": stat.files_changed,
+                    "insertions": stat.insertions,
+                    "deletions": stat.deletions,
                 })
-                .unwrap_or(Value::Null);
+            })
+            .unwrap_or(Value::Null);
+        let stat = crate::diff::diff_against_base(
+            &active.worktree.path,
+            &active.worktree.base_branch,
+        )
+        .map(|diff| {
+            let s = diff.stat();
+            json!({
+                "files_changed": s.files_changed,
+                "insertions": s.insertions,
+                "deletions": s.deletions,
+                "comparison_ref": comparison.as_ref().and_then(|value| value.reference.as_deref()),
+                "ahead": comparison.as_ref().and_then(|value| value.ahead),
+                "behind": comparison.as_ref().and_then(|value| value.behind),
+                "uncommitted": uncommitted,
+            })
+        })
+        .unwrap_or(Value::Null);
         self.run_stat_cache.insert(
             run_id.to_string(),
             (std::time::Instant::now(), stat.clone()),
@@ -11243,9 +11241,13 @@ mod tests {
 
     #[test]
     fn planned_run_builds_reviews_and_merges_with_a_cached_diffstat() {
-        let (dir, repo) = init_repo();
+        let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "quick change");
+        let worktree_path = state.runs[&run_id].worktree.path.clone();
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        git_in_dir(&worktree_path, &["push", "-u", "origin", &branch]);
+        std::fs::write(worktree_path.join("uncommitted.txt"), "one\ntwo\n").unwrap();
         let res = state.handle(req("run.get", json!({ "run_id": run_id })));
         assert_eq!(res["result"]["state"], "review", "{res:?}");
 
@@ -11260,6 +11262,16 @@ mod tests {
         };
         let t = entry(&state.handle(req("board.list", json!({}))));
         assert!(t["stat"]["files_changed"].as_u64().unwrap() >= 1, "{t:?}");
+        assert_eq!(
+            t["stat"]["comparison_ref"],
+            format!("origin/{branch}"),
+            "{t:?}"
+        );
+        assert_eq!(t["stat"]["ahead"], 0, "pushed branch must be level: {t:?}");
+        assert_eq!(t["stat"]["behind"], 0, "{t:?}");
+        assert_eq!(t["stat"]["uncommitted"]["files_changed"], 1, "{t:?}");
+        assert_eq!(t["stat"]["uncommitted"]["insertions"], 2, "{t:?}");
+        assert_eq!(t["stat"]["uncommitted"]["deletions"], 0, "{t:?}");
         // served from cache on the next poll (identical).
         let t2 = entry(&state.handle(req("board.list", json!({}))));
         assert_eq!(t["stat"], t2["stat"]);
@@ -15574,6 +15586,28 @@ mod tests {
         assert_eq!(entry["behind"], 0, "{entry:?}");
         assert!(entry["files_changed"].as_u64().unwrap() >= 1, "{entry:?}");
         let _ = origin;
+    }
+
+    #[test]
+    fn primary_changes_compares_an_untracked_branch_with_local_main() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        std::fs::write(repo.join("topic.txt"), "topic\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "topic"]);
+
+        let board = state.handle(req("board.list", json!({})));
+        let entry = board["result"]["primary_changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["branch"] == "topic")
+            .unwrap_or_else(|| panic!("no topic entry: {board:?}"));
+        assert!(entry["upstream"].is_null(), "{entry:?}");
+        assert_eq!(entry["comparison_ref"], "main", "{entry:?}");
+        assert_eq!(entry["ahead"], 1, "{entry:?}");
+        assert_eq!(entry["behind"], 0, "{entry:?}");
     }
 
     // ---- attention: what the rail orders and colours itself by ---------------

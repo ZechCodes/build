@@ -14,7 +14,14 @@ const run = (over = {}) => ({
   state_changed_at: ago(1),
   updated_at: ago(1),
   attention: { resume_at: ago(1), interacted: true, seen: true },
-  stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
+  stat: {
+    insertions: 40,
+    deletions: 10,
+    comparison_ref: "main",
+    ahead: 2,
+    behind: 0,
+    uncommitted: { files_changed: 1, insertions: 4, deletions: 1 },
+  },
   ...over,
 });
 
@@ -39,9 +46,11 @@ const worktree = (over = {}) => ({
   branch: "build/spike",
   agent_working: false,
   dirty_files: 1,
+  ahead: 1,
+  behind: 2,
+  comparison_ref: "origin/build/spike",
   unpushed: 1,
   upstream: "origin/build/spike",
-  behind_base: 2,
   base_branch: "main",
   diffstat: { files_changed: 1, insertions: 9, deletions: 2 },
   uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
@@ -268,22 +277,25 @@ describe("the row's contents", () => {
     expect(wtRow.name || wtRow.branch).toBe("build/no-name");
   });
 
-  it("carries a run's unpushed/behind counts and the delta it is building", () => {
+  it("compares a run with one ref and shows only its uncommitted delta", () => {
     const [entry] = railEntries({ runs: [run()], projectId: "p1", nowMs: NOW });
-    expect(entry.status).toMatchObject({ unpushed: 2, behind: 0, insertions: 4, deletions: 1 });
+    expect(entry.status).toMatchObject({
+      ahead: 2,
+      behind: 0,
+      comparisonRef: "main",
+      insertions: 4,
+      deletions: 1,
+    });
   });
 
-  // Three separate questions, three separate answers: is any of this only
-  // here (unpushed, vs the upstream), is it out of date (behind, vs the base
-  // branch), and is any of it uncommitted (+/−, vs HEAD). The branch delta —
-  // 9 insertions here — is the diff surface's business, not the row's.
-  it("answers unpushed, out-of-date and uncommitted separately", () => {
+  // Ahead and behind share one comparison ref. The branch delta — 9 insertions
+  // here — is the diff surface's business, while +/- is only uncommitted work.
+  it("answers ahead, behind and uncommitted separately", () => {
     const [entry] = railEntries({ worktrees: [worktree()], projectId: "p1", nowMs: NOW });
     expect(entry.status).toMatchObject({
-      unpushed: 1,
-      upstream: "origin/build/spike",
+      ahead: 1,
       behind: 2,
-      base: "main",
+      comparisonRef: "origin/build/spike",
       insertions: 3,
       deletions: 1,
     });
@@ -297,7 +309,7 @@ describe("the row's contents", () => {
       projectId: "p1",
       nowMs: NOW,
     });
-    expect(entry.status).toMatchObject({ unpushed: 1, behind: 2, insertions: 0, deletions: 0 });
+    expect(entry.status).toMatchObject({ ahead: 1, behind: 2, insertions: 0, deletions: 0 });
   });
 
   it("gives an issue no git status — it has no worktree to have one", () => {

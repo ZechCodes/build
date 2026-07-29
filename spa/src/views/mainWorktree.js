@@ -84,8 +84,13 @@ export async function renderMain() {
       // dispatches its runs into their own worktrees, so this is normally empty
       // — but a worktree the human works in directly can hold one, and the tab
       // is where it shows up.
+      // No `onStart` here, deliberately. `agent.start` scaffolds `.build/mcp.json`
+      // for an OWNER so the agent has somewhere to report `done`, and the primary
+      // checkout is owned by no run or plan — `run.adopt` only takes an external
+      // worktree. A button here could only ever fail, so the tab states the fact
+      // and offers nothing it cannot do.
       aux = mountAgentTab(body, scope, {
-        idleLabel: "no agent is running in this checkout",
+        idleLabel: "No agent is currently running in this checkout",
       });
     } else if (id === "inbox") {
       aux = mountProjectInbox(body, {

@@ -1779,6 +1779,19 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
+    /// The agent an entity dispatches with. A start with no turn behind it still
+    /// has to honor the provider/model the human chose for this worktree — the
+    /// sheet's answer, or the run's own — rather than silently defaulting.
+    fn entity_model_choice(&self, entity_id: &str) -> Result<ModelChoice, String> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return Ok(plan.model_choice.clone());
+        }
+        if let Some(run) = self.runs.get(entity_id) {
+            return Ok(run.model_choice.clone());
+        }
+        Err("unknown id".to_string())
+    }
+
     /// Kill, reap, and forget a worktree's agent, telling every attached client
     /// the tab is gone.
     ///
@@ -6356,6 +6369,10 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         }
         "term.attach" => term_attach(state, &sender, &params),
         "agent.attach" => agent_attach(state, &sender, &params),
+        // Bypasses `dispatch` for the same reason `deliver` does: opening a
+        // harness blocks for seconds on its readiness wait, and every terminal
+        // pump needs the state lock free while it does.
+        "agent.start" => agent_start(state, &params),
         _ => {
             let dispatched = state.lock().unwrap().dispatch(&method, &params);
             // A verb speaks to a worktree's agent by queuing a turn: it runs
@@ -6518,6 +6535,51 @@ fn agent_attach(
         }));
     }
     Ok(attach_to_tab(s, &key, sender, cols, rows))
+}
+
+/// Open a worktree's agent with nothing to say to it — the surface's "Start
+/// agent" button, and the "Restart" the human needs when the harness exits on
+/// its own (codex running a self-update and quitting, claude crashing).
+///
+/// Every other way to get an agent is a turn: you say something and the agent
+/// is spawned to hear it. That leaves no way to simply have one running, and no
+/// way back after an exit short of inventing a message. This verb is that way,
+/// and it is the only spawn path with no prompt behind it.
+///
+/// It carries no turn, so it needs no queue: `ensure_agent_tab` is idempotent on
+/// a live tab (`Warm`, same process) and replaces a dead one (`Fresh`, screen
+/// carried), which is exactly start-vs-restart. The owner must be an entity that
+/// owns a worktree — `.build/mcp.json` routes `done` per owner, so an agent with
+/// nobody to report to is worse than none.
+fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+    // `run_id` is the adopting caller's spelling: a worktree surface with no run
+    // yet mints one and forwards the verb, and that helper names the id it just
+    // minted. Same entity either way.
+    let entity_id = params
+        .get("id")
+        .or_else(|| params.get("run_id"))
+        .or_else(|| params.get("plan_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or("missing id")?;
+    let (root, model_choice) = {
+        let s = state.lock().unwrap();
+        (
+            s.entity_worktree_root(&entity_id)?,
+            s.entity_model_choice(&entity_id)?,
+        )
+    };
+    let (term_id, spawned) = ensure_agent_tab(state, &root, &entity_id, &model_choice)?;
+    state.lock().unwrap().touch_attention(&entity_id);
+    Ok(json!({
+        "term_id": term_id,
+        "live": true,
+        "spawned": match spawned {
+            Spawned::Fresh => "fresh",
+            Spawned::Warm => "warm",
+        },
+    }))
 }
 
 /// Register `sender` on a tab's screen and describe what it should render.
@@ -13914,6 +13976,151 @@ mod tests {
         }
         spawn_tab_pump(state, key.clone(), rx);
         (key, wire_id)
+    }
+
+    /// A run with a worktree but no agent tab — the state every worktree is in
+    /// before anyone speaks to it, and the one a surface's "Start agent" button
+    /// acts on. Returns the run's canonical root.
+    fn insert_run_without_agent(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        side_root: std::path::PathBuf,
+        run_id: &str,
+    ) -> std::path::PathBuf {
+        let store = crate::store::Store::new(side_root.join("store"));
+        let side = Orchestrator::new(
+            repo.to_path_buf(),
+            side_root.join("wt"),
+            Agent::Warm(HarnessSpec::new("true")),
+            Templates::default(),
+        );
+        let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
+        let (active, _turn) = side
+            .dispatch_run(
+                RunId::new(run_id),
+                RunSource {
+                    plan: &plan,
+                    has_active_run: false,
+                },
+                "main",
+                Default::default(),
+                &store,
+            )
+            .unwrap();
+        let root = AppState::canonical_root(&active.worktree.path);
+        let mut s = state.lock().unwrap();
+        let project_id = s.projects[0].id.clone();
+        s.entity_project.insert(run_id.to_string(), project_id);
+        s.runs.insert(run_id.to_string(), active);
+        root
+    }
+
+    /// `agent.start` is the surface's "Start agent" button: it opens the
+    /// worktree's one agent WITHOUT a turn to deliver. Attaching never spawns
+    /// (mounting a tab is a look), so before this verb the only way to get an
+    /// agent was to send it work — which is no help when the human just wants
+    /// the thing running, or wants it back after it exited.
+    #[tokio::test]
+    async fn agent_start_opens_the_worktrees_agent_and_is_idempotent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-start");
+        let key = TabKey::agent(&root);
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the worktree has no agent until someone asks for one"
+        );
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-start" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            started["result"]["spawned"], "fresh",
+            "the first start opens the agent"
+        );
+        assert_eq!(started["result"]["live"], true);
+        let wire_id = started["result"]["term_id"].as_str().unwrap().to_string();
+        assert!(
+            wire_id.starts_with("agent:"),
+            "an agent is addressed by its worktree: {wire_id}"
+        );
+        let pid = {
+            let s = state.lock().unwrap();
+            s.tabs
+                .get(&key)
+                .expect("the agent tab exists")
+                .session
+                .pid()
+        };
+
+        let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
+        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(
+            again["result"]["term_id"], wire_id,
+            "a second start addresses the same tab"
+        );
+        assert_eq!(
+            state.lock().unwrap().tabs.get(&key).unwrap().session.pid(),
+            pid,
+            "starting an agent that is already running must not spawn a second one"
+        );
+    }
+
+    /// The restart case the human actually hits: the harness exited (codex ran
+    /// its self-update and quit, claude crashed), the tab retains the dead
+    /// screen, and the button has to bring a NEW process back on the same tab.
+    #[tokio::test]
+    async fn agent_start_restarts_an_agent_that_exited() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-restart");
+        let key = TabKey::agent(&root);
+
+        let first = call(&handler, "agent.start", json!({ "id": "run-restart" }));
+        assert_eq!(first["ok"], true, "{first:?}");
+        let first_pid = {
+            let s = state.lock().unwrap();
+            s.tabs.get(&key).unwrap().session.pid()
+        };
+
+        // The harness dies the way a real one does, and the tab is RETAINED so
+        // the human can still read the last screen.
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s.tabs.get_mut(&key).unwrap();
+            tab.session.kill_and_reap();
+            tab.live = false;
+        }
+
+        let restarted = call(&handler, "agent.start", json!({ "id": "run-restart" }));
+        assert_eq!(restarted["ok"], true, "{restarted:?}");
+        assert_eq!(
+            restarted["result"]["spawned"], "fresh",
+            "a dead agent is replaced, not reported as running"
+        );
+        assert_eq!(restarted["result"]["live"], true);
+        let s = state.lock().unwrap();
+        let tab = s.tabs.get(&key).expect("the tab came back");
+        assert!(tab.live, "the restarted agent is live");
+        assert_ne!(
+            tab.session.pid(),
+            first_pid,
+            "restart means a NEW process, not the corpse reported as alive"
+        );
+    }
+
+    /// An id that owns no worktree cannot have an agent started in it — the
+    /// MCP `done` route is scaffolded per owner, so there is nothing to own it.
+    #[tokio::test]
+    async fn agent_start_refuses_an_id_that_owns_no_worktree() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let _ = &state;
+        let refused = call(&handler, "agent.start", json!({ "id": "run-nowhere" }));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("unknown id"),
+            "{refused:?}"
+        );
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works

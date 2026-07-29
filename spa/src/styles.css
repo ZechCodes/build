@@ -924,6 +924,17 @@ body.sidebar-collapsed #side-open { display:block; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
   background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;
   font-size:12px; color:var(--dim); box-shadow:0 2px 8px var(--shadow-soft); }
+/* The Agent tab's empty state: centered in the pane, because it IS the pane's
+   content when no agent is running — not an annotation on a terminal. */
+.agent-overlay { position:absolute; inset:0; z-index:3; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:14px; text-align:center; padding:24px; }
+.agent-overlay[hidden] { display:none; }
+.agent-overlay-msg { margin:0; font-size:14px; color:var(--dim); max-width:44ch; }
+/* An agent that EXITED leaves a screen worth reading — usually the reason it
+   exited. Veil it enough to read the offer, never enough to hide the evidence. */
+.agent-overlay.over-screen { background:color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter:blur(1.5px); }
+.agent-overlay.over-screen .agent-overlay-msg { color:var(--fg); font-weight:500; }
 /* ---- sidebar main (primary checkout) row ---- */
 .smain-line .stitle { font-family:var(--mono); font-size:12px; }
 @media (max-width: 900px) {

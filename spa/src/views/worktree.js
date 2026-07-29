@@ -183,8 +183,11 @@ export async function renderWorktree() {
       // This worktree's one agent. Mounting is a look, never a start: an agent
       // that has not been asked for anything yet shows the idle label until the
       // first delivered turn adopts the worktree and spawns it.
+      // Starting the agent is a mutating act on this directory, so it adopts —
+      // the same transparent adoption the first Request Changes performs, and
+      // the same reason: an agent needs an owner for `done` to report to.
       aux = mountAgentTab(body, scope, {
-        idleLabel: "no agent is running in this worktree",
+        onStart: () => adopting.runCall("agent.start", {}),
       });
       return;
     }

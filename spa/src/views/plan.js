@@ -255,7 +255,11 @@ export async function renderPlan() {
     // The plan addresses its own agent; the bridge resolves that to the
     // disposable planning worktree, which is where that agent lives — and which
     // is why an approved or abandoned plan has no agent tab at all.
-    agentPane = mountAgentTab(body, { id }, { idleLabel: "no active planning session" });
+    agentPane = mountAgentTab(
+      body,
+      { id },
+      { idleLabel: "No planning agent is currently running", onStart: () => App.call("agent.start", { id }) },
+    );
   };
 
   // Switch surfaces: Review repaints through the poll machinery; Agent owns its

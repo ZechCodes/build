@@ -203,6 +203,7 @@ pub enum BridgeAction {
     PostThreadMessage {
         body: String,
         anchor: Option<crate::thread::MessageAnchor>,
+        links: Vec<crate::thread::ThreadLink>,
     },
 }
 
@@ -341,7 +342,22 @@ impl DoneServer {
                                 "type": "object",
                                 "properties": {
                                     "body": { "type": "string" },
-                                    "anchor": { "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." }
+                                    "anchor": { "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." },
+                                    "links": {
+                                        "type": "array",
+                                        "maxItems": 20,
+                                        "description": "Optional links to worktree files. Use kind=file with a worktree-relative path and optional line_start/line_end.",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "kind": { "type": "string", "enum": ["file"] },
+                                                "path": { "type": "string" },
+                                                "line_start": { "type": "integer", "minimum": 1 },
+                                                "line_end": { "type": "integer", "minimum": 1 }
+                                            },
+                                            "required": ["kind", "path"]
+                                        }
+                                    }
                                 },
                                 "required": ["body"]
                             }
@@ -404,10 +420,45 @@ impl DoneServer {
                     }
                 },
             };
+            let links = match arguments.get("links") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(values)) if values.len() <= 20 => {
+                    match values
+                        .iter()
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .collect::<Result<Vec<crate::thread::ThreadLink>, _>>()
+                    {
+                        Ok(links) => links,
+                        Err(error) => {
+                            return Handled {
+                                reply: Some(tool_error(id, format!("invalid links: {error}"))),
+                                ..Handled::default()
+                            }
+                        }
+                    }
+                }
+                Some(Value::Array(_)) => {
+                    return Handled {
+                        reply: Some(tool_error(
+                            id,
+                            "links must contain at most 20 entries".to_string(),
+                        )),
+                        ..Handled::default()
+                    }
+                }
+                Some(_) => {
+                    return Handled {
+                        reply: Some(tool_error(id, "links must be an array".to_string())),
+                        ..Handled::default()
+                    }
+                }
+            };
             return Handled {
                 action: Some(BridgeAction::PostThreadMessage {
                     body: body.to_string(),
                     anchor,
+                    links,
                 }),
                 action_id: Some(id),
                 ..Handled::default()
@@ -693,8 +744,26 @@ mod tests {
         );
         assert!(matches!(
             post.action,
-            Some(BridgeAction::PostThreadMessage { ref body, anchor: None })
-                if body == "Which name should I use?"
+            Some(BridgeAction::PostThreadMessage { ref body, anchor: None, ref links })
+                if body == "Which name should I use?" && links.is_empty()
+        ));
+        assert!(post.reply.is_none());
+    }
+
+    #[test]
+    fn post_thread_message_accepts_typed_file_links() {
+        let post = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"body":"See the parser.","links":[{"kind":"file","path":"src/parser.rs","line_start":12,"line_end":18}]}}}"#,
+        );
+
+        assert!(matches!(
+            post.action,
+            Some(BridgeAction::PostThreadMessage { ref links, .. })
+                if links == &vec![crate::thread::ThreadLink::File {
+                    path: "src/parser.rs".to_string(),
+                    line_start: Some(12),
+                    line_end: Some(18),
+                }]
         ));
         assert!(post.reply.is_none());
     }

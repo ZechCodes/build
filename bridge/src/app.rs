@@ -2096,6 +2096,8 @@ impl AppState {
         let Some(mut active) = self.plans.remove(plan_id) else {
             return;
         };
+        let previous_stage_ids: Vec<String> =
+            active.stages.iter().map(|stage| stage.id.clone()).collect();
         let report_for_thread = report.clone();
         let outcome = (|| -> Result<(), String> {
             let project_id = self.project_of(plan_id)?;
@@ -2106,6 +2108,19 @@ impl AppState {
         })();
         if let Err(e) = &outcome {
             eprintln!("on_agent_done {plan_id}: {e}");
+        }
+        if outcome.is_ok()
+            && report_for_thread.phase == DonePhase::Plan
+            && report_for_thread.status == DoneStatus::Completed
+        {
+            let new_stages: Vec<(usize, StageDoc)> = active
+                .stages
+                .iter()
+                .enumerate()
+                .filter(|(_, stage)| !previous_stage_ids.contains(&stage.id))
+                .map(|(index, stage)| (index, stage.clone()))
+                .collect();
+            append_plan_stage_announcements(&mut active.thread, plan_id, &new_stages);
         }
         record_report_in_thread(
             &mut active.thread,
@@ -4581,22 +4596,27 @@ impl AppState {
             (project_id, active, turn)
         };
 
+        let plan_docs = self.owning_plan_stage_docs(&active);
+        record_current_stage_started(&mut active, &plan_docs);
+
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
         self.pending_agent_turns
             .push(PendingAgentTurn::for_run(&run_id, &active, turn));
         if self.qa_agent {
-            let plan_docs = self.owning_plan_stage_docs(&active);
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         let mut plan = self.take_plan(&source_plan_id)?;
-        plan.thread.push_event(
+        plan.thread.push_event_with_links(
             crate::thread::ThreadEventKind::ImplementationStarted,
             Some(format!("Implementation started as {run_id}")),
             None,
             None,
+            vec![crate::thread::ThreadLink::Run {
+                run_id: run_id.clone(),
+            }],
             now_rfc3339(),
         );
         let (_, plan_persisted) = self.finish_plan_mutation(source_plan_id, plan);
@@ -4768,6 +4788,7 @@ impl AppState {
                 .orch_for(&project_id)?
                 .dispatch_run_stage(&mut active, &plan_docs, &stage_id, model_override)
                 .map_err(err)?;
+            record_current_stage_started(&mut active, &plan_docs);
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -4799,6 +4820,7 @@ impl AppState {
                 .orch_for(&project_id)?
                 .fix_run_stage(&mut active, &plan_docs, &stage_id, &note)
                 .map_err(err)?;
+            record_current_stage_started(&mut active, &plan_docs);
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -4925,6 +4947,7 @@ impl AppState {
                     .orch_for(&project_id)?
                     .dispatch_run_stage(&mut active, &plan_docs, &next, None)
                     .map_err(err)?;
+                record_current_stage_started(&mut active, &plan_docs);
                 self.pending_agent_turns
                     .push(PendingAgentTurn::for_run(run_id, &active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -5607,6 +5630,8 @@ impl AppState {
     /// orchestrator ingests them into the canonical store exactly as a real
     /// harness would over MCP.
     fn qa_simulate_plan(&self, project_id: &str, active: &mut ActivePlan) -> Result<(), String> {
+        let previous_stage_ids: Vec<String> =
+            active.stages.iter().map(|stage| stage.id.clone()).collect();
         let worktree = active
             .worktree
             .as_ref()
@@ -5656,7 +5681,17 @@ impl AppState {
                     },
                 },
             )
-            .map_err(err)
+            .map_err(err)?;
+        let new_stages: Vec<(usize, StageDoc)> = active
+            .stages
+            .iter()
+            .enumerate()
+            .filter(|(_, stage)| !previous_stage_ids.contains(&stage.id))
+            .map(|(index, stage)| (index, stage.clone()))
+            .collect();
+        let plan_id = active.plan.id.0.clone();
+        append_plan_stage_announcements(&mut active.thread, &plan_id, &new_stages);
+        Ok(())
     }
 
     /// Simulate a per-stage plan-revision session: rewrite the stage doc in the
@@ -6600,7 +6635,11 @@ fn apply_thread_action(
             "agent_id": thread.agent.id,
             "messages": thread.read_unread(now),
         })),
-        BridgeAction::PostThreadMessage { body, anchor } => {
+        BridgeAction::PostThreadMessage {
+            body,
+            anchor,
+            links,
+        } => {
             let body = body.trim();
             if body.is_empty() {
                 return Err("message body must not be empty".to_string());
@@ -6623,10 +6662,54 @@ fn apply_thread_action(
                     artifact.as_str()
                 ));
             }
-            let message_id = thread.post_agent(body, anchor, now);
+            validate_thread_links(&links)?;
+            let message_id = thread.post_agent_with_links(body, anchor, links, now);
             Ok(json!({ "message_id": message_id }))
         }
     }
+}
+
+fn validate_thread_links(links: &[crate::thread::ThreadLink]) -> Result<(), String> {
+    if links.len() > 20 {
+        return Err("message links must contain at most 20 entries".to_string());
+    }
+    for link in links {
+        match link {
+            crate::thread::ThreadLink::File {
+                path,
+                line_start,
+                line_end,
+            } => {
+                if path.is_empty() || !crate::plan::is_worktree_contained_path(path) {
+                    return Err("file link path escapes the worktree".to_string());
+                }
+                if line_start.is_some_and(|line| line == 0)
+                    || line_end.is_some_and(|line| line == 0)
+                    || matches!((line_start, line_end), (Some(start), Some(end)) if start > end)
+                {
+                    return Err("file link line range is invalid".to_string());
+                }
+            }
+            crate::thread::ThreadLink::PlanStage {
+                plan_id,
+                stage_id,
+                path,
+            } => {
+                if plan_id.is_empty()
+                    || stage_id.is_empty()
+                    || !path.starts_with(".build/plan/")
+                    || !crate::plan::is_worktree_contained_path(path)
+                {
+                    return Err("plan stage link is invalid".to_string());
+                }
+            }
+            crate::thread::ThreadLink::Run { run_id } if run_id.is_empty() => {
+                return Err("run link is invalid".to_string());
+            }
+            crate::thread::ThreadLink::Run { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 const NEW_THREAD_MESSAGES_PROMPT: &str =
@@ -6805,6 +6888,60 @@ fn append_stage_comments_to_thread(
             });
         thread.post_user(body, anchor, &now);
     }
+}
+
+fn append_plan_stage_announcements(
+    thread: &mut crate::thread::Thread,
+    plan_id: &str,
+    stages: &[(usize, StageDoc)],
+) {
+    let now = now_rfc3339();
+    for (index, stage) in stages {
+        let explanation = if stage.summary.trim().is_empty() {
+            format!("**Stage {}: {}**", index + 1, stage.title)
+        } else {
+            format!(
+                "**Stage {}: {}**\n\n{}",
+                index + 1,
+                stage.title,
+                stage.summary.trim()
+            )
+        };
+        thread.post_agent_with_links(
+            explanation,
+            None,
+            vec![crate::thread::ThreadLink::PlanStage {
+                plan_id: plan_id.to_string(),
+                stage_id: stage.id.clone(),
+                path: stage.path.clone(),
+            }],
+            &now,
+        );
+    }
+}
+
+fn record_current_stage_started(active: &mut ActiveRun, stages: &[StageDoc]) {
+    let Some(plan_id) = active.run.plan_id.as_ref().map(|id| id.0.clone()) else {
+        return;
+    };
+    let Some(stage_id) = active.current_stage_id.as_deref() else {
+        return;
+    };
+    let Some(stage) = stages.iter().find(|stage| stage.id == stage_id) else {
+        return;
+    };
+    active.thread.push_event_with_links(
+        crate::thread::ThreadEventKind::StageStarted,
+        Some(format!("Started plan stage “{}”", stage.title)),
+        None,
+        None,
+        vec![crate::thread::ThreadLink::PlanStage {
+            plan_id,
+            stage_id: stage.id.clone(),
+            path: stage.path.clone(),
+        }],
+        now_rfc3339(),
+    );
 }
 
 /// Close the conversation's open session, if one is open. Nothing to close is
@@ -13096,6 +13233,69 @@ mod tests {
     }
 
     #[test]
+    fn planning_announces_each_stage_with_a_link_to_its_document() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "linked stages" })));
+        let plan_id = plan_id_of(&plan);
+        let view = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let stage_messages: Vec<&Value> = view["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| {
+                item["type"] == "message"
+                    && item["data"]["role"] == "agent"
+                    && item["data"]["links"][0]["kind"] == "plan_stage"
+            })
+            .collect();
+
+        assert_eq!(stage_messages.len(), 2, "{stage_messages:?}");
+        assert_eq!(stage_messages[0]["data"]["links"][0]["plan_id"], plan_id);
+        assert_eq!(
+            stage_messages[0]["data"]["links"][0]["stage_id"],
+            "first-half"
+        );
+        assert_eq!(
+            stage_messages[1]["data"]["links"][0]["stage_id"],
+            "second-half"
+        );
+    }
+
+    #[test]
+    fn run_conversation_links_every_started_stage_back_to_the_plan() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "linked dispatch" })));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        let run_id = run_id_of(&run);
+        state.handle(req(
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let starts: Vec<&Value> = view["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["data"]["event"] == "stage_started")
+            .collect();
+
+        assert_eq!(starts.len(), 2, "{starts:?}");
+        assert_eq!(starts[0]["data"]["links"][0]["plan_id"], plan_id);
+        assert_eq!(starts[0]["data"]["links"][0]["stage_id"], "first-half");
+        assert_eq!(starts[1]["data"]["links"][0]["stage_id"], "second-half");
+    }
+
+    #[test]
     fn mcp_thread_actions_are_owner_scoped_and_revision_snapshots_are_on_demand() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -13129,9 +13329,26 @@ mod tests {
                 BridgeAction::PostThreadMessage {
                     body: "Which name?".into(),
                     anchor: None,
+                    links: Vec::new(),
                 },
             )
             .unwrap();
+        let escaping_link = state.on_mcp_action(
+            "run-thread",
+            BridgeAction::PostThreadMessage {
+                body: "Open this".into(),
+                anchor: None,
+                links: vec![crate::thread::ThreadLink::File {
+                    path: "../../etc/passwd".into(),
+                    line_start: None,
+                    line_end: None,
+                }],
+            },
+        );
+        assert_eq!(
+            escaping_link.unwrap_err(),
+            "file link path escapes the worktree"
+        );
         let view = state.handle(req("run.get", json!({ "run_id": "run-thread" })));
         assert!(view["result"]["thread"]["items"]
             .as_array()

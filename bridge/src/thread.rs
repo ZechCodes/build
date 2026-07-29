@@ -70,6 +70,26 @@ pub struct MessageAnchor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ThreadLink {
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_start: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_end: Option<u32>,
+    },
+    PlanStage {
+        plan_id: String,
+        stage_id: String,
+        path: String,
+    },
+    Run {
+        run_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
     pub sequence: u64,
@@ -90,6 +110,8 @@ pub struct ThreadMessage {
     pub anchor: Option<MessageAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<ThreadLink>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +128,7 @@ pub enum ThreadEventKind {
     RevisionCreated,
     Approved,
     StageApproved,
+    StageStarted,
     ImplementationStarted,
     Committed,
     Pushed,
@@ -125,6 +148,8 @@ pub struct ThreadEvent {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<ThreadLink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +309,7 @@ impl Thread {
             MessageSource::Chat,
             body.into(),
             anchor,
+            Vec::new(),
             now.into(),
         )
     }
@@ -294,11 +320,22 @@ impl Thread {
         anchor: Option<MessageAnchor>,
         now: impl Into<String>,
     ) -> String {
+        self.post_agent_with_links(body, anchor, Vec::new(), now)
+    }
+
+    pub fn post_agent_with_links(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        links: Vec<ThreadLink>,
+        now: impl Into<String>,
+    ) -> String {
         self.post_message(
             MessageRole::Agent,
             MessageSource::Chat,
             body.into(),
             anchor,
+            links,
             now.into(),
         )
     }
@@ -313,6 +350,7 @@ impl Thread {
             MessageSource::Completion,
             summary.into(),
             None,
+            Vec::new(),
             now.into(),
         );
     }
@@ -323,6 +361,7 @@ impl Thread {
         source: MessageSource,
         body: String,
         anchor: Option<MessageAnchor>,
+        links: Vec<ThreadLink>,
         now: String,
     ) -> String {
         let sequence = self.next();
@@ -338,6 +377,7 @@ impl Thread {
             seen_at: None,
             anchor,
             resolved_by_revision: None,
+            links,
         }));
         id
     }
@@ -381,6 +421,18 @@ impl Thread {
         revision_id: Option<String>,
         now: impl Into<String>,
     ) {
+        self.push_event_with_links(event, summary, session_id, revision_id, Vec::new(), now);
+    }
+
+    pub fn push_event_with_links(
+        &mut self,
+        event: ThreadEventKind,
+        summary: Option<String>,
+        session_id: Option<String>,
+        revision_id: Option<String>,
+        links: Vec<ThreadLink>,
+        now: impl Into<String>,
+    ) {
         let sequence = self.next();
         self.items.push(ThreadItem::Event(ThreadEvent {
             id: format!("event-{sequence}"),
@@ -390,6 +442,7 @@ impl Thread {
             summary,
             session_id,
             revision_id,
+            links,
         }));
     }
 
@@ -760,5 +813,41 @@ mod tests {
         assert!(bumped > cursor, "{delta:?}");
         let drained = thread.wire_value_after(bumped);
         assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    #[test]
+    fn message_and_event_links_round_trip_on_the_wire() {
+        let mut thread = Thread::new("run-linked");
+        thread.post_agent_with_links(
+            "The parser and its tests changed.",
+            None,
+            vec![ThreadLink::File {
+                path: "src/parser.rs".to_string(),
+                line_start: Some(12),
+                line_end: Some(24),
+            }],
+            "2026-07-24T12:00:00Z",
+        );
+        thread.push_event_with_links(
+            ThreadEventKind::StageStarted,
+            Some("Started stage Parser".to_string()),
+            None,
+            None,
+            vec![ThreadLink::PlanStage {
+                plan_id: "plan-1".to_string(),
+                stage_id: "parser".to_string(),
+                path: ".build/plan/01-parser.md".to_string(),
+            }],
+            "2026-07-24T12:01:00Z",
+        );
+
+        let wire = thread.wire_value();
+        assert_eq!(wire["items"][0]["data"]["links"][0]["kind"], "file");
+        assert_eq!(
+            wire["items"][0]["data"]["links"][0]["path"],
+            "src/parser.rs"
+        );
+        assert_eq!(wire["items"][1]["data"]["links"][0]["kind"], "plan_stage");
+        assert_eq!(wire["items"][1]["data"]["links"][0]["stage_id"], "parser");
     }
 }

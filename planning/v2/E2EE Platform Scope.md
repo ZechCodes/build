@@ -45,7 +45,7 @@ The market splits into local orchestration dashboards (Conductor, Vibe Kanban â€
 | Permission system / approval gates | v2 | The whole point of v1 is start work and walk away |
 | Containers / sandboxing / egress control | v2 | OS-level isolation layer wraps the same spawn call later |
 | `ask_user` and other MCP tools beyond `done` | v2 | `done(status=blocked)` covers the v1 need |
-| Plan-mode wrapping, chat UI, activity log UI | Never (probably) | The terminal is the log. Chat, if ever needed, arrives as an MCP-rendered card |
+| Plan-mode wrapping, activity log UI | Never (probably) | The terminal remains the execution log; the dedicated Conversation tab carries only durable user/agent messages and lifecycle statuses |
 
 ### Design rules
 

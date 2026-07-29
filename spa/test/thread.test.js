@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createThreadCache, currentRevisionId, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { createThreadCache, currentRevisionId, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
@@ -49,6 +49,30 @@ describe("conversation thread rendering", () => {
     expect(actions[1].textContent).toContain("Review blocked");
     expect(actions[2].textContent).toContain("Plan approved");
     expect(document.querySelectorAll(".thread-event-icon")).toHaveLength(3);
+  });
+
+  it("renders typed file and stage references and wires them without hrefs", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "message", data: { role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }] } },
+        { type: "event", data: { event: "stage_started", summary: "Started parser stage", links: [{ kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" }] } },
+      ],
+    });
+    const links = [...document.querySelectorAll(".thread-reference")];
+    expect(links).toHaveLength(2);
+    expect(links[0].tagName).toBe("BUTTON");
+    expect(links[0].textContent).toContain("src/parser.js:8-12");
+    expect(links[1].textContent).toContain(".build/plan/01-parser.md");
+    expect(document.querySelector("a")).toBeNull();
+
+    const opened = [];
+    wireThreadLinks(document.body, (link) => opened.push(link));
+    links[0].click();
+    links[1].click();
+    expect(opened).toEqual([
+      { kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 },
+      { kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" },
+    ]);
   });
 
   it("keeps done as status and renders the agent-authored completion message", () => {

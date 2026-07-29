@@ -102,10 +102,10 @@ describe("planStageBoardHtml", () => {
 });
 
 describe("plan review layout", () => {
-  it("places one persistent conversation after the plan content", () => {
+  it("keeps the plan artifact skeleton free of the dedicated conversation", () => {
     const html = planReviewSkeletonHtml();
-    expect(html.indexOf('id="planbody"')).toBeLessThan(html.indexOf('id="planthread"'));
-    expect(html.match(/id="planthread"/g)).toHaveLength(1);
+    expect(html).toContain('id="planbody"');
+    expect(html).not.toContain('id="planthread"');
   });
 
   it("uses the shared conversation instead of a form below a stage document", () => {

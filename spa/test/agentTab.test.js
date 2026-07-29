@@ -18,8 +18,8 @@ const TERMINAL = { id: "term-1", label: "Terminal 1", closable: true };
 
 describe("the Agent tab on every worktree surface", () => {
   it("sits after Files and before the user's terminals, on all three surfaces", () => {
-    expect(ids(taskSurfaceTabs({ terminalTabs: [TERMINAL] }))).toEqual(["changes", "files", "agent", "term-1"]);
-    expect(ids(worktreeSurfaceTabs([TERMINAL]))).toEqual(["changes", "files", "agent", "term-1"]);
+    expect(ids(taskSurfaceTabs({ terminalTabs: [TERMINAL] }))).toEqual(["conversation", "changes", "files", "agent", "term-1"]);
+    expect(ids(worktreeSurfaceTabs([TERMINAL]))).toEqual(["conversation", "changes", "files", "agent", "term-1"]);
     expect(ids(projectSurfaceTabs([TERMINAL]))).toEqual(["inbox", "issues", "changes", "files", "archive", "agent", "term-1"]);
   });
 
@@ -41,7 +41,7 @@ describe("the Agent tab on every worktree surface", () => {
 
   // A multi-stage run adds Stages ahead of everything; the fixture does not move.
   it("keeps its place when a run grows a Stages tab", () => {
-    expect(ids(taskSurfaceTabs({ multiStage: true }))).toEqual(["stages", "changes", "files", "agent"]);
+    expect(ids(taskSurfaceTabs({ multiStage: true }))).toEqual(["conversation", "stages", "changes", "files", "agent"]);
   });
 
   // The `+` mints shells only. An agent tab it could open would be a SECOND

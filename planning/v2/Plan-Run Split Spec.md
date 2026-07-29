@@ -2,6 +2,16 @@
 
 Status: **locked** (2026-07-16). Branch: `plan-run-split`.
 
+## Conversation surface amendment (July 29, 2026)
+
+Plans and runs each expose their durable thread as a dedicated, first/default
+Conversation tab. Plan artifacts live in Stages; run artifacts live in Stages and
+Changes. Threads are no longer appended to either artifact view. The thread wire
+model supports validated typed references (`file`, `plan_stage`, `run`) on agent
+messages and status events. This amendment supersedes older Review-tab naming but
+does not change plan/run ownership, persistence, E2EE boundaries, or comment
+delivery semantics.
+
 ## Problem
 
 Today a plan cannot exist except as an early phase of a worktree-bound task. `TaskState`

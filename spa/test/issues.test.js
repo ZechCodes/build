@@ -91,7 +91,7 @@ describe("mountIssuesTab", () => {
     const ctl = mountIssuesTab(host, { projectId: "p1", callRpc, navigate: (r) => routes.push(r) });
     await vi.advanceTimersByTimeAsync(0);
     host.querySelector(".issue-row").click();
-    expect(routes).toEqual([{ name: "plan", projectId: "p1", id: "pl1", tab: "review" }]);
+    expect(routes).toEqual([{ name: "plan", projectId: "p1", id: "pl1", tab: "stages" }]);
     const callsBefore = callRpc.mock.calls.length;
     ctl.dispose();
     await vi.advanceTimersByTimeAsync(10_000);

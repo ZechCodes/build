@@ -13,6 +13,7 @@ const EVENT_META = {
   revision_created: { label: "Revision created", icon: "↻" },
   approved: { label: "Plan approved", icon: "✓", tone: "success" },
   stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
+  stage_started: { label: "Plan stage started", icon: "▶" },
   implementation_started: { label: "Implementation started", icon: "▶" },
   committed: { label: "Changes committed", icon: "◆", tone: "success" },
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
@@ -113,6 +114,32 @@ function harnessLabel(thread, override) {
   return raw;
 }
 
+function linkLocation(link) {
+  if (link.kind !== "file") return link.path || link.run_id || "Open";
+  const start = link.line_start;
+  const end = link.line_end;
+  const lines = start == null ? "" : start === end || end == null ? `:${start}` : `:${start}-${end}`;
+  return `${link.path || "file"}${lines}`;
+}
+
+function linksHtml(links) {
+  if (!links || !links.length) return "";
+  return `<div class="thread-references">${links
+    .map((link) => {
+      const attributes = [
+        `data-kind="${esc(link.kind || "")}"`,
+        link.path ? `data-path="${esc(link.path)}"` : "",
+        link.plan_id ? `data-plan-id="${esc(link.plan_id)}"` : "",
+        link.stage_id ? `data-stage-id="${esc(link.stage_id)}"` : "",
+        link.run_id ? `data-run-id="${esc(link.run_id)}"` : "",
+        link.line_start != null ? `data-line-start="${Number(link.line_start)}"` : "",
+        link.line_end != null ? `data-line-end="${Number(link.line_end)}"` : "",
+      ].filter(Boolean).join(" ");
+      return `<button type="button" class="thread-reference" ${attributes}>${esc(linkLocation(link))}</button>`;
+    })
+    .join("")}</div>`;
+}
+
 function messageHtml(message, agentLabel = "Agent") {
   const user = message.role === "user";
   const completion = message.source === "completion";
@@ -126,6 +153,7 @@ function messageHtml(message, agentLabel = "Agent") {
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> ${completion ? "completed the request" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
       ${anchorLabel(message.anchor)}
       <div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
+      ${linksHtml(message.links)}
     </div>
   </article>`;
 }
@@ -138,7 +166,7 @@ function eventHtml(event, agentLabel = "Agent") {
     : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}</div>
+    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
   </div>`;
 }
 
@@ -234,6 +262,22 @@ export function wireThreadRevisionLinks(root, loadRevision) {
       } catch (error) {
         viewer.innerHTML = `<div class="thread-revision-head">Could not load revision: ${esc(error.message || String(error))}</div>`;
       }
+    };
+  });
+}
+
+export function wireThreadLinks(root, openLink) {
+  if (!root) return;
+  root.querySelectorAll(".thread-reference").forEach((button) => {
+    button.onclick = () => {
+      const link = { kind: button.dataset.kind };
+      if (button.dataset.path) link.path = button.dataset.path;
+      if (button.dataset.planId) link.plan_id = button.dataset.planId;
+      if (button.dataset.stageId) link.stage_id = button.dataset.stageId;
+      if (button.dataset.runId) link.run_id = button.dataset.runId;
+      if (button.dataset.lineStart) link.line_start = Number(button.dataset.lineStart);
+      if (button.dataset.lineEnd) link.line_end = Number(button.dataset.lineEnd);
+      openLink(link);
     };
   });
 }

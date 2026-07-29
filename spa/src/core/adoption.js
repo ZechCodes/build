@@ -36,6 +36,7 @@ export function createAdoptingCall(call, projectId, worktreeId) {
       const id = await ensureAdopted();
       return call(method, { run_id: id, ...(params || {}) });
     },
+    adopt: ensureAdopted,
     adoptedRunId() {
       return runId;
     },

@@ -131,7 +131,7 @@ export function previewPlaceholderHtml(kind, message = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection.
  */
-export function renderFilesTab(body, { scope, callRpc }) {
+export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   body.innerHTML = `<div class="files"><div class="ftree" id="ftree"></div><div class="fpreview idle" id="fpreview"></div></div>`;
   const treeEl = body.querySelector("#ftree");
   const previewEl = body.querySelector("#fpreview");
@@ -143,7 +143,7 @@ export function renderFilesTab(body, { scope, callRpc }) {
   };
   showPlaceholder("idle", "Select a file to preview.");
 
-  let dir = ""; // current directory, relative to the scope root
+  let dir = initialPath ? parentPath(initialPath) : ""; // current directory, relative to the scope root
   let sourceOverride = false; // per-selected-file "view source" toggle
 
   const renderTree = (entries) => {
@@ -230,7 +230,12 @@ export function renderFilesTab(body, { scope, callRpc }) {
       };
   };
 
-  loadTree("");
+  loadTree(dir).then(() => {
+    if (!initialPath) return;
+    const fileName = initialPath.split("/").at(-1);
+    const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
+    selectFile(initialPath, row || null);
+  });
 }
 
 export { FS_READ_MAX_BYTES };

@@ -7,24 +7,25 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/settings")).toEqual({ name: "settings" });
     // The run route keeps the #/task grammar (runs are "Tasks" in the UI), keyed by run_id.
     expect(routeFromHash("#/task/run-123/changes")).toEqual({ name: "task", id: "run-123", tab: "changes" });
-    expect(routeFromHash("#/task/run-123")).toEqual({ name: "task", id: "run-123", tab: "changes" });
+    expect(routeFromHash("#/task/run-123")).toEqual({ name: "task", id: "run-123", tab: "conversation" });
     // The plan route is project-scoped, keyed by plan_id.
-    expect(routeFromHash("#/plan/plan-123/review")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
-    expect(routeFromHash("#/plan/plan-123")).toEqual({ name: "plan", id: "plan-123", tab: "review" });
-    expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" });
+    expect(routeFromHash("#/plan/plan-123/review")).toEqual({ name: "plan", id: "plan-123", tab: "stages" });
+    expect(routeFromHash("#/plan/plan-123")).toEqual({ name: "plan", id: "plan-123", tab: "conversation" });
+    expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "conversation" });
     expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
     expect(routeFromHash("#/project/proj-1/task/run-123/changes")).toEqual({
       name: "task", projectId: "proj-1", id: "run-123", tab: "changes",
     });
     expect(routeFromHash("#/project/proj-1/plan/plan-123/review")).toEqual({
-      name: "plan", projectId: "proj-1", id: "plan-123", tab: "review",
+      name: "plan", projectId: "proj-1", id: "plan-123", tab: "stages",
     });
     expect(routeFromHash("#/project/proj-1/worktree/wt-abc/changes")).toEqual({
       name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes",
     });
   });
 
-  it("parses the run (task) tab vocabulary and falls back to changes on unknown", () => {
+  it("parses the run (task) tab vocabulary and falls back to conversation on unknown", () => {
+    expect(routeFromHash("#/task/r/conversation").tab).toBe("conversation");
     expect(routeFromHash("#/task/r/changes").tab).toBe("changes");
     expect(routeFromHash("#/task/r/stages").tab).toBe("stages");
     expect(routeFromHash("#/task/r/files").tab).toBe("files");
@@ -32,29 +33,31 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/task/r/term-3").tab).toBe("term-3");
     expect(routeFromHash("#/task/r/diff").tab).toBe("changes"); // legacy Diff links land on Changes
     expect(routeFromHash("#/task/r/plan").tab).toBe("changes"); // the plan surface left the run route
-    expect(routeFromHash("#/task/r/bogus").tab).toBe("changes");
+    expect(routeFromHash("#/task/r/bogus").tab).toBe("conversation");
   });
 
-  it("parses the plan tab vocabulary and falls back to review on unknown", () => {
-    expect(routeFromHash("#/plan/p/review").tab).toBe("review");
+  it("parses the plan tab vocabulary and keeps review as a stages alias", () => {
+    expect(routeFromHash("#/plan/p/conversation").tab).toBe("conversation");
+    expect(routeFromHash("#/plan/p/stages").tab).toBe("stages");
+    expect(routeFromHash("#/plan/p/review").tab).toBe("stages");
     expect(routeFromHash("#/plan/p/agent").tab).toBe("agent");
-    expect(routeFromHash("#/plan/p/term-1").tab).toBe("review"); // plans are not a terminal scope
-    expect(routeFromHash("#/plan/p/bogus").tab).toBe("review");
+    expect(routeFromHash("#/plan/p/term-1").tab).toBe("conversation"); // plans are not a terminal scope
+    expect(routeFromHash("#/plan/p/bogus").tab).toBe("conversation");
   });
 
   it("deep-links a plan stage via a 4th segment (the run's Stages tab links here)", () => {
-    expect(routeFromHash("#/plan/plan-1/review/second-half")).toEqual({
+    expect(routeFromHash("#/plan/plan-1/stages/second-half")).toEqual({
       name: "plan",
       id: "plan-1",
-      tab: "review",
+      tab: "stages",
       stage: "second-half",
     });
     // No 4th segment → no stage key at all (so an equality check stays clean).
-    expect(routeFromHash("#/plan/plan-1/review").stage).toBeUndefined();
-    expect(routeFromHash("#/plan/a%20b/review/s%20x").stage).toBe("s x");
+    expect(routeFromHash("#/plan/plan-1/stages").stage).toBeUndefined();
+    expect(routeFromHash("#/plan/a%20b/stages/s%20x").stage).toBe("s x");
   });
 
-  it("parses the worktree tab vocabulary and defaults to changes", () => {
+  it("parses the worktree tab vocabulary and defaults to conversation", () => {
     expect(routeFromHash("#/worktree/p/w/changes").tab).toBe("changes");
     expect(routeFromHash("#/worktree/p/w/diff").tab).toBe("changes"); // legacy Diff links land on Changes
     expect(routeFromHash("#/worktree/p/w/files").tab).toBe("files");
@@ -62,8 +65,9 @@ describe("routeFromHash", () => {
     // The Agent tab is a FIXTURE on this surface (surfaceTabs.js AGENT_TAB), so
     // it has to survive a reload and a shared link like every other tab.
     expect(routeFromHash("#/worktree/p/w/agent").tab).toBe("agent");
-    expect(routeFromHash("#/worktree/p/w").tab).toBe("changes");
-    expect(routeFromHash("#/worktree/p/w/bogus").tab).toBe("changes");
+    expect(routeFromHash("#/worktree/p/w/conversation").tab).toBe("conversation");
+    expect(routeFromHash("#/worktree/p/w").tab).toBe("conversation");
+    expect(routeFromHash("#/worktree/p/w/bogus").tab).toBe("conversation");
   });
 
   it("parses the project inbox and primary-checkout tabs under one URL", () => {
@@ -87,9 +91,9 @@ describe("routeFromHash", () => {
   // tab regressed on three of the four surfaces once; this pins all of them.
   it("addresses every tab its surface can select, on every surface", () => {
     const selectableTabsBySurface = {
-      "#/project/p/task/r": ["stages", "changes", "files", "agent", "term-1"],
-      "#/project/p/plan/pl": ["review", "agent"],
-      "#/project/p/worktree/w": ["changes", "files", "agent", "term-1"],
+      "#/project/p/task/r": ["conversation", "stages", "changes", "files", "agent", "term-1"],
+      "#/project/p/plan/pl": ["conversation", "stages", "agent"],
+      "#/project/p/worktree/w": ["conversation", "changes", "files", "agent", "term-1"],
       "#/project/p": ["inbox", "issues", "changes", "files", "archive", "agent", "term-1"],
     };
     for (const [base, tabs] of Object.entries(selectableTabsBySurface)) {
@@ -108,7 +112,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/project/p/task/r/stages")).toEqual({ name: "task", projectId: "p", id: "r", tab: "stages" });
     expect(routeFromHash("#/project/p/plan/pl/agent")).toEqual({ name: "plan", projectId: "p", id: "pl", tab: "agent" });
     expect(routeFromHash("#/project/p/plan/pl/review/stage-2")).toEqual({
-      name: "plan", projectId: "p", id: "pl", tab: "review", stage: "stage-2",
+      name: "plan", projectId: "p", id: "pl", tab: "stages", stage: "stage-2",
     });
     expect(routeFromHash("#/project/p/worktree/w/files")).toEqual({
       name: "worktree", projectId: "p", worktreeId: "w", tab: "files",
@@ -137,7 +141,7 @@ describe("routeFromHash", () => {
   });
 
   it("decodes worktree route segments", () => {
-    expect(routeFromHash("#/worktree/a%20b/wt-1")).toEqual({ name: "worktree", projectId: "a b", worktreeId: "wt-1", tab: "changes" });
+    expect(routeFromHash("#/worktree/a%20b/wt-1")).toEqual({ name: "worktree", projectId: "a b", worktreeId: "wt-1", tab: "conversation" });
   });
 
   it("decodes run and plan ids", () => {
@@ -156,11 +160,11 @@ describe("hashFromRoute", () => {
       { name: "task", id: "run-9", tab: "files" },
       { name: "task", id: "run-9", tab: "agent" },
       { name: "task", id: "run-9", tab: "term-4" },
-      { name: "plan", id: "plan-9", tab: "review" },
+      { name: "plan", id: "plan-9", tab: "stages" },
       { name: "plan", id: "a b", tab: "agent" },
       { name: "task", projectId: "proj-1", id: "run-10", tab: "changes" },
       { name: "task", projectId: "a b", id: "run x", tab: "term-4" },
-      { name: "plan", projectId: "proj-1", id: "plan-10", tab: "review" },
+      { name: "plan", projectId: "proj-1", id: "plan-10", tab: "stages" },
       { name: "plan", projectId: "a b", id: "plan x", tab: "agent" },
       { name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "changes" },
       { name: "worktree", projectId: "a b", worktreeId: "wt x", tab: "files" },
@@ -210,8 +214,8 @@ describe("hashFromRoute", () => {
   });
 
   it("round-trips a plan stage deep-link", () => {
-    const route = { name: "plan", projectId: "project-1", id: "plan-1", tab: "review", stage: "second-half" };
-    expect(hashFromRoute(route)).toBe("#/project/project-1/plan/plan-1/review/second-half");
+    const route = { name: "plan", projectId: "project-1", id: "plan-1", tab: "stages", stage: "second-half" };
+    expect(hashFromRoute(route)).toBe("#/project/project-1/plan/plan-1/stages/second-half");
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
   });
 
@@ -221,11 +225,11 @@ describe("hashFromRoute", () => {
   });
 
   it("supplies the default tab when a route omits it", () => {
-    expect(hashFromRoute({ name: "task", id: "r" })).toBe("#/task/r/changes");
-    expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/plan/p/review");
-    expect(hashFromRoute({ name: "task", projectId: "p", id: "r" })).toBe("#/project/p/task/r/changes");
-    expect(hashFromRoute({ name: "plan", projectId: "p", id: "pl" })).toBe("#/project/p/plan/pl/review");
-    expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/project/p/worktree/w/changes");
+    expect(hashFromRoute({ name: "task", id: "r" })).toBe("#/task/r/conversation");
+    expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/plan/p/conversation");
+    expect(hashFromRoute({ name: "task", projectId: "p", id: "r" })).toBe("#/project/p/task/r/conversation");
+    expect(hashFromRoute({ name: "plan", projectId: "p", id: "pl" })).toBe("#/project/p/plan/pl/conversation");
+    expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/project/p/worktree/w/conversation");
     expect(hashFromRoute({ name: "project", projectId: "p" })).toBe("#/project/p");
     expect(hashFromRoute({ name: "project", projectId: "p", tab: "inbox" })).toBe("#/project/p");
   });
@@ -237,7 +241,7 @@ describe("hashFromRoute", () => {
 
   it("keeps top-level task, plan, and worktree hashes as legacy aliases", () => {
     expect(routeFromHash("#/task/r/files")).toEqual({ name: "task", id: "r", tab: "files" });
-    expect(routeFromHash("#/plan/pl/review/s1")).toEqual({ name: "plan", id: "pl", tab: "review", stage: "s1" });
+    expect(routeFromHash("#/plan/pl/review/s1")).toEqual({ name: "plan", id: "pl", tab: "stages", stage: "s1" });
     expect(routeFromHash("#/worktree/p/w/changes")).toEqual({ name: "worktree", projectId: "p", worktreeId: "w", tab: "changes" });
   });
 });

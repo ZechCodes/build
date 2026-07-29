@@ -1,5 +1,5 @@
 // The external-worktree surface: the same shell every other worktree-shaped
-// surface has — Changes, Files, and one tab per terminal. Changes is the full
+// surface has — Conversation, Changes, Files, and one tab per terminal. Changes is the full
 // git GUI (commit rail, uncommitted staging, history, branch and sync verbs)
 // scoped to this worktree, with the review diff plugged in as its pinned "All
 // changes" entry. Nothing here adopts the worktree except the review plug's own
@@ -18,6 +18,8 @@ import { mountGitPane } from "../core/gitPane.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
+import { threadHtml, wireThreadComposer } from "../core/thread.js";
+import { notifyError } from "../core/notify.js";
 
 /** The external-worktree surface's tabs, in row order. Agent is a fixture: this
  *  directory has one agent whether or not Build has ever adopted it, and it is
@@ -25,6 +27,7 @@ import { takeNewWorktreeMark } from "../core/newWorktree.js";
  *  begins when a human→agent verb (the first Request Changes here) delivers a
  *  turn, which is also what adopts the worktree. */
 export const worktreeSurfaceTabs = (terminalTabs = []) => [
+  { id: "conversation", label: "Conversation" },
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
   AGENT_TAB,
@@ -46,7 +49,7 @@ export async function renderWorktree() {
   // this surface on its Agent tab rather than on an empty diff. The mark is
   // one-shot, so a reload of the same surface behaves like any other visit.
   const pendingProvider = takeNewWorktreeMark(worktreeId);
-  let tab = App.route.tab || "changes";
+  let tab = App.route.tab || "conversation";
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
   let aux = null;
@@ -55,6 +58,7 @@ export async function renderWorktree() {
   // merged, abandoned) or found it gone: a late RPC rejection must not repaint
   // over the destination.
   let leaving = false;
+  let conversationDraft = "";
 
   const staticTabs = () => worktreeSurfaceTabs(terminals.tabs());
   const replaceWorktreeHash = () => {
@@ -79,7 +83,7 @@ export async function renderWorktree() {
   // the freshly minted task, which now holds any merge_failed reason.
   const handoffToTask = () => {
     leaving = true;
-    go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "changes" });
+    go({ name: "task", projectId, id: adopting.adoptedRunId(), tab: "conversation" });
   };
 
   const renderNotFound = () => {
@@ -179,6 +183,32 @@ export async function renderWorktree() {
     // + detail panes each scroll internally, so the body owns no padding).
     body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
+    if (tabId === "conversation") {
+      body.innerHTML = threadHtml({ items: [] }, {
+        composer: {
+          inputId: "worktreethreadinput",
+          sendId: "worktreethreadsend",
+          hintId: "worktreethreadhint",
+          placeholder: "Send a message to adopt this worktree and start its agent…",
+        },
+      });
+      wireThreadComposer(body, {
+        ids: { input: "worktreethreadinput", send: "worktreethreadsend", hint: "worktreethreadhint" },
+        readDraft: () => conversationDraft,
+        writeDraft: (value) => {
+          conversationDraft = value;
+        },
+        onSubmit: async (message) => {
+          if (pendingProvider) adopting.setAdoptParams({ provider: pendingProvider });
+          const runId = await adopting.adopt();
+          return App.call("thread.post", { entity_id: runId, body: message });
+        },
+        afterSubmit: () => handoffToTask(),
+        onError: (error) => notifyError("Message failed", error.message),
+      });
+      aux = { dispose() {} };
+      return;
+    }
     if (tabId === "agent") {
       // This worktree's one agent. Mounting is a look, never a start: an agent
       // that has not been asked for anything yet shows the idle label until the
@@ -212,7 +242,7 @@ export async function renderWorktree() {
       onExit: () => {
         terminals.drop(tabId);
         if (shellCtl) shellCtl.setTabs(staticTabs());
-        selectTab("changes");
+        selectTab("conversation");
       },
     });
   };
@@ -237,7 +267,7 @@ export async function renderWorktree() {
       /* raced with the reaper — drop the tab regardless */
     }
     if (shellCtl) shellCtl.setTabs(staticTabs());
-    if (tab === termId) selectTab("changes");
+    if (tab === termId) selectTab("conversation");
   };
 
   // Tear down the mounted pane (and, with it, the review plug's poll) when the

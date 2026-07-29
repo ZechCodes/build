@@ -1,9 +1,7 @@
 // The plan cockpit (project-scoped review), keyed by plan_id — the plan-side twin
-// of the run surface (views/task.js). The tab bar IS the top of the view (Review |
-// Agent, the same shell run/worktree use); a compact bar carries state and gate
-// actions. The Review body renders the plan's summary (markdown), then either a
-// single doc or multi-stage board, followed by one persistent conversation and
-// composer. "The terminal is the basement": the
+// of the run surface (views/task.js). Conversation is the first/default tab;
+// Stages owns the plan documents and stage board; Agent owns the planning PTY.
+// "The terminal is the basement": the
 // Agent tab (the drafting session's PTY) shows only while the plan is non-terminal.
 // Live-polled on the review cadence; conversation drafts survive stage switches
 // and thread refreshes.
@@ -14,7 +12,7 @@ import { renderMarkdown } from "../core/markdown.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentTab } from "../core/surfaceTabs.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -57,10 +55,9 @@ export async function renderPlan() {
   // round trip). Read once at entry; the chevron clears it on return.
   const returnRunId = sessionStorage.getItem("build.planReturn." + id);
   let last = null;
-  // The plan carries two surfaces: Review (the doc / stage board) and Agent (the
-  // drafting session's live PTY). The Agent tab shows only while the plan is
-  // non-terminal; Review is the default.
-  let tab = App.route.tab === "agent" ? "agent" : "review";
+  // Conversation and plan artifacts are separate surfaces. The Agent tab shows
+  // only while the plan is non-terminal.
+  let tab = ["conversation", "stages", "agent"].includes(App.route.tab) ? App.route.tab : "conversation";
   let tabShellCtl = null;
   let agentPane = null;
   // A locally-held RPC failure (abandon/delete/implement/approve) the bridge does
@@ -78,7 +75,7 @@ export async function renderPlan() {
       ...(projectId ? { projectId } : {}),
       id,
       tab,
-      ...(tab === "review" && selectedStageId ? { stage: selectedStageId } : {}),
+      ...(tab === "stages" && selectedStageId ? { stage: selectedStageId } : {}),
     };
     history.replaceState(null, "", hashFromRoute(App.route));
   };
@@ -144,15 +141,19 @@ export async function renderPlan() {
     }
   };
 
-  // The Review body skeleton: project metadata, summary, doc/stage host, then the
-  // persistent conversation. Mounted once per shell rebuild or tab switch; the
-  // poll refreshes each region in place.
-  const mountReviewSkeleton = () => {
+  const mountStagesSkeleton = () => {
     const body = $("#tabbody");
     if (!body) return;
     body.classList.remove("bare");
     body.innerHTML = planReviewSkeletonHtml();
     summaryKey = null; // force the summary to repaint into the fresh skeleton
+  };
+
+  const mountConversationSkeleton = () => {
+    const body = $("#tabbody");
+    if (!body) return;
+    body.classList.remove("bare");
+    body.innerHTML = '<div id="planthread"></div>';
     threadRenderKey = null;
   };
 
@@ -193,6 +194,16 @@ export async function renderPlan() {
       // Re-mounted per render: this body is rebuilt whenever the thread changes.
       wireActions(p, host.querySelector("#issuelifecycle"));
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
+      wireThreadLinks(host, (link) => {
+        if (link.kind === "plan_stage" && link.stage_id) {
+          selectedStageId = link.stage_id;
+          selectTab("stages");
+          return;
+        }
+        if (link.kind === "run" && link.run_id) {
+          go({ name: "task", projectId: p.project_id || projectId, id: link.run_id, tab: "conversation" });
+        }
+      });
       wireThreadComposer(host, {
         ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
         readDraft: () => threadDraft,
@@ -271,8 +282,11 @@ export async function renderPlan() {
     disposeAgent();
     if (next === "agent") {
       mountAgent();
+    } else if (next === "conversation") {
+      mountConversationSkeleton();
+      paint();
     } else {
-      mountReviewSkeleton();
+      mountStagesSkeleton();
       planKey = null;
       stagesKey = null;
       paint();
@@ -285,7 +299,11 @@ export async function renderPlan() {
   const wireTabs = (p) => {
     const host = $("#plantabs");
     if (!host) return;
-    const tabs = [{ id: "review", label: "Review" }, ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : [])];
+    const tabs = [
+      { id: "conversation", label: "Conversation" },
+      { id: "stages", label: p && p.stages && p.stages.length ? "Stages" : "Plan" },
+      ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : []),
+    ];
     // The chevron returns to the originating run (if we came from one and it's
     // still this plan's active run), else up to the project — goHome's target.
     const backTarget = planBackTarget({ returnRunId, activeRunId: p && p.active_run_id, projectId: p && p.project_id });
@@ -323,7 +341,8 @@ export async function renderPlan() {
     // A shell rebuild wiped #tabbody — re-mount the active surface so the poll's
     // early-return leaves a live pane/skeleton in place (mirrors task.js).
     if (tab === "agent" && p) mountAgent();
-    else mountReviewSkeleton();
+    else if (tab === "conversation") mountConversationSkeleton();
+    else mountStagesSkeleton();
   };
 
   // The issue's action cluster, mounted at the end of its conversation: the gate
@@ -418,7 +437,7 @@ export async function renderPlan() {
             }
             throw e;
           }
-          go({ name: "task", projectId: p.project_id, id: run.run_id, tab: "changes" });
+          go({ name: "task", projectId: p.project_id, id: run.run_id, tab: "conversation" });
         },
       });
       return;
@@ -584,7 +603,7 @@ export async function renderPlan() {
     // A plan that just crossed into a terminal state loses its Agent tab; fall
     // back to Review before the shell rebuild so the surface stays consistent.
     if (tab === "agent" && !agentAvailable(p)) {
-      selectTab("review");
+      selectTab("conversation");
       return;
     }
     const needShell = !last || last.state !== p.state || last.goal !== p.goal || last.active_run_id !== p.active_run_id;
@@ -599,9 +618,13 @@ export async function renderPlan() {
     // The Agent pane owns the body; the poll never repaints it.
     if (tab === "agent") return;
 
+    if (tab === "conversation") {
+      updateThread(p);
+      return;
+    }
+
     updateMeta(p);
     updateSummary(p);
-    updateThread(p);
 
     const body = $("#planbody");
     if (!body) return;

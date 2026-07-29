@@ -90,7 +90,7 @@ export async function renderNotifications() {
       b.onclick = () => {
         const x = byId.get(b.dataset.open);
         if (!x) return;
-        if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "review" });
+        if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "stages" });
         else go({ name: "task", projectId: x.src.project_id, id: x.id, tab: defaultRunTab(x.src) });
       };
     });

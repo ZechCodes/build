@@ -17,6 +17,19 @@ cached primary-changes summary; the sidebar and project page gain a "main"
 entry. Design rule #3 holds: the terminal is the basement — always accessible
 (one tap from any worktree surface), never the default tab.
 
+## Conversation surface amendment (July 29, 2026)
+
+This amendment supersedes the tab-order and embedded-review-conversation language
+below. Managed run surfaces use `Conversation | Stages? | Changes | Files | Agent |
+terminals`; external worktrees use `Conversation | Changes | Files | Agent |
+terminals`. Conversation is first and is the default route. Diff review retains
+selection, whole-file, and whole-change-set comments, but submitted comments are
+durable user messages shown only in Conversation. An external worktree creates its
+durable conversation on first agent-directed action through the existing adoption
+flow. Agent messages and status events may carry bridge-validated typed references
+to worktree files, plan stages, and runs; the SPA renders references as scoped
+navigation controls, never arbitrary links.
+
 ---
 
 ## 0. Global decisions (read first)

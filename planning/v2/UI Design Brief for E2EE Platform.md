@@ -21,7 +21,7 @@ Build should feel like reviewing work, not watching work. The user's time goes t
 
 **3. Calm by default.** Build's promise is *start work and walk away*. The UI must not punish walking away or reward staring. No streaming text, no spinners that imply you should wait, no live tool-call feeds. While an agent works, Build shows a quiet, glanceable progress state — and actively communicates "you can leave."
 
-**4. Artifacts, not transcripts.** Every interaction attaches to a thing: notes attach to the plan, comments attach to diff lines, decisions attach to cards. There is no freestanding conversation anywhere in the UI.
+**4. Artifacts and conversation stay distinct.** Notes attach to plan stages and comments attach to diff lines/files, while all user/agent messages and status updates share a dedicated Conversation tab. Conversation never displaces the artifact review surface and the terminal remains the full execution log.
 
 **5. Glanceable from a phone, deep on a desktop.** The phone is for state, decisions, and light review (approve a plan, skim a small diff, answer a blocked card). The desktop is for heavy review. Same surfaces, responsive depth — not two products.
 

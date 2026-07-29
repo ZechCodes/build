@@ -256,9 +256,9 @@ function hasScreen(attached) {
  * (files: no-op; a pane: dispose + detach, never closing the server PTY). Agent
  * tabs are surface-specific (task only) and mounted by the task view directly.
  */
-export function mountAuxTab(host, tabId, { scope, callRpc, onExit }) {
+export function mountAuxTab(host, tabId, { scope, callRpc, onExit, initialPath = null }) {
   if (tabId === "files") {
-    renderFilesTab(host, { scope, callRpc });
+    renderFilesTab(host, { scope, callRpc, initialPath });
     return { dispose() {} };
   }
   host.innerHTML = `<div class="termpane" id="termpane"></div>`;

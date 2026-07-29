@@ -1,6 +1,6 @@
 // The run view (a run is a "Task" in the UI): the worktree-scoped surface for
-// implementing a plan. Tabs are Stages (multi-stage runs only), Changes (the
-// review diff + request-changes + the merge/git plug), Files, Agent, and one per
+// implementing a plan. Tabs are Conversation, Stages (multi-stage runs only),
+// Changes (the review diff + request-changes + the merge/git plug), Files, Agent, and one per
 // open terminal. The plan doc left the run entirely — a compact reference header
 // links back to the owning plan (an adopted run shows its goal). Live-polled every
 // 1.6s; the aux tabs (Changes/Files/Agent/terminals) own their own bodies and are
@@ -11,20 +11,22 @@ import { esc } from "../core/text.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
-import { canDelete, canAbandon, bannerText, defaultRunTab, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
+import { canDelete, canAbandon, bannerText, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
-import { createThreadCache } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
 import { hashFromRoute } from "../core/router.js";
+import { RUN_TERMINAL_STATES } from "../core/board.js";
 
 /** The task surface's tabs, in row order. Agent is a fixture here as it is on
  *  every worktree surface — the run's worktree has one agent and it is always
  *  reachable, whether or not a session is live in it right now. */
 export const taskSurfaceTabs = ({ multiStage = false, terminalTabs = [] } = {}) => [
+  { id: "conversation", label: "Conversation" },
   ...(multiStage ? [{ id: "stages", label: "Stages" }] : []),
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
@@ -36,7 +38,7 @@ export async function renderTask() {
   const root = $("#root");
   const id = App.route.id;
   let projectId = App.route.projectId || null;
-  let tab = App.route.tab || "changes";
+  let tab = App.route.tab || "conversation";
 
   // Looking at it IS seeing it: the dot settles to grey until the run moves
   // again. Fire-and-forget — a missed stamp costs one stale dot, not an action.
@@ -54,12 +56,12 @@ export async function renderTask() {
   let aux = null; // the mounted files/terminal/agent pane controller
 
   // Aux tabs own their bodies; the poll only keeps the shell + banner current for
-  // them. Stages is poll-driven (like the old Plan tab) and is NOT an aux tab.
+  // them. Conversation and Stages are poll-driven and are not aux tabs.
   const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
   const isMultiStage = () => !!(last && last.stages && last.stages.length);
   // A run parked between stages opens on Stages; every other state opens on
   // Changes. A single-stage run never has a Stages tab, so fall back.
-  const defaultTab = () => (isMultiStage() ? defaultRunTab(last) : "changes");
+  const defaultTab = () => "conversation";
   const staticTabs = () => taskSurfaceTabs({ multiStage: isMultiStage(), terminalTabs: terminals.tabs() });
   const disposeAux = () => {
     if (aux) {
@@ -105,10 +107,11 @@ export async function renderTask() {
     replaceTaskHash();
     if (shellCtl) shellCtl.setActive(tabId);
     disposeAux();
-    if (tabId === "stages") {
+    if (tabId === "stages" || tabId === "conversation") {
       const body = $("#tabbody");
       if (body) body.classList.remove("bare", "flush");
       stagesKey = null;
+      conversationKey = null;
       paint();
     } else {
       mountAux(tabId);
@@ -148,12 +151,14 @@ export async function renderTask() {
     aux = mountAuxTab(body, tabId, {
       scope: { run_id: id },
       callRpc: (method, params) => App.call(method, params),
+      initialPath: tabId === "files" ? linkedFilePath : null,
       onExit: () => {
         terminals.drop(tabId);
         if (shellCtl) shellCtl.setTabs(staticTabs());
         selectTab(defaultTab());
       },
     });
+    if (tabId === "files") linkedFilePath = null;
   };
 
   const newTerminal = async () => {
@@ -216,7 +221,7 @@ export async function renderTask() {
       // Mark that we entered the plan from this run so the plan's back chevron
       // returns here (the plan↔run round trip; core/taskActions.planBackTarget).
       sessionStorage.setItem("build.planReturn." + last.plan_id, id);
-      go({ name: "plan", projectId: last.project_id || projectId, id: last.plan_id, tab: "review", stage: stageId });
+      go({ name: "plan", projectId: last.project_id || projectId, id: last.plan_id, tab: "stages", stage: stageId });
     }
   };
 
@@ -227,19 +232,8 @@ export async function renderTask() {
     taskId: id,
     callRpc: (method, params) => App.call(method, params),
     getTask: () => last,
-    // The plug's composer (thread.post) gets the full updated run view back:
-    // fold it through the same thread cache the poll uses, so the echoed
-    // message and the next cursored delta agree, and hand back the merged task.
-    absorbTaskView: (view) => {
-      last = { ...view, thread: threadCache.absorb(view.thread) };
-      return last;
-    },
     isOffline: () => App.offline,
     onMerged: () => goHome(),
-    // State and the verbs that change it live on the conversation now: the chip
-    // rides its title, the lifecycle split button closes its timeline.
-    threadStatus: (t) => ({ label: RUN_STATE_LABEL[t.state] || t.state || "", cls: runChipClass(t.state) }),
-    mountThreadActions: (host, t) => wireActions(host, t),
   });
 
   // A local (client-side) RPC failure from Abandon/Delete. The bridge does not set
@@ -339,6 +333,9 @@ export async function renderTask() {
 
   // The Stages tab's poll freeze/rebuild key, preserved across ticks.
   let stagesKey = null;
+  let conversationKey = null;
+  let conversationDraft = "";
+  let linkedFilePath = null;
   // The owning plan can be deleted once the run is terminal; once plan.stages
   // returns "unknown plan_id" we latch this and stop re-fetching, rendering the
   // board from the run's own progress records alone.
@@ -388,6 +385,71 @@ export async function renderTask() {
     });
   }
 
+  function openThreadLink(link) {
+    if (link.kind === "file" && link.path) {
+      linkedFilePath = link.path;
+      selectTab("files");
+      return;
+    }
+    if (link.kind === "plan_stage" && link.plan_id && link.stage_id) {
+      go({
+        name: "plan",
+        projectId: (last && last.project_id) || projectId,
+        id: link.plan_id,
+        tab: "stages",
+        stage: link.stage_id,
+      });
+      return;
+    }
+    if (link.kind === "run" && link.run_id) {
+      go({ name: "task", projectId: (last && last.project_id) || projectId, id: link.run_id, tab: "conversation" });
+    }
+  }
+
+  function paintConversation(t) {
+    const body = $("#tabbody");
+    if (!body) return;
+    const key = JSON.stringify({
+      state: t.state,
+      harness: t.harness || "",
+      sessions: t.thread?.sessions || [],
+      items: t.thread?.items || [],
+      revisions: t.thread?.revisions || [],
+    });
+    if (key === conversationKey && body.querySelector(".review-thread")) return;
+    conversationKey = key;
+    body.innerHTML = threadHtml(t.thread, {
+      agentLabel: t.harness,
+      status: { label: RUN_STATE_LABEL[t.state] || t.state || "", cls: runChipClass(t.state) },
+      actionsId: "threadlifecycle",
+      composer: !RUN_TERMINAL_STATES.has(t.state) && {
+        inputId: "runthreadinput",
+        sendId: "runthreadsend",
+        hintId: "runthreadhint",
+        placeholder: "Send a message to the coding agent…",
+      },
+    });
+    wireActions(body.querySelector("#threadlifecycle"), t);
+    wireThreadRevisionLinks(body, (revisionId) =>
+      App.call("thread.revision", { entity_id: id, revision_id: revisionId }),
+    );
+    wireThreadLinks(body, openThreadLink);
+    wireThreadComposer(body, {
+      ids: { input: "runthreadinput", send: "runthreadsend", hint: "runthreadhint" },
+      readDraft: () => conversationDraft,
+      writeDraft: (value) => {
+        conversationDraft = value;
+      },
+      onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
+      afterSubmit: (view) => {
+        last = { ...view, thread: threadCache.absorb(view.thread) };
+        conversationKey = null;
+        paint();
+      },
+      onError: (error) => showBanner("error: " + error.message.slice(0, 80)),
+    });
+  }
+
   let visitMarkedRead = false; // paint() marks the run read once per visit
 
   const paint = async () => {
@@ -431,7 +493,11 @@ export async function renderTask() {
     // RPC error (Abandon/Delete failure) wins over the polled last_error so the
     // poll can't wipe it before the user has read it.
     showBanner(bannerText(localError, t.last_error));
-    // Only the Stages tab is poll-driven; the aux tabs own their own bodies.
+    if (tab === "conversation") {
+      paintConversation(t);
+      return;
+    }
+    // Only Conversation and Stages are poll-driven; the aux tabs own their own bodies.
     if (tab !== "stages") return;
     await paintStages(t);
   };

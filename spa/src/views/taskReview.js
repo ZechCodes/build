@@ -2,7 +2,8 @@
 // "All changes" entry. A gitPane review plug: mount(host) renders the
 // aggregate task.diff (vs the base branch) into the detail pane and polls it
 // every 1.6s with the same freeze-while-commenting discipline; unmount stops
-// the poll. Line/range/file comments accumulate here and go to the coding
+// the poll. The durable conversation is a separate tab. Line/range/file comments
+// accumulate here and go to the coding
 // agent via task.request_changes; the merge/commit/push split button lives in
 // its actionbar. The plug instance (and its pending comments) belongs to the
 // task view, so remounts — tab switches, shell rebuilds — keep review state.
@@ -14,9 +15,8 @@ import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { diffThreadMessages } from "../core/notes.js";
-import { currentRevisionId, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../core/thread.js";
+import { currentRevisionId } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
-import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
@@ -54,23 +54,14 @@ export function reviewMergeOptions(adopted, base) {
 }
 
 /**
- * createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged,
- *                    threadStatus, mountThreadActions }) →
+ * createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) →
  *   { mount(host), unmount() } — the gitPane review plug for a task.
  *
- * threadStatus(task) → { label, cls } puts where the run stands on the
- * conversation's title, and mountThreadActions(host, task) hangs its lifecycle
- * verbs at the end of the timeline. Both are re-applied on every repaint, since
- * the poll rebuilds this body: the surface bar carries tabs and a branch only,
- * so state and the verbs that change it live on the record that explains them.
- *
- * getTask() returns the task view's freshest task.get payload (its own poll
- * keeps it current on every tab); absorbTaskView(view) folds an RPC-returned
- * run view back into that cached payload — through the task view's thread
- * cursor cache, so the fold and the next cursored poll agree — and returns
- * the merged task; onMerged() navigates away after a successful merge.
+ * getTask() returns the task view's freshest run payload. Conversation rendering
+ * and lifecycle actions belong to the dedicated Conversation tab; this plug owns
+ * only the diff, pending review comments, and review git actions.
  */
-export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isOffline, onMerged, threadStatus, mountThreadActions }) {
+export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) {
   let host = null;
   let timer = null;
   let selDispose = null;
@@ -82,17 +73,6 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
     diffKey = null,
     lastDiffState = null,
     diffMsg = "";
-  // Set by a successful composer send: the next paint must rebuild even
-  // through the busy freeze. paint() treats a focused composer as busy, and
-  // Cmd+Enter leaves focus in the textarea — without this flag the echo of a
-  // just-sent message would never paint (plan.js gets the same guarantee by
-  // force-nulling its render key; here busy would still win, so nulling
-  // diffKey alone is not enough).
-  let forceRebuild = false;
-  // The conversation composer's draft, held in the plug closure (like plan.js's
-  // threadDraft) and restored into every rebuild — a poll repaint can never eat
-  // a half-typed message.
-  let threadDraft = "";
 
   // Re-review memory (W6), per plug instance (per-session): a stamp of what the
   // reviewer saw at their last Request Changes, the files they have ticked off as
@@ -261,33 +241,6 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
     }
   }
 
-  // Wire the conversation composer (thread.post): "ask / tell the agent
-  // something" — a durable conversation write that never dispatches a
-  // revision pass or moves run state. The request-changes box below it is the
-  // other, distinct verb ("send these comments and get a revision"); the copy
-  // on each keeps them legible.
-  function wireComposer() {
-    wireThreadComposer(host, {
-      ids: { input: "diffthreadinput", send: "diffthreadsend", hint: "diffthreadhint" },
-      readDraft: () => threadDraft,
-      writeDraft: (value) => {
-        threadDraft = value;
-      },
-      onSubmit: (body) => callRpc("thread.post", { entity_id: taskId, body }),
-      // Optimistic echo: thread.post returns the full updated run view. Fold it
-      // back THROUGH the task view's thread cache (never around it, or the next
-      // cursored poll would disagree with what we paint), then force the
-      // rebuild past the focused-composer freeze.
-      afterSubmit: (view) => {
-        if (absorbTaskView) absorbTaskView(view);
-        diffKey = null;
-        forceRebuild = true;
-        paint();
-      },
-      onError: (error) => notifyError("Message failed", error.message),
-    });
-  }
-
   function renderBody(t, files) {
     const editable = t.state === "review" || t.state === "building";
     const working = t.state === "building";
@@ -311,29 +264,9 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
         ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
       ${filesHtml}
-      ${threadHtml(t.thread, {
-        agentLabel: t.harness,
-        status: threadStatus ? threadStatus(t) : null,
-        actionsId: mountThreadActions ? "threadlifecycle" : null,
-        // The composer shows wherever thread.post can land — the bridge
-        // refuses it only once the run is terminal (the conversation is
-        // closed), so review and the stage gate get it too. Diff-scoped ids
-        // so it can never collide with the plan composer.
-        composer: !RUN_TERMINAL_STATES.has(t.state) && {
-          inputId: "diffthreadinput",
-          sendId: "diffthreadsend",
-          hintId: "diffthreadhint",
-          placeholder: "Send a message to the coding agent — ask or clarify without requesting a revision…",
-        },
-      })}
       ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
         <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
-    wireThreadRevisionLinks(host, (revisionId) => callRpc("thread.revision", { entity_id: taskId, revision_id: revisionId }));
-    wireComposer();
-    // Re-mounted per repaint: the poll rebuilds this body wholesale.
-    const lifecycleHost = host.querySelector("#threadlifecycle");
-    if (lifecycleHost && mountThreadActions) mountThreadActions(lifecycleHost, t);
 
     // The changed-only filter and the per-file Viewed checkbox live on a delegated
     // change handler: the filter repaints (forcing a rebuild), Viewed collapses the
@@ -430,18 +363,8 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
     const files = filterNoiseFiles(parseDiff(diff.patch));
     renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
     lastDiffState = t.state;
-    // Keyed on BOTH sequences: read_unread and the revision-resolution pass
-    // stamp seen_at / resolved_by_revision on an already-sequenced message and
-    // append nothing, so a key built from creation sequences alone is identical
-    // across a mutation and the badge never repaints. updated_sequence is the
-    // bridge's marker for exactly that (bridge/src/thread.rs).
-    const threadKey =
-      t.thread && t.thread.items
-        ? t.thread.items.map((item) => `${item.data && item.data.sequence}:${(item.data && item.data.updated_sequence) || 0}`).join(",")
-        : "";
-    const key = t.state + " " + diff.patch + " " + threadKey;
+    const key = t.state + " " + diff.patch;
     const general = q("#dgeneral");
-    const composerInput = q("#diffthreadinput");
     // Freeze the diff while the user is actively commenting (pending comments,
     // open popover, or text in the general box) so anchors/selection survive —
     // and skip the rebuild when nothing changed (fold state survives too). A
@@ -453,15 +376,11 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       gitFlight.active() ||
       diffComments.length > 0 ||
       hasCommentPop() ||
-      (general && (general.value.trim() || document.activeElement === general)) ||
-      (composerInput && document.activeElement === composerInput);
-    if (q(".diffbar") && !forceRebuild && (key === diffKey || busy)) {
+      (general && (general.value.trim() || document.activeElement === general));
+    if (q(".diffbar") && (key === diffKey || busy)) {
       updateActions();
       return;
     }
-    forceRebuild = false;
-    // A forced rebuild can run while the request-changes box holds unsent
-    // text (its content lives only in the DOM): carry it into the fresh box.
     const generalDraft = general ? general.value : "";
     diffKey = key;
     renderBody(t, files);

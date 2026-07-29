@@ -13,6 +13,17 @@ Each stage is individually approvable and dispatchable; an `auto_advance` flag
 ("run all") auto-dispatches the next approved stage when validation passes.
 Legacy single-plan tasks and Quick tasks are untouched.
 
+## Conversation surface amendment (July 29, 2026)
+
+Plan surfaces use `Conversation | Stages | Agent`, with Conversation first and
+default. The stage board and documents live only in Stages, replacing the former
+Review tab name; legacy `review` URLs resolve to Stages. After successful initial
+manifest ingestion, the bridge records one agent message per stage with its title,
+summary, and a typed reference to the canonical stage document. Starting a stage
+records a `stage_started` status in the run conversation with a typed reference
+back to that plan stage. Stage comments remain attached to their documents and
+continue to appear as user messages in the durable conversation.
+
 ---
 
 ## 0. Global decisions (read first)

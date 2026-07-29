@@ -10,19 +10,23 @@
 const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
 
 // Each surface has its own valid tab vocabulary; an unknown/absent segment
-// falls back to that surface's default tab. Terminal tabs (`term-<n>`) are valid
+// falls back to that surface's Conversation default. Terminal tabs (`term-<n>`) are valid
 // on every worktree-backed surface. A run's plan doc moved to the plan route, so
 // a legacy #/task/<id>/plan (and the merged Diff tab) both land on Changes.
 const runTab = (seg) =>
-  seg === "changes" || seg === "files" || seg === "agent" || seg === "stages" || isTermTab(seg) ? seg : "changes";
-// A plan is project-scoped: the review doc plus its disposable-worktree agent
-// screen. Plans are not a terminal scope, so `term-<n>` falls back to review.
-const planTab = (seg) => (seg === "agent" ? "agent" : "review");
-// A worktree surface is Changes + Files + its ONE Build-owned agent. The Agent
+  seg === "conversation" || seg === "changes" || seg === "files" || seg === "agent" || seg === "stages" || isTermTab(seg)
+    ? seg
+    : seg === "diff" || seg === "plan"
+      ? "changes"
+      : "conversation";
+// A plan is project-scoped: Conversation, Stages/Plan, and its disposable-worktree
+// agent screen. Plans are not a terminal scope, so `term-<n>` falls back to Conversation.
+const planTab = (seg) => (seg === "review" ? "stages" : seg === "agent" || seg === "stages" ? seg : "conversation");
+// A worktree surface is Conversation + Changes + Files + its ONE Build-owned agent. The Agent
 // tab is a fixture there (surfaceTabs.js AGENT_TAB) — always reachable means
 // reachable by URL too, so a reload or a shared link stays on it.
-const worktreeSurfaceTabs = new Set(["changes", "files", "agent"]);
-const worktreeTab = (seg) => (worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "changes");
+const worktreeSurfaceTabs = new Set(["conversation", "changes", "files", "agent"]);
+const worktreeTab = (seg) => (seg === "diff" ? "changes" : worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "conversation");
 // The project surface IS the primary checkout's worktree surface plus its
 // project-scoped panes (Inbox, Issues, Archive). Same vocabulary for the canonical
 // #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias; they differ
@@ -90,16 +94,16 @@ export function routeFromHash(hash) {
 
 export function hashFromRoute(route) {
   if (route.name === "task") {
-    const leaf = `task/${encodeURIComponent(route.id)}/${route.tab || "changes"}`;
+    const leaf = `task/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
     return route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
   }
   if (route.name === "plan") {
-    const leaf = `plan/${encodeURIComponent(route.id)}/${route.tab || "review"}`;
+    const leaf = `plan/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
     const base = route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
     return route.stage ? `${base}/${encodeURIComponent(route.stage)}` : base;
   }
   if (route.name === "worktree") {
-    const leaf = `worktree/${encodeURIComponent(route.worktreeId)}/${route.tab || "changes"}`;
+    const leaf = `worktree/${encodeURIComponent(route.worktreeId)}/${route.tab || "conversation"}`;
     return `#/project/${encodeURIComponent(route.projectId)}/${leaf}`;
   }
   if (route.name === "main") return `#/project/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;

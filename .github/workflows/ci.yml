@@ -164,8 +164,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: spa/package-lock.json
+          # No `cache: npm`. It keys on a lockfile, and spa/package-lock.json is
+          # deliberately gitignored (.gitignore) — `@build/secure-transport` is a
+          # file: dep whose resolved path is machine-specific, so the lock is not
+          # shareable. setup-node fails hard rather than skipping when its cache
+          # key cannot be resolved.
       # `@build/secure-transport` is `file:../../build-secure-transport/js` — a
       # SIBLING of the repo root, the same convention skriftapp/Containerfile
       # satisfies by cloning it next to the source. npm resolves the path at

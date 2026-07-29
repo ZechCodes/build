@@ -28,9 +28,11 @@ vi.mock("../src/terminal/pane.js", () => ({
 }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab: vi.fn() }));
 
-import { mountAuxTab, mountAgentPane, terminalTabsController } from "../src/core/surfaceTabs.js";
+import { mountAuxTab, mountAgentPane, mountAgentTab, terminalTabsController, AGENT_TAB, NEW_TAB_KINDS } from "../src/core/surfaceTabs.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+let agentAttachResult; // what the bridge answers the next agent attach with
 
 // attachConnectionOverlay appends a chip element to the pane host and toggles a
 // class on it, so the host doubles gain the minimal DOM surface it touches.
@@ -49,7 +51,12 @@ function fakeEl(extra = {}) {
 
 function fakeHost() {
   const paneHost = fakeEl();
-  const host = fakeEl({ querySelector: () => paneHost, paneHost });
+  const chip = fakeEl({ textContent: "", hidden: true });
+  const host = fakeEl({
+    querySelector: (selector) => (selector === "#agentIdle" ? chip : paneHost),
+    paneHost,
+    chip,
+  });
   return host;
 }
 
@@ -59,6 +66,17 @@ beforeEach(() => {
   fakeManager.closeTerminal.mockReset();
   fakeManager.attachTerminal.mockReset();
   fakeManager.detach.mockReset();
+  fakeManager.input.mockReset();
+  fakeManager.resize.mockReset();
+  fakeManager.attachAgent.mockReset();
+  // The bridge answers every agent attach with the WORKTREE's wire id, and
+  // reports liveness through the registered onLive (which is how the idle chip
+  // learns there is no session).
+  agentAttachResult = { term_id: "agent:wt-3", live: true, snapshot: "", cursor: 0 };
+  fakeManager.attachAgent.mockImplementation(async (target, opts) => {
+    if (opts && opts.onLive) opts.onLive(!!agentAttachResult.live);
+    return agentAttachResult;
+  });
   paneSpy.lastOpts = null;
 });
 
@@ -73,44 +91,27 @@ describe("terminalTabsController labels", () => {
     expect(controller.label("term-c")).toBe("Terminal 3");
   });
 
-  // A tab says WHAT it is — an agent or a shell — not which vendor: the pane
-  // shows that soon enough, and "Agent" beside "Terminal" is the distinction
-  // that matters when you are scanning a row of tabs.
-  it("names a tab Agent or Terminal, numbering each on its own", async () => {
+  // Every tab the human opens is a shell. The one agent of a worktree is
+  // Build's, lives in the Agent tab, and is never one of these — a `+` that
+  // could mint a claude session put a second, unmanaged agent in the same
+  // directory as the real one.
+  it("calls every user tab a Terminal, whatever a daemon reports about it", async () => {
     fakeManager.listTerminals.mockResolvedValue([
       { term_id: "term-a", kind: "shell" },
       { term_id: "term-b", kind: "claude" },
-      { term_id: "term-c", kind: "codex" },
-      { term_id: "term-d", kind: "claude" },
     ]);
     const controller = terminalTabsController({ project_id: "p1" });
     await controller.load();
-    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Agent 1", "Agent 2", "Agent 3"]);
+    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Terminal 2"]);
   });
 
-  it("keeps the provider on the tab's title, where a hover can recover it", async () => {
-    fakeManager.listTerminals.mockResolvedValue([{ term_id: "term-b", kind: "codex" }]);
-    const controller = terminalTabsController({ project_id: "p1" });
-    await controller.load();
-    expect(controller.tabs()[0].title).toBe("Codex");
-  });
-
-  it("passes the chosen kind to term.create and labels the new tab by it", async () => {
+  it("asks term.create for nothing but a shell in this surface's directory", async () => {
     fakeManager.listTerminals.mockResolvedValue([]);
-    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x", kind: "claude" });
+    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x" });
     const controller = terminalTabsController({ run_id: "run-1" });
     await controller.load();
-    await controller.create("claude");
-    expect(fakeManager.createTerminal).toHaveBeenCalledWith({ run_id: "run-1" }, 80, 24, "claude");
-    expect(controller.label("term-x")).toBe("Agent 1");
-  });
-
-  it("trusts the kind the daemon reports over the one that was asked for", async () => {
-    fakeManager.listTerminals.mockResolvedValue([]);
-    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x", kind: "shell" });
-    const controller = terminalTabsController({ run_id: "run-1" });
-    await controller.load();
-    await controller.create("claude");
+    await controller.create();
+    expect(fakeManager.createTerminal).toHaveBeenCalledWith({ run_id: "run-1" }, 80, 24);
     expect(controller.label("term-x")).toBe("Terminal 1");
   });
 });
@@ -151,7 +152,7 @@ describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not
 describe("mountAgentPane surfaces a dropped input error (S3, pairs with B1)", () => {
   it("provides an onInputError so a rejected keystroke is not swallowed", async () => {
     const host = fakeHost();
-    mountAgentPane(host, "task-1", { onLive: () => {}, onExit: () => {} });
+    mountAgentPane(host, { id: "task-1" }, { onLive: () => {}, onExit: () => {} });
     await tick();
     expect(typeof paneSpy.lastOpts.onInputError).toBe("function");
   });
@@ -159,10 +160,66 @@ describe("mountAgentPane surfaces a dropped input error (S3, pairs with B1)", ()
   it("routes an input RPC rejection to onExit('agent_session_ended') so the idle chip shows", async () => {
     const host = fakeHost();
     const exits = [];
-    mountAgentPane(host, "task-1", { onLive: () => {}, onExit: (r) => exits.push(r) });
+    mountAgentPane(host, { id: "task-1" }, { onLive: () => {}, onExit: (r) => exits.push(r) });
     await tick();
     // a keystroke hitting a dead session: term.input rejected → onInputError fires
     paneSpy.lastOpts.onInputError(new Error("no active agent session"));
     expect(exits).toEqual(["agent_session_ended"]);
+  });
+});
+
+// An agent belongs to a worktree, and a surface addresses that worktree the way
+// it already knows it: a run/plan id, or a scope. The wire id comes BACK from
+// the attach (it is a hash of the canonical root), and every keystroke, resize
+// and detach after that must use it — not the address the surface asked with.
+describe("mountAgentPane addresses a worktree and keys itself by the bridge's answer", () => {
+  it("passes the surface's address straight through to agent.attach", async () => {
+    const host = fakeHost();
+    mountAgentPane(host, { project_id: "p1", worktree_id: "wt-3" }, { onLive: () => {}, onExit: () => {} });
+    await tick();
+    expect(fakeManager.attachAgent.mock.calls[0][0]).toEqual({ project_id: "p1", worktree_id: "wt-3" });
+  });
+
+  it("sends input and resize to the wire id the attach answered with", async () => {
+    const host = fakeHost();
+    await mountAgentPane(host, { project_id: "p1", worktree_id: "wt-3" }, { onLive: () => {}, onExit: () => {} });
+    await paneSpy.lastOpts.input("hi");
+    await paneSpy.lastOpts.resize(100, 30);
+    expect(fakeManager.input).toHaveBeenCalledWith("agent:wt-3", "hi");
+    expect(fakeManager.resize).toHaveBeenCalledWith("agent:wt-3", 100, 30);
+  });
+
+  it("lets go of that screen on dispose, so an unmounted tab stops streaming", async () => {
+    const host = fakeHost();
+    const pane = await mountAgentPane(host, { id: "run-2" }, { onLive: () => {}, onExit: () => {} });
+    pane.dispose();
+    expect(fakeManager.detach).toHaveBeenCalledWith("agent:wt-3");
+  });
+});
+
+// The Agent tab is a FIXTURE on every worktree surface — mounting it must never
+// spawn an agent. A worktree nothing has run in renders its empty state.
+describe("mountAgentTab", () => {
+  it("is the same tab on every surface: never closable, never minted by the human", () => {
+    expect(AGENT_TAB).toEqual({ id: "agent", label: "Agent" });
+    expect(NEW_TAB_KINDS.map((kind) => kind.id)).toEqual(["shell"]);
+  });
+
+  it("mounts a pane without asking anything to start, and stays quiet when nothing is live", async () => {
+    agentAttachResult = { term_id: "agent:wt-8", live: false, snapshot: "", cursor: 0 };
+    const host = fakeHost();
+    mountAgentTab(host, { project_id: "p1", worktree_id: "wt-8" }, { idleLabel: "no agent has run here yet" });
+    await tick();
+    expect(fakeManager.createTerminal).not.toHaveBeenCalled();
+    expect(host.chip.textContent).toBe("no agent has run here yet");
+    expect(host.chip.hidden).toBe(false);
+  });
+
+  it("keeps the tab intact when the attach itself fails — the chip stands in", async () => {
+    fakeManager.attachAgent.mockRejectedValueOnce(new Error("unknown worktree_id"));
+    const host = fakeHost();
+    mountAgentTab(host, { project_id: "p1", worktree_id: "gone" });
+    await tick();
+    expect(host.chip.hidden).toBe(false);
   });
 });

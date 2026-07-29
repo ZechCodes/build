@@ -65,6 +65,7 @@ export function createWorktreeReview({
   worktreeId,
   callRpc,
   adopting,
+  initialProvider = "",
   isOffline = () => false,
   onAdopted = () => {},
   onFinished = () => {},
@@ -87,10 +88,13 @@ export function createWorktreeReview({
   let meta = null; // the last worktree.diff payload's branch/base/adoptable/path
 
   let agentCatalog = normalizeModelCatalog({});
-  const agentChoice = { provider: "claude", model: "", effort: "" };
+  const agentChoice = { provider: initialProvider || "claude", model: "", effort: "" };
   loadModelCatalog().then((catalog) => {
     agentCatalog = normalizeModelCatalog(catalog);
-    agentChoice.provider = agentCatalog.default_provider || "claude";
+    // A provider chosen for THIS worktree — in the sheet, before the directory
+    // existed — outranks the account default: it is the agent the human asked
+    // to run here, and adoption dispatches with it.
+    if (!initialProvider) agentChoice.provider = agentCatalog.default_provider || "claude";
     updateActions();
   });
 

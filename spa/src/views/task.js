@@ -15,12 +15,22 @@ import { canDelete, canAbandon, bannerText, defaultRunTab, abandonConfirm, delet
 import { confirmAction } from "../core/confirm.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab, mountAgentPane, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
 import { createThreadCache } from "../core/thread.js";
-import { terminalManager } from "../terminal/manager.js";
 import { hashFromRoute } from "../core/router.js";
+
+/** The task surface's tabs, in row order. Agent is a fixture here as it is on
+ *  every worktree surface — the run's worktree has one agent and it is always
+ *  reachable, whether or not a session is live in it right now. */
+export const taskSurfaceTabs = ({ multiStage = false, terminalTabs = [] } = {}) => [
+  ...(multiStage ? [{ id: "stages", label: "Stages" }] : []),
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+  AGENT_TAB,
+  ...terminalTabs,
+];
 
 export async function renderTask() {
   const root = $("#root");
@@ -50,13 +60,7 @@ export async function renderTask() {
   // A run parked between stages opens on Stages; every other state opens on
   // Changes. A single-stage run never has a Stages tab, so fall back.
   const defaultTab = () => (isMultiStage() ? defaultRunTab(last) : "changes");
-  const staticTabs = () => [
-    ...(isMultiStage() ? [{ id: "stages", label: "Stages" }] : []),
-    { id: "changes", label: "Changes" },
-    { id: "files", label: "Files" },
-    { id: "agent", label: "Agent" },
-    ...terminals.tabs(),
-  ];
+  const staticTabs = () => taskSurfaceTabs({ multiStage: isMultiStage(), terminalTabs: terminals.tabs() });
   const disposeAux = () => {
     if (aux) {
       aux.dispose();
@@ -85,7 +89,7 @@ export async function renderTask() {
       onSelect: (tabId) => selectTab(tabId),
       onClose: (tabId) => closeTerminal(tabId),
       newTabOptions: NEW_TAB_KINDS,
-      onNewTab: (kind) => newTerminal(kind),
+      onNewTab: () => newTerminal(),
       back: { title: m.project ? `Back to ${m.project}` : "Back to project" },
       onBack: () => goHome(),
     });
@@ -120,7 +124,9 @@ export async function renderTask() {
     body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
     if (tabId === "agent") {
-      aux = mountAgentTab(body);
+      // The run addresses its own agent; the bridge resolves that to the
+      // worktree the run works in, which is where the agent actually lives.
+      aux = mountAgentTab(body, { id });
       return;
     }
     if (tabId === "changes") {
@@ -150,41 +156,10 @@ export async function renderTask() {
     });
   };
 
-  // The Agent tab: the live agent PTY (a full terminal on the user's machine —
-  // input allowed). A dead/absent session shows a quiet "no active agent session"
-  // chip over the retained last screen; an unknown run shows the chip alone.
-  const mountAgentTab = (body) => {
-    body.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
-    const chip = body.querySelector("#agentIdle");
-    const setIdle = (on) => {
-      if (!chip) return;
-      chip.textContent = on ? "no active agent session" : "";
-      chip.hidden = !on;
-    };
-    let pane = null;
-    let disposed = false;
-    mountAgentPane(body.querySelector("#agentpane"), id, {
-      onLive: (live) => setIdle(!live),
-      onExit: (reason) => {
-        if (reason === "agent_session_ended") setIdle(true);
-      },
-    }).then(
-      (p) => (disposed ? p.dispose() : (pane = p)),
-      () => setIdle(true), // unknown run or attach failure — chip alone, view intact
-    );
-    return {
-      dispose() {
-        disposed = true;
-        if (pane) pane.dispose();
-        terminalManager().detach(`agent:${id}`);
-      },
-    };
-  };
-
-  const newTerminal = async (kind) => {
+  const newTerminal = async () => {
     let termId;
     try {
-      termId = await terminals.create(kind);
+      termId = await terminals.create();
     } catch (e) {
       showBanner("error: " + e.message.slice(0, 80));
       return;

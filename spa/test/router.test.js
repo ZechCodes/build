@@ -59,8 +59,11 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/worktree/p/w/diff").tab).toBe("changes"); // legacy Diff links land on Changes
     expect(routeFromHash("#/worktree/p/w/files").tab).toBe("files");
     expect(routeFromHash("#/worktree/p/w/term-2").tab).toBe("term-2");
-    expect(routeFromHash("#/worktree/p/w/agent").tab).toBe("changes"); // no agent on worktrees
+    // The Agent tab is a FIXTURE on this surface (surfaceTabs.js AGENT_TAB), so
+    // it has to survive a reload and a shared link like every other tab.
+    expect(routeFromHash("#/worktree/p/w/agent").tab).toBe("agent");
     expect(routeFromHash("#/worktree/p/w").tab).toBe("changes");
+    expect(routeFromHash("#/worktree/p/w/bogus").tab).toBe("changes");
   });
 
   it("parses the project inbox and primary-checkout tabs under one URL", () => {
@@ -70,8 +73,35 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/project/proj-1/files").tab).toBe("files");
     expect(routeFromHash("#/project/proj-1/archive").tab).toBe("archive");
     expect(routeFromHash("#/project/proj-1/term-9").tab).toBe("term-9");
+    // Every tab the project surface can select is addressable: the primary
+    // checkout's Agent fixture and the project-scoped Issues pane included.
+    expect(routeFromHash("#/project/proj-1/inbox").tab).toBe("inbox");
+    expect(routeFromHash("#/project/proj-1/issues").tab).toBe("issues");
+    expect(routeFromHash("#/project/proj-1/agent").tab).toBe("agent");
     expect(routeFromHash("#/project/proj-1/bogus").tab).toBe("inbox");
     expect(routeFromHash("#/project/a%20b/files")).toEqual({ name: "project", projectId: "a b", tab: "files" });
+  });
+
+  // Every tab id the four worktree-backed surfaces can select (surfaceTabs.js
+  // AGENT_TAB + each view's own tab list) must parse back to itself. The Agent
+  // tab regressed on three of the four surfaces once; this pins all of them.
+  it("addresses every tab its surface can select, on every surface", () => {
+    const selectableTabsBySurface = {
+      "#/project/p/task/r": ["stages", "changes", "files", "agent", "term-1"],
+      "#/project/p/plan/pl": ["review", "agent"],
+      "#/project/p/worktree/w": ["changes", "files", "agent", "term-1"],
+      "#/project/p": ["inbox", "issues", "changes", "files", "archive", "agent", "term-1"],
+    };
+    for (const [base, tabs] of Object.entries(selectableTabsBySurface)) {
+      for (const tab of tabs) expect([`${base}/${tab}`, routeFromHash(`${base}/${tab}`).tab]).toEqual([`${base}/${tab}`, tab]);
+    }
+  });
+
+  it("keeps the legacy #/main alias on the project surface's full tab vocabulary", () => {
+    for (const tab of ["inbox", "issues", "changes", "files", "archive", "agent", "term-3"]) {
+      expect([tab, routeFromHash(`#/main/proj-1/${tab}`).tab]).toEqual([tab, tab]);
+    }
+    expect(routeFromHash("#/main/proj-1/bogus").tab).toBe("changes");
   });
 
   it("parses every project-owned navigation child beneath its project", () => {
@@ -144,6 +174,39 @@ describe("hashFromRoute", () => {
     ]) {
       expect(routeFromHash(hashFromRoute(route))).toEqual(route);
     }
+  });
+
+  // The Agent tab is a fixture on every worktree surface and the ONLY landing
+  // spot of the New Worktree flow, so a reload or a shared link must keep you on
+  // it — on all four surfaces, not three.
+  it("round-trips the Agent tab on every worktree-backed surface", () => {
+    for (const route of [
+      { name: "task", projectId: "p", id: "r1", tab: "agent" },
+      { name: "plan", projectId: "p", id: "pl1", tab: "agent" },
+      { name: "worktree", projectId: "p1", worktreeId: "w1", tab: "agent" },
+      { name: "project", projectId: "p1", tab: "agent" },
+    ]) {
+      const hash = hashFromRoute(route);
+      expect([hash, routeFromHash(hash)]).toEqual([hash, route]);
+      // …and again from the hash, so neither direction can drift alone.
+      expect(hashFromRoute(routeFromHash(hash))).toBe(hash);
+    }
+    expect(hashFromRoute({ name: "worktree", projectId: "p1", worktreeId: "w1", tab: "agent" })).toBe(
+      "#/project/p1/worktree/w1/agent",
+    );
+    expect(hashFromRoute({ name: "project", projectId: "p1", tab: "agent" })).toBe("#/project/p1/agent");
+  });
+
+  it("round-trips the project surface's Issues tab", () => {
+    const route = { name: "project", projectId: "p1", tab: "issues" };
+    expect(hashFromRoute(route)).toBe("#/project/p1/issues");
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+  });
+
+  it("round-trips the project surface's Archive tab", () => {
+    const route = { name: "project", projectId: "p1", tab: "archive" };
+    expect(hashFromRoute(route)).toBe("#/project/p1/archive");
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
   });
 
   it("round-trips a plan stage deep-link", () => {

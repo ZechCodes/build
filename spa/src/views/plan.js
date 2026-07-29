@@ -13,8 +13,7 @@ import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { mountAgentPane } from "../core/surfaceTabs.js";
-import { terminalManager } from "../terminal/manager.js";
+import { mountAgentTab } from "../core/surfaceTabs.js";
 import { createThreadCache, threadHtml, wireThreadComposer, wireThreadRevisionLinks } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
@@ -245,39 +244,18 @@ export async function renderPlan() {
     });
   };
 
-  // Mount the plan's drafting-session PTY edge-to-edge into #tabbody (agent.attach
-  // is entity-agnostic — a plan id resolves to its planning session). Mirrors
-  // task.js's Agent tab: a quiet idle chip over the retained last screen when no
-  // session is live. The poll never repaints the body while this is mounted.
+  // Mount the plan's drafting-session PTY edge-to-edge into #tabbody. The same
+  // Agent tab every worktree surface has: a quiet idle chip over the retained
+  // last screen when no session is live, and never a spawn on mount. The poll
+  // never repaints the body while this is mounted.
   const mountAgent = () => {
     const body = $("#tabbody");
     if (!body) return;
     body.classList.add("bare");
-    body.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
-    const chip = body.querySelector("#agentIdle");
-    const setIdle = (on) => {
-      if (!chip) return;
-      chip.textContent = on ? "no active planning session" : "";
-      chip.hidden = !on;
-    };
-    let pane = null;
-    let disposed = false;
-    mountAgentPane(body.querySelector("#agentpane"), id, {
-      onLive: (live) => setIdle(!live),
-      onExit: (reason) => {
-        if (reason === "agent_session_ended") setIdle(true);
-      },
-    }).then(
-      (p) => (disposed ? p.dispose() : (pane = p)),
-      () => setIdle(true), // unknown/absent session — chip alone, view intact
-    );
-    agentPane = {
-      dispose() {
-        disposed = true;
-        if (pane) pane.dispose();
-        terminalManager().detach(`agent:${id}`);
-      },
-    };
+    // The plan addresses its own agent; the bridge resolves that to the
+    // disposable planning worktree, which is where that agent lives — and which
+    // is why an approved or abandoned plan has no agent tab at all.
+    agentPane = mountAgentTab(body, { id }, { idleLabel: "no active planning session" });
   };
 
   // Switch surfaces: Review repaints through the poll machinery; Agent owns its

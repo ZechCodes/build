@@ -13,11 +13,23 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
-import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
+import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { createAdoptingCall } from "../core/adoption.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
+
+/** The external-worktree surface's tabs, in row order. Agent is a fixture: this
+ *  directory has one agent whether or not Build has ever adopted it, and it is
+ *  always somewhere you can look. Mounting the tab starts nothing — the agent
+ *  begins when a human→agent verb (the first Request Changes here) delivers a
+ *  turn, which is also what adopts the worktree. */
+export const worktreeSurfaceTabs = (terminalTabs = []) => [
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+  AGENT_TAB,
+  ...terminalTabs,
+];
 
 export async function renderWorktree() {
   const root = $("#root");
@@ -29,10 +41,11 @@ export async function renderWorktree() {
   const adopting = createAdoptingCall((method, params) => App.call(method, params), projectId, worktreeId);
   const scope = { project_id: projectId, worktree_id: worktreeId };
 
-  // A worktree Build just minted opens on the tool the sheet asked for, not on
-  // an empty diff — that answer was given before the worktree existed. The mark
-  // is one-shot, so a reload of the same surface lands on Changes like any other.
-  const pendingKind = takeNewWorktreeMark(worktreeId);
+  // A worktree Build just minted carries the answer the sheet asked for: WHICH
+  // AGENT runs here. It seeds the provider adoption dispatches with, and it lands
+  // this surface on its Agent tab rather than on an empty diff. The mark is
+  // one-shot, so a reload of the same surface behaves like any other visit.
+  const pendingProvider = takeNewWorktreeMark(worktreeId);
   let tab = App.route.tab || "changes";
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
@@ -43,7 +56,7 @@ export async function renderWorktree() {
   // over the destination.
   let leaving = false;
 
-  const staticTabs = () => [{ id: "changes", label: "Changes" }, { id: "files", label: "Files" }, ...terminals.tabs()];
+  const staticTabs = () => worktreeSurfaceTabs(terminals.tabs());
   const replaceWorktreeHash = () => {
     App.route = { name: "worktree", projectId, worktreeId, tab };
     history.replaceState(null, "", hashFromRoute(App.route));
@@ -108,6 +121,7 @@ export async function renderWorktree() {
     worktreeId,
     callRpc: (method, params) => App.call(method, params),
     adopting,
+    initialProvider: pendingProvider,
     isOffline: () => App.offline,
     onAdopted: () => handoffToTask(),
     onFinished: () => goHome(),
@@ -163,8 +177,17 @@ export async function renderWorktree() {
     if (!body) return;
     // Terminal tabs go edge-to-edge; Changes and Files run flush (their own rail
     // + detail panes each scroll internally, so the body owns no padding).
-    body.classList.toggle("bare", /^term-/.test(tabId));
+    body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
+    if (tabId === "agent") {
+      // This worktree's one agent. Mounting is a look, never a start: an agent
+      // that has not been asked for anything yet shows the idle label until the
+      // first delivered turn adopts the worktree and spawns it.
+      aux = mountAgentTab(body, scope, {
+        idleLabel: "no agent is running in this worktree",
+      });
+      return;
+    }
     if (tabId === "changes") {
       // The git surface for this worktree: the commit rail on the left, the
       // review diff ("All changes", the review plug), staging, or a commit's
@@ -234,7 +257,8 @@ export async function renderWorktree() {
   await terminals.load();
   if (leaving) return;
   if (shellCtl) shellCtl.setTabs(staticTabs());
-  // The sheet already asked what should run here, so open it — after the first
-  // paint, which is what gives newTerminal a tab row and a body to land in.
-  if (pendingKind) await newTerminal(pendingKind);
+  // The sheet already named the agent that runs here, so land on the tab it will
+  // appear in — after the first paint, which is what gives the pane a tab row and
+  // a body to mount into.
+  if (pendingProvider) selectTab("agent");
 }

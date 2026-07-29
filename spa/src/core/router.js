@@ -18,10 +18,19 @@ const runTab = (seg) =>
 // A plan is project-scoped: the review doc plus its disposable-worktree agent
 // screen. Plans are not a terminal scope, so `term-<n>` falls back to review.
 const planTab = (seg) => (seg === "agent" ? "agent" : "review");
-const worktreeTab = (seg) => (seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "changes");
-const mainTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "changes");
-const projectTab = (seg) =>
-  seg === "issues" || seg === "changes" || seg === "files" || seg === "archive" || isTermTab(seg) ? seg : "inbox";
+// A worktree surface is Changes + Files + its ONE Build-owned agent. The Agent
+// tab is a fixture there (surfaceTabs.js AGENT_TAB) — always reachable means
+// reachable by URL too, so a reload or a shared link stays on it.
+const worktreeSurfaceTabs = new Set(["changes", "files", "agent"]);
+const worktreeTab = (seg) => (worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "changes");
+// The project surface IS the primary checkout's worktree surface plus its
+// project-scoped panes (Inbox, Issues, Archive). Same vocabulary for the canonical
+// #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias; they differ
+// only in which tab an unknown segment falls back to.
+const projectSurfaceTabs = new Set([...worktreeSurfaceTabs, "inbox", "issues", "archive"]);
+const projectSurfaceTab = (seg, fallback) => (projectSurfaceTabs.has(seg) || isTermTab(seg) ? seg : fallback);
+const mainTab = (seg) => projectSurfaceTab(seg, "changes");
+const projectTab = (seg) => projectSurfaceTab(seg, "inbox");
 
 export function routeFromHash(hash) {
   const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);

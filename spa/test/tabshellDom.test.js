@@ -40,6 +40,17 @@ beforeEach(() => {
   document.body.innerHTML = "";
 });
 
+// A dropdown is how a control offers a CHOICE. With one thing to open, the `+`
+// is that one thing: a menu of one item asks a question with a single answer.
+describe("a + with one kind", () => {
+  it("opens it directly instead of a one-item menu", () => {
+    const shell = mount({ newTabOptions: [{ id: "shell", label: "Terminal", description: "your shell" }] });
+    click(shell.plus());
+    expect(menu()).toBeNull();
+    expect(shell.picked).toEqual(["shell"]);
+  });
+});
+
 describe("the + tab menu", () => {
   it("opens on click with one item per kind", () => {
     const shell = mount();

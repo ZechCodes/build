@@ -6868,7 +6868,7 @@ fn record_report_in_thread(
     };
     thread.push_event(event, Some(summary), None, None, &now);
     if let Some(completion) = &report.outputs.completion_report {
-        thread.post_completion(completion, now);
+        thread.remember_completion(completion);
     }
 }
 
@@ -12958,7 +12958,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_records_blockers_validation_gates_and_completion_messages() {
+    fn conversation_records_status_details_without_completion_report_messages() {
         let mut thread = crate::thread::Thread::new("run-activity");
         record_report_in_thread(
             &mut thread,
@@ -13004,13 +13004,16 @@ mod tests {
                 if event.event == crate::thread::ThreadEventKind::ReviewBlocked
                     && event.summary.as_deref() == Some("The migration is not reversible")
         )));
-        assert!(thread.items.iter().any(|item| matches!(
+        assert!(!thread.items.iter().any(|item| matches!(
             item,
             crate::thread::ThreadItem::Message(message)
                 if message.role == crate::thread::MessageRole::Agent
                     && message.source == crate::thread::MessageSource::Completion
-                    && message.body.contains("src/app.rs")
         )));
+        assert_eq!(
+            thread.last_completion.as_ref().unwrap().critical_files,
+            vec!["src/app.rs"]
+        );
     }
 
     #[test]

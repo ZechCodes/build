@@ -313,6 +313,7 @@ export function createTaskReview({ taskId, callRpc, getTask, absorbTaskView, isO
       ${filesHtml}
       ${threadHtml(t.thread, {
         agentLabel: t.harness,
+        initialMessage: t.goal,
         status: threadStatus ? threadStatus(t) : null,
         actionsId: mountThreadActions ? "threadlifecycle" : null,
         // The composer shows wherever thread.post can land — the bridge

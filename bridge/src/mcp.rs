@@ -226,7 +226,7 @@ impl DoneServer {
             "properties": {
                 "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
-                "summary": { "type": "string", "description": "A short markdown summary for the human reviewer. Lead with a one-line outcome, then a few '- ' bullet points of the key changes — or, if blocked/failed, what is needed to proceed. Use markdown: bullets, **bold**, and `backticks` for paths and commands. Prefer scannable bullets over one long paragraph." },
+                "summary": { "type": "string", "description": "One concise sentence stating what was completed. If blocked or failed, state what is needed instead. No file list, changelog, test log, links, or process narration." },
                 "outputs": {
                     "type": "object",
                     "properties": {
@@ -265,16 +265,6 @@ impl DoneServer {
                                     "response": { "type": "string" }
                                 },
                                 "required": ["comment_id", "response"]
-                            }
-                        },
-                        "completion_report": {
-                            "type": "object",
-                            "description": "Structured handoff for the reviewer and any cold replacement session.",
-                            "properties": {
-                                "critical_files": { "type": "array", "items": { "type": "string" } },
-                                "risk_notes": { "type": "array", "items": { "type": "string" } },
-                                "decisions": { "type": "array", "items": { "type": "string" } },
-                                "skips": { "type": "array", "items": { "type": "string" } }
                             }
                         }
                     }
@@ -596,15 +586,16 @@ mod tests {
     }
 
     #[test]
-    fn summary_schema_asks_for_markdown_bullets() {
+    fn summary_schema_asks_for_one_concise_outcome() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let desc = v["result"]["tools"][2]["inputSchema"]["properties"]["summary"]["description"]
             .as_str()
             .unwrap()
             .to_lowercase();
-        assert!(desc.contains("markdown"), "summary should ask for markdown");
-        assert!(desc.contains("bullet"), "summary should ask for bullets");
+        assert!(desc.contains("one concise sentence"), "{desc}");
+        assert!(desc.contains("no file list"), "{desc}");
+        assert!(!desc.contains("bullet"), "{desc}");
     }
 
     #[test]
@@ -683,7 +674,7 @@ mod tests {
         assert!(outputs["stages"].is_object());
         assert!(outputs["validation"].is_object());
         assert!(outputs["comment_resolutions"].is_object());
-        assert!(outputs["completion_report"].is_object());
+        assert!(outputs.get("completion_report").is_none());
     }
 
     #[test]

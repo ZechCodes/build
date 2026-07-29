@@ -303,15 +303,8 @@ impl Thread {
         )
     }
 
-    pub fn post_completion(&mut self, report: &CompletionReport, now: impl Into<String>) -> String {
+    pub fn remember_completion(&mut self, report: &CompletionReport) {
         self.last_completion = Some(report.clone());
-        self.post_message(
-            MessageRole::Agent,
-            MessageSource::Completion,
-            completion_report_markdown(report),
-            None,
-            now.into(),
-        )
     }
 
     fn post_message(
@@ -613,29 +606,6 @@ impl Thread {
         }
         lines.join("\n")
     }
-}
-
-fn completion_report_markdown(report: &CompletionReport) -> String {
-    let mut sections = vec!["**Completion report**".to_string()];
-    for (label, values) in [
-        ("Critical files", &report.critical_files),
-        ("Risks", &report.risk_notes),
-        ("Decisions", &report.decisions),
-        ("Skipped", &report.skips),
-    ] {
-        if values.is_empty() {
-            continue;
-        }
-        sections.push(format!(
-            "**{label}**\n{}",
-            values
-                .iter()
-                .map(|value| format!("- {value}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-    sections.join("\n\n")
 }
 
 fn snapshot_contents(contents: &str, max_bytes: usize) -> String {

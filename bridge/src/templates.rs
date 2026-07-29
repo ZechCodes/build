@@ -34,10 +34,9 @@ do not implement anything. Write nothing outside `.build/`.
 
 When the plan is ready, call the `done` tool with phase=\"plan\", status=\"completed\",
 outputs.plan_path=\".build/plan/stages.json\", outputs.stages set to the exact
-contents of the manifest, and a short markdown summary for the reviewer: a
-one-line outcome, then one `-` bullet per stage. Use `backticks` for paths and
-commands; prefer scannable bullets over one long paragraph. If you cannot proceed,
-call `done` with status=\"blocked\" and, in the same markdown format, say what you need.";
+contents of the manifest, and set summary to one concise sentence stating what
+was planned. If you cannot proceed, call `done` with status=\"blocked\" and use one
+concise sentence to say what you need.";
 
 const BUILD: &str = "\
 Execute the implementation plan at {plan_path}. The goal is:
@@ -53,11 +52,10 @@ anything under `.build/` — Build manages that directory. Ensure every code
 change is committed before you call `done`.
 
 When the work is complete, call the `done` tool with phase=\"build\",
-status=\"completed\", and a short markdown summary for the reviewer: a one-line
-outcome, then a few `-` bullets of the key changes (use `backticks` for paths and
-commands). Prefer scannable bullets over one long paragraph. If you get stuck, call
-`done` with status=\"blocked\" (you need something) or status=\"failed\" (the approach
-did not work) and, in the same markdown format, say what is needed to proceed.";
+status=\"completed\", and set summary to one concise sentence stating what was
+completed. If you get stuck, call `done` with status=\"blocked\" (you need something)
+or status=\"failed\" (the approach did not work) and use one concise sentence to say
+what is needed to proceed.";
 
 const BUILD_STAGE: &str = "\
 Execute ONE stage of a multi-stage implementation plan. The overall goal is:
@@ -78,11 +76,10 @@ anything under `.build/` — Build manages that directory. Ensure every code
 change is committed before you call `done`.
 
 When this stage's work is complete, call the `done` tool with phase=\"build\",
-status=\"completed\", and a short markdown summary for the reviewer: a one-line
-outcome, then a few `-` bullets of the key changes (use `backticks` for paths and
-commands). If you get stuck, call `done` with status=\"blocked\" (you need
-something) or status=\"failed\" (the approach did not work) and, in the same
-markdown format, say what is needed to proceed.";
+status=\"completed\", and set summary to one concise sentence stating what was
+completed. If you get stuck, call `done` with status=\"blocked\" (you need something)
+or status=\"failed\" (the approach did not work) and use one concise sentence to say
+what is needed to proceed.";
 
 const REVISE: &str = "\
 The reviewer left notes on the plan at {plan_path}:
@@ -91,7 +88,7 @@ The reviewer left notes on the plan at {plan_path}:
 
 Revise the plan to address every note. Keep writing only inside `.build/`. When done,
 call the `done` tool with phase=\"plan\", status=\"completed\", outputs.plan_path=\"{plan_path}\",
-and a short markdown summary (a one-line outcome, then `-` bullets of what changed).";
+and one concise sentence in summary stating what was revised.";
 
 const REVISE_STAGE: &str = "\
 The reviewer left comments on the plan document for stage \"{stage_title}\" at
@@ -105,7 +102,7 @@ add, remove, reorder, or re-id stages, and do not touch other stages' documents.
 Keep writing only inside `.build/`. When done, call the `done` tool with
 phase=\"revise\", status=\"completed\", outputs.comment_resolutions set to one
 {\"comment_id\", \"response\"} entry per [c-N] comment above saying how you addressed
-it, and a short markdown summary (a one-line outcome, then `-` bullets of what changed).";
+it, and one concise sentence in summary stating what was revised.";
 
 const FIX_STAGE: &str = "\
 An automated validation pass reviewed stage \"{stage_title}\" (plan document at
@@ -128,10 +125,9 @@ anything under `.build/` — Build manages that directory. Ensure every code
 change is committed before you call `done`.
 
 When done, call the `done` tool with
-phase=\"build\", status=\"completed\", and a short markdown summary of what changed
-(a one-line outcome, then `-` bullets). If you get stuck, call `done` with
-status=\"blocked\" or status=\"failed\" and say, in the same markdown format, what is
-needed to proceed.";
+phase=\"build\", status=\"completed\", and one concise sentence in summary stating
+what was fixed. If you get stuck, call `done` with status=\"blocked\" or
+status=\"failed\" and use one concise sentence to say what is needed to proceed.";
 
 const REVIEW_CHANGES: &str = "\
 The reviewer requested changes on your diff:
@@ -139,8 +135,8 @@ The reviewer requested changes on your diff:
 {comments}
 
 Address every comment in this worktree. When done, call the `done` tool with
-phase=\"revise\", status=\"completed\", and a short markdown summary of what changed
-(a one-line outcome, then `-` bullets). Prefer scannable bullets over one long paragraph.";
+phase=\"revise\", status=\"completed\", and one concise sentence in summary stating
+what was changed.";
 
 const VALIDATE: &str = "\
 You are a VALIDATION agent. Stage \"{stage_title}\" of a multi-stage plan was just
@@ -159,18 +155,12 @@ outputs.validation = {\"passed\": true|false, \"findings\": \"...\", \"notes_for
 `findings` is a short markdown report: a one-line verdict, then `-` bullets of
 what was verified and any divergences. `notes_for_next_stage` is markdown the
 next stage's builder should know (surprises, renamed symbols, follow-ups) — use
-\"\" if there is nothing. Also give a one-line markdown summary with a few `-`
-bullets in the summary argument. If you cannot complete the review, call `done`
-with status=\"blocked\" or status=\"failed\" and say, with markdown bullets, why.";
-
-const COMPLETION_REPORT_GUIDANCE: &str = "\
-\n\nIn every `done` call, set `outputs.completion_report` to a structured handoff:
-`{\"critical_files\":[],\"risk_notes\":[],\"decisions\":[],\"skips\":[]}`.
-List the important paths, known risks, consequential decisions, and anything
-intentionally not completed; use empty arrays when a category has nothing.";
+\"\" if there is nothing. Use one concise sentence in the summary argument to state
+the verdict. If you cannot complete the review, call `done` with status=\"blocked\"
+or status=\"failed\" and use one concise sentence to say why.";
 
 fn phase_template(base: &str) -> String {
-    format!("{base}{COMPLETION_REPORT_GUIDANCE}")
+    base.to_string()
 }
 
 /// The phase templates. Clone-and-edit to override per project.
@@ -370,8 +360,8 @@ mod tests {
             &t.validate,
         ] {
             assert!(
-                template.contains("outputs.completion_report"),
-                "every phase must leave structured cold-session handoff context"
+                !template.contains("outputs.completion_report"),
+                "{template}"
             );
         }
     }
@@ -446,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn done_summaries_ask_for_markdown_bullets() {
+    fn done_summaries_ask_for_one_concise_outcome() {
         let t = Templates::default();
         for tmpl in [
             &t.plan,
@@ -459,14 +449,8 @@ mod tests {
             &t.validate,
         ] {
             let lower = tmpl.to_lowercase();
-            assert!(
-                lower.contains("markdown"),
-                "template should ask for markdown: {tmpl}"
-            );
-            assert!(
-                lower.contains("bullet"),
-                "template should ask for bullets: {tmpl}"
-            );
+            assert!(lower.contains("one concise sentence"), "{tmpl}");
+            assert!(!lower.contains("summary with a few"), "{tmpl}");
             assert!(
                 !lower.contains("one-paragraph"),
                 "no 'one-paragraph' guidance: {tmpl}"

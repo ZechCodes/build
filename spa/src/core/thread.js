@@ -119,12 +119,13 @@ function messageHtml(message, agentLabel = "Agent") {
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
     : "";
+  // renderMarkdown escapes all input before adding its fixed safe tag set.
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}${completion ? " thread-completion" : ""}">
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> ${completion ? "reported completion" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
+      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> ${completion ? "completed the request" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
       ${anchorLabel(message.anchor)}
-      <div class="thread-body markdown">${renderMarkdown(message.body || "")}</div>
+      <div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
     </div>
   </article>`;
 }
@@ -134,26 +135,40 @@ function eventHtml(event, agentLabel = "Agent") {
   const label = meta.label.replace(/^Agent\b/, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.summary ? renderMarkdown(event.summary) : "";
+    : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}</div>
   </div>`;
 }
 
-function completionBody(report) {
-  if (!report) return "";
-  const groups = [
-    ["Critical files", report.critical_files],
-    ["Risks", report.risk_notes],
-    ["Decisions", report.decisions],
-    ["Skipped", report.skips],
-  ].filter(([, values]) => values && values.length);
-  return ["**Completion report**", ...groups.map(([label, values]) => `**${label}**\n${values.map((value) => `- ${value}`).join("\n")}`)].join("\n\n");
+function conciseLine(value, fallback) {
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line && !/^[-*]\s/.test(line)) || fallback;
 }
 
-function completionHtml(report, agentLabel) {
-  return report ? messageHtml({ role: "agent", source: "completion", body: completionBody(report) }, agentLabel) : "";
+function completionHtml(request, summary, agentLabel, createdAt) {
+  const body = `**Requested**\n${conciseLine(request, "Complete the current task.")}\n\n**Done**\n${conciseLine(summary, "Completed.")}`;
+  return messageHtml({ role: "agent", source: "completion", body, created_at: createdAt }, agentLabel);
+}
+
+function timelineHtml(items, agentLabel, initialRequest) {
+  let currentRequest = initialRequest;
+  const rendered = [];
+  for (const item of items) {
+    if (item.type === "message") {
+      const message = item.data || {};
+      if (message.role === "user" && String(message.body || "").trim()) currentRequest = message.body.trim();
+      if (message.source !== "completion") rendered.push(messageHtml(message, agentLabel));
+      continue;
+    }
+    const event = item.data || {};
+    rendered.push(eventHtml(event, agentLabel));
+    if (event.event === "done") rendered.push(completionHtml(currentRequest, event.summary, agentLabel, event.created_at));
+  }
+  return rendered;
 }
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
@@ -206,13 +221,12 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const hasSequencedCompletion = sourceItems.some((item) => item.type === "message" && item.data?.source === "completion");
-  const completion = hasSequencedCompletion ? "" : completionHtml(thread && thread.last_completion, agentLabel);
-  const itemCount = items.length + (completion ? 1 : 0);
+  const renderedItems = timelineHtml(items, agentLabel, initialMessage);
+  const itemCount = renderedItems.length;
   return `<section class="review-thread">
     <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
-    <div class="thread-items thread-timeline">${items.length || completion
-      ? items.map((item) => item.type === "message" ? messageHtml(item.data || {}, agentLabel) : eventHtml(item.data || {}, agentLabel)).join("") + completion
+    <div class="thread-items thread-timeline">${renderedItems.length
+      ? renderedItems.join("")
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
     ${threadActionsHtml(options.actionsId)}

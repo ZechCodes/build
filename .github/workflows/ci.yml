@@ -266,14 +266,21 @@ jobs:
       # a manifest whose image was never built would pin the Deployment to a
       # :SHA tag that does not exist in the registry — an ImagePullBackOff in
       # production, and for the relay a Recreate that never comes back.
+      # The gate is the image job's own result, NOT "did this tier change".
+      # `changes.outputs.app` only says the tier moved; the image job can still
+      # be SKIPPED (a red check upstream), and the job-level `if` deliberately
+      # tolerates skipped so a push touching one tier can deploy that tier. On
+      # 2026-07-29 those two facts combined took getbuild.ing down: web-e2e went
+      # red, build-app was skipped, this step applied `:<sha>` anyway, and the
+      # rollout replaced a serving pod with an ImagePullBackOff.
       - name: Roll the app (spa + skriftapp)
-        if: needs.changes.outputs.app == 'true'
+        if: needs['build-app'].result == 'success'
         run: |
           sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml | kubectl -n 8ly apply -f -
           kubectl -n 8ly rollout status deployment/build-app --timeout=300s
 
       - name: Roll the relay (bridge)
-        if: needs.changes.outputs.relay == 'true'
+        if: needs['build-relay'].result == 'success'
         run: |
           sed "s|:latest|:${{ github.sha }}|" deploy/k8s/relay.yaml | kubectl -n 8ly apply -f -
           kubectl -n 8ly rollout status deployment/build-relay --timeout=300s

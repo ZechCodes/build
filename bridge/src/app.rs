@@ -12500,6 +12500,78 @@ mod tests {
         assert!(got["result"]["last_error"].is_null(), "{got:?}");
     }
 
+    /// The plan half of the same hole. A plan's turns are queued and delivered
+    /// by exactly the same path as a run's, so a planning agent that never
+    /// starts must land on the PLAN the same way — `plan.get` says why, and the
+    /// reason survives a restart.
+    #[test]
+    fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_plan() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let plan_id = plan_id_of(&app.handle(req("plan.create", json!({ "goal": "unreachable" }))));
+        let state = app.shared();
+        {
+            let mut app = state.lock().unwrap();
+            app.pending_agent_turns.clear();
+            app.pending_agent_turns.push(unreachable_turn(&plan_id));
+        }
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("plan.get", json!({ "plan_id": plan_id })));
+        let last_error = got["result"]["last_error"].as_str().unwrap_or_default();
+        assert!(
+            last_error.contains("could not reach the agent"),
+            "the failure must be legible on the plan: {got:?}"
+        );
+        let record = state
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .load_all_plans()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == plan_id)
+            .expect("the plan is persisted");
+        assert!(
+            record.last_error.unwrap_or_default().contains("agent"),
+            "the failure must be persisted, not just held in memory"
+        );
+    }
+
+    /// The plan half of the tabless anomaly: a drafting plan whose agent never
+    /// arrived is demoted by the sweep, and one whose turn is still queued is
+    /// left alone.
+    #[test]
+    fn a_working_plan_with_no_agent_tab_is_an_anomaly_not_a_skip() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan_id = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "tabless" }))));
+        state.plans.get_mut(&plan_id).unwrap().plan.state = PlanState::Drafting;
+        state.pending_agent_turns.clear();
+        state.pending_agent_turns.push(unreachable_turn(&plan_id));
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
+            "a queued turn means the planning agent is coming, not missing"
+        );
+
+        state.pending_agent_turns.clear();
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(3600)),
+            vec![plan_id.clone()],
+            "a drafting plan with no agent at all must be demoted, not skipped"
+        );
+        let got = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
+        // No harness exited here, so no exit-code claim is invented.
+        assert!(got["result"]["last_error"].is_null(), "{got:?}");
+    }
+
     /// The tabless anomaly must not fire on the gap the queue opens: a verb
     /// transitions the run under the state lock and the turn is delivered after
     /// it, so for the seconds a cold spawn takes there is a working run whose

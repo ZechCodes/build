@@ -10,7 +10,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
-import { canDelete, canAbandon, bannerText, abandonConfirm, deleteRunConfirm } from "../core/taskActions.js";
+import { canDelete, bannerText, deleteRunConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { renderStagesTab, stageActionBusy, joinRunStages, runStagesFallback } from "./stages.js";
 import { mountTabShell } from "../core/tabshell.js";
@@ -34,11 +34,11 @@ export const taskSurfaceTabs = ({ multiStage = false, terminalTabs = [] } = {}) 
 ];
 
 export function taskRemovalAction(model = {}) {
-  if (!canAbandon(model.state)) return null;
+  if (!canDelete(model.state)) return null;
   return {
-    id: "abandonTask",
-    label: model.adopted ? "Abandon & delete" : "Abandon",
-    busyLabel: "abandoning…",
+    id: "deleteTask",
+    label: "Delete",
+    busyLabel: "deleting…",
   };
 }
 
@@ -265,34 +265,11 @@ export async function renderTask() {
     }
   };
 
-  // Removal actions live quietly at the end of the conversation. Terminal runs
-  // can be deleted; live runs can be abandoned. Adopted runs deliberately do
-  // not offer Release here: keeping that housekeeping verb as the bright
-  // default action overwhelmed the actual conversation.
+  // Live-task housekeeping does not belong in the conversation. Once a task is
+  // terminal, keep only the small destructive Delete action for clearing its
+  // history.
   const wireActions = (el, m) => {
     if (!el) return;
-    const state = m && m.state;
-    if (canDelete(state)) {
-      el.innerHTML = `<button class="btn danger mini" id="deleteTask">Delete</button>`;
-      $("#deleteTask").onclick = async () => {
-        if (!(await confirmAction(deleteRunConfirm()))) return; // cancel: view untouched
-        localError = null; // a fresh action clears any stale local error
-        const btn = $("#deleteTask");
-        btn.disabled = true;
-        btn.textContent = "deleting…";
-        try {
-          await App.call("run.delete", { run_id: id });
-          goHome();
-        } catch (e) {
-          btn.disabled = false;
-          btn.textContent = "Delete";
-          localError = "error: " + e.message.slice(0, 80);
-          showBanner(localError);
-        }
-      };
-      return;
-    }
-
     const action = taskRemovalAction(m);
     if (!action) {
       el.innerHTML = "";
@@ -301,13 +278,13 @@ export async function renderTask() {
     el.innerHTML = `<button class="btn danger mini" id="${esc(action.id)}">${esc(action.label)}</button>`;
     const btn = el.querySelector("button");
     btn.onclick = async () => {
-      if (!(await confirmAction(abandonConfirm({ adopted: m.adopted, branch: m.branch })))) return;
+      if (!(await confirmAction(deleteRunConfirm()))) return;
       localError = null;
       btn.disabled = true;
       btn.textContent = action.busyLabel;
       try {
-        await App.call("run.abandon", { run_id: id });
-        paint();
+        await App.call("run.delete", { run_id: id });
+        goHome();
       } catch (e) {
         btn.disabled = false;
         btn.textContent = action.label;

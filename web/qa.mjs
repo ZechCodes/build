@@ -367,14 +367,21 @@ async function main() {
   }
   check("fs.read fences a traversal path", fenceErrored);
 
-  // 5. Agent attach: a live run returns its reserved id + a boolean live; a
-  // merged run (still a record) attaches with live:false. The scope key is the
-  // opaque entity `id` (plan-… / run-…).
+  // 5. Agent attach: you address it by the opaque entity `id` (plan-… / run-…),
+  // but what comes back is keyed by the WORKTREE — `agent:<worktree_id>`, a hash
+  // of the canonical root — because an agent belongs to a directory, not to an
+  // entity. An entity-keyed id would let two entities over one root address two
+  // different agents, which is the whole thing the tab primitive rules out. So
+  // the id must be stable across attaches and must NOT be the entity's own id.
   const agentLive = await term.call("agent.attach", { id: b.run_id });
+  const agentAgain = await term.call("agent.attach", { id: b.run_id });
   check(
-    "agent.attach returns the reserved id + boolean live",
-    agentLive.term_id === `agent:${b.run_id}` && typeof agentLive.live === "boolean",
-    `live=${agentLive.live}`,
+    "agent.attach returns a worktree-keyed id + boolean live",
+    agentLive.term_id.startsWith("agent:") &&
+      agentLive.term_id !== `agent:${b.run_id}` &&
+      agentLive.term_id === agentAgain.term_id &&
+      typeof agentLive.live === "boolean",
+    `term_id=${agentLive.term_id} live=${agentLive.live}`,
   );
   const agentMerged = await term.call("agent.attach", { id: run.run_id });
   check("agent.attach on a merged run succeeds with live:false", agentMerged.live === false, `live=${agentMerged.live}`);

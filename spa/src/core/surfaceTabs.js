@@ -116,7 +116,9 @@ export function mountUserTerminalPane(host, termId, { onExit }) {
  *  `{ project_id, worktree_id }`, `{ project_id }`). The WIRE id comes back from
  *  the attach — it is `agent:<worktree_id>`, a hash of the canonical root that
  *  no client can compute — and every keystroke, resize and detach after that
- *  uses it. `onLive(bool)` reports session liveness (for the quiet idle chip);
+ *  uses it. `onLive(bool, attachResult)` reports session liveness (the second
+ *  argument is the attach payload, so a caller can tell a dead-with-a-screen
+ *  agent from one that never ran);
  *  `onExit(reason)` reacts to closures. Input is allowed — a live PTY on the
  *  user's machine. */
 export function mountAgentPane(host, target, { onLive, onExit }) {
@@ -164,26 +166,76 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
  *  human→agent verb delivers a turn, never because a tab was opened.
  *
  *  Returns { dispose() } — tears down the client view only. */
-export function mountAgentTab(host, target, { idleLabel = "no active agent session" } = {}) {
-  host.innerHTML = `<div class="agentwrap"><div class="agent-idle" id="agentIdle" hidden></div><div class="termpane" id="agentpane"></div></div>`;
-  const chip = host.querySelector("#agentIdle");
-  const setIdle = (on) => {
-    if (!chip) return;
-    chip.textContent = on ? idleLabel : "";
-    chip.hidden = !on;
+export function mountAgentTab(
+  host,
+  target,
+  { idleLabel = "No agent is currently running", exitedLabel = "The agent exited", onStart } = {},
+) {
+  host.innerHTML = `<div class="agentwrap">
+    <div class="termpane" id="agentpane"></div>
+    <div class="agent-overlay" id="agentOverlay" hidden>
+      <p class="agent-overlay-msg" id="agentOverlayMsg"></p>
+      ${onStart ? `<button class="btn primary" id="agentStart"></button>` : ""}
+    </div>
+  </div>`;
+  const shade = host.querySelector("#agentOverlay");
+  const message = host.querySelector("#agentOverlayMsg");
+  const start = host.querySelector("#agentStart");
+
+  // Which silence this is. `exited` is the one with a screen behind it worth
+  // reading, so its overlay is laid OVER that screen instead of standing in a
+  // blank pane — and it asks to start the agent AGAIN, which is a different
+  // sentence from asking to start one at all.
+  let exited = false;
+  const show = (state, reason) => {
+    if (state === "live") {
+      shade.hidden = true;
+      return;
+    }
+    exited = state === "exited";
+    shade.hidden = false;
+    shade.classList.toggle("over-screen", exited);
+    message.textContent = reason || (exited ? exitedLabel : idleLabel);
+    if (start) {
+      start.disabled = false;
+      start.textContent = exited ? "Restart agent" : "Start agent";
+    }
   };
+
+  if (start) {
+    start.onclick = async () => {
+      start.disabled = true;
+      start.textContent = "Starting…";
+      try {
+        await onStart();
+        // The agent is up. Its first frame would clear this anyway (the pane is
+        // already attached to the screen it is born onto), but not waiting for a
+        // round trip is what makes the button feel like it did something.
+        shade.hidden = true;
+      } catch (e) {
+        // Standing offer, plus the reason — a start that failed silently would
+        // leave the human pressing a button that never explains itself. `show`
+        // restores the button's label and enables it, so this needs no cleanup
+        // of its own.
+        show(exited ? "exited" : "idle", (e && e.message) || "could not start the agent");
+      }
+    };
+  }
+
   let pane = null;
   let disposed = false;
   mountAgentPane(host.querySelector("#agentpane"), target, {
-    onLive: (live) => setIdle(!live),
+    // A retained screen with no live session is a harness that ran and stopped;
+    // an empty one never ran at all.
+    onLive: (live, attached) => show(live ? "live" : hasScreen(attached) ? "exited" : "idle"),
     onExit: (reason) => {
-      if (reason === "agent_session_ended") setIdle(true);
+      if (reason === "agent_session_ended") show("exited");
     },
   }).then(
     (p) => (disposed ? p.dispose() : (pane = p)),
     // An unresolvable address (a plan whose worktree is gone, a deleted run) is
-    // the empty state too — the chip alone, the surface intact.
-    () => setIdle(true),
+    // the empty state too — the offer stands, the surface is intact.
+    () => show("idle"),
   );
   return {
     dispose() {
@@ -191,6 +243,11 @@ export function mountAgentTab(host, target, { idleLabel = "no active agent sessi
       if (pane) pane.dispose();
     },
   };
+}
+
+/** Whether an attach came back with a screen the human can still read. */
+function hasScreen(attached) {
+  return !!(attached && attached.snapshot && attached.snapshot.length);
 }
 
 /**

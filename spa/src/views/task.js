@@ -126,7 +126,7 @@ export async function renderTask() {
     if (tabId === "agent") {
       // The run addresses its own agent; the bridge resolves that to the
       // worktree the run works in, which is where the agent actually lives.
-      aux = mountAgentTab(body, { id });
+      aux = mountAgentTab(body, { id }, { onStart: () => App.call("agent.start", { id }) });
       return;
     }
     if (tabId === "changes") {

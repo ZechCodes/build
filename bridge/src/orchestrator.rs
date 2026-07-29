@@ -513,7 +513,7 @@ pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
 /// a still-painting screen, which is the failure it exists to prevent.
 pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(6000);
 
-fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
+pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool

@@ -205,21 +205,16 @@ describe("mountAgentTab", () => {
     expect(NEW_TAB_KINDS.map((kind) => kind.id)).toEqual(["shell"]);
   });
 
-  it("mounts a pane without asking anything to start, and stays quiet when nothing is live", async () => {
+  it("mounts a pane without asking anything to start", async () => {
     agentAttachResult = { term_id: "agent:wt-8", live: false, snapshot: "", cursor: 0 };
-    const host = fakeHost();
-    mountAgentTab(host, { project_id: "p1", worktree_id: "wt-8" }, { idleLabel: "no agent has run here yet" });
+    mountAgentTab(fakeHost(), { project_id: "p1", worktree_id: "wt-8" }, { onStart: vi.fn() });
     await tick();
     expect(fakeManager.createTerminal).not.toHaveBeenCalled();
-    expect(host.chip.textContent).toBe("no agent has run here yet");
-    expect(host.chip.hidden).toBe(false);
   });
 
-  it("keeps the tab intact when the attach itself fails — the chip stands in", async () => {
-    fakeManager.attachAgent.mockRejectedValueOnce(new Error("unknown worktree_id"));
-    const host = fakeHost();
-    mountAgentTab(host, { project_id: "p1", worktree_id: "gone" });
-    await tick();
-    expect(host.chip.hidden).toBe(false);
-  });
+  // What the tab SAYS when nothing is live — and the difference between a
+  // worktree that never ran one and one whose agent exited — needs real
+  // elements to assert (a centered block with a button, not a text node), so it
+  // lives in agentEmptyState.test.js under jsdom rather than against this
+  // file's hand-rolled host.
 });

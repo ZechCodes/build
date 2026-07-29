@@ -1806,6 +1806,31 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
+    /// An entity's conversation, for a caller that needs to read it without
+    /// changing it — chiefly "is anything waiting for this agent".
+    fn entity_thread(&self, entity_id: &str) -> Result<&crate::thread::Thread, String> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return Ok(&plan.thread);
+        }
+        if let Some(run) = self.runs.get(entity_id) {
+            return Ok(&run.thread);
+        }
+        Err("unknown id".to_string())
+    }
+
+    /// The agent an entity dispatches with. A start with no turn behind it still
+    /// has to honor the provider/model the human chose for this worktree — the
+    /// sheet's answer, or the run's own — rather than silently defaulting.
+    fn entity_model_choice(&self, entity_id: &str) -> Result<ModelChoice, String> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return Ok(plan.model_choice.clone());
+        }
+        if let Some(run) = self.runs.get(entity_id) {
+            return Ok(run.model_choice.clone());
+        }
+        Err("unknown id".to_string())
+    }
+
     /// Kill, reap, and forget a worktree's agent, telling every attached client
     /// the tab is gone.
     ///
@@ -4639,11 +4664,12 @@ impl AppState {
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
     /// work — the review-surface write path. Resolves a plan OR a run (the
     /// `thread.revision` idiom), appends the body as an unread user message,
-    /// and nudges a live harness session in place through its PTY so the agent
-    /// calls `read_unread_messages`. Never ends or spawns a session and never
-    /// moves plan/run state — with no live session the message simply waits
-    /// for the next session's catch-up. Refused only where no conversation
-    /// remains to post to: a terminal or unknown entity.
+    /// and nudges the worktree's live agent in place through its PTY so it
+    /// calls `read_unread_messages` — whatever the entity is parked as, because
+    /// that agent is the one the human is looking at. Never ends or spawns a
+    /// session and never moves plan/run state — with no live agent the message
+    /// simply waits for the next session's catch-up. Refused only where no
+    /// conversation remains to post to: a terminal or unknown entity.
     fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         if let Some(active) = self.plans.get(&entity_id) {
@@ -4656,10 +4682,8 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            if matches!(active.plan.state, PlanState::Drafting) {
-                if let Some(worktree) = &active.worktree {
-                    nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
-                }
+            if let Some(worktree) = &active.worktree {
+                nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             persisted?;
@@ -4675,9 +4699,7 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            if matches!(active.run.state, RunState::Building) {
-                nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
-            }
+            nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
             return Ok(view);
@@ -6687,12 +6709,16 @@ fn parse_thread_post_input(
 /// Tell the worktree's agent, in place, that unread thread messages await.
 ///
 /// [`deliver`]'s warm branch without the cold half, and deliberately so:
-/// `thread.post` never starts a process. Only call it when the agent acting on
-/// the messages can actually be CONSUMED — a run that is `building`, a plan
-/// that is `drafting`. Waking an agent parked at a review gate produces work
-/// whose `done` the run machine does not accept; that report is recorded as
-/// out-of-phase rather than rejected as a failure, but it still moves nothing,
-/// so the post is left durable and the next turn's catch-up packet carries it.
+/// `thread.post` never starts a process. It notifies whatever agent is ALIVE in
+/// that worktree, whatever its entity is parked as.
+///
+/// This was once gated on `building`/`drafting`, from when the agent existed
+/// only while working: any other state meant no process to talk to. A worktree's
+/// agent now outlives every phase and is sitting in the Agent tab the human is
+/// typing into, so gating on entity state meant a message could be typed into a
+/// live conversation and silently not arrive. A `done` the run machine does not
+/// accept from that state is recorded as out-of-phase and moves nothing, which
+/// is a far smaller cost than a conversation that lies about itself.
 ///
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
@@ -6949,6 +6975,10 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         }
         "term.attach" => term_attach(state, &sender, &params),
         "agent.attach" => agent_attach(state, &sender, &params),
+        // Bypasses `dispatch` for the same reason `deliver` does: opening a
+        // harness blocks for seconds on its readiness wait, and every terminal
+        // pump needs the state lock free while it does.
+        "agent.start" => agent_start(state, &params),
         _ => {
             let dispatched = state.lock().unwrap().dispatch(&method, &params);
             // A verb speaks to a worktree's agent by queuing a turn: it runs
@@ -7111,6 +7141,88 @@ fn agent_attach(
         }));
     }
     Ok(attach_to_tab(s, &key, sender, cols, rows))
+}
+
+/// Open a worktree's agent with nothing to say to it — the surface's "Start
+/// agent" button, and the "Restart" the human needs when the harness exits on
+/// its own (codex running a self-update and quitting, claude crashing).
+///
+/// Every other way to get an agent is a turn: you say something and the agent
+/// is spawned to hear it. That leaves no way to simply have one running, and no
+/// way back after an exit short of inventing a message. This verb is that way,
+/// and it is the only spawn path with no prompt behind it.
+///
+/// It carries no turn, so it needs no queue: `ensure_agent_tab` is idempotent on
+/// a live tab (`Warm`, same process) and replaces a dead one (`Fresh`, screen
+/// carried), which is exactly start-vs-restart. The owner must be an entity that
+/// owns a worktree — `.build/mcp.json` routes `done` per owner, so an agent with
+/// nobody to report to is worse than none.
+fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+    // `run_id` is the adopting caller's spelling: a worktree surface with no run
+    // yet mints one and forwards the verb, and that helper names the id it just
+    // minted. Same entity either way.
+    let entity_id = params
+        .get("id")
+        .or_else(|| params.get("run_id"))
+        .or_else(|| params.get("plan_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or("missing id")?;
+    let (turn, waiting) = {
+        let s = state.lock().unwrap();
+        let thread = s.entity_thread(&entity_id)?;
+        (
+            PendingAgentTurn {
+                root: s.entity_worktree_root(&entity_id)?,
+                owner: entity_id.clone(),
+                model_choice: s.entity_model_choice(&entity_id)?,
+                // Only sent when something is actually waiting (below). A hand-
+                // started agent has no context, so it gets the cold form: the
+                // conversation protocol and the catch-up packet around the nudge.
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+                phase: "start",
+            },
+            thread.has_unread(),
+        )
+    };
+
+    // The button means "give me an agent", not "go do something" — so a start
+    // with nothing waiting says nothing, and the human drives from there.
+    // But the reviewer's words are durable on the thread and an agent only
+    // learns of them by being TOLD to call `read_unread_messages`; a fresh
+    // harness has no reason to. Restarting after a crash with messages
+    // outstanding would silently ignore every one of them.
+    let (term_id, spawned) = if waiting {
+        deliver(
+            state,
+            &turn.root,
+            &turn.owner,
+            &turn.model_choice,
+            &turn.cold,
+            &turn.warm,
+        )?
+    } else {
+        ensure_agent_tab(state, &turn.root, &turn.owner, &turn.model_choice)?
+    };
+
+    let mut s = state.lock().unwrap();
+    // A fresh process is a new session either way — the lineage must not depend
+    // on whether there happened to be mail.
+    if spawned == Spawned::Fresh {
+        s.record_agent_session_start(&turn);
+    }
+    s.touch_attention(&entity_id);
+    Ok(json!({
+        "term_id": term_id,
+        "live": true,
+        "spawned": match spawned {
+            Spawned::Fresh => "fresh",
+            Spawned::Warm => "warm",
+        },
+        "notified": waiting,
+    }))
 }
 
 /// Register `sender` on a tab's screen and describe what it should render.
@@ -13028,6 +13140,62 @@ mod tests {
 
     // ---- thread.post: the non-dispatching conversation write ---------------
 
+    /// Talking to the agent you are looking at must reach it, whatever the run
+    /// happens to be parked as.
+    ///
+    /// The nudge used to fire only while a run was `Building`, from the era when
+    /// the agent EXISTED only while building — every other state meant no
+    /// process to talk to. A worktree's agent now outlives every phase and sits
+    /// right there in the Agent tab at the review gate, so gating on run state
+    /// meant typing into a live conversation and having it silently not arrive.
+    #[tokio::test]
+    async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-at-the-gate".to_string();
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            &dir.path().join("side"),
+            &run_id,
+            RunState::Review,
+            warm_tui_spec(),
+        );
+        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
+        let mut output = state.tabs[&key].session.subscribe();
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "why did you drop the index?" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            posted["result"]["state"], "review",
+            "the gate does not move"
+        );
+        assert_eq!(
+            state.tabs[&key].session.pid(),
+            Some(pid_before),
+            "a post talks to the agent, it never replaces it"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut echoed = String::new();
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+            match output.try_recv() {
+                Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            echoed.contains("read_unread_messages"),
+            "the agent at the gate must hear the message: {echoed:?}"
+        );
+    }
+
     /// The review surface's whole point: a message lands in the run's thread
     /// as unread WITHOUT respawning the agent or moving the run's state, and
     /// the agent's catch-up tool then drains it.
@@ -13298,14 +13466,18 @@ mod tests {
         );
     }
 
-    /// A post at a review gate must NOT wake the agent. The agent outlives the
-    /// phase it was dispatched for — that is now the rule, not the exception —
-    /// so nudging it to "act on every unread message" produces work whose
-    /// `done` is an illegal transition from `review`: recorded as out of phase,
-    /// moving nothing. Post-only means the message waits for the gate's own
-    /// verb to carry it.
+    /// A post at a review gate reaches the agent, and still moves nothing.
+    ///
+    /// This used to assert the opposite — that a parked harness was left alone,
+    /// because waking it produced work whose `done` is an illegal transition
+    /// from `review`. That reasoning died twice over: an out-of-phase `done` is
+    /// now RECORDED rather than rejected, and the agent no longer parks at all —
+    /// it is live in the Agent tab the human is typing into. Withholding the
+    /// message made the conversation lie about itself, which is worse than a
+    /// report that moves nothing. What must still hold is everything else: no
+    /// respawn, no state change, and durability either way.
     #[test]
-    fn thread_post_at_a_review_gate_leaves_the_parked_harness_alone() {
+    fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = "run-parked".to_string();
@@ -13329,9 +13501,9 @@ mod tests {
         ));
         assert_eq!(posted["ok"], true, "{posted:?}");
 
-        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut echoed = String::new();
-        while std::time::Instant::now() < deadline {
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
             match output.try_recv() {
                 Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -13341,8 +13513,17 @@ mod tests {
             }
         }
         assert!(
-            !echoed.contains("read_unread_messages"),
-            "a parked harness must not be told to act: {echoed:?}"
+            echoed.contains("read_unread_messages"),
+            "the agent the human is looking at must hear them: {echoed:?}"
+        );
+        assert_eq!(
+            state.runs[&run_id].run.state,
+            RunState::Review,
+            "hearing a message is not a state transition"
+        );
+        assert!(
+            !state.tabs[&key].session.has_exited(),
+            "the agent is talked to, never replaced"
         );
         // Durable regardless: the next session's catch-up carries it.
         let unread = state
@@ -14505,6 +14686,199 @@ mod tests {
         }
         spawn_tab_pump(state, key.clone(), rx);
         (key, wire_id)
+    }
+
+    /// A run with a worktree but no agent tab — the state every worktree is in
+    /// before anyone speaks to it, and the one a surface's "Start agent" button
+    /// acts on. Returns the run's canonical root.
+    fn insert_run_without_agent(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        side_root: std::path::PathBuf,
+        run_id: &str,
+    ) -> std::path::PathBuf {
+        let store = crate::store::Store::new(side_root.join("store"));
+        let side = Orchestrator::new(
+            repo.to_path_buf(),
+            side_root.join("wt"),
+            Agent::Warm(HarnessSpec::new("true")),
+            Templates::default(),
+        );
+        let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
+        let (active, _turn) = side
+            .dispatch_run(
+                RunId::new(run_id),
+                RunSource {
+                    plan: &plan,
+                    has_active_run: false,
+                },
+                "main",
+                Default::default(),
+                &store,
+            )
+            .unwrap();
+        let root = AppState::canonical_root(&active.worktree.path);
+        let mut s = state.lock().unwrap();
+        let project_id = s.projects[0].id.clone();
+        s.entity_project.insert(run_id.to_string(), project_id);
+        s.runs.insert(run_id.to_string(), active);
+        root
+    }
+
+    /// `agent.start` is the surface's "Start agent" button: it opens the
+    /// worktree's one agent WITHOUT a turn to deliver. Attaching never spawns
+    /// (mounting a tab is a look), so before this verb the only way to get an
+    /// agent was to send it work — which is no help when the human just wants
+    /// the thing running, or wants it back after it exited.
+    #[tokio::test]
+    async fn agent_start_opens_the_worktrees_agent_and_is_idempotent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-start");
+        let key = TabKey::agent(&root);
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the worktree has no agent until someone asks for one"
+        );
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-start" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            started["result"]["spawned"], "fresh",
+            "the first start opens the agent"
+        );
+        assert_eq!(started["result"]["live"], true);
+        let wire_id = started["result"]["term_id"].as_str().unwrap().to_string();
+        assert!(
+            wire_id.starts_with("agent:"),
+            "an agent is addressed by its worktree: {wire_id}"
+        );
+        let pid = {
+            let s = state.lock().unwrap();
+            s.tabs
+                .get(&key)
+                .expect("the agent tab exists")
+                .session
+                .pid()
+        };
+
+        let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
+        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(
+            again["result"]["term_id"], wire_id,
+            "a second start addresses the same tab"
+        );
+        assert_eq!(
+            state.lock().unwrap().tabs.get(&key).unwrap().session.pid(),
+            pid,
+            "starting an agent that is already running must not spawn a second one"
+        );
+    }
+
+    /// The restart case the human actually hits: the harness exited (codex ran
+    /// its self-update and quit, claude crashed), the tab retains the dead
+    /// screen, and the button has to bring a NEW process back on the same tab.
+    #[tokio::test]
+    async fn agent_start_restarts_an_agent_that_exited() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-restart");
+        let key = TabKey::agent(&root);
+
+        let first = call(&handler, "agent.start", json!({ "id": "run-restart" }));
+        assert_eq!(first["ok"], true, "{first:?}");
+        let first_pid = {
+            let s = state.lock().unwrap();
+            s.tabs.get(&key).unwrap().session.pid()
+        };
+
+        // The harness dies the way a real one does, and the tab is RETAINED so
+        // the human can still read the last screen.
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s.tabs.get_mut(&key).unwrap();
+            tab.session.kill_and_reap();
+            tab.live = false;
+        }
+
+        let restarted = call(&handler, "agent.start", json!({ "id": "run-restart" }));
+        assert_eq!(restarted["ok"], true, "{restarted:?}");
+        assert_eq!(
+            restarted["result"]["spawned"], "fresh",
+            "a dead agent is replaced, not reported as running"
+        );
+        assert_eq!(restarted["result"]["live"], true);
+        let s = state.lock().unwrap();
+        let tab = s.tabs.get(&key).expect("the tab came back");
+        assert!(tab.live, "the restarted agent is live");
+        assert_ne!(
+            tab.session.pid(),
+            first_pid,
+            "restart means a NEW process, not the corpse reported as alive"
+        );
+    }
+
+    /// Starting an agent by hand must not strand what is already waiting for
+    /// it. The reviewer's words are durable on the thread, and the ONLY way an
+    /// agent learns of them is being told to call `read_unread_messages` — a
+    /// fresh harness has no reason to. Without this, pressing Restart after a
+    /// crash brings back an agent that silently ignores every message posted
+    /// while it was down.
+    #[tokio::test]
+    async fn agent_start_tells_a_fresh_agent_what_is_waiting_for_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-waiting");
+        {
+            let mut s = state.lock().unwrap();
+            let run = s.runs.get_mut("run-waiting").unwrap();
+            run.thread
+                .post_user("look at the migration", None, "2026-07-29T12:00:00Z");
+        }
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-waiting" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+        assert!(
+            screen.contains("read_unread_messages"),
+            "a started agent must be told to read what is waiting: {screen:?}"
+        );
+    }
+
+    /// The other half: a start with nothing waiting says NOTHING. The button
+    /// means "give me an agent", not "go do something" — the human drives it
+    /// from there. An unsolicited prompt would put a fresh agent to work nobody
+    /// asked it to do.
+    #[tokio::test]
+    async fn agent_start_says_nothing_when_nothing_is_waiting() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-quiet");
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-quiet" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        // Give a prompt every chance to appear before concluding none did.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let screen = agent_screen_text(&state, &root);
+        assert!(
+            !screen.contains("read_unread_messages"),
+            "an agent with nothing waiting must be left alone: {screen:?}"
+        );
+    }
+
+    /// An id that owns no worktree cannot have an agent started in it — the
+    /// MCP `done` route is scaffolded per owner, so there is nothing to own it.
+    #[tokio::test]
+    async fn agent_start_refuses_an_id_that_owns_no_worktree() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let _ = &state;
+        let refused = call(&handler, "agent.start", json!({ "id": "run-nowhere" }));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("unknown id"),
+            "{refused:?}"
+        );
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works

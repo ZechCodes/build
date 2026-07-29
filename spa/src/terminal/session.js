@@ -200,7 +200,10 @@ export class TerminalSocket {
     entry.onSnapshot(b64decodeBytes(r.snapshot));
     if (entry.kind === "agent") {
       entry.live = !!r.live;
-      entry.onLive(entry.live);
+      // The attach result rides along: a dead agent WITH a retained screen ran
+      // and stopped, a dead agent with a blank one never ran, and only the
+      // payload can tell those apart.
+      entry.onLive(entry.live, r);
     }
     entry.attached = true;
     for (const p of entry.preAttach.splice(0)) this._applyStreamFrame(entry, p);

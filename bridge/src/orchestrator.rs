@@ -1992,8 +1992,10 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Abandon a run from any non-terminal state: kill the harness, mark the run
-    /// `Abandoned`, and remove its worktree. Per the run entity's contract the
+    /// Abandon a run from any non-terminal state: mark the run `Abandoned` and
+    /// remove its worktree. The worktree's agent is NOT this call's to kill —
+    /// an agent belongs to the worktree, not to the run, so the caller closes
+    /// the agent tab (see `run_abandon`). Per the run entity's contract the
     /// BRANCH is kept — a run's work survives an abandon so it can be
     /// re-attempted — unlike the fused path, which pruned both. Cleanup is
     /// best-effort: a leftover worktree is logged, never a reason to fail the

@@ -1506,25 +1506,51 @@ impl AppState {
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
     fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
-        // Plan and run ids are disjoint, so the owner lookup is the router.
-        if self.plans.contains_key(&turn.owner) {
-            let Ok(mut active) = self.take_plan(&turn.owner) else {
+        self.edit_owner_thread("record_agent_session_start", &turn.owner, |thread| {
+            open_session_lineage(thread, turn)
+        });
+    }
+
+    /// The agent process an id owns has ended: close the conversation's session
+    /// lineage for it. The mirror of
+    /// [`record_agent_session_start`](Self::record_agent_session_start), and it
+    /// is the PUMP that calls it — the only place that learns a harness died on
+    /// its own. An owner that no longer exists (its record was deleted with the
+    /// tab) has no lineage left to close, which is why this is quiet.
+    fn record_agent_session_end(&mut self, owner: &str) {
+        self.edit_owner_thread("record_agent_session_end", owner, |thread| {
+            finish_open_session(thread, &now_rfc3339())
+        });
+    }
+
+    /// Apply `edit` to `owner`'s conversation and persist the result, whichever
+    /// kind of entity the id names. Plan and run ids are disjoint, so the owner
+    /// lookup is the router; an id that names neither is a no-op, because a
+    /// thread that no longer exists cannot be wrong.
+    fn edit_owner_thread(
+        &mut self,
+        context: &str,
+        owner: &str,
+        edit: impl FnOnce(&mut crate::thread::Thread),
+    ) {
+        if self.plans.contains_key(owner) {
+            let Ok(mut active) = self.take_plan(owner) else {
                 return;
             };
-            open_session_lineage(&mut active.thread, turn);
-            let (_, persisted) = self.finish_plan_mutation(turn.owner.clone(), active);
+            edit(&mut active.thread);
+            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
-                eprintln!("record_agent_session_start {}: {error}", turn.owner);
+                eprintln!("{context} {owner}: {error}");
             }
             return;
         }
-        let Ok(mut active) = self.take_run(&turn.owner) else {
+        let Ok(mut active) = self.take_run(owner) else {
             return;
         };
-        open_session_lineage(&mut active.thread, turn);
-        let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
+        edit(&mut active.thread);
+        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
-            eprintln!("record_agent_session_start {}: {error}", turn.owner);
+            eprintln!("{context} {owner}: {error}");
         }
     }
 
@@ -4751,6 +4777,16 @@ impl AppState {
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_run(&mut active).map_err(err));
         if result.is_ok() {
+            // The worktree removal inside `abandon_run` is best-effort, so the
+            // orphan reaper — which only sweeps tabs whose root is GONE —
+            // cannot be trusted to take the agent with it. A human who
+            // abandoned a run must not keep paying for the agent that was
+            // working on it, so the kill is explicit, the way release and
+            // delete kill theirs.
+            self.close_agent_tab(&active.worktree.path);
+            // The run is out of the map, so its lineage closes on the thread
+            // this call holds rather than through the owner lookup.
+            finish_open_session(&mut active.thread, &now_rfc3339());
             active.thread.push_event(
                 crate::thread::ThreadEventKind::Abandoned,
                 Some("Run abandoned".to_string()),
@@ -6130,21 +6166,33 @@ fn append_stage_comments_to_thread(
     }
 }
 
+/// Close the conversation's open session, if one is open. Nothing to close is
+/// the normal case for a thread whose agent never started, so it is silence,
+/// not an error.
+///
+/// The mirror of [`open_session_lineage`], and the ONLY way a session ends: a
+/// session is the life of an agent PROCESS, so it closes when that process
+/// does (the tab pump's EOF) or when Build kills it — never when the agent
+/// merely finishes a turn.
+fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
+    let Some(session_id) = thread
+        .sessions
+        .iter()
+        .rev()
+        .find(|session| session.ended_at.is_none())
+        .map(|session| session.id.clone())
+    else {
+        return;
+    };
+    thread.finish_session(&session_id, now);
+}
+
 fn record_report_in_thread(
     thread: &mut crate::thread::Thread,
     report: &DoneReport,
     orchestration_error: Option<&str>,
 ) {
     let now = now_rfc3339();
-    if let Some(session_id) = thread
-        .sessions
-        .iter()
-        .rev()
-        .find(|session| session.ended_at.is_none())
-        .map(|session| session.id.clone())
-    {
-        thread.finish_session(&session_id, &now);
-    }
     let (event, summary) = match orchestration_error {
         Some(error) => (
             crate::thread::ThreadEventKind::RunFailed,
@@ -6185,17 +6233,12 @@ fn record_report_in_thread(
     }
 }
 
+/// An entity went quiet (or its agent exited) without reporting: record the
+/// reason. The session lineage is deliberately left alone — a quiet agent is
+/// still an agent, and one that exited has already had its session closed by
+/// the pump that saw the EOF.
 fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit_code: Option<i32>) {
     let now = now_rfc3339();
-    if let Some(session_id) = thread
-        .sessions
-        .iter()
-        .rev()
-        .find(|session| session.ended_at.is_none())
-        .map(|session| session.id.clone())
-    {
-        thread.finish_session(&session_id, &now);
-    }
     let (event, summary) = match exit_code {
         Some(code) => (
             crate::thread::ThreadEventKind::RunFailed,
@@ -6790,13 +6833,20 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     Err(broadcast::error::RecvError::Closed) => {
                         let mut s = state.lock().unwrap();
                         let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        match tab.role {
-                            TabRole::Agent { .. } => {
+                        let ended_owner = match &tab.role {
+                            TabRole::Agent { owner, .. } => Some(owner.clone()),
+                            TabRole::Shell => None,
+                        };
+                        match ended_owner {
+                            Some(owner) => {
                                 tab.live = false;
                                 tab.screen.flush(&term_id);
                                 tab.screen.push_closed(&term_id, "agent_session_ended");
+                                // The process is what a session IS, so this is
+                                // where the conversation's lineage closes.
+                                s.record_agent_session_end(&owner);
                             }
-                            TabRole::Shell => {
+                            None => {
                                 let Some(tab) = s.tabs.remove(&key) else { return; };
                                 tab.session.kill_and_reap();
                                 tab.screen.push_closed(&term_id, "exited");
@@ -7884,6 +7934,132 @@ mod tests {
             "a warm tab hears the nudge: {warm_screen:?}"
         );
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    }
+
+    /// The conversation's open session for `owner`, if it has one.
+    fn open_session_count(state: &Arc<Mutex<AppState>>, owner: &str) -> usize {
+        state.lock().unwrap().runs[owner]
+            .thread
+            .sessions
+            .iter()
+            .filter(|session| session.ended_at.is_none())
+            .count()
+    }
+
+    /// A session belongs to the agent PROCESS, not to a phase. `done` is the
+    /// agent finishing a turn at its prompt — it is still there, still in the
+    /// same session — so the thread must not record a session end, and the warm
+    /// turn that follows must not read back as a turn taken outside any
+    /// session.
+    #[tokio::test]
+    async fn done_then_a_warm_turn_stays_in_one_open_session() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-lineage");
+        state.lock().unwrap().runs.insert(
+            "run-lineage".into(),
+            crate::orchestrator::ActiveRun::reattach(
+                &fake_run_record("run-lineage"),
+                ".build/plan.md".into(),
+            ),
+        );
+        let queue_turn = || {
+            state
+                .lock()
+                .unwrap()
+                .pending_agent_turns
+                .push(PendingAgentTurn {
+                    root: AppState::canonical_root(&root),
+                    owner: "run-lineage".into(),
+                    model_choice: ModelChoice::default(),
+                    cold: "COLD-TURN".into(),
+                    warm: "WARM-TURN".into(),
+                    phase: "build",
+                });
+        };
+
+        queue_turn();
+        deliver_pending_agent_turns(&state);
+        assert_eq!(
+            open_session_count(&state, "run-lineage"),
+            1,
+            "a cold delivery opens the session"
+        );
+
+        state.lock().unwrap().on_agent_done(
+            "run-lineage",
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "built".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        queue_turn();
+        deliver_pending_agent_turns(&state);
+
+        let s = state.lock().unwrap();
+        let thread = &s.runs["run-lineage"].thread;
+        assert_eq!(
+            thread.sessions.len(),
+            1,
+            "a warm turn continues the one session: {:?}",
+            thread.sessions
+        );
+        assert!(
+            thread.sessions[0].ended_at.is_none(),
+            "the agent is still at its prompt: {:?}",
+            thread.sessions
+        );
+        assert!(
+            !thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::SessionEnded
+            )),
+            "no session ended, so the thread must not say one did: {:?}",
+            thread.items
+        );
+    }
+
+    /// A session ends where it really ends: when the agent's process does. The
+    /// pump's EOF is the only place that knows, so that is where the thread
+    /// learns it — otherwise a run whose agent died reads back as forever in
+    /// session.
+    #[tokio::test]
+    async fn the_session_closes_when_the_agent_process_exits() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let (tab_key, _wire_id) =
+            insert_live_run(&state, &repo, dir.path().join("side"), "run-eof");
+        state
+            .lock()
+            .unwrap()
+            .record_agent_session_start(&PendingAgentTurn {
+                root: tab_key.root.clone(),
+                owner: "run-eof".into(),
+                model_choice: ModelChoice::default(),
+                cold: String::new(),
+                warm: String::new(),
+                phase: "build",
+            });
+        assert_eq!(open_session_count(&state, "run-eof"), 1);
+
+        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while open_session_count(&state, "run-eof") > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the agent's process ended and the session never closed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.runs["run-eof"].thread.sessions.len(),
+            1,
+            "the dead session is closed, not replaced"
+        );
     }
 
     /// Point a QA state's only project at a different agent — the seam every
@@ -12442,6 +12618,76 @@ mod tests {
         assert_eq!(unread["messages"][0]["body"], "a note for later");
     }
 
+    /// Abandon must leave no agent behind. Worktree removal is best-effort by
+    /// contract — a leftover worktree is logged, never a reason to fail the
+    /// abandon — so when it fails the worktree stays on disk and the orphan
+    /// reaper (which only sweeps tabs whose root is GONE) never fires. The kill
+    /// has to be the abandon's own, or the human is left paying for an agent
+    /// working on something they abandoned.
+    #[test]
+    fn abandon_closes_the_agent_even_when_the_worktree_survives() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "abandon me");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        let root = AppState::canonical_root(&worktree);
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &HarnessSpec::new("cat"),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        let agent_pid = tab.session.pid().expect("the agent has a pid");
+        state.tabs.insert(TabKey::agent(&root), tab);
+        state.runs.get_mut(&run_id).unwrap().thread.start_session(
+            "claude",
+            None,
+            None,
+            "build",
+            &now_rfc3339(),
+        );
+
+        // Cleanup will fail before it touches the worktree: the orchestrator's
+        // repo is not a repo, so `remove` errors on the very first step and the
+        // worktree survives the abandon.
+        state.projects[0].orch = Orchestrator::new(
+            dir.path().join("not-a-repo"),
+            dir.path().join("wt"),
+            Agent::Warm(HarnessSpec::new("true")),
+            Templates::default(),
+        );
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(
+            worktree.exists(),
+            "this test is only meaningful while the failed cleanup leaves the worktree behind"
+        );
+        assert!(
+            !state.tabs.contains_key(&TabKey::agent(&root)),
+            "an abandoned run's agent is gone from the registry"
+        );
+        assert!(
+            process_reaped(agent_pid),
+            "an abandoned run's agent process is killed and reaped"
+        );
+        let session = state.runs[&run_id]
+            .thread
+            .sessions
+            .last()
+            .expect("the run had a session");
+        assert!(
+            session.ended_at.is_some(),
+            "abandon ends the session it just killed: {session:?}"
+        );
+    }
+
     /// Only entities with no meaningful conversation left refuse a post:
     /// terminal states and unknown ids.
     #[test]
@@ -12743,6 +12989,50 @@ mod tests {
             state.mark_idle_tasks(Duration::from_millis(50)),
             vec!["run-quiet".to_string()],
             "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
+    /// A quiet agent is still an agent. The idle sweep records WHY an entity
+    /// went quiet, and that record must not also claim the session ended: the
+    /// process is sitting at its prompt, and the next turn continues the very
+    /// session the thread would have closed.
+    #[test]
+    fn an_idle_demotion_leaves_the_live_agents_session_open() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-still-there",
+            RunState::Building,
+            warm_tui_spec(),
+        );
+        state
+            .runs
+            .get_mut("run-still-there")
+            .unwrap()
+            .thread
+            .start_session("claude", None, None, "build", &now_rfc3339());
+        // Long enough that the PTY has been silent past the threshold below.
+        std::thread::sleep(Duration::from_millis(200));
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(1));
+
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_millis(50)),
+            vec!["run-still-there".to_string()],
+            "the quiet agent's entity is demoted"
+        );
+        assert!(
+            !state.tabs[&key].session.has_exited(),
+            "this test is only meaningful while the agent is still alive"
+        );
+        let thread = &state.runs["run-still-there"].thread;
+        assert!(
+            thread.sessions.last().unwrap().ended_at.is_none(),
+            "a quiet agent is still in its session: {:?}",
+            thread.sessions
         );
     }
 

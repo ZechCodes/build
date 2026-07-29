@@ -982,6 +982,17 @@ pub struct AppState {
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
     /// the queue for the test to inspect instead.
+    ///
+    /// DELIBERATE DIVERGENCE — do not "fix" this back into an inline `deliver`
+    /// at each verb. A verb runs holding this lock; a delivery spawns a harness
+    /// and waits seconds on its readiness, and every terminal pump needs the
+    /// same lock to make progress, so delivering inline deadlocks the daemon
+    /// for as long as the spawn takes. The split is the contract: under the
+    /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and the drain
+    /// sites — [`dispatch_frame`] and the done-socket — SAY it with the lock
+    /// free. Everything that has to look agentless-versus-in-flight
+    /// ([`AppState::agent_turns_in_flight`], the idle sweep) exists to cover
+    /// the gap this split opens; none of it is optional.
     pending_agent_turns: Vec<PendingAgentTurn>,
     /// Owners whose turn has left [`AppState::pending_agent_turns`] and is
     /// being delivered right now, counted because one drain can carry several
@@ -7586,6 +7597,99 @@ mod tests {
         );
     }
 
+    /// One directory, two spellings, ONE tab registry.
+    ///
+    /// The same worktree reaches the daemon under literally different paths: a
+    /// run's is `worktrees_root/<name>` while the scanner canonicalizes, and on
+    /// macOS `/tmp` IS `/private/tmp`. Every scope funnels through the canonical
+    /// form for exactly this reason — keyed by the spelling it was asked with, a
+    /// shell opened through one path is invisible through the other while its
+    /// process keeps running, which is the orphan tab this design dissolves.
+    #[tokio::test]
+    async fn a_worktree_spelled_two_ways_holds_one_set_of_tabs() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let canonical_root = {
+            let mut s = state.lock().unwrap();
+            let root = insert_run(
+                &mut s,
+                &repo,
+                dir.path(),
+                "run-canonical",
+                RunState::Building,
+            );
+            insert_run(&mut s, &repo, dir.path(), "run-aliased", RunState::Building);
+            // The second run addresses that SAME directory under another name.
+            let alias = dir.path().join("alias-to-worktree");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            s.runs.get_mut("run-aliased").unwrap().worktree.path = alias;
+            root
+        };
+
+        let created = call(&handler, "term.create", json!({ "run_id": "run-aliased" }));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+
+        // Asked about through the OTHER spelling, the same directory holds the
+        // same shell.
+        let listed = call(&handler, "term.list", json!({ "run_id": "run-canonical" }));
+        let listed_ids: Vec<&str> = listed["result"]["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["term_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            listed_ids,
+            vec![term_id.as_str()],
+            "both spellings name one worktree, so both see its shell: {listed:?}"
+        );
+
+        let s = state.lock().unwrap();
+        let keys: Vec<&TabKey> = s.tabs.keys().collect();
+        assert!(
+            keys.iter().all(|key| key.root == canonical_root),
+            "every tab is keyed by the canonical root ({canonical_root:?}): {keys:?}"
+        );
+    }
+
+    /// A worktree's tab row is its own. The registry is one map over every
+    /// worktree the daemon holds, so the only thing keeping one directory's
+    /// shells out of another's row is the filter on the resolved root.
+    #[tokio::test]
+    async fn term_list_shows_only_the_shells_of_the_worktree_asked_about() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        {
+            let mut s = state.lock().unwrap();
+            insert_run(&mut s, &repo, dir.path(), "run-here", RunState::Building);
+            insert_run(&mut s, &repo, dir.path(), "run-there", RunState::Building);
+        }
+        let shell_in = |run_id: &str| {
+            let created = call(&handler, "term.create", json!({ "run_id": run_id }));
+            assert_eq!(created["ok"], true, "{created:?}");
+            created["result"]["term_id"].as_str().unwrap().to_string()
+        };
+        let here = shell_in("run-here");
+        let there = shell_in("run-there");
+        assert_ne!(here, there, "two worktrees, two shells");
+
+        for (run_id, own, other) in [("run-here", &here, &there), ("run-there", &there, &here)] {
+            let listed = call(&handler, "term.list", json!({ "run_id": run_id }));
+            let ids: Vec<&str> = listed["result"]["terminals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["term_id"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                ids,
+                vec![own.as_str()],
+                "{run_id} must show its own shell and not {other}: {listed:?}"
+            );
+        }
+    }
+
     /// One attach verb over one id space. A client holds a row of tabs — some
     /// shells, one agent — and must not need to know which RPC each one
     /// answers to; the id says everything.
@@ -7621,6 +7725,34 @@ mod tests {
         );
         assert_eq!(stale["ok"], false, "{stale:?}");
         assert_eq!(stale["error"], "unknown term_id");
+    }
+
+    /// The agent tab is not one of the human's tabs to close.
+    ///
+    /// `term.close` serves one id space, so the agent's wire id resolves there
+    /// like any other — and closing it would kill the one PTY every human→agent
+    /// path lands in, from a surface that renders it as a `×`-less fixture. The
+    /// refusal is what makes "always reachable" survive a stale or hand-rolled
+    /// client; the tab's life belongs to the worktree.
+    #[tokio::test]
+    async fn term_close_refuses_the_agent_tab() {
+        let (dir, repo) = init_repo();
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-unclosable");
+        let (agent_wire_id, _) =
+            ensure_agent_tab(&state, &root, "run-unclosable", &ModelChoice::default()).unwrap();
+
+        let refused = handler(
+            SessionSender::detached("s1"),
+            req("term.close", json!({ "term_id": agent_wire_id })),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(refused["error"], "cannot close an agent terminal");
+
+        let s = state.lock().unwrap();
+        let key = TabKey::agent(&AppState::canonical_root(&root));
+        let tab = s.tabs.get(&key).expect("the agent tab is still registered");
+        assert!(tab.live, "and its session was never killed");
+        assert!(!tab.session.has_exited());
     }
 
     /// A user terminal is the user's own login shell and nothing else. The
@@ -12992,6 +13124,87 @@ mod tests {
         );
     }
 
+    /// Wait until a tab's PTY has been silent for `quiet` — the harness has
+    /// finished echoing whatever it was just handed. A test that then backdates
+    /// the stamp is not racing the reader thread for the last word on when this
+    /// terminal painted.
+    async fn wait_for_pty_quiet(state: &Arc<Mutex<AppState>>, key: &TabKey, quiet: Duration) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let idle = state.lock().unwrap().tabs[key].session.idle_for();
+            if idle >= quiet {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the agent's PTY never settled"
+            );
+            tokio::time::sleep(quiet - idle).await;
+        }
+    }
+
+    /// And the clock the rule reads is started by DELIVERY itself.
+    ///
+    /// Nothing else can start it: the agent tab outlives every phase, so the
+    /// only moment that means "you now owe an answer" is the moment Build
+    /// submitted a turn. If a delivery left the stamp alone, an agent handed a
+    /// long job would be demoted the first time it thought quietly for longer
+    /// than the threshold — silence read as an anomaly when it is the work.
+    #[tokio::test]
+    async fn delivering_a_turn_starts_the_quiescence_clock() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let root = {
+            let mut s = state.lock().unwrap();
+            insert_run(
+                &mut s,
+                &repo,
+                dir.path(),
+                "run-spoken-to",
+                RunState::Building,
+            )
+        };
+
+        let (_, spawned) = deliver(
+            &state,
+            &root,
+            "run-spoken-to",
+            &ModelChoice::default(),
+            "get to work",
+            "there is more",
+        )
+        .expect("the turn reaches an agent");
+        assert_eq!(spawned, Spawned::Fresh, "the tab did not exist yet");
+
+        let key = TabKey::agent(&root);
+        // The tty echoes a written prompt back through the reader thread, so
+        // wait for the PTY to go quiet before speaking about its silence.
+        wait_for_pty_quiet(&state, &key, Duration::from_millis(200)).await;
+
+        let mut s = state.lock().unwrap();
+        // It has painted nothing since — it is chewing on what it was asked.
+        s.tabs
+            .get_mut(&key)
+            .unwrap()
+            .session
+            .backdate_last_output(Duration::from_secs(600));
+        assert!(
+            s.mark_idle_tasks(Duration::from_secs(60)).is_empty(),
+            "an agent Build has just spoken to is working, however quiet it is"
+        );
+        assert_eq!(s.runs["run-spoken-to"].run.state, RunState::Building);
+
+        // Control: the run was demotable all along — it is the turn's stamp,
+        // and only that, holding it up.
+        s.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(600));
+        assert_eq!(
+            s.mark_idle_tasks(Duration::from_secs(60)),
+            vec!["run-spoken-to".to_string()],
+            "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
     /// A quiet agent is still an agent. The idle sweep records WHY an entity
     /// went quiet, and that record must not also claim the session ended: the
     /// process is sitting at its prompt, and the next turn continues the very
@@ -14469,13 +14682,37 @@ mod tests {
             "a freshly spawned agent has just painted"
         );
 
-        // Left at its prompt overnight: alive, not working.
+        // A dead agent's retained screen is not a heartbeat: the tab still holds
+        // the last thing it painted, and that is a corpse, not progress.
         let dead = {
             let agent = s.tabs.get_mut(&key).unwrap();
             agent.live = false;
-            agent_is_working(agent)
+            let dead = agent_is_working(agent);
+            agent.live = true; // restore: the next case is about a LIVE agent
+            dead
         };
         assert!(!dead, "a dead agent's retained screen is not a heartbeat");
+
+        // Left at its prompt overnight: the tab is live, the process is running,
+        // and it has painted nothing since the window closed. That agent is
+        // waiting for YOU — a pulse here teaches the human to ignore the pulse.
+        let parked = {
+            let agent = s.tabs.get_mut(&key).unwrap();
+            assert!(
+                agent_is_working(agent),
+                "still working right up until it falls silent"
+            );
+            agent
+                .session
+                .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+            assert!(agent.live, "the tab is live");
+            assert!(!agent.session.has_exited(), "and its process still running");
+            agent_is_working(agent)
+        };
+        assert!(
+            !parked,
+            "an agent parked at its prompt is waiting for you, not working"
+        );
 
         // The human's own shell is never an agent, however busy it looks.
         let shell_root = AppState::canonical_root(&repo);

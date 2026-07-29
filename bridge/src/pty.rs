@@ -370,6 +370,19 @@ impl PtySession {
         Instant::now().saturating_duration_since(*self.last_activity.lock().unwrap())
     }
 
+    /// Test-only: age the last-output stamp by `ago`, so a live PTY reports the
+    /// silence of one that has been sitting at its prompt for that long.
+    ///
+    /// The windows this feeds (an agent counts as working for 30 s after it
+    /// paints; quiescence demotes after minutes) are far longer than any test
+    /// may sleep, and the alternative — a real wait — would make the suite
+    /// unrunnable. The process stays genuinely alive; only the clock moves.
+    #[cfg(test)]
+    pub fn backdate_last_output(&self, ago: Duration) {
+        let mut last = self.last_activity.lock().unwrap();
+        *last = last.checked_sub(ago).expect("a stamp old enough to age");
+    }
+
     /// Resolve once the PTY has been silent for at least `threshold` — the
     /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
     pub async fn wait_quiescent(&self, threshold: Duration) {

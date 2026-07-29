@@ -4385,11 +4385,12 @@ impl AppState {
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
     /// work — the review-surface write path. Resolves a plan OR a run (the
     /// `thread.revision` idiom), appends the body as an unread user message,
-    /// and nudges a live harness session in place through its PTY so the agent
-    /// calls `read_unread_messages`. Never ends or spawns a session and never
-    /// moves plan/run state — with no live session the message simply waits
-    /// for the next session's catch-up. Refused only where no conversation
-    /// remains to post to: a terminal or unknown entity.
+    /// and nudges the worktree's live agent in place through its PTY so it
+    /// calls `read_unread_messages` — whatever the entity is parked as, because
+    /// that agent is the one the human is looking at. Never ends or spawns a
+    /// session and never moves plan/run state — with no live agent the message
+    /// simply waits for the next session's catch-up. Refused only where no
+    /// conversation remains to post to: a terminal or unknown entity.
     fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         if let Some(active) = self.plans.get(&entity_id) {
@@ -4402,10 +4403,8 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            if matches!(active.plan.state, PlanState::Drafting) {
-                if let Some(worktree) = &active.worktree {
-                    nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
-                }
+            if let Some(worktree) = &active.worktree {
+                nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             persisted?;
@@ -4421,9 +4420,7 @@ impl AppState {
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            if matches!(active.run.state, RunState::Building) {
-                nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
-            }
+            nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
             return Ok(view);
@@ -6119,12 +6116,16 @@ fn parse_thread_post_input(
 /// Tell the worktree's agent, in place, that unread thread messages await.
 ///
 /// [`deliver`]'s warm branch without the cold half, and deliberately so:
-/// `thread.post` never starts a process. Only call it when the agent acting on
-/// the messages can actually be CONSUMED — a run that is `building`, a plan
-/// that is `drafting`. Waking an agent parked at a review gate produces work
-/// whose `done` the run machine does not accept; that report is recorded as
-/// out-of-phase rather than rejected as a failure, but it still moves nothing,
-/// so the post is left durable and the next turn's catch-up packet carries it.
+/// `thread.post` never starts a process. It notifies whatever agent is ALIVE in
+/// that worktree, whatever its entity is parked as.
+///
+/// This was once gated on `building`/`drafting`, from when the agent existed
+/// only while working: any other state meant no process to talk to. A worktree's
+/// agent now outlives every phase and is sitting in the Agent tab the human is
+/// typing into, so gating on entity state meant a message could be typed into a
+/// live conversation and silently not arrive. A `done` the run machine does not
+/// accept from that state is recorded as out-of-phase and moves nothing, which
+/// is a far smaller cost than a conversation that lies about itself.
 ///
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
@@ -12549,6 +12550,62 @@ mod tests {
 
     // ---- thread.post: the non-dispatching conversation write ---------------
 
+    /// Talking to the agent you are looking at must reach it, whatever the run
+    /// happens to be parked as.
+    ///
+    /// The nudge used to fire only while a run was `Building`, from the era when
+    /// the agent EXISTED only while building — every other state meant no
+    /// process to talk to. A worktree's agent now outlives every phase and sits
+    /// right there in the Agent tab at the review gate, so gating on run state
+    /// meant typing into a live conversation and having it silently not arrive.
+    #[tokio::test]
+    async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-at-the-gate".to_string();
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            &dir.path().join("side"),
+            &run_id,
+            RunState::Review,
+            warm_tui_spec(),
+        );
+        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
+        let mut output = state.tabs[&key].session.subscribe();
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "why did you drop the index?" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            posted["result"]["state"], "review",
+            "the gate does not move"
+        );
+        assert_eq!(
+            state.tabs[&key].session.pid(),
+            Some(pid_before),
+            "a post talks to the agent, it never replaces it"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut echoed = String::new();
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+            match output.try_recv() {
+                Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            echoed.contains("read_unread_messages"),
+            "the agent at the gate must hear the message: {echoed:?}"
+        );
+    }
+
     /// The review surface's whole point: a message lands in the run's thread
     /// as unread WITHOUT respawning the agent or moving the run's state, and
     /// the agent's catch-up tool then drains it.
@@ -12819,14 +12876,18 @@ mod tests {
         );
     }
 
-    /// A post at a review gate must NOT wake the agent. The agent outlives the
-    /// phase it was dispatched for — that is now the rule, not the exception —
-    /// so nudging it to "act on every unread message" produces work whose
-    /// `done` is an illegal transition from `review`: recorded as out of phase,
-    /// moving nothing. Post-only means the message waits for the gate's own
-    /// verb to carry it.
+    /// A post at a review gate reaches the agent, and still moves nothing.
+    ///
+    /// This used to assert the opposite — that a parked harness was left alone,
+    /// because waking it produced work whose `done` is an illegal transition
+    /// from `review`. That reasoning died twice over: an out-of-phase `done` is
+    /// now RECORDED rather than rejected, and the agent no longer parks at all —
+    /// it is live in the Agent tab the human is typing into. Withholding the
+    /// message made the conversation lie about itself, which is worse than a
+    /// report that moves nothing. What must still hold is everything else: no
+    /// respawn, no state change, and durability either way.
     #[test]
-    fn thread_post_at_a_review_gate_leaves_the_parked_harness_alone() {
+    fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = "run-parked".to_string();
@@ -12850,9 +12911,9 @@ mod tests {
         ));
         assert_eq!(posted["ok"], true, "{posted:?}");
 
-        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut echoed = String::new();
-        while std::time::Instant::now() < deadline {
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
             match output.try_recv() {
                 Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
@@ -12862,8 +12923,17 @@ mod tests {
             }
         }
         assert!(
-            !echoed.contains("read_unread_messages"),
-            "a parked harness must not be told to act: {echoed:?}"
+            echoed.contains("read_unread_messages"),
+            "the agent the human is looking at must hear them: {echoed:?}"
+        );
+        assert_eq!(
+            state.runs[&run_id].run.state,
+            RunState::Review,
+            "hearing a message is not a state transition"
+        );
+        assert!(
+            !state.tabs[&key].session.has_exited(),
+            "the agent is talked to, never replaced"
         );
         // Durable regardless: the next session's catch-up carries it.
         let unread = state

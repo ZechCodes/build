@@ -9,6 +9,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A deploy you can re-run by hand. The path filter below scopes a PUSH to the
+  # tiers that push touched — correct, until a deploy fails for a reason outside
+  # the diff (a red check, a registry blip) and the fix lands in a commit that
+  # touches neither tier. Then main is ahead of production with nothing left to
+  # trigger a rollout. A dispatch takes the `files="ALL"` branch, so it rebuilds
+  # and rolls both tiers at whatever main currently is.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -171,7 +178,8 @@ jobs:
     needs: [changes, bridge, interop, web-e2e, secrets]
     if: >-
       ${{ !cancelled()
-          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
           && needs.bridge.result != 'failure'
           && needs.interop.result != 'failure'
@@ -210,7 +218,8 @@ jobs:
     needs: [changes, bridge, interop, web-e2e, secrets]
     if: >-
       ${{ !cancelled()
-          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
           && needs.changes.outputs.relay == 'true'
           && needs.bridge.result == 'success'
           && needs.interop.result == 'success'
@@ -246,7 +255,8 @@ jobs:
     needs: [changes, build-app, build-relay]
     if: >-
       ${{ !cancelled()
-          && github.event_name == 'push' && github.ref == 'refs/heads/main'
+          && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
           && (needs.changes.outputs.app == 'true' || needs.changes.outputs.relay == 'true')
           && needs['build-app'].result != 'failure' && needs['build-app'].result != 'cancelled'
           && needs['build-relay'].result != 'failure' && needs['build-relay'].result != 'cancelled' }}

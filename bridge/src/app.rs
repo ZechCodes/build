@@ -10959,6 +10959,307 @@ mod tests {
         );
     }
 
+    /// A multi-stage run parked at its stage gate after a REAL first-stage build
+    /// and validation verdict — the shape `run.stage_fix` and run-all act on,
+    /// reached without the scripted agent playing both sides of the stage.
+    /// Returns `(run_id, worktree root)`.
+    fn run_at_the_stage_gate_after_a_real_first_stage(
+        state: &mut AppState,
+        goal: &str,
+        first_stage_passed: bool,
+    ) -> (String, std::path::PathBuf) {
+        let (run_id, root) = run_awaiting_a_real_stage_build(state, goal);
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "the first stage is built".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Validate,
+                status: DoneStatus::Completed,
+                summary: "the first stage is validated".into(),
+                outputs: DoneOutputs {
+                    validation: Some(ValidationReport {
+                        passed: first_stage_passed,
+                        findings: if first_stage_passed {
+                            String::new()
+                        } else {
+                            "- the migration is missing".into()
+                        },
+                        notes_for_next_stage: String::new(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+        assert_eq!(
+            state.runs[&run_id].run.state,
+            RunState::StageGate,
+            "a verdict on a non-final stage parks the run at the gate"
+        );
+        (run_id, root)
+    }
+
+    /// Fixing a failed stage is a turn, not a new process. `run.stage_fix` moves
+    /// the stage back to `Building` — and unless the fix prompt is QUEUED for the
+    /// worktree's one agent, the run sits in `Building` forever with nobody ever
+    /// told to fix anything. Moving the state is not dispatching the work.
+    #[test]
+    fn fixing_a_failed_stage_queues_its_fix_prompt_for_the_worktrees_one_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, root) =
+            run_at_the_stage_gate_after_a_real_first_stage(&mut state, "fix the stage", false);
+        assert_eq!(
+            state.runs[&run_id].stages[0].state,
+            StageProgressState::Validated { passed: false },
+            "the fix verb only applies to a stage whose validation failed"
+        );
+        state.pending_agent_turns.clear();
+
+        let fixed = state.handle(req(
+            "run.stage_fix",
+            json!({
+                "run_id": run_id,
+                "stage_id": "first-half",
+                "note": "add the migration",
+            }),
+        ));
+        assert_eq!(fixed["ok"], true, "{fixed:?}");
+        assert_eq!(
+            state.runs[&run_id].stages[0].state,
+            StageProgressState::Building,
+            "the stage went back to work"
+        );
+        assert!(
+            state.tabs.is_empty(),
+            "a verb queues a turn; only delivery — off the state lock — spawns"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a stage fix is a turn for the worktree's agent");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(
+            queued.root, root,
+            "the stage is fixed in the worktree it was built in"
+        );
+        assert_eq!(queued.phase, "build");
+        assert!(
+            queued.warm.contains("add the migration")
+                && queued.warm.contains("the migration is missing"),
+            "the reviewer's note and the failed findings both travel: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "the agent that just failed validation is not re-taught the protocol: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.starts_with(&queued.warm)
+                && queued.cold.contains("Build conversation protocol"),
+            "a replacement agent gets the same fix plus the conversation it missed: {}",
+            queued.cold
+        );
+    }
+
+    /// Sending a stage's open comments mid-run is a turn for the RUN's worktree
+    /// agent (the plan doc is revised where the run can see it). The comments
+    /// land durably on both threads first — but unless the revision turn is
+    /// queued, nothing ever asks the agent to revise the doc and the run stalls
+    /// at the gate with `revising_stage_id` set and no agent working.
+    #[test]
+    fn sending_stage_notes_mid_run_queues_a_revision_turn_for_the_worktrees_one_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "revise mid-run" })));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            let approved = state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+            assert_eq!(approved["ok"], true, "{approved:?}");
+        }
+        state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "stage_gate", "{run:?}");
+        let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
+        let comment = state.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": plan_id, "stage_id": "second-half", "body": "tighten this" }),
+        ));
+        assert_eq!(comment["ok"], true, "{comment:?}");
+        // The scripted agent answers the revision itself, which would swallow
+        // the very dispatch under test.
+        state.qa_agent = false;
+        state.pending_agent_turns.clear();
+
+        let sent = state.handle(req(
+            "run.stage_send_notes",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(sent["ok"], true, "{sent:?}");
+        assert!(
+            state.tabs.is_empty(),
+            "a verb queues a turn; only delivery — off the state lock — spawns"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("stage notes are a turn for the run worktree's agent");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(
+            queued.root, root,
+            "the doc is revised in the run's worktree, not the plan's"
+        );
+        assert_eq!(queued.phase, "revise");
+        assert!(
+            queued.warm.contains("read_unread_messages"),
+            "the comments travel through MCP; the turn only points at them: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "an agent already in the run is not re-taught the protocol: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.contains("02-second-half.md")
+                && queued.cold.contains("Build conversation protocol"),
+            "a cold agent is pointed at the stage doc it must revise: {}",
+            queued.cold
+        );
+        let durable = state.runs[&run_id].thread.items.iter().any(|item| {
+            matches!(item, crate::thread::ThreadItem::Message(m)
+                if m.body.contains("tighten this"))
+        });
+        assert!(durable, "the comments stay durable on the run's thread");
+    }
+
+    /// Run-all is the one dispatcher with no human behind each hop: arming it at
+    /// a stage gate must QUEUE the next stage's turn, not merely walk the run's
+    /// state forward. Drop the queueing and every stage advances while no agent
+    /// is ever asked to build one — the failure is silent by construction.
+    #[test]
+    fn auto_advance_queues_the_next_stages_turn_for_the_worktrees_one_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, root) =
+            run_at_the_stage_gate_after_a_real_first_stage(&mut state, "run them all", true);
+        assert_eq!(
+            state.runs[&run_id].stages[0].state,
+            StageProgressState::Validated { passed: true },
+            "the first stage passed, so the next one is dispatchable"
+        );
+        state.pending_agent_turns.clear();
+
+        let armed = state.handle(req(
+            "run.set_auto_advance",
+            json!({ "run_id": run_id, "enabled": true }),
+        ));
+        assert_eq!(armed["ok"], true, "{armed:?}");
+        assert_eq!(
+            state.runs[&run_id].run.state,
+            RunState::Building,
+            "run-all dispatched the next stage"
+        );
+        assert!(
+            state.tabs.is_empty(),
+            "auto-advance queues a turn; only delivery — off the state lock — spawns"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("run-all dispatches the next stage as a turn for the worktree's agent");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(
+            queued.root, root,
+            "the next stage is built in the run's one worktree"
+        );
+        assert_eq!(queued.phase, "build");
+        assert!(
+            queued.warm.contains("Second half"),
+            "the next stage's instruction travels warm or cold: {}",
+            queued.warm
+        );
+        assert!(
+            !queued.warm.contains("Build conversation protocol"),
+            "the agent that built stage one is not re-taught the protocol: {}",
+            queued.warm
+        );
+        assert!(
+            queued.cold.starts_with(&queued.warm)
+                && queued.cold.contains("Build conversation protocol"),
+            "a replacement agent gets the same instruction plus the conversation: {}",
+            queued.cold
+        );
+    }
+
+    /// Run-all end to end: no human types anything between stages, so the whole
+    /// path — queue under the state lock, drain off it — has to carry the next
+    /// stage's prompt into the SAME agent process. A break anywhere along it is
+    /// invisible from the run's state, which advances either way.
+    #[tokio::test]
+    async fn run_all_delivers_the_next_stages_prompt_to_the_same_agent_process() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (run_id, root) = {
+            let mut s = state.lock().unwrap();
+            run_at_the_stage_gate_after_a_real_first_stage(&mut s, "run them all", true)
+        };
+        // The turns the fixture queued were queued on the state directly; the
+        // handler is the thing that delivers, and delivering opens the agent.
+        let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
+        assert_eq!(opened["ok"], true, "{opened:?}");
+        let key = TabKey::agent(&root);
+        let first_stage_pid = {
+            let s = state.lock().unwrap();
+            s.tabs
+                .get(&key)
+                .expect("the first stage's turns opened the worktree's agent")
+                .session
+                .pid()
+                .expect("a live harness has a pid")
+        };
+
+        let armed = call(
+            &handler,
+            "run.set_auto_advance",
+            json!({ "run_id": run_id, "enabled": true }),
+        );
+        assert_eq!(armed["ok"], true, "{armed:?}");
+
+        let screen = wait_for_agent_screen(&state, &root, "Second half").await;
+        assert!(
+            screen.contains("Second half"),
+            "run-all's next stage must reach the agent's PTY: {screen:?}"
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.runs[&run_id].run.state,
+            RunState::Building,
+            "the run is building the stage run-all dispatched"
+        );
+        assert_eq!(
+            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            Some(first_stage_pid),
+            "the agent that built stage one is the one asked to build stage two"
+        );
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    }
+
     /// Every phase of a multi-stage run — the first stage's build, the
     /// validation hand-off its `done` triggers, and the next stage's build —
     /// reaches ONE process in the run's worktree. The phase boundary stopped

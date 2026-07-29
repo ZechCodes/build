@@ -339,6 +339,18 @@ impl Thread {
         id
     }
 
+    /// Whether the reviewer has said anything the agent has not picked up yet.
+    ///
+    /// The read-only half of [`read_unread`](Self::read_unread), which marks
+    /// what it returns as seen — so a caller deciding WHETHER to send the agent
+    /// to the mailbox cannot use it without emptying the mailbox first.
+    pub fn has_unread(&self) -> bool {
+        self.items.iter().any(|item| {
+            matches!(item, ThreadItem::Message(message)
+                if message.role == MessageRole::User && message.seen_at.is_none())
+        })
+    }
+
     pub fn read_unread(&mut self, now: &str) -> Vec<ThreadMessage> {
         let mut unread = Vec::new();
         for item in &mut self.items {

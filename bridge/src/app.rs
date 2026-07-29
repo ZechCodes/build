@@ -1779,6 +1779,18 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
+    /// An entity's conversation, for a caller that needs to read it without
+    /// changing it — chiefly "is anything waiting for this agent".
+    fn entity_thread(&self, entity_id: &str) -> Result<&crate::thread::Thread, String> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return Ok(&plan.thread);
+        }
+        if let Some(run) = self.runs.get(entity_id) {
+            return Ok(&run.thread);
+        }
+        Err("unknown id".to_string())
+    }
+
     /// The agent an entity dispatches with. A start with no turn behind it still
     /// has to honor the provider/model the human chose for this worktree — the
     /// sheet's answer, or the run's own — rather than silently defaulting.
@@ -6563,15 +6575,51 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .ok_or("missing id")?;
-    let (root, model_choice) = {
+    let (turn, waiting) = {
         let s = state.lock().unwrap();
+        let thread = s.entity_thread(&entity_id)?;
         (
-            s.entity_worktree_root(&entity_id)?,
-            s.entity_model_choice(&entity_id)?,
+            PendingAgentTurn {
+                root: s.entity_worktree_root(&entity_id)?,
+                owner: entity_id.clone(),
+                model_choice: s.entity_model_choice(&entity_id)?,
+                // Only sent when something is actually waiting (below). A hand-
+                // started agent has no context, so it gets the cold form: the
+                // conversation protocol and the catch-up packet around the nudge.
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+                phase: "start",
+            },
+            thread.has_unread(),
         )
     };
-    let (term_id, spawned) = ensure_agent_tab(state, &root, &entity_id, &model_choice)?;
-    state.lock().unwrap().touch_attention(&entity_id);
+
+    // The button means "give me an agent", not "go do something" — so a start
+    // with nothing waiting says nothing, and the human drives from there.
+    // But the reviewer's words are durable on the thread and an agent only
+    // learns of them by being TOLD to call `read_unread_messages`; a fresh
+    // harness has no reason to. Restarting after a crash with messages
+    // outstanding would silently ignore every one of them.
+    let (term_id, spawned) = if waiting {
+        deliver(
+            state,
+            &turn.root,
+            &turn.owner,
+            &turn.model_choice,
+            &turn.cold,
+            &turn.warm,
+        )?
+    } else {
+        ensure_agent_tab(state, &turn.root, &turn.owner, &turn.model_choice)?
+    };
+
+    let mut s = state.lock().unwrap();
+    // A fresh process is a new session either way — the lineage must not depend
+    // on whether there happened to be mail.
+    if spawned == Spawned::Fresh {
+        s.record_agent_session_start(&turn);
+    }
+    s.touch_attention(&entity_id);
     Ok(json!({
         "term_id": term_id,
         "live": true,
@@ -6579,6 +6627,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             Spawned::Fresh => "fresh",
             Spawned::Warm => "warm",
         },
+        "notified": waiting,
     }))
 }
 
@@ -14105,6 +14154,54 @@ mod tests {
             tab.session.pid(),
             first_pid,
             "restart means a NEW process, not the corpse reported as alive"
+        );
+    }
+
+    /// Starting an agent by hand must not strand what is already waiting for
+    /// it. The reviewer's words are durable on the thread, and the ONLY way an
+    /// agent learns of them is being told to call `read_unread_messages` — a
+    /// fresh harness has no reason to. Without this, pressing Restart after a
+    /// crash brings back an agent that silently ignores every message posted
+    /// while it was down.
+    #[tokio::test]
+    async fn agent_start_tells_a_fresh_agent_what_is_waiting_for_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-waiting");
+        {
+            let mut s = state.lock().unwrap();
+            let run = s.runs.get_mut("run-waiting").unwrap();
+            run.thread
+                .post_user("look at the migration", None, "2026-07-29T12:00:00Z");
+        }
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-waiting" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+        assert!(
+            screen.contains("read_unread_messages"),
+            "a started agent must be told to read what is waiting: {screen:?}"
+        );
+    }
+
+    /// The other half: a start with nothing waiting says NOTHING. The button
+    /// means "give me an agent", not "go do something" — the human drives it
+    /// from there. An unsolicited prompt would put a fresh agent to work nobody
+    /// asked it to do.
+    #[tokio::test]
+    async fn agent_start_says_nothing_when_nothing_is_waiting() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-quiet");
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-quiet" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        // Give a prompt every chance to appear before concluding none did.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let screen = agent_screen_text(&state, &root);
+        assert!(
+            !screen.contains("read_unread_messages"),
+            "an agent with nothing waiting must be left alone: {screen:?}"
         );
     }
 

@@ -972,6 +972,13 @@ pub struct AppState {
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
     /// the queue for the test to inspect instead.
     pending_agent_turns: Vec<PendingAgentTurn>,
+    /// Owners whose turn has left [`AppState::pending_agent_turns`] and is
+    /// being delivered right now, counted because one drain can carry several
+    /// turns for the same owner. Between a verb's transition and the tab its
+    /// turn spawns, a working entity legitimately has no agent tab yet — the
+    /// queue and this counter are what tell the idle sweep the difference
+    /// between an agent on its way and an agent that never arrived.
+    agent_turns_in_flight: HashMap<String, usize>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
     /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
@@ -1036,6 +1043,7 @@ impl AppState {
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
             pending_agent_turns: Vec::new(),
+            agent_turns_in_flight: HashMap::new(),
             next_term: 1,
             self_handle: None,
             next_stream: 1,
@@ -1506,6 +1514,52 @@ impl AppState {
         if let Err(error) = persisted {
             eprintln!("record_agent_session_start {}: {error}", turn.owner);
         }
+    }
+
+    /// A turn never reached an agent: record why on the entity and persist it,
+    /// so the surface says what happened instead of showing a working task with
+    /// nobody working.
+    ///
+    /// The state is deliberately left alone. The transition that queued this
+    /// turn is already durable, and demotion belongs to one place — the idle
+    /// sweep, which now reads a working entity with no agent tab as the anomaly
+    /// it is. This method's whole job is the reason.
+    fn record_agent_delivery_failure(&mut self, turn: &PendingAgentTurn, error: &str) {
+        let reason = format!("could not reach the agent: {error}");
+        // Plan and run ids are disjoint, so the owner lookup is the router.
+        if self.plans.contains_key(&turn.owner) {
+            let Ok(mut active) = self.take_plan(&turn.owner) else {
+                return;
+            };
+            active.last_error = Some(reason);
+            let (_, persisted) = self.finish_plan_mutation(turn.owner.clone(), active);
+            if let Err(error) = persisted {
+                eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
+            }
+            return;
+        }
+        let Ok(mut active) = self.take_run(&turn.owner) else {
+            return;
+        };
+        active.last_error = Some(reason);
+        let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
+        if let Err(error) = persisted {
+            eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
+        }
+    }
+
+    /// Is this entity's agent merely on its way — a turn still queued, or one
+    /// off the queue and mid-delivery? Between the verb that transitions an
+    /// entity (under the state lock) and the tab its turn spawns (lock free,
+    /// seconds for a cold harness), a working entity has no agent tab and is
+    /// perfectly healthy. Everywhere else, a working entity without one is an
+    /// anomaly.
+    fn agent_turn_is_undelivered(&self, owner: &str) -> bool {
+        self.agent_turns_in_flight.contains_key(owner)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == owner)
     }
 
     /// Move `entity_state_changed_at` only when the entity's wire state
@@ -2505,8 +2559,18 @@ impl AppState {
         // measured from the last turn Build submitted there. A tab's agent
         // survives every phase boundary, so raw PTY silence would demote a run
         // the moment it was re-dispatched after a long quiet review.
-        let idle_check = |tab: Option<&Tab>| {
-            let tab = tab?;
+        //
+        // NO tab at all is the loudest anomaly of the three, not a reason to
+        // look away: Build owns every agent and keeps it as a tab for the life
+        // of its worktree, so a working entity without one has a delivery that
+        // failed or a worktree that was reaped out from under it. Only a turn
+        // still on its way (`turn_undelivered`) explains a missing tab
+        // innocently, and it explains it for seconds, not for the daemon's
+        // life. A tabless demotion claims no exit code — nothing exited.
+        let idle_check = |tab: Option<&Tab>, turn_undelivered: bool| {
+            let Some(tab) = tab else {
+                return if turn_undelivered { None } else { Some(None) };
+            };
             if tab.session.has_exited() {
                 return Some(Some(tab.session.exit_code().unwrap_or(-1)));
             }
@@ -2527,7 +2591,11 @@ impl AppState {
             .filter(|(_, a)| a.plan.state.is_working())
             .filter_map(|(id, a)| {
                 let root = a.worktree.as_ref().map(|w| Self::canonical_root(&w.path))?;
-                idle_check(self.tabs.get(&TabKey::agent(&root))).map(|code| (id.clone(), code))
+                idle_check(
+                    self.tabs.get(&TabKey::agent(&root)),
+                    self.agent_turn_is_undelivered(id),
+                )
+                .map(|code| (id.clone(), code))
             })
             .collect();
         let idle_runs: Vec<(String, Option<i32>)> = self
@@ -2536,7 +2604,11 @@ impl AppState {
             .filter(|(_, a)| a.run.state.is_working())
             .filter_map(|(id, a)| {
                 let root = Self::canonical_root(&a.worktree.path);
-                idle_check(self.tabs.get(&TabKey::agent(&root))).map(|code| (id.clone(), code))
+                idle_check(
+                    self.tabs.get(&TabKey::agent(&root)),
+                    self.agent_turn_is_undelivered(id),
+                )
+                .map(|code| (id.clone(), code))
             })
             .collect();
 
@@ -6556,21 +6628,51 @@ fn deliver(
 /// session lineage — the record the thread reads back as "the revise agent
 /// started here". A warm delivery continues the session already open.
 fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
-    let queued = std::mem::take(&mut state.lock().unwrap().pending_agent_turns);
+    // Taking the queue and marking those owners in flight happen under ONE lock
+    // acquisition, so there is no instant in which a queued turn is invisible to
+    // the idle sweep and its entity looks agentless.
+    let queued = {
+        let mut s = state.lock().unwrap();
+        let queued = std::mem::take(&mut s.pending_agent_turns);
+        for turn in &queued {
+            *s.agent_turns_in_flight
+                .entry(turn.owner.clone())
+                .or_default() += 1;
+        }
+        queued
+    };
     for turn in queued {
-        match deliver(
+        let delivered = deliver(
             state,
             &turn.root,
             &turn.owner,
             &turn.model_choice,
             &turn.cold,
             &turn.warm,
-        ) {
-            Ok((_, Spawned::Fresh)) => state.lock().unwrap().record_agent_session_start(&turn),
+        );
+        let mut s = state.lock().unwrap();
+        match delivered {
+            Ok((_, Spawned::Fresh)) => s.record_agent_session_start(&turn),
             Ok((_, Spawned::Warm)) => {}
-            // The turn is already durable on the thread; the agent picks it up
-            // with `read_unread_messages` the next time a tab opens.
-            Err(error) => eprintln!("deliver to {}: {error}", turn.owner),
+            // The turn stays durable on the thread — the agent picks it up with
+            // `read_unread_messages` the next time a tab opens — but nothing is
+            // reading that thread right now, so the entity itself has to carry
+            // the reason. The idle sweep finishes the job: an entity left
+            // working with no agent tab is demoted on the next pass.
+            Err(error) => {
+                eprintln!("deliver to {}: {error}", turn.owner);
+                s.record_agent_delivery_failure(&turn, &error);
+            }
+        }
+        // Off the queue and out of flight: from here the entity's agent tab is
+        // the whole truth about whether an agent is there.
+        if let std::collections::hash_map::Entry::Occupied(mut in_flight) =
+            s.agent_turns_in_flight.entry(turn.owner.clone())
+        {
+            *in_flight.get_mut() -= 1;
+            if *in_flight.get() == 0 {
+                in_flight.remove();
+            }
         }
     }
 }
@@ -12306,6 +12408,138 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("exit code 7"));
+    }
+
+    /// A turn addressed to a worktree that cannot host an agent — the scaffold
+    /// step fails on a path that is not a directory.
+    fn unreachable_turn(owner: &str) -> PendingAgentTurn {
+        PendingAgentTurn {
+            root: std::path::PathBuf::from("/dev/null/there-is-no-worktree-here"),
+            owner: owner.to_string(),
+            model_choice: ModelChoice::default(),
+            cold: "cold turn".into(),
+            warm: "warm turn".into(),
+            phase: "build",
+        }
+    }
+
+    /// A delivery that never reached an agent used to be a silent `eprintln!`:
+    /// the run had already transitioned to `Building` and been persisted, so it
+    /// sat there working with nobody working, forever. The failure has to land
+    /// on the entity where a surface can read it.
+    #[test]
+    fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_entity() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-unreachable",
+            RunState::Building,
+        );
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-unreachable"));
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-unreachable" })));
+        let last_error = got["result"]["last_error"].as_str().unwrap_or_default();
+        assert!(
+            last_error.contains("could not reach the agent"),
+            "the failure must be legible on the run: {got:?}"
+        );
+        // And it is durable: the reason survives a re-read from the store.
+        let record = state
+            .lock()
+            .unwrap()
+            .store
+            .as_ref()
+            .unwrap()
+            .load_all_runs()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "run-unreachable")
+            .expect("the run is persisted");
+        assert!(
+            record.last_error.unwrap_or_default().contains("agent"),
+            "the failure must be persisted, not just held in memory"
+        );
+    }
+
+    /// The idle sweep used to skip an entity with no agent tab (`let tab =
+    /// tab?`), which is exactly the entity a failed delivery leaves behind.
+    /// Build owns every agent and always keeps it as a tab, so a working entity
+    /// with none is an anomaly, not an absence of evidence.
+    #[test]
+    fn a_working_run_with_no_agent_tab_is_an_anomaly_not_a_skip() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-tabless",
+            RunState::Building,
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(3600)),
+            vec!["run-tabless".to_string()],
+            "a working run with no agent at all must be demoted, not skipped"
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": "run-tabless" })));
+        assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
+        // No harness exited here, so no exit-code claim is invented.
+        assert!(got["result"]["last_error"].is_null(), "{got:?}");
+    }
+
+    /// The tabless anomaly must not fire on the gap the queue opens: a verb
+    /// transitions the run under the state lock and the turn is delivered after
+    /// it, so for the seconds a cold spawn takes there is a working run whose
+    /// agent is legitimately still on its way.
+    #[test]
+    fn a_run_whose_turn_is_still_on_its_way_is_not_demoted() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-dispatching",
+            RunState::Building,
+        );
+        state
+            .pending_agent_turns
+            .push(unreachable_turn("run-dispatching"));
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
+            "a queued turn means the agent is coming, not missing"
+        );
+
+        // Mid-delivery — off the queue, not yet a tab — is the same story.
+        state.pending_agent_turns.clear();
+        *state
+            .agent_turns_in_flight
+            .entry("run-dispatching".into())
+            .or_default() += 1;
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
+            "a turn mid-delivery means the agent is coming, not missing"
+        );
+
+        // Once the delivery is over and no tab appeared, it IS the anomaly.
+        state.agent_turns_in_flight.clear();
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(3600)),
+            vec!["run-dispatching".to_string()]
+        );
     }
 
     fn fake_run_record(id: &str) -> PersistedRun {

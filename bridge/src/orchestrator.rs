@@ -322,6 +322,7 @@ impl ActivePlan {
                 id: PlanId::new(record.id.clone()),
                 goal: record.goal.clone(),
                 state: record.state,
+                archived_at: record.archived_at.clone(),
             },
             worktree,
             base_branch: record.base_branch.clone(),
@@ -3355,6 +3356,7 @@ mod tests {
             project_path: "/home/u/code/proj".into(),
             base_branch: "main".into(),
             state: crate::plan::PlanState::Interrupted,
+            archived_at: Some("2026-07-01T10:06:00Z".into()),
             worktree_name: Some("add-a-greeting".into()),
             worktree_path: Some("/tmp/wt/add-a-greeting".into()),
             branch: Some("plan/add-a-greeting".into()),
@@ -3374,6 +3376,7 @@ mod tests {
         let active = ActivePlan::reattach(&record);
         assert_eq!(active.plan.id.0, "plan-1");
         assert_eq!(active.plan.state, PlanState::Interrupted);
+        assert_eq!(active.plan.archived_at, record.archived_at);
         let worktree = active.worktree.as_ref().unwrap();
         assert_eq!(worktree.branch, "plan/add-a-greeting");
         assert_eq!(worktree.base_branch, "main");

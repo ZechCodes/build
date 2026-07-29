@@ -337,6 +337,10 @@ pub struct Plan {
     pub id: PlanId,
     pub goal: String,
     pub state: PlanState,
+    /// Durable archival metadata, orthogonal to the lifecycle state. Archiving
+    /// never discards canonical docs or linked run history.
+    #[serde(default)]
+    pub archived_at: Option<String>,
 }
 
 impl Plan {
@@ -346,6 +350,7 @@ impl Plan {
             id,
             goal: goal.into(),
             state: PlanState::Created,
+            archived_at: None,
         }
     }
 

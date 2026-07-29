@@ -27,6 +27,8 @@ const plan = (over = {}) => ({
   state_changed_at: ago(1),
   updated_at: ago(1),
   attention: { resume_at: ago(1), interacted: true, seen: false },
+  can_archive: false,
+  archived_at: null,
   ...over,
 });
 
@@ -44,6 +46,7 @@ const worktree = (over = {}) => ({
   diffstat: { files_changed: 1, insertions: 9, deletions: 2 },
   uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
   attention: { resume_at: ago(2), interacted: true, seen: false },
+  can_finish: false,
   ...over,
 });
 
@@ -217,6 +220,43 @@ describe("the dot", () => {
 });
 
 describe("the row's contents", () => {
+  it("never returns archived runs to the active rail", () => {
+    expect(
+      railEntries({
+        runs: [run({ state: "archived", state_changed_at: ago(1) })],
+        projectId: "p1",
+        nowMs: NOW,
+      }),
+    ).toEqual([]);
+  });
+
+  it("retains plan archive eligibility and archive state", () => {
+    const [entry] = railEntries({
+      plans: [plan({ can_archive: true, archived_at: "2026-07-28T08:00:00Z" })],
+      projectId: "p1",
+      nowMs: NOW,
+    });
+    expect(entry).toMatchObject({ can_archive: true, archived_at: "2026-07-28T08:00:00Z" });
+  });
+
+  it("retains every external-worktree field needed to finish it", () => {
+    const [entry] = railEntries({
+      worktrees: [worktree({ can_finish: true })],
+      projectId: "p1",
+      nowMs: NOW,
+    });
+    expect(entry).toMatchObject({
+      can_finish: true,
+      agent_working: false,
+      dirty_files: 1,
+      branch: "build/spike",
+      base_branch: "main",
+      upstream: "origin/build/spike",
+      unpushed: 1,
+      uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
+    });
+  });
+
   it("names a run by its goal and a worktree by its name, falling back to the branch", () => {
     const [runRow] = railEntries({ runs: [run({ goal: "fix the thing" })], projectId: "p1", nowMs: NOW });
     expect(runRow.name).toBe("fix the thing");

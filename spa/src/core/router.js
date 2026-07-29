@@ -21,7 +21,7 @@ const planTab = (seg) => (seg === "agent" ? "agent" : "review");
 const worktreeTab = (seg) => (seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "changes");
 const mainTab = (seg) => (seg === "files" || isTermTab(seg) ? seg : "changes");
 const projectTab = (seg) =>
-  seg === "changes" || seg === "files" || isTermTab(seg) ? seg : "inbox";
+  seg === "issues" || seg === "changes" || seg === "files" || seg === "archive" || isTermTab(seg) ? seg : "inbox";
 
 export function routeFromHash(hash) {
   const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);

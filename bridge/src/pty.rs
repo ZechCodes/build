@@ -370,6 +370,11 @@ impl PtySession {
         Instant::now().saturating_duration_since(*self.last_activity.lock().unwrap())
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_idle_for_test(&self, idle: Duration) {
+        *self.last_activity.lock().unwrap() = Instant::now() - idle;
+    }
+
     /// Resolve once the PTY has been silent for at least `threshold` — the
     /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
     pub async fn wait_quiescent(&self, threshold: Duration) {

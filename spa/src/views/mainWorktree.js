@@ -11,6 +11,7 @@ import { terminalTabsController, mountAuxTab, NEW_TAB_KINDS } from "../core/surf
 import { mountGitPane } from "../core/gitPane.js";
 import { mountProjectInbox } from "./project.js";
 import { mountIssuesTab } from "./issues.js";
+import { mountArchiveTab } from "./archive.js";
 import { openNewIssue } from "../sheets/newIssue.js";
 
 export const projectSurfaceTabs = (terminalTabs = []) => [
@@ -18,6 +19,7 @@ export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "issues", label: "Issues" },
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
+  { id: "archive", label: "Archive" },
   ...terminalTabs,
 ];
 
@@ -86,6 +88,12 @@ export async function renderMain() {
         callRpc: (method, params) => App.call(method, params),
         navigate: go,
         onNewIssue: () => openNewIssue({ projectId }),
+      });
+    } else if (id === "archive") {
+      aux = mountArchiveTab(body, {
+        projectId,
+        callRpc: (method, params) => App.call(method, params),
+        navigate: go,
       });
     } else if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status

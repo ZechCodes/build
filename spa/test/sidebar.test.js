@@ -36,6 +36,7 @@ const plan = (over) => ({
   state_changed_at: iso(1),
   updated_at: iso(1),
   attention: { resume_at: iso(3), interacted: true, seen: true },
+  can_archive: false,
   ...over,
 });
 
@@ -53,6 +54,7 @@ const worktree = (over) => ({
   diffstat: { files_changed: 0, insertions: 0, deletions: 0 },
   uncommitted: { files_changed: 0, insertions: 0, deletions: 0 },
   attention: { resume_at: null, interacted: false, seen: false },
+  can_finish: false,
   ...over,
 });
 
@@ -228,6 +230,48 @@ describe("a project block", () => {
     expect(html).toContain('data-run="r1"');
     expect(html).toContain('data-plan="pl1"');
     expect(html).toContain('data-wt="w1"');
+  });
+
+  it("renders compact Done controls only for eligible plans and external worktrees", () => {
+    const m = model({
+      runs: [run()],
+      plans: [plan({ can_archive: true })],
+      externalWorktrees: [
+        worktree({
+          can_finish: true,
+          attention: { resume_at: iso(1), interacted: true, seen: true },
+        }),
+      ],
+    });
+    const html = projectHtml(m, ui());
+    expect(html).toContain('class="btn mini" data-done-plan="pl1"');
+    expect(html).toContain('class="btn mini" data-done-worktree="w1"');
+    expect(html).not.toContain('data-done-run="r1"');
+  });
+
+  it("renders Done for an eligible worktree inside the expanded Worktrees row", () => {
+    const m = model({
+      runs: [],
+      plans: [],
+      externalWorktrees: [worktree({ worktree_id: "folded", can_finish: true })],
+    });
+    const html = projectHtml(m, ui({ wtOpen: new Set(["p1"]) }));
+    expect(html).toContain('data-done-worktree="folded"');
+  });
+
+  it("omits Done for ineligible plans and worktrees", () => {
+    const m = model({
+      plans: [plan({ can_archive: false })],
+      externalWorktrees: [
+        worktree({
+          can_finish: false,
+          attention: { resume_at: iso(1), interacted: true, seen: true },
+        }),
+      ],
+    });
+    const html = projectHtml(m, ui());
+    expect(html).not.toContain("data-done-plan");
+    expect(html).not.toContain("data-done-worktree");
   });
 
   it("shows the Worktrees row folded, and its contents when open", () => {

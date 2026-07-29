@@ -159,6 +159,10 @@ pub struct PersistedPlan {
     pub project_path: String,
     pub base_branch: String,
     pub state: PlanState,
+    /// Durable archival metadata. This is deliberately not a `PlanState` arm:
+    /// lifecycle and filing are independent, and canonical docs remain live.
+    #[serde(default)]
+    pub archived_at: Option<String>,
     /// The disposable planning worktree, while one is alive (kept warm through
     /// the notes/revision loop). `None` once torn down (approve/abandon) or
     /// before one exists — the store docs are canonical either way.
@@ -269,6 +273,53 @@ pub struct PersistedRun {
     /// to `updated_at`.
     #[serde(default)]
     pub state_changed_at: Option<String>,
+}
+
+/// The user-selected way an external worktree was finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorktreeFinishAction {
+    Cleanup,
+    Push,
+    Merge,
+    Delete,
+}
+
+/// Whether a durable finish record is protecting an in-progress destructive
+/// operation or is ready to appear in Project Archive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorktreeFinishStatus {
+    Pending,
+    #[default]
+    Archived,
+}
+
+/// Durable intent and eventual history for an external worktree finished
+/// through `worktree.finish`. Project ids are intentionally absent because they
+/// are re-minted at boot; the canonical project path is the stable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedArchivedWorktree {
+    #[serde(default)]
+    pub status: WorktreeFinishStatus,
+    pub project_path: String,
+    pub worktree_id: String,
+    pub worktree_name: String,
+    pub worktree_path: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    pub head_sha: String,
+    #[serde(default)]
+    pub upstream: Option<String>,
+    #[serde(default)]
+    pub unpushed: Option<u64>,
+    pub dirty_files: usize,
+    pub uncommitted_files: usize,
+    pub uncommitted_insertions: usize,
+    pub uncommitted_deletions: usize,
+    pub action: WorktreeFinishAction,
+    #[serde(default)]
+    pub archived_at: Option<String>,
 }
 
 /// The bridge's JSON record store: plans (record + canonical docs per dir),
@@ -519,6 +570,51 @@ impl Store {
         remove_file_if_present(&record_path)?;
         remove_file_if_present(&record_path.with_extension("json.tmp"))?;
         Ok(())
+    }
+
+    // ---- Archived external worktrees --------------------------------------
+
+    fn archived_worktree_path(&self, worktree_id: &str) -> PathBuf {
+        self.dir
+            .join("archived-worktrees")
+            .join(format!("{worktree_id}.json"))
+    }
+
+    /// Persist one finished external worktree by its stable server id. Re-saving
+    /// the same record atomically replaces it, making repeated finish requests
+    /// idempotent without duplicating history.
+    pub fn save_archived_worktree(
+        &self,
+        record: &PersistedArchivedWorktree,
+    ) -> Result<(), StoreError> {
+        let json = serde_json::to_string_pretty(record)
+            .expect("an archived worktree record always serializes");
+        write_record_atomically(&self.archived_worktree_path(&record.worktree_id), &json)
+    }
+
+    /// Load every finished external worktree, ordered by archive time and id.
+    /// Corruption is a boot error: silently dropping archive history would make
+    /// a destructive finish action illegible after restart.
+    pub fn load_all_archived_worktrees(
+        &self,
+    ) -> Result<Vec<PersistedArchivedWorktree>, StoreError> {
+        let archive_dir = self.dir.join("archived-worktrees");
+        if !archive_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        for entry in std::fs::read_dir(archive_dir)? {
+            let path = entry?.path();
+            if is_json_record(&path) {
+                records.push(read_record(&path)?);
+            }
+        }
+        records.sort_by(|a: &PersistedArchivedWorktree, b| {
+            a.archived_at
+                .cmp(&b.archived_at)
+                .then(a.worktree_id.cmp(&b.worktree_id))
+        });
+        Ok(records)
     }
 
     // ---- Canonical plan-doc ops (worktree ⇄ store) ----
@@ -925,6 +1021,7 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         project_path: task.project_path.clone(),
         base_branch: task.base_branch.clone(),
         state: migrated_plan_state(task, past_planning),
+        archived_at: None,
         worktree_name,
         worktree_path,
         branch,
@@ -1553,6 +1650,7 @@ mod tests {
             project_path: "/home/u/code/proj".into(),
             base_branch: "main".into(),
             state,
+            archived_at: None,
             worktree_name: Some("plan-greeting".into()),
             worktree_path: Some("/home/u/.build/worktrees/plan-greeting".into()),
             branch: Some("plan/greeting".into()),
@@ -1584,6 +1682,26 @@ mod tests {
             created_at: "2026-07-01T10:00:00Z".into(),
             updated_at: "2026-07-01T10:05:00Z".into(),
             state_changed_at: None,
+        }
+    }
+
+    fn archived_worktree_record(id: &str, project_path: &str) -> PersistedArchivedWorktree {
+        PersistedArchivedWorktree {
+            status: WorktreeFinishStatus::Archived,
+            project_path: project_path.into(),
+            worktree_id: id.into(),
+            worktree_name: "feature-one".into(),
+            worktree_path: "/home/u/.build/worktrees/feature-one".into(),
+            branch: Some("build/feature-one".into()),
+            head_sha: "0123456789abcdef".into(),
+            upstream: Some("origin/build/feature-one".into()),
+            unpushed: Some(2),
+            dirty_files: 3,
+            uncommitted_files: 2,
+            uncommitted_insertions: 14,
+            uncommitted_deletions: 4,
+            action: WorktreeFinishAction::Push,
+            archived_at: Some("2026-07-29T12:00:00Z".into()),
         }
     }
 
@@ -1636,6 +1754,63 @@ mod tests {
         rec.effort = Some("ultra".into());
         store.save_plan(&rec).unwrap();
         assert_eq!(store.load_all_plans().unwrap(), vec![rec]);
+    }
+
+    #[test]
+    fn plan_archived_at_round_trips_and_defaults_for_legacy_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let mut archived = plan_record("plan-archived", PlanState::Approved);
+        archived.archived_at = Some("2026-07-29T12:00:00Z".into());
+        store.save_plan(&archived).unwrap();
+        assert_eq!(store.load_all_plans().unwrap(), vec![archived]);
+
+        let legacy_path = store.plan_record_path("plan-legacy");
+        let mut legacy =
+            serde_json::to_value(plan_record("plan-legacy", PlanState::Approved)).unwrap();
+        legacy.as_object_mut().unwrap().remove("archived_at");
+        write_record_atomically(&legacy_path, &serde_json::to_string(&legacy).unwrap()).unwrap();
+        let loaded = store.load_all_plans().unwrap();
+        assert_eq!(loaded[1].id, "plan-legacy");
+        assert_eq!(loaded[1].archived_at, None);
+    }
+
+    #[test]
+    fn archived_worktrees_round_trip_by_stable_id_and_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let tasks = dir.path().join("tasks");
+        let record = archived_worktree_record("wt-0123456789ab", "/home/u/code/proj");
+        Store::new(&tasks).save_archived_worktree(&record).unwrap();
+
+        let reopened = Store::new(&tasks);
+        assert_eq!(
+            reopened.load_all_archived_worktrees().unwrap(),
+            vec![record]
+        );
+        assert!(tasks
+            .join("archived-worktrees/wt-0123456789ab.json")
+            .is_file());
+    }
+
+    #[test]
+    fn archived_worktree_save_is_idempotent_and_projects_remain_filterable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let first = archived_worktree_record("wt-aaaaaaaaaaaa", "/projects/one");
+        let second = archived_worktree_record("wt-bbbbbbbbbbbb", "/projects/two");
+        store.save_archived_worktree(&first).unwrap();
+        store.save_archived_worktree(&first).unwrap();
+        store.save_archived_worktree(&second).unwrap();
+
+        let loaded = store.load_all_archived_worktrees().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded
+                .iter()
+                .filter(|record| record.project_path == "/projects/one")
+                .count(),
+            1
+        );
     }
 
     #[test]

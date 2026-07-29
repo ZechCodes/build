@@ -4,6 +4,8 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { buildSidebarModel, sidebarHtml } from "../core/sidebar.js";
+import { confirmAction } from "../core/confirm.js";
+import { wireRailDoneControls } from "../core/railDone.js";
 import { subscribeFeed, refreshFeed } from "../core/taskFeed.js";
 import { setBadge } from "./shared.js";
 import { openBrowser } from "../sheets/browser.js";
@@ -137,6 +139,13 @@ function draw() {
   });
   aside.querySelectorAll(".srow[data-main]").forEach((r) => {
     r.onclick = () => goFromRail({ name: "project", projectId: r.dataset.main, tab: "changes" });
+  });
+  wireRailDoneControls(aside, {
+    plans: lastFeed.plans,
+    worktrees: lastFeed.externalWorktrees,
+    callRpc: (method, params) => App.call(method, params),
+    confirm: confirmAction,
+    refresh: refreshFeed,
   });
 }
 

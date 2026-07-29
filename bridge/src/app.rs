@@ -40,7 +40,10 @@ use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState};
-use crate::store::{now_rfc3339, PersistedPlan, PersistedRun, Store};
+use crate::store::{
+    now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
+    WorktreeFinishAction, WorktreeFinishStatus,
+};
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
 use crate::transport::Frame;
@@ -460,6 +463,24 @@ fn agent_is_working(kind: TermKind, idle: Duration) -> bool {
     kind != TermKind::Shell && idle < AGENT_WORKING_WINDOW
 }
 
+/// `(agent_working, can_finish)` for all terminal tabs in one external
+/// worktree. Done is advisory: at least one non-shell agent tab must exist, and
+/// every such tab must be outside the existing working window.
+fn worktree_agent_signals(
+    terminals: impl IntoIterator<Item = (TermKind, Duration)>,
+) -> (bool, bool) {
+    let mut has_agent = false;
+    let mut agent_working = false;
+    for (kind, idle) in terminals {
+        if kind == TermKind::Shell {
+            continue;
+        }
+        has_agent = true;
+        agent_working |= agent_is_working(kind, idle);
+    }
+    (agent_working, has_agent && !agent_working)
+}
+
 /// The verbs that count as the human acting on an entity, and the param naming
 /// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
 /// a queue you triage by reading and reading one IS engaging with it — while a
@@ -804,6 +825,10 @@ pub struct AppState {
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
+    /// Finished external worktrees keyed by their stable path-derived id.
+    /// Loaded from the store at boot; project association is resolved by the
+    /// canonical project path because project ids are re-minted.
+    archived_worktrees: HashMap<String, PersistedArchivedWorktree>,
     /// entity id → its RFC 3339 creation time, carried across saves (and restarts).
     entity_created_at: HashMap<String, String>,
     /// entity id → its RFC 3339 last-mutation time (stamped on every mutation).
@@ -876,6 +901,7 @@ impl AppState {
             plans: HashMap::new(),
             runs: HashMap::new(),
             store: None,
+            archived_worktrees: HashMap::new(),
             entity_created_at: HashMap::new(),
             entity_updated_at: HashMap::new(),
             entity_state_changed_at: HashMap::new(),
@@ -980,9 +1006,17 @@ impl AppState {
         store.migrate_legacy_tasks().map_err(|e| e.to_string())?;
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
+        let archived_worktrees = store
+            .load_all_archived_worktrees()
+            .map_err(|e| e.to_string())?;
         // Attention survives a restart, or Monday would look like a fresh install.
         self.attention = store.load_attention();
         self.store = Some(store);
+        self.archived_worktrees = archived_worktrees
+            .into_iter()
+            .map(|record| (record.worktree_id.clone(), record))
+            .collect();
+        self.recover_completed_worktree_finishes();
         // Plans first: a run re-derives its `plan_path` from the owning plan's
         // record, so the plan must already be in the map.
         for record in plans {
@@ -1212,6 +1246,7 @@ impl AppState {
             project_path,
             base_branch: active.base_branch.clone(),
             state: active.plan.state,
+            archived_at: active.plan.archived_at.clone(),
             worktree_name: worktree.map(|w| w.name.clone()),
             worktree_path: worktree.map(|w| w.path.display().to_string()),
             branch: worktree.map(|w| w.branch.clone()),
@@ -2064,6 +2099,7 @@ impl AppState {
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),
             "board.list" => Ok(self.board_list()),
+            "archive.list" => self.archive_list(params),
             // Plan surface (project-scoped): keyed by plan_id, docs from store.
             "plan.create" => self.plan_create(params),
             "plan.get" => self.plan_get(params),
@@ -2080,6 +2116,7 @@ impl AppState {
             "plan.message" => self.plan_message(params),
             "plan.abandon" => self.plan_abandon(params),
             "plan.delete" => self.plan_delete(params),
+            "plan.archive" => self.plan_archive(params),
             // Run surface (worktree-scoped): keyed by run_id.
             "run.create" => self.run_create(params),
             "run.get" => self.run_get(params),
@@ -2096,6 +2133,7 @@ impl AppState {
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
             "worktree.create" => self.worktree_create(params),
+            "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
             "worktree.diff" => self.worktree_diff(params),
             "stream.events" => self.stream_events(params),
@@ -2882,15 +2920,20 @@ impl AppState {
             .keys()
             .map(|id| (id.clone(), self.attention_json(id)))
             .collect();
-        let agent_working: std::collections::HashSet<String> = self
-            .terms
-            .values()
-            .filter(|term| agent_is_working(term.kind, term.session.idle_for()))
-            .filter_map(|term| match &term.scope {
-                TermScope::ExternalWorktree { worktree_id, .. } => Some(worktree_id.clone()),
-                _ => None,
-            })
-            .collect();
+        let mut worktree_terminals: HashMap<(String, String), Vec<(TermKind, Duration)>> =
+            HashMap::new();
+        for term in self.terms.values() {
+            if let TermScope::ExternalWorktree {
+                project_id,
+                worktree_id,
+            } = &term.scope
+            {
+                worktree_terminals
+                    .entry((project_id.clone(), worktree_id.clone()))
+                    .or_default()
+                    .push((term.kind, term.session.idle_for()));
+            }
+        }
         let projects: Vec<(String, String, String)> = self
             .projects
             .iter()
@@ -2903,6 +2946,13 @@ impl AppState {
             };
             for w in worktrees {
                 let adoptable = w.branch.as_deref().is_some_and(|b| b != base_branch);
+                let (agent_working, can_finish) = worktree_agent_signals(
+                    worktree_terminals
+                        .get(&(project_id.clone(), w.id.clone()))
+                        .into_iter()
+                        .flatten()
+                        .copied(),
+                );
                 entries.push(json!({
                     "worktree_id": w.id,
                     "project_id": project_id,
@@ -2931,7 +2981,8 @@ impl AppState {
                         "deletions": w.uncommitted.deletions,
                     },
                     "adoptable": adoptable,
-                    "agent_working": agent_working.contains(&w.id),
+                    "agent_working": agent_working,
+                    "can_finish": can_finish,
                     // A worktree Build cut carries attention from birth, so it
                     // surfaces in the rail as something waiting for you. One made
                     // outside Build has none until you act on it here, and stays
@@ -3411,6 +3462,250 @@ impl AppState {
         }))
     }
 
+    /// Finish an external worktree selected only by server-resolved ids. The
+    /// forced scan is both stale-id protection and the execution-time status
+    /// recheck; client paths are ignored and never become an authority.
+    fn worktree_finish(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let worktree_id = require_str(params, "worktree_id")?;
+        let action = parse_worktree_finish_action(&require_str(params, "action")?)?;
+        let (project_path, base_branch) = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| (project.repo_path.clone(), project.base_branch.clone()))
+            .ok_or("unknown project_id")?;
+        let canonical_project_path = project_path.display().to_string();
+
+        self.require_store()?;
+        // A completed record makes the mutation idempotent. A pending record is
+        // the crash/failure-safe resume point and uses only the same server ids.
+        if let Some(record) = self.archived_worktrees.get(&worktree_id).cloned() {
+            if record.project_path == canonical_project_path {
+                if record.action != action {
+                    return Err(format!(
+                        "worktree.finish already started with action {:?}",
+                        record.action
+                    ));
+                }
+                if record.status == WorktreeFinishStatus::Archived {
+                    return Ok(archived_worktree_json(&record));
+                }
+                return self.resume_worktree_finish(
+                    &project_id,
+                    &project_path,
+                    &base_branch,
+                    record,
+                );
+            }
+        }
+
+        let external = self
+            .external_worktrees(&project_id, true)?
+            .into_iter()
+            .find(|worktree| worktree.id == worktree_id)
+            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?;
+
+        ensure_worktree_finish_eligible(&external, action, &base_branch)?;
+        let dirty_metadata = external.clone();
+        if matches!(
+            action,
+            WorktreeFinishAction::Push | WorktreeFinishAction::Merge
+        ) && external.dirty_files > 0
+        {
+            checkpoint_worktree(&external.path, action)?;
+        }
+        let head_sha = git_stdout(&external.path, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+
+        let record = PersistedArchivedWorktree {
+            status: WorktreeFinishStatus::Pending,
+            project_path: canonical_project_path,
+            worktree_id: external.id,
+            worktree_name: external.name,
+            worktree_path: external.path.display().to_string(),
+            branch: external.branch,
+            head_sha,
+            upstream: dirty_metadata.upstream,
+            unpushed: dirty_metadata.unpushed,
+            dirty_files: dirty_metadata.dirty_files,
+            uncommitted_files: dirty_metadata.uncommitted.files_changed,
+            uncommitted_insertions: dirty_metadata.uncommitted.insertions,
+            uncommitted_deletions: dirty_metadata.uncommitted.deletions,
+            action,
+            archived_at: None,
+        };
+        self.store
+            .as_ref()
+            .expect("store required before destructive git mutation")
+            .save_archived_worktree(&record)
+            .map_err(|error| format!("worktree finish intent store: {error}"))?;
+        self.archived_worktrees
+            .insert(record.worktree_id.clone(), record.clone());
+        self.resume_worktree_finish(&project_id, &project_path, &base_branch, record)
+    }
+
+    fn resume_worktree_finish(
+        &mut self,
+        project_id: &str,
+        project_path: &std::path::Path,
+        base_branch: &str,
+        mut record: PersistedArchivedWorktree,
+    ) -> Result<Value, String> {
+        let worktree_path = validate_finish_record_path(&record, project_path)?;
+
+        match record.action {
+            WorktreeFinishAction::Cleanup => {
+                if worktree_path.exists() {
+                    remove_registered_worktree(project_path, &worktree_path, false)?;
+                }
+            }
+            WorktreeFinishAction::Push => {
+                if worktree_path.exists() {
+                    crate::gitgui::push(&worktree_path, false)?;
+                    remove_registered_worktree(project_path, &worktree_path, false)?;
+                }
+            }
+            WorktreeFinishAction::Merge => {
+                let branch_exists = record
+                    .branch
+                    .as_deref()
+                    .map(|branch| local_branch_exists(project_path, branch))
+                    .transpose()?
+                    .unwrap_or(false);
+                if !worktree_path.exists() && branch_exists {
+                    return Err(
+                        "worktree.finish merge lost its worktree before branch deletion"
+                            .to_string(),
+                    );
+                }
+                if worktree_path.exists() {
+                    let deleted_branch =
+                        if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
+                            merge_external_branch(project_path, branch, base_branch)?;
+                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+                            true
+                        } else {
+                            false
+                        };
+                    if let Err(remove_error) =
+                        remove_registered_worktree(project_path, &worktree_path, true)
+                    {
+                        restore_finish_branch_after_removal_failure(
+                            project_path,
+                            &record,
+                            deleted_branch,
+                            &remove_error,
+                        )?;
+                        return Err(remove_error);
+                    }
+                }
+            }
+            WorktreeFinishAction::Delete => {
+                let branch_exists = record
+                    .branch
+                    .as_deref()
+                    .map(|branch| local_branch_exists(project_path, branch))
+                    .transpose()?
+                    .unwrap_or(false);
+                if !worktree_path.exists() && branch_exists {
+                    return Err(
+                        "worktree.finish delete lost its worktree before branch deletion"
+                            .to_string(),
+                    );
+                }
+                if worktree_path.exists() {
+                    let deleted_branch =
+                        if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
+                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+                            true
+                        } else {
+                            false
+                        };
+                    if let Err(remove_error) =
+                        remove_registered_worktree(project_path, &worktree_path, true)
+                    {
+                        restore_finish_branch_after_removal_failure(
+                            project_path,
+                            &record,
+                            deleted_branch,
+                            &remove_error,
+                        )?;
+                        return Err(remove_error);
+                    }
+                }
+            }
+        }
+
+        record.status = WorktreeFinishStatus::Archived;
+        record.archived_at = Some(now_rfc3339());
+        self.store
+            .as_ref()
+            .expect("store required before destructive git mutation")
+            .save_archived_worktree(&record)
+            .map_err(|error| format!("worktree archive store: {error}"))?;
+        self.archived_worktrees
+            .insert(record.worktree_id.clone(), record.clone());
+        self.close_external_worktree_terminals(project_id, &record.worktree_id);
+        self.invalidate_external_scan(project_id);
+        self.persist_attention();
+        Ok(archived_worktree_json(&record))
+    }
+
+    fn recover_completed_worktree_finishes(&mut self) {
+        let recoverable = self
+            .archived_worktrees
+            .values()
+            .filter(|record| {
+                record.status == WorktreeFinishStatus::Pending
+                    && finish_git_steps_are_complete(record)
+            })
+            .map(|record| record.worktree_id.clone())
+            .collect::<Vec<_>>();
+        for worktree_id in recoverable {
+            let mut record = self.archived_worktrees[&worktree_id].clone();
+            record.status = WorktreeFinishStatus::Archived;
+            record.archived_at = Some(now_rfc3339());
+            let result = self
+                .store
+                .as_ref()
+                .expect("recovery only runs with a store")
+                .save_archived_worktree(&record);
+            match result {
+                Ok(()) => {
+                    self.archived_worktrees.insert(worktree_id, record);
+                }
+                Err(error) => {
+                    eprintln!("recover worktree finish {worktree_id}: {error}");
+                }
+            }
+        }
+    }
+
+    fn close_external_worktree_terminals(&mut self, project_id: &str, worktree_id: &str) {
+        let term_ids = self
+            .terms
+            .iter()
+            .filter(|(_, term)| {
+                matches!(
+                    &term.scope,
+                    TermScope::ExternalWorktree {
+                        project_id: term_project,
+                        worktree_id: term_worktree,
+                    } if term_project == project_id && term_worktree == worktree_id
+                )
+            })
+            .map(|(term_id, _)| term_id.clone())
+            .collect::<Vec<_>>();
+        for term_id in term_ids {
+            if let Some(term) = self.terms.remove(&term_id) {
+                term.session.kill_and_reap();
+                term.screen.push_closed(&term_id, "reaped");
+            }
+        }
+    }
+
     /// `entity.seen` — the human has looked at this run/plan/worktree as it
     /// stands. Versioned against the entity's state clock, so a later change
     /// makes it unseen again rather than staying read forever.
@@ -3775,6 +4070,27 @@ impl AppState {
                 now_rfc3339(),
             );
         }
+        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+
+    /// Archive a completed plan without changing its lifecycle state or
+    /// deleting canonical docs/run history. Repeating the request preserves the
+    /// first archive timestamp.
+    fn plan_archive(&mut self, params: &Value) -> Result<Value, String> {
+        let plan_id = require_str(params, "plan_id")?;
+        let mut active = self.take_plan(&plan_id)?;
+        let outcome = if active.plan.archived_at.is_some() {
+            Ok(())
+        } else if self.plan_implementation_complete(&plan_id, &active) {
+            active.plan.archived_at = Some(now_rfc3339());
+            active.session.end();
+            Ok(())
+        } else {
+            Err("plan.archive: plan implementation is incomplete".to_string())
+        };
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
@@ -4586,6 +4902,7 @@ impl AppState {
         let plans: Vec<Value> = {
             let ids: Vec<String> = self.plans.keys().cloned().collect();
             ids.into_iter()
+                .filter(|id| self.plans[id].plan.archived_at.is_none())
                 .map(|id| {
                     let active = self.plans.get(&id).expect("listed above");
                     self.plan_view(&id, active, ThreadDetail::Digest)
@@ -4593,7 +4910,12 @@ impl AppState {
                 .collect()
         };
         let runs: Vec<Value> = {
-            let ids: Vec<String> = self.runs.keys().cloned().collect();
+            let ids: Vec<String> = self
+                .runs
+                .iter()
+                .filter(|(_, active)| active.run.state != RunState::Archived)
+                .map(|(id, _)| id.clone())
+                .collect();
             ids.into_iter()
                 .map(|id| {
                     let stat = self.run_stat(&id);
@@ -4614,6 +4936,36 @@ impl AppState {
             "external_worktrees": external_worktrees,
             "primary_changes": primary_changes,
         })
+    }
+
+    /// Archived plans and external worktrees for one project, grouped by kind.
+    /// Canonical project path is the durable join because project ids remint.
+    fn archive_list(&self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let project = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or("unknown project_id")?;
+        let project_path = project.repo_path.display().to_string();
+        let plans = self
+            .plans
+            .iter()
+            .filter(|(plan_id, active)| {
+                active.plan.archived_at.is_some() && self.project_path_for(plan_id) == project_path
+            })
+            .map(|(plan_id, active)| self.plan_view(plan_id, active, ThreadDetail::Digest))
+            .collect::<Vec<_>>();
+        let worktrees = self
+            .archived_worktrees
+            .values()
+            .filter(|record| {
+                record.project_path == project_path
+                    && record.status == WorktreeFinishStatus::Archived
+            })
+            .map(archived_worktree_json)
+            .collect::<Vec<_>>();
+        Ok(json!({ "plans": plans, "worktrees": worktrees }))
     }
 
     /// A run the user deletes must disappear from Build. Any live run whose
@@ -4723,6 +5075,7 @@ impl AppState {
                 && !run.run.state.is_terminal())
             .then(|| id.clone())
         });
+        let implementation_complete = self.plan_implementation_complete(plan_id, active);
         json!({
             "plan_id": plan_id,
             "goal": active.plan.goal,
@@ -4744,6 +5097,9 @@ impl AppState {
                 ThreadDetail::Full => active.thread.wire_value(),
             },
             "active_run_id": active_run_id,
+            "implementation_complete": implementation_complete,
+            "can_archive": implementation_complete && active.plan.archived_at.is_none(),
+            "archived_at": active.plan.archived_at,
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
             // instead of retrying reads that can never succeed.
@@ -4759,6 +5115,30 @@ impl AppState {
                 .iter()
                 .map(|doc| plan_stage_json(active, doc))
                 .collect::<Vec<_>>(),
+        })
+    }
+
+    /// Server-derived implementation completion. Multi-stage completion must
+    /// be proven by one linked run that passed every manifest stage and reached
+    /// Review/Merged; single-doc plans only need that run-level human gate.
+    fn plan_implementation_complete(&self, plan_id: &str, plan: &ActivePlan) -> bool {
+        self.runs.values().any(|run| {
+            if run.run.plan_id.as_ref().map(|id| id.0.as_str()) != Some(plan_id) {
+                return false;
+            }
+            let passed_human_gate = matches!(run.run.state, RunState::Review | RunState::Merged);
+            if plan.stages.is_empty() {
+                return passed_human_gate;
+            }
+            matches!(
+                run.run.state,
+                RunState::Review | RunState::Merged | RunState::Archived
+            ) && plan.stages.iter().all(|stage| {
+                run.stages.iter().any(|progress| {
+                    progress.stage_id == stage.id
+                        && progress.state == StageProgressState::Validated { passed: true }
+                })
+            })
         })
     }
 
@@ -5591,6 +5971,256 @@ fn media_mime_hint(path: &std::path::Path) -> Option<&'static str> {
 
 fn err(e: OrchestratorError) -> String {
     e.to_string()
+}
+
+fn parse_worktree_finish_action(action: &str) -> Result<WorktreeFinishAction, String> {
+    match action {
+        "cleanup" => Ok(WorktreeFinishAction::Cleanup),
+        "push" => Ok(WorktreeFinishAction::Push),
+        "merge" => Ok(WorktreeFinishAction::Merge),
+        "delete" => Ok(WorktreeFinishAction::Delete),
+        other => Err(format!(
+            "unknown worktree finish action {other:?} — expected cleanup, push, merge, or delete"
+        )),
+    }
+}
+
+fn ensure_worktree_finish_eligible(
+    worktree: &ExternalWorktree,
+    action: WorktreeFinishAction,
+    base_branch: &str,
+) -> Result<(), String> {
+    let repo = git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
+    let conflicted = repo
+        .statuses(Some(
+            git2::StatusOptions::new()
+                .include_untracked(true)
+                .recurse_untracked_dirs(true),
+        ))
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|entry| entry.status().is_conflicted());
+    match action {
+        WorktreeFinishAction::Cleanup => {
+            if worktree.dirty_files > 0
+                || conflicted
+                || repo.state() != git2::RepositoryState::Clean
+            {
+                return Err(
+                    "worktree.finish cleanup requires no uncommitted, staged, untracked, or conflicted changes"
+                        .to_string(),
+                );
+            }
+        }
+        WorktreeFinishAction::Push => {
+            if worktree.upstream.is_none() {
+                return Err("worktree.finish push requires an upstream/tracking branch".to_string());
+            }
+            if conflicted || repo.state() != git2::RepositoryState::Clean {
+                return Err(
+                    "worktree.finish push cannot checkpoint conflicted git state".to_string(),
+                );
+            }
+        }
+        WorktreeFinishAction::Merge => {
+            let branch = worktree
+                .branch
+                .as_deref()
+                .ok_or("worktree.finish merge requires an attached branch")?;
+            if branch == base_branch {
+                return Err(format!(
+                    "worktree.finish merge requires a branch different from base {base_branch:?}"
+                ));
+            }
+            if conflicted || repo.state() != git2::RepositoryState::Clean {
+                return Err(
+                    "worktree.finish merge cannot checkpoint conflicted git state".to_string(),
+                );
+            }
+        }
+        WorktreeFinishAction::Delete => {}
+    }
+    Ok(())
+}
+
+fn checkpoint_worktree(
+    worktree_path: &std::path::Path,
+    action: WorktreeFinishAction,
+) -> Result<(), String> {
+    git_stdout(worktree_path, &["add", "-A", "--", "."])?;
+    let staged = git_stdout(worktree_path, &["diff", "--cached", "--name-only"])?;
+    if staged.trim().is_empty() {
+        return Ok(());
+    }
+    let message = match action {
+        WorktreeFinishAction::Push => "Build checkpoint before push",
+        WorktreeFinishAction::Merge => "Build checkpoint before merge",
+        WorktreeFinishAction::Cleanup | WorktreeFinishAction::Delete => {
+            unreachable!("only push/merge checkpoint")
+        }
+    };
+    git_stdout(worktree_path, &["commit", "-m", message]).map(|_| ())
+}
+
+fn validate_finish_record_path(
+    record: &PersistedArchivedWorktree,
+    project_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    if record.project_path != project_path.display().to_string() {
+        return Err("worktree.finish record belongs to another project".to_string());
+    }
+    let worktree_path = std::path::PathBuf::from(&record.worktree_path);
+    let canonical_project = std::fs::canonicalize(project_path)
+        .map_err(|error| format!("worktree.finish project path: {error}"))?;
+    let resolved_worktree = if worktree_path.exists() {
+        std::fs::canonicalize(&worktree_path)
+            .map_err(|error| format!("worktree.finish worktree path: {error}"))?
+    } else {
+        worktree_path.clone()
+    };
+    if resolved_worktree == canonical_project {
+        return Err("worktree.finish never acts on the primary checkout".to_string());
+    }
+    if crate::worktree::external_worktree_id(&resolved_worktree) != record.worktree_id {
+        return Err(
+            "worktree.finish record id no longer matches its server-resolved path".to_string(),
+        );
+    }
+    Ok(resolved_worktree)
+}
+
+fn local_branch_exists(project_path: &std::path::Path, branch: &str) -> Result<bool, String> {
+    let repo = git2::Repository::open(project_path).map_err(|error| error.to_string())?;
+    let result = match repo.find_branch(branch, git2::BranchType::Local) {
+        Ok(_) => Ok(true),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    };
+    result
+}
+
+fn delete_local_branch_for_finish(
+    project_path: &std::path::Path,
+    branch: &str,
+    expected_head: &str,
+) -> Result<(), String> {
+    let reference = format!("refs/heads/{branch}");
+    git_stdout(
+        project_path,
+        &["update-ref", "-d", &reference, expected_head],
+    )
+    .map(|_| ())
+}
+
+fn restore_finish_branch_after_removal_failure(
+    project_path: &std::path::Path,
+    record: &PersistedArchivedWorktree,
+    deleted_branch: bool,
+    remove_error: &str,
+) -> Result<(), String> {
+    let Some(branch) = record.branch.as_deref().filter(|_| deleted_branch) else {
+        return Ok(());
+    };
+    let reference = format!("refs/heads/{branch}");
+    git_stdout(project_path, &["update-ref", &reference, &record.head_sha])
+        .map(|_| ())
+        .map_err(|restore_error| {
+            format!(
+                "{remove_error}; restoring branch {branch:?} after removal failure also failed: {restore_error}"
+            )
+        })
+}
+
+fn finish_git_steps_are_complete(record: &PersistedArchivedWorktree) -> bool {
+    if std::path::Path::new(&record.worktree_path).exists() {
+        return false;
+    }
+    match record.action {
+        WorktreeFinishAction::Cleanup | WorktreeFinishAction::Push => true,
+        WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
+            record.branch.as_deref().is_none_or(|branch| {
+                local_branch_exists(std::path::Path::new(&record.project_path), branch)
+                    .is_ok_and(|exists| !exists)
+            })
+        }
+    }
+}
+
+fn merge_external_branch(
+    project_path: &std::path::Path,
+    branch: &str,
+    base_branch: &str,
+) -> Result<(), String> {
+    let checked_out = git_stdout(project_path, &["symbolic-ref", "--short", "HEAD"])?;
+    if checked_out.trim() != base_branch {
+        return Err(format!(
+            "primary checkout is on {:?}, not configured base {base_branch:?}",
+            checked_out.trim()
+        ));
+    }
+    if let Err(merge_error) = git_stdout(project_path, &["merge", "--no-edit", "--", branch]) {
+        if let Err(abort_error) = git_stdout(project_path, &["merge", "--abort"]) {
+            eprintln!("worktree.finish merge {branch}: abort failed: {abort_error}");
+        }
+        return Err(merge_error);
+    }
+    Ok(())
+}
+
+fn remove_registered_worktree(
+    project_path: &std::path::Path,
+    worktree_path: &std::path::Path,
+    force: bool,
+) -> Result<(), String> {
+    let path = worktree_path
+        .to_str()
+        .ok_or("worktree path is not valid UTF-8")?;
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.extend(["--", path]);
+    git_stdout(project_path, &args).map(|_| ())
+}
+
+fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("could not run git: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!("git {args:?}: {detail}"))
+}
+
+fn archived_worktree_json(record: &PersistedArchivedWorktree) -> Value {
+    json!({
+        "worktree_id": record.worktree_id,
+        "name": record.worktree_name,
+        "path": record.worktree_path,
+        "branch": record.branch,
+        "head_sha": record.head_sha,
+        "upstream": record.upstream,
+        "unpushed": record.unpushed,
+        "dirty_files": record.dirty_files,
+        "uncommitted": {
+            "files_changed": record.uncommitted_files,
+            "insertions": record.uncommitted_insertions,
+            "deletions": record.uncommitted_deletions,
+        },
+        "action": record.action,
+        "archived_at": record.archived_at,
+    })
 }
 
 fn apply_thread_action(
@@ -9388,7 +10018,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_run_worktree_archives_it_and_plan_docs_survive() {
+    fn deleting_a_run_worktree_removes_it_from_the_board_and_plan_docs_survive() {
         let (dir, repo) = init_repo();
         let plan_id;
         let run_id;
@@ -9413,17 +10043,14 @@ mod tests {
             let worktree = state.runs.get(&run_id).unwrap().worktree.path.clone();
             std::fs::remove_dir_all(&worktree).unwrap();
 
-            // The next board poll retires the run to archived history.
+            // The next board poll retires the run to internal archived history.
             let board = state.handle(req("board.list", json!({})));
-            let entry = board["result"]["runs"]
+            assert!(board["result"]["runs"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|t| t["run_id"] == json!(run_id.clone()))
-                .unwrap()
-                .clone();
-            assert_eq!(entry["state"], "archived", "{entry:?}");
-            assert_eq!(entry["needs_attention"], false);
+                .all(|run| run["run_id"] != run_id));
+            assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
 
             // The plan and its docs are untouched — they were never in the run.
             let doc = state.handle(req(
@@ -10855,6 +11482,7 @@ mod tests {
             project_path: repo.display().to_string(),
             base_branch: "main".into(),
             state: PlanState::Drafting,
+            archived_at: None,
             worktree_name: Some(id.into()),
             worktree_path: Some(worktree.display().to_string()),
             branch: Some(format!("plan/{id}")),
@@ -11482,6 +12110,29 @@ mod tests {
         assert!(!agent_is_working(TermKind::Shell, just_now));
     }
 
+    #[test]
+    fn can_finish_requires_an_idle_non_shell_agent() {
+        let recent = Duration::from_secs(1);
+        let idle = AGENT_WORKING_WINDOW + Duration::from_secs(1);
+
+        assert_eq!(
+            worktree_agent_signals([(TermKind::Shell, recent)]),
+            (false, false)
+        );
+        assert_eq!(
+            worktree_agent_signals([(TermKind::Claude, recent)]),
+            (true, false)
+        );
+        assert_eq!(
+            worktree_agent_signals([(TermKind::Codex, idle)]),
+            (false, true)
+        );
+        assert_eq!(
+            worktree_agent_signals([(TermKind::Claude, idle), (TermKind::Codex, recent)]),
+            (true, false)
+        );
+    }
+
     /// The board reports it per worktree, so a bare worktree — which has no run
     /// state to read — can still say whether something is happening in it.
     #[tokio::test]
@@ -11515,6 +12166,7 @@ mod tests {
             false,
             "nothing running yet"
         );
+        assert_eq!(entry_of(&state)["can_finish"], false);
 
         // A shell is not an agent, so opening one must not start the pulse.
         let created = handler(
@@ -11530,6 +12182,7 @@ mod tests {
             false,
             "a shell is the human's own hands"
         );
+        assert_eq!(entry_of(&state)["can_finish"], false);
     }
 
     /// The relay calls `dispatch` directly — `handle` is a test convenience — so
@@ -11575,5 +12228,680 @@ mod tests {
         let after = attention_of(&mut reloaded, &run_id);
         assert_eq!(after["seen"], true, "{after:?}");
         assert_eq!(after["interacted"], true, "{after:?}");
+    }
+
+    #[test]
+    fn completed_plan_archives_idempotently_and_moves_off_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "archive completed plan");
+        let project_id = state.projects[0].id.clone();
+
+        let before = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert_eq!(
+            before["result"]["implementation_complete"], true,
+            "{before:?}"
+        );
+        assert_eq!(before["result"]["can_archive"], true, "{before:?}");
+        assert!(before["result"]["archived_at"].is_null());
+
+        let archived = state.handle(req("plan.archive", json!({ "plan_id": plan_id })));
+        assert_eq!(archived["ok"], true, "{archived:?}");
+        let archived_at = archived["result"]["archived_at"]
+            .as_str()
+            .expect("archive timestamp")
+            .to_string();
+        assert_eq!(archived["result"]["can_archive"], false);
+
+        let repeated = state.handle(req("plan.archive", json!({ "plan_id": plan_id })));
+        assert_eq!(repeated["result"]["archived_at"], archived_at);
+        let board = state.handle(req("board.list", json!({})));
+        assert!(board["result"]["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|plan| plan["plan_id"] != plan_id));
+        assert!(board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"] == run_id));
+
+        let listed = state.handle(req("plan.list", json!({})));
+        assert!(listed["result"]["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plan| plan["plan_id"] == plan_id));
+        let archive = state.handle(req("archive.list", json!({ "project_id": project_id })));
+        assert_eq!(archive["result"]["plans"].as_array().unwrap().len(), 1);
+        assert!(archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn plan_archive_rejects_incomplete_plans_and_legacy_completion_uses_run_gate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let incomplete = state.handle(req("plan.create", json!({ "goal": "not implemented" })));
+        let incomplete_id = plan_id_of(&incomplete);
+        let rejected = state.handle(req("plan.archive", json!({ "plan_id": incomplete_id })));
+        assert_eq!(rejected["ok"], false, "{rejected:?}");
+        assert!(rejected["error"].as_str().unwrap().contains("incomplete"));
+
+        let (legacy_plan_id, legacy_run_id) =
+            planned_run_in_review(&mut state, "legacy completion");
+        state.plans.get_mut(&legacy_plan_id).unwrap().stages.clear();
+        state.runs.get_mut(&legacy_run_id).unwrap().stages.clear();
+        let legacy = state.handle(req("plan.get", json!({ "plan_id": legacy_plan_id })));
+        assert_eq!(
+            legacy["result"]["implementation_complete"], true,
+            "{legacy:?}"
+        );
+    }
+
+    #[test]
+    fn multi_stage_completion_requires_every_plan_stage_to_have_passed_in_one_run() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "all stages");
+        state.runs.get_mut(&run_id).unwrap().stages.pop();
+
+        let incomplete = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert_eq!(incomplete["result"]["implementation_complete"], false);
+        assert_eq!(incomplete["result"]["can_archive"], false);
+    }
+
+    #[test]
+    fn archived_completed_run_stays_internal_for_plan_completion() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "completed then removed");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        std::fs::remove_dir_all(worktree).unwrap();
+
+        let board = state.handle(req("board.list", json!({})));
+        assert!(board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|run| run["run_id"] != run_id));
+        assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
+        let plan = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert_eq!(plan["result"]["implementation_complete"], true, "{plan:?}");
+        assert_eq!(plan["result"]["can_archive"], true, "{plan:?}");
+    }
+
+    #[test]
+    fn archived_plan_metadata_survives_restart_with_docs_and_runs() {
+        let (dir, repo) = init_repo();
+        let plan_id;
+        let run_id;
+        let canonical_doc;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            (plan_id, run_id) = planned_run_in_review(&mut state, "durable archive");
+            let before = state.handle(req(
+                "plan.stage_doc",
+                json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+            ));
+            canonical_doc = before["result"]["contents"]
+                .as_str()
+                .expect("canonical stage doc")
+                .to_string();
+            let archived = state.handle(req("plan.archive", json!({ "plan_id": plan_id })));
+            assert_eq!(archived["ok"], true, "{archived:?}");
+            let repeated = state.handle(req("plan.archive", json!({ "plan_id": plan_id })));
+            assert_eq!(
+                repeated["result"]["archived_at"],
+                archived["result"]["archived_at"]
+            );
+            let after = state.handle(req(
+                "plan.stage_doc",
+                json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+            ));
+            assert_eq!(after["result"]["contents"], canonical_doc);
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let plan = reloaded.handle(req("plan.get", json!({ "plan_id": plan_id })));
+        assert!(plan["result"]["archived_at"].is_string(), "{plan:?}");
+        assert_eq!(plan["result"]["implementation_complete"], true);
+        assert_eq!(
+            reloaded.handle(req("run.get", json!({ "run_id": run_id })))["ok"],
+            true
+        );
+        let doc = reloaded.handle(req(
+            "plan.stage_doc",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(doc["ok"], true, "{doc:?}");
+        assert_eq!(doc["result"]["contents"], canonical_doc);
+    }
+
+    fn external_id(state: &mut AppState, project_id: &str, branch: Option<&str>) -> String {
+        state
+            .external_worktrees(project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == branch)
+            .expect("external worktree is discoverable")
+            .id
+    }
+
+    #[test]
+    fn worktree_finish_cleanup_requires_clean_and_preserves_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "cleanup", "cleanup");
+        let worktree_id = external_id(&mut state, &project_id, Some("cleanup"));
+
+        std::fs::write(path.join("dirty.txt"), "dirty\n").unwrap();
+        let rejected = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+        ));
+        assert_eq!(rejected["ok"], false, "{rejected:?}");
+        assert!(path.exists());
+
+        std::fs::remove_file(path.join("dirty.txt")).unwrap();
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["action"], "cleanup");
+        assert!(!path.exists());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("cleanup", git2::BranchType::Local)
+            .is_ok());
+
+        let repeated = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+        ));
+        assert_eq!(repeated["ok"], true, "{repeated:?}");
+    }
+
+    #[test]
+    fn worktree_finish_store_failure_happens_before_worktree_removal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "store-failure", "store-failure");
+        let worktree_id = external_id(&mut state, &project_id, Some("store-failure"));
+        let store_root = dir.path().join("store");
+        std::fs::create_dir_all(&store_root).unwrap();
+        std::fs::write(store_root.join("archived-worktrees"), "not a directory").unwrap();
+
+        let failed = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(path.exists(), "store failure must precede removal");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("store-failure", git2::BranchType::Local)
+            .is_ok());
+    }
+
+    #[test]
+    fn worktree_finish_merge_checkpoints_dirty_work_deletes_branch_and_archives() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "merge-me", "merge-me");
+        std::fs::write(path.join("feature.txt"), "finished\n").unwrap();
+        let worktree_id = external_id(&mut state, &project_id, Some("merge-me"));
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "merge" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(repo.join("feature.txt").is_file());
+        assert!(!path.exists());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("merge-me", git2::BranchType::Local)
+            .is_err());
+        let log = Command::new("git")
+            .args(["log", "--format=%s", "-2"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&log.stdout).contains("Build checkpoint before merge"));
+
+        let archive = state.handle(req("archive.list", json!({ "project_id": project_id })));
+        let worktree = &archive["result"]["worktrees"][0];
+        assert_eq!(worktree["worktree_id"], worktree_id);
+        assert_eq!(worktree["dirty_files"], 1);
+        assert_eq!(worktree["action"], "merge");
+    }
+
+    #[test]
+    fn worktree_finish_push_requires_tracking_then_checkpoints_pushes_and_keeps_branch() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "push-me", "push-me");
+        let worktree_id = external_id(&mut state, &project_id, Some("push-me"));
+
+        let rejected = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "push" }),
+        ));
+        assert_eq!(rejected["ok"], false, "{rejected:?}");
+        assert!(rejected["error"].as_str().unwrap().contains("upstream"));
+
+        git_in_dir(&path, &["push", "-u", "origin", "push-me"]);
+        std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "push" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(!path.exists());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("push-me", git2::BranchType::Local)
+            .is_ok());
+        let remote_subject = Command::new("git")
+            .args(["log", "--format=%s", "-1", "origin/push-me"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&remote_subject.stdout)
+            .contains("Build checkpoint before push"));
+    }
+
+    #[test]
+    fn worktree_finish_delete_accepts_dirty_detached_head_without_deleting_a_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "detached", "detached-source");
+        git_in_dir(&path, &["checkout", "--detach"]);
+        std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
+        let worktree_id = external_id(&mut state, &project_id, None);
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "delete" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(finished["result"]["branch"].is_null());
+        assert!(!path.exists());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("detached-source", git2::BranchType::Local)
+            .is_ok());
+
+        let attached_path =
+            add_external_worktree(&repo, dir.path(), "attached-delete", "attached-delete");
+        std::fs::write(attached_path.join("discarded.txt"), "discard me too\n").unwrap();
+        let attached_id = external_id(&mut state, &project_id, Some("attached-delete"));
+        let attached = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": attached_id, "action": "delete" }),
+        ));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("attached-delete", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn worktree_finish_branch_delete_failure_is_retryable_and_not_archived() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "delete-retry", "delete-retry");
+        std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
+        let worktree_id = external_id(&mut state, &project_id, Some("delete-retry"));
+        let lock = repo.join(".git/refs/heads/delete-retry.lock");
+        std::fs::write(&lock, "locked\n").unwrap();
+
+        let failed = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "delete" }),
+        ));
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(
+            path.exists(),
+            "branch failure must leave a retryable worktree"
+        );
+        assert_eq!(
+            external_id(&mut state, &project_id, Some("delete-retry")),
+            worktree_id,
+            "the rail must still resolve the original attached worktree"
+        );
+        let archive = state.handle(req("archive.list", json!({ "project_id": project_id })));
+        assert!(archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        std::fs::remove_file(lock).unwrap();
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "delete" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(!path.exists());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("delete-retry", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn worktree_finish_never_accepts_paths_and_git_failure_does_not_archive() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "conflict", "conflict");
+        std::fs::write(path.join("README.md"), "feature\n").unwrap();
+        git_in_dir(&path, &["commit", "-am", "feature"]);
+        std::fs::write(repo.join("README.md"), "mainline\n").unwrap();
+        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        let worktree_id = external_id(&mut state, &project_id, Some("conflict"));
+
+        let forged = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": "wt-not-real",
+                "path": path,
+                "action": "delete"
+            }),
+        ));
+        assert_eq!(forged["ok"], false, "{forged:?}");
+        assert!(path.exists());
+
+        let failed = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "merge" }),
+        ));
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(path.exists(), "a failed merge must not remove the worktree");
+        let archive = state.handle(req("archive.list", json!({ "project_id": project_id })));
+        assert!(archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        let primary_id =
+            crate::worktree::external_worktree_id(&std::fs::canonicalize(&repo).unwrap());
+        let primary = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": primary_id,
+                "action": "delete"
+            }),
+        ));
+        assert_eq!(primary["ok"], false, "{primary:?}");
+        assert!(repo.join("README.md").exists());
+    }
+
+    #[test]
+    fn archive_list_is_scoped_by_project_canonical_path() {
+        let (dir, repo) = init_repo();
+        let (_other_dir, other_repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let first_project = state.projects[0].id.clone();
+        let second_project = state.add_project(other_repo.clone(), "main".into());
+        let first_path = add_external_worktree(&repo, dir.path(), "first", "first");
+        let second_path = add_external_worktree(&other_repo, dir.path(), "second", "second");
+        let first_id = external_id(&mut state, &first_project, Some("first"));
+        let second_id = external_id(&mut state, &second_project, Some("second"));
+        assert_eq!(state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": first_project, "worktree_id": first_id, "action": "cleanup" }),
+        ))["ok"], true);
+        assert_eq!(state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": second_project, "worktree_id": second_id, "action": "cleanup" }),
+        ))["ok"], true);
+        assert!(!first_path.exists() && !second_path.exists());
+
+        let first = state.handle(req("archive.list", json!({ "project_id": first_project })));
+        let second = state.handle(req("archive.list", json!({ "project_id": second_project })));
+        assert_eq!(first["result"]["worktrees"].as_array().unwrap().len(), 1);
+        assert_eq!(second["result"]["worktrees"].as_array().unwrap().len(), 1);
+        assert_ne!(
+            first["result"]["worktrees"][0]["worktree_id"],
+            second["result"]["worktrees"][0]["worktree_id"]
+        );
+    }
+
+    #[test]
+    fn archived_worktrees_load_into_archive_list_after_restart() {
+        let (dir, repo) = init_repo();
+        let worktree_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            add_external_worktree(&repo, dir.path(), "durable-finish", "durable-finish");
+            worktree_id = external_id(&mut state, &project_id, Some("durable-finish"));
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let reminted_project_id = reloaded.projects[0].id.clone();
+        let archive = reloaded.handle(req(
+            "archive.list",
+            json!({ "project_id": reminted_project_id }),
+        ));
+        assert!(archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|worktree| worktree["worktree_id"] == worktree_id));
+    }
+
+    #[test]
+    fn restart_completes_a_durable_finish_intent_after_worktree_removal() {
+        let (dir, repo) = init_repo();
+        let worktree_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            add_external_worktree(
+                &repo,
+                dir.path(),
+                "interrupted-finish",
+                "interrupted-finish",
+            );
+            worktree_id = external_id(&mut state, &project_id, Some("interrupted-finish"));
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let record_path = dir
+            .path()
+            .join("store/archived-worktrees")
+            .join(format!("{worktree_id}.json"));
+        let mut record: Value =
+            serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+        record["status"] = json!("pending");
+        record["archived_at"] = Value::Null;
+        std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let project_id = reloaded.projects[0].id.clone();
+        let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
+        assert!(archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|worktree| worktree["worktree_id"] == worktree_id));
+        let recovered: Value =
+            serde_json::from_str(&std::fs::read_to_string(record_path).unwrap()).unwrap();
+        assert_eq!(recovered["status"], "archived");
+        assert!(recovered["archived_at"].is_string());
+    }
+
+    #[test]
+    fn pushed_worktrees_load_into_archive_list_after_restart() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let worktree_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            let path = add_external_worktree(&repo, dir.path(), "durable-push", "durable-push");
+            git_in_dir(&path, &["push", "-u", "origin", "durable-push"]);
+            std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
+            worktree_id = external_id(&mut state, &project_id, Some("durable-push"));
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "push" }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let project_id = reloaded.projects[0].id.clone();
+        let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
+        let record = archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|worktree| worktree["worktree_id"] == worktree_id)
+            .unwrap();
+        assert_eq!(record["action"], "push");
+    }
+
+    #[test]
+    fn deleted_worktrees_load_into_archive_list_after_restart() {
+        let (dir, repo) = init_repo();
+        let worktree_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            let path = add_external_worktree(&repo, dir.path(), "durable-delete", "durable-delete");
+            std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
+            worktree_id = external_id(&mut state, &project_id, Some("durable-delete"));
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "delete" }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let project_id = reloaded.projects[0].id.clone();
+        let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
+        let record = archive["result"]["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|worktree| worktree["worktree_id"] == worktree_id)
+            .unwrap();
+        assert_eq!(record["action"], "delete");
+    }
+
+    #[test]
+    fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "idle-agent", "idle-agent");
+        let worktree_id = external_id(&mut state, &project_id, Some("idle-agent"));
+        let size = PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let session = PtySession::spawn(
+            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            Some(path.clone()),
+            size,
+        )
+        .unwrap();
+        session.set_idle_for_test(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+        state.terms.insert(
+            "term-idle-agent".into(),
+            TermSession {
+                term_id: "term-idle-agent".into(),
+                scope: TermScope::ExternalWorktree {
+                    project_id: project_id.clone(),
+                    worktree_id: worktree_id.clone(),
+                },
+                kind: TermKind::Claude,
+                scope_root: path,
+                created_at: now_rfc3339(),
+                session,
+                screen: TermScreen::new(80, 24),
+            },
+        );
+
+        let board = state.handle(req("board.list", json!({})));
+        let entry = board["result"]["external_worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["worktree_id"] == worktree_id)
+            .unwrap();
+        assert_eq!(entry["agent_working"], false, "{entry:?}");
+        assert_eq!(entry["can_finish"], true, "{entry:?}");
+        state
+            .terms
+            .remove("term-idle-agent")
+            .unwrap()
+            .session
+            .kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn worktree_finish_closes_and_reaps_scoped_terminals() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        app.term_shell = "/bin/bash".into();
+        let project_id = app.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "terminal-finish", "terminal-finish");
+        let worktree_id = external_id(&mut app, &project_id, Some("terminal-finish"));
+        let state = app.shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        let created = handler(
+            SessionSender::detached("s1"),
+            req(
+                "term.create",
+                json!({ "project_id": project_id, "worktree_id": worktree_id }),
+            ),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        let pid = state.lock().unwrap().terms[&term_id].session.pid().unwrap();
+
+        let finished = handler(
+            SessionSender::detached("s1"),
+            req(
+                "worktree.finish",
+                json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+            ),
+        );
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(!state.lock().unwrap().terms.contains_key(&term_id));
+        assert!(
+            process_reaped(pid),
+            "scoped terminal must be killed and reaped"
+        );
     }
 }

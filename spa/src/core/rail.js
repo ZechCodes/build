@@ -81,6 +81,8 @@ function planEntry(plan) {
     needsYou: !!plan.needs_attention,
     changedAt: ms(plan.state_changed_at) ?? ms(plan.updated_at),
     attention: plan.attention || {},
+    can_archive: !!plan.can_archive,
+    archived_at: plan.archived_at || null,
     status: null,
     route: { name: "plan", projectId: plan.project_id, id: plan.plan_id, tab: "review" },
   };
@@ -98,10 +100,17 @@ function worktreeEntry(worktree) {
     branch: worktree.branch || "",
     state: "",
     working: !!worktree.agent_working,
+    agent_working: !!worktree.agent_working,
     terminal: false,
     needsYou: false,
     changedAt: ms(worktree.attention?.resume_at),
     attention: worktree.attention || {},
+    can_finish: !!worktree.can_finish,
+    dirty_files: worktree.dirty_files ?? 0,
+    base_branch: worktree.base_branch || null,
+    upstream: worktree.upstream || null,
+    unpushed: worktree.unpushed ?? null,
+    uncommitted: worktree.uncommitted || null,
     // Three facts, three separate questions: is this worktree out of date with
     // the branch it works against (behind), is any of its work only here
     // (unpushed), and is any of it uncommitted (+/−). The bridge measures the
@@ -146,7 +155,7 @@ const sortKey = (entry) => ms(entry.attention?.resume_at) ?? 0;
 export function railEntries({ runs = [], plans = [], worktrees = [], projectId, nowMs = Date.now(), minimum = RAIL_MINIMUM } = {}) {
   const mine = (list) => list.filter((x) => x.project_id === projectId);
   const candidates = [
-    ...mine(runs).map(runEntry),
+    ...mine(runs).filter((run) => run.state !== "archived").map(runEntry),
     ...mine(plans).map(planEntry),
     ...mine(worktrees).filter((w) => w.attention?.interacted).map(worktreeEntry),
   ];

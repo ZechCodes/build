@@ -65,8 +65,10 @@ describe("routeFromHash", () => {
 
   it("parses the project inbox and primary-checkout tabs under one URL", () => {
     expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
+    expect(routeFromHash("#/project/proj-1/issues").tab).toBe("issues");
     expect(routeFromHash("#/project/proj-1/changes").tab).toBe("changes");
     expect(routeFromHash("#/project/proj-1/files").tab).toBe("files");
+    expect(routeFromHash("#/project/proj-1/archive").tab).toBe("archive");
     expect(routeFromHash("#/project/proj-1/term-9").tab).toBe("term-9");
     expect(routeFromHash("#/project/proj-1/bogus").tab).toBe("inbox");
     expect(routeFromHash("#/project/a%20b/files")).toEqual({ name: "project", projectId: "a b", tab: "files" });
@@ -134,8 +136,10 @@ describe("hashFromRoute", () => {
       { name: "worktree", projectId: "a b", worktreeId: "wt x", tab: "files" },
       { name: "worktree", projectId: "p", worktreeId: "w", tab: "term-1" },
       { name: "project", projectId: "proj-1", tab: "inbox" },
+      { name: "project", projectId: "proj-1", tab: "issues" },
       { name: "project", projectId: "a b", tab: "changes" },
       { name: "project", projectId: "p", tab: "files" },
+      { name: "project", projectId: "a b", tab: "archive" },
       { name: "project", projectId: "p", tab: "term-2" },
     ]) {
       expect(routeFromHash(hashFromRoute(route))).toEqual(route);

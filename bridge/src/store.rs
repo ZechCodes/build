@@ -1,15 +1,11 @@
-//! Durable persistence for the plan/run split, under the bridge state dir
+//! Durable persistence for Issues, under the bridge state dir
 //! (`~/.build/tasks/` by default, next to the identity file):
 //!
 //! ```text
-//! plans/<plan_id>/record.json   the plan's durable core
-//! plans/<plan_id>/docs/…        the plan's canonical docs, in the worktree-
-//!                               relative `.build/plan.md` / `.build/plan/*`
-//!                               layout (ingest/materialize are straight copies)
-//! runs/<run_id>.json            one file per run
-//! <task_id>.json                legacy fused-task records (pre-split); boot
-//!                               migration splits them and renames to
-//!                               `<task_id>.json.migrated`
+//! issues/<issue_id>/record.json one aggregate: planning + implementation lineage
+//! issues/<issue_id>/docs/…      canonical stage-plan docs
+//! runs/<run_id>.json            planless adopted-worktree conversations only
+//! plans/… / <task_id>.json      legacy formats; boot migrates and tombstones them
 //! ```
 //!
 //! Every record holds the *durable core* of its entity — identity, project,
@@ -287,6 +283,16 @@ pub struct PersistedRun {
     pub state_changed_at: Option<String>,
 }
 
+/// Canonical durable Issue aggregate. Planning state, stage-plan review,
+/// implementation lineage, threads, and publication journals cross the crash
+/// boundary as one record instead of being reconstructed from mutable halves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedIssue {
+    pub issue: PersistedPlan,
+    #[serde(default)]
+    pub implementations: Vec<PersistedRun>,
+}
+
 /// The user-selected way an external worktree was finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -490,9 +496,17 @@ impl Store {
 
     // ---- Plans (project-scoped records + canonical docs) ----
 
-    /// Where a plan's record and docs live.
+    /// Where a legacy split plan's record and docs live.
     fn plan_dir(&self, plan_id: &str) -> PathBuf {
         self.dir.join("plans").join(plan_id)
+    }
+
+    fn issue_dir(&self, issue_id: &str) -> PathBuf {
+        self.dir.join("issues").join(issue_id)
+    }
+
+    pub fn issue_record_path(&self, issue_id: &str) -> PathBuf {
+        self.issue_dir(issue_id).join("record.json")
     }
 
     /// Where a plan's durable record lives.
@@ -502,7 +516,78 @@ impl Store {
 
     /// Where a plan's canonical docs live (worktree-relative layout inside).
     fn plan_docs_dir(&self, plan_id: &str) -> PathBuf {
-        self.plan_dir(plan_id).join("docs")
+        if self.issue_record_path(plan_id).is_file() {
+            self.issue_dir(plan_id).join("docs")
+        } else {
+            self.plan_dir(plan_id).join("docs")
+        }
+    }
+
+    /// Atomically update the planning half of a canonical Issue while retaining
+    /// every implementation lineage record already attached to it.
+    pub fn save_issue_plan(&self, record: &PersistedPlan) -> Result<(), StoreError> {
+        let path = self.issue_record_path(&record.id);
+        let implementations = if path.is_file() {
+            read_record::<PersistedIssue>(&path)?.implementations
+        } else {
+            Vec::new()
+        };
+        let legacy_docs = self.plan_dir(&record.id).join("docs");
+        let issue_docs = self.issue_dir(&record.id).join("docs");
+        if !path.is_file() && legacy_docs.is_dir() {
+            copy_tree(&legacy_docs, &issue_docs, &[])?;
+        }
+        let aggregate = PersistedIssue {
+            issue: record.clone(),
+            implementations,
+        };
+        let json = serde_json::to_string_pretty(&aggregate).expect("an Issue always serializes");
+        write_record_atomically(&path, &json)
+    }
+
+    /// Atomically append/replace one implementation inside its owning Issue.
+    pub fn save_issue_implementation(&self, record: &PersistedRun) -> Result<(), StoreError> {
+        let issue_id = record.plan_id.as_deref().ok_or_else(|| {
+            StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "implementation has no issue_id",
+            ))
+        })?;
+        let path = self.issue_record_path(issue_id);
+        let mut aggregate: PersistedIssue = read_record(&path)?;
+        if let Some(existing) = aggregate
+            .implementations
+            .iter_mut()
+            .find(|implementation| implementation.id == record.id)
+        {
+            *existing = record.clone();
+        } else {
+            aggregate.implementations.push(record.clone());
+        }
+        let json = serde_json::to_string_pretty(&aggregate).expect("an Issue always serializes");
+        write_record_atomically(&path, &json)
+    }
+
+    pub fn load_all_issues(&self) -> Result<Vec<PersistedIssue>, StoreError> {
+        let issues_dir = self.dir.join("issues");
+        if !issues_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut records: Vec<PersistedIssue> = Vec::new();
+        for entry in std::fs::read_dir(&issues_dir)? {
+            let issue_dir = entry?.path();
+            let path = issue_dir.join("record.json");
+            if path.is_file() {
+                records.push(read_record(&path)?);
+            }
+        }
+        records.sort_by(|a, b| {
+            a.issue
+                .created_at
+                .cmp(&b.issue.created_at)
+                .then(a.issue.id.cmp(&b.issue.id))
+        });
+        Ok(records)
     }
 
     /// Persist one plan record atomically and durably.
@@ -518,20 +603,23 @@ impl Store {
     /// a task that migrated without one (quick tasks) — skipped, files kept.
     pub fn load_all_plans(&self) -> Result<Vec<PersistedPlan>, StoreError> {
         let plans_dir = self.dir.join("plans");
-        if !plans_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut records: Vec<PersistedPlan> = Vec::new();
-        for entry in std::fs::read_dir(&plans_dir)? {
-            let plan_dir = entry?.path();
-            if !plan_dir.is_dir() {
-                continue;
+        let mut records: Vec<PersistedPlan> = self
+            .load_all_issues()?
+            .into_iter()
+            .map(|issue| issue.issue)
+            .collect();
+        if plans_dir.exists() {
+            for entry in std::fs::read_dir(&plans_dir)? {
+                let plan_dir = entry?.path();
+                if !plan_dir.is_dir() {
+                    continue;
+                }
+                let record_path = plan_dir.join("record.json");
+                if !record_path.is_file() {
+                    continue;
+                }
+                records.push(read_record(&record_path)?);
             }
-            let record_path = plan_dir.join("record.json");
-            if !record_path.is_file() {
-                continue;
-            }
-            records.push(read_record(&record_path)?);
         }
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(records)
@@ -541,6 +629,7 @@ impl Store {
     /// same reason as `delete`: only ever called for a plan the board wants
     /// gone, and a double-delete must not fail the RPC.
     pub fn delete_plan(&self, plan_id: &str) -> Result<(), StoreError> {
+        remove_dir_if_present(&self.issue_dir(plan_id))?;
         remove_dir_if_present(&self.plan_dir(plan_id))
     }
 
@@ -561,16 +650,19 @@ impl Store {
     /// `load_all_plans`: missing dir means none, unparseable means fail fast.
     pub fn load_all_runs(&self) -> Result<Vec<PersistedRun>, StoreError> {
         let runs_dir = self.dir.join("runs");
-        if !runs_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut records: Vec<PersistedRun> = Vec::new();
-        for entry in std::fs::read_dir(&runs_dir)? {
-            let path = entry?.path();
-            if !is_json_record(&path) {
-                continue;
+        let mut records: Vec<PersistedRun> = self
+            .load_all_issues()?
+            .into_iter()
+            .flat_map(|issue| issue.implementations)
+            .collect();
+        if runs_dir.exists() {
+            for entry in std::fs::read_dir(&runs_dir)? {
+                let path = entry?.path();
+                if !is_json_record(&path) {
+                    continue;
+                }
+                records.push(read_record(&path)?);
             }
-            records.push(read_record(&path)?);
         }
         records.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(records)
@@ -578,6 +670,16 @@ impl Store {
 
     /// Delete a run's record (and any leftover `.tmp`). Idempotent.
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
+        for mut issue in self.load_all_issues()? {
+            let before = issue.implementations.len();
+            issue.implementations.retain(|run| run.id != run_id);
+            if issue.implementations.len() != before {
+                let path = self.issue_record_path(&issue.issue.id);
+                let json =
+                    serde_json::to_string_pretty(&issue).expect("an Issue always serializes");
+                write_record_atomically(&path, &json)?;
+            }
+        }
         let record_path = self.run_record_path(run_id);
         remove_file_if_present(&record_path)?;
         remove_file_if_present(&record_path.with_extension("json.tmp"))?;
@@ -813,6 +915,68 @@ impl Store {
             }
             std::fs::rename(&legacy_path, legacy_path.with_extension("json.migrated"))?;
             migrated += 1;
+        }
+        Ok(migrated)
+    }
+
+    /// Final Issue cutover: aggregate split plan/run records under
+    /// `issues/<id>/record.json`, copy canonical docs, then tombstone every
+    /// consumed split record. The Issue record is written first, so a crash at
+    /// any later point resumes without losing either representation.
+    pub fn migrate_split_records_to_issues(&self) -> Result<usize, StoreError> {
+        let plans_dir = self.dir.join("plans");
+        let runs_dir = self.dir.join("runs");
+        let mut split_runs = Vec::<(PathBuf, PersistedRun)>::new();
+        if runs_dir.is_dir() {
+            for entry in std::fs::read_dir(&runs_dir)? {
+                let path = entry?.path();
+                if is_json_record(&path) {
+                    split_runs.push((path.clone(), read_record(&path)?));
+                }
+            }
+        }
+        let mut migrated = 0;
+        if plans_dir.is_dir() {
+            for entry in std::fs::read_dir(&plans_dir)? {
+                let dir = entry?.path();
+                let plan_path = dir.join("record.json");
+                if !plan_path.is_file() {
+                    continue;
+                }
+                let plan: PersistedPlan = read_record(&plan_path)?;
+                let issue_path = self.issue_record_path(&plan.id);
+                if !issue_path.is_file() {
+                    let docs = dir.join("docs");
+                    if docs.is_dir() {
+                        copy_tree(&docs, &self.issue_dir(&plan.id).join("docs"), &[])?;
+                    }
+                    let implementations = split_runs
+                        .iter()
+                        .filter(|(_, run)| run.plan_id.as_deref() == Some(plan.id.as_str()))
+                        .map(|(_, run)| run.clone())
+                        .collect();
+                    let issue = PersistedIssue {
+                        issue: plan.clone(),
+                        implementations,
+                    };
+                    let json =
+                        serde_json::to_string_pretty(&issue).expect("an Issue always serializes");
+                    write_record_atomically(&issue_path, &json)?;
+                }
+                std::fs::rename(&plan_path, plan_path.with_extension("json.migrated"))?;
+                migrated += 1;
+            }
+        }
+        // Also completes the crash window where the plan tombstone landed but
+        // one or more implementation tombstones did not.
+        for (path, run) in split_runs {
+            if run
+                .plan_id
+                .as_deref()
+                .is_some_and(|issue_id| self.issue_record_path(issue_id).is_file())
+            {
+                std::fs::rename(&path, path.with_extension("json.migrated"))?;
+            }
         }
         Ok(migrated)
     }
@@ -1864,6 +2028,42 @@ mod tests {
         rec.branch = None;
         store.save_plan(&rec).unwrap();
         assert_eq!(store.load_all_plans().unwrap(), vec![rec]);
+    }
+
+    #[test]
+    fn split_records_migrate_to_one_canonical_issue_and_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let plan = plan_record("plan-1", PlanState::Approved);
+        let run = run_record("run-1", RunState::Review);
+        store.save_plan(&plan).unwrap();
+        store.save_run(&run).unwrap();
+        std::fs::create_dir_all(store.plan_docs_dir("plan-1")).unwrap();
+        std::fs::write(store.plan_docs_dir("plan-1").join("plan.md"), "# durable").unwrap();
+
+        assert_eq!(store.migrate_split_records_to_issues().unwrap(), 1);
+        assert_eq!(store.migrate_split_records_to_issues().unwrap(), 0);
+        let issues = store.load_all_issues().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].issue, plan);
+        assert_eq!(issues[0].implementations, vec![run]);
+        assert!(store.issue_record_path("plan-1").is_file());
+        assert!(!store.plan_record_path("plan-1").exists());
+        assert!(store
+            .plan_record_path("plan-1")
+            .with_extension("json.migrated")
+            .is_file());
+        assert!(!store.run_record_path("run-1").exists());
+        assert!(store
+            .run_record_path("run-1")
+            .with_extension("json.migrated")
+            .is_file());
+        assert_eq!(
+            store.read_plan_doc("plan-1", "plan.md").as_deref(),
+            Some("# durable")
+        );
+        assert_eq!(store.load_all_plans().unwrap().len(), 1);
+        assert_eq!(store.load_all_runs().unwrap().len(), 1);
     }
 
     #[test]

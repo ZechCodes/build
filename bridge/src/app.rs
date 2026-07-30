@@ -1252,6 +1252,9 @@ impl AppState {
         // a no-op). This must run before the loaders so recovery only ever
         // sees the split shape.
         store.migrate_legacy_tasks().map_err(|e| e.to_string())?;
+        store
+            .migrate_split_records_to_issues()
+            .map_err(|e| e.to_string())?;
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
         let archived_worktrees = store
@@ -1691,8 +1694,8 @@ impl AppState {
         self.store
             .as_ref()
             .expect("checked above")
-            .save_plan(&record)
-            .map_err(|e| format!("plan store: {e}"))
+            .save_issue_plan(&record)
+            .map_err(|e| format!("issue store: {e}"))
     }
 
     /// Write a run's durable core to the store (atomic replace). Same discipline
@@ -1739,11 +1742,20 @@ impl AppState {
             updated_at,
             state_changed_at: self.entity_state_changed_at.get(run_id).cloned(),
         };
-        self.store
-            .as_ref()
-            .expect("checked above")
-            .save_run(&record)
-            .map_err(|e| format!("run store: {e}"))
+        let store = self.store.as_ref().expect("checked above");
+        if record
+            .plan_id
+            .as_deref()
+            .is_some_and(|issue_id| store.issue_record_path(issue_id).is_file())
+        {
+            store
+                .save_issue_implementation(&record)
+                .map_err(|e| format!("issue store: {e}"))
+        } else {
+            store
+                .save_run(&record)
+                .map_err(|e| format!("run store: {e}"))
+        }
     }
 
     /// The shared tail of every plan mutation: stamp times, compute the response
@@ -13581,6 +13593,9 @@ mod tests {
         assert_eq!(stages["result"]["issue_id"], issue_id);
         assert_eq!(stages["result"]["plan_id"], issue_id);
         assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
+        let store = Store::new(dir.path().join("store"));
+        assert!(store.issue_record_path(&issue_id).is_file());
+        assert!(!store.plan_record_path(&issue_id).exists());
     }
 
     #[test]

@@ -1440,6 +1440,14 @@ impl Orchestrator {
             &active.worktree.path,
             &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
         )?;
+        let built_sha = self
+            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        active.stages[progress_index].built_sha = Some(built_sha);
+        active.stages[progress_index].completion_sha = None;
+        active.stages[progress_index].invalidation_reason = None;
+        active.stages[progress_index].publication = crate::run::StagePublication::Local;
         active.stages[progress_index].apply(StageProgressEvent::StartValidation)?;
         let prompt = self.render_run_stage(
             &self.templates.validate,
@@ -1510,6 +1518,32 @@ impl Orchestrator {
                 "validate/completed report carried no outputs.validation; rejected".to_string(),
             ));
         };
+        let built_sha = active.stages[progress_index]
+            .built_sha
+            .clone()
+            .ok_or_else(|| {
+                OrchestratorError::Gate(format!(
+                    "stage {stage_id} has no pinned built_sha; validation cannot establish a stable boundary"
+                ))
+            })?;
+        let head = self
+            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        let dirty = self.git(
+            &active.worktree.path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )?;
+        if head != built_sha || !dirty.trim().is_empty() {
+            return Err(OrchestratorError::Gate(format!(
+                "validation must be observational: expected clean HEAD {built_sha}, found HEAD {head}{}",
+                if dirty.trim().is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" with dirty files ({})", dirty.lines().count())
+                }
+            )));
+        }
         let passed = validation.passed;
         let last_stage = doc_index + 1 == plan_stage_docs.len();
         let verdict = if passed {
@@ -1526,6 +1560,9 @@ impl Orchestrator {
         }
         active.stages[progress_index].apply(StageProgressEvent::ValidationDone { passed })?;
         active.stages[progress_index].validation = Some(validation);
+        if passed {
+            active.stages[progress_index].completion_sha = Some(built_sha);
+        }
         // The verdict parks the run at a gate; the worktree's agent stays live
         // and idle in its tab, which is the point of the tab — the reviewer
         // arrives at the gate already in conversation with a running process.
@@ -3440,6 +3477,9 @@ mod tests {
             .unwrap();
         assert_eq!(run.run.state, RunState::Building, "validation is running");
         assert_eq!(run.stages[0].state, StageProgressState::Validating);
+        let candidate = worktree_head(&run.worktree.path);
+        assert_eq!(run.stages[0].built_sha.as_deref(), Some(candidate.as_str()));
+        assert_eq!(run.stages[0].completion_sha, None);
         let subject = last_commit_subject(&run.worktree.path);
         assert!(
             subject.contains("stage first"),
@@ -3494,6 +3534,36 @@ mod tests {
             Some("note for second")
         );
         assert!(run.auto_advance, "run-all stays armed after a pass");
+        assert_eq!(run.stages[0].completion_sha, run.stages[0].built_sha);
+    }
+
+    #[tokio::test]
+    async fn validation_rejects_a_dirty_or_moved_candidate_boundary() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 1);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+        std::fs::write(run.worktree.path.join("only.txt"), "one\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+
+        std::fs::write(run.worktree.path.join("validation-mutated.txt"), "bad\n").unwrap();
+        let error = orch
+            .on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("validation must be observational"),
+            "{error}"
+        );
+        assert_eq!(run.stages[0].state, StageProgressState::Validating);
+        assert_eq!(run.stages[0].completion_sha, None);
     }
 
     #[tokio::test]

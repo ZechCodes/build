@@ -306,6 +306,18 @@ pub fn stage_progress_transition(
     }
 }
 
+/// Publication evidence for a completed stage commit. `LegacyUnknown` is the
+/// fail-closed default for records written before Build pinned completion SHAs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagePublication {
+    Local,
+    Pushed,
+    Merged,
+    #[default]
+    LegacyUnknown,
+}
+
 /// One stage's execution progress on a run, keyed by the plan's stage id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageProgress {
@@ -316,6 +328,18 @@ pub struct StageProgress {
     /// re-dispatches so the stage diff always covers all of the stage's work.
     #[serde(default)]
     pub start_sha: Option<String>,
+    /// Candidate commit observed immediately after the build safety-net commit.
+    #[serde(default)]
+    pub built_sha: Option<String>,
+    /// Immutable successful boundary. Stable stage diffs are
+    /// `start_sha..completion_sha`, never a diff against the moving worktree.
+    #[serde(default)]
+    pub completion_sha: Option<String>,
+    #[serde(default)]
+    pub publication: StagePublication,
+    /// Evidence retained when worktree loss or recovery invalidates execution.
+    #[serde(default)]
+    pub invalidation_reason: Option<String>,
     #[serde(default)]
     pub validation: Option<ValidationReport>,
 }
@@ -328,6 +352,10 @@ impl StageProgress {
             stage_id: stage_id.into(),
             state: StageProgressState::Building,
             start_sha: None,
+            built_sha: None,
+            completion_sha: None,
+            publication: StagePublication::Local,
+            invalidation_reason: None,
             validation: None,
         }
     }
@@ -1011,6 +1039,10 @@ mod tests {
             stage_id: "database-schema".into(),
             state: StageProgressState::Validated { passed: false },
             start_sha: Some("abc123".into()),
+            built_sha: Some("def456".into()),
+            completion_sha: None,
+            publication: StagePublication::Local,
+            invalidation_reason: None,
             validation: Some(ValidationReport {
                 passed: false,
                 findings: "- migration missing".into(),
@@ -1023,11 +1055,23 @@ mod tests {
             progress
         );
 
-        // start_sha/validation are #[serde(default)]: a bare record still loads.
+        // New boundary fields default safely for records written before they existed.
         let bare: StageProgress =
             serde_json::from_str(r#"{"stage_id":"s","state":"building"}"#).unwrap();
         assert_eq!(bare.start_sha, None);
+        assert_eq!(bare.built_sha, None);
+        assert_eq!(bare.completion_sha, None);
+        assert_eq!(bare.publication, StagePublication::LegacyUnknown);
+        assert_eq!(bare.invalidation_reason, None);
         assert_eq!(bare.validation, None);
+    }
+
+    #[test]
+    fn dispatched_stage_starts_local_with_no_commit_boundaries() {
+        let progress = StageProgress::dispatched("stage-1");
+        assert_eq!(progress.publication, StagePublication::Local);
+        assert_eq!(progress.built_sha, None);
+        assert_eq!(progress.completion_sha, None);
     }
 
     #[test]

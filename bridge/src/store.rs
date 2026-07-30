@@ -1175,6 +1175,10 @@ fn stage_progress_from_legacy(stage: &Stage) -> Option<StageProgress> {
         stage_id: stage.id.clone(),
         state,
         start_sha: stage.start_sha.clone(),
+        built_sha: None,
+        completion_sha: None,
+        publication: crate::run::StagePublication::LegacyUnknown,
+        invalidation_reason: None,
         validation: stage
             .validation
             .as_ref()
@@ -1721,6 +1725,10 @@ mod tests {
                 stage_id: "database-schema".into(),
                 state: StageProgressState::Validated { passed: false },
                 start_sha: Some("deadbeef".into()),
+                built_sha: Some("feedface".into()),
+                completion_sha: None,
+                publication: crate::run::StagePublication::Local,
+                invalidation_reason: None,
                 validation: Some(crate::run::ValidationReport {
                     passed: false,
                     findings: "missing the soft-delete column".into(),

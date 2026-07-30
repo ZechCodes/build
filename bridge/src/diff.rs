@@ -118,6 +118,23 @@ pub fn diff_against_merge_base(
     diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
 }
 
+/// Render an immutable commit-to-commit range. Inputs must be full object ids,
+/// not revspecs: callers resolve only persisted stage boundaries through this
+/// helper, so later HEAD movement and dirty files cannot alter the result.
+pub fn diff_between_commits(
+    worktree_path: &Path,
+    start_sha: &str,
+    completion_sha: &str,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let start = repo.find_commit(git2::Oid::from_str(start_sha)?)?;
+    let completion = repo.find_commit(git2::Oid::from_str(completion_sha)?)?;
+    let start_tree = start.tree()?;
+    let completion_tree = completion.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), None)?;
+    worktree_diff_from_git_diff(&diff)
+}
+
 /// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
 /// working directory and index (untracked included).
 /// The scaffolded per-owner MCP config: machine-local plumbing, never the
@@ -142,7 +159,10 @@ fn diff_tree_to_dirty_workdir(
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
     let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
+    worktree_diff_from_git_diff(&diff)
+}
 
+fn worktree_diff_from_git_diff(diff: &git2::Diff<'_>) -> Result<WorktreeDiff, DiffError> {
     let files: Vec<ChangedFile> = diff
         .deltas()
         .map(|delta| ChangedFile {
@@ -483,6 +503,37 @@ mod tests {
         let diff = diff_against_merge_base(&repo, "main").unwrap();
         let paths: Vec<&str> = diff.files().iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"dirty.txt"), "got {paths:?}");
+    }
+
+    #[test]
+    fn commit_range_diff_is_stable_after_later_commits_and_dirty_changes() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output.status);
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        let start = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("stage-one.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "stage one"]);
+        let completion = git(&["rev-parse", "HEAD"]);
+
+        let expected = diff_between_commits(&repo, &start, &completion).unwrap();
+        std::fs::write(repo.join("stage-two.txt"), "two\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "stage two"]);
+        std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
+        let after = diff_between_commits(&repo, &start, &completion).unwrap();
+
+        assert_eq!(after, expected);
+        assert!(after.patch().contains("stage-one.txt"));
+        assert!(!after.patch().contains("stage-two.txt"));
+        assert!(!after.patch().contains("dirty.txt"));
     }
 
     #[test]

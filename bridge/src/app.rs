@@ -2494,6 +2494,7 @@ impl AppState {
             "run.create" => self.run_create(params),
             "run.get" => self.run_get(params),
             "run.diff" => self.run_diff(params),
+            "run.stage_diff" => self.run_stage_diff(params),
             "run.request_changes" => self.run_request_changes(params),
             "run.stage_dispatch" => self.run_stage_dispatch(params),
             "run.stage_fix" => self.run_stage_fix(params),
@@ -4728,21 +4729,46 @@ impl AppState {
         let project_id = self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let diff = self.orch_for(&project_id)?.run_diff(active).map_err(err)?;
-        let files: Vec<Value> = diff
-            .files()
-            .iter()
-            .map(|f| json!({ "path": f.path, "status": format!("{:?}", f.status) }))
-            .collect();
-        let stat = diff.stat();
-        Ok(json!({
-            "stat": {
-                "files_changed": stat.files_changed,
-                "insertions": stat.insertions,
-                "deletions": stat.deletions,
-            },
-            "files": files,
-            "patch": diff.patch(),
-        }))
+        Ok(diff_json(&diff))
+    }
+
+    /// Immutable stage review surface. Unlike `run.diff`, this never reads the
+    /// working directory or current HEAD: it resolves only the two object ids
+    /// persisted when the stage was dispatched and successfully validated.
+    fn run_stage_diff(&self, params: &Value) -> Result<Value, String> {
+        let run_id = require_str(params, "run_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        let progress = active
+            .stage_progress(&stage_id)
+            .ok_or_else(|| format!("unknown stage_id: {stage_id}"))?;
+        let (Some(start_sha), Some(completion_sha)) =
+            (&progress.start_sha, &progress.completion_sha)
+        else {
+            return Ok(json!({
+                "run_id": run_id,
+                "stage_id": stage_id,
+                "status": "unavailable",
+                "reason": if progress.publication == crate::run::StagePublication::LegacyUnknown {
+                    "legacy_unpinned"
+                } else {
+                    "stage_not_complete"
+                },
+                "start_sha": progress.start_sha,
+                "completion_sha": progress.completion_sha,
+            }));
+        };
+        let diff =
+            crate::diff::diff_between_commits(&active.worktree.path, start_sha, completion_sha)
+                .map_err(|error| format!("stage diff unavailable: {error}"))?;
+        let mut value = diff_json(&diff);
+        let object = value.as_object_mut().expect("diff_json returns an object");
+        object.insert("run_id".to_string(), json!(run_id));
+        object.insert("stage_id".to_string(), json!(stage_id));
+        object.insert("status".to_string(), json!("available"));
+        object.insert("start_sha".to_string(), json!(start_sha));
+        object.insert("completion_sha".to_string(), json!(completion_sha));
+        Ok(value)
     }
 
     /// Send diff comments to the coding agent — from `review` or `building`.
@@ -6035,13 +6061,35 @@ fn plan_stage_json(active: &ActivePlan, doc: &StageDoc) -> Value {
     })
 }
 
-/// The wire view of a run stage's execution progress: id, sub-state, start sha,
-/// and its validation report if any.
+fn diff_json(diff: &crate::diff::WorktreeDiff) -> Value {
+    let files: Vec<Value> = diff
+        .files()
+        .iter()
+        .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
+        .collect();
+    let stat = diff.stat();
+    json!({
+        "stat": {
+            "files_changed": stat.files_changed,
+            "insertions": stat.insertions,
+            "deletions": stat.deletions,
+        },
+        "files": files,
+        "patch": diff.patch(),
+    })
+}
+
+/// The wire view of a run stage's execution progress: id, sub-state, immutable
+/// commit boundaries, publication evidence, and its validation report if any.
 fn run_stage_json(progress: &StageProgress) -> Value {
     json!({
         "id": progress.stage_id,
         "state": run_stage_progress_str(&progress.state),
         "start_sha": progress.start_sha,
+        "built_sha": progress.built_sha,
+        "completion_sha": progress.completion_sha,
+        "publication": progress.publication,
+        "invalidation_reason": progress.invalidation_reason,
         "validation": progress.validation.as_ref().map(|v| json!({
             "passed": v.passed,
             "findings": v.findings,
@@ -12170,6 +12218,28 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["state"] == "validated_passed"));
+        let first = &armed["result"]["stages"][0];
+        assert!(first["start_sha"].is_string(), "{first:?}");
+        assert!(first["built_sha"].is_string(), "{first:?}");
+        assert_eq!(first["completion_sha"], first["built_sha"], "{first:?}");
+        assert_eq!(first["publication"], "local", "{first:?}");
+
+        let stable = state.handle(req(
+            "run.stage_diff",
+            json!({ "run_id": run_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(stable["ok"], true, "{stable:?}");
+        assert_eq!(stable["result"]["status"], "available");
+        assert_eq!(stable["result"]["start_sha"], first["start_sha"]);
+        assert_eq!(stable["result"]["completion_sha"], first["completion_sha"]);
+        assert!(stable["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("result-first-half.txt"));
+        assert!(!stable["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("result-second-half.txt"));
     }
 
     /// Requesting changes talks to the worktree's agent instead of killing it
@@ -14090,6 +14160,10 @@ mod tests {
             stage_id: "stage-1".into(),
             state: StageProgressState::Built,
             start_sha: None,
+            built_sha: None,
+            completion_sha: None,
+            publication: crate::run::StagePublication::Local,
+            invalidation_reason: None,
             validation: None,
         }];
 

@@ -523,6 +523,7 @@ pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) 
     // an in-order reader hits the carve-out before committing to silence.
     out.push_str(
         "\n\nBuild conversation protocol:\n\
+         - Before acting, call `read_unread_messages` and process every unread Issue message.\n\
          - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
@@ -549,6 +550,29 @@ pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) 
         out.push('\n');
     }
     out
+}
+
+fn append_stage_catalog(
+    mut prompt: String,
+    stages: &[StageDoc],
+    status_for: impl Fn(&str) -> String,
+) -> String {
+    prompt.push_str("\n\nOrdered Issue stage-plan catalog (authoritative order):\n");
+    if stages.is_empty() {
+        prompt.push_str("- No stage plans exist yet.\n");
+    } else {
+        for stage in stages {
+            prompt.push_str(&format!(
+                "- {} — {} — {} — approval: {:?}; predecessor/execution status: {}\n",
+                stage.id,
+                stage.title,
+                stage.path,
+                stage.state,
+                status_for(&stage.id)
+            ));
+        }
+    }
+    prompt
 }
 
 /// How the orchestrator launches an agent for a phase.
@@ -2174,7 +2198,7 @@ impl Orchestrator {
     // --- internals -------------------------------------------------------------
 
     fn render_plan(&self, template: &str, active: &ActivePlan, comments: &str) -> String {
-        templates::render(
+        let rendered = templates::render(
             template,
             &Vars {
                 goal: &active.plan.goal,
@@ -2183,7 +2207,8 @@ impl Orchestrator {
                 base_branch: &active.base_branch,
                 ..Vars::default()
             },
-        )
+        );
+        append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
 
     fn render_run(&self, template: &str, active: &ActiveRun, comments: &str) -> String {
@@ -2230,7 +2255,7 @@ impl Orchestrator {
             .and_then(|p| p.validation.as_ref())
             .map(|v| v.findings.as_str())
             .unwrap_or("");
-        templates::render(
+        let rendered = templates::render(
             template,
             &Vars {
                 goal: &active.run.goal,
@@ -2246,7 +2271,20 @@ impl Orchestrator {
                 findings,
                 prior_notes,
             },
-        )
+        );
+        append_stage_catalog(rendered, plan_stage_docs, |stage_id| {
+            active
+                .stage_progress(stage_id)
+                .map(|progress| match progress.state {
+                    StageProgressState::Building => "building",
+                    StageProgressState::Built => "built",
+                    StageProgressState::Validating => "validating",
+                    StageProgressState::Validated { passed: true } => "complete",
+                    StageProgressState::Validated { passed: false } => "validation failed",
+                })
+                .unwrap_or("not started")
+                .to_string()
+        })
     }
 
     /// Write the per-entity MCP config under `.build/` so it never trips
@@ -3457,6 +3495,23 @@ mod tests {
         let prompt = dispatch_turn_halves(&turn, "build");
         assert!(prompt.contains("Execute ONE stage"), "{prompt}");
         assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
+        assert!(
+            prompt.contains("Ordered Issue stage-plan catalog"),
+            "{prompt}"
+        );
+        let first = prompt
+            .find("first — First")
+            .expect("first stage in catalog");
+        let second = prompt
+            .find("second — Second")
+            .expect("second stage in catalog");
+        assert!(first < second, "catalog preserves manifest order: {prompt}");
+        assert!(
+            turn.cold
+                .contains("Before acting, call `read_unread_messages`"),
+            "cold Issue agents always pull the authoritative mailbox: {}",
+            turn.cold
+        );
     }
 
     #[tokio::test]

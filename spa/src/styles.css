@@ -1005,7 +1005,6 @@ body.sidebar-collapsed #side-open { display:block; }
 .thread-revision-head { display:flex; justify-content:space-between; gap:12px; padding:8px 12px; color:var(--dim); font-size:11px; }
 .thread-revision-head button { border:0; background:none; color:var(--dim); cursor:pointer; font-size:16px; }
 .thread-revision-view pre { margin:0; padding:12px; max-height:52vh; overflow:auto; border-top:1px solid var(--line2); font:11px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
-.thread-completion .thread-comment-card { border-color:color-mix(in srgb, var(--accent) 35%, var(--line)); }
 .thread-composer { margin-left:44px; }
 .thread-composer textarea { display:block; width:100%; min-height:54px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:11px 12px; background:var(--bg); color:var(--ink); font:13px/1.45 var(--sans); }
 .thread-composer textarea:focus { outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color:var(--accent); }

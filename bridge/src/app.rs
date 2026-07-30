@@ -13305,8 +13305,7 @@ mod tests {
         assert!(!thread.items.iter().any(|item| matches!(
             item,
             crate::thread::ThreadItem::Message(message)
-                if message.role == crate::thread::MessageRole::Agent
-                    && message.source == crate::thread::MessageSource::Completion
+                if message.role == crate::thread::MessageRole::Agent && message.done
         )));
         assert_eq!(
             thread.last_completion.as_ref().unwrap().critical_files,
@@ -13327,7 +13326,7 @@ mod tests {
             item,
             crate::thread::ThreadItem::Message(message)
                 if message.role == crate::thread::MessageRole::Agent
-                    && message.source == crate::thread::MessageSource::Completion
+                    && message.done
                     && message.body == "Fixed and deployed the renderer."
         )));
     }

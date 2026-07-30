@@ -188,15 +188,16 @@ function linksHtml(links) {
 
 function messageHtml(message, agentLabel = "Agent") {
   const user = message.role === "user";
-  const completion = message.source === "completion";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
     : "";
+  // `done` is message metadata, not a presentation type. A done-flagged send
+  // follows the timeline's done event and otherwise renders like every message.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
-  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}${completion ? " thread-completion" : ""}">
+  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}">
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> ${completion ? "completed the request" : "commented"} ${timeHtml(message.created_at)}</span>${status}</div>
+      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${anchorLabel(message.anchor)}
       <div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
       ${linksHtml(message.links)}

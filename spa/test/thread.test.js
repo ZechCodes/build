@@ -75,12 +75,12 @@ describe("conversation thread rendering", () => {
     ]);
   });
 
-  it("keeps done as status and renders the agent-authored completion message", () => {
+  it("renders a done-flagged send like any other message after the done entry", () => {
     const html = threadHtml(
       {
         items: [
           { type: "event", data: { event: "done", summary: "Implemented persistent review conversations." } },
-          { type: "message", data: { role: "agent", source: "completion", body: "Implemented persistent review conversations." } },
+          { type: "message", data: { role: "agent", done: true, body: "Implemented persistent review conversations." } },
         ],
         last_completion: {
           critical_files: ["src/plan.js"],
@@ -93,14 +93,18 @@ describe("conversation thread rendering", () => {
     );
 
     document.body.innerHTML = html;
+    const timeline = [...document.querySelector(".thread-items").children];
     const messages = [...document.querySelectorAll(".thread-message")];
     expect(messages[0].classList.contains("user")).toBe(true);
     expect(messages[0].textContent).toContain("Make review conversations persistent");
-    expect(messages.at(-1).classList.contains("agent")).toBe(true);
-    expect(messages.at(-1).textContent).toContain("Implemented persistent review conversations.");
-    expect(messages.at(-1).textContent).not.toContain("Critical files");
-    expect(messages.at(-1).textContent).not.toContain("src/plan.js");
-    expect(document.querySelector(".thread-event").textContent).toContain("Agent reported done");
+    expect(timeline.at(-2).classList.contains("thread-event")).toBe(true);
+    expect(timeline.at(-2).textContent).toContain("Agent reported done");
+    expect(timeline.at(-1).classList.contains("thread-message")).toBe(true);
+    expect(timeline.at(-1).classList.contains("thread-completion")).toBe(false);
+    expect(timeline.at(-1).querySelector(".thread-message-head").textContent).toContain("Agent commented");
+    expect(timeline.at(-1).textContent).toContain("Implemented persistent review conversations.");
+    expect(timeline.at(-1).textContent).not.toContain("Critical files");
+    expect(timeline.at(-1).textContent).not.toContain("src/plan.js");
     expect(document.querySelector(".thread-event-detail")).toBeNull();
     expect(document.querySelector("details")).toBeNull();
     expect(document.querySelector("#planthreadinput")).not.toBeNull();
@@ -147,12 +151,12 @@ describe("conversation thread rendering", () => {
       items: [
         { type: "event", data: { event: "session_started" } },
         { type: "event", data: { event: "done", summary: "Finished the task." } },
-        { type: "message", data: { role: "agent", source: "completion", body: "Finished the task." } },
+        { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
-    const completionHead = document.querySelector(".thread-completion .thread-message-head").textContent;
-    expect(completionHead).toContain("Codex completed the request");
-    expect(completionHead).not.toContain("Agent completed the request");
+    const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
+    expect(completionHead).toContain("Codex commented");
+    expect(completionHead).not.toContain("Agent commented");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
   });

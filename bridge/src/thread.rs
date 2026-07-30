@@ -41,6 +41,10 @@ impl MessageSource {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl MessageRole {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -100,6 +104,12 @@ pub struct ThreadMessage {
     #[serde(default)]
     pub updated_sequence: u64,
     pub role: MessageRole,
+    /// Completion is metadata on an otherwise ordinary message. The timeline
+    /// renders it like any other send after the separate `done` event.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub done: bool,
+    /// Deprecated persisted shape. New completion sends use `done`; retaining
+    /// this field lets older thread records deserialize without migration.
     #[serde(default, skip_serializing_if = "MessageSource::is_chat")]
     pub source: MessageSource,
     pub body: String,
@@ -306,7 +316,7 @@ impl Thread {
         }
         self.post_message(
             MessageRole::User,
-            MessageSource::Chat,
+            false,
             body.into(),
             anchor,
             Vec::new(),
@@ -332,7 +342,7 @@ impl Thread {
     ) -> String {
         self.post_message(
             MessageRole::Agent,
-            MessageSource::Chat,
+            false,
             body.into(),
             anchor,
             links,
@@ -347,7 +357,7 @@ impl Thread {
     pub fn post_completion(&mut self, summary: impl Into<String>, now: impl Into<String>) {
         self.post_message(
             MessageRole::Agent,
-            MessageSource::Completion,
+            true,
             summary.into(),
             None,
             Vec::new(),
@@ -358,7 +368,7 @@ impl Thread {
     fn post_message(
         &mut self,
         role: MessageRole,
-        source: MessageSource,
+        done: bool,
         body: String,
         anchor: Option<MessageAnchor>,
         links: Vec<ThreadLink>,
@@ -371,7 +381,8 @@ impl Thread {
             sequence,
             updated_sequence: sequence,
             role,
-            source,
+            done,
+            source: MessageSource::Chat,
             body,
             created_at: now,
             seen_at: None,
@@ -654,7 +665,8 @@ impl Thread {
         let mut lines = Vec::new();
         for item in self.items.iter().rev().take(limit).rev() {
             match item {
-                ThreadItem::Message(message) if message.source == MessageSource::Completion => {}
+                ThreadItem::Message(message)
+                    if message.done || message.source == MessageSource::Completion => {}
                 ThreadItem::Message(message) => lines.push(format!(
                     "- {}: {}",
                     message.role.as_str(),
@@ -813,6 +825,27 @@ mod tests {
         assert!(bumped > cursor, "{delta:?}");
         let drained = thread.wire_value_after(bumped);
         assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    #[test]
+    fn done_is_a_flag_on_the_agent_message_and_follows_the_done_event() {
+        let mut thread = Thread::new("run-done");
+        thread.push_event(
+            ThreadEventKind::Done,
+            Some("Implemented the change".to_string()),
+            None,
+            None,
+            "2026-07-24T12:00:00Z",
+        );
+        thread.post_completion("Implemented the change", "2026-07-24T12:00:00Z");
+
+        let wire = thread.wire_value();
+        assert_eq!(wire["items"][0]["type"], "event");
+        assert_eq!(wire["items"][0]["data"]["event"], "done");
+        assert_eq!(wire["items"][1]["type"], "message");
+        assert_eq!(wire["items"][1]["data"]["body"], "Implemented the change");
+        assert_eq!(wire["items"][1]["data"]["done"], true);
+        assert!(wire["items"][1]["data"].get("source").is_none(), "{wire:?}");
     }
 
     #[test]

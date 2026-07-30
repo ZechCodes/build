@@ -747,6 +747,12 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                         "mcp_servers.build.required=true".to_string(),
                         "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\"]".to_string(),
                         "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
+                        // Build writes prompt bytes and Enter back-to-back. Codex's
+                        // fallback detector otherwise classifies that stream as a
+                        // paste burst and turns Enter into a newline, so the prompt
+                        // remains visible but unsent. This PTY advertises and frames
+                        // real pastes explicitly; the fallback is unnecessary.
+                        "disable_paste_burst=true".to_string(),
                     ] {
                         spec = spec.arg("--config").arg(override_arg);
                     }
@@ -9565,6 +9571,31 @@ mod tests {
         assert!(
             args.contains(r#"projects."/tmp/build worktrees/run-9".trust_level="trusted""#),
             "{args}"
+        );
+    }
+
+    /// Build injects a prompt and its submit key back-to-back. Codex otherwise
+    /// classifies that rapid character stream as a paste burst and consumes the
+    /// trailing Enter as a newline inside the paste, leaving the prompt visible
+    /// but unsent. Build's PTY supports bracketed paste, so the fallback burst
+    /// detector must be disabled for every Codex process it owns.
+    #[test]
+    fn codex_argv_disables_the_fallback_paste_burst_detector() {
+        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+            panic!("real agent should be a provider-aware warm TUI");
+        };
+        let choice = ModelChoice {
+            provider: AgentProvider::Codex,
+            ..ModelChoice::default()
+        };
+        let spec = build("one line", &choice, &SpawnOptions::default());
+
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|args| { args[0] == "--config" && args[1] == "disable_paste_burst=true" }),
+            "Codex must not swallow Build's immediate submit key: {:?}",
+            spec.args
         );
     }
 

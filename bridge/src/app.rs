@@ -2083,6 +2083,9 @@ impl AppState {
     /// actions resolve to the owning Issue (legacy plan id). Planless adopted
     /// runs retain their independent worktree conversation.
     fn on_mcp_action(&mut self, entity_id: &str, action: BridgeAction) -> Result<Value, String> {
+        if let BridgeAction::PostThreadMessage { links, .. } = &action {
+            self.validate_thread_links_for_owner(entity_id, links)?;
+        }
         let now = now_rfc3339();
         if self.plans.contains_key(entity_id) {
             let mut active = self.take_plan(entity_id)?;
@@ -2130,6 +2133,73 @@ impl AppState {
             return Ok(value);
         }
         Err(format!("unknown conversation owner: {entity_id}"))
+    }
+
+    /// Validate agent-supplied navigation against the conversation owner. Shape
+    /// checks alone let a compromised agent forge links into another Issue;
+    /// ownership and canonical stage paths are bridge-resolved here.
+    fn validate_thread_links_for_owner(
+        &self,
+        entity_id: &str,
+        links: &[crate::thread::ThreadLink],
+    ) -> Result<(), String> {
+        validate_thread_links(links)?;
+        let issue_id = self
+            .plans
+            .contains_key(entity_id)
+            .then(|| entity_id.to_string())
+            .or_else(|| {
+                self.runs
+                    .get(entity_id)
+                    .and_then(|run| run.run.plan_id.as_ref())
+                    .map(|id| id.0.clone())
+            });
+        for link in links {
+            match link {
+                crate::thread::ThreadLink::PlanStage {
+                    plan_id,
+                    stage_id,
+                    path,
+                } => {
+                    if issue_id.as_deref() != Some(plan_id.as_str()) {
+                        return Err("plan stage link does not belong to this Issue".to_string());
+                    }
+                    let exact = self.plans.get(plan_id).and_then(|issue| {
+                        issue
+                            .stages
+                            .iter()
+                            .find(|stage| stage.id == *stage_id)
+                            .map(|stage| stage.path.as_str())
+                    });
+                    if exact != Some(path.as_str()) {
+                        return Err("plan stage link is not a canonical Issue stage".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::Run { run_id } => {
+                    let belongs = self.runs.get(run_id).is_some_and(|run| match &issue_id {
+                        Some(issue_id) => {
+                            run.run.plan_id.as_ref().map(|id| id.0.as_str())
+                                == Some(issue_id.as_str())
+                        }
+                        None => run_id == entity_id,
+                    });
+                    if !belongs {
+                        return Err("run link does not belong to this Issue".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::File { .. } => {
+                    let has_scope = self.runs.contains_key(entity_id)
+                        || self.plans.get(entity_id).is_some_and(|issue| {
+                            issue.worktree.is_some()
+                                || self.current_issue_implementation(entity_id).is_some()
+                        });
+                    if !has_scope {
+                        return Err("file link has no Issue worktree scope".to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// A plan agent reported `done`: ingest + advance on the plan's orchestrator.
@@ -4653,9 +4723,33 @@ impl AppState {
 
     fn issue_stage_diff(&self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
-        let run_id = self
-            .current_issue_implementation(&issue_id)
+        let stage_id = require_str(params, "stage_id")?;
+        // Resolve the lineage that actually owns this immutable boundary, not
+        // merely the newest attempt. A later failed/restarted implementation
+        // must not hide a completed stage from an earlier retained lineage.
+        let mut lineages = self
+            .runs
+            .values()
+            .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(&issue_id))
+            .filter(|run| {
+                run.stage_progress(&stage_id).is_some_and(|progress| {
+                    progress.start_sha.is_some() && progress.completion_sha.is_some()
+                })
+            })
+            .collect::<Vec<_>>();
+        lineages.sort_by_key(|run| {
+            self.entity_created_at
+                .get(&run.run.id.0)
+                .cloned()
+                .unwrap_or_default()
+        });
+        let run_id = lineages
+            .last()
             .map(|run| run.run.id.0.clone())
+            .or_else(|| {
+                self.current_issue_implementation(&issue_id)
+                    .map(|run| run.run.id.0.clone())
+            })
             .ok_or("issue has no implementation lineage")?;
         let mut run_params = params.clone();
         run_params
@@ -5264,9 +5358,21 @@ impl AppState {
                 ));
             }
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
+            let implementation_target =
+                self.current_issue_implementation_id(&entity_id)
+                    .and_then(|run_id| {
+                        self.runs
+                            .get(&run_id)
+                            .map(|run| (run_id, run.worktree.path.clone()))
+                    });
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
-            if let Some(worktree) = &active.worktree {
+            if let Some((run_id, worktree_path)) = implementation_target {
+                // The Issue owns the conversation, but its live implementation
+                // owns the checkout/PTY. Addressing thread.post to the Issue
+                // must therefore wake that implementation agent.
+                nudge_live_agent_tab(&self.tabs, &worktree_path, &run_id);
+            } else if let Some(worktree) = &active.worktree {
                 nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
@@ -5336,9 +5442,13 @@ impl AppState {
                 "completion_sha": progress.completion_sha,
             }));
         };
-        let diff =
-            crate::diff::diff_between_commits(&active.worktree.path, start_sha, completion_sha)
-                .map_err(|error| format!("stage diff unavailable: {error}"))?;
+        let object_database = if active.worktree.path.exists() {
+            active.worktree.path.clone()
+        } else {
+            std::path::PathBuf::from(self.project_path_for(&run_id))
+        };
+        let diff = crate::diff::diff_between_commits(&object_database, start_sha, completion_sha)
+            .map_err(|error| format!("stage diff unavailable: {error}"))?;
         let mut value = diff_json(&diff);
         let object = value.as_object_mut().expect("diff_json returns an object");
         object.insert("run_id".to_string(), json!(run_id));
@@ -5375,7 +5485,7 @@ impl AppState {
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
-                .run_request_changes(&mut active, NEW_THREAD_MESSAGES_PROMPT)
+                .run_request_changes(&mut active, &plan_docs, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
@@ -5618,6 +5728,7 @@ impl AppState {
             MergeCleanup::Prune
         };
         let mut active = self.take_run(&run_id)?;
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let result = {
             let orch = self.orch_for(&project_id)?;
             match action.as_str() {
@@ -5633,35 +5744,97 @@ impl AppState {
                 active.last_error = Some(message.clone());
             }
         }
+        let (event, summary) = match (&result, action.as_str()) {
+            (Ok(()), "commit") => (
+                crate::thread::ThreadEventKind::Committed,
+                "Changes committed".to_string(),
+            ),
+            (Ok(()), "push") => (
+                crate::thread::ThreadEventKind::Pushed,
+                "Changes committed and pushed".to_string(),
+            ),
+            (Ok(()), "merge") => (
+                crate::thread::ThreadEventKind::Merged,
+                "Changes merged into the base branch".to_string(),
+            ),
+            (Ok(()), "merge_push") => (
+                crate::thread::ThreadEventKind::Merged,
+                "Changes merged and pushed".to_string(),
+            ),
+            (Err(error), _) => (
+                crate::thread::ThreadEventKind::RunFailed,
+                format!("Git action {action} failed: {error}"),
+            ),
+            _ => unreachable!("validated git action"),
+        };
         if result.is_ok() {
-            let (event, summary) = match action.as_str() {
-                "commit" => (
-                    crate::thread::ThreadEventKind::Committed,
-                    "Changes committed",
-                ),
-                "push" => (
-                    crate::thread::ThreadEventKind::Pushed,
-                    "Changes committed and pushed",
-                ),
-                "merge" => (
-                    crate::thread::ThreadEventKind::Merged,
-                    "Changes merged into the base branch",
-                ),
-                "merge_push" => (
-                    crate::thread::ThreadEventKind::Merged,
-                    "Changes merged and pushed",
-                ),
-                _ => unreachable!("validated git action"),
+            let publication = match action.as_str() {
+                "push" => Some(StagePublication::Pushed),
+                "merge" | "merge_push" => Some(StagePublication::Merged),
+                _ => None,
             };
-            active
-                .thread
-                .push_event(event, Some(summary.to_string()), None, None, now_rfc3339());
+            if let Some(publication) = publication {
+                for progress in &mut active.stages {
+                    if progress.completion_sha.is_some() {
+                        progress.publication = publication;
+                        progress.invalidation_reason = None;
+                    }
+                }
+            }
+        }
+        let links = issue_id
+            .as_ref()
+            .and_then(|issue_id| self.plans.get(issue_id).map(|issue| (issue_id, issue)))
+            .map(|(issue_id, issue)| {
+                let mut links = vec![crate::thread::ThreadLink::Run {
+                    run_id: run_id.clone(),
+                }];
+                links.extend(issue.stages.iter().map(|stage| {
+                    crate::thread::ThreadLink::PlanStage {
+                        plan_id: issue_id.clone(),
+                        stage_id: stage.id.clone(),
+                        path: stage.path.clone(),
+                    }
+                }));
+                links
+            })
+            .unwrap_or_else(|| {
+                vec![crate::thread::ThreadLink::Run {
+                    run_id: run_id.clone(),
+                }]
+            });
+        if issue_id.is_none() {
+            active.thread.push_event_with_links(
+                event,
+                Some(summary.clone()),
+                None,
+                None,
+                links.clone(),
+                now_rfc3339(),
+            );
         }
         let merged_worktree = (result.is_ok() && active.run.state == RunState::Merged)
             .then(|| active.worktree.clone());
         let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let issue_persisted = if let Some(issue_id) = issue_id {
+            let mut issue = self.take_plan(&issue_id)?;
+            issue.thread.push_event_with_links(
+                event,
+                Some(summary),
+                None,
+                None,
+                links,
+                now_rfc3339(),
+            );
+            Some(self.finish_plan_mutation(issue_id, issue).1)
+        } else {
+            None
+        };
         result?;
         persisted?;
+        if let Some(issue_persisted) = issue_persisted {
+            issue_persisted?;
+        }
         if let Some(worktree) = merged_worktree {
             self.apply_merge_cleanup(&run_id, &project_id, &worktree, cleanup);
         }
@@ -5720,7 +5893,7 @@ impl AppState {
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
-                .message_run(&mut active, NEW_THREAD_MESSAGES_PROMPT)
+                .message_run(&mut active, &plan_docs, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
@@ -12517,6 +12690,28 @@ mod tests {
             json!({ "run_id": run_id, "action": "push" }),
         ));
         assert_eq!(pushed["ok"], true, "{pushed:?}");
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert!(
+            issue["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "event"
+                    && item["data"]["event"] == "pushed"
+                    && item["data"]["links"].as_array().is_some_and(|links| links
+                        .iter()
+                        .any(|link| link["kind"] == "run" && link["run_id"] == run_id))),
+            "{issue:?}"
+        );
+        let before_delete = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(
+            before_delete["result"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|stage| stage["publication"] == "pushed"),
+            "{before_delete:?}"
+        );
         let worktree = state.runs[&run_id].worktree.path.clone();
         assert!(Command::new("git")
             .args([
@@ -12543,6 +12738,16 @@ mod tests {
                     && stage["invalidation_reason"].is_null()),
             "{stages:?}"
         );
+        let stable = state.handle(req(
+            "issue.stage_diff",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(stable["ok"], true, "{stable:?}");
+        assert_eq!(stable["result"]["status"], "available", "{stable:?}");
+        assert!(stable["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("result-first-half.txt"));
     }
 
     #[test]
@@ -13320,8 +13525,11 @@ mod tests {
         );
         assert!(
             queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("rename the symbol"),
-            "a cold agent gets the run context AND the reviewer's words: {}",
+                && queued.cold.contains("rename the symbol")
+                && queued.cold.contains("Ordered Issue stage-plan catalog")
+                && queued.cold.find("\n- first-half").unwrap()
+                    < queued.cold.find("\n- second-half").unwrap(),
+            "a cold agent gets the run context, ordered stage catalog, AND the reviewer's words: {}",
             queued.cold
         );
         let structured = state.handle(req(
@@ -13641,8 +13849,11 @@ mod tests {
         );
         assert!(
             queued.cold.contains("02-second-half.md")
-                && queued.cold.contains("Build conversation protocol"),
-            "a cold agent is pointed at the stage doc it must revise: {}",
+                && queued.cold.contains("Build conversation protocol")
+                && queued.cold.contains("Ordered Issue stage-plan catalog")
+                && queued.cold.find("\n- first-half").unwrap()
+                    < queued.cold.find("\n- second-half").unwrap(),
+            "a cold agent is primed with the ordered catalog and stage doc it must revise: {}",
             queued.cold
         );
         let durable = state.runs[&run_id].thread.items.iter().any(|item| {
@@ -14607,6 +14818,45 @@ mod tests {
     }
 
     #[test]
+    fn mcp_typed_links_cannot_forge_another_issues_lineage() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_a, run_a) = planned_run_in_review(&mut state, "owner a");
+        let (issue_b, run_b) = planned_run_in_review(&mut state, "owner b");
+        let stage_b = state.plans[&issue_b].stages[0].clone();
+
+        let forged_stage = state.on_mcp_action(
+            &run_a,
+            BridgeAction::PostThreadMessage {
+                body: "look elsewhere".into(),
+                anchor: None,
+                links: vec![crate::thread::ThreadLink::PlanStage {
+                    plan_id: issue_b.clone(),
+                    stage_id: stage_b.id,
+                    path: stage_b.path,
+                }],
+            },
+        );
+        assert_eq!(
+            forged_stage.unwrap_err(),
+            "plan stage link does not belong to this Issue"
+        );
+        let forged_run = state.on_mcp_action(
+            &run_a,
+            BridgeAction::PostThreadMessage {
+                body: "open another implementation".into(),
+                anchor: None,
+                links: vec![crate::thread::ThreadLink::Run { run_id: run_b }],
+            },
+        );
+        assert_eq!(
+            forged_run.unwrap_err(),
+            "run link does not belong to this Issue"
+        );
+        assert!(state.plans.contains_key(&issue_a));
+    }
+
+    #[test]
     fn a_cursored_poll_reships_a_message_after_the_agent_marks_it_seen() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -14756,6 +15006,58 @@ mod tests {
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
             .unwrap();
         assert_eq!(unread["messages"][0]["body"], "just a review note");
+    }
+
+    #[tokio::test]
+    async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed post");
+        let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &warm_tui_spec(),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("implementation agent tab spawns");
+        let mut output = tab.session.subscribe();
+        state.tabs.insert(TabKey::agent(&root), tab);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "read this in the implementation" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut echoed = String::new();
+        while std::time::Instant::now() < deadline && !echoed.contains("read_unread_messages") {
+            match output.try_recv() {
+                Ok(chunk) => echoed.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            echoed.contains("read_unread_messages"),
+            "the active implementation agent must be nudged: {echoed:?}"
+        );
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert!(unread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["body"] == "read this in the implementation"));
     }
 
     #[test]

@@ -1136,7 +1136,7 @@ impl Orchestrator {
             .get(index + 1)
             .map(|next| next.path.as_str())
             .unwrap_or("");
-        templates::render(
+        let rendered = templates::render(
             template,
             &Vars {
                 goal: &active.plan.goal,
@@ -1152,7 +1152,8 @@ impl Orchestrator {
                 findings: "",
                 prior_notes: "",
             },
-        )
+        );
+        append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
 
     // ---- Run seams (Plan/Run split) ----------------------------------------
@@ -1279,7 +1280,7 @@ impl Orchestrator {
                 "",
             )
         } else {
-            self.render_run(&self.templates.build, &active, "")
+            self.render_run(&self.templates.build, &active, "", &plan_link.stages)
         };
         let turn = AgentTurn::dispatched(prompt, &active.thread, "build");
         Ok((active, turn))
@@ -1760,6 +1761,7 @@ impl Orchestrator {
     pub fn run_request_changes(
         &self,
         active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
         comments: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
         if let Some(stage_id) = active.current_stage_id.clone() {
@@ -1778,7 +1780,12 @@ impl Orchestrator {
         active.run.apply(RunEvent::RequestChanges)?;
         active.last_error = None;
         Ok(AgentTurn::posted(
-            self.render_run(&self.templates.review_changes, active, comments),
+            self.render_run(
+                &self.templates.review_changes,
+                active,
+                comments,
+                plan_stage_docs,
+            ),
             &active.thread,
             comments,
             "revise",
@@ -1802,6 +1809,7 @@ impl Orchestrator {
     pub fn message_run(
         &self,
         active: &mut ActiveRun,
+        plan_stage_docs: &[StageDoc],
         message: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
         if message.trim().is_empty() {
@@ -1840,7 +1848,7 @@ impl Orchestrator {
             // Pure legality first — the caller persists the run even on Err.
             run_transition(&active.run.state, event)?;
         }
-        let prompt = self.render_run(&self.templates.message, active, message);
+        let prompt = self.render_run(&self.templates.message, active, message, plan_stage_docs);
         if let Some(event) = event {
             active.run.apply(event)?;
         }
@@ -1866,7 +1874,7 @@ impl Orchestrator {
     ) -> Result<AgentTurn, OrchestratorError> {
         run_transition(&active.run.state, RunEvent::Reply)?;
         let prompt = if plan_stage_docs.is_empty() {
-            self.render_run(&self.templates.build, active, "")
+            self.render_run(&self.templates.build, active, "", plan_stage_docs)
         } else {
             self.resume_run_stage_prompt(active, plan_stage_docs)?
         };
@@ -2213,8 +2221,14 @@ impl Orchestrator {
         append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
 
-    fn render_run(&self, template: &str, active: &ActiveRun, comments: &str) -> String {
-        templates::render(
+    fn render_run(
+        &self,
+        template: &str,
+        active: &ActiveRun,
+        comments: &str,
+        plan_stage_docs: &[StageDoc],
+    ) -> String {
+        let rendered = templates::render(
             template,
             &Vars {
                 goal: &active.run.goal,
@@ -2223,7 +2237,13 @@ impl Orchestrator {
                 base_branch: &active.worktree.base_branch,
                 ..Vars::default()
             },
-        )
+        );
+        append_stage_catalog(rendered, plan_stage_docs, |stage_id| {
+            active
+                .stage_progress(stage_id)
+                .map(|progress| format!("{:?}", progress.state))
+                .unwrap_or_else(|| "not started".to_string())
+        })
     }
 
     /// Render a stage-scoped template for a run with the full stage variable
@@ -4216,7 +4236,9 @@ mod tests {
             "opening review says nothing to the agent — it is the human's move"
         );
 
-        let turn = orch.run_request_changes(&mut single, "tweak it").unwrap();
+        let turn = orch
+            .run_request_changes(&mut single, &[], "tweak it")
+            .unwrap();
         assert_eq!(single.run.state, RunState::Building);
         let cold = posted_turn_halves(&turn, "revise", "tweak it");
         assert!(
@@ -4239,7 +4261,7 @@ mod tests {
             StageProgressState::Validating
         );
         let err = orch
-            .run_request_changes(&mut run, "no")
+            .run_request_changes(&mut run, &plan.stages, "no")
             .expect_err("cannot redirect a validating stage");
         assert!(err.to_string().contains("awaiting validation"), "{err}");
     }
@@ -4327,14 +4349,14 @@ mod tests {
 
         let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
         assert!(orch
-            .message_run(&mut run, "  ")
+            .message_run(&mut run, &[], "  ")
             .unwrap_err()
             .to_string()
             .contains("empty"));
 
         // Building → the run keeps working and the message becomes a turn.
         let turn = orch
-            .message_run(&mut run, "also handle the empty case")
+            .message_run(&mut run, &[], "also handle the empty case")
             .unwrap();
         assert_eq!(run.run.state, RunState::Building);
         posted_turn_halves(&turn, "message", "also handle the empty case");
@@ -4347,7 +4369,7 @@ mod tests {
         )
         .unwrap();
         let err = orch
-            .message_run(&mut run, "sneak past")
+            .message_run(&mut run, &[], "sneak past")
             .expect_err("review gate refuses messages");
         assert!(err.to_string().contains("review gate"), "{err}");
     }

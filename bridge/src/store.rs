@@ -260,6 +260,10 @@ pub struct PersistedRun {
     /// restart and can never be mistaken for a verified success.
     #[serde(default)]
     pub recovery: Option<crate::run::RecoveryAttempt>,
+    /// Write-ahead journal for push/merge. It is cleared only after refs prove
+    /// the candidate commit's publication (including after daemon restart).
+    #[serde(default)]
+    pub publication_attempt: Option<crate::run::PublicationAttempt>,
     #[serde(default)]
     pub provider: AgentProvider,
     /// Model/effort the run's agents run on (None = harness default).
@@ -1121,6 +1125,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         adopted: task.adopted,
         pending_continuation: task.pending_continuation,
         recovery: None,
+        publication_attempt: None,
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
@@ -1754,6 +1759,7 @@ mod tests {
             adopted: false,
             pending_continuation: false,
             recovery: None,
+            publication_attempt: None,
             provider: AgentProvider::Claude,
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),

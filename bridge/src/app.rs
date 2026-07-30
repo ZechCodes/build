@@ -39,7 +39,10 @@ use crate::plan::{
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
-use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState, StagePublication};
+use crate::run::{
+    PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
+    StagePublication,
+};
 use crate::store::{
     now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
     WorktreeFinishAction, WorktreeFinishStatus,
@@ -47,7 +50,10 @@ use crate::store::{
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
 use crate::transport::Frame;
-use crate::worktree::{discover_external_worktrees, ExternalWorktree, Worktree};
+use crate::worktree::{
+    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
+    Worktree,
+};
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
 #[derive(Debug, Clone)]
@@ -1387,6 +1393,58 @@ impl AppState {
 
         let mut state_changed = false;
         let mut recovery_event = None;
+
+        // Resolve an interrupted publication from repository evidence before
+        // considering worktree recovery. The write-ahead record names the exact
+        // candidate, and classification refreshes its configured remote ref.
+        if let Some(attempt) = active.publication_attempt.clone() {
+            let publication = classify_stage_publication(
+                &repo_path,
+                &active.worktree.branch,
+                &active.worktree.base_branch,
+                &attempt.candidate_sha,
+            );
+            let proven = match attempt.action.as_str() {
+                "push" => matches!(
+                    publication,
+                    StagePublication::Pushed | StagePublication::Merged
+                ),
+                "merge" | "merge_push" => publication == StagePublication::Merged,
+                _ => false,
+            };
+            if proven {
+                for progress in &mut active.stages {
+                    if progress.completion_sha.is_some() {
+                        progress.publication = publication;
+                        progress.invalidation_reason = None;
+                    }
+                }
+                if matches!(attempt.action.as_str(), "merge" | "merge_push") {
+                    active.run.state = RunState::Merged;
+                }
+                active.publication_attempt = None;
+                active.last_error = None;
+                recovery_event = Some((
+                    if publication == StagePublication::Merged {
+                        crate::thread::ThreadEventKind::Merged
+                    } else {
+                        crate::thread::ThreadEventKind::Pushed
+                    },
+                    format!(
+                        "Recovered interrupted {} from verified refs at {}",
+                        attempt.action, attempt.candidate_sha
+                    ),
+                ));
+                state_changed = true;
+            } else {
+                active.last_error = Some(format!(
+                    "interrupted {} is not yet proven by configured refs (candidate {})",
+                    attempt.action, attempt.candidate_sha
+                ));
+                state_changed = true;
+            }
+        }
+
         if !active.run.state.is_terminal() && !active.worktree.path.exists() {
             let restored = project_id
                 .as_deref()
@@ -1670,6 +1728,7 @@ impl AppState {
             adopted: active.adopted,
             pending_continuation: active.pending_continuation,
             recovery: active.recovery.clone(),
+            publication_attempt: active.publication_attempt.clone(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
@@ -6386,6 +6445,34 @@ impl AppState {
         };
         let mut active = self.take_run(&run_id)?;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+
+        // Push and merge cross a process boundary: git may complete and the
+        // daemon may die before the resulting state is saved. Commit first so
+        // the exact candidate is known, then fsync a write-ahead intent before
+        // invoking the externally visible side effect.
+        if matches!(action.as_str(), "push" | "merge" | "merge_push") {
+            let prepared = self
+                .orch_for(&project_id)
+                .and_then(|orch| orch.run_commit(&active).map_err(err))
+                .and_then(|()| git_stdout(&active.worktree.path, &["rev-parse", "HEAD"]))
+                .map(|candidate_sha| PublicationAttempt {
+                    action: action.clone(),
+                    candidate_sha: candidate_sha.trim().to_string(),
+                    started_at: now_rfc3339(),
+                });
+            let attempt = match prepared {
+                Ok(attempt) => attempt,
+                Err(error) => {
+                    self.runs.insert(run_id, active);
+                    return Err(error);
+                }
+            };
+            active.publication_attempt = Some(attempt);
+            if let Err(error) = self.persist_run_record(&run_id, &active) {
+                self.runs.insert(run_id, active);
+                return Err(error);
+            }
+        }
         let result = {
             let orch = self.orch_for(&project_id)?;
             match action.as_str() {
@@ -6437,6 +6524,10 @@ impl AppState {
                         progress.invalidation_reason = None;
                     }
                 }
+                // Clearing this field and the lifecycle/thread update below
+                // share the post-side-effect atomic record write. If that write
+                // is interrupted, boot still sees the prior journal.
+                active.publication_attempt = None;
             }
         }
         let links = issue_id
@@ -8382,6 +8473,13 @@ fn classify_stage_publication(
     let Ok(completion) = git2::Oid::from_str(completion_sha) else {
         return StagePublication::Local;
     };
+    // Push success is remote evidence, not merely a local command result. Make
+    // the configured remote-tracking ref current before classifying; the fetch
+    // is noninteractive and timeout-bounded by the shared recovery helper.
+    if let Some(remote) = configured_remote_for_branch(&repo, branch) {
+        let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+        let _ = bounded_git_fetch(repo_path, &remote, &refspec);
+    }
     let reachable = |reference: &str| {
         repo.find_reference(reference)
             .ok()
@@ -13403,6 +13501,30 @@ mod tests {
     }
 
     #[test]
+    fn failed_push_retains_durable_candidate_journal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "journal failed push");
+
+        let failed = state.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": "push" }),
+        ));
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        let record = Store::new(dir.path().join("store"))
+            .load_all_runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.id == run_id)
+            .unwrap();
+        let attempt = record
+            .publication_attempt
+            .expect("intent is durable before uncertain side effect");
+        assert_eq!(attempt.action, "push");
+        assert_eq!(attempt.candidate_sha.len(), 40);
+    }
+
+    #[test]
     fn run_stat_uses_the_checked_out_branch_upstream_after_a_rename() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
@@ -17334,6 +17456,7 @@ mod tests {
             adopted: false,
             pending_continuation: false,
             recovery: None,
+            publication_attempt: None,
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
@@ -17520,6 +17643,65 @@ mod tests {
     }
 
     #[test]
+    fn boot_recovers_journaled_push_from_configured_remote_evidence() {
+        let (dir, repo) = init_repo();
+        let remote = dir.path().join("mirror.git");
+        git_in_dir(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git_in_dir(
+            &repo,
+            &["remote", "add", "mirror", remote.to_str().unwrap()],
+        );
+        git_in_dir(&repo, &["checkout", "-b", "build/journaled"]);
+        std::fs::write(repo.join("published.txt"), "published\n").unwrap();
+        git_in_dir(&repo, &["add", "published.txt"]);
+        git_in_dir(&repo, &["commit", "-m", "published candidate"]);
+        let candidate = git_stdout(&repo, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        git_in_dir(&repo, &["push", "-u", "mirror", "build/journaled"]);
+        // Force recovery to refresh remote evidence rather than trusting a
+        // convenient local remote-tracking ref left by setup.
+        git_in_dir(
+            &repo,
+            &["update-ref", "-d", "refs/remotes/mirror/build/journaled"],
+        );
+
+        let store = Store::new(dir.path().join("store"));
+        let mut record = building_run("run-journaled", &repo, &repo);
+        record.state = RunState::Review;
+        record.branch = "build/journaled".into();
+        record.stages = vec![StageProgress {
+            stage_id: "only".into(),
+            state: StageProgressState::Validated { passed: true },
+            start_sha: None,
+            built_sha: Some(candidate.clone()),
+            completion_sha: Some(candidate.clone()),
+            publication: StagePublication::Local,
+            invalidation_reason: None,
+            validation: None,
+        }];
+        record.publication_attempt = Some(PublicationAttempt {
+            action: "push".into(),
+            candidate_sha: candidate,
+            started_at: "2026-07-01T10:00:00Z".into(),
+        });
+        store.save_run(&record).unwrap();
+
+        let mut state = qa_state(&repo, dir.path());
+        let recovered = state.handle(req("run.get", json!({ "run_id": "run-journaled" })));
+        assert_eq!(recovered["ok"], true, "{recovered:?}");
+        assert_eq!(recovered["result"]["stages"][0]["publication"], "pushed");
+        let persisted = store
+            .load_all_runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.id == "run-journaled")
+            .unwrap();
+        assert!(persisted.publication_attempt.is_none());
+    }
+
+    #[test]
     fn corrupt_run_record_fails_boot_naming_the_file() {
         let (dir, repo) = init_repo();
         let runs_dir = dir.path().join("store").join("runs");
@@ -17589,6 +17771,7 @@ mod tests {
             adopted: false,
             pending_continuation: false,
             recovery: None,
+            publication_attempt: None,
             provider: AgentProvider::Claude,
             model: None,
             effort: None,

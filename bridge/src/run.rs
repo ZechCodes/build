@@ -342,6 +342,16 @@ pub enum StagePublication {
     LegacyUnknown,
 }
 
+/// Git publication intent persisted before push/merge side effects. The
+/// candidate commit makes restart recovery an observation of refs rather than
+/// a guess based on whether the previous process returned success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationAttempt {
+    pub action: String,
+    pub candidate_sha: String,
+    pub started_at: String,
+}
+
 /// One stage's execution progress on a run, keyed by the plan's stage id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageProgress {

@@ -287,15 +287,29 @@ impl WorktreeManager {
     }
 }
 
-fn configured_remote_for_branch(repo: &git2::Repository, branch: &str) -> Option<String> {
-    repo.config()
-        .ok()?
+pub(crate) fn configured_remote_for_branch(
+    repo: &git2::Repository,
+    branch: &str,
+) -> Option<String> {
+    let config = repo.config().ok()?;
+    let named = config
         .get_string(&format!("branch.{branch}.remote"))
         .ok()
-        .filter(|remote| remote != "." && !remote.trim().is_empty())
+        .or_else(|| config.get_string("remote.pushDefault").ok())
+        .filter(|remote| remote != "." && !remote.trim().is_empty());
+    if named.is_some() {
+        return named;
+    }
+    if repo.find_remote("origin").is_ok() {
+        return Some("origin".to_string());
+    }
+    let remotes = repo.remotes().ok()?;
+    (remotes.len() == 1)
+        .then(|| remotes.get(0).map(str::to_string))
+        .flatten()
 }
 
-fn bounded_git_fetch(
+pub(crate) fn bounded_git_fetch(
     repo_path: &Path,
     remote: &str,
     refspec: &str,

@@ -54,8 +54,8 @@ use crate::run::{
 use crate::store::{PersistedPlan, PersistedRun, Store, StoreError};
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
 use crate::worktree::{
-    derive_adoption_goal, slugify, ExternalWorktree, Worktree, WorktreeError, WorktreeManager,
-    PLAN_BRANCH_PREFIX,
+    configured_remote_for_branch, derive_adoption_goal, slugify, ExternalWorktree, Worktree,
+    WorktreeError, WorktreeManager, PLAN_BRANCH_PREFIX,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -392,6 +392,9 @@ pub struct ActiveRun {
     /// Durable nonce-bound branch recovery attempt, if one is active or last
     /// completed. The app layer owns verification and lifecycle events.
     pub recovery: Option<crate::run::RecoveryAttempt>,
+    /// Push/merge write-ahead intent, retained across a crash until repository
+    /// refs independently prove or disprove publication.
+    pub publication_attempt: Option<crate::run::PublicationAttempt>,
     /// Which model/effort this run's agents run on (None = harness default).
     pub model_choice: ModelChoice,
     /// The durable conversation paired with the evolving review diff.
@@ -434,6 +437,7 @@ impl ActiveRun {
             adopted: record.adopted,
             pending_continuation: record.pending_continuation,
             recovery: record.recovery.clone(),
+            publication_attempt: record.publication_attempt.clone(),
             model_choice: ModelChoice {
                 provider: record.provider,
                 model: record.model.clone(),
@@ -1271,6 +1275,7 @@ impl Orchestrator {
             adopted: false,
             pending_continuation: false,
             recovery: None,
+            publication_attempt: None,
             model_choice,
             thread,
             last_summary: None,
@@ -2036,6 +2041,7 @@ impl Orchestrator {
             adopted: true,
             pending_continuation: true,
             recovery: None,
+            publication_attempt: None,
             model_choice,
             thread,
             last_summary: None,
@@ -2067,15 +2073,18 @@ impl Orchestrator {
         self.commit_all(&active.worktree.path, &active.run.goal)
     }
 
-    /// Commit, then push the run branch to its `origin`. Keeps the worktree, so
-    /// the agent can keep working / the user can open a PR.
+    /// Commit, then push the run branch to its configured remote. Keeps the
+    /// worktree, so the agent can keep working / the user can open a PR.
     pub fn run_push(&self, active: &ActiveRun) -> Result<(), OrchestratorError> {
         self.commit_all(&active.worktree.path, &active.run.goal)?;
+        let repo = git2::Repository::discover(&active.worktree.path)
+            .map_err(|error| OrchestratorError::Git(error.to_string()))?;
+        let remote = configured_remote_for_branch(&repo, &active.worktree.branch)
+            .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
         self.git(
             &active.worktree.path,
-            // `--` stops option parsing so an option-shaped branch name can
-            // never be read as a flag (defense in depth alongside `adopt_run`).
-            &["push", "-u", "origin", "--", &active.worktree.branch],
+            // `--` stops option parsing so option-shaped names remain opaque.
+            &["push", "-u", &remote, "--", &active.worktree.branch],
         )?;
         Ok(())
     }
@@ -2085,7 +2094,11 @@ impl Orchestrator {
     pub fn run_merge_and_push(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
         let base = active.worktree.base_branch.clone();
         self.run_approve_merge(active)?;
-        self.git(&self.repo_path, &["push", "origin", &base])?;
+        let repo = git2::Repository::open(&self.repo_path)
+            .map_err(|error| OrchestratorError::Git(error.to_string()))?;
+        let remote = configured_remote_for_branch(&repo, &base)
+            .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
+        self.git(&self.repo_path, &["push", &remote, &base])?;
         Ok(())
     }
 
@@ -3375,6 +3388,7 @@ mod tests {
             adopted: true,
             pending_continuation: true,
             recovery: None,
+            publication_attempt: None,
             provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),

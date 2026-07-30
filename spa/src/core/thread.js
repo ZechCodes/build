@@ -15,6 +15,8 @@ const EVENT_META = {
   stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
   stage_started: { label: "Stage implementation started", icon: "▶" },
   implementation_started: { label: "Implementation started", icon: "▶" },
+  worktree_deleted: { label: "Implementation worktree deleted", icon: "×", tone: "blocked" },
+  stage_invalidated: { label: "Stage marked incomplete", icon: "!", tone: "blocked" },
   committed: { label: "Changes committed", icon: "◆", tone: "success" },
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },

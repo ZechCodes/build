@@ -140,6 +140,8 @@ pub enum ThreadEventKind {
     StageApproved,
     StageStarted,
     ImplementationStarted,
+    WorktreeDeleted,
+    StageInvalidated,
     Committed,
     Pushed,
     Merged,

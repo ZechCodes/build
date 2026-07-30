@@ -39,7 +39,7 @@ use crate::plan::{
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
-use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState};
+use crate::run::{RunEvent, RunId, RunState, StageProgress, StageProgressState, StagePublication};
 use crate::store::{
     now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
     WorktreeFinishAction, WorktreeFinishStatus,
@@ -4321,6 +4321,10 @@ impl AppState {
                     json!(progress.and_then(|p| p.validation.as_ref())),
                 );
                 object.insert(
+                    "invalidation_reason".to_string(),
+                    json!(progress.and_then(|p| p.invalidation_reason.as_ref())),
+                );
+                object.insert(
                     "comments".to_string(),
                     json!(issue
                         .comments
@@ -5816,6 +5820,43 @@ impl AppState {
     /// worktree vanished retires to Archived: session ended, git's stale
     /// worktree record pruned — the record stays as quiet history. `Created` is
     /// exempt (its worktree may legitimately not exist yet).
+    fn reconcile_missing_run_worktree(&self, run_id: &str, active: &mut ActiveRun) -> Vec<String> {
+        let repo_path = self
+            .entity_project
+            .get(run_id)
+            .and_then(|project_id| {
+                self.projects
+                    .iter()
+                    .find(|project| &project.id == project_id)
+            })
+            .map(|project| project.repo_path.clone());
+        let mut affected = Vec::new();
+        for progress in &mut active.stages {
+            let publication = match (&repo_path, progress.completion_sha.as_deref()) {
+                (Some(repo_path), Some(completion_sha)) => classify_stage_publication(
+                    repo_path,
+                    &active.worktree.branch,
+                    &active.worktree.base_branch,
+                    completion_sha,
+                ),
+                _ => StagePublication::Local,
+            };
+            progress.publication = publication;
+            let in_flight = !matches!(
+                progress.state,
+                StageProgressState::Validated { passed: true }
+            );
+            if publication == StagePublication::Local || in_flight {
+                progress.invalidation_reason = Some(
+                    "Issue worktree disappeared before this stage's commits were verified pushed or merged"
+                        .to_string(),
+                );
+                affected.push(progress.stage_id.clone());
+            }
+        }
+        affected
+    }
+
     fn archive_runs_with_deleted_worktrees(&mut self) {
         let doomed: Vec<String> = self
             .runs
@@ -5831,6 +5872,8 @@ impl AppState {
             let Ok(mut active) = self.take_run(&run_id) else {
                 continue;
             };
+            let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+            let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
             match active.run.apply(RunEvent::Archive) {
                 Ok(_) => {
                     self.prune_worktree_records(&run_id);
@@ -5844,6 +5887,44 @@ impl AppState {
             let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("archive {run_id}: {e}");
+            }
+            if let Some(issue_id) = issue_id {
+                if let Ok(mut issue) = self.take_plan(&issue_id) {
+                    issue.thread.push_event_with_links(
+                        crate::thread::ThreadEventKind::WorktreeDeleted,
+                        Some(format!(
+                            "Implementation worktree disappeared; {} stage(s) were reconciled",
+                            affected_stages.len()
+                        )),
+                        None,
+                        None,
+                        vec![crate::thread::ThreadLink::Run {
+                            run_id: run_id.clone(),
+                        }],
+                        now_rfc3339(),
+                    );
+                    for stage_id in &affected_stages {
+                        if let Some(stage) = issue.stages.iter().find(|stage| &stage.id == stage_id)
+                        {
+                            issue.thread.push_event_with_links(
+                                crate::thread::ThreadEventKind::StageInvalidated,
+                                Some(format!("Stage “{}” is incomplete", stage.title)),
+                                None,
+                                None,
+                                vec![crate::thread::ThreadLink::PlanStage {
+                                    plan_id: issue_id.clone(),
+                                    stage_id: stage.id.clone(),
+                                    path: stage.path.clone(),
+                                }],
+                                now_rfc3339(),
+                            );
+                        }
+                    }
+                    let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                    if let Err(e) = persisted {
+                        eprintln!("archive {run_id}: issue event persist failed: {e}");
+                    }
+                }
             }
         }
     }
@@ -6032,6 +6113,8 @@ impl AppState {
                 run.stages.iter().any(|progress| {
                     progress.stage_id == stage.id
                         && progress.state == StageProgressState::Validated { passed: true }
+                        && progress.completion_sha.is_some()
+                        && progress.invalidation_reason.is_none()
                 })
             })
         })
@@ -6631,6 +6714,7 @@ fn run_stage_progress_str(state: &StageProgressState) -> String {
 
 fn canonical_stage_execution(progress: &StageProgress) -> &'static str {
     match progress.state {
+        _ if progress.invalidation_reason.is_some() => "incomplete",
         StageProgressState::Building => "building",
         StageProgressState::Built => "built",
         StageProgressState::Validating => "validating",
@@ -7164,6 +7248,45 @@ fn remove_registered_worktree(
     }
     args.extend(["--", path]);
     git_stdout(project_path, &args).map(|_| ())
+}
+
+fn classify_stage_publication(
+    repo_path: &std::path::Path,
+    branch: &str,
+    base_branch: &str,
+    completion_sha: &str,
+) -> StagePublication {
+    let Ok(repo) = git2::Repository::open(repo_path) else {
+        return StagePublication::Local;
+    };
+    let Ok(completion) = git2::Oid::from_str(completion_sha) else {
+        return StagePublication::Local;
+    };
+    let reachable = |reference: &str| {
+        repo.find_reference(reference)
+            .ok()
+            .and_then(|reference| reference.peel_to_commit().ok())
+            .is_some_and(|tip| {
+                tip.id() == completion
+                    || repo
+                        .graph_descendant_of(tip.id(), completion)
+                        .unwrap_or(false)
+            })
+    };
+    let merge_ref = format!("refs/heads/{base_branch}");
+    if reachable(&merge_ref) {
+        return StagePublication::Merged;
+    }
+    let upstream_ref = repo
+        .find_branch(branch, git2::BranchType::Local)
+        .ok()
+        .and_then(|local| local.upstream().ok())
+        .and_then(|upstream| upstream.get().name().map(str::to_string));
+    if upstream_ref.as_deref().is_some_and(reachable) {
+        StagePublication::Pushed
+    } else {
+        StagePublication::Local
+    }
 }
 
 fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
@@ -12106,6 +12229,77 @@ mod tests {
         assert_eq!(stages["result"]["issue_id"], issue_id);
         assert_eq!(stages["result"]["plan_id"], issue_id);
         assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn disappearing_issue_worktree_invalidates_local_stage_completion_but_preserves_boundaries() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "lost local worktree");
+        let before = state.runs[&run_id].stages[0].clone();
+        assert!(before.completion_sha.is_some());
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        state.handle(req("board.list", json!({})));
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        let first = &stages["result"]["stages"][0];
+        assert_eq!(first["execution"], "incomplete", "{stages:?}");
+        assert_eq!(first["start_sha"], before.start_sha.unwrap());
+        assert_eq!(first["completion_sha"], before.completion_sha.unwrap());
+        assert!(first["invalidation_reason"]
+            .as_str()
+            .unwrap()
+            .contains("worktree"));
+    }
+
+    #[test]
+    fn disappearing_worktree_keeps_pushed_stage_commits_complete() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "published worktree");
+        let pushed = state.handle(req(
+            "run.git_action",
+            json!({ "run_id": run_id, "action": "push" }),
+        ));
+        assert_eq!(pushed["ok"], true, "{pushed:?}");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        state.handle(req("board.list", json!({})));
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(
+            stages["result"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|stage| stage["execution"] == "complete"
+                    && stage["publication"] == "pushed"
+                    && stage["invalidation_reason"].is_null()),
+            "{stages:?}"
+        );
     }
 
     #[test]
@@ -17203,7 +17397,7 @@ mod tests {
     }
 
     #[test]
-    fn archived_completed_run_stays_internal_for_plan_completion() {
+    fn archived_local_only_run_no_longer_counts_as_issue_completion() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (plan_id, run_id) = planned_run_in_review(&mut state, "completed then removed");
@@ -17218,8 +17412,8 @@ mod tests {
             .all(|run| run["run_id"] != run_id));
         assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
         let plan = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
-        assert_eq!(plan["result"]["implementation_complete"], true, "{plan:?}");
-        assert_eq!(plan["result"]["can_archive"], true, "{plan:?}");
+        assert_eq!(plan["result"]["implementation_complete"], false, "{plan:?}");
+        assert_eq!(plan["result"]["can_archive"], false, "{plan:?}");
     }
 
     #[test]

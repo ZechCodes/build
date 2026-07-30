@@ -256,6 +256,10 @@ pub struct PersistedRun {
     /// session spawn after adoption, persisted so a restart in between keeps it.
     #[serde(default)]
     pub pending_continuation: bool,
+    /// Durable nonce-bound recovery journal. A started attempt survives daemon
+    /// restart and can never be mistaken for a verified success.
+    #[serde(default)]
+    pub recovery: Option<crate::run::RecoveryAttempt>,
     #[serde(default)]
     pub provider: AgentProvider,
     /// Model/effort the run's agents run on (None = harness default).
@@ -1116,6 +1120,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         auto_advance: task.auto_advance,
         adopted: task.adopted,
         pending_continuation: task.pending_continuation,
+        recovery: None,
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
@@ -1748,6 +1753,7 @@ mod tests {
             auto_advance: true,
             adopted: false,
             pending_continuation: false,
+            recovery: None,
             provider: AgentProvider::Claude,
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),

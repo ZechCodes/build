@@ -389,6 +389,9 @@ pub struct ActiveRun {
     /// — not only the first time after an adoption. Kept because it is on every
     /// `PersistedRun` on disk and dropping it needs a store migration.
     pub pending_continuation: bool,
+    /// Durable nonce-bound branch recovery attempt, if one is active or last
+    /// completed. The app layer owns verification and lifecycle events.
+    pub recovery: Option<crate::run::RecoveryAttempt>,
     /// Which model/effort this run's agents run on (None = harness default).
     pub model_choice: ModelChoice,
     /// The durable conversation paired with the evolving review diff.
@@ -430,6 +433,7 @@ impl ActiveRun {
             auto_advance: record.auto_advance,
             adopted: record.adopted,
             pending_continuation: record.pending_continuation,
+            recovery: record.recovery.clone(),
             model_choice: ModelChoice {
                 provider: record.provider,
                 model: record.model.clone(),
@@ -774,7 +778,10 @@ impl Orchestrator {
             (DonePhase::Revise, DoneStatus::Completed) => {
                 self.consume_plan_stage_revision(active, store, &report)?;
             }
-            (DonePhase::Build | DonePhase::Validate, DoneStatus::Completed) => {
+            (
+                DonePhase::Build | DonePhase::Validate | DonePhase::Recover,
+                DoneStatus::Completed,
+            ) => {
                 return Err(OrchestratorError::Gate(format!(
                     "a planning session reported phase={:?}; plans only accept plan/revise \
                      reports",
@@ -1263,6 +1270,7 @@ impl Orchestrator {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            recovery: None,
             model_choice,
             thread,
             last_summary: None,
@@ -1346,6 +1354,11 @@ impl Orchestrator {
                     return Ok(ReportConsumed::out_of_phase(illegal));
                 }
                 active.auto_advance = false;
+            }
+            (DonePhase::Recover, DoneStatus::Completed) => {
+                return Err(OrchestratorError::Gate(
+                    "recovery reports are verified by the app recovery journal".to_string(),
+                ));
             }
             (DonePhase::Plan, DoneStatus::Completed) => {
                 // Plan reports belong to plans; consuming one here would let
@@ -2022,6 +2035,7 @@ impl Orchestrator {
             auto_advance: false,
             adopted: true,
             pending_continuation: true,
+            recovery: None,
             model_choice,
             thread,
             last_summary: None,
@@ -3360,6 +3374,7 @@ mod tests {
             auto_advance: true,
             adopted: true,
             pending_continuation: true,
+            recovery: None,
             provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),

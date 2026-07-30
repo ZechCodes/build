@@ -240,6 +240,30 @@ pub struct ValidationReport {
     pub notes_for_next_stage: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryState {
+    Started,
+    Succeeded,
+    Failed,
+}
+
+/// Durable nonce and outcome for one attempt to recover an Issue's original
+/// implementation branch. The agent's MCP report is a claim; `Succeeded` is
+/// written only after the daemon independently verifies the restored checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryAttempt {
+    pub id: String,
+    pub requested_stage_id: String,
+    pub branch: String,
+    pub state: RecoveryState,
+    #[serde(default)]
+    pub report: Option<crate::mcp::RecoveryReport>,
+    pub started_at: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
 /// Position of one stage in its run-side execution lifecycle. Plan-side doc
 /// review (`Planned/Approved`) lives on the plan (`crate::plan::StageDoc`);
 /// a progress record exists only once the stage has been dispatched.

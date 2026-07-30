@@ -26,6 +26,8 @@ pub enum DonePhase {
     Revise,
     /// An automated validation pass gating the next stage of a multi-stage plan.
     Validate,
+    /// A branch-lineage recovery agent reporting a nonce-bound result.
+    Recover,
 }
 
 /// The agent's claim about how the phase ended.
@@ -47,6 +49,19 @@ pub struct CommentResolution {
     pub response: String,
 }
 
+/// A recovery agent's claim. The daemon accepts it only for its currently
+/// persisted recovery nonce, then independently verifies branch, HEAD and the
+/// restored worktree before unblocking implementation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryReport {
+    pub recovery_id: String,
+    pub recovered: bool,
+    pub branch: String,
+    pub head_sha: String,
+    #[serde(default)]
+    pub findings: String,
+}
+
 /// Structured outputs a phase can report.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoneOutputs {
@@ -60,6 +75,9 @@ pub struct DoneOutputs {
     /// Required when phase=validate and status=completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<crate::run::ValidationReport>,
+    /// Required when phase=recover and status=completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryReport>,
     /// Optional on phase=revise/completed: per-comment resolutions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_resolutions: Option<Vec<CommentResolution>>,
@@ -94,6 +112,8 @@ pub enum DoneError {
     MissingPlanPath,
     #[error("outputs.validation is required when phase=validate and status=completed")]
     MissingValidationReport,
+    #[error("outputs.recovery is required when phase=recover and status=completed")]
+    MissingRecoveryReport,
     #[error("invalid outputs.stages: {0}")]
     InvalidStages(String),
     #[error("plan_path {0:?} must be a plain relative path inside the worktree (no '..', no leading '/')")]
@@ -173,6 +193,12 @@ impl DoneReport {
         {
             return Err(DoneError::MissingValidationReport);
         }
+        if args.phase == DonePhase::Recover
+            && args.status == DoneStatus::Completed
+            && args.outputs.recovery.is_none()
+        {
+            return Err(DoneError::MissingRecoveryReport);
+        }
         Ok(DoneReport {
             phase: args.phase,
             status: args.status,
@@ -225,7 +251,7 @@ impl DoneServer {
         json!({
             "type": "object",
             "properties": {
-                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate"] },
+                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "recover"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
                 "summary": { "type": "string", "description": "One concise sentence stating what was completed. If blocked or failed, state what is needed instead. No file list, changelog, test log, links, or process narration." },
                 "outputs": {
@@ -255,6 +281,18 @@ impl DoneServer {
                                 "notes_for_next_stage": { "type": "string", "description": "Markdown notes the next stage's builder should know. Empty string if none." }
                             },
                             "required": ["passed", "findings", "notes_for_next_stage"]
+                        },
+                        "recovery": {
+                            "type": "object",
+                            "description": "Required when phase=recover and status=completed. Echo the recovery_id nonce from the recovery prompt.",
+                            "properties": {
+                                "recovery_id": { "type": "string" },
+                                "recovered": { "type": "boolean" },
+                                "branch": { "type": "string" },
+                                "head_sha": { "type": "string" },
+                                "findings": { "type": "string" }
+                            },
+                            "required": ["recovery_id", "recovered", "branch", "head_sha", "findings"]
                         },
                         "comment_resolutions": {
                             "type": "array",
@@ -805,6 +843,25 @@ mod tests {
         assert!(validation.passed);
         assert_eq!(validation.findings, "all good");
         assert_eq!(validation.notes_for_next_stage, "none");
+    }
+
+    #[test]
+    fn done_recover_completed_requires_a_verified_recovery_report() {
+        let missing = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"done","arguments":{"phase":"recover","status":"completed","summary":"recovered"}}}"#,
+        );
+        assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
+        assert!(missing.report.is_none());
+
+        let complete = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":92,"method":"tools/call","params":{"name":"done","arguments":{"phase":"recover","status":"completed","summary":"recovered","outputs":{"recovery":{"recovery_id":"recovery-nonce","recovered":true,"branch":"build/fix","head_sha":"0123456789012345678901234567890123456789","findings":"branch restored"}}}}}"#,
+        );
+        let report = complete.report.expect("verified recovery report");
+        assert_eq!(report.phase, DonePhase::Recover);
+        assert_eq!(
+            report.outputs.recovery.unwrap().recovery_id,
+            "recovery-nonce"
+        );
     }
 
     #[test]

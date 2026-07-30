@@ -548,6 +548,22 @@ impl PendingAgentTurn {
             phase: turn.phase,
         })
     }
+
+    fn for_recovery(
+        owner: &str,
+        active: &ActiveRun,
+        project_root: &std::path::Path,
+        prompt: String,
+    ) -> Self {
+        PendingAgentTurn {
+            root: AppState::canonical_root(project_root),
+            owner: owner.to_string(),
+            model_choice: active.model_choice.clone(),
+            cold: prompt.clone(),
+            warm: prompt,
+            phase: "recover",
+        }
+    }
 }
 
 /// One registered project: a git repo, its base branch, and the orchestrator that
@@ -1385,7 +1401,7 @@ impl AppState {
                 Ok(worktree) => {
                     active.worktree = worktree;
                     recovery_event = Some((
-                        crate::thread::ThreadEventKind::WorktreeRecovered,
+                        crate::thread::ThreadEventKind::WorktreeRecreated,
                         format!(
                             "Recreated the Issue worktree from branch {}",
                             active.worktree.branch
@@ -1393,25 +1409,65 @@ impl AppState {
                     ));
                     state_changed = true;
                 }
+                Err(error) if active.run.plan_id.is_some() && project_id.is_some() => {
+                    let issue_id = active.run.plan_id.as_ref().expect("guarded").0.clone();
+                    let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
+                    let requested_stage_id = self
+                        .plans
+                        .get(&issue_id)
+                        .and_then(|issue| match &issue.plan.implementation_intent {
+                            ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
+                            ImplementationIntent::All => issue.stages.iter().find_map(|doc| {
+                                active
+                                    .stage_progress(&doc.id)
+                                    .is_none_or(|progress| {
+                                        progress.state
+                                            != StageProgressState::Validated { passed: true }
+                                            || progress.invalidation_reason.is_some()
+                                    })
+                                    .then(|| doc.id.clone())
+                            }),
+                            ImplementationIntent::None => active.current_stage_id.clone(),
+                        })
+                        .unwrap_or_default();
+                    let started_at = now_rfc3339();
+                    active.recovery = Some(crate::run::RecoveryAttempt {
+                        id: recovery_id.clone(),
+                        requested_stage_id: requested_stage_id.clone(),
+                        branch: active.worktree.branch.clone(),
+                        state: crate::run::RecoveryState::Started,
+                        report: None,
+                        started_at: started_at.clone(),
+                        completed_at: None,
+                    });
+                    active.last_error = Some(format!(
+                        "automatic branch restoration failed: {error}; verified recovery agent started"
+                    ));
+                    let prompt = format!(
+                        "You are a RECOVERY agent. Recovery nonce: {recovery_id}. Restore only the exact branch {} for Issue {issue_id}; never start from the moving base. Requested stage: {requested_stage_id}. Inspect local/remote refs and reflogs, then call `done` with phase=\"recover\" and outputs.recovery containing this nonce, recovered, branch, exact 40-character head_sha, and findings.",
+                        active.worktree.branch
+                    );
+                    self.pending_agent_turns
+                        .push(PendingAgentTurn::for_recovery(
+                            &run_id, &active, &repo_path, prompt,
+                        ));
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::RecoveryStarted,
+                        format!("Verified recovery {recovery_id} started: {error}"),
+                    ));
+                    state_changed = true;
+                }
                 Err(error) => {
                     let affected = self.reconcile_missing_run_worktree(&run_id, &mut active);
-                    // Issue-linked runs remain archived as durable lineage;
-                    // legacy/standalone runs preserve their established
-                    // abandoned recovery state.
-                    let terminal_event = if active.run.plan_id.is_some() {
-                        RunEvent::Archive
-                    } else {
-                        RunEvent::Abandon
-                    };
                     active
                         .run
-                        .apply(terminal_event)
+                        .apply(RunEvent::Abandon)
                         .map_err(|e| format!("recover {run_id}: {e}"))?;
                     active.last_error = Some(format!("worktree recovery failed: {error}"));
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::RecoveryFailed,
                         format!(
-                            "Could not recover the Issue worktree: {error}. {} stage(s) were marked incomplete",
+                            "Could not recover the worktree: {error}. {} stage(s) were marked incomplete",
                             affected.len()
                         ),
                     ));
@@ -1471,14 +1527,21 @@ impl AppState {
             recovery_event,
         ) {
             if let Ok(mut issue) = self.take_plan(&issue_id) {
+                let mut links = vec![crate::thread::ThreadLink::Implementation {
+                    issue_id: issue_id.clone(),
+                    implementation_id: run_id.clone(),
+                }];
+                if let Some(recovery) = &active.recovery {
+                    links.push(crate::thread::ThreadLink::Recovery {
+                        recovery_id: recovery.id.clone(),
+                    });
+                }
                 issue.thread.push_event_with_links(
                     event,
                     Some(summary),
                     None,
                     None,
-                    vec![crate::thread::ThreadLink::Run {
-                        run_id: run_id.clone(),
-                    }],
+                    links,
                     now_rfc3339(),
                 );
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
@@ -1606,6 +1669,7 @@ impl AppState {
             auto_advance: active.auto_advance,
             adopted: active.adopted,
             pending_continuation: active.pending_continuation,
+            recovery: active.recovery.clone(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
@@ -2468,6 +2532,10 @@ impl AppState {
         let Some(mut active) = self.runs.remove(run_id) else {
             return;
         };
+        if report.phase == DonePhase::Recover {
+            self.consume_recovery_report(run_id, active, report);
+            return;
+        }
         let is_stage_revision = active.revising_stage_id.is_some()
             && report.phase == DonePhase::Revise
             && report.status == DoneStatus::Completed;
@@ -2604,6 +2672,167 @@ impl AppState {
         {
             if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
                 eprintln!("issue scheduler {issue_id}: {error}");
+            }
+        }
+    }
+
+    fn consume_recovery_report(&mut self, run_id: &str, mut active: ActiveRun, report: DoneReport) {
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let now = now_rfc3339();
+        let reported = report.outputs.recovery.clone();
+        let verification = (|| -> Result<crate::mcp::RecoveryReport, String> {
+            if report.status != DoneStatus::Completed {
+                return Err(format!(
+                    "recovery agent reported {:?}: {}",
+                    report.status, report.summary
+                ));
+            }
+            let reported = reported.clone().ok_or("recovery report missing")?;
+            let attempt = active
+                .recovery
+                .as_ref()
+                .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
+                .ok_or("no recovery attempt is awaiting a report")?;
+            if reported.recovery_id != attempt.id {
+                return Err("recovery nonce does not match the persisted attempt".to_string());
+            }
+            if !reported.recovered {
+                return Err(format!(
+                    "exact lineage was not recovered: {}",
+                    reported.findings
+                ));
+            }
+            if reported.branch != active.worktree.branch {
+                return Err("recovery report names a different branch".to_string());
+            }
+            let project_id = self.project_of(run_id)?;
+            let worktree = self
+                .orch_for(&project_id)?
+                .restore_run_worktree(&active.worktree)
+                .map_err(err)?;
+            let checkout =
+                git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
+            let verified_head = checkout
+                .head()
+                .and_then(|head| head.peel_to_commit())
+                .map_err(|error| error.to_string())?
+                .id()
+                .to_string();
+            if reported.head_sha != verified_head {
+                return Err(format!(
+                    "recovery HEAD verification failed: agent reported {}, checkout is {verified_head}",
+                    reported.head_sha
+                ));
+            }
+            active.worktree = worktree;
+            Ok(reported)
+        })();
+
+        let (event, summary, recovery_id, requested_stage_id) = match verification {
+            Ok(verified) => {
+                let attempt = active.recovery.as_mut().expect("verified attempt exists");
+                attempt.state = crate::run::RecoveryState::Succeeded;
+                attempt.report = Some(verified.clone());
+                attempt.completed_at = Some(now.clone());
+                active.last_error = None;
+                (
+                    crate::thread::ThreadEventKind::RecoverySucceeded,
+                    format!(
+                        "Verified recovery restored {} at {}",
+                        verified.branch, verified.head_sha
+                    ),
+                    attempt.id.clone(),
+                    attempt.requested_stage_id.clone(),
+                )
+            }
+            Err(reason) => {
+                let (recovery_id, requested_stage_id) = active
+                    .recovery
+                    .as_ref()
+                    .map(|attempt| (attempt.id.clone(), attempt.requested_stage_id.clone()))
+                    .unwrap_or_else(|| ("recovery-unmatched".to_string(), String::new()));
+                if let Some(attempt) = active.recovery.as_mut() {
+                    attempt.state = crate::run::RecoveryState::Failed;
+                    attempt.report = reported;
+                    attempt.completed_at = Some(now.clone());
+                }
+                active.last_error = Some(format!("verified recovery failed: {reason}"));
+                if let Some(issue_id) = issue_id.as_deref() {
+                    if let Some(issue) = self.plans.get(issue_id) {
+                        if let Some(index) = issue
+                            .stages
+                            .iter()
+                            .position(|stage| stage.id == requested_stage_id)
+                        {
+                            if let Some(predecessor) = index.checked_sub(1).and_then(|previous| {
+                                active
+                                    .stages
+                                    .iter_mut()
+                                    .find(|progress| progress.stage_id == issue.stages[previous].id)
+                            }) {
+                                if matches!(
+                                    predecessor.publication,
+                                    StagePublication::Local | StagePublication::LegacyUnknown
+                                ) {
+                                    predecessor.invalidation_reason = Some(format!(
+                                        "preceding unpublished stage invalidated after verified recovery failed: {reason}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                (
+                    crate::thread::ThreadEventKind::RecoveryFailed,
+                    format!("Verified recovery failed: {reason}"),
+                    recovery_id,
+                    requested_stage_id,
+                )
+            }
+        };
+        let succeeded = event == crate::thread::ThreadEventKind::RecoverySucceeded;
+        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        if let Err(error) = persisted {
+            eprintln!("recovery {run_id}: run persist failed: {error}");
+            return;
+        }
+        if let Some(issue_id) = issue_id {
+            if let Ok(mut issue) = self.take_plan(&issue_id) {
+                let mut links = vec![
+                    crate::thread::ThreadLink::Implementation {
+                        issue_id: issue_id.clone(),
+                        implementation_id: run_id.to_string(),
+                    },
+                    crate::thread::ThreadLink::Recovery { recovery_id },
+                ];
+                if let Some(stage) = issue
+                    .stages
+                    .iter()
+                    .find(|stage| stage.id == requested_stage_id)
+                {
+                    links.push(crate::thread::ThreadLink::IssueStage {
+                        issue_id: issue_id.clone(),
+                        stage_id: stage.id.clone(),
+                        path: stage.path.clone(),
+                    });
+                }
+                issue
+                    .thread
+                    .push_event_with_links(event, Some(summary), None, None, links, &now);
+                let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
+                if let Err(error) = persisted {
+                    eprintln!("recovery {run_id}: Issue persist failed: {error}");
+                    return;
+                }
+            }
+            if succeeded {
+                if let Err(error) =
+                    self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))
+                {
+                    self.block_issue_scheduler(&issue_id, None, &error);
+                }
+            } else if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
+                eprintln!("recovery {run_id}: scheduler refresh failed: {error}");
             }
         }
     }
@@ -4959,45 +5188,106 @@ impl AppState {
                 persisted
             }
             Err(error) => {
-                let affected = self.reconcile_missing_run_worktree(run_id, &mut active);
-                active.last_error = Some(format!("worktree recovery failed: {error}"));
-                if !active.run.state.is_terminal() {
-                    active
-                        .run
-                        .apply(RunEvent::Archive)
-                        .map_err(|error| error.to_string())?;
+                if active
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.state == crate::run::RecoveryState::Started)
+                {
+                    self.runs.insert(run_id.to_string(), active);
+                    return Err("verified Issue recovery is already running".to_string());
                 }
+                let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
+                let requested_stage_id = match &issue.plan.implementation_intent {
+                    ImplementationIntent::Stage(stage_id) => stage_id.clone(),
+                    ImplementationIntent::All => issue
+                        .stages
+                        .iter()
+                        .find(|doc| {
+                            active.stage_progress(&doc.id).is_none_or(|progress| {
+                                progress.state != StageProgressState::Validated { passed: true }
+                                    || progress.invalidation_reason.is_some()
+                            })
+                        })
+                        .map(|doc| doc.id.clone())
+                        .unwrap_or_default(),
+                    ImplementationIntent::None => {
+                        active.current_stage_id.clone().unwrap_or_default()
+                    }
+                };
+                let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
+                let started_at = now_rfc3339();
+                active.recovery = Some(crate::run::RecoveryAttempt {
+                    id: recovery_id.clone(),
+                    requested_stage_id: requested_stage_id.clone(),
+                    branch: active.worktree.branch.clone(),
+                    state: crate::run::RecoveryState::Started,
+                    report: None,
+                    started_at: started_at.clone(),
+                    completed_at: None,
+                });
+                active.last_error = Some(format!(
+                    "automatic branch restoration failed: {error}; verified recovery agent started"
+                ));
+                let project_root = self
+                    .projects
+                    .iter()
+                    .find(|project| project.id == project_id)
+                    .map(|project| project.repo_path.clone())
+                    .ok_or("unknown project_id")?;
+                let catalog = issue
+                    .stages
+                    .iter()
+                    .enumerate()
+                    .map(|(index, stage)| {
+                        format!(
+                            "{}. {} — {} — {:?}",
+                            index + 1,
+                            stage.id,
+                            stage.path,
+                            stage.state
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let prompt = format!(
+                    "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {error}\n\nOrdered Issue stage-plan catalog:\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `done` with phase=\"recover\", status=\"completed\", outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, report recovered=false with the same nonce and verified findings.",
+                    active.worktree.branch,
+                    active.worktree.path.display(),
+                    active.worktree.branch,
+                );
+                self.pending_agent_turns
+                    .push(PendingAgentTurn::for_recovery(
+                        run_id,
+                        &active,
+                        &project_root,
+                        prompt,
+                    ));
                 let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
-                let mut links = vec![crate::thread::ThreadLink::Run {
-                    run_id: run_id.to_string(),
-                }];
-                links.extend(
-                    issue
-                        .stages
-                        .iter()
-                        .filter(|stage| affected.contains(&stage.id))
-                        .map(|stage| crate::thread::ThreadLink::PlanStage {
-                            plan_id: issue_id.to_string(),
-                            stage_id: stage.id.clone(),
-                            path: stage.path.clone(),
-                        }),
-                );
                 issue.thread.push_event_with_links(
-                    crate::thread::ThreadEventKind::RecoveryFailed,
+                    crate::thread::ThreadEventKind::RecoveryStarted,
                     Some(format!(
-                        "Issue worktree recovery failed: {error}. {} stage(s) are incomplete and dependent stages are blocked",
-                        affected.len()
+                        "Verified recovery started after automatic restore failed: {error}"
                     )),
                     None,
                     None,
-                    links,
-                    now_rfc3339(),
+                    vec![
+                        crate::thread::ThreadLink::Implementation {
+                            issue_id: issue_id.to_string(),
+                            implementation_id: run_id.to_string(),
+                        },
+                        crate::thread::ThreadLink::Recovery {
+                            recovery_id: recovery_id.clone(),
+                        },
+                    ],
+                    started_at,
                 );
                 let (_, issue_persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
                 issue_persisted?;
-                Err(format!("Issue worktree recovery failed: {error}"))
+                Err(format!(
+                    "automatic restore failed; verified recovery {recovery_id} started"
+                ))
             }
         }
     }
@@ -6681,6 +6971,7 @@ impl AppState {
             .filter(|(_, active)| {
                 !active.run.state.is_terminal()
                     && active.run.state != RunState::Created
+                    && active.recovery.is_none()
                     && !active.worktree.path.exists()
             })
             .map(|(id, _)| id.clone())
@@ -6849,6 +7140,7 @@ impl AppState {
                     "state": run_state_str(&run.run.state),
                     "branch": run.worktree.branch,
                     "worktree_path": run.worktree.path.display().to_string(),
+                    "recovery": run.recovery,
                     "created_at": self.entity_created_at.get(&run.run.id.0),
                 })
             })
@@ -6888,6 +7180,7 @@ impl AppState {
                 "state": run_state_str(&run.run.state),
                 "branch": run.worktree.branch,
                 "worktree_path": run.worktree.path.display().to_string(),
+                "recovery": run.recovery,
             })),
             "implementation_lineage": implementation_lineage,
             "implementation_intent": active.plan.implementation_intent,
@@ -6981,6 +7274,7 @@ impl AppState {
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
+            "recovery": active.recovery,
             "can_finish": active.run.state == RunState::Merged
                 || (active.run.state == RunState::Review && active.worktree.path.exists()),
             "created_at": self.entity_created_at.get(run_id),
@@ -13440,6 +13734,250 @@ mod tests {
     }
 
     #[test]
+    fn missing_original_branch_starts_nonce_bound_recovery_instead_of_archiving() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req(
+            "issue.create",
+            json!({ "goal": "recover exact lineage" }),
+        ));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["branch", "-D", "--", &branch])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        let requested = state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(requested["ok"], false, "{requested:?}");
+        assert!(requested["error"]
+            .as_str()
+            .unwrap()
+            .contains("verified recovery"));
+        let issue_view = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        let active = &state.runs[&run_id];
+        assert_ne!(active.run.state, RunState::Archived);
+        let recovery = active.recovery.as_ref().expect("durable recovery attempt");
+        assert_eq!(recovery.state, crate::run::RecoveryState::Started);
+        assert!(recovery.id.starts_with("recovery-"));
+        assert_eq!(recovery.requested_stage_id, "second-half");
+        assert!(state.pending_agent_turns.iter().any(|turn| {
+            turn.owner == run_id
+                && turn.phase == "recover"
+                && turn.cold.contains(&recovery.id)
+                && turn.cold.contains("Ordered Issue stage-plan catalog")
+        }));
+        assert!(issue_view["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["data"]["event"] == "recovery_started"
+                && item["data"]["links"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|link| link["kind"] == "recovery")));
+    }
+
+    #[test]
+    fn recovery_report_nonce_mismatch_fails_and_invalidates_only_the_predecessor() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req(
+            "issue.create",
+            json!({ "goal": "reject forged recovery" }),
+        ));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap(),
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-D", "--", &branch])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "forged".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id: "recovery-wrong".into(),
+                        recovered: true,
+                        branch,
+                        head_sha: "0".repeat(40),
+                        findings: "claim".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Failed
+        );
+        assert!(active.stages[0].invalidation_reason.is_some());
+        assert!(active
+            .stages
+            .iter()
+            .skip(1)
+            .all(|stage| stage.invalidation_reason.is_none()));
+        assert_ne!(active.run.state, RunState::Archived);
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert!(issue["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["data"]["event"] == "recovery_failed"));
+    }
+
+    #[test]
+    fn matching_recovery_report_is_independently_verified_and_resumes_requested_stage() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req(
+            "issue.create",
+            json!({ "goal": "verify recovered head" }),
+        ));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        let head_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&worktree)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap(),
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-D", "--", &branch])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        let recovery_id = state.runs[&run_id].recovery.as_ref().unwrap().id.clone();
+        assert!(Command::new("git")
+            .args(["branch", &branch, &head_sha])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "exact branch recovered".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id,
+                        recovered: true,
+                        branch,
+                        head_sha,
+                        findings: "local reflog proved the exact tip".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Succeeded
+        );
+        assert!(active.worktree.path.exists());
+        assert_eq!(active.run.state, RunState::Review);
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert!(issue["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["data"]["event"] == "recovery_succeeded"));
+    }
+
+    #[test]
     fn implement_all_resumes_when_the_waiting_stage_plan_is_approved() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -13865,8 +14403,8 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|item| item["type"] == "event"
-                    && item["data"]["event"] == "worktree_recovered"
-                    && item["data"]["links"][0]["run_id"] == run_id),
+                    && item["data"]["event"] == "worktree_recreated"
+                    && item["data"]["links"][0]["implementation_id"] == run_id),
             "{issue:?}"
         );
     }
@@ -16783,6 +17321,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            recovery: None,
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
@@ -17037,6 +17576,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            recovery: None,
             provider: AgentProvider::Claude,
             model: None,
             effort: None,

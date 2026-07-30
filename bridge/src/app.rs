@@ -2062,10 +2062,11 @@ impl AppState {
         }
     }
 
-    /// Execute an MCP thread request against the identity-scoped owner baked
-    /// into that session's MCP command. There is no caller-supplied thread id:
-    /// a plan process can only reach its plan thread and a run process only its
-    /// run thread.
+    /// Execute an MCP thread request against the conversation owner resolved
+    /// from the lifecycle owner baked into that session's MCP command. Planned
+    /// implementations report `done` as their run id, but all unread/reply
+    /// actions resolve to the owning Issue (legacy plan id). Planless adopted
+    /// runs retain their independent worktree conversation.
     fn on_mcp_action(&mut self, entity_id: &str, action: BridgeAction) -> Result<Value, String> {
         let now = now_rfc3339();
         if self.plans.contains_key(entity_id) {
@@ -2077,6 +2078,25 @@ impl AppState {
                 &now,
             );
             let (_, persisted) = self.finish_plan_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if let Some(issue_id) = self
+            .runs
+            .get(entity_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.clone())
+            .filter(|issue_id| self.plans.contains_key(issue_id))
+        {
+            let mut issue = self.take_plan(&issue_id)?;
+            let result = apply_thread_action(
+                &mut issue.thread,
+                crate::thread::ArtifactKind::Diff,
+                action,
+                &now,
+            );
+            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -2164,6 +2184,7 @@ impl AppState {
             return;
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let report_for_thread = report.clone();
         let consumed = (|| -> Result<ReportConsumed, String> {
             let project_id = self.project_of(run_id)?;
@@ -2196,28 +2217,41 @@ impl AppState {
                 Ok(outcome)
             }
         };
+        let diff_revision = if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed
+        {
+            self.project_of(run_id).ok().and_then(|project_id| {
+                self.orch_for(&project_id)
+                    .and_then(|orch| orch.run_diff(&active).map_err(err))
+                    .ok()
+                    .map(|diff| diff.patch().to_string())
+            })
+        } else {
+            None
+        };
+        let mut issue = issue_id
+            .as_ref()
+            .and_then(|issue_id| self.plans.remove(issue_id));
+        let conversation = issue
+            .as_mut()
+            .map(|issue| &mut issue.thread)
+            .unwrap_or(&mut active.thread);
         record_report_in_thread(
-            &mut active.thread,
+            conversation,
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
-        if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed {
-            if let Ok(project_id) = self.project_of(run_id) {
-                if let Ok(diff) = self
-                    .orch_for(&project_id)
-                    .and_then(|orch| orch.run_diff(&active).map_err(err))
-                {
-                    active.thread.add_revision(
-                        crate::thread::ArtifactKind::Diff,
-                        diff.patch(),
-                        &now_rfc3339(),
-                    );
-                }
-            }
+        if let Some(patch) = diff_revision {
+            conversation.add_revision(crate::thread::ArtifactKind::Diff, &patch, &now_rfc3339());
         }
         let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
+        }
+        if let (Some(issue_id), Some(issue)) = (issue_id, issue) {
+            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+            if let Err(e) = persisted {
+                eprintln!("on_agent_done {run_id}: issue conversation persist failed: {e}");
+            }
         }
         self.auto_advance_run(run_id);
     }
@@ -2473,6 +2507,31 @@ impl AppState {
             "project.set_remote" => self.project_set_remote(params),
             "board.list" => Ok(self.board_list()),
             "archive.list" => self.archive_list(params),
+            // Canonical Issue surface. The existing plan id and plan-store path
+            // remain the durable identity/location; plan.* below is the
+            // deprecated wire adapter for existing clients.
+            "issue.create" => self.plan_create(params),
+            "issue.get" => self.plan_get(&alias_param(params, "issue_id", "plan_id")),
+            "issue.list" => Ok(self.issue_list()),
+            "issue.doc" => self.plan_doc(&alias_param(params, "issue_id", "plan_id")),
+            "issue.stages" => self.issue_stages(params),
+            "issue.stage_doc" => self.plan_stage_doc(&alias_param(params, "issue_id", "plan_id")),
+            "issue.approve" => self.plan_approve(&alias_param(params, "issue_id", "plan_id")),
+            "issue.send_notes" => self.plan_send_notes(&alias_param(params, "issue_id", "plan_id")),
+            "issue.stage_approve" => {
+                self.plan_stage_approve(&alias_param(params, "issue_id", "plan_id"))
+            }
+            "issue.stage_revise" => {
+                self.plan_stage_send_notes(&alias_param(params, "issue_id", "plan_id"))
+            }
+            "issue.comment_add" => {
+                self.plan_comment_add(&alias_param(params, "issue_id", "plan_id"))
+            }
+            "issue.comment_delete" => {
+                self.plan_comment_delete(&alias_param(params, "issue_id", "plan_id"))
+            }
+            "issue.archive" => self.plan_archive(&alias_param(params, "issue_id", "plan_id")),
+            "issue.delete" => self.plan_delete(&alias_param(params, "issue_id", "plan_id")),
             // Plan surface (project-scoped): keyed by plan_id, docs from store.
             "plan.create" => self.plan_create(params),
             "plan.get" => self.plan_get(params),
@@ -4093,6 +4152,39 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Canonical conversation owner for a run. Planned runs are implementation
+    /// lineage of the Issue and therefore project the Issue thread; planless
+    /// adopted runs remain independent worktree entities.
+    fn conversation_thread_for_run<'a>(&'a self, run: &'a ActiveRun) -> &'a crate::thread::Thread {
+        run.run
+            .plan_id
+            .as_ref()
+            .and_then(|issue_id| self.plans.get(&issue_id.0))
+            .map(|issue| &issue.thread)
+            .unwrap_or(&run.thread)
+    }
+
+    fn record_issue_current_stage_started(
+        &mut self,
+        run_id: &str,
+        stages: &[StageDoc],
+    ) -> Result<(), String> {
+        let issue_id = self
+            .runs
+            .get(run_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.clone());
+        let Some(issue_id) = issue_id else {
+            return Ok(());
+        };
+        let mut issue = self.take_plan(&issue_id)?;
+        if let Some(run) = self.runs.get(run_id) {
+            record_current_stage_started(&mut issue.thread, run, stages);
+        }
+        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+        persisted
+    }
+
     /// Queue a plan's turn for its planning worktree's agent. A plan whose
     /// worktree is gone has no agent to hear it; the turn is dropped rather
     /// than delivered somewhere it does not belong.
@@ -4167,6 +4259,71 @@ impl AppState {
         json!({ "plans": plans })
     }
 
+    fn issue_list(&self) -> Value {
+        let issues: Vec<Value> = self
+            .plans
+            .iter()
+            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest))
+            .collect();
+        json!({ "issues": issues, "plans": issues })
+    }
+
+    fn issue_stages(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
+        if !issue.is_multi_stage() {
+            return Err("not a multi-stage issue".to_string());
+        }
+        let implementation = self.current_issue_implementation(&issue_id);
+        let stages = issue
+            .stages
+            .iter()
+            .map(|doc| {
+                let progress = implementation.and_then(|run| run.stage_progress(&doc.id));
+                let mut stage = plan_stage_json(issue, doc);
+                let object = stage
+                    .as_object_mut()
+                    .expect("plan_stage_json returns an object");
+                object.insert(
+                    "approval".to_string(),
+                    json!(stage_doc_state_str(&doc.state)),
+                );
+                object.insert(
+                    "execution".to_string(),
+                    json!(progress.map_or("pending", canonical_stage_execution)),
+                );
+                object.insert(
+                    "start_sha".to_string(),
+                    json!(progress.and_then(|p| p.start_sha.as_ref())),
+                );
+                object.insert(
+                    "built_sha".to_string(),
+                    json!(progress.and_then(|p| p.built_sha.as_ref())),
+                );
+                object.insert(
+                    "completion_sha".to_string(),
+                    json!(progress.and_then(|p| p.completion_sha.as_ref())),
+                );
+                object.insert(
+                    "publication".to_string(),
+                    json!(progress.map(|p| p.publication)),
+                );
+                object.insert(
+                    "validation".to_string(),
+                    json!(progress.and_then(|p| p.validation.as_ref())),
+                );
+                stage
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "issue_id": issue_id,
+            "plan_id": issue_id,
+            "implementation_id": implementation.map(|run| run.run.id.0.clone()),
+            "auto_advance": implementation.is_some_and(|run| run.auto_advance),
+            "stages": stages,
+        }))
+    }
+
     /// Read the single (non-staged) plan doc from the canonical store — never
     /// from a worktree (the worktree is disposable; the store is the truth).
     fn plan_doc(&mut self, params: &Value) -> Result<Value, String> {
@@ -4208,7 +4365,7 @@ impl AppState {
                 view
             })
             .collect();
-        Ok(json!({ "plan_id": plan_id, "stages": stages }))
+        Ok(json!({ "issue_id": plan_id, "plan_id": plan_id, "stages": stages }))
     }
 
     /// Read one stage's plan doc from the canonical store.
@@ -4236,7 +4393,13 @@ impl AppState {
             .require_store()?
             .read_plan_doc(&plan_id, &path)
             .ok_or_else(|| format!("stage doc not available: {path}"))?;
-        Ok(json!({ "stage_id": stage_id, "path": path, "contents": contents }))
+        Ok(json!({
+            "issue_id": plan_id,
+            "plan_id": plan_id,
+            "stage_id": stage_id,
+            "path": path,
+            "contents": contents,
+        }))
     }
 
     /// Approve the plan (the last human gate): the disposable planning worktree
@@ -4311,9 +4474,25 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
         outcome?;
         persisted?;
+        // Implement All remains armed while it waits on an unapproved stage.
+        // Approval is durable before this scheduler hop, so a restart can
+        // safely observe the approved doc and resume the same intent.
+        let waiting_runs: Vec<String> = self
+            .runs
+            .iter()
+            .filter(|(_, run)| {
+                run.auto_advance
+                    && run.run.state == RunState::StageGate
+                    && run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(plan_id.as_str())
+            })
+            .map(|(run_id, _)| run_id.clone())
+            .collect();
+        for run_id in waiting_runs {
+            self.auto_advance_run(&run_id);
+        }
         Ok(view)
     }
 
@@ -4605,7 +4784,6 @@ impl AppState {
         };
 
         let plan_docs = self.owning_plan_stage_docs(&active);
-        record_current_stage_started(&mut active, &plan_docs);
 
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
@@ -4627,6 +4805,9 @@ impl AppState {
             }],
             now_rfc3339(),
         );
+        if let Some(run) = self.runs.get(&run_id) {
+            record_current_stage_started(&mut plan.thread, run, &plan_docs);
+        }
         let (_, plan_persisted) = self.finish_plan_mutation(source_plan_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
@@ -4646,7 +4827,8 @@ impl AppState {
                 .expect("run_view returns an object")
                 .insert(
                     "thread".to_string(),
-                    active.thread.wire_value_after(after_sequence),
+                    self.conversation_thread_for_run(active)
+                        .wire_value_after(after_sequence),
                 );
         }
         Ok(view)
@@ -4655,10 +4837,18 @@ impl AppState {
     fn thread_revision(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let revision_id = require_str(params, "revision_id")?;
+        let planned_issue_id = self
+            .runs
+            .get(&entity_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.as_str());
         let thread = self
             .plans
             .get(&entity_id)
             .map(|active| &active.thread)
+            .or_else(|| {
+                planned_issue_id.and_then(|id| self.plans.get(id).map(|active| &active.thread))
+            })
             .or_else(|| self.runs.get(&entity_id).map(|active| &active.thread))
             .ok_or("unknown conversation owner")?;
         let revision = thread
@@ -4714,6 +4904,17 @@ impl AppState {
                 ));
             }
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
+            let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+            let worktree_path = active.worktree.path.clone();
+            if let Some(issue_id) = issue_id.filter(|id| self.plans.contains_key(id)) {
+                let mut issue = self.take_plan(&issue_id)?;
+                append_user_thread_messages(&mut issue.thread, messages);
+                nudge_live_agent_tab(&self.tabs, &worktree_path, &entity_id);
+                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                persisted?;
+                let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
+                return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
+            }
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
             nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
@@ -4786,6 +4987,13 @@ impl AppState {
             self.owning_plan_stage_docs(active)
         };
         let mut active = self.take_run(&run_id)?;
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let mut issue = issue_id
+            .as_ref()
+            .and_then(|issue_id| self.plans.remove(issue_id));
+        let legacy_run_thread = issue
+            .as_ref()
+            .map(|issue| std::mem::replace(&mut active.thread, issue.thread.clone()));
         append_user_thread_messages(&mut active.thread, messages);
         let outcome = (|| -> Result<(), String> {
             let turn = self
@@ -4796,8 +5004,18 @@ impl AppState {
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
+        if let (Some(issue), Some(legacy_thread)) = (&mut issue, legacy_run_thread) {
+            issue.thread = std::mem::replace(&mut active.thread, legacy_thread);
+        }
+        let issue_persisted = match (issue_id, issue) {
+            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue).1),
+            _ => None,
+        };
         let (view, persisted) = self.finish_run_mutation(run_id, active);
         outcome?;
+        if let Some(issue_persisted) = issue_persisted {
+            issue_persisted?;
+        }
         persisted?;
         Ok(view)
     }
@@ -4821,7 +5039,6 @@ impl AppState {
                 .orch_for(&project_id)?
                 .dispatch_run_stage(&mut active, &plan_docs, &stage_id, model_override)
                 .map_err(err)?;
-            record_current_stage_started(&mut active, &plan_docs);
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -4829,6 +5046,7 @@ impl AppState {
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
+        self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         Ok(self.run_view(&run_id, active, ThreadDetail::Full))
@@ -4853,7 +5071,6 @@ impl AppState {
                 .orch_for(&project_id)?
                 .fix_run_stage(&mut active, &plan_docs, &stage_id, &note)
                 .map_err(err)?;
-            record_current_stage_started(&mut active, &plan_docs);
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -4861,6 +5078,7 @@ impl AppState {
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
+        self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         Ok(self.run_view(&run_id, active, ThreadDetail::Full))
@@ -4980,7 +5198,6 @@ impl AppState {
                     .orch_for(&project_id)?
                     .dispatch_run_stage(&mut active, &plan_docs, &next, None)
                     .map_err(err)?;
-                record_current_stage_started(&mut active, &plan_docs);
                 self.pending_agent_turns
                     .push(PendingAgentTurn::for_run(run_id, &active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
@@ -4991,6 +5208,10 @@ impl AppState {
                 return;
             }
             if let Err(e) = persisted {
+                eprintln!("auto-advance {run_id}: {e}");
+                return;
+            }
+            if let Err(e) = self.record_issue_current_stage_started(run_id, &plan_docs) {
                 eprintln!("auto-advance {run_id}: {e}");
                 return;
             }
@@ -5421,6 +5642,7 @@ impl AppState {
         let external_worktrees = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
         json!({
+            "issues": plans,
             "plans": plans,
             "runs": runs,
             "external_worktrees": external_worktrees,
@@ -5547,6 +5769,26 @@ impl AppState {
         })
     }
 
+    fn current_issue_implementation(&self, issue_id: &str) -> Option<&ActiveRun> {
+        let mut implementations = self
+            .runs
+            .values()
+            .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id))
+            .collect::<Vec<_>>();
+        implementations.sort_by_key(|run| {
+            self.entity_created_at
+                .get(&run.run.id.0)
+                .cloned()
+                .unwrap_or_default()
+        });
+        implementations
+            .iter()
+            .rev()
+            .find(|run| !run.run.state.is_terminal())
+            .copied()
+            .or_else(|| implementations.last().copied())
+    }
+
     fn plan_view(&self, plan_id: &str, active: &ActivePlan, thread_detail: ThreadDetail) -> Value {
         let project_id = self
             .entity_project
@@ -5565,7 +5807,30 @@ impl AppState {
             .then(|| id.clone())
         });
         let implementation_complete = self.plan_implementation_complete(plan_id, active);
+        let current_implementation = self.current_issue_implementation(plan_id);
+        let mut implementation_lineage = self
+            .runs
+            .values()
+            .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(plan_id))
+            .map(|run| {
+                json!({
+                    "implementation_id": run.run.id.0,
+                    "run_id": run.run.id.0,
+                    "state": run_state_str(&run.run.state),
+                    "branch": run.worktree.branch,
+                    "worktree_path": run.worktree.path.display().to_string(),
+                    "created_at": self.entity_created_at.get(&run.run.id.0),
+                })
+            })
+            .collect::<Vec<_>>();
+        implementation_lineage.sort_by_key(|implementation| {
+            implementation["created_at"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        });
         json!({
+            "issue_id": plan_id,
             "plan_id": plan_id,
             "goal": active.plan.goal,
             "state": plan_state_str(&active.plan.state),
@@ -5586,6 +5851,15 @@ impl AppState {
                 ThreadDetail::Full => active.thread.wire_value(),
             },
             "active_run_id": active_run_id,
+            "current_implementation_id": current_implementation.map(|run| run.run.id.0.clone()),
+            "current_implementation": current_implementation.map(|run| json!({
+                "implementation_id": run.run.id.0,
+                "run_id": run.run.id.0,
+                "state": run_state_str(&run.run.state),
+                "branch": run.worktree.branch,
+                "worktree_path": run.worktree.path.display().to_string(),
+            })),
+            "implementation_lineage": implementation_lineage,
             "implementation_complete": implementation_complete,
             "can_archive": implementation_complete && active.plan.archived_at.is_none(),
             "archived_at": active.plan.archived_at,
@@ -5646,6 +5920,8 @@ impl AppState {
             .unwrap_or_default();
         json!({
             "run_id": run_id,
+            "implementation_id": run_id,
+            "issue_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
             "plan_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
             "goal": active.run.goal,
             "state": run_state_str(&active.run.state),
@@ -5664,8 +5940,8 @@ impl AppState {
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
-                ThreadDetail::Digest => active.thread.digest_value(),
-                ThreadDetail::Full => active.thread.wire_value(),
+                ThreadDetail::Digest => self.conversation_thread_for_run(active).digest_value(),
+                ThreadDetail::Full => self.conversation_thread_for_run(active).wire_value(),
             },
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
@@ -6221,6 +6497,19 @@ fn run_stage_progress_str(state: &StageProgressState) -> String {
     .to_string()
 }
 
+fn canonical_stage_execution(progress: &StageProgress) -> &'static str {
+    match progress.state {
+        StageProgressState::Building => "building",
+        StageProgressState::Built => "built",
+        StageProgressState::Validating => "validating",
+        StageProgressState::Validated { passed: true } if progress.completion_sha.is_some() => {
+            "complete"
+        }
+        StageProgressState::Validated { passed: true } => "legacy_unpinned",
+        StageProgressState::Validated { passed: false } => "validation_failed",
+    }
+}
+
 /// Write a file under `dir`, creating parent dirs — the QA agent's file writer.
 fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), String> {
     let path = dir.join(rel);
@@ -6356,6 +6645,21 @@ fn has_agent_choice(params: &Value) -> bool {
     ["provider", "model", "effort"]
         .iter()
         .any(|key| params.get(key).is_some())
+}
+
+/// Copy a canonical opaque id into the legacy parameter name consumed by the
+/// compatibility implementation. If an old client already sent the legacy
+/// name it remains untouched.
+fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
+    let mut aliased = params.clone();
+    if aliased.get(legacy).is_none() {
+        if let Some(value) = aliased.get(canonical).cloned() {
+            if let Some(object) = aliased.as_object_mut() {
+                object.insert(legacy.to_string(), value);
+            }
+        }
+    }
+    aliased
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -7067,7 +7371,11 @@ fn append_plan_stage_announcements(
     }
 }
 
-fn record_current_stage_started(active: &mut ActiveRun, stages: &[StageDoc]) {
+fn record_current_stage_started(
+    thread: &mut crate::thread::Thread,
+    active: &ActiveRun,
+    stages: &[StageDoc],
+) {
     let Some(plan_id) = active.run.plan_id.as_ref().map(|id| id.0.clone()) else {
         return;
     };
@@ -7077,7 +7385,7 @@ fn record_current_stage_started(active: &mut ActiveRun, stages: &[StageDoc]) {
     let Some(stage) = stages.iter().find(|stage| stage.id == stage_id) else {
         return;
     };
-    active.thread.push_event_with_links(
+    thread.push_event_with_links(
         crate::thread::ThreadEventKind::StageStarted,
         Some(format!("Started plan stage “{}”", stage.title)),
         None,
@@ -11642,6 +11950,72 @@ mod tests {
     }
 
     #[test]
+    fn issue_facade_preserves_plan_identity_and_board_compatibility() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let created = state.handle(req("issue.create", json!({ "goal": "canonical issue" })));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        assert_eq!(created["result"]["plan_id"], issue_id);
+
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        let legacy = state.handle(req("plan.get", json!({ "plan_id": issue_id })));
+        assert_eq!(issue["result"]["issue_id"], issue_id);
+        assert_eq!(issue["result"]["plan_id"], issue_id);
+        assert_eq!(legacy["result"]["issue_id"], issue_id);
+        assert_eq!(issue["result"]["goal"], legacy["result"]["goal"]);
+
+        let listed = state.handle(req("issue.list", json!({})));
+        assert_eq!(listed["result"]["issues"].as_array().unwrap().len(), 1);
+        let board = state.handle(req("board.list", json!({})));
+        assert_eq!(board["result"]["issues"], board["result"]["plans"]);
+
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert_eq!(stages["result"]["issue_id"], issue_id);
+        assert_eq!(stages["result"]["plan_id"], issue_id);
+        assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn implement_all_resumes_when_the_waiting_stage_plan_is_approved() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req("issue.create", json!({ "goal": "resume all" })));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "stage_gate", "{run:?}");
+
+        let waiting = state.handle(req(
+            "run.set_auto_advance",
+            json!({ "run_id": run_id, "enabled": true }),
+        ));
+        assert_eq!(waiting["result"]["state"], "stage_gate", "{waiting:?}");
+        assert_eq!(waiting["result"]["auto_advance"], true);
+
+        let approved = state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        let implementation = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            implementation["result"]["state"], "review",
+            "{implementation:?}"
+        );
+        assert!(implementation["result"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|stage| stage["state"] == "validated_passed"));
+    }
+
+    #[test]
     fn board_list_carries_plans_runs_and_ride_alongs() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -13712,6 +14086,44 @@ mod tests {
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
             .unwrap();
         assert_eq!(unread["messages"][0]["body"], "just a review note");
+    }
+
+    #[test]
+    fn planned_run_conversation_and_mcp_alias_the_issue_thread() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (plan_id, run_id) = planned_run_in_review(&mut state, "one issue thread");
+        let plan_state = state.plans[&plan_id].plan.state;
+        let run_state = state.runs[&run_id].run.state;
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "shared implementation note" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(state.plans[&plan_id].plan.state, plan_state);
+        assert_eq!(state.runs[&run_id].run.state, run_state);
+        assert!(state.runs[&run_id]
+            .thread
+            .items
+            .iter()
+            .all(|item| !matches!(item, crate::thread::ThreadItem::Message(message) if message.body == "shared implementation note")));
+
+        let run_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert!(run_view["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["data"]["body"] == "shared implementation note"));
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(unread["thread_id"], format!("thread:{plan_id}"));
+        assert!(unread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["body"] == "shared implementation note"));
     }
 
     /// A mid-build post must leave the worktree's agent running (same process,

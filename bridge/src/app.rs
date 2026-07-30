@@ -1310,34 +1310,77 @@ impl AppState {
             .unwrap_or_else(|| crate::templates::DEFAULT_PLAN_PATH.to_string());
         let mut active = ActiveRun::reattach(&record, plan_path);
 
-        let mut state_changed = false;
-        if !active.run.state.is_terminal() {
-            if !active.worktree.path.exists() {
-                eprintln!(
-                    "recover {run_id}: worktree {} is gone; abandoning (branch kept)",
-                    active.worktree.path.display()
-                );
-                active
-                    .run
-                    .apply(RunEvent::Abandon)
-                    .map_err(|e| format!("recover {run_id}: {e}"))?;
-                state_changed = true;
-            } else if active.run.state.is_working() {
-                active
-                    .run
-                    .apply(RunEvent::Interrupt)
-                    .map_err(|e| format!("recover {run_id}: {e}"))?;
-                state_changed = true;
-            }
-        }
-
         self.entity_project_path
             .insert(run_id.clone(), record.project_path.clone());
         let repo_path = std::path::PathBuf::from(&record.project_path);
-        if repo_path.exists() {
-            let project_id = self.add_project(repo_path, record.base_branch);
-            self.entity_project.insert(run_id.clone(), project_id);
-        } else if !active.run.state.is_terminal() {
+        let project_id = if repo_path.exists() {
+            let project_id = self.add_project(repo_path.clone(), record.base_branch.clone());
+            self.entity_project
+                .insert(run_id.clone(), project_id.clone());
+            Some(project_id)
+        } else {
+            None
+        };
+
+        let mut state_changed = false;
+        let mut recovery_event = None;
+        if !active.run.state.is_terminal() && !active.worktree.path.exists() {
+            let restored = project_id
+                .as_deref()
+                .filter(|_| !active.adopted)
+                .ok_or_else(|| "the original project/branch is unavailable".to_string())
+                .and_then(|project_id| {
+                    self.orch_for(project_id)?
+                        .restore_run_worktree(&active.worktree)
+                        .map_err(err)
+                });
+            match restored {
+                Ok(worktree) => {
+                    active.worktree = worktree;
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::WorktreeRecovered,
+                        format!(
+                            "Recreated the Issue worktree from branch {}",
+                            active.worktree.branch
+                        ),
+                    ));
+                    state_changed = true;
+                }
+                Err(error) => {
+                    let affected = self.reconcile_missing_run_worktree(&run_id, &mut active);
+                    // Issue-linked runs remain archived as durable lineage;
+                    // legacy/standalone runs preserve their established
+                    // abandoned recovery state.
+                    let terminal_event = if active.run.plan_id.is_some() {
+                        RunEvent::Archive
+                    } else {
+                        RunEvent::Abandon
+                    };
+                    active
+                        .run
+                        .apply(terminal_event)
+                        .map_err(|e| format!("recover {run_id}: {e}"))?;
+                    active.last_error = Some(format!("worktree recovery failed: {error}"));
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::RecoveryFailed,
+                        format!(
+                            "Could not recover the Issue worktree: {error}. {} stage(s) were marked incomplete",
+                            affected.len()
+                        ),
+                    ));
+                    state_changed = true;
+                }
+            }
+        }
+        if !active.run.state.is_terminal() && active.run.state.is_working() {
+            active
+                .run
+                .apply(RunEvent::Interrupt)
+                .map_err(|e| format!("recover {run_id}: {e}"))?;
+            state_changed = true;
+        }
+
+        if project_id.is_none() && !active.run.state.is_terminal() {
             if active.adopted {
                 // Automated actions never touch an adopted worktree: park the
                 // run needs-attention instead of abandoning.
@@ -1369,11 +1412,31 @@ impl AppState {
                     Some(format!("project repo missing at {}", record.project_path));
                 state_changed = true;
             }
-        } else {
+        } else if project_id.is_none() {
             eprintln!(
                 "recover {run_id}: project repo {} is gone; run kept as history",
                 record.project_path
             );
+        }
+
+        if let (Some(issue_id), Some((event, summary))) = (
+            active.run.plan_id.as_ref().map(|id| id.0.clone()),
+            recovery_event,
+        ) {
+            if let Ok(mut issue) = self.take_plan(&issue_id) {
+                issue.thread.push_event_with_links(
+                    event,
+                    Some(summary),
+                    None,
+                    None,
+                    vec![crate::thread::ThreadLink::Run {
+                        run_id: run_id.clone(),
+                    }],
+                    now_rfc3339(),
+                );
+                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                persisted?;
+            }
         }
 
         // Same restore discipline as recover_plan: a boot transition stamps
@@ -4609,6 +4672,8 @@ impl AppState {
             }
         };
 
+        self.ensure_issue_implementation_worktree(issue_id, &run_id)?;
+
         match intent {
             ImplementationIntent::Stage(stage_id) => {
                 let already_started = self.runs[&run_id].stage_progress(&stage_id).is_some();
@@ -4638,6 +4703,94 @@ impl AppState {
                 self.refresh_issue_scheduler_activity(issue_id)
             }
             ImplementationIntent::None => Ok(()),
+        }
+    }
+
+    fn ensure_issue_implementation_worktree(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+    ) -> Result<(), String> {
+        if self
+            .runs
+            .get(run_id)
+            .is_some_and(|run| run.worktree.path.exists())
+        {
+            return Ok(());
+        }
+        let project_id = self.project_of(run_id)?;
+        let mut active = self.take_run(run_id)?;
+        let restored = if active.adopted {
+            Err(
+                "adopted worktree is missing; its original checkout cannot be recreated safely"
+                    .to_string(),
+            )
+        } else {
+            self.orch_for(&project_id)?
+                .restore_run_worktree(&active.worktree)
+                .map_err(err)
+        };
+        match restored {
+            Ok(worktree) => {
+                active.worktree = worktree;
+                active.last_error = None;
+                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                persisted?;
+                let mut issue = self.take_plan(issue_id)?;
+                issue.thread.push_event_with_links(
+                    crate::thread::ThreadEventKind::WorktreeRecovered,
+                    Some("Recreated the Issue worktree from its original branch".to_string()),
+                    None,
+                    None,
+                    vec![crate::thread::ThreadLink::Run {
+                        run_id: run_id.to_string(),
+                    }],
+                    now_rfc3339(),
+                );
+                let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+                persisted
+            }
+            Err(error) => {
+                let affected = self.reconcile_missing_run_worktree(run_id, &mut active);
+                active.last_error = Some(format!("worktree recovery failed: {error}"));
+                if !active.run.state.is_terminal() {
+                    active
+                        .run
+                        .apply(RunEvent::Archive)
+                        .map_err(|error| error.to_string())?;
+                }
+                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                persisted?;
+                let mut issue = self.take_plan(issue_id)?;
+                let mut links = vec![crate::thread::ThreadLink::Run {
+                    run_id: run_id.to_string(),
+                }];
+                links.extend(
+                    issue
+                        .stages
+                        .iter()
+                        .filter(|stage| affected.contains(&stage.id))
+                        .map(|stage| crate::thread::ThreadLink::PlanStage {
+                            plan_id: issue_id.to_string(),
+                            stage_id: stage.id.clone(),
+                            path: stage.path.clone(),
+                        }),
+                );
+                issue.thread.push_event_with_links(
+                    crate::thread::ThreadEventKind::RecoveryFailed,
+                    Some(format!(
+                        "Issue worktree recovery failed: {error}. {} stage(s) are incomplete and dependent stages are blocked",
+                        affected.len()
+                    )),
+                    None,
+                    None,
+                    links,
+                    now_rfc3339(),
+                );
+                let (_, issue_persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+                issue_persisted?;
+                Err(format!("Issue worktree recovery failed: {error}"))
+            }
         }
     }
 
@@ -5912,6 +6065,11 @@ impl AppState {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
         let mut active = self.take_run(&run_id)?;
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        // Reconcile publication while the checkout and refs are still
+        // inspectable. Every Build-owned removal path must decide completion
+        // before deleting the evidence it needs to decide it.
+        let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
         let result = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_run(&mut active).map_err(err));
@@ -5934,9 +6092,39 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
         result?;
         persisted?;
+        if let Some(issue_id) = issue_id {
+            let mut issue = self.take_plan(&issue_id)?;
+            let mut links = vec![crate::thread::ThreadLink::Run {
+                run_id: run_id.clone(),
+            }];
+            links.extend(
+                issue
+                    .stages
+                    .iter()
+                    .filter(|stage| affected_stages.contains(&stage.id))
+                    .map(|stage| crate::thread::ThreadLink::PlanStage {
+                        plan_id: issue_id.clone(),
+                        stage_id: stage.id.clone(),
+                        path: stage.path.clone(),
+                    }),
+            );
+            issue.thread.push_event_with_links(
+                crate::thread::ThreadEventKind::WorktreeDeleted,
+                Some(format!(
+                    "Issue worktree deleted; {} unpublished stage(s) are incomplete",
+                    affected_stages.len()
+                )),
+                None,
+                None,
+                links,
+                now_rfc3339(),
+            );
+            let (_, issue_persisted) = self.finish_plan_mutation(issue_id, issue);
+            issue_persisted?;
+        }
         Ok(view)
     }
 
@@ -5956,6 +6144,13 @@ impl AppState {
                  (merged/abandoned/archived/failed) can be deleted",
                 run_state_str(&state)
             ));
+        }
+        // A planned implementation is durable Issue lineage: its immutable
+        // stage boundaries and publication evidence must outlive card cleanup.
+        // Archived lineages are already filtered from board.list, so preserve
+        // the record while keeping the legacy delete call idempotently useful.
+        if active.run.plan_id.is_some() {
+            return Ok(json!({ "ok": true, "retained_as_issue_lineage": true }));
         }
         let worktree = active.worktree.clone();
         let adopted = active.adopted;
@@ -6529,7 +6724,8 @@ impl AppState {
                 run.stages.iter().any(|progress| {
                     progress.stage_id == stage.id
                         && progress.state == StageProgressState::Validated { passed: true }
-                        && progress.completion_sha.is_some()
+                        && (progress.completion_sha.is_some()
+                            || progress.publication == StagePublication::LegacyUnknown)
                         && progress.invalidation_reason.is_none()
                 })
             })
@@ -8246,11 +8442,25 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         // pump needs the state lock free while it does.
         "agent.start" => agent_start(state, &params),
         _ => {
-            let dispatched = state.lock().unwrap().dispatch(&method, &params);
+            let dispatched = {
+                let mut app = state.lock().unwrap();
+                let queued_before = app.pending_agent_turns.len();
+                let result = app.dispatch(&method, &params);
+                if result.is_err() {
+                    // A turn is not deliverable until the mutation that queued
+                    // it is durable. Drop only this request's turns on failure;
+                    // otherwise a later harmless RPC would deliver work the
+                    // failed request never committed.
+                    app.pending_agent_turns.truncate(queued_before);
+                }
+                result
+            };
             // A verb speaks to a worktree's agent by queuing a turn: it runs
             // under the state lock and `deliver` needs that lock free (a cold
             // spawn blocks for seconds on the harness's readiness wait).
-            deliver_pending_agent_turns(state);
+            if dispatched.is_ok() {
+                deliver_pending_agent_turns(state);
+            }
             dispatched
         }
     };
@@ -12681,6 +12891,31 @@ mod tests {
     }
 
     #[test]
+    fn abandoning_an_unpublished_issue_worktree_marks_completed_stages_incomplete() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "abandon local lineage");
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(
+            stages["result"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|stage| stage["execution"] == "incomplete"
+                    && stage["invalidation_reason"].as_str().is_some()),
+            "{stages:?}"
+        );
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert!(issue["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "event" && item["data"]["event"] == "worktree_deleted"));
+    }
+
+    #[test]
     fn disappearing_worktree_keeps_pushed_stage_commits_complete() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
@@ -12849,6 +13084,55 @@ mod tests {
         );
         assert_eq!(completed["result"]["implementation_intent"], "none");
         assert_eq!(completed["result"]["implementation_activity"], "idle");
+    }
+
+    #[test]
+    fn implement_stage_recreates_the_original_missing_issue_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req("issue.create", json!({ "goal": "reuse branch" })));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        ));
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        assert_eq!(run["result"]["state"], "stage_gate", "{run:?}");
+        state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        let implemented = state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert!(worktree.exists());
+        assert_eq!(
+            implemented["result"]["current_implementation"]["state"],
+            "review"
+        );
+        assert!(implemented["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "event" && item["data"]["event"] == "worktree_recovered"));
     }
 
     #[test]
@@ -13237,6 +13521,50 @@ mod tests {
         // An archived run can be cleared off the board.
         let deleted = reloaded.handle(req("run.delete", json!({ "run_id": run_id })));
         assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert_eq!(deleted["result"]["retained_as_issue_lineage"], true);
+        assert!(reloaded.runs.contains_key(&run_id));
+    }
+
+    #[test]
+    fn boot_recreates_a_missing_issue_worktree_from_its_original_branch() {
+        let (dir, repo) = init_repo();
+        let issue_id;
+        let run_id;
+        let worktree;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            (issue_id, run_id) = planned_run_in_review(&mut state, "restore lineage");
+            worktree = state.runs[&run_id].worktree.path.clone();
+            assert!(Command::new("git")
+                .args([
+                    "worktree",
+                    "remove",
+                    "--force",
+                    "--",
+                    worktree.to_str().unwrap()
+                ])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+            assert!(!worktree.exists());
+        }
+
+        let mut restored = qa_state(&repo, dir.path());
+        assert!(worktree.exists(), "the original checkout path is recreated");
+        let run = restored.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(run["result"]["state"], "review", "{run:?}");
+        let issue = restored.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert!(
+            issue["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "event"
+                    && item["data"]["event"] == "worktree_recovered"
+                    && item["data"]["links"][0]["run_id"] == run_id),
+            "{issue:?}"
+        );
     }
 
     #[test]
@@ -17999,6 +18327,28 @@ mod tests {
         let incomplete = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
         assert_eq!(incomplete["result"]["implementation_complete"], false);
         assert_eq!(incomplete["result"]["can_archive"], false);
+    }
+
+    #[test]
+    fn legacy_validated_stages_without_pinned_boundaries_preserve_completion() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "legacy completion");
+        for stage in &mut state.runs.get_mut(&run_id).unwrap().stages {
+            stage.completion_sha = None;
+            stage.publication = StagePublication::LegacyUnknown;
+        }
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            issue["result"]["implementation_complete"], true,
+            "{issue:?}"
+        );
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(stages["result"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|stage| stage["execution"] == "legacy_unpinned"));
     }
 
     #[test]

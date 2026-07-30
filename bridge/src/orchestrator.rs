@@ -1458,7 +1458,6 @@ impl Orchestrator {
                 return Ok(ReportConsumed::applied());
             }
         }
-        active.stages[progress_index].apply(StageProgressEvent::BuildDone)?;
         // The agent authors the stage's atomic commits; this is only a safety
         // net (a no-op on a clean tree) — but it stays load-bearing: it
         // GUARANTEES a committed boundary before the validation gate's
@@ -1471,6 +1470,10 @@ impl Orchestrator {
             .git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
+        // Commit/rev-parse are fallible. Only move Building → Built after both
+        // succeeded, otherwise the caller could persist a Built stage with no
+        // durable boundary.
+        active.stages[progress_index].apply(StageProgressEvent::BuildDone)?;
         active.stages[progress_index].built_sha = Some(built_sha);
         active.stages[progress_index].completion_sha = None;
         active.stages[progress_index].invalidation_reason = None;
@@ -1668,11 +1671,13 @@ impl Orchestrator {
             )));
         }
 
-        active.run.apply(RunEvent::Dispatch)?;
+        // Probe the candidate boundary before mutating the run machine. A
+        // vanished/corrupt checkout must leave StageGate intact for recovery.
         let start_sha = self
             .git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
+        active.run.apply(RunEvent::Dispatch)?;
         // A fresh next stage has no progress record yet; create one (`Building`,
         // pinned to the current HEAD). A record already present keeps its
         // `start_sha` so the stage diff always covers all of its work.
@@ -2194,6 +2199,12 @@ impl Orchestrator {
         active.last_summary = Some(report.summary.clone());
         active.last_error = None;
         Ok(())
+    }
+
+    /// Recreate a missing native implementation checkout from its exact
+    /// persisted branch, using the verified local ref first and origin second.
+    pub fn restore_run_worktree(&self, worktree: &Worktree) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.restore(worktree)?)
     }
 
     /// Best-effort teardown of a leftover worktree + branch for a task being

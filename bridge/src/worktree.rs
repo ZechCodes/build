@@ -147,6 +147,62 @@ impl WorktreeManager {
         format!("{}/{}", self.branch_prefix, slug)
     }
 
+    /// Recreate a Build-owned checkout at its original path and branch. The
+    /// local branch is authoritative when present; otherwise fetch exactly the
+    /// same branch from origin into a validated local ref. No fallback to the
+    /// moving base is allowed because that would silently discard lineage.
+    pub fn restore(&self, worktree: &Worktree) -> Result<Worktree, WorktreeError> {
+        if worktree.path.exists() {
+            return Ok(worktree.clone());
+        }
+        let expected_path = self.worktrees_root.join(&worktree.name);
+        if worktree.path != expected_path
+            || worktree.name.is_empty()
+            || worktree.name.contains(['/', '\\'])
+        {
+            return Err(WorktreeError::Command(
+                "refusing to restore a worktree outside its managed root".to_string(),
+            ));
+        }
+        let local_ref = format!("refs/heads/{}", worktree.branch);
+        let remote_ref = format!("refs/heads/{}", worktree.branch);
+        if !git2::Reference::is_valid_name(&local_ref) {
+            return Err(WorktreeError::Command(format!(
+                "invalid persisted branch: {:?}",
+                worktree.branch
+            )));
+        }
+        let repo = git2::Repository::open(&self.repo_path)?;
+        if let Ok(stale) = repo.find_worktree(&worktree.name) {
+            let mut prune = git2::WorktreePruneOptions::new();
+            prune.valid(true).working_tree(true);
+            stale.prune(Some(&mut prune))?;
+        }
+        if repo.find_reference(&local_ref).is_err() {
+            let refspec = format!("+{remote_ref}:{local_ref}");
+            let output = std::process::Command::new("git")
+                .arg("fetch")
+                .arg("--")
+                .arg("origin")
+                .arg(&refspec)
+                .current_dir(&self.repo_path)
+                .output()?;
+            if !output.status.success() {
+                return Err(WorktreeError::Command(format!(
+                    "branch {:?} was not found locally or on origin: {}",
+                    worktree.branch,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+        }
+        std::fs::create_dir_all(&self.worktrees_root)?;
+        let branch_ref = repo.find_reference(&local_ref)?;
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&branch_ref));
+        repo.worktree(&worktree.name, &worktree.path, Some(&opts))?;
+        Ok(worktree.clone())
+    }
+
     /// Remove the worktree's working directory and prune git's record of it. When
     /// `keep_branch` is false the task branch is deleted too.
     pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError> {
@@ -685,6 +741,80 @@ mod tests {
             r.find_branch("build/keep-me", git2::BranchType::Local)
                 .is_ok(),
             "branch kept"
+        );
+    }
+
+    #[test]
+    fn restore_recreates_the_original_worktree_from_its_local_branch() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("recover-local", "main").unwrap();
+        std::fs::write(wt.path.join("stage.txt"), "kept\n").unwrap();
+        git_in(&wt.path, &["add", "stage.txt"]);
+        git_in(&wt.path, &["commit", "-m", "stage"]);
+        let head = git2::Repository::open(&wt.path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap();
+        mgr.remove(&wt, true).unwrap();
+
+        let restored = mgr.restore(&wt).unwrap();
+        assert_eq!(restored, wt);
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join("stage.txt")).unwrap(),
+            "kept\n"
+        );
+        assert_eq!(
+            git2::Repository::open(&wt.path)
+                .unwrap()
+                .head()
+                .unwrap()
+                .target()
+                .unwrap(),
+            head
+        );
+    }
+
+    #[test]
+    fn restore_fetches_the_original_branch_when_only_origin_has_it() {
+        let (dir, repo) = init_repo();
+        let origin = dir.path().join("origin.git");
+        git_in(
+            dir.path(),
+            &[
+                "clone",
+                "--bare",
+                repo.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        git_in(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("recover-remote", "main").unwrap();
+        std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
+        git_in(&wt.path, &["add", "remote-stage.txt"]);
+        git_in(&wt.path, &["commit", "-m", "remote stage"]);
+        git_in(&wt.path, &["push", "-u", "origin", &wt.branch]);
+        mgr.remove(&wt, true).unwrap();
+        git_in(&repo, &["branch", "-D", &wt.branch]);
+        git_in(
+            &repo,
+            &[
+                "update-ref",
+                "-d",
+                &format!("refs/remotes/origin/{}", wt.branch),
+            ],
+        );
+
+        mgr.restore(&wt).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(wt.path.join("remote-stage.txt")).unwrap(),
+            "remote\n"
         );
     }
 

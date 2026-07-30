@@ -38,7 +38,7 @@ export function planStageActionBusy() {
 // the poll never accumulates listeners (same discipline as stages.js/task.js).
 let stageSelDispose = null;
 
-const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "");
+const commentBadge = (n) => (Number(n) > 0 ? `<span class="cbadge">${esc(String(n))} 💬</span>` : "");
 const EXECUTION_LABEL = {
   pending: "PENDING",
   building: "BUILDING",
@@ -85,8 +85,8 @@ export function planStageBoardHtml(plan, stagesData) {
         <span class="stagenum">${num}</span>
         <div class="stagemain">
           <div class="stagetop"><span class="stagetitle">${esc(s.title)}</span>
-            <span class="chip stagechip ${stageChipClass(approval)}">${STAGE_LABEL[approval] || approval}</span>
-            <span class="chip stagechip ${stageChipClass(execution)}">${EXECUTION_LABEL[execution] || execution}</span>
+            <span class="chip stagechip ${stageChipClass(approval)}">${esc(STAGE_LABEL[approval] || String(approval || "unknown"))}</span>
+            <span class="chip stagechip ${stageChipClass(execution)}">${esc(EXECUTION_LABEL[execution] || String(execution || "unknown"))}</span>
             ${commentBadge(s.open_comments)}</div>
           ${s.summary ? `<div class="stagesummary">${esc(s.summary)}</div>` : ""}
           ${boundary}
@@ -94,11 +94,20 @@ export function planStageBoardHtml(plan, stagesData) {
     })
     .join("");
   const ready = plan.state === "approved";
-  const waiting = !!stagesData.auto_advance && stages.some((stage) => (stage.approval || stage.state) !== "approved" && stage.execution !== "complete");
+  const activity = plan.implementation_activity;
+  const activityKind = activity && typeof activity === "object" ? Object.keys(activity)[0] : activity;
+  const waiting = activityKind === "waiting_approval" || (!!stagesData.auto_advance && stages.some((stage) => (stage.approval || stage.state) !== "approved" && stage.execution !== "complete"));
+  const running = activityKind === "preparing" || activityKind === "running";
+  const blocked = activityKind === "blocked";
+  const implementLabel = waiting ? "Implement All · waiting for stage-plan approval"
+    : activityKind === "preparing" ? "Implement All · preparing"
+    : activityKind === "running" ? "Implement All · running"
+    : blocked ? "Implement All · blocked"
+    : "Implement All";
   return `
     <div class="stagehead">
       ${allPlanned ? `<button class="btn mini" id="approveall">Approve all stage plans</button>` : ""}
-      ${ready && stages.length ? `<button class="btn primary mini" id="implementall" ${waiting ? "disabled" : ""}>${waiting ? "Waiting for stage-plan approval" : "Implement all"}</button>` : ""}
+      ${ready && stages.length ? `<button class="btn primary mini" id="implementall" ${waiting || running || blocked ? "disabled" : ""}>${implementLabel}</button>` : ""}
       <span class="hint" id="stageshint"></span>
     </div>
     <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
@@ -190,8 +199,14 @@ function renderStageDoc(ctx, stage) {
     : '<div class="plan-loading">✦ loading stage document…</div>';
   const canAnnotate = canComment && paneState === "ready";
 
+  const failureDetails = stage.invalidation_reason
+    ? `<div class="stage-validation fail"><strong>Stage incomplete</strong><div>${esc(stage.invalidation_reason)}</div></div>`
+    : stage.execution === "validation_failed" && stage.validation?.findings
+      ? `<div class="stage-validation fail"><strong>Stage validation failed</strong>${renderMarkdown(stage.validation.findings)}</div>`
+      : "";
   body.innerHTML = `
     <div class="stageback" id="stageback">← All stages</div>
+    ${failureDetails}
     <div class="plan" id="stagedoc">${docHtml}</div>
     <div class="stagecomments">${commentsHtml}</div>
     <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
@@ -277,11 +292,12 @@ function renderStageActions(ctx, stage) {
   const predecessorsComplete = index >= 0 && stages.slice(0, index).every((candidate) => candidate.execution === "complete");
   const execution = stage.execution || "pending";
   const canImplement = plan.state === "approved" && execution === "pending" && predecessorsComplete;
-  const implementButton = canImplement ? '<button class="btn primary" id="implementstage">Implement stage</button>' : "";
+  const implementButton = canImplement ? '<button class="btn primary" id="implementstage">Implement Stage</button>' : "";
+  const fixButton = execution === "validation_failed" ? '<button class="btn primary" id="fixstage">Send stage back to fix</button>' : "";
   const diffButton = execution === "complete" && stage.start_sha && stage.completion_sha
     ? '<button class="btn" id="stagediff">View stable diff</button>'
     : "";
-  actions.innerHTML = `${sendNotesBtn}${diffButton}${implementButton}`;
+  actions.innerHTML = `${sendNotesBtn}${diffButton}${fixButton}${implementButton}`;
   hint.textContent = !predecessorsComplete
     ? "Waiting for predecessor stages to complete."
     : ["building", "built", "validating"].includes(execution)
@@ -290,6 +306,13 @@ function renderStageActions(ctx, stage) {
         ? "Validation failed — send the stage back to fix."
         : viaRun ? "Sends to the implementation's stage-plan revision." : "";
   wireSendNotes();
+  const fix = body.querySelector("#fixstage");
+  if (fix) {
+    bindAction(fix, "sending…", async () => {
+      await callRpc("issue.stage_fix", { issue_id: planId, stage_id: stage.id, note: "" });
+      repaint();
+    });
+  }
   const implement = body.querySelector("#implementstage");
   if (implement) {
     bindAction(implement, "starting…", async () => {

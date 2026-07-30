@@ -300,7 +300,8 @@ export async function renderTask() {
   let stagesKey = null;
   let conversationKey = null;
   let conversationDraft = "";
-  let linkedFilePath = null;
+  let linkedFilePath = sessionStorage.getItem(`build.fileLink.${id}`);
+  if (linkedFilePath) sessionStorage.removeItem(`build.fileLink.${id}`);
   // The owning plan can be deleted once the run is terminal; once plan.stages
   // returns "unknown plan_id" we latch this and stop re-fetching, rendering the
   // board from the run's own progress records alone.

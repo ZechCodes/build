@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { planBucketKey, bucketPlans } from "../src/core/planRail.js";
 import { planStageBoardHtml, docErrorPaneHtml, renderPlanStages } from "../src/views/planStages.js";
+import { issueThreadLinkTarget } from "../src/views/plan.js";
 import { planReviewSkeletonHtml } from "../src/core/planReview.js";
 import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
 
@@ -110,6 +111,19 @@ describe("planStageBoardHtml", () => {
   });
 });
 
+describe("Issue conversation typed links", () => {
+  it("routes file references into the active implementation's scoped Files surface", () => {
+    expect(issueThreadLinkTarget(
+      { kind: "file", path: "src/parser.js" },
+      { project_id: "p1", current_implementation_id: "run-1" },
+      "fallback",
+    )).toEqual({
+      route: { name: "task", projectId: "p1", id: "run-1", tab: "files" },
+      filePath: "src/parser.js",
+    });
+  });
+});
+
 describe("plan review layout", () => {
   it("keeps the plan artifact skeleton free of the dedicated conversation", () => {
     const html = planReviewSkeletonHtml();
@@ -151,6 +165,50 @@ describe("plan review layout", () => {
       onSelectStage: () => {},
     });
     expect(document.querySelector("#implementstage")).not.toBeNull();
+  });
+
+  it("renders escaped invalidation details and offers the legal stage repair action", async () => {
+    document.body.innerHTML = '<div id="planbody"></div>';
+    const calls = [];
+    const stage = {
+      id: "s1",
+      title: "Schema",
+      state: "approved",
+      approval: "approved",
+      execution: "validation_failed",
+      invalidation_reason: '<img src=x onerror="globalThis.pwned=1">',
+      validation: { passed: false, findings: "Migration missing" },
+      open_comments: 0,
+      comments: [],
+    };
+    renderPlanStages({
+      body: document.querySelector("#planbody"),
+      plan: { issue_id: "p1", plan_id: "p1", state: "approved" },
+      stagesData: { stages: [stage] },
+      stageDoc: { stage_id: "s1", contents: "# Schema" },
+      stageDocState: "ready",
+      selectedStageId: "s1",
+      callRpc: async (method, params) => calls.push([method, params]),
+      repaint: () => {},
+      onSelectStage: () => {},
+    });
+    expect(document.querySelector("#fixstage")).not.toBeNull();
+    expect(document.querySelector("#planbody img")).toBeNull();
+    expect(document.querySelector("#planbody").textContent).toContain('<img src=x onerror="globalThis.pwned=1">');
+    document.querySelector("#fixstage").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([["issue.stage_fix", { issue_id: "p1", stage_id: "s1", note: "" }]]);
+  });
+
+  it("escapes unknown status fallbacks from malformed compatibility payloads", () => {
+    const attack = '<img src=x onerror="globalThis.pwned=1">';
+    const html = planStageBoardHtml(
+      { state: "approved", implementation_activity: "idle" },
+      { stages: [{ id: "s1", title: "Schema", state: attack, approval: attack, execution: attack, open_comments: attack }] },
+    );
+    document.body.innerHTML = html;
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.body.textContent).toContain(attack);
   });
 
   it("offers stable diff for a completed stage", () => {
@@ -207,7 +265,7 @@ describe("Implement availability text (plan cockpit footer)", () => {
   it("explains the not-yet-approved plan at the review gate", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: readyStages };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/approve the plan/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
   });
 
   it("explains the unapproved first stage", () => {
@@ -233,7 +291,7 @@ describe("Implement availability text (plan cockpit footer)", () => {
   it("still blocks an unapproved single-doc plan at the review gate", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: [] };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/approve the plan/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
   });
 
   it("still blocks a single-doc plan that already has a run", () => {
@@ -247,7 +305,7 @@ describe("Implement availability text (plan cockpit footer)", () => {
   it("blocks a plan whose docs are unavailable, with a reason, ahead of the state gates", () => {
     const plan = { state: "approved", active_run_id: null, stages: [], docs_available: false };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/documents are unavailable/i);
+    expect(implementBlockReason(plan)).toMatch(/stage plans are unavailable/i);
   });
 
   it("still allows implement when docs_available is true or absent", () => {

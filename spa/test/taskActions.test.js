@@ -104,7 +104,7 @@ describe("Implement availability", () => {
   it("is blocked (with a reason) while the plan is not yet approved", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: approvedFirstStage };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/approve/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
   });
 
   it("is blocked while the first stage doc is not approved", () => {
@@ -133,7 +133,7 @@ describe("Implement availability", () => {
 
   it("is still gated by plan approval and the single-active-writer rule when stages is empty", () => {
     expect(canImplement({ state: "plan_review", active_run_id: null, stages: [] })).toBe(false);
-    expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/approve the plan/i);
+    expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/mark the issue ready/i);
     expect(canImplement({ state: "approved", active_run_id: "run-1", stages: [] })).toBe(false);
     expect(implementBlockReason({ state: "approved", active_run_id: "run-1", stages: [] })).toMatch(/implementation is already active/i);
   });

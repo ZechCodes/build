@@ -27,7 +27,7 @@ import { loadAgentDefaults } from "../core/agentDefaults.js";
 export async function openNewIssue({ projectId } = {}) {
   $("#sheet").innerHTML = `
     <h3>New issue</h3>
-    <div class="sub">Say what you want. Build drafts the plan to implement it, you discuss and approve that plan, then Implement when you're ready.</div>
+    <div class="sub">Say what you want. Build drafts ordered stage plans, you discuss and approve them, then implement when you're ready.</div>
     <textarea id="goal" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…"></textarea>
     <div class="advanced" id="advanced" hidden>
       <div class="field"><label>Harness</label>

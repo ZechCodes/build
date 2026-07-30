@@ -39,6 +39,21 @@ import { hashFromRoute } from "../core/router.js";
 // approve or implement while the agent is still drafting, and nothing once abandoned.
 const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 
+export function issueThreadLinkTarget(link, issue, fallbackProjectId) {
+  if (link.kind === "run" && link.run_id) {
+    return { route: { name: "task", projectId: issue.project_id || fallbackProjectId, id: link.run_id, tab: "conversation" } };
+  }
+  if (link.kind === "file" && link.path) {
+    const runId = issue.current_implementation_id || issue.active_run_id;
+    if (!runId) return null;
+    return {
+      route: { name: "task", projectId: issue.project_id || fallbackProjectId, id: runId, tab: "files" },
+      filePath: link.path,
+    };
+  }
+  return null;
+}
+
 export async function renderPlan() {
   const root = $("#root");
   const id = App.route.id;
@@ -113,7 +128,7 @@ export async function renderPlan() {
     }
     disposeAgent();
     const backLabel = last && last.project_id ? "Back to project" : "Back to notifications";
-    root.innerHTML = `<div class="empty gone">This plan no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
+    root.innerHTML = `<div class="empty gone">This Issue no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
     const back = $("#goneback");
     if (back) back.onclick = () => goHome();
   };
@@ -195,9 +210,10 @@ export async function renderPlan() {
           selectTab("stages");
           return;
         }
-        if (link.kind === "run" && link.run_id) {
-          go({ name: "task", projectId: p.project_id || projectId, id: link.run_id, tab: "conversation" });
-        }
+        const target = issueThreadLinkTarget(link, p, projectId);
+        if (!target) return;
+        if (target.filePath) sessionStorage.setItem(`build.fileLink.${target.route.id}`, target.filePath);
+        go(target.route);
       });
       wireThreadComposer(host, {
         ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
@@ -398,8 +414,8 @@ export async function renderPlan() {
       actions.appendChild(host);
       mountSplitButton(host, {
         options: [
-          { id: "implement", label: "Implement", busyLabel: "starting…", description: "Create or reuse the Issue worktree and implement its approved stage plans." },
-          { id: "implement_opts", menuLabel: "Implement with options…", busyLabel: "starting…", description: "Override the base branch, model, or effort for this run." },
+          { id: "implement", label: "Implement All", busyLabel: "starting…", description: "Create or reuse the Issue worktree and implement approved stage plans sequentially." },
+          { id: "implement_opts", menuLabel: "Implement All with options…", busyLabel: "starting…", description: "Override the base branch, model, or effort for this implementation." },
         ],
         run: async (optionId) => {
           // Plain Implement is a decisive gate: confirm with what-happens-next
@@ -444,7 +460,7 @@ export async function renderPlan() {
     disabled.id = "implement";
     disabled.disabled = true;
     disabled.title = reason || "";
-    disabled.textContent = "Implement";
+    disabled.textContent = "Implement All";
     actions.appendChild(disabled);
   };
 

@@ -55,10 +55,10 @@ export function canImplement(plan) {
  *  canonical storage, its worktree pruned) can never be materialized into a run,
  *  so that block precedes the state gates. */
 export function implementBlockReason(plan) {
-  if (!plan) return "No plan.";
-  if (plan.docs_available === false) return "This plan's documents are unavailable, so it can't be implemented.";
+  if (!plan) return "No Issue.";
+  if (plan.docs_available === false) return "This Issue's stage plans are unavailable, so it can't be implemented.";
   if (plan.active_run_id) return "An implementation is already active for this Issue.";
-  if (plan.state !== "approved") return "Approve the plan before implementing it.";
+  if (plan.state !== "approved") return "Mark the Issue ready before implementing it.";
   if (!firstStageApproved(plan)) return "Approve the first stage before implementing.";
   return null;
 }

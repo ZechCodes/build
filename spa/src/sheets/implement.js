@@ -1,5 +1,5 @@
 // Implement-with-overrides: the plan cockpit's Implement split-button opens this
-// when the user wants a base-branch or model different from the plan's defaults.
+// when the user wants a base branch or model different from the Issue defaults.
 // Returns a promise that resolves with the created run (the caller navigates to
 // it) or rejects on cancel (the split-button restores itself). A dispatch error
 // keeps the sheet open so the user can adjust and retry.
@@ -25,10 +25,10 @@ export function openImplementOptions(plan, catalog) {
   const initialCatalog = catalogForProvider(fullCatalog, initialProvider);
   return new Promise((resolve, reject) => {
     $("#sheet").innerHTML = `
-      <h3>Implement with options</h3>
-      <div class="sub">Create a run for “${esc(plan.goal)}”, overriding the base branch or model.</div>
+      <h3>Implement All with options</h3>
+      <div class="sub">Create or reuse the Issue implementation for “${esc(plan.goal)}”, overriding the base branch or model.</div>
       <div class="field"><label>Base branch</label>
-        <input id="implbase" placeholder="${esc(plan.base_branch || "the plan's base branch")}"></div>
+        <input id="implbase" placeholder="${esc(plan.base_branch || "the Issue base branch")}"></div>
       <div class="field-row" style="display:flex;gap:10px">
         <div class="field" style="flex:1"><label>Agent</label><select id="implprovider">${providerOptionsHtml(providers, initialProvider)}</select></div>
         <div class="field" style="flex:1"><label>Model</label><select id="implmodel">${modelOptionsHtml(initialCatalog.models, plan.model || "")}</select></div>
@@ -68,7 +68,7 @@ export function openImplementOptions(plan, catalog) {
     $("#implstart").onclick = async () => {
       const base = $("#implbase").value.trim();
       const params = {
-        plan_id: plan.plan_id,
+        issue_id: plan.issue_id || plan.plan_id,
         ...(base ? { base_branch: base } : {}),
         ...modelParams(
           catalogForProvider(fullCatalog, providerSel.value).models,
@@ -80,7 +80,7 @@ export function openImplementOptions(plan, catalog) {
       $("#implstart").disabled = true;
       $("#implstart").textContent = "starting…";
       try {
-        const run = await App.call("run.create", params);
+        const run = await App.call("issue.implement_all", params);
         close();
         resolve(run);
       } catch (e) {

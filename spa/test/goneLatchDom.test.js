@@ -45,14 +45,14 @@ describe("gone-latch (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     const root = document.getElementById("root");
-    expect(root.textContent).toContain("This plan no longer exists");
+    expect(root.textContent).toContain("This Issue no longer exists");
     expect(root.textContent).toContain("Back to notifications"); // no project learned
 
     // The latch freezes the view: later ticks fetch nothing and never repaint.
     const fetchesAtLatch = calls.filter((m) => m === "issue.get").length;
     await vi.advanceTimersByTimeAsync(5000);
     expect(calls.filter((m) => m === "issue.get").length).toBe(fetchesAtLatch);
-    expect(root.textContent).toContain("This plan no longer exists");
+    expect(root.textContent).toContain("This Issue no longer exists");
 
     document.getElementById("goneback").click();
     expect(location.hash).toBe("#/notifications");

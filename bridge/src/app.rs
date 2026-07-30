@@ -5427,7 +5427,13 @@ impl AppState {
             .insert("run_id".to_string(), json!(run_id));
         match action {
             "fix" => self.run_stage_fix(&run_params)?,
-            "diff" => self.run_diff(&run_params)?,
+            "diff" => {
+                let mut diff = self.run_diff(&run_params)?;
+                diff.as_object_mut()
+                    .expect("run.diff returns an object")
+                    .insert("issue_id".to_string(), json!(issue_id));
+                return Ok(diff);
+            }
             "request_changes" => self.run_request_changes(&run_params)?,
             "git_action" => self.run_git_action(&run_params)?,
             _ => unreachable!("known issue run action"),
@@ -13609,6 +13615,12 @@ mod tests {
                 .len(),
             1
         );
+        let issue_diff = state.handle(req("issue.diff", json!({ "issue_id": issue_id })));
+        assert_eq!(issue_diff["ok"], true, "{issue_diff:?}");
+        assert_eq!(issue_diff["result"]["issue_id"], issue_id);
+        assert!(issue_diff["result"]["patch"]
+            .as_str()
+            .is_some_and(|patch| !patch.is_empty()));
 
         let diff = state.handle(req(
             "issue.stage_diff",

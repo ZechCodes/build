@@ -83,14 +83,32 @@ pub enum ThreadLink {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line_end: Option<u32>,
     },
+    /// Legacy stage reference retained for clients and records predating the
+    /// Issue cutover. New lifecycle events emit `IssueStage`.
     PlanStage {
         plan_id: String,
         stage_id: String,
         path: String,
     },
-    Run {
-        run_id: String,
+    /// Canonical reference to one ordered stage-plan document owned by an Issue.
+    IssueStage {
+        issue_id: String,
+        stage_id: String,
+        path: String,
     },
+    /// Legacy implementation reference retained as a wire alias.
+    Run { run_id: String },
+    /// Canonical implementation lineage reference, explicitly scoped to Issue.
+    Implementation {
+        issue_id: String,
+        implementation_id: String,
+    },
+    /// Stable server-minted identity of a checkout.
+    Worktree { worktree_id: String },
+    /// Exact immutable commit boundary.
+    Commit { sha: String },
+    /// One verified recovery attempt/session.
+    Recovery { recovery_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,9 +159,18 @@ pub enum ThreadEventKind {
     StageStarted,
     ImplementationStarted,
     WorktreeCreated,
+    /// Existing original checkout was verified and reused.
+    WorktreeReused,
+    /// Original checkout was recreated from its persisted branch lineage.
+    WorktreeRecreated,
+    /// Legacy recovery event retained for persisted compatibility.
     WorktreeRecovered,
+    RecoveryStarted,
+    RecoverySucceeded,
     RecoveryFailed,
     WorktreeDeleted,
+    StageCompleted,
+    ImplementationArchived,
     StageInvalidated,
     Committed,
     Pushed,
@@ -887,5 +914,36 @@ mod tests {
         );
         assert_eq!(wire["items"][1]["data"]["links"][0]["kind"], "plan_stage");
         assert_eq!(wire["items"][1]["data"]["links"][0]["stage_id"], "parser");
+
+        let canonical = vec![
+            ThreadLink::IssueStage {
+                issue_id: "issue-1".into(),
+                stage_id: "parser".into(),
+                path: ".build/plan/01-parser.md".into(),
+            },
+            ThreadLink::Implementation {
+                issue_id: "issue-1".into(),
+                implementation_id: "run-1".into(),
+            },
+            ThreadLink::Worktree {
+                worktree_id: "wt-0123456789ab".into(),
+            },
+            ThreadLink::Commit {
+                sha: "a".repeat(40),
+            },
+            ThreadLink::Recovery {
+                recovery_id: "recovery-1".into(),
+            },
+        ];
+        let value = serde_json::to_value(&canonical).unwrap();
+        assert_eq!(value[0]["kind"], "issue_stage");
+        assert_eq!(value[1]["kind"], "implementation");
+        assert_eq!(value[2]["kind"], "worktree");
+        assert_eq!(value[3]["kind"], "commit");
+        assert_eq!(value[4]["kind"], "recovery");
+        assert_eq!(
+            serde_json::from_value::<Vec<ThreadLink>>(value).unwrap(),
+            canonical
+        );
     }
 }

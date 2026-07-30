@@ -149,12 +149,10 @@ impl WorktreeManager {
 
     /// Recreate a Build-owned checkout at its original path and branch. The
     /// local branch is authoritative when present; otherwise fetch exactly the
-    /// same branch from origin into a validated local ref. No fallback to the
-    /// moving base is allowed because that would silently discard lineage.
+    /// same branch from its configured remote into a validated local ref. No
+    /// fallback to the moving base is allowed because that would silently
+    /// discard lineage.
     pub fn restore(&self, worktree: &Worktree) -> Result<Worktree, WorktreeError> {
-        if worktree.path.exists() {
-            return Ok(worktree.clone());
-        }
         let expected_path = self.worktrees_root.join(&worktree.name);
         if worktree.path != expected_path
             || worktree.name.is_empty()
@@ -163,6 +161,9 @@ impl WorktreeManager {
             return Err(WorktreeError::Command(
                 "refusing to restore a worktree outside its managed root".to_string(),
             ));
+        }
+        if worktree.path.exists() {
+            return self.verify_existing_worktree(worktree, &expected_path);
         }
         let local_ref = format!("refs/heads/{}", worktree.branch);
         let remote_ref = format!("refs/heads/{}", worktree.branch);
@@ -180,16 +181,12 @@ impl WorktreeManager {
         }
         if repo.find_reference(&local_ref).is_err() {
             let refspec = format!("+{remote_ref}:{local_ref}");
-            let output = std::process::Command::new("git")
-                .arg("fetch")
-                .arg("--")
-                .arg("origin")
-                .arg(&refspec)
-                .current_dir(&self.repo_path)
-                .output()?;
+            let remote = configured_remote_for_branch(&repo, &worktree.branch)
+                .unwrap_or_else(|| "origin".to_string());
+            let output = bounded_git_fetch(&self.repo_path, &remote, &refspec)?;
             if !output.status.success() {
                 return Err(WorktreeError::Command(format!(
-                    "branch {:?} was not found locally or on origin: {}",
+                    "branch {:?} was not found locally or on configured remote: {}",
                     worktree.branch,
                     String::from_utf8_lossy(&output.stderr).trim()
                 )));
@@ -200,6 +197,70 @@ impl WorktreeManager {
         let mut opts = git2::WorktreeAddOptions::new();
         opts.reference(Some(&branch_ref));
         repo.worktree(&worktree.name, &worktree.path, Some(&opts))?;
+        self.verify_existing_worktree(worktree, &expected_path)
+    }
+
+    fn verify_existing_worktree(
+        &self,
+        worktree: &Worktree,
+        expected_path: &Path,
+    ) -> Result<Worktree, WorktreeError> {
+        let actual = std::fs::canonicalize(&worktree.path)?;
+        let expected = std::fs::canonicalize(expected_path)?;
+        if actual != expected {
+            return Err(WorktreeError::Command(
+                "refusing to trust a worktree outside its canonical managed path".to_string(),
+            ));
+        }
+        let primary = git2::Repository::open(&self.repo_path)?;
+        let registered = primary.find_worktree(&worktree.name).map_err(|_| {
+            WorktreeError::Command(format!(
+                "existing path is not the registered worktree {:?}",
+                worktree.name
+            ))
+        })?;
+        if std::fs::canonicalize(registered.path())? != actual {
+            return Err(WorktreeError::Command(
+                "registered worktree path does not match the persisted path".to_string(),
+            ));
+        }
+        let checkout = git2::Repository::open(&actual)?;
+        if std::fs::canonicalize(checkout.commondir())?
+            != std::fs::canonicalize(primary.commondir())?
+        {
+            return Err(WorktreeError::Command(
+                "existing path belongs to a different git common directory".to_string(),
+            ));
+        }
+        let head = checkout.head()?;
+        if !head.is_branch() || head.shorthand() != Some(worktree.branch.as_str()) {
+            return Err(WorktreeError::Command(format!(
+                "worktree is not on the exact persisted branch {:?}",
+                worktree.branch
+            )));
+        }
+        let head_oid = head.target().ok_or_else(|| {
+            WorktreeError::Command("worktree HEAD has no direct commit".to_string())
+        })?;
+        let branch_oid = primary
+            .find_reference(&format!("refs/heads/{}", worktree.branch))?
+            .target()
+            .ok_or_else(|| WorktreeError::Command("persisted branch has no commit".to_string()))?;
+        if head_oid != branch_oid {
+            return Err(WorktreeError::Command(
+                "worktree HEAD does not match the persisted branch tip".to_string(),
+            ));
+        }
+        let base_oid = primary
+            .revparse_single(&worktree.base_branch)?
+            .peel_to_commit()?
+            .id();
+        primary.merge_base(base_oid, head_oid).map_err(|_| {
+            WorktreeError::Command(format!(
+                "worktree branch has no verified ancestry with {:?}",
+                worktree.base_branch
+            ))
+        })?;
         Ok(worktree.clone())
     }
 
@@ -224,6 +285,64 @@ impl WorktreeManager {
         }
         Ok(())
     }
+}
+
+fn configured_remote_for_branch(repo: &git2::Repository, branch: &str) -> Option<String> {
+    repo.config()
+        .ok()?
+        .get_string(&format!("branch.{branch}.remote"))
+        .ok()
+        .filter(|remote| remote != "." && !remote.trim().is_empty())
+}
+
+fn bounded_git_fetch(
+    repo_path: &Path,
+    remote: &str,
+    refspec: &str,
+) -> Result<std::process::Output, WorktreeError> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new("git")
+        .arg("fetch")
+        .arg("--")
+        .arg(remote)
+        .arg(refspec)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(repo_path)
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(WorktreeError::Command(format!(
+                "timed out fetching persisted ref {refspec:?} from remote {remote:?}"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)?;
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr)?;
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// One git worktree of the project repo that Build did not create (or no longer
@@ -775,6 +894,24 @@ mod tests {
                 .unwrap(),
             head
         );
+    }
+
+    #[test]
+    fn restore_rejects_an_existing_unregistered_directory() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let path = dir.path().join("worktrees").join("forged");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("loot"), "not a worktree\n").unwrap();
+        let forged = Worktree {
+            name: "forged".into(),
+            path,
+            branch: "build/forged".into(),
+            base_branch: "main".into(),
+        };
+
+        let error = mgr.restore(&forged).unwrap_err().to_string();
+        assert!(error.contains("registered worktree"), "{error}");
     }
 
     #[test]

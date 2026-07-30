@@ -717,6 +717,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                         spec = spec.arg(arg);
                     }
                     spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
+                        .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
                 }
                 AgentProvider::Codex => {
                     let mut spec = HarnessSpec::new("codex")
@@ -738,6 +739,11 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                         format!(
                             "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
                             serde_json::to_string(&mcp_socket).expect("socket serializes")
+                        ),
+                        format!(
+                            "mcp_servers.build.env.BRIDGE_MCP_TOKEN={}",
+                            serde_json::to_string(&options.mcp_session_token)
+                                .expect("MCP token serializes")
                         ),
                         format!(
                             "projects.{}.trust_level=\"trusted\"",
@@ -1024,6 +1030,10 @@ pub struct AppState {
     /// queue and this counter are what tell the idle sweep the difference
     /// between an agent on its way and an agent that never arrived.
     agent_turns_in_flight: HashMap<String, usize>,
+    /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
+    /// implementation id is intentionally insufficient to forge local control
+    /// frames; replacing an agent tab rotates this token.
+    mcp_session_tokens: HashMap<String, String>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
     /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
@@ -1049,6 +1059,42 @@ pub struct AppState {
     notifier: Option<Notifier>,
     /// At most one push per task-state change.
     notify_throttle: NotifyThrottle,
+}
+
+fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
+    let actual = actual.as_bytes();
+    let expected = expected.as_bytes();
+    let mut difference = actual.len() ^ expected.len();
+    let width = actual.len().max(expected.len());
+    for index in 0..width {
+        difference |= usize::from(
+            actual.get(index).copied().unwrap_or(0) ^ expected.get(index).copied().unwrap_or(0),
+        );
+    }
+    difference == 0
+}
+
+/// Resolve a control frame only when it carries the current per-session
+/// capability. The token is never included in errors or logs.
+fn authenticated_mcp_owner<'a>(
+    frame: &'a Value,
+    sessions: &HashMap<String, String>,
+) -> Option<&'a str> {
+    let owner = frame.get("task_id")?.as_str()?;
+    let supplied = frame.get("session_token")?.as_str()?;
+    let expected = sessions.get(owner)?;
+    constant_time_token_eq(supplied, expected).then_some(owner)
+}
+
+#[cfg(unix)]
+fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let listener = tokio::net::UnixListener::bind(path)?;
+    // bind(2) applies the process umask, but a permissive or changed umask must
+    // never make the lifecycle control plane available to other local users.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 impl AppState {
@@ -1091,6 +1137,7 @@ impl AppState {
             agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
             agent_turns_in_flight: HashMap::new(),
+            mcp_session_tokens: HashMap::new(),
             next_term: 1,
             self_handle: None,
             next_stream: 1,
@@ -2058,7 +2105,7 @@ impl AppState {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::remove_file(&path);
-            let listener = match tokio::net::UnixListener::bind(&path) {
+            let listener = match bind_done_listener(std::path::Path::new(&path)) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("done socket: bind {path} failed: {e}");
@@ -2095,14 +2142,26 @@ impl AppState {
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
-                        // The MCP CLI stays `mcp --task <id>` (opaque): the
-                        // `task_id` field carries whatever id — plan or run —
-                        // owns this session; the daemon routes by owner lookup.
-                        let entity_id = v.get("task_id").and_then(Value::as_str).unwrap_or("");
+                        // The legacy `task_id` spelling remains opaque and
+                        // compatible, but it is not authentication. Only the
+                        // current harness process knows the rotated capability.
+                        let entity_id = {
+                            let guard = state.lock().unwrap();
+                            authenticated_mcp_owner(&v, &guard.mcp_session_tokens)
+                                .map(str::to_string)
+                        };
+                        let Some(entity_id) = entity_id else {
+                            let response =
+                                json!({ "ok": false, "error": "unauthorized MCP session" });
+                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+                            let _ = write_half.write_all(b"\n").await;
+                            let _ = write_half.flush().await;
+                            continue;
+                        };
                         if let Ok(report) = serde_json::from_value::<DoneReport>(
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
-                            state.lock().unwrap().on_agent_done(entity_id, report);
+                            state.lock().unwrap().on_agent_done(&entity_id, report);
                             // A report can start the next phase (a built stage
                             // hands itself to validation). The turn is queued
                             // under the lock above; sending it needs the lock
@@ -2114,7 +2173,7 @@ impl AppState {
                             v.get("request").cloned().unwrap_or(Value::Null),
                         ) {
                             let response =
-                                match state.lock().unwrap().on_mcp_action(entity_id, action) {
+                                match state.lock().unwrap().on_mcp_action(&entity_id, action) {
                                     Ok(result) => json!({ "ok": true, "result": result }),
                                     Err(error) => json!({ "ok": false, "error": error }),
                                 };
@@ -2238,6 +2297,25 @@ impl AppState {
                         return Err("plan stage link is not a canonical Issue stage".to_string());
                     }
                 }
+                crate::thread::ThreadLink::IssueStage {
+                    issue_id: linked_issue,
+                    stage_id,
+                    path,
+                } => {
+                    if issue_id.as_deref() != Some(linked_issue.as_str()) {
+                        return Err("Issue stage link does not belong to this Issue".to_string());
+                    }
+                    let exact = self.plans.get(linked_issue).and_then(|issue| {
+                        issue
+                            .stages
+                            .iter()
+                            .find(|stage| stage.id == *stage_id)
+                            .map(|stage| stage.path.as_str())
+                    });
+                    if exact != Some(path.as_str()) {
+                        return Err("Issue stage link is not canonical".to_string());
+                    }
+                }
                 crate::thread::ThreadLink::Run { run_id } => {
                     let belongs = self.runs.get(run_id).is_some_and(|run| match &issue_id {
                         Some(issue_id) => {
@@ -2248,6 +2326,72 @@ impl AppState {
                     });
                     if !belongs {
                         return Err("run link does not belong to this Issue".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::Implementation {
+                    issue_id: linked_issue,
+                    implementation_id,
+                } => {
+                    if issue_id.as_deref() != Some(linked_issue.as_str())
+                        || !self.runs.get(implementation_id).is_some_and(|run| {
+                            run.run.plan_id.as_ref().map(|id| id.0.as_str())
+                                == Some(linked_issue.as_str())
+                        })
+                    {
+                        return Err("implementation link does not belong to this Issue".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::Worktree { worktree_id } => {
+                    let expected = self
+                        .runs
+                        .get(entity_id)
+                        .or_else(|| {
+                            issue_id
+                                .as_deref()
+                                .and_then(|issue| self.current_issue_implementation(issue))
+                        })
+                        .map(|run| crate::worktree::external_worktree_id(&run.worktree.path));
+                    if expected.as_deref() != Some(worktree_id.as_str()) {
+                        return Err("worktree link does not belong to this Issue".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::Commit { sha } => {
+                    let belongs = self.runs.values().any(|run| {
+                        let same_owner = match &issue_id {
+                            Some(issue) => {
+                                run.run.plan_id.as_ref().map(|id| id.0.as_str())
+                                    == Some(issue.as_str())
+                            }
+                            None => run.run.id.0 == entity_id,
+                        };
+                        same_owner
+                            && (run.base_sha.as_deref() == Some(sha.as_str())
+                                || run.stages.iter().any(|stage| {
+                                    stage.start_sha.as_deref() == Some(sha.as_str())
+                                        || stage.completion_sha.as_deref() == Some(sha.as_str())
+                                }))
+                    });
+                    if !belongs {
+                        return Err("commit link is not a recorded Issue boundary".to_string());
+                    }
+                }
+                crate::thread::ThreadLink::Recovery { recovery_id } => {
+                    let thread = issue_id
+                        .as_deref()
+                        .and_then(|id| self.plans.get(id).map(|issue| &issue.thread))
+                        .or_else(|| self.runs.get(entity_id).map(|run| &run.thread));
+                    let recorded = thread.is_some_and(|thread| {
+                        thread.items.iter().any(|item| match item {
+                            crate::thread::ThreadItem::Event(event) => event.links.iter().any(
+                                |link| matches!(link, crate::thread::ThreadLink::Recovery { recovery_id: id } if id == recovery_id),
+                            ),
+                            crate::thread::ThreadItem::Message(message) => message.links.iter().any(
+                                |link| matches!(link, crate::thread::ThreadLink::Recovery { recovery_id: id } if id == recovery_id),
+                            ),
+                        })
+                    });
+                    if !recorded {
+                        return Err("recovery link is not recorded on this Issue".to_string());
                     }
                 }
                 crate::thread::ThreadLink::File { .. } => {
@@ -2376,6 +2520,30 @@ impl AppState {
         } else {
             None
         };
+        let completed_stage_event = if matches!(outcome, Ok(ReportOutcome::Applied))
+            && report_for_thread.phase == DonePhase::Validate
+            && report_for_thread.status == DoneStatus::Completed
+        {
+            active.current_stage_id.as_deref().and_then(|stage_id| {
+                active
+                    .stage_progress(stage_id)
+                    .filter(|progress| {
+                        progress.state == StageProgressState::Validated { passed: true }
+                    })
+                    .map(|progress| {
+                        (
+                            stage_id.to_string(),
+                            progress.completion_sha.clone(),
+                            plan_docs
+                                .iter()
+                                .find(|doc| doc.id == stage_id)
+                                .map(|doc| doc.path.clone()),
+                        )
+                    })
+            })
+        } else {
+            None
+        };
         let mut issue = issue_id
             .as_ref()
             .and_then(|issue_id| self.plans.remove(issue_id));
@@ -2388,6 +2556,32 @@ impl AppState {
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
+        if let (Some(issue_id), Some((stage_id, completion_sha, stage_path))) =
+            (issue_id.as_deref(), completed_stage_event)
+        {
+            let mut links = vec![crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            }];
+            if let Some(path) = stage_path {
+                links.push(crate::thread::ThreadLink::IssueStage {
+                    issue_id: issue_id.to_string(),
+                    stage_id: stage_id.clone(),
+                    path,
+                });
+            }
+            if let Some(sha) = completion_sha {
+                links.push(crate::thread::ThreadLink::Commit { sha });
+            }
+            conversation.push_event_with_links(
+                crate::thread::ThreadEventKind::StageCompleted,
+                Some(format!("Completed stage {stage_id}")),
+                None,
+                None,
+                links,
+                now_rfc3339(),
+            );
+        }
         if let Some(patch) = diff_revision {
             conversation.add_revision(crate::thread::ArtifactKind::Diff, &patch, &now_rfc3339());
         }
@@ -4711,11 +4905,12 @@ impl AppState {
         issue_id: &str,
         run_id: &str,
     ) -> Result<(), String> {
-        if self
+        let worktree_existed = self
             .runs
             .get(run_id)
-            .is_some_and(|run| run.worktree.path.exists())
-        {
+            .is_some_and(|run| run.worktree.path.exists());
+        let adopted = self.runs.get(run_id).is_some_and(|run| run.adopted);
+        if adopted && worktree_existed {
             return Ok(());
         }
         let project_id = self.project_of(run_id)?;
@@ -4734,17 +4929,30 @@ impl AppState {
             Ok(worktree) => {
                 active.worktree = worktree;
                 active.last_error = None;
+                let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
                 let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
                 issue.thread.push_event_with_links(
-                    crate::thread::ThreadEventKind::WorktreeRecovered,
-                    Some("Recreated the Issue worktree from its original branch".to_string()),
+                    if worktree_existed {
+                        crate::thread::ThreadEventKind::WorktreeReused
+                    } else {
+                        crate::thread::ThreadEventKind::WorktreeRecreated
+                    },
+                    Some(if worktree_existed {
+                        "Verified and reused the original Issue worktree".to_string()
+                    } else {
+                        "Recreated the Issue worktree from its original branch".to_string()
+                    }),
                     None,
                     None,
-                    vec![crate::thread::ThreadLink::Run {
-                        run_id: run_id.to_string(),
-                    }],
+                    vec![
+                        crate::thread::ThreadLink::Implementation {
+                            issue_id: issue_id.to_string(),
+                            implementation_id: run_id.to_string(),
+                        },
+                        crate::thread::ThreadLink::Worktree { worktree_id },
+                    ],
                     now_rfc3339(),
                 );
                 let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
@@ -8021,10 +8229,51 @@ fn validate_thread_links(links: &[crate::thread::ThreadLink]) -> Result<(), Stri
                     return Err("plan stage link is invalid".to_string());
                 }
             }
+            crate::thread::ThreadLink::IssueStage {
+                issue_id,
+                stage_id,
+                path,
+            } => {
+                if issue_id.is_empty()
+                    || stage_id.is_empty()
+                    || !path.starts_with(".build/plan/")
+                    || !crate::plan::is_worktree_contained_path(path)
+                {
+                    return Err("Issue stage link is invalid".to_string());
+                }
+            }
             crate::thread::ThreadLink::Run { run_id } if run_id.is_empty() => {
                 return Err("run link is invalid".to_string());
             }
             crate::thread::ThreadLink::Run { .. } => {}
+            crate::thread::ThreadLink::Implementation {
+                issue_id,
+                implementation_id,
+            } if issue_id.is_empty() || implementation_id.is_empty() => {
+                return Err("implementation link is invalid".to_string());
+            }
+            crate::thread::ThreadLink::Implementation { .. } => {}
+            crate::thread::ThreadLink::Worktree { worktree_id }
+                if !worktree_id.starts_with("wt-") || worktree_id.len() != 15 =>
+            {
+                return Err("worktree link is invalid".to_string());
+            }
+            crate::thread::ThreadLink::Worktree { .. } => {}
+            crate::thread::ThreadLink::Commit { sha }
+                if sha.len() != 40
+                    || !sha
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) =>
+            {
+                return Err("commit link is invalid".to_string());
+            }
+            crate::thread::ThreadLink::Commit { .. } => {}
+            crate::thread::ThreadLink::Recovery { recovery_id }
+                if !recovery_id.starts_with("recovery-") || recovery_id.len() > 80 =>
+            {
+                return Err("recovery link is invalid".to_string());
+            }
+            crate::thread::ThreadLink::Recovery { .. } => {}
         }
     }
     Ok(())
@@ -8228,8 +8477,8 @@ fn append_plan_stage_announcements(
         thread.post_agent_with_links(
             explanation,
             None,
-            vec![crate::thread::ThreadLink::PlanStage {
-                plan_id: plan_id.to_string(),
+            vec![crate::thread::ThreadLink::IssueStage {
+                issue_id: plan_id.to_string(),
                 stage_id: stage.id.clone(),
                 path: stage.path.clone(),
             }],
@@ -8257,8 +8506,8 @@ fn record_current_stage_started(
         Some(format!("Started plan stage “{}”", stage.title)),
         None,
         None,
-        vec![crate::thread::ThreadLink::PlanStage {
-            plan_id,
+        vec![crate::thread::ThreadLink::IssueStage {
+            issue_id: plan_id,
             stage_id: stage.id.clone(),
             path: stage.path.clone(),
         }],
@@ -8772,7 +9021,11 @@ fn ensure_agent_tab(
         let reserved = {
             let mut s = state.lock().unwrap();
             if let Some(tab) = s.tabs.get(&key) {
-                if tab.live && !tab.session.has_exited() {
+                let same_owner = matches!(
+                    &tab.role,
+                    TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
+                );
+                if same_owner && tab.live && !tab.session.has_exited() {
                     return Ok((tab.wire_id(), Spawned::Warm));
                 }
             }
@@ -8792,14 +9045,23 @@ fn ensure_agent_tab(
                 // A Build-owned tab respawned after a crash should always pick
                 // its own transcript back up, so the probe is unconditional too.
                 let continue_session = (s.transcript_probe)(&root, model_choice.provider);
-                let spec = orch.agent_harness_spec(owner, &root, model_choice, continue_session);
+                let session_token = uuid::Uuid::new_v4().to_string();
+                let spec = orch.agent_harness_spec(
+                    owner,
+                    &root,
+                    model_choice,
+                    continue_session,
+                    &session_token,
+                );
                 let size = orch.pty_size();
+                s.mcp_session_tokens
+                    .insert(owner.to_string(), session_token.clone());
                 s.agent_spawns_in_flight.insert(root.clone());
-                Some((spec, size, carried))
+                Some((spec, size, carried, session_token))
             }
         };
 
-        let Some((spec, size, carried)) = reserved else {
+        let Some((spec, size, carried, session_token)) = reserved else {
             // Someone else is spawning this root's agent: wait for their tab
             // rather than start a second harness beside it.
             if std::time::Instant::now() >= deadline {
@@ -8826,7 +9088,15 @@ fn ensure_agent_tab(
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
-                state.lock().unwrap().agent_spawns_in_flight.remove(&root);
+                let mut state = state.lock().unwrap();
+                state.agent_spawns_in_flight.remove(&root);
+                if state
+                    .mcp_session_tokens
+                    .get(owner)
+                    .is_some_and(|current| constant_time_token_eq(current, &session_token))
+                {
+                    state.mcp_session_tokens.remove(owner);
+                }
                 return Err(error);
             }
         };
@@ -10549,6 +10819,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mcp_control_frames_require_the_current_session_token() {
+        let sessions = HashMap::from([("run-1".to_string(), "secret-current".to_string())]);
+        let valid = json!({
+            "task_id": "run-1",
+            "session_token": "secret-current",
+            "report": { "phase": "build", "status": "completed", "summary": "done", "outputs": {} }
+        });
+        assert_eq!(authenticated_mcp_owner(&valid, &sessions), Some("run-1"));
+        assert_eq!(
+            authenticated_mcp_owner(
+                &json!({ "task_id": "run-1", "session_token": "stale" }),
+                &sessions
+            ),
+            None
+        );
+        assert_eq!(
+            authenticated_mcp_owner(&json!({ "task_id": "run-1" }), &sessions),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn done_socket_is_explicitly_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.sock");
+        let _listener = bind_done_listener(&path).expect("bind private MCP socket");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
     /// An agent tab is a MANAGED agent: the spec it spawns from carries Build's
     /// `done` MCP server and the owner id that routes reports back through the
     /// owner lookup. The socket lives inside the harness builder's closure, so
@@ -10578,7 +10882,7 @@ mod tests {
             effort: None,
         };
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &claude, false);
+        let spec = orch.agent_harness_spec("run-42", cwd, &claude, false, "token-42");
         assert_eq!(spec.binary, "claude");
         let args = spec.args.join(" ");
         assert!(
@@ -10594,10 +10898,10 @@ mod tests {
             spec.env
         );
         // A replaced tab picks its own conversation back up.
-        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true);
+        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, "token-43");
         assert!(resumed.args.join(" ").contains("--continue"));
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false);
+        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, "token-42");
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
         assert!(
@@ -10613,7 +10917,7 @@ mod tests {
             "{args}"
         );
         assert!(!args.ends_with("resume --last"), "{args}");
-        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true);
+        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, "token-43");
         assert!(resumed.args.join(" ").ends_with("resume --last"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -13132,7 +13436,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["type"] == "event" && item["data"]["event"] == "worktree_recovered"));
+            .any(|item| item["type"] == "event" && item["data"]["event"] == "worktree_recreated"));
     }
 
     #[test]
@@ -14593,13 +14897,16 @@ mod tests {
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
         let key = TabKey::agent(&root);
-        let build_pid = {
+        let (build_pid, session_token) = {
             let s = state.lock().unwrap();
             let tab = s
                 .tabs
                 .get(&key)
                 .expect("dispatching a stage opens the worktree's agent");
-            tab.session.pid().expect("a live harness has a pid")
+            (
+                tab.session.pid().expect("a live harness has a pid"),
+                s.mcp_session_tokens[&run_id].clone(),
+            )
         };
 
         let socket_path = dir.path().join("done.sock");
@@ -14610,6 +14917,7 @@ mod tests {
         let mut socket = connect_when_bound(&socket_path).await;
         let report = json!({
             "task_id": run_id,
+            "session_token": session_token,
             "report": {
                 "phase": "build",
                 "status": "completed",
@@ -15022,12 +15330,12 @@ mod tests {
             .filter(|item| {
                 item["type"] == "message"
                     && item["data"]["role"] == "agent"
-                    && item["data"]["links"][0]["kind"] == "plan_stage"
+                    && item["data"]["links"][0]["kind"] == "issue_stage"
             })
             .collect();
 
         assert_eq!(stage_messages.len(), 2, "{stage_messages:?}");
-        assert_eq!(stage_messages[0]["data"]["links"][0]["plan_id"], plan_id);
+        assert_eq!(stage_messages[0]["data"]["links"][0]["issue_id"], plan_id);
         assert_eq!(
             stage_messages[0]["data"]["links"][0]["stage_id"],
             "first-half"
@@ -15066,7 +15374,7 @@ mod tests {
             .collect();
 
         assert_eq!(starts.len(), 2, "{starts:?}");
-        assert_eq!(starts[0]["data"]["links"][0]["plan_id"], plan_id);
+        assert_eq!(starts[0]["data"]["links"][0]["issue_id"], plan_id);
         assert_eq!(starts[0]["data"]["links"][0]["stage_id"], "first-half");
         assert_eq!(starts[1]["data"]["links"][0]["stage_id"], "second-half");
     }
@@ -15573,6 +15881,7 @@ mod tests {
         let options = SpawnOptions {
             continue_session: false,
             owner_id: "e2e".into(),
+            mcp_session_token: "e2e-session-token".into(),
             cwd: workspace.clone(),
         };
         // Building the spec is what pre-trusts the workspace — the dialog this

@@ -467,6 +467,7 @@ fn mcp_stdio() {
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
     let socket = std::env::var("BRIDGE_MCP_SOCKET").ok();
+    let session_token = std::env::var("BRIDGE_MCP_TOKEN").ok();
 
     let server = build_bridge::mcp::DoneServer::new(&owner_id);
     let stdin = std::io::stdin().lock();
@@ -475,7 +476,12 @@ fn mcp_stdio() {
         stdin,
         stdout,
         |report| {
-            let line = serde_json::json!({ "task_id": owner_id, "report": report }).to_string();
+            let line = serde_json::json!({
+                "task_id": owner_id,
+                "session_token": session_token,
+                "report": report
+            })
+            .to_string();
             match &socket {
                 Some(path) => {
                     if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(path) {
@@ -496,7 +502,12 @@ fn mcp_stdio() {
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
                 .map_err(|error| format!("could not set daemon timeout: {error}"))?;
-            let line = serde_json::json!({ "task_id": owner_id, "request": action }).to_string();
+            let line = serde_json::json!({
+                "task_id": owner_id,
+                "session_token": session_token,
+                "request": action
+            })
+            .to_string();
             writeln!(stream, "{line}")
                 .map_err(|error| format!("could not send request: {error}"))?;
             let mut response = String::new();

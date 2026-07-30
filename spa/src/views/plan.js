@@ -40,8 +40,9 @@ import { hashFromRoute } from "../core/router.js";
 const NO_GATE = new Set(["created", "drafting", "abandoned"]);
 
 export function issueThreadLinkTarget(link, issue, fallbackProjectId) {
-  if (link.kind === "run" && link.run_id) {
-    return { route: { name: "task", projectId: issue.project_id || fallbackProjectId, id: link.run_id, tab: "conversation" } };
+  const implementationId = link.implementation_id || link.run_id;
+  if ((link.kind === "implementation" || link.kind === "run") && implementationId) {
+    return { route: { name: "task", projectId: issue.project_id || fallbackProjectId, id: implementationId, tab: "conversation" } };
   }
   if (link.kind === "file" && link.path) {
     const runId = issue.current_implementation_id || issue.active_run_id;

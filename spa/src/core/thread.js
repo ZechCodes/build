@@ -15,8 +15,15 @@ const EVENT_META = {
   stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
   stage_started: { label: "Stage implementation started", icon: "▶" },
   implementation_started: { label: "Implementation started", icon: "▶" },
+  worktree_reused: { label: "Implementation worktree reused", icon: "↻", tone: "success" },
+  worktree_recreated: { label: "Implementation worktree recreated", icon: "↻", tone: "success" },
   worktree_deleted: { label: "Implementation worktree deleted", icon: "×", tone: "blocked" },
+  recovery_started: { label: "Verified recovery started", icon: "▶" },
+  recovery_succeeded: { label: "Verified recovery succeeded", icon: "✓", tone: "success" },
+  recovery_failed: { label: "Verified recovery failed", icon: "×", tone: "blocked" },
+  stage_completed: { label: "Stage completed", icon: "✓", tone: "success" },
   stage_invalidated: { label: "Stage marked incomplete", icon: "!", tone: "blocked" },
+  implementation_archived: { label: "Implementation archived", icon: "■" },
   committed: { label: "Changes committed", icon: "◆", tone: "success" },
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },
@@ -163,7 +170,9 @@ function harnessLabel(thread, override) {
 }
 
 function linkLocation(link) {
-  if (link.kind !== "file") return link.path || link.run_id || "Open";
+  if (link.kind !== "file") {
+    return link.path || link.implementation_id || link.run_id || link.worktree_id || link.sha || link.recovery_id || "Open";
+  }
   const start = link.line_start;
   const end = link.line_end;
   const lines = start == null ? "" : start === end || end == null ? `:${start}` : `:${start}-${end}`;
@@ -177,9 +186,14 @@ function linksHtml(links) {
       const attributes = [
         `data-kind="${esc(link.kind || "")}"`,
         link.path ? `data-path="${esc(link.path)}"` : "",
+        link.issue_id ? `data-issue-id="${esc(link.issue_id)}"` : "",
         link.plan_id ? `data-plan-id="${esc(link.plan_id)}"` : "",
         link.stage_id ? `data-stage-id="${esc(link.stage_id)}"` : "",
+        link.implementation_id ? `data-implementation-id="${esc(link.implementation_id)}"` : "",
         link.run_id ? `data-run-id="${esc(link.run_id)}"` : "",
+        link.worktree_id ? `data-worktree-id="${esc(link.worktree_id)}"` : "",
+        link.sha ? `data-sha="${esc(link.sha)}"` : "",
+        link.recovery_id ? `data-recovery-id="${esc(link.recovery_id)}"` : "",
         link.line_start != null ? `data-line-start="${Number(link.line_start)}"` : "",
         link.line_end != null ? `data-line-end="${Number(link.line_end)}"` : "",
       ].filter(Boolean).join(" ");
@@ -321,9 +335,14 @@ export function wireThreadLinks(root, openLink) {
     button.onclick = () => {
       const link = { kind: button.dataset.kind };
       if (button.dataset.path) link.path = button.dataset.path;
+      if (button.dataset.issueId) link.issue_id = button.dataset.issueId;
       if (button.dataset.planId) link.plan_id = button.dataset.planId;
       if (button.dataset.stageId) link.stage_id = button.dataset.stageId;
+      if (button.dataset.implementationId) link.implementation_id = button.dataset.implementationId;
       if (button.dataset.runId) link.run_id = button.dataset.runId;
+      if (button.dataset.worktreeId) link.worktree_id = button.dataset.worktreeId;
+      if (button.dataset.sha) link.sha = button.dataset.sha;
+      if (button.dataset.recoveryId) link.recovery_id = button.dataset.recoveryId;
       if (button.dataset.lineStart) link.line_start = Number(button.dataset.lineStart);
       if (button.dataset.lineEnd) link.line_end = Number(button.dataset.lineEnd);
       openLink(link);

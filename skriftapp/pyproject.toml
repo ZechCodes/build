@@ -27,15 +27,10 @@ dev = [
     "pytest-asyncio>=0.24.0",
 ]
 
-[tool.uv]  # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown -- cooldown IS set below; the rule only recognizes the relative form, which older uv cannot parse
-# Supply-chain cooldown: don't resolve packages published after this date.
-# A concrete RFC 3339 timestamp, NOT a relative "7 days": relative durations
-# only parse on uv >= 0.9.17, and an unparseable value silently disables this
-# whole [tool.uv] table on older uv (0.6.x prints a settings-discovery warning
-# and ignores it). Bump the date forward whenever the lockfile is refreshed
-# (keep several days of cooldown; currently the day after the skrift 0.2.0a9
-# pin was published).
-exclude-newer = "2026-06-27T00:00:00Z"
+[tool.uv]
+# Supply-chain cooldown: wait before resolving newly published packages. Keep
+# the canonical relative form so automated policy checks can verify the guard.
+exclude-newer = "7 days"
 # Virtual project: buildapp/ is imported from the working directory by Skrift's
 # controller loading, so there is nothing to build or install.
 package = false

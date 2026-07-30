@@ -357,18 +357,20 @@ export async function renderTask() {
       selectTab("files");
       return;
     }
-    if (link.kind === "plan_stage" && link.plan_id && link.stage_id) {
+    const issueId = link.issue_id || link.plan_id;
+    if ((link.kind === "issue_stage" || link.kind === "plan_stage") && issueId && link.stage_id) {
       go({
         name: "plan",
         projectId: (last && last.project_id) || projectId,
-        id: link.plan_id,
+        id: issueId,
         tab: "stages",
         stage: link.stage_id,
       });
       return;
     }
-    if (link.kind === "run" && link.run_id) {
-      go({ name: "task", projectId: (last && last.project_id) || projectId, id: link.run_id, tab: "conversation" });
+    const implementationId = link.implementation_id || link.run_id;
+    if ((link.kind === "implementation" || link.kind === "run") && implementationId) {
+      go({ name: "task", projectId: (last && last.project_id) || projectId, id: implementationId, tab: "conversation" });
     }
   }
 

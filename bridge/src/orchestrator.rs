@@ -470,6 +470,10 @@ pub struct SpawnOptions {
     pub continue_session: bool,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
+    /// Unlogged capability for this exact harness process. The daemon rotates it
+    /// whenever the worktree's agent tab is replaced, preventing another local
+    /// process from forging reports with only a known entity id.
+    pub mcp_session_token: String,
     /// The worktree the harness will run in. Providers gate an interactive
     /// session behind a workspace-trust dialog for a directory they have not
     /// seen before, and Build mints a fresh worktree per run — so the adapter
@@ -647,10 +651,12 @@ impl Orchestrator {
         cwd: &Path,
         model_choice: &ModelChoice,
         continue_session: bool,
+        mcp_session_token: &str,
     ) -> HarnessSpec {
         let options = SpawnOptions {
             continue_session,
             owner_id: owner_id.to_string(),
+            mcp_session_token: mcp_session_token.to_string(),
             cwd: cwd.to_path_buf(),
         };
         match &self.agent {

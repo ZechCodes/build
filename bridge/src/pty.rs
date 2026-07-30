@@ -649,22 +649,23 @@ mod tests {
 
     #[tokio::test]
     async fn child_inherits_the_daemon_environment() {
-        // Without inheritance the child gets an empty env and portable-pty falls
-        // back to the confstr PATH ("/usr/bin:/bin:/usr/sbin:/sbin"), so a harness
-        // installed anywhere else (`claude` under ~/.local/bin, a toolbox shim)
-        // fails to spawn at all.
-        let parent_path = std::env::var("PATH").unwrap();
+        // Assert inheritance with a test-private marker instead of PATH. Another
+        // parallel test extends PATH to exercise binary lookup, so comparing two
+        // unsynchronised PATH snapshots made this test environment-sensitive.
+        let marker = format!("inherit-{}", uuid::Uuid::new_v4());
+        std::env::set_var("BUILD_BRIDGE_ENV_INHERITANCE_TEST", &marker);
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf 'PATH[%s]' \"$PATH\"");
+            .arg("printf 'MARKER[%s]' \"$BUILD_BRIDGE_ENV_INHERITANCE_TEST\"");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         let mut rx = session.subscribe();
 
-        let out = read_until(&mut rx, "PATH[").await;
+        let out = read_until(&mut rx, "MARKER[").await;
         assert!(
-            out.contains(&format!("PATH[{parent_path}")),
-            "child PATH should be the daemon's; got: {out:?}"
+            out.contains(&format!("MARKER[{marker}]")),
+            "child should inherit the daemon environment; got: {out:?}"
         );
+        std::env::remove_var("BUILD_BRIDGE_ENV_INHERITANCE_TEST");
     }
 
     #[tokio::test]

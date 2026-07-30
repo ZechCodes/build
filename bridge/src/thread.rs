@@ -157,6 +157,7 @@ pub enum ThreadEventKind {
     Approved,
     StageApproved,
     StageStarted,
+    StageFailed,
     ImplementationStarted,
     WorktreeCreated,
     /// Existing original checkout was verified and reused.

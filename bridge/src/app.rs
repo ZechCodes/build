@@ -560,13 +560,20 @@ impl PendingAgentTurn {
         active: &ActiveRun,
         project_root: &std::path::Path,
         prompt: String,
+        issue_thread: &crate::thread::Thread,
     ) -> Self {
+        // A recovery may replace a dead process or take over a warm
+        // implementation tab. In either case it is a distinct Issue agent and
+        // must re-establish the durable conversation protocol before touching
+        // refs. Wrapping both variants also gives a warm recovery the unread
+        // pull instruction instead of assuming an earlier phase primed it.
+        let primed = crate::orchestrator::conversation_prompt(&prompt, issue_thread);
         PendingAgentTurn {
             root: AppState::canonical_root(project_root),
             owner: owner.to_string(),
             model_choice: active.model_choice.clone(),
-            cold: prompt.clone(),
-            warm: prompt,
+            cold: primed.clone(),
+            warm: primed,
             phase: "recover",
         }
     }
@@ -1472,50 +1479,85 @@ impl AppState {
                 }
                 Err(error) if active.run.plan_id.is_some() && project_id.is_some() => {
                     let issue_id = active.run.plan_id.as_ref().expect("guarded").0.clone();
-                    let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
-                    let requested_stage_id = self
-                        .plans
-                        .get(&issue_id)
-                        .and_then(|issue| match &issue.plan.implementation_intent {
-                            ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
-                            ImplementationIntent::All => issue.stages.iter().find_map(|doc| {
-                                active
-                                    .stage_progress(&doc.id)
-                                    .is_none_or(|progress| {
-                                        progress.state
-                                            != StageProgressState::Validated { passed: true }
-                                            || progress.invalidation_reason.is_some()
-                                    })
-                                    .then(|| doc.id.clone())
-                            }),
-                            ImplementationIntent::None => active.current_stage_id.clone(),
+                    let existing = active
+                        .recovery
+                        .as_ref()
+                        .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
+                        .cloned();
+                    let requested_stage_id = existing
+                        .as_ref()
+                        .map(|attempt| attempt.requested_stage_id.clone())
+                        .or_else(|| {
+                            self.plans.get(&issue_id).and_then(|issue| {
+                                match &issue.plan.implementation_intent {
+                                    ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
+                                    ImplementationIntent::All => {
+                                        issue.stages.iter().find_map(|doc| {
+                                            active
+                                                .stage_progress(&doc.id)
+                                                .is_none_or(|progress| {
+                                                    progress.state
+                                                        != StageProgressState::Validated {
+                                                            passed: true,
+                                                        }
+                                                        || progress.invalidation_reason.is_some()
+                                                })
+                                                .then(|| doc.id.clone())
+                                        })
+                                    }
+                                    ImplementationIntent::None => active.current_stage_id.clone(),
+                                }
+                            })
                         })
                         .unwrap_or_default();
-                    let started_at = now_rfc3339();
-                    active.recovery = Some(crate::run::RecoveryAttempt {
-                        id: recovery_id.clone(),
-                        requested_stage_id: requested_stage_id.clone(),
-                        branch: active.worktree.branch.clone(),
-                        state: crate::run::RecoveryState::Started,
-                        report: None,
-                        started_at: started_at.clone(),
-                        completed_at: None,
-                    });
+                    let recovery_id = existing
+                        .as_ref()
+                        .map(|attempt| attempt.id.clone())
+                        .unwrap_or_else(|| format!("recovery-{}", uuid::Uuid::new_v4()));
+                    let started_at = existing
+                        .as_ref()
+                        .map(|attempt| attempt.started_at.clone())
+                        .unwrap_or_else(now_rfc3339);
+                    if existing.is_none() {
+                        active.recovery = Some(crate::run::RecoveryAttempt {
+                            id: recovery_id.clone(),
+                            requested_stage_id: requested_stage_id.clone(),
+                            branch: active.worktree.branch.clone(),
+                            state: crate::run::RecoveryState::Started,
+                            report: None,
+                            started_at: started_at.clone(),
+                            completed_at: None,
+                        });
+                        recovery_event = Some((
+                            crate::thread::ThreadEventKind::RecoveryStarted,
+                            format!("Verified recovery {recovery_id} started: {error}"),
+                        ));
+                    }
                     active.last_error = Some(format!(
-                        "automatic branch restoration failed: {error}; verified recovery agent started"
+                        "automatic branch restoration failed: {error}; verified recovery {recovery_id} is running"
                     ));
-                    let prompt = format!(
-                        "You are a RECOVERY agent. Recovery nonce: {recovery_id}. Restore only the exact branch {} for Issue {issue_id}; never start from the moving base. Requested stage: {requested_stage_id}. Inspect local/remote refs and reflogs, then call `done` with phase=\"recover\" and outputs.recovery containing this nonce, recovered, branch, exact 40-character head_sha, and findings.",
-                        active.worktree.branch
+                    let (stages, issue_thread) = self
+                        .plans
+                        .get(&issue_id)
+                        .map(|issue| (issue.stages.clone(), issue.thread.clone()))
+                        .unwrap_or_else(|| (Vec::new(), crate::thread::Thread::new(&issue_id)));
+                    let prompt = recovery_agent_prompt(
+                        &recovery_id,
+                        &issue_id,
+                        &run_id,
+                        &requested_stage_id,
+                        &active.worktree,
+                        &error,
+                        &stages,
                     );
                     self.pending_agent_turns
                         .push(PendingAgentTurn::for_recovery(
-                            &run_id, &active, &repo_path, prompt,
+                            &run_id,
+                            &active,
+                            &repo_path,
+                            prompt,
+                            &issue_thread,
                         ));
-                    recovery_event = Some((
-                        crate::thread::ThreadEventKind::RecoveryStarted,
-                        format!("Verified recovery {recovery_id} started: {error}"),
-                    ));
                     state_changed = true;
                 }
                 Err(error) => {
@@ -1595,6 +1637,22 @@ impl AppState {
                 if let Some(recovery) = &active.recovery {
                     links.push(crate::thread::ThreadLink::Recovery {
                         recovery_id: recovery.id.clone(),
+                    });
+                    if let Some(stage) = issue
+                        .stages
+                        .iter()
+                        .find(|stage| stage.id == recovery.requested_stage_id)
+                    {
+                        links.push(crate::thread::ThreadLink::IssueStage {
+                            issue_id: issue_id.clone(),
+                            stage_id: stage.id.clone(),
+                            path: stage.path.clone(),
+                        });
+                    }
+                }
+                if active.worktree.path.exists() {
+                    links.push(crate::thread::ThreadLink::Worktree {
+                        worktree_id: crate::worktree::external_worktree_id(&active.worktree.path),
                     });
                 }
                 issue.thread.push_event_with_links(
@@ -2659,6 +2717,28 @@ impl AppState {
         } else {
             None
         };
+        let failed_stage_event = (report_for_thread.status == DoneStatus::Failed
+            || report_for_thread
+                .outputs
+                .validation
+                .as_ref()
+                .is_some_and(|validation| !validation.passed)
+            || outcome.is_err())
+        .then(|| {
+            active.current_stage_id.as_deref().and_then(|stage_id| {
+                plan_docs.iter().find(|doc| doc.id == stage_id).map(|doc| {
+                    let summary = report_for_thread
+                        .outputs
+                        .validation
+                        .as_ref()
+                        .filter(|validation| !validation.passed)
+                        .map(|validation| validation.findings.clone())
+                        .unwrap_or_else(|| report_for_thread.summary.clone());
+                    (stage_id.to_string(), doc.path.clone(), summary)
+                })
+            })
+        })
+        .flatten();
         let completed_stage_event = if matches!(outcome, Ok(ReportOutcome::Applied))
             && report_for_thread.phase == DonePhase::Validate
             && report_for_thread.status == DoneStatus::Completed
@@ -2695,6 +2775,28 @@ impl AppState {
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
+        if let (Some(issue_id), Some((stage_id, stage_path, summary))) =
+            (issue_id.as_deref(), failed_stage_event)
+        {
+            conversation.push_event_with_links(
+                crate::thread::ThreadEventKind::StageFailed,
+                Some(summary),
+                None,
+                None,
+                vec![
+                    crate::thread::ThreadLink::IssueStage {
+                        issue_id: issue_id.to_string(),
+                        stage_id,
+                        path: stage_path,
+                    },
+                    crate::thread::ThreadLink::Implementation {
+                        issue_id: issue_id.to_string(),
+                        implementation_id: run_id.to_string(),
+                    },
+                ],
+                now_rfc3339(),
+            );
+        }
         if let (Some(issue_id), Some((stage_id, completion_sha, stage_path))) =
             (issue_id.as_deref(), completed_stage_event)
         {
@@ -5149,8 +5251,8 @@ impl AppState {
             );
         }
 
-        let run_id = match self.current_issue_implementation_id(issue_id) {
-            Some(run_id) => run_id,
+        let (run_id, worktree_just_created) = match self.current_issue_implementation_id(issue_id) {
+            Some(run_id) => (run_id, false),
             None => {
                 self.set_issue_scheduler_activity(
                     issue_id,
@@ -5158,15 +5260,38 @@ impl AppState {
                     ImplementationActivity::Preparing,
                 )?;
                 let created = self.run_create(&alias_param(request, "issue_id", "plan_id"))?;
-                created
-                    .get("run_id")
-                    .and_then(Value::as_str)
-                    .ok_or("run.create returned no run_id")?
-                    .to_string()
+                (
+                    created
+                        .get("run_id")
+                        .and_then(Value::as_str)
+                        .ok_or("run.create returned no run_id")?
+                        .to_string(),
+                    true,
+                )
             }
         };
 
-        self.ensure_issue_implementation_worktree(issue_id, &run_id)?;
+        if let Some(attempt) = self.runs[&run_id]
+            .recovery
+            .as_ref()
+            .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
+        {
+            return self.set_issue_scheduler_activity(
+                issue_id,
+                None,
+                ImplementationActivity::Blocked {
+                    stage_id: attempt.requested_stage_id.clone(),
+                    reason: self.runs[&run_id]
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| format!("verified recovery {} is running", attempt.id)),
+                },
+            );
+        }
+
+        if !worktree_just_created {
+            self.ensure_issue_implementation_worktree(issue_id, &run_id)?;
+        }
 
         match intent {
             ImplementationIntent::Stage(stage_id) => {
@@ -5305,26 +5430,14 @@ impl AppState {
                     .find(|project| project.id == project_id)
                     .map(|project| project.repo_path.clone())
                     .ok_or("unknown project_id")?;
-                let catalog = issue
-                    .stages
-                    .iter()
-                    .enumerate()
-                    .map(|(index, stage)| {
-                        format!(
-                            "{}. {} — {} — {:?}",
-                            index + 1,
-                            stage.id,
-                            stage.path,
-                            stage.state
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let prompt = format!(
-                    "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {error}\n\nOrdered Issue stage-plan catalog:\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `done` with phase=\"recover\", status=\"completed\", outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, report recovered=false with the same nonce and verified findings.",
-                    active.worktree.branch,
-                    active.worktree.path.display(),
-                    active.worktree.branch,
+                let prompt = recovery_agent_prompt(
+                    &recovery_id,
+                    issue_id,
+                    run_id,
+                    &requested_stage_id,
+                    &active.worktree,
+                    &error,
+                    &issue.stages,
                 );
                 self.pending_agent_turns
                     .push(PendingAgentTurn::for_recovery(
@@ -5332,10 +5445,31 @@ impl AppState {
                         &active,
                         &project_root,
                         prompt,
+                        &issue.thread,
                     ));
                 let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
+                let mut links = vec![
+                    crate::thread::ThreadLink::Implementation {
+                        issue_id: issue_id.to_string(),
+                        implementation_id: run_id.to_string(),
+                    },
+                    crate::thread::ThreadLink::Recovery {
+                        recovery_id: recovery_id.clone(),
+                    },
+                ];
+                if let Some(stage) = issue
+                    .stages
+                    .iter()
+                    .find(|stage| stage.id == requested_stage_id)
+                {
+                    links.push(crate::thread::ThreadLink::IssueStage {
+                        issue_id: issue_id.to_string(),
+                        stage_id: stage.id.clone(),
+                        path: stage.path.clone(),
+                    });
+                }
                 issue.thread.push_event_with_links(
                     crate::thread::ThreadEventKind::RecoveryStarted,
                     Some(format!(
@@ -5343,15 +5477,7 @@ impl AppState {
                     )),
                     None,
                     None,
-                    vec![
-                        crate::thread::ThreadLink::Implementation {
-                            issue_id: issue_id.to_string(),
-                            implementation_id: run_id.to_string(),
-                        },
-                        crate::thread::ThreadLink::Recovery {
-                            recovery_id: recovery_id.clone(),
-                        },
-                    ],
+                    links,
                     started_at,
                 );
                 let (_, issue_persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
@@ -5373,6 +5499,32 @@ impl AppState {
         let Some(run) = self.current_issue_implementation(issue_id) else {
             return Ok(());
         };
+        if let Some(attempt) = run.recovery.as_ref().filter(|attempt| {
+            matches!(
+                attempt.state,
+                crate::run::RecoveryState::Started | crate::run::RecoveryState::Failed
+            )
+        }) {
+            return self.set_issue_scheduler_activity(
+                issue_id,
+                None,
+                ImplementationActivity::Blocked {
+                    stage_id: attempt.requested_stage_id.clone(),
+                    reason: run
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| match attempt.state {
+                            crate::run::RecoveryState::Started => {
+                                format!("verified recovery {} is running", attempt.id)
+                            }
+                            crate::run::RecoveryState::Failed => {
+                                format!("verified recovery {} failed", attempt.id)
+                            }
+                            crate::run::RecoveryState::Succeeded => unreachable!("filtered above"),
+                        }),
+                },
+            );
+        }
         let (intent, activity) = match run.run.state {
             RunState::Review | RunState::Merged => (
                 Some(ImplementationIntent::None),
@@ -5991,17 +6143,33 @@ impl AppState {
         if self.qa_agent {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
+        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         let mut plan = self.take_plan(&source_plan_id)?;
+        let implementation_link = crate::thread::ThreadLink::Implementation {
+            issue_id: source_plan_id.clone(),
+            implementation_id: run_id.clone(),
+        };
+        plan.thread.push_event_with_links(
+            crate::thread::ThreadEventKind::WorktreeCreated,
+            Some(format!(
+                "Created the Issue implementation worktree for {run_id}"
+            )),
+            None,
+            None,
+            vec![
+                implementation_link.clone(),
+                crate::thread::ThreadLink::Worktree { worktree_id },
+            ],
+            now_rfc3339(),
+        );
         plan.thread.push_event_with_links(
             crate::thread::ThreadEventKind::ImplementationStarted,
             Some(format!("Implementation started as {run_id}")),
             None,
             None,
-            vec![crate::thread::ThreadLink::Run {
-                run_id: run_id.clone(),
-            }],
+            vec![implementation_link],
             now_rfc3339(),
         );
         if let Some(run) = self.runs.get(&run_id) {
@@ -6546,12 +6714,13 @@ impl AppState {
             .as_ref()
             .and_then(|issue_id| self.plans.get(issue_id).map(|issue| (issue_id, issue)))
             .map(|(issue_id, issue)| {
-                let mut links = vec![crate::thread::ThreadLink::Run {
-                    run_id: run_id.clone(),
+                let mut links = vec![crate::thread::ThreadLink::Implementation {
+                    issue_id: issue_id.clone(),
+                    implementation_id: run_id.clone(),
                 }];
                 links.extend(issue.stages.iter().map(|stage| {
-                    crate::thread::ThreadLink::PlanStage {
-                        plan_id: issue_id.clone(),
+                    crate::thread::ThreadLink::IssueStage {
+                        issue_id: issue_id.clone(),
                         stage_id: stage.id.clone(),
                         path: stage.path.clone(),
                     }
@@ -6677,6 +6846,7 @@ impl AppState {
         // inspectable. Every Build-owned removal path must decide completion
         // before deleting the evidence it needs to decide it.
         let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
+        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         let result = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_run(&mut active).map_err(err));
@@ -6704,16 +6874,20 @@ impl AppState {
         persisted?;
         if let Some(issue_id) = issue_id {
             let mut issue = self.take_plan(&issue_id)?;
-            let mut links = vec![crate::thread::ThreadLink::Run {
-                run_id: run_id.clone(),
-            }];
+            let mut links = vec![
+                crate::thread::ThreadLink::Implementation {
+                    issue_id: issue_id.clone(),
+                    implementation_id: run_id.clone(),
+                },
+                crate::thread::ThreadLink::Worktree { worktree_id },
+            ];
             links.extend(
                 issue
                     .stages
                     .iter()
                     .filter(|stage| affected_stages.contains(&stage.id))
-                    .map(|stage| crate::thread::ThreadLink::PlanStage {
-                        plan_id: issue_id.clone(),
+                    .map(|stage| crate::thread::ThreadLink::IssueStage {
+                        issue_id: issue_id.clone(),
                         stage_id: stage.id.clone(),
                         path: stage.path.clone(),
                     }),
@@ -7091,6 +7265,7 @@ impl AppState {
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
+            let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
                 Ok(_) => {
                     self.prune_worktree_records(&run_id);
@@ -7115,9 +7290,15 @@ impl AppState {
                         )),
                         None,
                         None,
-                        vec![crate::thread::ThreadLink::Run {
-                            run_id: run_id.clone(),
-                        }],
+                        vec![
+                            crate::thread::ThreadLink::Implementation {
+                                issue_id: issue_id.clone(),
+                                implementation_id: run_id.clone(),
+                            },
+                            crate::thread::ThreadLink::Worktree {
+                                worktree_id: worktree_id.clone(),
+                            },
+                        ],
                         now_rfc3339(),
                     );
                     for stage_id in &affected_stages {
@@ -7128,11 +7309,17 @@ impl AppState {
                                 Some(format!("Stage “{}” is incomplete", stage.title)),
                                 None,
                                 None,
-                                vec![crate::thread::ThreadLink::PlanStage {
-                                    plan_id: issue_id.clone(),
-                                    stage_id: stage.id.clone(),
-                                    path: stage.path.clone(),
-                                }],
+                                vec![
+                                    crate::thread::ThreadLink::IssueStage {
+                                        issue_id: issue_id.clone(),
+                                        stage_id: stage.id.clone(),
+                                        path: stage.path.clone(),
+                                    },
+                                    crate::thread::ThreadLink::Implementation {
+                                        issue_id: issue_id.clone(),
+                                        implementation_id: run_id.clone(),
+                                    },
+                                ],
                                 now_rfc3339(),
                             );
                         }
@@ -8897,6 +9084,42 @@ fn append_plan_stage_announcements(
     }
 }
 
+fn recovery_agent_prompt(
+    recovery_id: &str,
+    issue_id: &str,
+    run_id: &str,
+    requested_stage_id: &str,
+    worktree: &Worktree,
+    restore_error: &str,
+    stages: &[StageDoc],
+) -> String {
+    let catalog = if stages.is_empty() {
+        "- No stage plans exist yet.".to_string()
+    } else {
+        stages
+            .iter()
+            .enumerate()
+            .map(|(index, stage)| {
+                format!(
+                    "{}. {} — {} — {} — {:?}",
+                    index + 1,
+                    stage.id,
+                    stage.title,
+                    stage.path,
+                    stage.state
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {restore_error}\n\nOrdered Issue stage-plan catalog (authoritative order):\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `done` with phase=\"recover\", status=\"completed\", outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, report recovered=false with the same nonce and verified findings.",
+        worktree.branch,
+        worktree.path.display(),
+        worktree.branch,
+    )
+}
+
 fn record_current_stage_started(
     thread: &mut crate::thread::Thread,
     active: &ActiveRun,
@@ -8916,11 +9139,17 @@ fn record_current_stage_started(
         Some(format!("Started plan stage “{}”", stage.title)),
         None,
         None,
-        vec![crate::thread::ThreadLink::IssueStage {
-            issue_id: plan_id,
-            stage_id: stage.id.clone(),
-            path: stage.path.clone(),
-        }],
+        vec![
+            crate::thread::ThreadLink::IssueStage {
+                issue_id: plan_id.clone(),
+                stage_id: stage.id.clone(),
+                path: stage.path.clone(),
+            },
+            crate::thread::ThreadLink::Implementation {
+                issue_id: plan_id,
+                implementation_id: active.run.id.0.clone(),
+            },
+        ],
         now_rfc3339(),
     );
 }
@@ -13649,11 +13878,16 @@ mod tests {
             "{stages:?}"
         );
         let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
-        assert!(issue["result"]["thread"]["items"]
+        let deleted = issue["result"]["thread"]["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["type"] == "event" && item["data"]["event"] == "worktree_deleted"));
+            .find(|item| item["type"] == "event" && item["data"]["event"] == "worktree_deleted")
+            .expect("worktree deletion is journaled");
+        let links = deleted["data"]["links"].as_array().unwrap();
+        assert!(links.iter().any(|link| link["kind"] == "implementation"));
+        assert!(links.iter().any(|link| link["kind"] == "worktree"));
+        assert!(links.iter().any(|link| link["kind"] == "issue_stage"));
     }
 
     #[test]
@@ -13674,9 +13908,13 @@ mod tests {
                 .iter()
                 .any(|item| item["type"] == "event"
                     && item["data"]["event"] == "pushed"
-                    && item["data"]["links"].as_array().is_some_and(|links| links
-                        .iter()
-                        .any(|link| link["kind"] == "run" && link["run_id"] == run_id))),
+                    && item["data"]["links"]
+                        .as_array()
+                        .is_some_and(|links| links
+                            .iter()
+                            .any(|link| link["kind"] == "implementation"
+                                && link["issue_id"] == issue_id
+                                && link["implementation_id"] == run_id))),
             "{issue:?}"
         );
         let before_delete = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
@@ -13751,6 +13989,16 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        let lifecycle = implemented["result"]["thread"]["items"].as_array().unwrap();
+        assert!(lifecycle
+            .iter()
+            .any(|item| item["data"]["event"] == "worktree_created"));
+        assert!(
+            !lifecycle
+                .iter()
+                .any(|item| item["data"]["event"] == "worktree_reused"),
+            "the scheduler must not relabel its newly-created checkout as reused: {lifecycle:?}"
         );
         let issue_diff = state.handle(req("issue.diff", json!({ "issue_id": issue_id })));
         assert_eq!(issue_diff["ok"], true, "{issue_diff:?}");
@@ -13937,12 +14185,32 @@ mod tests {
         assert_eq!(recovery.state, crate::run::RecoveryState::Started);
         assert!(recovery.id.starts_with("recovery-"));
         assert_eq!(recovery.requested_stage_id, "second-half");
-        assert!(state.pending_agent_turns.iter().any(|turn| {
-            turn.owner == run_id
-                && turn.phase == "recover"
-                && turn.cold.contains(&recovery.id)
-                && turn.cold.contains("Ordered Issue stage-plan catalog")
-        }));
+        let recovery_turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == run_id && turn.phase == "recover")
+            .expect("recovery turn is queued");
+        assert!(
+            recovery_turn.cold.contains(&recovery.id),
+            "{}",
+            recovery_turn.cold
+        );
+        assert!(
+            recovery_turn.cold.contains("Build conversation protocol"),
+            "{}",
+            recovery_turn.cold
+        );
+        assert!(recovery_turn.cold.contains("read_unread_messages"));
+        assert!(recovery_turn
+            .cold
+            .contains("Ordered Issue stage-plan catalog"));
+        let catalog = recovery_turn
+            .cold
+            .split("Ordered Issue stage-plan catalog (authoritative order):")
+            .nth(1)
+            .unwrap();
+        assert!(catalog.find("first-half") < catalog.find("second-half"));
+        assert!(recovery_turn.warm.contains("read_unread_messages"));
         assert!(issue_view["result"]["thread"]["items"]
             .as_array()
             .unwrap()
@@ -14032,6 +14300,107 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["data"]["event"] == "recovery_failed"));
+        assert_eq!(
+            issue["result"]["implementation_activity"]["blocked"]["stage_id"], "second-half",
+            "a failed verified recovery must visibly block the requested next stage: {issue:?}"
+        );
+        assert!(
+            issue["result"]["implementation_activity"]["blocked"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("verified recovery failed"))
+        );
+    }
+
+    #[test]
+    fn restart_with_pending_verified_recovery_boots_and_requeues_the_same_primed_attempt() {
+        let (dir, repo) = init_repo();
+        let issue_id;
+        let run_id;
+        let recovery_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let issue = state.handle(req(
+                "issue.create",
+                json!({ "goal": "restart pending recovery" }),
+            ));
+            issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+            for stage_id in ["first-half", "second-half"] {
+                state.handle(req(
+                    "issue.stage_approve",
+                    json!({ "issue_id": issue_id, "stage_id": stage_id }),
+                ));
+            }
+            state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+            let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+            run_id = run_id_of(&run);
+            let branch = state.runs[&run_id].worktree.branch.clone();
+            let worktree = state.runs[&run_id].worktree.path.clone();
+            git_in_dir(
+                &repo,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    "--",
+                    worktree.to_str().unwrap(),
+                ],
+            );
+            git_in_dir(&repo, &["branch", "-D", "--", &branch]);
+            let requested = state.handle(req(
+                "issue.implement_stage",
+                json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+            ));
+            assert_eq!(requested["ok"], false, "{requested:?}");
+            recovery_id = state.runs[&run_id].recovery.as_ref().unwrap().id.clone();
+        }
+
+        let state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_task_store(dir.path().join("store"))
+        .expect("a pending recovery must not abort daemon startup");
+        let recovery = state.runs[&run_id]
+            .recovery
+            .as_ref()
+            .expect("the durable attempt survives restart");
+        assert_eq!(
+            recovery.id, recovery_id,
+            "restart must not mint a new nonce"
+        );
+        assert_eq!(recovery.state, crate::run::RecoveryState::Started);
+        let turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == run_id && turn.phase == "recover")
+            .expect("restart requeues the recovery agent");
+        assert!(
+            turn.cold.contains("Build conversation protocol"),
+            "{}",
+            turn.cold
+        );
+        assert!(turn.cold.contains("read_unread_messages"), "{}", turn.cold);
+        assert!(
+            turn.cold.contains("Ordered Issue stage-plan catalog"),
+            "{}",
+            turn.cold
+        );
+        let catalog = turn
+            .cold
+            .split("Ordered Issue stage-plan catalog (authoritative order):")
+            .nth(1)
+            .unwrap();
+        assert!(catalog.find("first-half") < catalog.find("second-half"));
+        assert_eq!(
+            state.plans[&issue_id].plan.implementation_activity,
+            ImplementationActivity::Blocked {
+                stage_id: "second-half".into(),
+                reason: state.runs[&run_id].last_error.clone().unwrap(),
+            }
+        );
     }
 
     #[test]
@@ -15998,9 +16367,154 @@ mod tests {
             .iter()
             .any(|item| item["data"]["event"] == "stage_approved"));
         assert!(items.iter().any(|item| item["data"]["event"] == "approved"));
-        assert!(items
+        let implementation_started = items
             .iter()
-            .any(|item| item["data"]["event"] == "implementation_started"));
+            .find(|item| item["data"]["event"] == "implementation_started")
+            .expect("implementation start is journaled");
+        assert!(implementation_started["data"]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| link["kind"] == "implementation"));
+        let worktree_created = items
+            .iter()
+            .find(|item| item["data"]["event"] == "worktree_created")
+            .expect("initial checkout creation is journaled");
+        assert!(worktree_created["data"]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| link["kind"] == "implementation"));
+        assert!(worktree_created["data"]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| link["kind"] == "worktree"));
+        assert!(
+            !items
+                .iter()
+                .any(|item| item["data"]["event"] == "worktree_reused"),
+            "a newly created checkout must not immediately be mislabeled as reused: {items:?}"
+        );
+    }
+
+    #[test]
+    fn stage_failure_is_journaled_with_issue_stage_and_implementation_references() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req("issue.create", json!({ "goal": "linked failure" })));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        state.qa_agent = false;
+        let dispatched = state.handle(req(
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Failed,
+                summary: "stage implementation failed".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        let failed = issue["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["data"]["event"] == "stage_failed")
+            .expect("stage failure has a dedicated lifecycle event");
+        let links = failed["data"]["links"].as_array().unwrap();
+        assert!(links.iter().any(|link| {
+            link["kind"] == "issue_stage"
+                && link["issue_id"] == issue_id
+                && link["stage_id"] == "second-half"
+        }));
+        assert!(links.iter().any(|link| {
+            link["kind"] == "implementation"
+                && link["issue_id"] == issue_id
+                && link["implementation_id"] == run_id
+        }));
+    }
+
+    #[test]
+    fn failed_stage_validation_is_journaled_with_canonical_references() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req(
+            "issue.create",
+            json!({ "goal": "linked validation failure" }),
+        ));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        state.qa_agent = false;
+        state.handle(req(
+            "run.stage_dispatch",
+            json!({ "run_id": run_id, "stage_id": "second-half" }),
+        ));
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "built candidate".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Validate,
+                status: DoneStatus::Completed,
+                summary: "validation found defects".into(),
+                outputs: DoneOutputs {
+                    validation: Some(crate::run::ValidationReport {
+                        passed: false,
+                        findings: "required regression test is failing".into(),
+                        notes_for_next_stage: String::new(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        let failed = issue["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["data"]["event"] == "stage_failed"
+                    && item["data"]["summary"] == "required regression test is failing"
+            })
+            .expect("failed validation has a stage lifecycle event");
+        let links = failed["data"]["links"].as_array().unwrap();
+        assert!(links
+            .iter()
+            .any(|link| { link["kind"] == "issue_stage" && link["stage_id"] == "second-half" }));
+        assert!(links.iter().any(|link| {
+            link["kind"] == "implementation" && link["implementation_id"] == run_id
+        }));
     }
 
     #[test]
@@ -16064,6 +16578,15 @@ mod tests {
         assert_eq!(starts[0]["data"]["links"][0]["issue_id"], plan_id);
         assert_eq!(starts[0]["data"]["links"][0]["stage_id"], "first-half");
         assert_eq!(starts[1]["data"]["links"][0]["stage_id"], "second-half");
+        for started in starts {
+            assert!(started["data"]["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(
+                    |link| link["kind"] == "implementation" && link["implementation_id"] == run_id
+                ));
+        }
     }
 
     #[test]

@@ -33,8 +33,8 @@ use crate::orchestrator::{
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
-    CommentAnchor, CommentState, PlanEvent, PlanId, PlanState, StageComment, StageDoc,
-    StageDocState,
+    CommentAnchor, CommentState, ImplementationActivity, ImplementationIntent, PlanEvent, PlanId,
+    PlanState, StageComment, StageDoc, StageDocState,
 };
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
@@ -1204,6 +1204,19 @@ impl AppState {
         for record in runs {
             self.recover_run(record)?;
         }
+        // Issue implementation intent is the scheduler's durable source of
+        // truth. Reconcile it only after every implementation lineage record
+        // has been restored, so an approved waiting stage can resume without
+        // minting a duplicate worktree after a daemon restart.
+        let issue_ids = self
+            .plans
+            .iter()
+            .filter(|(_, issue)| issue.plan.implementation_intent != ImplementationIntent::None)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for issue_id in issue_ids {
+            self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))?;
+        }
         Ok(self)
     }
 
@@ -1426,6 +1439,8 @@ impl AppState {
             base_branch: active.base_branch.clone(),
             state: active.plan.state,
             archived_at: active.plan.archived_at.clone(),
+            implementation_intent: active.plan.implementation_intent.clone(),
+            implementation_activity: active.plan.implementation_activity.clone(),
             worktree_name: worktree.map(|w| w.name.clone()),
             worktree_path: worktree.map(|w| w.path.display().to_string()),
             branch: worktree.map(|w| w.branch.clone()),
@@ -2254,6 +2269,16 @@ impl AppState {
             }
         }
         self.auto_advance_run(run_id);
+        if let Some(issue_id) = self
+            .runs
+            .get(run_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.clone())
+        {
+            if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
+                eprintln!("issue scheduler {issue_id}: {error}");
+            }
+        }
     }
 
     /// Consume a mid-run stage-doc revision's `done`: it writes the revised docs
@@ -4358,10 +4383,154 @@ impl AppState {
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
-        let implementation_id = match self.current_issue_implementation_id(&issue_id) {
-            Some(id) => id,
+        self.arm_issue_scheduler(&issue_id, ImplementationIntent::All)?;
+        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
+            self.block_issue_scheduler(&issue_id, None, &error);
+            return Err(error);
+        }
+        self.issue_view_full(&issue_id)
+    }
+
+    fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
+        let index = issue
+            .stages
+            .iter()
+            .position(|stage| stage.id == stage_id)
+            .ok_or_else(|| format!("unknown stage_id: {stage_id}"))?;
+        if issue.stages[index].state != StageDocState::Approved {
+            return Err(format!("stage {stage_id} is not approved"));
+        }
+        if self.current_issue_implementation_id(&issue_id).is_none() && index != 0 {
+            return Err(format!(
+                "cannot implement stage {stage_id}: no current implementation contains its completed predecessors"
+            ));
+        }
+        self.arm_issue_scheduler(&issue_id, ImplementationIntent::Stage(stage_id.clone()))?;
+        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
+            self.block_issue_scheduler(&issue_id, Some(stage_id), &error);
+            return Err(error);
+        }
+        self.issue_view_full(&issue_id)
+    }
+
+    /// Persist scheduler intent before any worktree/git/agent side effect. The
+    /// Issue record is the recovery journal; run.auto_advance is only the live
+    /// implementation's execution flag.
+    fn arm_issue_scheduler(
+        &mut self,
+        issue_id: &str,
+        intent: ImplementationIntent,
+    ) -> Result<(), String> {
+        let mut issue = self.take_plan(issue_id)?;
+        if issue.plan.state != PlanState::Approved {
+            self.plans.insert(issue_id.to_string(), issue);
+            return Err("only a ready Issue can be implemented".to_string());
+        }
+        issue.plan.implementation_intent = intent;
+        issue.plan.implementation_activity = ImplementationActivity::Preparing;
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        persisted
+    }
+
+    fn set_issue_scheduler_activity(
+        &mut self,
+        issue_id: &str,
+        intent: Option<ImplementationIntent>,
+        activity: ImplementationActivity,
+    ) -> Result<(), String> {
+        let mut issue = self.take_plan(issue_id)?;
+        if let Some(intent) = intent {
+            issue.plan.implementation_intent = intent;
+        }
+        issue.plan.implementation_activity = activity;
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        persisted
+    }
+
+    fn block_issue_scheduler(&mut self, issue_id: &str, stage_id: Option<String>, reason: &str) {
+        let stage_id = stage_id
+            .or_else(|| {
+                self.plans
+                    .get(issue_id)
+                    .and_then(|issue| issue.stages.first())
+                    .map(|stage| stage.id.clone())
+            })
+            .unwrap_or_default();
+        if let Err(error) = self.set_issue_scheduler_activity(
+            issue_id,
+            None,
+            ImplementationActivity::Blocked {
+                stage_id,
+                reason: reason.to_string(),
+            },
+        ) {
+            eprintln!("issue scheduler {issue_id}: could not persist failure: {error}");
+        }
+    }
+
+    /// Reconcile one Issue's durable intent with its implementation lineage.
+    /// This is deliberately idempotent: boot, approval, and completion may all
+    /// call it, but the single-active-writer gate prevents duplicate checkouts.
+    fn advance_issue_scheduler(&mut self, issue_id: &str, request: &Value) -> Result<(), String> {
+        let intent = self
+            .plans
+            .get(issue_id)
+            .ok_or("unknown issue_id")?
+            .plan
+            .implementation_intent
+            .clone();
+        if intent == ImplementationIntent::None {
+            return Ok(());
+        }
+
+        let target_stage = match &intent {
+            ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
+            ImplementationIntent::All => self.plans[issue_id]
+                .stages
+                .iter()
+                .find(|doc| {
+                    self.current_issue_implementation(issue_id)
+                        .and_then(|run| run.stage_progress(&doc.id))
+                        .is_none_or(|progress| {
+                            progress.state != StageProgressState::Validated { passed: true }
+                                || progress.invalidation_reason.is_some()
+                        })
+                })
+                .map(|doc| doc.id.clone()),
+            ImplementationIntent::None => None,
+        };
+        let Some(target_stage) = target_stage else {
+            return self.set_issue_scheduler_activity(
+                issue_id,
+                Some(ImplementationIntent::None),
+                ImplementationActivity::Idle,
+            );
+        };
+        let approved = self.plans[issue_id]
+            .stages
+            .iter()
+            .find(|stage| stage.id == target_stage)
+            .is_some_and(|stage| stage.state == StageDocState::Approved);
+        if !approved {
+            return self.set_issue_scheduler_activity(
+                issue_id,
+                None,
+                ImplementationActivity::WaitingApproval(target_stage),
+            );
+        }
+
+        let run_id = match self.current_issue_implementation_id(issue_id) {
+            Some(run_id) => run_id,
             None => {
-                let created = self.run_create(&alias_param(params, "issue_id", "plan_id"))?;
+                self.set_issue_scheduler_activity(
+                    issue_id,
+                    None,
+                    ImplementationActivity::Preparing,
+                )?;
+                let created = self.run_create(&alias_param(request, "issue_id", "plan_id"))?;
                 created
                     .get("run_id")
                     .and_then(Value::as_str)
@@ -4369,42 +4538,103 @@ impl AppState {
                     .to_string()
             }
         };
-        let mut run_params = params.clone();
-        let object = run_params
-            .as_object_mut()
-            .ok_or("issue params must be an object")?;
-        object.insert("run_id".to_string(), json!(implementation_id));
-        object.insert("enabled".to_string(), json!(true));
-        self.run_set_auto_advance(&run_params)?;
-        self.issue_view_full(&issue_id)
+
+        match intent {
+            ImplementationIntent::Stage(stage_id) => {
+                let already_started = self.runs[&run_id].stage_progress(&stage_id).is_some();
+                if !already_started {
+                    let mut params = request.clone();
+                    let object = params
+                        .as_object_mut()
+                        .ok_or("issue params must be an object")?;
+                    object.insert("run_id".to_string(), json!(run_id));
+                    object.insert("stage_id".to_string(), json!(stage_id));
+                    self.run_stage_dispatch(&params)?;
+                }
+                self.set_issue_scheduler_activity(
+                    issue_id,
+                    Some(ImplementationIntent::None),
+                    ImplementationActivity::Idle,
+                )
+            }
+            ImplementationIntent::All => {
+                let mut params = request.clone();
+                let object = params
+                    .as_object_mut()
+                    .ok_or("issue params must be an object")?;
+                object.insert("run_id".to_string(), json!(run_id.clone()));
+                object.insert("enabled".to_string(), json!(true));
+                self.run_set_auto_advance(&params)?;
+                self.refresh_issue_scheduler_activity(issue_id)
+            }
+            ImplementationIntent::None => Ok(()),
+        }
     }
 
-    fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
-        let issue_id = require_str(params, "issue_id")?;
-        let stage_id = require_str(params, "stage_id")?;
-        if let Some(implementation_id) = self.current_issue_implementation_id(&issue_id) {
-            let mut run_params = params.clone();
-            run_params
-                .as_object_mut()
-                .ok_or("issue params must be an object")?
-                .insert("run_id".to_string(), json!(implementation_id));
-            self.run_stage_dispatch(&run_params)?;
-        } else {
-            let first_stage = self
-                .plans
-                .get(&issue_id)
-                .ok_or("unknown issue_id")?
-                .stages
-                .first()
-                .map(|stage| stage.id.as_str());
-            if first_stage != Some(stage_id.as_str()) {
-                return Err(format!(
-                    "cannot implement stage {stage_id}: no current implementation contains its completed predecessors"
-                ));
-            }
-            self.run_create(&alias_param(params, "issue_id", "plan_id"))?;
+    fn refresh_issue_scheduler_activity(&mut self, issue_id: &str) -> Result<(), String> {
+        let Some(issue) = self.plans.get(issue_id) else {
+            return Err("unknown issue_id".to_string());
+        };
+        if issue.plan.implementation_intent == ImplementationIntent::None {
+            return Ok(());
         }
-        self.issue_view_full(&issue_id)
+        let Some(run) = self.current_issue_implementation(issue_id) else {
+            return Ok(());
+        };
+        let (intent, activity) = match run.run.state {
+            RunState::Review | RunState::Merged => (
+                Some(ImplementationIntent::None),
+                ImplementationActivity::Idle,
+            ),
+            RunState::StageGate => {
+                let next = issue
+                    .stages
+                    .iter()
+                    .find(|doc| {
+                        run.stage_progress(&doc.id).is_none_or(|progress| {
+                            progress.state != StageProgressState::Validated { passed: true }
+                                || progress.invalidation_reason.is_some()
+                        })
+                    })
+                    .map(|doc| (doc.id.clone(), doc.state));
+                match next {
+                    Some((stage_id, StageDocState::Planned)) => {
+                        (None, ImplementationActivity::WaitingApproval(stage_id))
+                    }
+                    Some((stage_id, StageDocState::Approved)) => {
+                        (None, ImplementationActivity::Running(stage_id))
+                    }
+                    None => (
+                        Some(ImplementationIntent::None),
+                        ImplementationActivity::Idle,
+                    ),
+                }
+            }
+            RunState::Building => (
+                None,
+                ImplementationActivity::Running(
+                    run.current_stage_id
+                        .clone()
+                        .unwrap_or_else(|| "implementation".into()),
+                ),
+            ),
+            RunState::Blocked
+            | RunState::Failed
+            | RunState::IdleUnreported
+            | RunState::Interrupted
+            | RunState::Abandoned
+            | RunState::Archived => (
+                None,
+                ImplementationActivity::Blocked {
+                    stage_id: run.current_stage_id.clone().unwrap_or_default(),
+                    reason: run.last_error.clone().unwrap_or_else(|| {
+                        format!("implementation is {}", run_state_str(&run.run.state))
+                    }),
+                },
+            ),
+            RunState::Created => (None, ImplementationActivity::Preparing),
+        };
+        self.set_issue_scheduler_activity(issue_id, intent, activity)
     }
 
     fn issue_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
@@ -4628,6 +4858,17 @@ impl AppState {
             .collect();
         for run_id in waiting_runs {
             self.auto_advance_run(&run_id);
+        }
+        if self
+            .plans
+            .get(&plan_id)
+            .is_some_and(|issue| issue.plan.implementation_intent != ImplementationIntent::None)
+        {
+            let request = json!({ "issue_id": plan_id });
+            if let Err(error) = self.advance_issue_scheduler(&plan_id, &request) {
+                self.block_issue_scheduler(&plan_id, Some(stage_id), &error);
+                return Err(error);
+            }
         }
         Ok(view)
     }
@@ -6073,6 +6314,8 @@ impl AppState {
                 "worktree_path": run.worktree.path.display().to_string(),
             })),
             "implementation_lineage": implementation_lineage,
+            "implementation_intent": active.plan.implementation_intent,
+            "implementation_activity": active.plan.implementation_activity,
             "implementation_complete": implementation_complete,
             "can_archive": implementation_complete && active.plan.archived_at.is_none(),
             "archived_at": active.plan.archived_at,
@@ -12346,6 +12589,64 @@ mod tests {
     }
 
     #[test]
+    fn implement_all_persists_intent_before_stage_one_approval_and_resumes() {
+        let (dir, repo) = init_repo();
+        let issue_id;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let issue = state.handle(req("issue.create", json!({ "goal": "durable all" })));
+            issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+            state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+
+            let waiting = state.handle(req("issue.implement_all", json!({ "issue_id": issue_id })));
+            assert_eq!(waiting["ok"], true, "{waiting:?}");
+            assert!(waiting["result"]["current_implementation"].is_null());
+            assert_eq!(waiting["result"]["implementation_intent"], "all");
+            assert_eq!(
+                waiting["result"]["implementation_activity"],
+                json!({ "waiting_approval": "first-half" })
+            );
+        }
+
+        // The intent is durable even though no worktree/run existed yet.
+        let mut state = qa_state(&repo, dir.path());
+        let restored = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(restored["result"]["implementation_intent"], "all");
+        assert_eq!(
+            restored["result"]["implementation_activity"],
+            json!({ "waiting_approval": "first-half" })
+        );
+
+        let first = state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(first["ok"], true, "{first:?}");
+        let waiting = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            waiting["result"]["current_implementation"]["state"],
+            "stage_gate"
+        );
+        assert_eq!(
+            waiting["result"]["implementation_activity"],
+            json!({ "waiting_approval": "second-half" })
+        );
+
+        let second = state.handle(req(
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        assert_eq!(second["ok"], true, "{second:?}");
+        let completed = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            completed["result"]["current_implementation"]["state"],
+            "review"
+        );
+        assert_eq!(completed["result"]["implementation_intent"], "none");
+        assert_eq!(completed["result"]["implementation_activity"], "idle");
+    }
+
+    #[test]
     fn implement_all_resumes_when_the_waiting_stage_plan_is_approved() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -15759,6 +16060,8 @@ mod tests {
             base_branch: "main".into(),
             state: PlanState::Drafting,
             archived_at: None,
+            implementation_intent: crate::plan::ImplementationIntent::None,
+            implementation_activity: crate::plan::ImplementationActivity::Idle,
             worktree_name: Some(id.into()),
             worktree_path: Some(worktree.display().to_string()),
             branch: Some(format!("plan/{id}")),

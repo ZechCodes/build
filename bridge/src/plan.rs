@@ -330,8 +330,33 @@ pub struct StageComment {
     pub agent_reply: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationIntent {
+    #[default]
+    None,
+    Stage(String),
+    All,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationActivity {
+    #[default]
+    Idle,
+    Preparing,
+    Running(String),
+    WaitingApproval(String),
+    Blocked {
+        stage_id: String,
+        reason: String,
+    },
+}
+
 /// A plan: identity, goal, and current lifecycle state. Stage docs, comments,
-/// and store bookkeeping attach in the persistence slice.
+/// and store bookkeeping attach in the persistence slice. On the canonical
+/// wire this is the Issue aggregate; the type name remains for disk/API
+/// compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub id: PlanId,
@@ -341,6 +366,10 @@ pub struct Plan {
     /// never discards canonical docs or linked run history.
     #[serde(default)]
     pub archived_at: Option<String>,
+    #[serde(default)]
+    pub implementation_intent: ImplementationIntent,
+    #[serde(default)]
+    pub implementation_activity: ImplementationActivity,
 }
 
 impl Plan {
@@ -351,6 +380,8 @@ impl Plan {
             goal: goal.into(),
             state: PlanState::Created,
             archived_at: None,
+            implementation_intent: ImplementationIntent::None,
+            implementation_activity: ImplementationActivity::Idle,
         }
     }
 

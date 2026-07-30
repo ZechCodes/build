@@ -163,6 +163,10 @@ pub struct PersistedPlan {
     /// lifecycle and filing are independent, and canonical docs remain live.
     #[serde(default)]
     pub archived_at: Option<String>,
+    #[serde(default)]
+    pub implementation_intent: crate::plan::ImplementationIntent,
+    #[serde(default)]
+    pub implementation_activity: crate::plan::ImplementationActivity,
     /// The disposable planning worktree, while one is alive (kept warm through
     /// the notes/revision loop). `None` once torn down (approve/abandon) or
     /// before one exists — the store docs are canonical either way.
@@ -1022,6 +1026,8 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         base_branch: task.base_branch.clone(),
         state: migrated_plan_state(task, past_planning),
         archived_at: None,
+        implementation_intent: crate::plan::ImplementationIntent::None,
+        implementation_activity: crate::plan::ImplementationActivity::Idle,
         worktree_name,
         worktree_path,
         branch,
@@ -1655,6 +1661,8 @@ mod tests {
             base_branch: "main".into(),
             state,
             archived_at: None,
+            implementation_intent: crate::plan::ImplementationIntent::None,
+            implementation_activity: crate::plan::ImplementationActivity::Idle,
             worktree_name: Some("plan-greeting".into()),
             worktree_path: Some("/home/u/.build/worktrees/plan-greeting".into()),
             branch: Some("plan/greeting".into()),

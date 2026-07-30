@@ -161,7 +161,7 @@ describe("mountArchiveTab", () => {
       name: "plan",
       projectId: "project-1",
       id: "plan-1",
-      tab: "review",
+      tab: "conversation",
     });
     control.dispose();
   });

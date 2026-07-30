@@ -124,8 +124,13 @@ export async function openNewIssue({ projectId } = {}) {
     };
     $("#scrim").classList.remove("show");
     try {
-      const plan = await App.call("plan.create", params);
-      go({ name: "plan", projectId: plan.project_id || params.project_id, id: plan.plan_id, tab: "review" });
+      const issue = await App.call("issue.create", params);
+      go({
+        name: "plan",
+        projectId: issue.project_id || params.project_id,
+        id: issue.issue_id || issue.plan_id,
+        tab: "conversation",
+      });
     } catch (e) {
       notifyError("Couldn't file the issue", e.message);
     }

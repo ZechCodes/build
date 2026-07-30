@@ -5,7 +5,6 @@ import {
   mergeFailureReason,
   bannerText,
   planDeletable,
-  planAbandonable,
   canImplement,
   implementBlockReason,
   defaultRunTab,
@@ -14,7 +13,6 @@ import {
   abandonConfirm,
   deleteRunConfirm,
   deletePlanConfirm,
-  abandonPlanConfirm,
   approvePlanConfirm,
   implementConfirm,
   planBackTarget,
@@ -53,18 +51,8 @@ describe("plan removal actions match the bridge contract", () => {
     for (const s of LIVE_PLAN_STATES) expect(planDeletable(s)).toBe(false);
   });
 
-  it("plan abandon is offered for every non-terminal state", () => {
-    for (const s of LIVE_PLAN_STATES) expect(planAbandonable(s)).toBe(true);
-    expect(planAbandonable("abandoned")).toBe(false);
-  });
-
-  it("plan delete and abandon are mutually exclusive", () => {
-    for (const s of [...LIVE_PLAN_STATES, "abandoned"]) expect(planDeletable(s)).not.toBe(planAbandonable(s));
-  });
-
-  it("plan abandon is not offered for a missing/unknown state", () => {
-    expect(planAbandonable("")).toBe(false);
-    expect(planAbandonable(undefined)).toBe(false);
+  it("has no live Issue Abandon helper; only historical abandoned records can be deleted", () => {
+    for (const s of LIVE_PLAN_STATES) expect(planDeletable(s)).toBe(false);
   });
 });
 
@@ -128,7 +116,7 @@ describe("Implement availability", () => {
   it("is blocked while a run already implements the plan (single active writer)", () => {
     const plan = { state: "approved", active_run_id: "run-7", stages: approvedFirstStage };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/run/i);
+    expect(implementBlockReason(plan)).toMatch(/implementation/i);
   });
 
   it("is unavailable for a missing plan", () => {
@@ -147,7 +135,7 @@ describe("Implement availability", () => {
     expect(canImplement({ state: "plan_review", active_run_id: null, stages: [] })).toBe(false);
     expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/approve the plan/i);
     expect(canImplement({ state: "approved", active_run_id: "run-1", stages: [] })).toBe(false);
-    expect(implementBlockReason({ state: "approved", active_run_id: "run-1", stages: [] })).toMatch(/already implementing/i);
+    expect(implementBlockReason({ state: "approved", active_run_id: "run-1", stages: [] })).toMatch(/implementation is already active/i);
   });
 
   it("is unavailable for a plan whose stages array is absent altogether (no gate, but approval still required)", () => {
@@ -157,8 +145,8 @@ describe("Implement availability", () => {
 
 describe("stage-notes routing (which send-notes verb applies)", () => {
   it("routes through the plan while it is still under review", () => {
-    expect(stageNotesTarget({ state: "plan_review", plan_id: "pl-1", active_run_id: null })).toEqual({
-      method: "plan.stage_send_notes",
+    expect(stageNotesTarget({ state: "plan_review", issue_id: "pl-1", plan_id: "pl-1", active_run_id: null })).toEqual({
+      method: "issue.stage_revise",
       entityId: "pl-1",
     });
   });
@@ -303,19 +291,10 @@ describe("run/plan removal confirmation plans", () => {
 
   it("deleting a plan removes the record (danger)", () => {
     expect(deletePlanConfirm()).toEqual({
-      title: "Delete this plan?",
-      actions: ["Remove the plan record permanently"],
+      title: "Delete this issue?",
+      actions: ["Remove the Issue record and stage plans permanently"],
       confirmLabel: "Delete",
       danger: true,
-    });
-  });
-
-  it("abandoning a plan removes the planning worktree but keeps the plan as history", () => {
-    expect(abandonPlanConfirm()).toEqual({
-      title: "Abandon this plan?",
-      actions: ["Remove the planning worktree", "Keep the plan as history"],
-      confirmLabel: "Abandon",
-      danger: false,
     });
   });
 });
@@ -323,23 +302,23 @@ describe("run/plan removal confirmation plans", () => {
 describe("plan gate confirmation plans (Approve / Implement)", () => {
   it("approve outlines the worktree teardown and the implement unlock", () => {
     expect(approvePlanConfirm()).toEqual({
-      title: "Approve this plan?",
+      title: "Mark this issue ready?",
       actions: [
-        "The planning worktree is removed — the plan document is already saved",
-        "Implement unlocks: a coding agent can execute this plan",
+        "The planning worktree is removed — the Issue stage plans are already saved",
+        "Implementation unlocks for approved stage plans",
       ],
-      confirmLabel: "Approve plan",
+      confirmLabel: "Mark ready",
       danger: false,
     });
   });
 
   it("implement outlines the worktree, the agent session, and the notification", () => {
     expect(implementConfirm({ base: "main" })).toEqual({
-      title: "Implement this plan?",
-      intro: "A fresh agent session will execute this plan.",
+      title: "Implement this issue?",
+      intro: "A fresh agent session will execute the approved stage plans.",
       actions: [
         "Create a worktree on a new branch off main",
-        "Start a coding agent session running the plan",
+        "Start a coding agent session for the approved stage plans",
         "You'll be notified when it's ready to review",
       ],
       confirmLabel: "Implement",

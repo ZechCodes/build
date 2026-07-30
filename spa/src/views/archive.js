@@ -151,7 +151,7 @@ export function mountArchiveTab(host, { projectId, callRpc, navigate, pollMs = 5
   const draw = (payload) => {
     host.innerHTML = archiveHtml(payload);
     host.querySelectorAll("[data-plan]").forEach((card) => {
-      const openPlan = () => navigate({ name: "plan", projectId, id: card.dataset.plan, tab: "review" });
+      const openPlan = () => navigate({ name: "plan", projectId, id: card.dataset.plan, tab: "conversation" });
       card.onclick = openPlan;
       card.onkeydown = (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;

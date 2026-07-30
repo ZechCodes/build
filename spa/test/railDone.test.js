@@ -71,11 +71,11 @@ describe("worktree Done action matrix", () => {
 describe("rail Done confirmations", () => {
   it("explains that archiving moves the plan and docs to Project Archive", () => {
     expect(planArchiveConfirm()).toMatchObject({
-      title: "Archive this plan?",
-      confirmLabel: "Archive plan",
+      title: "Archive this issue?",
+      confirmLabel: "Archive issue",
       danger: false,
     });
-    expect(planArchiveConfirm().actions.join(" ")).toContain("plan and its documents to Project Archive");
+    expect(planArchiveConfirm().actions.join(" ")).toContain("Issue and its stage plans to Project Archive");
   });
 
   it("discloses branch preservation and unpushed commits during cleanup", () => {

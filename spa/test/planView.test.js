@@ -94,10 +94,19 @@ describe("planStageBoardHtml", () => {
     expect(planStageBoardHtml({ state: "plan_review" }, { stages: [] })).toContain("No stages yet.");
   });
 
-  it("never shows a run-side control (no run-all, no review banner) — plan side is docs only", () => {
-    const html = planStageBoardHtml({ state: "plan_review" }, allPlanned);
-    expect(html).not.toContain('id="runall"');
-    expect(html).not.toContain("stage-validation");
+  it("joins stage-plan approval and execution and offers Implement all on a ready Issue", () => {
+    const joined = {
+      auto_advance: false,
+      stages: [
+        { id: "s1", title: "Schema", state: "approved", approval: "approved", execution: "complete", start_sha: "base", completion_sha: "abc", publication: "local" },
+        { id: "s2", title: "Backfill", state: "approved", approval: "approved", execution: "pending" },
+      ],
+    };
+    const html = planStageBoardHtml({ state: "approved" }, joined);
+    expect(html).toContain('id="implementall"');
+    expect(html).toContain("COMPLETE");
+    expect(html).toContain("abc");
+    expect(html).toContain("local");
   });
 });
 
@@ -127,9 +136,26 @@ describe("plan review layout", () => {
     expect(document.querySelector(".plan-feedback")).toBeNull();
   });
 
-  it("omits the redundant sticky action bar for a settled stage with no actions", () => {
+  it("offers Implement stage for an approved pending stage plan", () => {
     document.body.innerHTML = '<div id="planbody"></div>';
-    const stage = { id: "s1", title: "Schema", state: "approved", open_comments: 0, comments: [] };
+    const stage = { id: "s1", title: "Schema", state: "approved", approval: "approved", execution: "pending", open_comments: 0, comments: [] };
+    renderPlanStages({
+      body: document.querySelector("#planbody"),
+      plan: { issue_id: "p1", plan_id: "p1", state: "approved" },
+      stagesData: { stages: [stage], auto_advance: false },
+      stageDoc: { stage_id: "s1", contents: "# Schema" },
+      stageDocState: "ready",
+      selectedStageId: "s1",
+      callRpc: async () => {},
+      repaint: () => {},
+      onSelectStage: () => {},
+    });
+    expect(document.querySelector("#implementstage")).not.toBeNull();
+  });
+
+  it("offers stable diff for a completed stage", () => {
+    document.body.innerHTML = '<div id="planbody"></div>';
+    const stage = { id: "s1", title: "Schema", state: "approved", approval: "approved", execution: "complete", start_sha: "base", completion_sha: "abc", open_comments: 0, comments: [] };
     renderPlanStages({
       body: document.querySelector("#planbody"),
       plan: { plan_id: "p1", state: "plan_review" },
@@ -141,8 +167,7 @@ describe("plan review layout", () => {
       repaint: () => {},
       onSelectStage: () => {},
     });
-    expect(document.querySelector(".actionbar")).toBeNull();
-    expect(document.body.textContent).not.toContain("stage approved");
+    expect(document.querySelector("#stagediff")).not.toBeNull();
   });
 });
 
@@ -155,7 +180,7 @@ describe("docErrorPaneHtml (doc-read Retry)", () => {
     expect(html).toContain('class="plan-empty warn"');
     expect(html).toContain('id="docretry"');
     expect(html).toContain("Retry");
-    expect(html).toContain("the plan document");
+    expect(html).toContain("the stage plan document");
     expect(html).not.toContain("Reopen");
   });
 
@@ -192,7 +217,7 @@ describe("Implement availability text (plan cockpit footer)", () => {
 
   it("explains a run already in progress", () => {
     const plan = { state: "approved", active_run_id: "run-9", stages: readyStages };
-    expect(implementBlockReason(plan)).toMatch(/already implementing/i);
+    expect(implementBlockReason(plan)).toMatch(/implementation is already active/i);
   });
 
   // Single-doc plans (and migrated legacy single-plan tasks) carry an EMPTY
@@ -214,7 +239,7 @@ describe("Implement availability text (plan cockpit footer)", () => {
   it("still blocks a single-doc plan that already has a run", () => {
     const plan = { state: "approved", active_run_id: "run-3", stages: [] };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/already implementing/i);
+    expect(implementBlockReason(plan)).toMatch(/implementation is already active/i);
   });
 
   // A migrated plan whose canonical docs are gone can never be materialized —

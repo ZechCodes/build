@@ -9,10 +9,10 @@ const plural = (count, singular, pluralForm = `${singular}s`) => `${count} ${cou
 
 export function planArchiveConfirm() {
   return {
-    title: "Archive this plan?",
-    intro: "This closes the plan without deleting its artifacts.",
-    actions: ["Move the plan and its documents to Project Archive"],
-    confirmLabel: "Archive plan",
+    title: "Archive this issue?",
+    intro: "This archives the Issue without deleting its stage plans or implementation lineage.",
+    actions: ["Move the Issue and its stage plans to Project Archive"],
+    confirmLabel: "Archive issue",
     danger: false,
   };
 }

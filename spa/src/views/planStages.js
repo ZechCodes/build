@@ -17,7 +17,7 @@ import { STAGE_LABEL, stageChipClass, commentCard, headingPathFor, bindAction } 
 // (a migrated plan predating canonical storage, its worktree pruned). Shared by
 // the single-doc pane (plan.js) so both surfaces say the same thing.
 export const DOCS_UNAVAILABLE =
-  "This plan's documents are unavailable — they predate canonical doc storage and their worktree is gone.";
+  "This Issue's stage plans are unavailable — they predate canonical doc storage and their worktree is gone.";
 import { stageNotesTarget } from "../core/taskActions.js";
 import { watchSelection } from "../selectWatch.js";
 import { showCommentPop } from "../commentPop.js";
@@ -39,6 +39,18 @@ export function planStageActionBusy() {
 let stageSelDispose = null;
 
 const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "");
+const EXECUTION_LABEL = {
+  pending: "PENDING",
+  building: "BUILDING",
+  built: "BUILT",
+  validating: "VALIDATING",
+  validation_failed: "VALIDATION FAILED",
+  complete: "COMPLETE",
+  legacy_unpinned: "COMPLETE · DIFF UNAVAILABLE",
+  blocked: "BLOCKED",
+  failed: "FAILED",
+  incomplete: "INCOMPLETE",
+};
 
 /** The doc-read error pane, with an inline Retry that clears the read latch and
  *  refetches (W15) — replacing the old "Reopen the plan/stage to retry" copy.
@@ -48,7 +60,7 @@ const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "
 export function docErrorPaneHtml(kind) {
   const isStage = kind === "stage";
   const buttonId = isStage ? "stagedocretry" : "docretry";
-  const what = isStage ? "this stage document" : "the plan document";
+  const what = isStage ? "this stage document" : "the stage plan document";
   return `<div class="plan-empty warn">Couldn't load ${what}. <button class="btn mini" id="${buttonId}">Retry</button></div>`;
 }
 
@@ -64,19 +76,29 @@ export function planStageBoardHtml(plan, stagesData) {
   const rows = stages
     .map((s, i) => {
       const num = String(i + 1).padStart(2, "0");
+      const approval = s.approval || s.state;
+      const execution = s.execution || "pending";
+      const boundary = s.completion_sha
+        ? `<div class="stagesummary mono">${esc(s.start_sha || "?")}..${esc(s.completion_sha)} · ${esc(s.publication || "local")}</div>`
+        : "";
       return `<div class="stagerow" data-stage="${esc(s.id)}">
         <span class="stagenum">${num}</span>
         <div class="stagemain">
           <div class="stagetop"><span class="stagetitle">${esc(s.title)}</span>
-            <span class="chip stagechip ${stageChipClass(s.state)}">${STAGE_LABEL[s.state] || s.state}</span>
+            <span class="chip stagechip ${stageChipClass(approval)}">${STAGE_LABEL[approval] || approval}</span>
+            <span class="chip stagechip ${stageChipClass(execution)}">${EXECUTION_LABEL[execution] || execution}</span>
             ${commentBadge(s.open_comments)}</div>
           ${s.summary ? `<div class="stagesummary">${esc(s.summary)}</div>` : ""}
+          ${boundary}
         </div></div>`;
     })
     .join("");
+  const ready = plan.state === "approved";
+  const waiting = !!stagesData.auto_advance && stages.some((stage) => (stage.approval || stage.state) !== "approved" && stage.execution !== "complete");
   return `
     <div class="stagehead">
-      ${allPlanned ? `<button class="btn mini" id="approveall">Approve all stages</button>` : ""}
+      ${allPlanned ? `<button class="btn mini" id="approveall">Approve all stage plans</button>` : ""}
+      ${ready && stages.length ? `<button class="btn primary mini" id="implementall" ${waiting ? "disabled" : ""}>${waiting ? "Waiting for stage-plan approval" : "Implement all"}</button>` : ""}
       <span class="hint" id="stageshint"></span>
     </div>
     <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>`;
@@ -98,7 +120,7 @@ export function renderPlanStages(ctx) {
     x.onclick = async (e) => {
       e.stopPropagation();
       try {
-        await ctx.callRpc("plan.comment_delete", { plan_id: ctx.plan.plan_id, comment_id: x.dataset.del });
+        await ctx.callRpc("issue.comment_delete", { issue_id: ctx.plan.plan_id, comment_id: x.dataset.del });
         ctx.repaint();
       } catch {
         /* the poll re-syncs */
@@ -120,13 +142,21 @@ function renderStageList(ctx) {
   const stages = stagesData.stages || [];
   body.innerHTML = planStageBoardHtml(plan, stagesData);
 
+  const implementAll = body.querySelector("#implementall");
+  if (implementAll && !implementAll.disabled) {
+    bindAction(implementAll, "starting…", async () => {
+      await callRpc("issue.implement_all", { issue_id: plan.issue_id || plan.plan_id });
+      repaint();
+    });
+  }
+
   const approveAll = body.querySelector("#approveall");
   if (approveAll) {
     bindAction(approveAll, "approving…", async () => {
       bulkActionInFlight = true;
       try {
         for (const s of stages.filter((x) => x.state === "planned")) {
-          await callRpc("plan.stage_approve", { plan_id: plan.plan_id, stage_id: s.id });
+          await callRpc("issue.stage_approve", { issue_id: plan.plan_id, stage_id: s.id });
         }
       } finally {
         bulkActionInFlight = false;
@@ -141,7 +171,7 @@ function renderStageList(ctx) {
 
 function renderStageDoc(ctx, stage) {
   const { body, plan, stageDoc, callRpc, repaint, onSelectStage } = ctx;
-  const planId = plan.plan_id;
+  const planId = plan.issue_id || plan.plan_id;
 
   const comments = (stage.comments || []).slice().sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
   const commentsHtml = comments.length ? comments.map(commentCard).join("") : "";
@@ -182,8 +212,8 @@ function renderStageDoc(ctx, stage) {
       const range = sel.getRangeAt(0);
       showCommentPop(range.getBoundingClientRect(), async (commentBody) => {
         try {
-          await callRpc("plan.comment_add", {
-            plan_id: planId,
+          await callRpc("issue.comment_add", {
+            issue_id: planId,
             stage_id: stage.id,
             body: commentBody,
             anchor: { heading_path: headingPathFor(docEl, anchorNode), snippet },
@@ -209,7 +239,7 @@ function renderStageDoc(ctx, stage) {
 // through — the send-notes button is disabled.
 function renderStageActions(ctx, stage) {
   const { body, plan, callRpc, repaint } = ctx;
-  const planId = plan.plan_id;
+  const planId = plan.issue_id || plan.plan_id;
   const actions = body.querySelector("#stageactions");
   const hint = body.querySelector("#stagehint");
   const openCount = stage.open_comments || 0;
@@ -222,30 +252,64 @@ function renderStageActions(ctx, stage) {
     if (!target) {
       // Plan approved but no run to revise through: nothing to send to.
       b.disabled = true;
-      b.title = "Approve settled — start a run to revise this stage.";
+      b.title = "Issue ready — start an implementation to revise this stage.";
       return;
     }
     b.title = viaRun ? "Revises this stage through the run's stage-gate revision." : "";
     bindAction(b, "sending…", async () => {
-      const params = viaRun ? { run_id: target.entityId, stage_id: stage.id } : { plan_id: planId, stage_id: stage.id };
+      const params = viaRun ? { run_id: target.entityId, stage_id: stage.id } : { issue_id: planId, stage_id: stage.id };
       await callRpc(target.method, params);
       repaint();
     });
   };
 
-  if (stage.state === "planned") {
-    actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage</button>`;
+  if ((stage.approval || stage.state) === "planned") {
+    actions.innerHTML = `${sendNotesBtn}<button class="btn primary" id="approvestage">Approve stage plan</button>`;
     bindAction(body.querySelector("#approvestage"), "approving…", async () => {
-      await callRpc("plan.stage_approve", { plan_id: planId, stage_id: stage.id });
+      await callRpc("issue.stage_approve", { issue_id: planId, stage_id: stage.id });
       repaint();
     });
     wireSendNotes();
     return;
   }
-  // approved (or any non-planned doc state): send-notes stays available; the
-  // doc is otherwise settled on the plan side.
-  actions.innerHTML = sendNotesBtn;
-  hint.textContent = viaRun ? "Sends to the run's stage-gate revision." : "";
+  const stages = ctx.stagesData.stages || [];
+  const index = stages.findIndex((candidate) => candidate.id === stage.id);
+  const predecessorsComplete = index >= 0 && stages.slice(0, index).every((candidate) => candidate.execution === "complete");
+  const execution = stage.execution || "pending";
+  const canImplement = plan.state === "approved" && execution === "pending" && predecessorsComplete;
+  const implementButton = canImplement ? '<button class="btn primary" id="implementstage">Implement stage</button>' : "";
+  const diffButton = execution === "complete" && stage.start_sha && stage.completion_sha
+    ? '<button class="btn" id="stagediff">View stable diff</button>'
+    : "";
+  actions.innerHTML = `${sendNotesBtn}${diffButton}${implementButton}`;
+  hint.textContent = !predecessorsComplete
+    ? "Waiting for predecessor stages to complete."
+    : ["building", "built", "validating"].includes(execution)
+      ? "Agent is working on this stage."
+      : execution === "validation_failed"
+        ? "Validation failed — send the stage back to fix."
+        : viaRun ? "Sends to the implementation's stage-plan revision." : "";
   wireSendNotes();
-  if (!sendNotesBtn && !hint.textContent) body.querySelector(".actionbar")?.remove();
+  const implement = body.querySelector("#implementstage");
+  if (implement) {
+    bindAction(implement, "starting…", async () => {
+      await callRpc("issue.implement_stage", { issue_id: planId, stage_id: stage.id });
+      repaint();
+    });
+  }
+  const stableDiff = body.querySelector("#stagediff");
+  if (stableDiff) {
+    bindAction(stableDiff, "loading…", async () => {
+      const diff = await callRpc("issue.stage_diff", { issue_id: planId, stage_id: stage.id });
+      let pane = body.querySelector("#stagediffpane");
+      if (!pane) {
+        pane = document.createElement("pre");
+        pane.id = "stagediffpane";
+        pane.className = "fsrc";
+        body.querySelector("#stagedoc")?.after(pane);
+      }
+      pane.textContent = diff.status === "available" ? diff.patch || "No changes." : diff.reason || "Stable diff unavailable.";
+    });
+  }
+  if (!actions.innerHTML && !hint.textContent) body.querySelector(".actionbar")?.remove();
 }

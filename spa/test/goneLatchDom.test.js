@@ -49,9 +49,9 @@ describe("gone-latch (DOM)", () => {
     expect(root.textContent).toContain("Back to notifications"); // no project learned
 
     // The latch freezes the view: later ticks fetch nothing and never repaint.
-    const fetchesAtLatch = calls.filter((m) => m === "plan.get").length;
+    const fetchesAtLatch = calls.filter((m) => m === "issue.get").length;
     await vi.advanceTimersByTimeAsync(5000);
-    expect(calls.filter((m) => m === "plan.get").length).toBe(fetchesAtLatch);
+    expect(calls.filter((m) => m === "issue.get").length).toBe(fetchesAtLatch);
     expect(root.textContent).toContain("This plan no longer exists");
 
     document.getElementById("goneback").click();
@@ -87,8 +87,8 @@ describe("gone-latch (DOM)", () => {
     const root = document.getElementById("root");
     expect(root.textContent).not.toContain("no longer exists");
 
-    const fetchesAtStart = calls.filter((m) => m === "plan.get").length;
+    const fetchesAtStart = calls.filter((m) => m === "issue.get").length;
     await vi.advanceTimersByTimeAsync(3300); // two poll ticks
-    expect(calls.filter((m) => m === "plan.get").length).toBeGreaterThan(fetchesAtStart);
+    expect(calls.filter((m) => m === "issue.get").length).toBeGreaterThan(fetchesAtStart);
   });
 });

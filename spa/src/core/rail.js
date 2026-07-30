@@ -83,7 +83,7 @@ function planEntry(plan) {
     can_archive: !!plan.can_archive,
     archived_at: plan.archived_at || null,
     status: null,
-    route: { name: "plan", projectId: plan.project_id, id: plan.plan_id, tab: "review" },
+    route: { name: "plan", projectId: plan.project_id, id: plan.issue_id || plan.plan_id, tab: "conversation" },
   };
 }
 

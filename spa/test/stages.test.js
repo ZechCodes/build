@@ -91,7 +91,7 @@ describe("stageBoardHtml — deleted plan fallback", () => {
 
   it("shows a note that the plan was deleted when planDeleted is set", () => {
     const html = stageBoardHtml({ state: "merged" }, { stages, auto_advance: false, planDeleted: true });
-    expect(html).toContain("The plan for this run was deleted");
+    expect(html).toContain("The Issue for this implementation was deleted");
     expect(html).toContain('id="stagelist"'); // still a real board the poll can find
   });
 

@@ -26,12 +26,6 @@ export function planDeletable(state) {
   return state === "abandoned";
 }
 
-/** Whether plan.abandon is valid: any non-terminal plan (abandoned is the only
- *  terminal plan state). Abandon is the removal affordance for a live plan. */
-export function planAbandonable(state) {
-  return !!state && state !== "abandoned";
-}
-
 /** Whether the plan's first stage doc is approved — the fine-grained gate that
  *  run dispatch requires on top of the coarse plan approval. Single-doc plans
  *  (and migrated legacy single-plan tasks) carry an EMPTY stages array; the
@@ -63,7 +57,7 @@ export function canImplement(plan) {
 export function implementBlockReason(plan) {
   if (!plan) return "No plan.";
   if (plan.docs_available === false) return "This plan's documents are unavailable, so it can't be implemented.";
-  if (plan.active_run_id) return "A run is already implementing this plan.";
+  if (plan.active_run_id) return "An implementation is already active for this Issue.";
   if (plan.state !== "approved") return "Approve the plan before implementing it.";
   if (!firstStageApproved(plan)) return "Approve the first stage before implementing.";
   return null;
@@ -128,7 +122,7 @@ export function stageNotesTarget(plan) {
   if (plan.state === "approved") {
     return plan.active_run_id ? { method: "run.stage_send_notes", entityId: plan.active_run_id } : null;
   }
-  return { method: "plan.stage_send_notes", entityId: plan.plan_id };
+  return { method: "issue.stage_revise", entityId: plan.issue_id || plan.plan_id };
 }
 
 // ---- Confirmation plans (the modal-confirm step outlines) --------------------
@@ -200,21 +194,10 @@ export function deleteRunConfirm() {
 /** The confirmation plan for plan.delete (removes the abandoned plan's record). */
 export function deletePlanConfirm() {
   return {
-    title: "Delete this plan?",
-    actions: ["Remove the plan record permanently"],
+    title: "Delete this issue?",
+    actions: ["Remove the Issue record and stage plans permanently"],
     confirmLabel: "Delete",
     danger: true,
-  };
-}
-
-/** The confirmation plan for plan.abandon: the planning worktree goes, the plan
- *  document is store-canonical and stays as history — so not a danger verb. */
-export function abandonPlanConfirm() {
-  return {
-    title: "Abandon this plan?",
-    actions: ["Remove the planning worktree", "Keep the plan as history"],
-    confirmLabel: "Abandon",
-    danger: false,
   };
 }
 
@@ -222,12 +205,12 @@ export function abandonPlanConfirm() {
  *  one: the outline frames what approval unlocks. */
 export function approvePlanConfirm() {
   return {
-    title: "Approve this plan?",
+    title: "Mark this issue ready?",
     actions: [
-      "The planning worktree is removed — the plan document is already saved",
-      "Implement unlocks: a coding agent can execute this plan",
+      "The planning worktree is removed — the Issue stage plans are already saved",
+      "Implementation unlocks for approved stage plans",
     ],
-    confirmLabel: "Approve plan",
+    confirmLabel: "Mark ready",
     danger: false,
   };
 }
@@ -236,11 +219,11 @@ export function approvePlanConfirm() {
  *  `base` may be a placeholder like "the base branch". */
 export function implementConfirm({ base }) {
   return {
-    title: "Implement this plan?",
-    intro: "A fresh agent session will execute this plan.",
+    title: "Implement this issue?",
+    intro: "A fresh agent session will execute the approved stage plans.",
     actions: [
       `Create a worktree on a new branch off ${base}`,
-      "Start a coding agent session running the plan",
+      "Start a coding agent session for the approved stage plans",
       "You'll be notified when it's ready to review",
     ],
     confirmLabel: "Implement",

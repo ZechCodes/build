@@ -234,7 +234,7 @@ export function stageBoardHtml(run, stagesData) {
   // The owning plan was deleted (legal once the run is terminal): the doc titles
   // and comments are gone, so the board falls back to the run's own progress.
   const deletedNote = stagesData.planDeleted
-    ? `<div class="empty stagenote">The plan for this run was deleted — showing the run's own stage progress.</div>`
+    ? `<div class="empty stagenote">The Issue for this implementation was deleted — showing the run's own stage progress.</div>`
     : "";
 
   return `

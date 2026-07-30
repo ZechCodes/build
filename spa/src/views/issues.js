@@ -70,7 +70,7 @@ export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue,
   const draw = (plans) => {
     host.innerHTML = issuesHtml(bucketIssues(plans, projectId));
     host.querySelectorAll(".issue-row[data-plan]").forEach((row) => {
-      row.onclick = () => navigate({ name: "plan", projectId, id: row.dataset.plan, tab: "stages" });
+      row.onclick = () => navigate({ name: "plan", projectId, id: row.dataset.plan, tab: "conversation" });
     });
     const newIssue = host.querySelector("[data-newissue]");
     if (newIssue && onNewIssue) newIssue.onclick = () => onNewIssue();

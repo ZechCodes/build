@@ -2,7 +2,8 @@
 // #/project/<projectId>       — one project's Inbox,
 // #/project/<projectId>/<tab> — that project's primary checkout tabs.
 // #/project/<projectId>/task/<runId>/<tab>
-// #/project/<projectId>/plan/<planId>/<tab>[/<stage>]
+// #/project/<projectId>/issue/<issueId>/<tab>[/<stage>]
+// Legacy plan routes parse to the same internal surface and canonicalize on write.
 // #/project/<projectId>/worktree/<worktreeId>/<tab>
 // The old top-level task/plan/worktree/main forms remain legacy aliases.
 // Pure mapping both ways; the app shell owns the hashchange listener.
@@ -46,10 +47,10 @@ export function routeFromHash(hash) {
     case "task":
       if (!parts[1]) return { name: "notifications" };
       return { name: "task", id: decodeURIComponent(parts[1]), tab: runTab(parts[2]) };
+    case "issue":
     case "plan": {
       if (!parts[1]) return { name: "notifications" };
-      // An optional 4th segment deep-links one stage's doc — the run's Stages
-      // tab links here so a mid-run revision lands on the exact plan doc.
+      // An optional 4th segment deep-links one stage plan document.
       const route = { name: "plan", id: decodeURIComponent(parts[1]), tab: planTab(parts[2]) };
       if (parts[3]) route.stage = decodeURIComponent(parts[3]);
       return route;
@@ -72,7 +73,7 @@ export function routeFromHash(hash) {
         if (!parts[3]) return { name: "notifications" };
         return { name: "task", projectId, id: decodeURIComponent(parts[3]), tab: runTab(parts[4]) };
       }
-      if (parts[2] === "plan") {
+      if (parts[2] === "issue" || parts[2] === "plan") {
         if (!parts[3]) return { name: "notifications" };
         const route = { name: "plan", projectId, id: decodeURIComponent(parts[3]), tab: planTab(parts[4]) };
         if (parts[5]) route.stage = decodeURIComponent(parts[5]);
@@ -98,7 +99,7 @@ export function hashFromRoute(route) {
     return route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
   }
   if (route.name === "plan") {
-    const leaf = `plan/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
+    const leaf = `issue/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
     const base = route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
     return route.stage ? `${base}/${encodeURIComponent(route.stage)}` : base;
   }

@@ -36,6 +36,17 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/task/r/bogus").tab).toBe("conversation");
   });
 
+  it("parses canonical issue routes and keeps plan routes as legacy aliases", () => {
+    expect(routeFromHash("#/issue/p/conversation")).toEqual({ name: "plan", id: "p", tab: "conversation" });
+    expect(routeFromHash("#/project/proj-1/issue/p/stages/s2")).toEqual({
+      name: "plan", projectId: "proj-1", id: "p", tab: "stages", stage: "s2",
+    });
+    expect(hashFromRoute({ name: "plan", projectId: "proj-1", id: "p", tab: "conversation" }))
+      .toBe("#/project/proj-1/issue/p/conversation");
+    expect(hashFromRoute(routeFromHash("#/project/proj-1/plan/p/review/s2")))
+      .toBe("#/project/proj-1/issue/p/stages/s2");
+  });
+
   it("parses the plan tab vocabulary and keeps review as a stages alias", () => {
     expect(routeFromHash("#/plan/p/conversation").tab).toBe("conversation");
     expect(routeFromHash("#/plan/p/stages").tab).toBe("stages");
@@ -215,7 +226,7 @@ describe("hashFromRoute", () => {
 
   it("round-trips a plan stage deep-link", () => {
     const route = { name: "plan", projectId: "project-1", id: "plan-1", tab: "stages", stage: "second-half" };
-    expect(hashFromRoute(route)).toBe("#/project/project-1/plan/plan-1/stages/second-half");
+    expect(hashFromRoute(route)).toBe("#/project/project-1/issue/plan-1/stages/second-half");
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
   });
 
@@ -226,9 +237,9 @@ describe("hashFromRoute", () => {
 
   it("supplies the default tab when a route omits it", () => {
     expect(hashFromRoute({ name: "task", id: "r" })).toBe("#/task/r/conversation");
-    expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/plan/p/conversation");
+    expect(hashFromRoute({ name: "plan", id: "p" })).toBe("#/issue/p/conversation");
     expect(hashFromRoute({ name: "task", projectId: "p", id: "r" })).toBe("#/project/p/task/r/conversation");
-    expect(hashFromRoute({ name: "plan", projectId: "p", id: "pl" })).toBe("#/project/p/plan/pl/conversation");
+    expect(hashFromRoute({ name: "plan", projectId: "p", id: "pl" })).toBe("#/project/p/issue/pl/conversation");
     expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/project/p/worktree/w/conversation");
     expect(hashFromRoute({ name: "project", projectId: "p" })).toBe("#/project/p");
     expect(hashFromRoute({ name: "project", projectId: "p", tab: "inbox" })).toBe("#/project/p");

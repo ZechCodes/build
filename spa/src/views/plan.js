@@ -19,14 +19,12 @@ import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.
 import {
   canImplement,
   implementBlockReason,
-  planAbandonable,
   planDeletable,
   bannerText,
   shouldFetchPlanDoc,
   planDocPaneState,
   approvePlanConfirm,
   implementConfirm,
-  abandonPlanConfirm,
   deletePlanConfirm,
   planBackTarget,
 } from "../core/taskActions.js";
@@ -37,9 +35,6 @@ import { hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
 import { hashFromRoute } from "../core/router.js";
 
-// Plan states whose planning session accepts a freeform message (the bridge
-// gates the rest): a live drafting session redirects, a parked one resumes.
-const MESSAGEABLE = ["drafting", "blocked", "failed", "idle_unreported", "interrupted"];
 // States that carry no plan-level gate yet (no Approve/Implement) — nothing to
 // approve or implement while the agent is still drafting, and nothing once abandoned.
 const NO_GATE = new Set(["created", "drafting", "abandoned"]);
@@ -167,7 +162,7 @@ export async function renderPlan() {
     if (host) {
       // The plan's own composer ids — passed explicitly so this composer can
       // never collide with another surface's (e.g. the diff composer's).
-      const composer = (p.state === "plan_review" || MESSAGEABLE.includes(p.state)) && {
+      const composer = p.state !== "abandoned" && {
         inputId: "planthreadinput",
         sendId: "planthreadsend",
         hintId: "planthreadhint",
@@ -195,7 +190,7 @@ export async function renderPlan() {
       wireActions(p, host.querySelector("#issuelifecycle"));
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
       wireThreadLinks(host, (link) => {
-        if (link.kind === "plan_stage" && link.stage_id) {
+        if ((link.kind === "issue_stage" || link.kind === "plan_stage") && link.stage_id) {
           selectedStageId = link.stage_id;
           selectTab("stages");
           return;
@@ -210,10 +205,7 @@ export async function renderPlan() {
         writeDraft: (value) => {
           threadDraft = value;
         },
-        onSubmit: (message) =>
-          p.state === "plan_review"
-            ? App.call("plan.send_notes", { plan_id: id, messages: [{ body: message, anchor: null }] })
-            : App.call("plan.message", { plan_id: id, message }),
+        onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
         afterSubmit: () => {
           threadRenderKey = null;
           planKey = null;
@@ -301,7 +293,7 @@ export async function renderPlan() {
     if (!host) return;
     const tabs = [
       { id: "conversation", label: "Conversation" },
-      { id: "stages", label: p && p.stages && p.stages.length ? "Stages" : "Plan" },
+      { id: "stages", label: p && p.stages && p.stages.length ? "Stages" : "Stage plan" },
       ...(agentAvailable(p) ? [{ id: "agent", label: "Agent" }] : []),
     ];
     // The chevron returns to the originating run (if we came from one and it's
@@ -367,7 +359,7 @@ export async function renderPlan() {
       const approve = document.createElement("button");
       approve.className = "btn";
       approve.id = "approveplan";
-      approve.textContent = "Approve plan";
+      approve.textContent = "Mark issue ready";
       actions.appendChild(approve);
       approve.onclick = async () => {
         // A decisive gate: confirm what approval does; cancel leaves the
@@ -377,13 +369,13 @@ export async function renderPlan() {
         approve.disabled = true;
         approve.textContent = "approving…";
         try {
-          await App.call("plan.approve", { plan_id: id });
+          await App.call("issue.approve", { issue_id: id });
           planKey = null;
           stagesKey = null;
           paint();
         } catch (e) {
           approve.disabled = false;
-          approve.textContent = "Approve plan";
+          approve.textContent = "Mark issue ready";
           localError = "error: " + e.message.slice(0, 80);
           showBanner(localError);
         }
@@ -394,12 +386,9 @@ export async function renderPlan() {
       const link = document.createElement("button");
       link.className = "btn primary";
       link.id = "viewrun";
-      link.textContent = "View run →";
-      link.title = "A run is implementing this plan.";
-      // A multi-stage plan's run is driven from its Stages tab (the stage_gate
-      // case); single-doc plans open on Changes.
-      link.onclick = () =>
-        go({ name: "task", projectId: p.project_id, id: p.active_run_id, tab: p.stages && p.stages.length ? "stages" : "changes" });
+      link.textContent = "View implementation stages →";
+      link.title = "This Issue has an active implementation.";
+      link.onclick = () => selectTab("stages");
       actions.appendChild(link);
       return;
     }
@@ -409,7 +398,7 @@ export async function renderPlan() {
       actions.appendChild(host);
       mountSplitButton(host, {
         options: [
-          { id: "implement", label: "Implement", busyLabel: "starting…", description: "Create a worktree and run this plan on its own branch." },
+          { id: "implement", label: "Implement", busyLabel: "starting…", description: "Create or reuse the Issue worktree and implement its approved stage plans." },
           { id: "implement_opts", menuLabel: "Implement with options…", busyLabel: "starting…", description: "Override the base branch, model, or effort for this run." },
         ],
         run: async (optionId) => {
@@ -426,7 +415,9 @@ export async function renderPlan() {
           let run;
           try {
             run = optionId === "implement"
-              ? await App.call("run.create", { plan_id: id })
+              ? p.stages && p.stages.length
+                ? await App.call("issue.implement_all", { issue_id: id })
+                : await App.call("run.create", { issue_id: id })
               : await openImplementOptions(p, await loadModelCatalog());
           } catch (e) {
             // A dispatch error (not the options-sheet/confirm cancel) raises a
@@ -437,7 +428,12 @@ export async function renderPlan() {
             }
             throw e;
           }
-          go({ name: "task", projectId: p.project_id, id: run.run_id, tab: "conversation" });
+          if (run.run_id) go({ name: "task", projectId: p.project_id, id: run.run_id, tab: "conversation" });
+          else {
+            planKey = null;
+            stagesKey = null;
+            paint();
+          }
         },
       });
       return;
@@ -452,38 +448,26 @@ export async function renderPlan() {
     actions.appendChild(disabled);
   };
 
-  // Removal: Delete a terminal (abandoned) plan, or Abandon a live one.
+  // Historical abandoned records remain deletable for compatibility. There is
+  // deliberately no live Issue Abandon affordance.
   const wireRemoval = (p, actions) => {
-    let btn;
-    if (planDeletable(p.state)) {
-      btn = document.createElement("button");
-      btn.className = "btn danger mini";
-      btn.id = "planremove";
-      btn.textContent = "Delete";
-    } else if (planAbandonable(p.state)) {
-      btn = document.createElement("button");
-      btn.className = "btn mini";
-      btn.id = "planremove";
-      btn.textContent = "Abandon";
-    } else {
-      return;
-    }
+    if (!planDeletable(p.state)) return;
+    const btn = document.createElement("button");
+    btn.className = "btn danger mini";
+    btn.id = "planremove";
+    btn.textContent = "Delete";
     actions.appendChild(btn);
-    const deleting = planDeletable(p.state);
     btn.onclick = async () => {
-      // Both removal verbs confirm with their step outline; cancel leaves the
-      // button (and any held error) untouched.
-      if (!(await confirmAction(deleting ? deletePlanConfirm() : abandonPlanConfirm()))) return;
+      if (!(await confirmAction(deletePlanConfirm()))) return;
       localError = null;
       btn.disabled = true;
-      btn.textContent = deleting ? "deleting…" : "abandoning…";
+      btn.textContent = "deleting…";
       try {
-        await App.call(deleting ? "plan.delete" : "plan.abandon", { plan_id: id });
-        if (deleting) goHome();
-        else paint();
+        await App.call("issue.delete", { issue_id: id });
+        goHome();
       } catch (e) {
         btn.disabled = false;
-        btn.textContent = deleting ? "Delete" : "Abandon";
+        btn.textContent = "Delete";
         localError = "error: " + e.message.slice(0, 80);
         showBanner(localError);
       }
@@ -498,7 +482,7 @@ export async function renderPlan() {
       paneState === "ready" ? renderMarkdown(doc)
       : paneState === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
       : paneState === "error" ? docErrorPaneHtml("plan")
-      : '<div class="plan-loading">✦ loading plan document…</div>';
+      : '<div class="plan-loading">✦ loading stage plan document…</div>';
     body.innerHTML = `<div class="plan" id="plandoc">${docHtml}</div>`;
     // A doc-read error latched the pane; the inline Retry clears the latch, forces
     // a refetch, and repaints (W15).
@@ -518,7 +502,7 @@ export async function renderPlan() {
   async function paintStages(p) {
     let stagesData;
     try {
-      stagesData = await App.call("plan.stages", { plan_id: id });
+      stagesData = await App.call("issue.stages", { issue_id: id });
     } catch {
       return; // not readable yet; the poll retries
     }
@@ -527,7 +511,7 @@ export async function renderPlan() {
     let stageDoc = null;
     if (selectedStageId && shouldFetchPlanDoc({ docsAvailable: p.docs_available, errorLatched: stageDocError.has(selectedStageId) })) {
       try {
-        stageDoc = await App.call("plan.stage_doc", { plan_id: id, stage_id: selectedStageId });
+        stageDoc = await App.call("issue.stage_doc", { issue_id: id, stage_id: selectedStageId });
       } catch {
         stageDocError.add(selectedStageId); // latch: render an error state, stop refetching
       }
@@ -585,11 +569,11 @@ export async function renderPlan() {
     if (gone || App.offline) return; // latched gone-state / offline freeze: no repaint
     let p;
     try {
-      p = await App.call("plan.get", { plan_id: id, ...threadCache.cursorParam() });
+      p = await App.call("issue.get", { issue_id: id, ...threadCache.cursorParam() });
     } catch (e) {
       // A deleted plan is permanent: latch the gone-state and stop polling.
       // Every other error is transient — stay silent and let the poll retry.
-      if (/unknown plan_id/.test((e && e.message) || "")) renderGone();
+      if (/unknown (issue_id|plan_id)/.test((e && e.message) || "")) renderGone();
       return;
     }
     // Fold the cursored conversation delta back into a full thread before
@@ -644,7 +628,7 @@ export async function renderPlan() {
     let doc = "";
     if (shouldFetchPlanDoc({ docsAvailable: p.docs_available, errorLatched: singleDocError })) {
       try {
-        doc = (await App.call("plan.doc", { plan_id: id })).contents;
+        doc = (await App.call("issue.doc", { issue_id: id })).contents;
       } catch {
         singleDocError = true; // latch: render an error state, stop refetching
       }

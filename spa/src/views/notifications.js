@@ -34,15 +34,15 @@ function runNotifEvent(t) {
 // the user to move the plan forward.
 function planNotifEvent(p) {
   if (p.state === "plan_review")
-    return { icon: "✦", tone: "", title: "Plan ready to review", sub: p.summary || "The planning agent finished. Review the plan.", action: "Review plan", primary: true };
+    return { icon: "✦", tone: "", title: "Issue ready to review", sub: p.summary || "The planning agent finished. Review the stage plans.", action: "Review issue", primary: true };
   if (p.state === "blocked")
-    return { icon: "▲", tone: "warn", title: "Planning blocked", sub: p.summary || "The planning agent needs your input.", action: "View plan", primary: false };
+    return { icon: "▲", tone: "warn", title: "Planning blocked", sub: p.summary || "The planning agent needs your input.", action: "View issue", primary: false };
   if (p.state === "failed")
-    return { icon: "▲", tone: "warn", title: "Planning failed", sub: p.summary || "Planning did not complete.", action: "View plan", primary: false };
+    return { icon: "▲", tone: "warn", title: "Planning failed", sub: p.summary || "Planning did not complete.", action: "View issue", primary: false };
   if (p.state === "idle_unreported")
-    return { icon: "▲", tone: "warn", title: "Planning idle", sub: p.summary || "The planning session went idle without reporting.", action: "View plan", primary: false };
+    return { icon: "▲", tone: "warn", title: "Planning idle", sub: p.summary || "The planning session went idle without reporting.", action: "View issue", primary: false };
   if (p.state === "interrupted")
-    return { icon: "▲", tone: "warn", title: "Planning interrupted", sub: p.summary || "The planning session was interrupted.", action: "View plan", primary: false };
+    return { icon: "▲", tone: "warn", title: "Planning interrupted", sub: p.summary || "The planning session was interrupted.", action: "View issue", primary: false };
   return null;
 }
 
@@ -90,7 +90,7 @@ export async function renderNotifications() {
       b.onclick = () => {
         const x = byId.get(b.dataset.open);
         if (!x) return;
-        if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "stages" });
+        if (x.kind === "plan") go({ name: "plan", projectId: x.src.project_id, id: x.id, tab: "conversation" });
         else go({ name: "task", projectId: x.src.project_id, id: x.id, tab: defaultRunTab(x.src) });
       };
     });

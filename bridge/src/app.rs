@@ -2558,7 +2558,7 @@ impl AppState {
             "plan.delete" => self.plan_delete(params),
             "plan.archive" => self.plan_archive(params),
             // Run surface (worktree-scoped): keyed by run_id.
-            "run.create" => self.run_create(params),
+            "run.create" => self.run_create(&alias_param(params, "issue_id", "plan_id")),
             "run.get" => self.run_get(params),
             "run.diff" => self.run_diff(params),
             "run.stage_diff" => self.run_stage_diff(params),
@@ -4319,6 +4319,15 @@ impl AppState {
                 object.insert(
                     "validation".to_string(),
                     json!(progress.and_then(|p| p.validation.as_ref())),
+                );
+                object.insert(
+                    "comments".to_string(),
+                    json!(issue
+                        .comments
+                        .iter()
+                        .filter(|comment| comment.stage_id == doc.id)
+                        .map(comment_json)
+                        .collect::<Vec<_>>()),
                 );
                 stage
             })

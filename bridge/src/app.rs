@@ -2524,6 +2524,14 @@ impl AppState {
             "issue.stage_revise" => {
                 self.plan_stage_send_notes(&alias_param(params, "issue_id", "plan_id"))
             }
+            "issue.implement_stage" => self.issue_implement_stage(params),
+            "issue.implement_all" => self.issue_implement_all(params),
+            "issue.set_auto_advance" => self.issue_set_auto_advance(params),
+            "issue.stage_fix" => self.issue_run_action(params, "fix"),
+            "issue.stage_diff" => self.issue_stage_diff(params),
+            "issue.diff" => self.issue_run_action(params, "diff"),
+            "issue.request_changes" => self.issue_run_action(params, "request_changes"),
+            "issue.git_action" => self.issue_run_action(params, "git_action"),
             "issue.comment_add" => {
                 self.plan_comment_add(&alias_param(params, "issue_id", "plan_id"))
             }
@@ -4322,6 +4330,121 @@ impl AppState {
             "auto_advance": implementation.is_some_and(|run| run.auto_advance),
             "stages": stages,
         }))
+    }
+
+    fn current_issue_implementation_id(&self, issue_id: &str) -> Option<String> {
+        self.current_issue_implementation(issue_id)
+            .filter(|run| !run.run.state.is_terminal())
+            .map(|run| run.run.id.0.clone())
+    }
+
+    fn issue_view_full(&self, issue_id: &str) -> Result<Value, String> {
+        let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
+        Ok(self.plan_view(issue_id, issue, ThreadDetail::Full))
+    }
+
+    fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let implementation_id = match self.current_issue_implementation_id(&issue_id) {
+            Some(id) => id,
+            None => {
+                let created = self.run_create(&alias_param(params, "issue_id", "plan_id"))?;
+                created
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .ok_or("run.create returned no run_id")?
+                    .to_string()
+            }
+        };
+        let mut run_params = params.clone();
+        let object = run_params
+            .as_object_mut()
+            .ok_or("issue params must be an object")?;
+        object.insert("run_id".to_string(), json!(implementation_id));
+        object.insert("enabled".to_string(), json!(true));
+        self.run_set_auto_advance(&run_params)?;
+        self.issue_view_full(&issue_id)
+    }
+
+    fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        if let Some(implementation_id) = self.current_issue_implementation_id(&issue_id) {
+            let mut run_params = params.clone();
+            run_params
+                .as_object_mut()
+                .ok_or("issue params must be an object")?
+                .insert("run_id".to_string(), json!(implementation_id));
+            self.run_stage_dispatch(&run_params)?;
+        } else {
+            let first_stage = self
+                .plans
+                .get(&issue_id)
+                .ok_or("unknown issue_id")?
+                .stages
+                .first()
+                .map(|stage| stage.id.as_str());
+            if first_stage != Some(stage_id.as_str()) {
+                return Err(format!(
+                    "cannot implement stage {stage_id}: no current implementation contains its completed predecessors"
+                ));
+            }
+            self.run_create(&alias_param(params, "issue_id", "plan_id"))?;
+        }
+        self.issue_view_full(&issue_id)
+    }
+
+    fn issue_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let run_id = self
+            .current_issue_implementation_id(&issue_id)
+            .ok_or("issue has no active implementation")?;
+        let mut run_params = params.clone();
+        run_params
+            .as_object_mut()
+            .ok_or("issue params must be an object")?
+            .insert("run_id".to_string(), json!(run_id));
+        self.run_set_auto_advance(&run_params)?;
+        self.issue_view_full(&issue_id)
+    }
+
+    fn issue_stage_diff(&self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let run_id = self
+            .current_issue_implementation(&issue_id)
+            .map(|run| run.run.id.0.clone())
+            .ok_or("issue has no implementation lineage")?;
+        let mut run_params = params.clone();
+        run_params
+            .as_object_mut()
+            .ok_or("issue params must be an object")?
+            .insert("run_id".to_string(), json!(run_id));
+        let mut result = self.run_stage_diff(&run_params)?;
+        result
+            .as_object_mut()
+            .expect("run stage diff returns an object")
+            .insert("issue_id".to_string(), json!(issue_id));
+        Ok(result)
+    }
+
+    fn issue_run_action(&mut self, params: &Value, action: &str) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let run_id = self
+            .current_issue_implementation_id(&issue_id)
+            .ok_or("issue has no active implementation")?;
+        let mut run_params = params.clone();
+        run_params
+            .as_object_mut()
+            .ok_or("issue params must be an object")?
+            .insert("run_id".to_string(), json!(run_id));
+        match action {
+            "fix" => self.run_stage_fix(&run_params)?,
+            "diff" => self.run_diff(&run_params)?,
+            "request_changes" => self.run_request_changes(&run_params)?,
+            "git_action" => self.run_git_action(&run_params)?,
+            _ => unreachable!("known issue run action"),
+        };
+        self.issue_view_full(&issue_id)
     }
 
     /// Read the single (non-staged) plan doc from the canonical store — never
@@ -11974,6 +12097,49 @@ mod tests {
         assert_eq!(stages["result"]["issue_id"], issue_id);
         assert_eq!(stages["result"]["plan_id"], issue_id);
         assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn issue_implement_all_runs_sequentially_and_exposes_stable_stage_diff() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req("issue.create", json!({ "goal": "canonical all" })));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        let implemented = state.handle(req("issue.implement_all", json!({ "issue_id": issue_id })));
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert_eq!(
+            implemented["result"]["current_implementation"]["state"],
+            "review"
+        );
+        assert_eq!(
+            implemented["result"]["implementation_lineage"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let diff = state.handle(req(
+            "issue.stage_diff",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        ));
+        assert_eq!(diff["result"]["issue_id"], issue_id);
+        assert_eq!(diff["result"]["status"], "available");
+        assert!(diff["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("result-first-half.txt"));
+        assert!(!diff["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("result-second-half.txt"));
     }
 
     #[test]

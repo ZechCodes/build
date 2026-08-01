@@ -22,6 +22,15 @@ You are in PLAN mode. The goal is:
 
 {goal}
 
+Settle the conversation before you plan. First answer, with `post_thread_message`,
+every question the reviewer has asked — in the goal above and in any unread
+message. Then ask your own: if anything you would have to guess at would change
+how this work splits into stages, post all of those questions at once with
+`post_thread_message` and call the `done` tool with phase=\"plan\",
+status=\"blocked\" and one concise sentence saying you are waiting on answers.
+Write no stage documents until the answers are in — resume planning here once
+they are. Only when nothing is left to ask, plan:
+
 Break the work into sequential stages and write one self-contained markdown plan
 document per stage under `.build/plan/`, named `NN-<stage-id>.md` (`01-`, `02-`, …).
 Also write the manifest `.build/plan/stages.json`: a JSON array, in execution
@@ -374,6 +383,29 @@ mod tests {
         assert!(t
             .plan
             .contains("outputs.plan_path=\".build/plan/stages.json\""));
+    }
+
+    #[test]
+    fn plan_template_settles_questions_before_writing_stages() {
+        let t = Templates::default();
+        let converse = t
+            .plan
+            .find("post_thread_message")
+            .expect("the plan agent reaches the reviewer through the thread");
+        let write_stages = t
+            .plan
+            .find("Break the work into sequential stages")
+            .expect("the stage-writing instructions");
+        assert!(
+            converse < write_stages,
+            "questions are asked and answered before any stage doc is written: {}",
+            t.plan
+        );
+        assert!(
+            t.plan.contains("status=\"blocked\""),
+            "an unanswered question parks the plan instead of being guessed at: {}",
+            t.plan
+        );
     }
 
     #[test]

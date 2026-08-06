@@ -401,6 +401,7 @@ manual `ActiveTask` construction initialize `session_generation: 0`.
 {
   "term_id": "agent:task-3",
   "live": true,
+  "provider": "claude",
   "snapshot": "<b64>",
   "cursor": 4096,
   "cols": 120,
@@ -427,6 +428,11 @@ Behavior, all under one lock:
 
 **`agent.attach` never errors because no session is running** — `live: false`
 with the last (or blank) snapshot is the contract. Only an unknown task errors.
+
+`provider` is the harness the tab's PTY runs (`"claude"` / `"codex"`), and is
+`null` when no agent has ever run in that worktree — the retained screen of an
+exited agent is the only record of which harness painted it, so the Agent tab's
+start offer leads with that provider rather than a guess.
 
 ### 3.3 The agent pump
 

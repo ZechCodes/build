@@ -9906,6 +9906,11 @@ fn term_ack(
 /// resolve server-side to the same canonical root — the tab registry's key — so
 /// a run and the directory it works in reach one agent, not two.
 ///
+/// The reply carries `provider` — the harness the tab runs, or null where no
+/// agent has ever run — because a dead agent's retained screen is the only
+/// record of which harness painted it, and the tab's start-again offer leads
+/// with that one.
+///
 /// **Never errors because no agent is running** — `live: false` with the last
 /// (or a blank) snapshot is the contract, because a tab must still show what
 /// its agent did before it died, and because the Agent tab is a fixture on
@@ -10084,9 +10089,17 @@ fn attach_to_tab(
         tab.screen.set_size(cols, rows);
     }
     tab.screen.register(sender);
+    // Which harness is behind this screen. Null for a shell, and null from the
+    // no-tab-yet branch above — a worktree nothing has run in has no answer, and
+    // the client leads its start offer with its own default there instead.
+    let provider = match tab.role {
+        TabRole::Agent { provider, .. } => Some(provider),
+        TabRole::Shell => None,
+    };
     json!({
         "term_id": tab.wire_id(),
         "live": tab.live,
+        "provider": provider,
         "snapshot": tab.screen.snapshot(),
         "cursor": tab.screen.total,
         "cols": tab.screen.cols,
@@ -20033,6 +20046,76 @@ mod tests {
         assert_eq!(live["ok"], true, "{live:?}");
         assert_eq!(live["result"]["live"], true);
         assert_eq!(live["result"]["term_id"], json!(wire_id));
+    }
+
+    /// An agent that exited leaves a screen and nothing else — and the offer to
+    /// start one again leads with the harness that painted it. Only the tab
+    /// knows which one that was (the entity's model choice can have moved since,
+    /// and most agent-bearing worktrees have no entity at all), so the attach
+    /// says it. A worktree nothing has run in names none: there is nothing to
+    /// report, and the client leads with its own default instead.
+    #[tokio::test]
+    async fn agent_attach_names_the_provider_that_painted_the_screen() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let root = AppState::canonical_root(&repo);
+
+        // Nothing has run here yet: no harness to name.
+        let empty = handler(
+            SessionSender::detached("s1"),
+            req("agent.attach", json!({ "project_id": project_id })),
+        );
+        assert_eq!(empty["ok"], true, "{empty:?}");
+        assert!(
+            empty["result"]["provider"].is_null(),
+            "a worktree with no agent tab has no harness to report: {empty:?}"
+        );
+
+        // One ran, on codex, and died. The retained screen still answers for it.
+        let (tab, rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: "run-codex".to_string(),
+                provider: AgentProvider::Codex,
+            },
+            &HarnessSpec::new("true"),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        let key = TabKey::agent(&root);
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        spawn_tab_pump(&state, key.clone(), rx);
+
+        let ran = handler(
+            SessionSender::detached("s2"),
+            req("agent.attach", json!({ "project_id": project_id })),
+        );
+        assert_eq!(ran["ok"], true, "{ran:?}");
+        assert_eq!(
+            ran["result"]["provider"], "codex",
+            "the retained screen names the harness that painted it: {ran:?}"
+        );
+
+        // A user's shell is not an agent, and reports no harness.
+        let shell = handler(
+            SessionSender::detached("s3"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(shell["ok"], true, "{shell:?}");
+        let attached = handler(
+            SessionSender::detached("s3"),
+            req(
+                "term.attach",
+                json!({ "term_id": shell["result"]["term_id"] }),
+            ),
+        );
+        assert!(
+            attached["result"]["provider"].is_null(),
+            "a login shell runs no harness: {attached:?}"
+        );
     }
 
     /// The Agent tab is a fixture on every worktree surface, so clients mount

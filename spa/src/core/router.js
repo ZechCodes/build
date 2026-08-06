@@ -16,7 +16,7 @@ const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
 // a legacy #/task/<id>/plan (and the merged Diff tab) both land on Changes.
 // The tab bar's right cluster (core/projectCluster.js) rides EVERY project
 // surface, so its tabs are addressable on every one of them.
-const clusterTabs = ["inbox", "archive"];
+const clusterTabs = ["inbox", "issues", "archive"];
 const runTabs = new Set(["conversation", "changes", "files", "agent", "stages", ...clusterTabs]);
 const runTab = (seg) =>
   runTabs.has(seg) || isTermTab(seg) ? seg : seg === "diff" || seg === "plan" ? "changes" : "conversation";
@@ -30,12 +30,11 @@ const planTab = (seg) => (seg === "review" ? "stages" : planTabs.has(seg) ? seg 
 // reachable by URL too, so a reload or a shared link stays on it.
 const worktreeSurfaceTabs = new Set(["conversation", "changes", "files", "agent", ...clusterTabs]);
 const worktreeTab = (seg) => (seg === "diff" ? "changes" : worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "conversation");
-// The project surface IS the primary checkout's worktree surface plus its
-// project-scoped Issues pane. Same vocabulary for the canonical
-// #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias; they differ
-// only in which tab an unknown segment falls back to.
-const projectSurfaceTabs = new Set([...worktreeSurfaceTabs, "issues"]);
-const projectSurfaceTab = (seg, fallback) => (projectSurfaceTabs.has(seg) || isTermTab(seg) ? seg : fallback);
+// The project surface IS the primary checkout's worktree surface — same tabs,
+// same cluster (Issues moved into it, so #/project/<id>/issues still resolves).
+// The canonical #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias
+// differ only in which tab an unknown segment falls back to.
+const projectSurfaceTab = (seg, fallback) => (worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : fallback);
 const mainTab = (seg) => projectSurfaceTab(seg, "changes");
 // The bare project URL is the primary checkout's Conversation — the same landing
 // every other worktree surface has. Inbox keeps its own segment.

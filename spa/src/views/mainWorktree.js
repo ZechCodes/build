@@ -1,7 +1,7 @@
 // One unified project surface. Conversation, Changes, Files, Agent, and user
 // terminals operate on the project's primary checkout — the repo root, adopted
 // as a super-worktree the same way an external worktree is. The project-wide
-// entries (Inbox, Archive, project settings) ride the tab bar's shared right
+// entries (Inbox, Issues, Archive, project settings) ride the tab bar's shared right
 // cluster, as they do on every other project surface.
 
 import { $ } from "../dom.js";
@@ -17,8 +17,6 @@ import { subscribeFeed, primaryRunIdFor } from "../core/taskFeed.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { notifyError } from "../core/notify.js";
-import { mountIssuesTab } from "./issues.js";
-import { openNewIssue } from "../sheets/newIssue.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
 
 /** The project surface's tabs, in row order. The primary checkout is a worktree
@@ -27,7 +25,6 @@ import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions
  *  always reachable, never started by opening them. */
 export const projectSurfaceTabs = (terminalTabs = []) => [
   { id: "conversation", label: "Conversation" },
-  { id: "issues", label: "Issues" },
   { id: "changes", label: "Changes" },
   { id: "files", label: "Files" },
   AGENT_TAB,
@@ -264,19 +261,12 @@ export async function renderMain() {
         onStart: (provider) => startAdoptedAgent(adopting, provider),
       });
     } else if (isProjectClusterTab(id)) {
-      // Inbox and Archive are the right cluster's, on every project surface —
-      // one mounting path, whichever surface the user is standing on.
+      // Inbox, Issues and Archive are the right cluster's, on every project
+      // surface — one mounting path, whichever surface the user is standing on.
       aux = mountProjectClusterTab(body, id, {
         projectId,
         callRpc: (method, params) => App.call(method, params),
         navigate: go,
-      });
-    } else if (id === "issues") {
-      aux = mountIssuesTab(body, {
-        projectId,
-        callRpc: (method, params) => App.call(method, params),
-        navigate: go,
-        onNewIssue: () => openNewIssue({ projectId }),
       });
     } else if (id === "changes") {
       // The git pane owns its own poll; refreshHeader rides its git.status

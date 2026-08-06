@@ -112,7 +112,7 @@ function activeProjectId() {
 }
 
 // The checkout line lights up for the primary checkout's own tabs. The tab bar's
-// right cluster (Inbox, Archive) is project-wide, not the checkout's, so standing
+// right cluster (Inbox, Issues, Archive) is project-wide, not the checkout's, so standing
 // there leaves the line quiet.
 function activeMainProjectId() {
   const route = App.route;

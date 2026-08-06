@@ -1,7 +1,7 @@
 // The run view (a run is a "Task" in the UI): the worktree-scoped surface for
 // implementing a plan. Tabs are Conversation, Stages (multi-stage runs only),
 // Changes (the review diff + request-changes + the merge/git plug), Files, Agent, one per
-// open terminal, and the tab bar's shared right cluster (Inbox, Archive, project settings). The plan doc left the run entirely — a compact reference header
+// open terminal, and the tab bar's shared right cluster (Inbox, Issues, Archive, project settings). The plan doc left the run entirely — a compact reference header
 // links back to the owning plan (an adopted run shows its goal). Live-polled every
 // 1.6s; the aux tabs (Changes/Files/Agent/terminals) own their own bodies and are
 // never repainted by the poll.
@@ -140,7 +140,7 @@ export async function renderTask() {
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
     if (isProjectClusterTab(tabId)) {
       // The project-wide panes behind the tab bar's right cluster: the same
-      // Inbox and Archive every project surface reaches, mounted here.
+      // Inbox, Issues and Archive every project surface reaches, mounted here.
       aux = mountProjectClusterTab(body, tabId, {
         projectId,
         callRpc: (method, params) => App.call(method, params),

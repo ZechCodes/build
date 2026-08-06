@@ -104,9 +104,9 @@ describe("routeFromHash", () => {
   // tab regressed on three of the four surfaces once; this pins all of them.
   it("addresses every tab its surface can select, on every surface", () => {
     const selectableTabsBySurface = {
-      "#/project/p/task/r": ["conversation", "stages", "changes", "files", "agent", "term-1", "inbox", "archive"],
-      "#/project/p/plan/pl": ["conversation", "stages", "agent", "inbox", "archive"],
-      "#/project/p/worktree/w": ["conversation", "changes", "files", "agent", "term-1", "inbox", "archive"],
+      "#/project/p/task/r": ["conversation", "stages", "changes", "files", "agent", "term-1", "inbox", "issues", "archive"],
+      "#/project/p/plan/pl": ["conversation", "stages", "agent", "inbox", "issues", "archive"],
+      "#/project/p/worktree/w": ["conversation", "changes", "files", "agent", "term-1", "inbox", "issues", "archive"],
       "#/project/p": ["conversation", "inbox", "issues", "changes", "files", "archive", "agent", "term-1"],
     };
     for (const [base, tabs] of Object.entries(selectableTabsBySurface)) {
@@ -214,14 +214,18 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "project", projectId: "p1", tab: "agent" })).toBe("#/project/p1/agent");
   });
 
+  // Issues left the project row for the right cluster, so its old URL keeps
+  // resolving on the surface that used to own it.
   it("round-trips the project surface's Issues tab", () => {
     const route = { name: "project", projectId: "p1", tab: "issues" };
     expect(hashFromRoute(route)).toBe("#/project/p1/issues");
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    expect(routeFromHash("#/main/p1/issues")).toEqual(route);
   });
 
-  // Inbox and Archive left the project row for the tab bar's right cluster; the
-  // URLs that named them keep working, on every surface that now carries it.
+  // Inbox, Issues and Archive left the project row for the tab bar's right
+  // cluster; the URLs that named them keep working, on every surface that now
+  // carries it.
   it("keeps the cluster's tabs addressable on every project surface", () => {
     const inbox = { name: "project", projectId: "p1", tab: "inbox" };
     expect(hashFromRoute(inbox)).toBe("#/project/p1/inbox");
@@ -232,6 +236,13 @@ describe("hashFromRoute", () => {
     expect(routeFromHash(hashFromRoute(worktreeInbox))).toEqual(worktreeInbox);
     const planInbox = { name: "plan", projectId: "p1", id: "pl1", tab: "inbox" };
     expect(routeFromHash(hashFromRoute(planInbox))).toEqual(planInbox);
+    for (const route of [
+      { name: "task", projectId: "p1", id: "r1", tab: "issues" },
+      { name: "worktree", projectId: "p1", worktreeId: "w1", tab: "issues" },
+      { name: "plan", projectId: "p1", id: "pl1", tab: "issues" },
+    ]) {
+      expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    }
   });
 
   it("round-trips the project surface's Archive tab", () => {

@@ -1,6 +1,6 @@
 // The external-worktree surface: the same shell every other worktree-shaped
 // surface has — Conversation, Changes, Files, one tab per terminal, and the tab
-// bar's shared right cluster (Inbox, Archive, project settings). Changes is the full
+// bar's shared right cluster (Inbox, Issues, Archive, project settings). Changes is the full
 // git GUI (commit rail, uncommitted staging, history, branch and sync verbs)
 // scoped to this worktree, with the review diff plugged in as its pinned "All
 // changes" entry. Nothing here adopts the worktree except the review plug's own
@@ -188,7 +188,7 @@ export async function renderWorktree() {
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
     if (isProjectClusterTab(tabId)) {
       // The project-wide panes behind the tab bar's right cluster: the same
-      // Inbox and Archive every project surface reaches, mounted here.
+      // Inbox, Issues and Archive every project surface reaches, mounted here.
       aux = mountProjectClusterTab(body, tabId, {
         projectId,
         callRpc: (method, params) => App.call(method, params),

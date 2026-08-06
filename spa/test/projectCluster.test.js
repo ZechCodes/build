@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-// The tab-bar right cluster every project surface carries: the Inbox icon tab
-// and the ⋯ menu (Archive, Project settings). One definition, one body-mounting
-// entry point — the surfaces only route.
+// The tab-bar right cluster every project surface carries: the Inbox and Issues
+// icon tabs and the ⋯ menu (Archive, Project settings). One definition, one
+// body-mounting entry point — the surfaces only route.
 
 import { describe, it, expect, vi } from "vitest";
 import {
@@ -19,8 +19,13 @@ const hostElement = () => {
 };
 
 describe("the project cluster's entries", () => {
-  it("puts Inbox on the row as an icon tab with an accessible name", () => {
-    expect(PROJECT_CLUSTER_TABS).toEqual([{ id: "inbox", glyph: "▤", label: "Inbox" }]);
+  // Every project-scoped pane is an icon tab here; the surfaces' own tabs
+  // (conversation/changes/files/agent/terminals) keep the row's left side.
+  it("puts Inbox and Issues on the row as icon tabs with accessible names", () => {
+    expect(PROJECT_CLUSTER_TABS).toEqual([
+      { id: "inbox", glyph: "▤", label: "Inbox" },
+      { id: "issues", glyph: "◎", label: "Issues" },
+    ]);
   });
 
   it("puts Archive and Project settings behind the ⋯", () => {
@@ -30,6 +35,7 @@ describe("the project cluster's entries", () => {
 
   it("claims only its own tab ids", () => {
     expect(isProjectClusterTab("inbox")).toBe(true);
+    expect(isProjectClusterTab("issues")).toBe(true);
     expect(isProjectClusterTab("archive")).toBe(true);
     expect(["conversation", "changes", "files", "agent", "term-1", undefined].map(isProjectClusterTab)).toEqual([
       false,
@@ -59,6 +65,46 @@ describe("mountProjectClusterTab", () => {
     await Promise.resolve();
     expect(callRpc).toHaveBeenCalledWith("archive.list", { project_id: "proj-1" });
     pane.dispose();
+  });
+
+  it("mounts the project's issues for the issues tab, with the sheet behind its verb", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ plans: [] });
+    const filed = [];
+    const host = hostElement();
+    const pane = mountProjectClusterTab(host, "issues", {
+      projectId: "proj-1",
+      callRpc,
+      navigate: () => {},
+      openNewIssue: (options) => filed.push(options),
+    });
+    expect(pane).not.toBeNull();
+    await Promise.resolve();
+    expect(callRpc).toHaveBeenCalledWith("board.list");
+    host.querySelector("[data-newissue]").click();
+    expect(filed).toEqual([{ projectId: "proj-1" }]);
+    pane.dispose();
+  });
+
+  it("routes an issue row to that issue's surface", async () => {
+    const plan = { plan_id: "pl-1", project_id: "proj-1", goal: "ship it", state: "plan_review", stages: [] };
+    const callRpc = vi.fn().mockResolvedValue({ plans: [plan] });
+    const host = hostElement();
+    const routes = [];
+    const pane = mountProjectClusterTab(host, "issues", {
+      projectId: "proj-1",
+      callRpc,
+      navigate: (route) => routes.push(route),
+    });
+    await Promise.resolve();
+    host.querySelector(".issue-row").click();
+    expect(routes).toEqual([{ name: "plan", projectId: "proj-1", id: "pl-1", tab: "conversation" }]);
+    pane.dispose();
+  });
+
+  it("mounts nothing until the surface has learned its project", () => {
+    for (const tabId of ["inbox", "issues", "archive"]) {
+      expect(mountProjectClusterTab(hostElement(), tabId, { projectId: null, callRpc: vi.fn(), navigate: () => {} })).toBeNull();
+    }
   });
 
   it("returns null for a tab it does not own, so the surface mounts its own", () => {

@@ -16,6 +16,7 @@
 // mounted on `document.body` and positioned from their anchor's box, because the
 // row itself scrolls horizontally and would clip a child popup.
 
+import { ICON_ELLIPSIS } from "./icons.js";
 import { esc } from "./text.js";
 
 /** Pure: one popup item per entry, carrying its id under `data-<key>`. Items are
@@ -34,8 +35,8 @@ function menuItemsHtml(items, key) {
 /** Pure: the tab-row HTML. `tabs` = [{ id, label, closable? }]; `active` is a
  *  tab id; a non-empty `newTabOptions` renders the trailing `+`; `back` =
  *  { title } renders a leading chevron cell (the surface's way out — up to its
- *  project); `rightTabs` = [{ id, glyph, label }] and a non-empty `menu` render
- *  the trailing right cluster. Everything is escaped. */
+ *  project); `rightTabs` = [{ id, icon, label }] and a non-empty `menu` render
+ *  the trailing right cluster. Everything is escaped but the icons. */
 export function tabShellHtml({ tabs, active, newTabOptions, back, rightTabs, menu }) {
   const backCell = back
     ? `<div class="t tback" data-back="1" title="${esc(back.title || "Back")}" aria-label="${esc(back.title || "Back")}">‹</div>`
@@ -53,18 +54,22 @@ export function tabShellHtml({ tabs, active, newTabOptions, back, rightTabs, men
     ? `<div class="t tplus" data-newtab="1" title="New tab" aria-haspopup="menu">+</div>`
     : "";
   // An icon tab IS a tab: same `data-tab`, same active class, same onSelect. Its
-  // label is the tooltip and the accessible name — the glyph is the cell.
+  // label is the tooltip and the accessible name — the icon is the cell.
+  //
+  // `icon` is markup, and the ONLY value on this row that is not escaped: it is
+  // an SVG constant from core/icons.js, resolved at build time and never user
+  // data. Everything around it is escaped as usual.
   const iconCells = (rightTabs || [])
     .map(
       (tab) =>
-        `<div class="t ticon ${tab.id === active ? "active" : ""}" data-tab="${esc(tab.id)}" title="${esc(tab.label)}" aria-label="${esc(tab.label)}">${esc(tab.glyph)}</div>`,
+        `<div class="t ticon ${tab.id === active ? "active" : ""}" data-tab="${esc(tab.id)}" title="${esc(tab.label)}" aria-label="${esc(tab.label)}">${tab.icon || ""}</div>`,
     )
     .join("");
   // An action that opens a tab state (Archive) has no cell of its own: the ⋯ is
   // where it was entered, so the ⋯ is what says you are standing in it.
   const inMenu = (menu || []).some((item) => item.id === active);
   const dots = (menu || []).length
-    ? `<div class="t tmenu${inMenu ? " active" : ""}" data-menu="1" title="More" aria-label="More actions" aria-haspopup="menu">⋯</div>`
+    ? `<div class="t tmenu${inMenu ? " active" : ""}" data-menu="1" title="More" aria-label="More actions" aria-haspopup="menu">${ICON_ELLIPSIS}</div>`
     : "";
   const cluster = iconCells || dots ? `<div class="tabs-right">${iconCells}${dots}</div>` : "";
   return `<div class="tabs">${backCell}${cells}${plus}${cluster}</div>`;

@@ -165,6 +165,15 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
 .surface-bar .tabrow { flex:1 1 auto; min-width:0; overflow-x:auto; }
 .surface-bar .tabs { margin-bottom:0; }
 .projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
+/* A cluster pane (Inbox / Issues / Archive) names itself: its tab is an icon on
+   the row, so the heading is the only place the name is written. The body keeps
+   the pane's own full height, so an empty state still centres in it. */
+.cluster-pane { display:flex; flex-direction:column; min-height:100%; width:100%; max-width:1180px; margin:0 auto; }
+.cluster-pane .board-head { margin-bottom:14px; }
+/* A single 1fr row hands the mounted pane the leftover height as a definite one,
+   which is what an empty state's `height:100%` needs; taller content grows the
+   row instead, and #tabbody scrolls as always. */
+.cluster-pane .cluster-body { flex:1 1 auto; min-height:0; display:grid; grid-template-rows:1fr; }
 .project-inbox { width:100%; max-width:1180px; margin:0 auto; container-type:inline-size; }
 /* Worktrees ride a right-hand column when this pane can spare the width, and
    fall back under the main column when it cannot. Containment is scoped to the
@@ -226,8 +235,12 @@ a.plan-ref:hover { text-decoration:underline; }
    screen, and these entries must stay reachable wherever it has been scrolled. */
 .tabs .tabs-right { display:flex; gap:4px; margin-left:auto; padding-left:12px;
   position:sticky; right:0; background:var(--bg); z-index:1; }
-.tabs .t.ticon { font-size:15px; line-height:1; padding:7px 11px; }
-.tabs .t.tmenu { color:var(--dim); font-weight:600; font-size:15px; line-height:1; padding:7px 11px; }
+/* Lucide SVGs, stroked in currentColor and sized from here: 16px inside 7px of
+   padding matches the 30px box a text tab gets from its own padding + line, so
+   the icons sit on the row's baseline rather than beside it. */
+.tabs .t.ticon { padding:7px 11px; }
+.tabs .t.tmenu { color:var(--dim); padding:7px 11px; }
+.tabs .t.ticon svg, .tabs .t.tmenu svg { width:16px; height:16px; display:block; }
 .tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
 /* plan */
 .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }

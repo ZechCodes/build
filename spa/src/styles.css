@@ -225,10 +225,13 @@ a.plan-ref:hover { text-decoration:underline; }
 .tabs .t.tback:hover { color:var(--accent); }
 /* The right cluster: the project-wide entries every surface carries (Inbox as an
    icon tab, the ⋯ actions menu), pushed to the row's end. */
-.tabs .tabs-right { display:flex; gap:4px; margin-left:auto; padding-left:12px; }
+/* Sticky like the back chevron on the other end: the row scrolls on a narrow
+   screen, and these entries must stay reachable wherever it has been scrolled. */
+.tabs .tabs-right { display:flex; gap:4px; margin-left:auto; padding-left:12px;
+  position:sticky; right:0; background:var(--bg); z-index:1; }
 .tabs .t.ticon { font-size:15px; line-height:1; padding:7px 11px; }
 .tabs .t.tmenu { color:var(--dim); font-weight:600; font-size:15px; line-height:1; padding:7px 11px; }
-.tabs .t.tmenu:hover { color:var(--accent); }
+.tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
 /* plan */
 .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }

@@ -196,6 +196,14 @@ describe("the ⋯ surface menu", () => {
     expect(menu()).toBeNull();
   });
 
+  it("carries the active state for the tab state it opened", () => {
+    const shell = mountWithCluster();
+    shell.controller.setActive("archive");
+    expect(shell.dots().classList.contains("active")).toBe(true);
+    shell.controller.setActive("changes");
+    expect(shell.dots().classList.contains("active")).toBe(false);
+  });
+
   it("is absent when the surface passes no menu", () => {
     const shell = mountWithCluster({ menu: [], onMenuPick: undefined });
     expect(shell.dots()).toBeNull();

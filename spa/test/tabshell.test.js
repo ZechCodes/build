@@ -102,6 +102,15 @@ describe("tabShellHtml right cluster", () => {
     expect((html.match(/ active"/g) || []).length).toBe(1);
   });
 
+  // Archive has no cell of its own — the ⋯ is where it was entered, so the ⋯ is
+  // what says you are standing in it.
+  it("marks the ⋯ active while one of its own tab states is selected", () => {
+    const inMenu = tabShellHtml({ tabs, active: "archive", newTabOptions: [], rightTabs: RIGHT_TABS, menu: MENU_ITEMS });
+    expect(inMenu).toContain('class="t tmenu active"');
+    const elsewhere = tabShellHtml({ tabs, active: "plan", newTabOptions: [], rightTabs: RIGHT_TABS, menu: MENU_ITEMS });
+    expect(elsewhere).toContain('class="t tmenu" data-menu="1"');
+  });
+
   it("omits the cluster when the surface passes neither icon tabs nor a menu", () => {
     const html = tabShellHtml({ tabs, active: "plan", newTabOptions: [] });
     expect(html).not.toContain("tabs-right");

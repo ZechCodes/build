@@ -60,8 +60,11 @@ export function tabShellHtml({ tabs, active, newTabOptions, back, rightTabs, men
         `<div class="t ticon ${tab.id === active ? "active" : ""}" data-tab="${esc(tab.id)}" title="${esc(tab.label)}" aria-label="${esc(tab.label)}">${esc(tab.glyph)}</div>`,
     )
     .join("");
+  // An action that opens a tab state (Archive) has no cell of its own: the ⋯ is
+  // where it was entered, so the ⋯ is what says you are standing in it.
+  const inMenu = (menu || []).some((item) => item.id === active);
   const dots = (menu || []).length
-    ? `<div class="t tmenu" data-menu="1" title="More" aria-label="More actions" aria-haspopup="menu">⋯</div>`
+    ? `<div class="t tmenu${inMenu ? " active" : ""}" data-menu="1" title="More" aria-label="More actions" aria-haspopup="menu">⋯</div>`
     : "";
   const cluster = iconCells || dots ? `<div class="tabs-right">${iconCells}${dots}</div>` : "";
   return `<div class="tabs">${backCell}${cells}${plus}${cluster}</div>`;

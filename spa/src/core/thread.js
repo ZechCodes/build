@@ -295,9 +295,13 @@ export function threadHtml(thread, options = {}) {
     : sourceItems;
   const renderedItems = timelineHtml(items, agentLabel);
   const itemCount = renderedItems.length;
-  return `<section class="review-thread">
+  // The timeline draws the avatar spine, and the messages sit in the gutter it
+  // runs down. With nothing on the record there is neither, so the empty case
+  // says so and the CSS drops both rather than ruling a line beside a sentence.
+  const empty = itemCount ? "" : " is-empty";
+  return `<section class="review-thread${empty}">
     <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
-    <div class="thread-items thread-timeline">${renderedItems.length
+    <div class="thread-items thread-timeline${empty}">${itemCount
       ? renderedItems.join("")
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>

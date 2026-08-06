@@ -111,6 +111,33 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector("#planthreadsend").textContent).toBe("Send");
   });
 
+  // The timeline's avatar spine is drawn by the timeline itself, so a
+  // conversation with nothing in it drew a 2px rule down the side of its own
+  // empty state — a thread stem holding no messages. The empty case marks
+  // itself so the CSS can drop the spine and the gutter it aligns to.
+  it("marks an empty conversation, so its avatar spine is not drawn against nothing", () => {
+    document.body.innerHTML = threadHtml({ items: [] }, { composer: true });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(true);
+    expect(document.querySelector(".review-thread").classList.contains("is-empty")).toBe(true);
+    expect(document.querySelector(".thread-empty").textContent).toBe("No conversation yet.");
+  });
+
+  it("drops the empty mark as soon as there is anything on the record", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "message", data: { role: "user", body: "rename this", created_at: "2026-07-24T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(false);
+    expect(document.querySelector(".review-thread").classList.contains("is-empty")).toBe(false);
+    expect(document.querySelector(".thread-empty")).toBeNull();
+  });
+
+  // An initial message is a rendered item like any other: a plan opened from an
+  // issue has a conversation from its first frame.
+  it("is not empty when the only item is the initial message folded in", () => {
+    document.body.innerHTML = threadHtml({ items: [] }, { initialMessage: "add a dark theme" });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(false);
+  });
+
   it("renders a caller-scoped composer so two composers can coexist without id collisions", () => {
     document.body.innerHTML =
       threadHtml({ items: [] }, { composer: true }) +

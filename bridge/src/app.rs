@@ -233,13 +233,18 @@ struct AttachedClient {
     /// The highest cursor this client has reported applying. Seeded at attach
     /// with the cursor the attach snapshot carries.
     acked_cursor: u64,
+    /// The highest cursor actually pushed to this client. While it is paused
+    /// the live cursor runs ahead of this, and this — not the live cursor — is
+    /// the most its acks can ever reach, so the resume is measured against it.
+    sent_cursor: u64,
     /// Whether this client has ever acknowledged anything. A client that has
     /// not is exempt from flow control — an older SPA sends no acks, and
     /// measuring it by a cursor it never reports would stall it forever.
     sent_ack: bool,
     /// Set once the client fell past [`TERM_UNACKED_BUDGET_BYTES`]. It receives
-    /// nothing until an ack brings it back under, and comes back on a snapshot
-    /// because the frames it missed left a hole in its byte stream.
+    /// nothing until it has acked everything it was sent (`sent_cursor`), and
+    /// comes back on a snapshot because the frames it missed left a hole in
+    /// its byte stream.
     paused: bool,
 }
 
@@ -347,13 +352,14 @@ impl TermScreen {
         self.attached.push(AttachedClient {
             sender: sender.clone(),
             acked_cursor: self.total,
+            sent_cursor: self.total,
             sent_ack: false,
             paused: false,
         });
     }
 
-    /// Record what a client has applied, and resync it if that brings it back
-    /// under budget.
+    /// Record what a client has applied, and resync it once a paused client
+    /// has drained everything it was actually sent.
     ///
     /// A paused client missed frames, so the raw stream it left is no longer
     /// contiguous with what it holds (the INVARIANT raw output rides on). It
@@ -371,7 +377,13 @@ impl TermScreen {
         // A cursor past what the bridge has produced acknowledges nothing real;
         // clamping keeps a confused client measurable rather than exempt.
         client.acked_cursor = client.acked_cursor.max(cursor.min(total));
-        if !client.paused || client.lag(total) > TERM_UNACKED_BUDGET_BYTES {
+        // A paused client is fed nothing, so the live cursor runs away from it
+        // without bound — measuring the resume against the live cursor could
+        // hold a client that drained everything it was ever sent paused
+        // forever, with no frame left that could unpause it. Its own last sent
+        // frame is the most it can ack, and acking that means its queue is
+        // empty: resync it now.
+        if !client.paused || client.acked_cursor < client.sent_cursor {
             return;
         }
         // PTY bytes arrive on their own channel, so an ack can land between a
@@ -390,6 +402,12 @@ impl TermScreen {
         let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
         let client = &mut self.attached[index];
         client.paused = false;
+        client.sent_cursor = self.total;
+        // The snapshot is a fresh baseline, exactly like the attach snapshot
+        // in `register`: the client owes nothing before it. Leaving the old
+        // acked cursor standing would count the whole paused gap as unacked
+        // debt and re-pause the client on the very next flush.
+        client.acked_cursor = self.total;
         if !client.sender.push(payload) {
             self.attached.remove(index);
         }
@@ -414,7 +432,12 @@ impl TermScreen {
             if client.paused {
                 return true;
             }
-            client.sender.push(payload.clone())
+            if !client.sender.push(payload.clone()) {
+                return false;
+            }
+            // Every frame this method carries stands at the live cursor.
+            client.sent_cursor = total;
+            true
         });
     }
 
@@ -19898,6 +19921,53 @@ mod tests {
             output_text(&acking, "term-1").contains("mid-cycle"),
             "{acking:?}"
         );
+    }
+
+    /// A paused client receives nothing, so the highest cursor it can ever ack
+    /// is the last frame it was sent before pausing. A sustained flood runs the
+    /// live cursor far past that frame — measuring the resume against the live
+    /// cursor would leave the client paused forever, with no frame in existence
+    /// that could ever unpause it. Draining everything it was actually sent is
+    /// all a paused client can do, and it must be enough: the resync snapshot
+    /// covers the withheld gap by construction.
+    #[test]
+    fn a_paused_client_resumes_after_acking_all_it_was_sent_even_when_the_flood_ran_far_ahead() {
+        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
+
+        screen.process(&chunk_of(ACK_TEST_CHUNK));
+        screen.flush("term-1");
+        screen.ack("term-1", "client-one", screen.total);
+        screen.ack("term-1", "client-two", screen.total);
+
+        // client-one goes silent; the flood runs 32 chunks (~3.2 MiB) — far
+        // more than the unacked budget past anything client-one was sent.
+        for _ in 0..32 {
+            flush_chunk_acked_by(&mut screen, "client-two");
+        }
+        let sent = drain_pushes(&mut pushes, &session_key);
+        let last_received = sent.last().unwrap()["cursor"].as_u64().unwrap();
+        assert!(
+            screen.total - last_received > TERM_UNACKED_BUDGET_BYTES,
+            "the flood must outrun the paused client by more than the budget"
+        );
+
+        // It drains its queue and acks the last frame it was given — the
+        // highest cursor it can ever report.
+        screen.ack("term-1", "client-one", last_received);
+        let resync = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(
+            resync.len(),
+            1,
+            "draining everything sent earns the resync: {resync:?}"
+        );
+        assert_eq!(resync[0]["type"], "term.reset", "{resync:?}");
+        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), screen.total);
+
+        // And the raw stream is back.
+        flush_chunk_acked_by(&mut screen, "client-one");
+        let resumed = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(resumed.len(), 1, "{resumed:?}");
+        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
     }
 
     /// A client from before acks existed never sends one, and it must not be

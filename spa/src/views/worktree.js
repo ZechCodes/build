@@ -15,7 +15,7 @@ import { hashFromRoute } from "../core/router.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
-import { createAdoptingCall } from "../core/adoption.js";
+import { createAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
 import { threadHtml, wireThreadComposer } from "../core/thread.js";
@@ -33,19 +33,6 @@ export const worktreeSurfaceTabs = (terminalTabs = []) => [
   AGENT_TAB,
   ...terminalTabs,
 ];
-
-/** Start this worktree's agent from the Agent tab, adopting the worktree on the
- *  way (an agent needs an owner for `done` to report to).
- *
- *  `pickedProvider` is the card the human pressed, `markedProvider` the answer
- *  the new-worktree sheet already got — a press is the later and more explicit
- *  of the two, so it wins. The provider seeds the adopt (the run is minted on
- *  it) AND rides the start, so a worktree adopted earlier still switches. */
-export function startWorktreeAgent(adopting, pickedProvider, markedProvider) {
-  const provider = pickedProvider || markedProvider;
-  if (provider) adopting.setAdoptParams({ provider });
-  return adopting.runCall("agent.start", provider ? { provider } : {});
-}
 
 export async function renderWorktree() {
   const root = $("#root");
@@ -230,7 +217,7 @@ export async function renderWorktree() {
       // the same transparent adoption the first Request Changes performs, and
       // the same reason: an agent needs an owner for `done` to report to.
       aux = mountAgentTab(body, scope, {
-        onStart: (provider) => startWorktreeAgent(adopting, provider, pendingProvider),
+        onStart: (provider) => startAdoptedAgent(adopting, provider, pendingProvider),
         selectedProvider: pendingProvider,
       });
       return;

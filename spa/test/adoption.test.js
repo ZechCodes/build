@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createAdoptingCall } from "../src/core/adoption.js";
+import { createAdoptingCall, createPrimaryAdoptingCall } from "../src/core/adoption.js";
 
 describe("createAdoptingCall", () => {
   it("adopts on the first runCall, then issues the method with the minted run_id", async () => {
@@ -68,5 +68,67 @@ describe("createAdoptingCall", () => {
       model: "gpt-5.6-sol",
       effort: "high",
     });
+  });
+});
+
+// The primary checkout adopts through the same latch: only the scope it names
+// differs (the repo root has no worktree id), and the run it mints owns the
+// repository the user works in directly.
+describe("createPrimaryAdoptingCall", () => {
+  it("adopts the project's primary checkout, then routes through the minted run", async () => {
+    const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-main" } : { ok: true }));
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+
+    await adopting.runCall("agent.start", { provider: "claude" });
+
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", primary: true });
+    expect(call).toHaveBeenNthCalledWith(2, "agent.start", { run_id: "run-main", provider: "claude" });
+    expect(adopting.adoptedRunId()).toBe("run-main");
+  });
+
+  it("mints the run on the picked provider", async () => {
+    const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-main" } : { ok: true }));
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    adopting.setAdoptParams({ provider: "codex" });
+    await adopting.adopt();
+    expect(call).toHaveBeenNthCalledWith(1, "run.adopt", { project_id: "proj-1", primary: true, provider: "codex" });
+  });
+
+  // Reconnect after a reload: the run that already owns the checkout is learned
+  // read-only, so nothing is minted and every later call routes through it.
+  it("binds to a run that already owns the checkout without adopting", async () => {
+    const call = vi.fn(async () => ({ ok: true }));
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    adopting.seedAdoptedRun("run-existing");
+    expect(adopting.adoptedRunId()).toBe("run-existing");
+
+    await adopting.runCall("agent.start", {});
+
+    expect(call.mock.calls.filter((c) => c[0] === "run.adopt")).toHaveLength(0);
+    expect(call).toHaveBeenCalledWith("agent.start", { run_id: "run-existing" });
+  });
+
+  it("ignores a seed once the checkout has been adopted here", async () => {
+    const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-mine" } : { ok: true }));
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    await adopting.adopt();
+    adopting.seedAdoptedRun("run-other");
+    expect(adopting.adoptedRunId()).toBe("run-mine");
+  });
+
+  // A terminal run has let go of the checkout (the bridge stops reporting it as
+  // the owner), so the next action adopts a fresh owner rather than posting into
+  // a run that no longer works here.
+  it("releases the checkout so the next action adopts again", async () => {
+    let minted = 0;
+    const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: `run-${++minted}` } : { ok: true }));
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+    await adopting.adopt();
+    adopting.releaseAdoptedRun();
+    expect(adopting.adoptedRunId()).toBe(null);
+
+    await adopting.adopt();
+
+    expect(adopting.adoptedRunId()).toBe("run-2");
   });
 });

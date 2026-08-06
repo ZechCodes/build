@@ -2353,6 +2353,57 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
+    /// Whether an entity's worktree currently holds a running harness process.
+    /// An entity with no worktree has no agent and therefore none running.
+    fn entity_agent_is_live(&self, entity_id: &str) -> bool {
+        let Ok(root) = self.entity_worktree_root(entity_id) else {
+            return false;
+        };
+        self.tabs
+            .get(&TabKey::agent(&root))
+            .is_some_and(|tab| tab.live && !tab.session.has_exited())
+    }
+
+    /// Point an entity's agents at a different provider/model. The persisted
+    /// choice is what every later start and turn reads, so a switch made at
+    /// the Agent tab has to outlive both this process and this daemon.
+    ///
+    /// A running harness cannot be re-provisioned under itself: the process
+    /// would keep the old provider while the record claimed the new one, and
+    /// the human would have no owner-side handle on what is actually running.
+    /// So a switch is refused while a session is live. Re-asserting the choice
+    /// the entity already has is not a switch and passes through, which is what
+    /// keeps a start that always names its provider idempotent.
+    fn set_entity_model_choice(
+        &mut self,
+        entity_id: &str,
+        choice: ModelChoice,
+    ) -> Result<(), String> {
+        if self.entity_model_choice(entity_id)? == choice {
+            return Ok(());
+        }
+        if self.entity_agent_is_live(entity_id) {
+            return Err(format!(
+                "agent.start: an agent session is already running on {} — stop the current \
+                 session first, then start it on {}",
+                self.entity_model_choice(entity_id)?.provider.label(),
+                choice.provider.label()
+            ));
+        }
+        if self.plans.contains_key(entity_id) {
+            let mut active = self.take_plan(entity_id)?;
+            active.model_choice = choice;
+            let persisted = self.persist_plan_record(entity_id, &active);
+            self.plans.insert(entity_id.to_string(), active);
+            return persisted;
+        }
+        let mut active = self.take_run(entity_id)?;
+        active.model_choice = choice;
+        let persisted = self.persist_run_record(entity_id, &active);
+        self.runs.insert(entity_id.to_string(), active);
+        persisted
+    }
+
     /// Kill, reap, and forget a worktree's agent, telling every attached client
     /// the tab is gone.
     ///
@@ -9934,8 +9985,17 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .ok_or("missing id")?;
+    // The Agent tab's provider picker rides the start itself. Parsed before
+    // anything is touched, so an unrunnable provider refuses instead of opening
+    // an agent on the old one.
+    let requested_choice = has_agent_choice(params)
+        .then(|| model_choice_from(params))
+        .transpose()?;
     let (turn, waiting) = {
-        let s = state.lock().unwrap();
+        let mut s = state.lock().unwrap();
+        if let Some(choice) = requested_choice {
+            s.set_entity_model_choice(&entity_id, choice)?;
+        }
         let thread = s.entity_thread(&entity_id)?;
         (
             PendingAgentTurn {
@@ -19602,6 +19662,219 @@ mod tests {
             refused["error"].as_str().unwrap().contains("unknown id"),
             "{refused:?}"
         );
+    }
+
+    /// A plan holding its planning worktree with no agent tab — the plan
+    /// surface's idle Agent tab. The dispatch turn is dropped: this fixture is
+    /// about the plan, not about delivering to it.
+    fn insert_plan_without_agent(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        side_root: std::path::PathBuf,
+        plan_id: &str,
+    ) {
+        let side = Orchestrator::new(
+            repo.to_path_buf(),
+            side_root.join("wt"),
+            Agent::Warm(HarnessSpec::new("true")),
+            Templates::default(),
+        );
+        let (active, _turn) = side
+            .dispatch_plan(
+                PlanId::new(plan_id),
+                "side goal",
+                "main",
+                Default::default(),
+            )
+            .unwrap();
+        let mut s = state.lock().unwrap();
+        let project_id = s.projects[0].id.clone();
+        s.entity_project.insert(plan_id.to_string(), project_id);
+        s.plans.insert(plan_id.to_string(), active);
+    }
+
+    /// The Agent tab's provider picker: a start may NAME the provider it wants.
+    /// The picker chooses what this worktree runs on from here on — not just
+    /// what this one process runs on — so the entity's persisted choice follows
+    /// it and a restart honors it.
+    #[tokio::test]
+    async fn agent_start_with_a_provider_switches_and_persists_the_choice() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let adopted = call(
+            &handler,
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        let run_id = run_id_of(&adopted);
+
+        let started = call(
+            &handler,
+            "agent.start",
+            json!({ "id": run_id, "provider": "codex" }),
+        );
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        let choice = state.lock().unwrap().runs[&run_id].model_choice.clone();
+        assert_eq!(choice.provider, AgentProvider::Codex);
+        assert_eq!(
+            choice.model, None,
+            "a bare provider brings its own defaults, not the last provider's model"
+        );
+        assert_eq!(choice.effort, None);
+        let persisted = crate::store::Store::new(dir.path().join("store"))
+            .load_all_runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.id == run_id)
+            .expect("the primary run is on disk");
+        assert_eq!(
+            persisted.provider,
+            AgentProvider::Codex,
+            "a restart must bring the provider the human picked back"
+        );
+    }
+
+    /// The same seam serves a plan: its persisted choice is what every later
+    /// plan session runs on.
+    #[tokio::test]
+    async fn agent_start_with_a_provider_switches_a_plans_choice() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        insert_plan_without_agent(&state, &repo, dir.path().join("side"), "plan-switch");
+
+        let started = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "plan-switch", "provider": "codex" }),
+        );
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            state.lock().unwrap().plans["plan-switch"]
+                .model_choice
+                .provider,
+            AgentProvider::Codex
+        );
+        let persisted = crate::store::Store::new(dir.path().join("store"))
+            .load_all_plans()
+            .unwrap()
+            .into_iter()
+            .find(|plan| plan.id == "plan-switch")
+            .expect("the plan is on disk");
+        assert_eq!(persisted.provider, AgentProvider::Codex);
+    }
+
+    /// A start with no provider named is the start that has always existed: the
+    /// entity keeps the model AND effort chosen when it was created.
+    #[tokio::test]
+    async fn agent_start_without_a_provider_keeps_the_entitys_choice() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-kept");
+        {
+            let mut s = state.lock().unwrap();
+            s.runs.get_mut("run-kept").unwrap().model_choice = ModelChoice {
+                provider: AgentProvider::Codex,
+                model: Some("gpt-5.6-terra".to_string()),
+                effort: Some("high".to_string()),
+            };
+        }
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-kept" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let choice = state.lock().unwrap().runs["run-kept"].model_choice.clone();
+        assert_eq!(choice.provider, AgentProvider::Codex);
+        assert_eq!(choice.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(
+            choice.effort.as_deref(),
+            Some("high"),
+            "an omitted provider changes nothing about the entity"
+        );
+    }
+
+    /// A provider the daemon cannot run is refused before anything is started —
+    /// the same rejection every other provider param gives.
+    #[tokio::test]
+    async fn agent_start_refuses_an_unknown_provider() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-bogus");
+
+        let refused = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "run-bogus", "provider": "gemini" }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent provider"),
+            "{refused:?}"
+        );
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .tabs
+                .contains_key(&TabKey::agent(&root)),
+            "a refused start opens no agent"
+        );
+    }
+
+    /// Switching provider under a running harness would leave that process
+    /// running the old provider while the record claimed the new one — a
+    /// stranded agent nobody owns. The switch is refused and the running
+    /// session is left exactly as it was.
+    #[tokio::test]
+    async fn agent_start_refuses_a_provider_switch_while_the_agent_is_live() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-mid");
+
+        let refused = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "run-mid", "provider": "codex" }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("stop the current session"),
+            "{refused:?}"
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.runs["run-mid"].model_choice.provider,
+            AgentProvider::Claude,
+            "a refused switch leaves the record alone"
+        );
+        assert!(
+            s.tabs[&key].live,
+            "and leaves the running harness where it was"
+        );
+    }
+
+    /// Naming the provider the entity already runs on is not a switch: nothing
+    /// is stranded, so the idempotent "give me the tab" start still works while
+    /// a session is live.
+    #[tokio::test]
+    async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
+
+        let again = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "run-same", "provider": "claude" }),
+        );
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works

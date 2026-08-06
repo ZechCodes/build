@@ -22,7 +22,8 @@ describe("startAdoptedAgent", () => {
     expect(adopting.runCall).toHaveBeenCalledWith("agent.start", { provider: "codex" });
   });
 
-  // The Restart button names no provider: the run already holds one.
+  // No UI path omits the provider any more (every picker control names one),
+  // but the helper's contract still covers it: the run already holds a choice.
   it("starts on the run's own provider when none was picked", async () => {
     const adopting = fakeAdopting();
     await startAdoptedAgent(adopting, undefined, null);

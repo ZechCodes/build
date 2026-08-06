@@ -9962,6 +9962,9 @@ fn agent_attach(
             "cursor": screen.total,
             "cols": screen.cols,
             "rows": screen.rows,
+            // Explicit, not omitted: the contract says provider is null where
+            // no agent has ever run, and attach_to_tab always emits the key.
+            "provider": Value::Null,
         }));
     }
     Ok(attach_to_tab(s, &key, sender, cols, rows))

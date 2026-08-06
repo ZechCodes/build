@@ -271,6 +271,19 @@ when none is live, do nothing and return `{ "ok": true, "live": false }` (the
 retained last screen must not be garbled by a dead resize — and attach must
 never error the whole view, §3).
 
+**`term.ack`** `{ term_id, cursor }` → `{ "ok": true }`
+
+Terminal flow control, handled in `dispatch_frame` (it needs the caller's
+`SessionSender` — an ack speaks for one client's receive queue). The client
+reports the cursor it has applied; the bridge stores it against that client's
+attachment. A client more than `TERM_UNACKED_BUDGET_BYTES` past its last ack is
+paused: it receives no `term.output` and no flood-collapse `term.reset` until an
+ack brings it back under, at which point it gets exactly one `term.reset`
+snapshot at the live cursor (it missed frames, so raw bytes would no longer be
+contiguous) and resumes. A client that has never acked is exempt — an older SPA
+sends none, and it keeps the unthrottled behaviour. Unknown id →
+`"unknown term_id"`.
+
 ### 2.3 Push frames (all carry `term_id` now)
 
 ```json

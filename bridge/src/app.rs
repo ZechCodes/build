@@ -198,7 +198,7 @@ impl TermScope {
 /// model for every tab — a shell and an agent reconnect the same way.
 struct TermScreen {
     parser: vt100::Parser,
-    attached: Vec<SessionSender>,
+    attached: Vec<AttachedClient>,
     /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
     /// so a repaint becomes one frame instead of ten.
     pending: Vec<u8>,
@@ -222,8 +222,53 @@ struct TermScreen {
     rows: u16,
 }
 
+/// One client attached to a screen, and how far behind it is running.
+///
+/// The bridge cannot see the browser's receive queue, so the client tells it:
+/// every applied frame is acknowledged with the cursor it reached
+/// (`term.ack`), and the gap between that and the live cursor is the only
+/// measure of a client that is not draining.
+struct AttachedClient {
+    sender: SessionSender,
+    /// The highest cursor this client has reported applying. Seeded at attach
+    /// with the cursor the attach snapshot carries.
+    acked_cursor: u64,
+    /// Whether this client has ever acknowledged anything. A client that has
+    /// not is exempt from flow control — an older SPA sends no acks, and
+    /// measuring it by a cursor it never reports would stall it forever.
+    sent_ack: bool,
+    /// Set once the client fell past [`TERM_UNACKED_BUDGET_BYTES`]. It receives
+    /// nothing until an ack brings it back under, and comes back on a snapshot
+    /// because the frames it missed left a hole in its byte stream.
+    paused: bool,
+}
+
+impl AttachedClient {
+    /// Output bytes this client has been sent but not acknowledged.
+    fn lag(&self, total: u64) -> u64 {
+        total.saturating_sub(self.acked_cursor)
+    }
+
+    /// Whether this client is too far behind to keep feeding. Only a client
+    /// that acks at all can be judged this way.
+    fn falling_behind(&self, total: u64) -> bool {
+        self.sent_ack && self.lag(total) > TERM_UNACKED_BUDGET_BYTES
+    }
+}
+
 /// Flush coalesced terminal output at ~100 fps.
 const TERM_FLUSH_MS: u64 = 10;
+/// How many bytes one client may leave unacknowledged before the bridge stops
+/// feeding it.
+///
+/// Every frame for a browser tab rides ONE FIFO (bridge channel → relay queue →
+/// browser demux), so a client that cannot drain as fast as a PTY floods does
+/// not just fall behind: it becomes an unbounded queue that everything else —
+/// the liveness ping, every keystroke — waits behind. A megabyte is far more
+/// than any screen and far less than a stall, and past it chasing the client
+/// with bytes it will never catch up on is worse than resyncing it with one
+/// snapshot the moment it drains.
+const TERM_UNACKED_BUDGET_BYTES: u64 = 1024 * 1024;
 /// If a single flush exceeds this, send the current screen snapshot instead of
 /// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
 /// and bounds per-frame size. The vt100 model makes this lossless for the screen.
@@ -291,10 +336,71 @@ impl TermScreen {
 
     /// Register a client for live output, dropping any prior sender with the
     /// same session id first (a reconnect on the same id).
+    ///
+    /// The new client starts acknowledged up to the live cursor: the attach
+    /// response carries that same cursor with the screen snapshot, so it owes
+    /// nothing for anything that came before. It starts unpaused and, until its
+    /// first ack, exempt from flow control.
     fn register(&mut self, sender: &SessionSender) {
         self.attached
-            .retain(|snd| snd.session_id() != sender.session_id());
-        self.attached.push(sender.clone());
+            .retain(|client| client.sender.session_id() != sender.session_id());
+        self.attached.push(AttachedClient {
+            sender: sender.clone(),
+            acked_cursor: self.total,
+            sent_ack: false,
+            paused: false,
+        });
+    }
+
+    /// Record what a client has applied, and resync it if that brings it back
+    /// under budget.
+    ///
+    /// A paused client missed frames, so the raw stream it left is no longer
+    /// contiguous with what it holds (the INVARIANT raw output rides on). It
+    /// comes back on one snapshot at the live cursor — a full screen, so it
+    /// replaces whatever the client was left holding — and resumes from there.
+    /// A client whose connection died while paused is dropped here, since a
+    /// paused client is not fed and a failed push is the only proof left.
+    fn ack(&mut self, term_id: &str, session_id: &str, cursor: u64) {
+        let total = self.total;
+        let Some(index) = self
+            .attached
+            .iter()
+            .position(|client| client.sender.session_id() == session_id)
+        else {
+            return;
+        };
+        let client = &mut self.attached[index];
+        client.sent_ack = true;
+        // A cursor past what the bridge has produced acknowledges nothing real;
+        // clamping keeps a confused client measurable rather than exempt.
+        client.acked_cursor = client.acked_cursor.max(cursor.min(total));
+        if !client.paused || client.lag(total) > TERM_UNACKED_BUDGET_BYTES {
+            return;
+        }
+        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": total });
+        let client = &mut self.attached[index];
+        client.paused = false;
+        if !client.sender.push(payload) {
+            self.attached.remove(index);
+        }
+    }
+
+    /// Push one frame to every client that is keeping up: a client past its
+    /// unacked budget is paused and skipped (its own resync will catch it up),
+    /// a client already paused stays skipped, and a client whose connection is
+    /// gone is dropped.
+    fn push_to_keeping_up(&mut self, payload: Value) {
+        let total = self.total;
+        self.attached.retain_mut(|client| {
+            if client.falling_behind(total) {
+                client.paused = true;
+            }
+            if client.paused {
+                return true;
+            }
+            client.sender.push(payload.clone())
+        });
     }
 
     /// Flush pending bytes as one keyed push to every attached client — raw
@@ -316,7 +422,7 @@ impl TermScreen {
             }
             let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": self.total });
             self.pending.clear();
-            self.attached.retain(|snd| snd.push(payload.clone()));
+            self.push_to_keeping_up(payload);
             return;
         }
 
@@ -332,14 +438,16 @@ impl TermScreen {
         self.snapshot_due = false;
         self.last_flood_snapshot_at = Some(std::time::Instant::now());
         let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        self.attached.retain(|snd| snd.push(payload.clone()));
+        self.push_to_keeping_up(payload);
     }
 
-    /// Tell every attached client this terminal ended, and why.
+    /// Tell every attached client this terminal ended, and why. A paused client
+    /// hears it too: flow control withholds output, never the fact that there
+    /// is no more of it coming.
     fn push_closed(&self, term_id: &str, reason: &str) {
         let payload = json!({ "type": "term.closed", "term_id": term_id, "reason": reason });
-        for snd in &self.attached {
-            snd.push(payload.clone());
+        for client in &self.attached {
+            client.sender.push(payload.clone());
         }
     }
 }
@@ -3497,10 +3605,12 @@ impl AppState {
         for tab in self.tabs.values_mut() {
             tab.screen
                 .attached
-                .retain(|snd| snd.session_id() != session_id);
+                .retain(|client| client.sender.session_id() != session_id);
         }
         self.agent_screens_awaiting_spawn.retain(|_, screen| {
-            screen.attached.retain(|snd| snd.session_id() != session_id);
+            screen
+                .attached
+                .retain(|client| client.sender.session_id() != session_id);
             !screen.attached.is_empty()
         });
     }
@@ -9432,6 +9542,9 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
             created
         }
         "term.attach" => term_attach(state, &sender, &params),
+        // Needs the caller's own session: an ack speaks for one client's
+        // receive queue, not for the screen.
+        "term.ack" => term_ack(state, &sender, &params),
         "agent.attach" => agent_attach(state, &sender, &params),
         // Bypasses `dispatch` for the same reason `deliver` does: opening a
         // harness blocks for seconds on its readiness wait, and every terminal
@@ -9547,6 +9660,30 @@ fn term_attach(
     let mut s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(&term_id)?;
     Ok(attach_to_tab(&mut s, &key, sender, cols, rows))
+}
+
+/// Report how far this client has applied a tab's output — the client half of
+/// terminal flow control, on the same id space as every other `term.*` verb
+/// (`term-<n>` or `agent:<worktree_id>`).
+///
+/// Advisory by design: it moves one number and may push one resync snapshot to
+/// the caller. An unknown id errors like the rest of the family, so a stale
+/// client drops the tab rather than acking into a terminal that is gone.
+fn term_ack(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    params: &Value,
+) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    let cursor = params
+        .get("cursor")
+        .and_then(Value::as_u64)
+        .ok_or("missing cursor")?;
+    let mut s = state.lock().unwrap();
+    let key = s.tab_key_of_wire_id(&term_id)?;
+    let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
+    tab.screen.ack(&term_id, sender.session_id(), cursor);
+    Ok(json!({ "ok": true }))
 }
 
 /// Attach this client to the agent of a WORKTREE, addressed the way the
@@ -9884,7 +10021,7 @@ fn ensure_agent_tab(
                 });
                 tab.screen.set_size(waiting.cols, waiting.rows);
                 for client in &waiting.attached {
-                    tab.screen.register(client);
+                    tab.screen.register(&client.sender);
                 }
             }
             s.tabs.insert(key.clone(), tab);
@@ -10039,7 +10176,7 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                 "data": tab.screen.snapshot(),
                 "cursor": tab.screen.total,
             });
-            tab.screen.attached.retain(|snd| snd.push(payload.clone()));
+            tab.screen.push_to_keeping_up(payload);
             term_id
         };
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
@@ -10694,6 +10831,41 @@ mod tests {
             req("term.list", json!({ "project_id": project_id })),
         );
         assert_eq!(relisted["result"]["terminals"].as_array().unwrap().len(), 0);
+    }
+
+    /// `term.ack` is the client's half of flow control: it reports the cursor it
+    /// has actually applied, on the same id space every other `term.*` verb
+    /// takes. A stale client acking a terminal that is gone gets the same
+    /// "unknown term_id" as any other verb, so it drops the tab instead of
+    /// acking into the void forever.
+    #[tokio::test]
+    async fn term_ack_reports_a_cursor_and_rejects_an_unknown_term_id() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        handler(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        let (sender, _pushes, _key) = SessionSender::observable("s1");
+        let attached = handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        let cursor = attached["result"]["cursor"].as_u64().unwrap();
+
+        let acked = handler(
+            SessionSender::detached("s1"),
+            req("term.ack", json!({ "term_id": "term-1", "cursor": cursor })),
+        );
+        assert_eq!(acked["ok"], true, "{acked:?}");
+        assert_eq!(acked["result"]["ok"], true, "{acked:?}");
+
+        let unknown = handler(
+            SessionSender::detached("s1"),
+            req("term.ack", json!({ "term_id": "term-404", "cursor": 1 })),
+        );
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert_eq!(unknown["error"], "unknown term_id", "{unknown:?}");
     }
 
     #[tokio::test]
@@ -11795,7 +11967,7 @@ mod tests {
                 .screen
                 .attached
                 .iter()
-                .map(|snd| snd.session_id().to_string())
+                .map(|client| client.sender.session_id().to_string())
                 .collect()
         };
         assert_eq!(
@@ -19485,6 +19657,175 @@ mod tests {
             .collect();
         assert_eq!(cursors, vec![5, 10, 17], "{seen:?}");
         assert_eq!(output_text(&seen, "term-1"), "one\r\ntwo\r\nthree\r\n");
+    }
+
+    /// One chunk of output well under the flood-collapse threshold, so a flush
+    /// of it ships as raw `term.output`. Sixteen of them exceed the unacked
+    /// budget — the ack tests count in these.
+    const ACK_TEST_CHUNK: usize = 100 * 1024;
+
+    fn chunk_of(bytes: usize) -> Vec<u8> {
+        vec![b'x'; bytes]
+    }
+
+    /// One client's capture: everything the bridge pushed to it, and the
+    /// session key those pushes decrypt with.
+    type ClientCapture = (
+        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        String,
+    );
+
+    /// A screen with two observable clients attached, each with its own capture.
+    fn two_client_screen() -> (TermScreen, ClientCapture, ClientCapture) {
+        let (first_sender, first_pushes, first_key) = SessionSender::observable("client-one");
+        let (second_sender, second_pushes, second_key) = SessionSender::observable("client-two");
+        let mut screen = TermScreen::new(80, 24);
+        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
+        screen.register(&first_sender);
+        screen.register(&second_sender);
+        (
+            screen,
+            (first_pushes, first_key),
+            (second_pushes, second_key),
+        )
+    }
+
+    /// Push one chunk and flush it, then have `acking` acknowledge everything
+    /// the screen has produced so far.
+    fn flush_chunk_acked_by(screen: &mut TermScreen, acking: &str) {
+        screen.process(&chunk_of(ACK_TEST_CHUNK));
+        screen.flush("term-1");
+        screen.ack("term-1", acking, screen.total);
+    }
+
+    /// A client that acknowledges what it received is keeping up by definition,
+    /// so nothing about flow control may interrupt its stream — however much
+    /// output flows through it.
+    #[test]
+    fn a_client_that_keeps_acking_keeps_receiving_raw_output() {
+        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
+
+        for _ in 0..16 {
+            flush_chunk_acked_by(&mut screen, "client-one");
+        }
+
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(seen.len(), 16, "every flush reached the client: {seen:?}");
+        assert!(
+            seen.iter().all(|push| push["type"] == "term.output"),
+            "an acking client is never resynced out of the raw stream: {seen:?}"
+        );
+        assert_eq!(
+            seen.last().unwrap()["cursor"].as_u64().unwrap(),
+            screen.total
+        );
+    }
+
+    /// A client whose acks stop is a client that is not draining: its frames are
+    /// piling up in the bridge's channel and the relay's queue, and every frame
+    /// behind them — the liveness ping, the human's keystrokes — waits on the
+    /// pile. Past the budget it stops being fed. The other client is a different
+    /// connection and must not be slowed by its neighbour.
+    #[test]
+    fn a_client_that_stops_acking_stops_being_fed_and_the_other_does_not() {
+        let (mut screen, (mut silent_pushes, silent_key), (mut acking_pushes, acking_key)) =
+            two_client_screen();
+
+        // Both acknowledge the first flush, so neither is exempt as never-acked.
+        screen.process(&chunk_of(ACK_TEST_CHUNK));
+        screen.flush("term-1");
+        screen.ack("term-1", "client-one", screen.total);
+        screen.ack("term-1", "client-two", screen.total);
+        drain_pushes(&mut silent_pushes, &silent_key);
+        drain_pushes(&mut acking_pushes, &acking_key);
+
+        // client-one goes silent while output keeps flowing past the budget.
+        for _ in 0..16 {
+            flush_chunk_acked_by(&mut screen, "client-two");
+        }
+
+        // It is fed until the flush that carries it PAST the budget: ten 100 KiB
+        // chunks fit inside a megabyte, the eleventh does not.
+        let fits_in_budget = (TERM_UNACKED_BUDGET_BYTES / ACK_TEST_CHUNK as u64) as usize;
+        let silent = drain_pushes(&mut silent_pushes, &silent_key);
+        assert_eq!(
+            silent.len(),
+            fits_in_budget,
+            "a client past its unacked budget stops being fed: {silent:?}"
+        );
+        let fed_bytes: u64 = silent
+            .iter()
+            .map(|push| b64decode(push["data"].as_str().unwrap()).unwrap().len() as u64)
+            .sum();
+        assert!(
+            fed_bytes <= TERM_UNACKED_BUDGET_BYTES,
+            "nothing past the budget went out: {fed_bytes}"
+        );
+
+        let acking = drain_pushes(&mut acking_pushes, &acking_key);
+        assert_eq!(
+            acking.len(),
+            16,
+            "the client that kept acking kept receiving: {acking:?}"
+        );
+    }
+
+    /// A paused client drains, acks, and comes back under budget. It missed
+    /// frames while paused, so the raw stream it left is no longer contiguous
+    /// with what it holds: exactly one snapshot resyncs it, and raw output
+    /// resumes from there.
+    #[test]
+    fn an_ack_under_budget_resyncs_the_paused_client_once_then_resumes_raw_output() {
+        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
+
+        screen.process(&chunk_of(ACK_TEST_CHUNK));
+        screen.flush("term-1");
+        screen.ack("term-1", "client-one", screen.total);
+        for _ in 0..16 {
+            flush_chunk_acked_by(&mut screen, "client-two");
+        }
+        drain_pushes(&mut pushes, &session_key);
+
+        // It catches up on everything the bridge has produced.
+        let caught_up_at = screen.total;
+        screen.ack("term-1", "client-one", caught_up_at);
+        let resync = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(resync.len(), 1, "exactly one resync frame: {resync:?}");
+        assert_eq!(
+            resync[0]["type"], "term.reset",
+            "the resync is a snapshot, never raw bytes over a gap: {resync:?}"
+        );
+        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), caught_up_at);
+
+        // A second ack at the same cursor does not resync again.
+        screen.ack("term-1", "client-one", caught_up_at);
+        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
+
+        // And the stream is raw again.
+        flush_chunk_acked_by(&mut screen, "client-one");
+        let resumed = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(resumed.len(), 1, "{resumed:?}");
+        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
+    }
+
+    /// A client from before acks existed never sends one, and it must not be
+    /// starved for that: with no ack to measure by, there is no evidence it is
+    /// falling behind, so it keeps today's behaviour.
+    #[test]
+    fn a_client_that_never_acks_is_never_paused() {
+        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
+
+        for _ in 0..16 {
+            screen.process(&chunk_of(ACK_TEST_CHUNK));
+            screen.flush("term-1");
+        }
+
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(
+            seen.len(),
+            16,
+            "an ack-less client is fed exactly as it always was: {seen:?}"
+        );
     }
 
     /// A human can close the browser while waiting on the Agent tab of a

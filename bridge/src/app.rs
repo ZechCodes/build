@@ -7963,6 +7963,7 @@ impl AppState {
             .find(|p| p.id == project_id)
             .map(|p| p.name.clone())
             .unwrap_or_default();
+        let primary = self.owns_primary_checkout(run_id, active);
         json!({
             "run_id": run_id,
             "implementation_id": run_id,
@@ -7994,10 +7995,12 @@ impl AppState {
             // Adopted around the repo root, not a worktree beside it: the rail
             // renders it as the project's "main" row, never as one more
             // worktree, and its finish/merge controls do not apply.
-            "primary": self.owns_primary_checkout(run_id, active),
+            "primary": primary,
             "recovery": active.recovery,
-            "can_finish": active.run.state == RunState::Merged
-                || (active.run.state == RunState::Review && active.worktree.path.exists()),
+            // `run.finish` refuses the primary checkout, so it is never offered.
+            "can_finish": !primary
+                && (active.run.state == RunState::Merged
+                    || (active.run.state == RunState::Review && active.worktree.path.exists())),
             "created_at": self.entity_created_at.get(run_id),
             "updated_at": self.entity_updated_at.get(run_id),
             "state_changed_at": self.entity_state_changed_at.get(run_id),
@@ -19044,6 +19047,23 @@ mod tests {
         );
         assert!(repo.join("README.md").exists(), "the checkout is untouched");
         assert!(state.runs.contains_key(&run_id), "the run survives");
+    }
+
+    /// `run.finish` refuses the primary checkout, so its view must not offer
+    /// it: a Done button that can only fail is not an offer.
+    #[test]
+    fn a_primary_run_never_offers_can_finish() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_primary_run(&mut state);
+
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert_eq!(got["result"]["state"], "review", "{got:?}");
+        assert_eq!(
+            got["result"]["can_finish"], false,
+            "finish is refused for the primary checkout, so it is never offered: {got:?}"
+        );
     }
 
     /// Merging the primary checkout would merge the base branch into itself —

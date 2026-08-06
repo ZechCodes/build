@@ -36,20 +36,23 @@ const GIT_ACTION_RPC = {
 };
 
 // The merge option set. Adopted tasks add "Merge & release" (un-adopt after
-// merge, keeping the user's worktree). Descriptions carry the raw base
-// branch — the split button escapes them.
-export function reviewMergeOptions(adopted, base) {
+// merge, keeping the user's worktree). A primary run (adopted around the repo
+// root) narrows to commit and push: the bridge refuses merging the primary
+// checkout — its branch is what a merge would target. Descriptions carry the
+// raw base branch — the split button escapes them.
+export function reviewMergeOptions(adopted, base, primary = false) {
+  const commitAndPush = [
+    { id: "commit", label: "Commit", menuLabel: "Commit", description: "commit the work, stay on the branch", busyLabel: "committing…" },
+    { id: "push", menuLabel: "Push", description: "commit, then push this branch to origin", busyLabel: "pushing…" },
+  ];
+  if (primary) return commitAndPush;
   const options = [
     { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: `commit, merge into ${base}, remove the worktree + branch`, busyLabel: "merging…" },
     { id: "merge_keep", menuLabel: "Merge & keep worktree", description: `merge into ${base}, keep the worktree and branch`, busyLabel: "merging…" },
   ];
   if (adopted)
     options.push({ id: "merge_release", menuLabel: "Merge & release", description: `merge into ${base}, then un-adopt — keep the worktree and branch, drop the task`, busyLabel: "merging…" });
-  options.push(
-    { id: "merge_push", menuLabel: "Merge & push", description: `merge, then push ${base} to origin`, busyLabel: "merging & pushing…" },
-    { id: "commit", menuLabel: "Commit", description: "commit the work, stay on the branch", busyLabel: "committing…" },
-    { id: "push", menuLabel: "Push", description: "commit, then push this branch to origin", busyLabel: "pushing…" },
-  );
+  options.push({ id: "merge_push", menuLabel: "Merge & push", description: `merge, then push ${base} to origin`, busyLabel: "merging & pushing…" }, ...commitAndPush);
   return options;
 }
 
@@ -188,7 +191,13 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       };
     } else if (lastDiffState === "review") {
       // A recent git-action result (Committed./Pushed./error) outlives the poll.
-      hint.textContent = diffMsg || "Select code or click a line number to comment, or finish the worktree.";
+      // The primary checkout has no worktree to finish, so its hint offers what
+      // its actions actually do.
+      hint.textContent =
+        diffMsg ||
+        (task && task.primary
+          ? "Select code or click a line number to comment, or commit the work."
+          : "Select code or click a line number to comment, or finish the worktree.");
       // GitHub-style split button: primary runs the default (Merge & clean up),
       // the caret opens the full menu. Every action commits first; push is
       // explicit. Adopted tasks add "Merge & release".
@@ -231,7 +240,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
           throw e; // let the split button restore the primary button
         }
       };
-      mountSplitButton(actions, { options: reviewMergeOptions(task && task.adopted, base), run, flight: gitFlight });
+      mountSplitButton(actions, {
+        options: reviewMergeOptions(task && task.adopted, base, task && task.primary),
+        run,
+        flight: gitFlight,
+      });
     } else if (lastDiffState === "building") {
       hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
       actions.innerHTML = "";

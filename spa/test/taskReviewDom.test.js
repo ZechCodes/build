@@ -5,7 +5,7 @@
 // split button (which would carry a new latch — a second concurrent merge).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createTaskReview, REVIEW_POLL_MS } from "../src/views/taskReview.js";
+import { createTaskReview, reviewMergeOptions, REVIEW_POLL_MS } from "../src/views/taskReview.js";
 
 const PATCH = [
   "diff --git a/a.txt b/a.txt",
@@ -76,5 +76,48 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     expect(document.querySelectorAll(".modal-scrim")).toHaveLength(0);
 
     plug.unmount();
+  });
+
+  // The bridge refuses merging the primary checkout (its branch is what a merge
+  // would target), so its review surface must not offer it — commit and push are
+  // the git actions that work there.
+  it("offers commit and push, never merge, on a primary run", async () => {
+    const callRpc = (method) =>
+      method === "run.diff" ? Promise.resolve({ patch: PATCH, stat: {}, files: [] }) : Promise.resolve({});
+    const plug = createTaskReview({
+      taskId: "rp",
+      callRpc,
+      getTask: () => ({ ...TASK, branch: "main", adopted: true, primary: true }),
+      isOffline: () => false,
+      onMerged: () => {},
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    plug.mount(host);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const lead = host.querySelector("#diffactions .btn.primary:not(.caret)");
+    expect(lead.textContent).toBe("Commit");
+    expect(host.querySelector('[data-action="merge_prune"]')).toBe(null);
+    plug.unmount();
+  });
+});
+
+describe("reviewMergeOptions", () => {
+  it("keeps the merge variants for a worktree run", () => {
+    expect(reviewMergeOptions(true, "main", false).map((o) => o.id)).toEqual([
+      "merge_prune",
+      "merge_keep",
+      "merge_release",
+      "merge_push",
+      "commit",
+      "push",
+    ]);
+  });
+
+  it("narrows to commit and push for a primary run", () => {
+    const options = reviewMergeOptions(true, "main", true);
+    expect(options.map((o) => o.id)).toEqual(["commit", "push"]);
+    expect(options[0].label ?? options[0].menuLabel).toBe("Commit");
   });
 });

@@ -45,17 +45,21 @@ function makeSocket(overrides = {}) {
 }
 
 // Drive the E2EE handshake on `ws` to a connected state; returns the session_init.
-async function handshake(ws, { deviceId = "dev-b", pinned = "pk-b" } = {}) {
+// `settle` yields to the socket's own awaits — real timers or fake ones.
+async function handshakeWith(ws, settle, { deviceId = "dev-b", pinned = "pk-b" } = {}) {
   ws.emit("open");
-  await tick();
+  await settle();
   ws.serverSend({ type: "authenticated" });
   ws.serverSend({ type: "device_key", device_id: deviceId, transport_public_key: pinned });
-  await tick();
+  await settle();
   const init = ws.sent.find((m) => m.type === "session_init");
   ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
-  await tick();
+  await settle();
   return init;
 }
+
+const handshake = (ws, opts) => handshakeWith(ws, tick, opts);
+const handshakeOnFakeTimers = (ws, opts) => handshakeWith(ws, () => vi.advanceTimersByTimeAsync(0), opts);
 
 const lastPayload = (ws) => ws.sent.at(-1).envelope.frameFields.payload;
 const respond = (ws, init, id, result) =>
@@ -72,6 +76,27 @@ const rejectCall = (ws, init, id, error) =>
   });
 const push = (ws, init, payload) =>
   ws.serverSend({ type: "e2ee_envelope", session_id: init.session_id, envelope: { frameFields: { payload } } });
+
+/** connected(), but driven on fake timers, reporting every status it saw. */
+async function connectedOnFakeTimers() {
+  FakeWebSocket.instances.length = 0;
+  const socket = makeSocket();
+  const statuses = [];
+  socket.onStatus((s) => statuses.push(s));
+  const started = socket.start();
+  started.catch(() => {});
+  await vi.advanceTimersByTimeAsync(0);
+  const ws = FakeWebSocket.instances.at(-1);
+  const init = await handshakeOnFakeTimers(ws);
+  await started;
+  return { socket, ws, init, statuses };
+}
+
+/** Every request of one method sent on `ws`, in order. */
+const callsOn = (ws, method) =>
+  ws.sent
+    .filter((m) => m.type === "e2ee_envelope" && m.envelope.frameFields.payload.method === method)
+    .map((m) => m.envelope.frameFields.payload);
 
 async function connected(overrides) {
   FakeWebSocket.instances.length = 0;
@@ -525,29 +550,7 @@ describe("TerminalSocket liveness", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  /** connected(), but driven on fake timers, reporting every status it saw. */
-  async function connectedOnFakeTimers() {
-    FakeWebSocket.instances.length = 0;
-    const socket = makeSocket();
-    const statuses = [];
-    socket.onStatus((s) => statuses.push(s));
-    const started = socket.start();
-    started.catch(() => {});
-    await vi.advanceTimersByTimeAsync(0);
-    const ws = FakeWebSocket.instances.at(-1);
-    ws.emit("open");
-    await vi.advanceTimersByTimeAsync(0);
-    ws.serverSend({ type: "authenticated" });
-    ws.serverSend({ type: "device_key", device_id: "dev-b", transport_public_key: "pk-b" });
-    await vi.advanceTimersByTimeAsync(0);
-    const init = ws.sent.find((m) => m.type === "session_init");
-    ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
-    await started;
-    return { socket, ws, init, statuses };
-  }
-
-  const pingsSentOn = (ws) =>
-    ws.sent.filter((m) => m.type === "e2ee_envelope" && m.envelope.frameFields.payload.method === "ping");
+  const pingsSentOn = (ws) => callsOn(ws, "ping");
 
   it("stays connected while output keeps arriving, even though no ping is ever answered", async () => {
     const { socket, ws, init, statuses } = await connectedOnFakeTimers();
@@ -605,6 +608,145 @@ describe("TerminalSocket liveness", () => {
     await vi.advanceTimersByTimeAsync(2500);
     expect(pingsSentOn(ws)).toEqual([]);
     expect(statuses).toEqual(["disconnected", "connecting"]);
+    socket.close();
+  });
+});
+
+// The bridge cannot see this browser's receive queue, so it streams blind until
+// the client tells it how far it has actually got. These tests pin what a
+// terminal owes the bridge — one cheap, advisory cursor report — and the two
+// things it must never do with it: cost a call per frame, or be worth a
+// disconnect.
+describe("TerminalSocket output acks", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const acksOn = (ws) => callsOn(ws, "term.ack");
+
+  /** An attached user terminal on fake timers, with the socket's connection. */
+  async function attachedOnFakeTimers(termId, cursor = 0) {
+    const ctx = await connectedOnFakeTimers();
+    const attaching = ctx.socket.attachTerminal(termId, { onOutput: () => {}, onSnapshot: () => {} });
+    attaching.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    respond(ctx.ws, ctx.init, lastPayload(ctx.ws).id, { snapshot: b64(""), cursor });
+    await attaching;
+    return ctx;
+  }
+
+  it("reports one cursor per throttle window, carrying the latest one applied", async () => {
+    const { socket, ws, init } = await attachedOnFakeTimers("term-1");
+
+    // A burst: ten coalesced frames land inside one window.
+    for (let cursor = 1; cursor <= 10; cursor++) {
+      push(ws, init, { type: "term.output", term_id: "term-1", cursor, data: b64("x") });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(acksOn(ws)).toEqual([]); // a frame does not cost a call
+
+    await vi.advanceTimersByTimeAsync(300);
+    let acks = acksOn(ws);
+    expect(acks.length).toBe(1);
+    expect(acks[0].params).toEqual({ term_id: "term-1", cursor: 10 });
+
+    // The next window reports the next burst — a reset counts as applied too.
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 11, data: b64("y") });
+    push(ws, init, { type: "term.reset", term_id: "term-1", cursor: 20, data: b64("SCREEN") });
+    await vi.advanceTimersByTimeAsync(300);
+    acks = acksOn(ws);
+    expect(acks.length).toBe(2);
+    expect(acks[1].params).toEqual({ term_id: "term-1", cursor: 20 });
+
+    // A frame the terminal did NOT apply (stale cursor) is not worth an ack.
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 3, data: b64("stale") });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(acksOn(ws).length).toBe(2);
+    socket.close();
+  });
+
+  it("swallows a rejected ack — telemetry is never worth a disconnect", async () => {
+    const { socket, ws, init, statuses } = await attachedOnFakeTimers("term-1");
+    const outputs = [];
+    socket.detach("term-1");
+    const reattaching = socket.attachTerminal("term-1", { onOutput: (b) => outputs.push(dec(b)), onSnapshot: () => {} });
+    reattaching.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
+    await reattaching;
+    statuses.length = 0;
+
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 1, data: b64("a") });
+    await vi.advanceTimersByTimeAsync(300);
+    const ack = acksOn(ws).at(-1);
+    rejectCall(ws, init, ack.id, "unknown term_id");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(statuses).toEqual([]); // no teardown, no reconnect loop
+    // …and the terminal is still streaming.
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 2, data: b64("b") });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(outputs).toEqual(["a", "b"]);
+    socket.close();
+  });
+
+  it("sends no ack for a terminal the tab detached", async () => {
+    const { socket, ws, init } = await attachedOnFakeTimers("term-1");
+
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 7, data: b64("x") });
+    await vi.advanceTimersByTimeAsync(0);
+    socket.detach("term-1"); // unmounted inside the throttle window
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(acksOn(ws)).toEqual([]);
+    socket.close();
+  });
+
+  it("sends no ack after close() — a closed socket owes the bridge nothing", async () => {
+    const { socket, ws, init } = await attachedOnFakeTimers("term-1");
+
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 7, data: b64("x") });
+    await vi.advanceTimersByTimeAsync(0);
+    socket.close();
+
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(acksOn(ws)).toEqual([]);
+  });
+
+  it("drops a pending ack when the connection does — a cursor never crosses connections", async () => {
+    const { socket, ws, init } = await attachedOnFakeTimers("term-1");
+
+    push(ws, init, { type: "term.output", term_id: "term-1", cursor: 9, data: b64("x") });
+    await vi.advanceTimersByTimeAsync(0);
+    socket.simulateDrop(); // the ack is still inside its window
+
+    await vi.advanceTimersByTimeAsync(600); // past the timer AND the backoff
+    const ws2 = FakeWebSocket.instances.at(-1);
+    expect(ws2).not.toBe(ws);
+    expect(acksOn(ws)).toEqual([]); // nothing chased the dead socket
+    const init2 = await handshakeOnFakeTimers(ws2);
+    // The re-attach rebases the cursor far past the one that was pending.
+    respond(ws2, init2, lastPayload(ws2).id, { snapshot: b64(""), cursor: 500 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(acksOn(ws2)).toEqual([]); // the stale timer did not survive the reconnect
+
+    // The new connection acks its own frames normally.
+    push(ws2, init2, { type: "term.output", term_id: "term-1", cursor: 501, data: b64("y") });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(acksOn(ws2).map((a) => a.params)).toEqual([{ term_id: "term-1", cursor: 501 }]);
+    socket.close();
+  });
+
+  it("acks an agent screen under the wire id the bridge named, not the provisional one", async () => {
+    const { socket, ws, init } = await connectedOnFakeTimers();
+    const attaching = socket.attachAgent({ id: "run-3" }, { onSnapshot: () => {}, onOutput: () => {}, onLive: () => {} });
+    attaching.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    respond(ws, init, lastPayload(ws).id, { term_id: "agent:wt-3", snapshot: b64(""), cursor: 0, live: true });
+    await attaching;
+
+    push(ws, init, { type: "term.output", term_id: "agent:wt-3", cursor: 4, data: b64("painting") });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(acksOn(ws).map((a) => a.params)).toEqual([{ term_id: "agent:wt-3", cursor: 4 }]);
     socket.close();
   });
 });

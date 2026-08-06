@@ -37,6 +37,17 @@ const ORPHAN_FRAME_LIMIT = 64;
  *  dead. Only real silence past it is worth a ping. */
 const FRAME_PROOF_OF_LIFE_MS = 4000;
 
+/** How long one terminal's cursor ack holds off the next.
+ *
+ *  The bridge streams blind: it cannot see this browser's receive queue, so
+ *  without a report it keeps feeding a client that is not draining — and every
+ *  frame for this tab rides ONE FIFO, so the pile it builds is what the
+ *  liveness ping and every keystroke end up waiting behind. The report is the
+ *  cursor we have applied, and one per quarter second per terminal is enough
+ *  for a bridge whose budget is measured in megabytes, while a per-frame ack
+ *  would put an RPC behind every flush of a flood. */
+const TERM_ACK_THROTTLE_MS = 250;
+
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     if (typeof getPinnedDeviceKey !== "function") {
@@ -56,7 +67,8 @@ export class TerminalSocket {
     this._onStatus = noop;
     this._closed = false;
     this._backoff = 400;
-    // termId → { kind, attachParams, cols, rows, lastCursor, onOutput, onSnapshot, onClosed, onLive }
+    // termId → { kind, attachParams, termId, cols, rows, lastCursor, ackTimer,
+    //            onOutput, onSnapshot, onClosed, onLive }
     this._terms = new Map();
     this._connected = false;
     this._connectWaiters = [];
@@ -106,7 +118,7 @@ export class TerminalSocket {
       await this.whenConnected();
       await this._call("term.close", { term_id: termId });
     } finally {
-      this._terms.delete(termId);
+      this._forgetTerm(termId);
     }
   }
 
@@ -162,6 +174,7 @@ export class TerminalSocket {
     if (!wireId || wireId === currentId) return;
     if (this._terms.get(currentId) === entry) this._terms.delete(currentId);
     this._terms.set(wireId, entry);
+    entry.termId = wireId; // a pending ack must name the id the bridge knows
     const outran = this._orphanFrames.get(wireId);
     if (outran) {
       this._orphanFrames.delete(wireId);
@@ -200,7 +213,7 @@ export class TerminalSocket {
   /** An attach that never took must not leave its registration behind — a dead
    *  id would swallow pushes and be retried on every reconnect forever. */
   _deregisterFailedAttach(termId, entry) {
-    if (this._terms.get(termId) === entry) this._terms.delete(termId);
+    if (this._terms.get(termId) === entry) this._forgetTerm(termId);
   }
 
   /** Apply an attach response's snapshot, then replay any pushes that outran it
@@ -223,7 +236,7 @@ export class TerminalSocket {
 
   /** Deregister a terminal (tab unmounted) — the server PTY keeps running. */
   detach(termId) {
-    this._terms.delete(termId);
+    this._forgetTerm(termId);
   }
 
   /** Send keystrokes to a terminal's PTY. */
@@ -240,9 +253,13 @@ export class TerminalSocket {
   _register(termId, kind, attachParams, opts) {
     const entry = {
       kind, attachParams,
+      // The wire id this entry currently answers to — what an ack names. An
+      // agent's is provisional until the bridge answers with the real one.
+      termId,
       cols: opts.cols || 80,
       rows: opts.rows || 24,
       lastCursor: 0,
+      ackTimer: null, // pending throttled ack, if any
       attached: false, // pushes buffer in preAttach until the attach response applies
       preAttach: [],
       live: false, // agent kind: last reported session liveness
@@ -258,6 +275,7 @@ export class TerminalSocket {
   /** Permanent close — no reconnect. */
   close() {
     this._closed = true;
+    for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     try { this._ws && this._ws.close(); } catch { /* ignore */ }
   }
 
@@ -372,6 +390,9 @@ export class TerminalSocket {
       entry.lastCursor = 0;
       entry.attached = false;
       entry.preAttach = [];
+      // The cursor this reset just discarded is what a pending ack would have
+      // reported — on a connection where it means nothing.
+      this._cancelPendingAck(entry);
       try {
         const r = entry.kind === "agent"
           ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
@@ -383,7 +404,7 @@ export class TerminalSocket {
         this._applyAttachResult(entry, r);
       } catch (e) {
         if (/unknown (term_id|id)/.test(e.message || "")) {
-          this._terms.delete(termId);
+          this._forgetTerm(termId);
           entry.onClosed("reaped");
         }
         // Other failures leave the entry registered — the next reconnect retries.
@@ -432,7 +453,7 @@ export class TerminalSocket {
         if (entry.kind === "agent" && p.reason === "agent_session_ended") {
           entry.live = false; // the next session's frames re-report live
         } else {
-          this._terms.delete(p.term_id);
+          this._forgetTerm(p.term_id);
         }
         entry.onClosed(p.reason);
       }
@@ -451,12 +472,49 @@ export class TerminalSocket {
         entry.lastCursor = p.cursor;
         entry.onOutput(b64decodeBytes(p.data));
         this._markAgentLive(entry);
+        this._scheduleAck(entry);
       }
     } else if ((p.cursor || 0) >= entry.lastCursor) {
       entry.lastCursor = p.cursor || 0;
       entry.onSnapshot(b64decodeBytes(p.data));
       this._markAgentLive(entry);
+      this._scheduleAck(entry);
     }
+  }
+
+  /** Report this terminal's applied cursor to the bridge, at most once per
+   *  TERM_ACK_THROTTLE_MS. The bridge pauses a client that falls too far past
+   *  its last ack and resyncs it with a snapshot when it catches up, so the
+   *  report is what keeps a busy terminal streaming rather than stalling
+   *  everything behind it.
+   *
+   *  A window already open is left alone — the cursor is read when the ack is
+   *  SENT, so a burst of frames costs one call and reports the last of them.
+   *  The call is advisory: a failure is swallowed, because losing an ack costs
+   *  one snapshot resync while surfacing it would tear the socket down. */
+  _scheduleAck(entry) {
+    if (entry.ackTimer) return;
+    entry.ackTimer = setTimeout(() => {
+      entry.ackTimer = null;
+      this._call("term.ack", { term_id: entry.termId, cursor: entry.lastCursor }).catch(noop);
+    }, TERM_ACK_THROTTLE_MS);
+  }
+
+  /** Drop a terminal's pending ack. A cursor means something only for the
+   *  terminal and the connection it was read on: an ack that outlives either
+   *  reports a position on a stream that no longer exists. */
+  _cancelPendingAck(entry) {
+    if (!entry || !entry.ackTimer) return;
+    clearTimeout(entry.ackTimer);
+    entry.ackTimer = null;
+  }
+
+  /** Deregister a terminal and drop what it still owes the bridge. */
+  _forgetTerm(termId) {
+    const entry = this._terms.get(termId);
+    this._cancelPendingAck(entry);
+    this._terms.delete(termId);
+    return entry;
   }
 
   /** Frames only stream while a session is pumping, so an applied frame on an
@@ -507,6 +565,9 @@ export class TerminalSocket {
     this._gen++; // invalidate this connection so its demux/liveness stop
     this._connected = false;
     this._onStatus("disconnected");
+    // Every pending ack was read on the connection that just died: the bridge
+    // it would report to is gone, and the re-attach rebases each cursor anyway.
+    for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     for (const { reject } of this._pending.values()) reject(new Error("disconnected"));
     this._pending.clear();
     const delay = this._backoff;

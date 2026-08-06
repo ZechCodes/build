@@ -355,6 +355,16 @@ impl ActivePlan {
     }
 }
 
+/// Which checkout a run is being adopted around. The primary checkout is a
+/// worktree like any other to everything downstream of adoption; the two
+/// differ only in the gates that apply at the moment of minting and at the
+/// lifecycle verbs that would remove a worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptionScope {
+    ExternalWorktree,
+    PrimaryCheckout,
+}
+
 /// One run in flight: one implementation attempt — a worktree on a
 /// `build/<slug>` branch, its lifecycle state, per-stage execution progress,
 /// and the warm session. An adopted run is one whose `run.plan_id` is `None`.
@@ -1977,25 +1987,29 @@ impl Orchestrator {
         }
     }
 
-    /// Mint a plan-less run around an existing external worktree (the run-side
-    /// `adopt`; `plan_id` is `None`). No agent session is spawned — the run
-    /// lands in `Review` (there is work to review). Order matches the fused
-    /// path: checkpoint FIRST (pre-Build work stays its own legible commit),
-    /// then scaffold `.build/mcp.json` (left uncommitted). Any error aborts with
+    /// Mint a plan-less run around an existing checkout (the run-side `adopt`;
+    /// `plan_id` is `None`). No agent session is spawned — the run lands in
+    /// `Review` (there is work to review). Order matches the fused path:
+    /// checkpoint FIRST (pre-Build work stays its own legible commit), then
+    /// scaffold `.build/mcp.json` (left uncommitted). Any error aborts with
     /// nothing persisted — the caller only persists on `Ok`.
     pub fn adopt_run(
         &self,
         id: RunId,
-        external: &ExternalWorktree,
+        checkout: &ExternalWorktree,
         base_branch: &str,
         model_choice: ModelChoice,
+        scope: AdoptionScope,
     ) -> Result<ActiveRun, OrchestratorError> {
-        let Some(branch) = external.branch.clone() else {
+        let Some(branch) = checkout.branch.clone() else {
             return Err(OrchestratorError::Gate(
                 "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
             ));
         };
-        if branch == base_branch {
+        // A worktree sitting on the base branch is a mistake to adopt; the
+        // primary checkout sitting on it is the normal case (it is the base
+        // checkout), which is why the scopes are told apart here at all.
+        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
             return Err(OrchestratorError::Gate(format!(
                 "cannot adopt a worktree with the base branch {base_branch:?} checked out"
             )));
@@ -2011,17 +2025,17 @@ impl Orchestrator {
             )));
         }
 
-        self.commit_all_with_message(&external.path, "Checkpoint: adopted by Build")?;
+        self.commit_all_with_message(&checkout.path, "Checkpoint: adopted by Build")?;
 
         let worktree = Worktree {
-            name: external.name.clone(),
-            path: external.path.clone(),
+            name: checkout.name.clone(),
+            path: checkout.path.clone(),
             branch: branch.clone(),
             base_branch: base_branch.to_string(),
         };
         self.scaffold_build_dir(&worktree, &id.0)?;
 
-        let goal = derive_adoption_goal(&branch, &external.head_subject);
+        let goal = derive_adoption_goal(&branch, &checkout.head_subject);
         let mut run = Run::new(id, None, goal);
         run.apply(RunEvent::Dispatch)?;
         run.apply(RunEvent::BuildReady)?;
@@ -2111,7 +2125,7 @@ impl Orchestrator {
     /// best-effort: a leftover worktree is logged, never a reason to fail the
     /// abandon (the lifecycle verdict is what must persist).
     pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
-        active.run.apply(RunEvent::Abandon)?;
+        self.abandon_run_keeping_checkout(active)?;
         if let Err(cleanup) = self
             .worktrees
             .remove(&active.worktree, /* keep_branch */ true)
@@ -2121,6 +2135,18 @@ impl Orchestrator {
                 active.worktree.name
             );
         }
+        Ok(())
+    }
+
+    /// Abandon without touching the checkout — the lifecycle verdict alone.
+    /// A run adopted around the PRIMARY checkout ends this way: that directory
+    /// is the repository, and [`WorktreeManager::remove`] opens with
+    /// `remove_dir_all`.
+    pub fn abandon_run_keeping_checkout(
+        &self,
+        active: &mut ActiveRun,
+    ) -> Result<(), OrchestratorError> {
+        active.run.apply(RunEvent::Abandon)?;
         Ok(())
     }
 
@@ -4516,7 +4542,13 @@ mod tests {
         std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
 
         let run = orch
-            .adopt_run(RunId::new("run-ad"), &external, "main", Default::default())
+            .adopt_run(
+                RunId::new("run-ad"),
+                &external,
+                "main",
+                Default::default(),
+                AdoptionScope::ExternalWorktree,
+            )
             .unwrap();
         assert_eq!(run.run.state, RunState::Review);
         assert_eq!(run.run.plan_id, None, "an adopted run has no plan");

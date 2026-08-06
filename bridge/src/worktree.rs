@@ -465,6 +465,75 @@ pub fn discover_external_worktrees(
     base_branch: &str,
     excluded_paths: &HashSet<PathBuf>,
 ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
+    let primary_canonical = std::fs::canonicalize(repo_path)?;
+    let target = ScanTarget::External {
+        primary: &primary_canonical,
+        excluded: excluded_paths,
+    };
+    let mut found = describe_checkouts(repo_path, base_branch, &target)?;
+    found.sort_by(|a, b| {
+        a.head_age_seconds
+            .cmp(&b.head_age_seconds)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(found)
+}
+
+/// The primary checkout described in the shape adoption takes for an external
+/// worktree, so one adoption path serves both. Read-only.
+pub fn describe_primary_checkout(
+    repo_path: &Path,
+    base_branch: &str,
+) -> Result<ExternalWorktree, WorktreeError> {
+    let primary_canonical = std::fs::canonicalize(repo_path)?;
+    let target = ScanTarget::Primary {
+        primary: &primary_canonical,
+    };
+    describe_checkouts(repo_path, base_branch, &target)?
+        .pop()
+        .ok_or_else(|| {
+            WorktreeError::Command(format!(
+                "the primary checkout at {} cannot be described — a bare or detached repository \
+                 has no branch to adopt",
+                primary_canonical.display()
+            ))
+        })
+}
+
+/// Which of the repository's checkouts a scan describes. The membership test
+/// runs BEFORE any summary is computed: a summary costs several git
+/// invocations per checkout and the external scan runs on a poll.
+enum ScanTarget<'a> {
+    External {
+        primary: &'a Path,
+        excluded: &'a HashSet<PathBuf>,
+    },
+    Primary {
+        primary: &'a Path,
+    },
+}
+
+impl ScanTarget<'_> {
+    fn admits(&self, canonical_path: &Path) -> bool {
+        match self {
+            ScanTarget::External { primary, excluded } => {
+                canonical_path != *primary && !excluded.contains(canonical_path)
+            }
+            ScanTarget::Primary { primary } => canonical_path == *primary,
+        }
+    }
+
+    fn is_primary(&self, canonical_path: &Path) -> bool {
+        matches!(self, ScanTarget::Primary { primary } if canonical_path == *primary)
+    }
+}
+
+/// `git worktree list --porcelain`, parsed into the summaries `target` admits.
+fn describe_checkouts(
+    repo_path: &Path,
+    base_branch: &str,
+    target: &ScanTarget<'_>,
+) -> Result<Vec<ExternalWorktree>, WorktreeError> {
     let output = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(repo_path)
@@ -475,46 +544,26 @@ pub fn discover_external_worktrees(
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-
-    let primary_canonical = std::fs::canonicalize(repo_path)?;
     let repo = git2::Repository::open(repo_path)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let mut found = Vec::new();
-    for block in stdout.split("\n\n") {
-        let Some(entry) = parse_worktree_block(
-            block,
-            &repo,
-            &primary_canonical,
-            excluded_paths,
-            base_branch,
-            now,
-        ) else {
-            continue;
-        };
-        found.push(entry);
-    }
-
-    found.sort_by(|a, b| {
-        a.head_age_seconds
-            .cmp(&b.head_age_seconds)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    Ok(found)
+    Ok(stdout
+        .split("\n\n")
+        .filter_map(|block| parse_worktree_block(block, &repo, target, base_branch, now))
+        .collect())
 }
 
 /// Parse one `git worktree list --porcelain` block into an [`ExternalWorktree`],
-/// or `None` if it should be skipped (bare/prunable, primary checkout, excluded,
-/// gone from disk, or a summary that could not be computed — each case logs its
-/// own `eprintln!` except the deliberately silent structural skips).
+/// or `None` if it should be skipped (bare/prunable, outside `target`, gone from
+/// disk, or a summary that could not be computed — each case logs its own
+/// `eprintln!` except the deliberately silent structural skips).
 fn parse_worktree_block(
     block: &str,
     repo: &git2::Repository,
-    primary_canonical: &Path,
-    excluded_paths: &HashSet<PathBuf>,
+    target: &ScanTarget<'_>,
     base_branch: &str,
     now: i64,
 ) -> Option<ExternalWorktree> {
@@ -552,10 +601,7 @@ fn parse_worktree_block(
         return None;
     }
     let canonical_path = std::fs::canonicalize(&path).ok()?;
-    if canonical_path == primary_canonical {
-        return None;
-    }
-    if excluded_paths.contains(&canonical_path) {
+    if !target.admits(&canonical_path) {
         return None;
     }
     let head_sha = head_sha?;
@@ -564,13 +610,23 @@ fn parse_worktree_block(
         return None;
     }
 
-    let name = resolve_worktree_name(repo, &canonical_path).or_else(|| {
-        eprintln!(
-            "discover_external_worktrees: no git worktree name for {}",
-            canonical_path.display()
-        );
-        None
-    })?;
+    // Git names only LINKED worktrees, so the primary checkout has none. A
+    // name exists to make `WorktreeManager::remove` work, and the primary is
+    // never removed (it is the repository), so its directory stands in.
+    let name = if target.is_primary(&canonical_path) {
+        canonical_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "primary".to_string())
+    } else {
+        resolve_worktree_name(repo, &canonical_path).or_else(|| {
+            eprintln!(
+                "discover_external_worktrees: no git worktree name for {}",
+                canonical_path.display()
+            );
+            None
+        })?
+    };
 
     let head_oid = git2::Oid::from_str(&head_sha)
         .inspect_err(|e| {

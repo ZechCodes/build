@@ -28,8 +28,8 @@ use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneRe
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, Agent, AgentTurn, Orchestrator, OrchestratorError, ReportConsumed,
-    ReportOutcome, RunSource, SpawnOptions, TranscriptProbe,
+    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
+    ReportConsumed, ReportOutcome, RunSource, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -4273,6 +4273,45 @@ impl AppState {
             .ok_or_else(|| format!("unknown project: {project_id}"))
     }
 
+    /// A project's primary checkout — the repo root, the same directory
+    /// `TermScope::Primary` resolves to.
+    fn repo_path_for(&self, project_id: &str) -> Result<std::path::PathBuf, String> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.repo_path.clone())
+            .ok_or_else(|| format!("unknown project: {project_id}"))
+    }
+
+    /// Whether a run was adopted around its project's primary checkout rather
+    /// than a worktree beside it.
+    ///
+    /// Derived from the two paths the run record already carries (its worktree
+    /// and its project), so it survives a daemon restart with no new stored
+    /// field and can never disagree with where the run actually works. Takes
+    /// the run by reference because the callers that matter most — `run_view`
+    /// and the lifecycle guards — hold it outside the map.
+    fn owns_primary_checkout(&self, run_id: &str, active: &ActiveRun) -> bool {
+        let repo_path = self.project_path_for(run_id);
+        !repo_path.is_empty()
+            && Self::canonical_root(std::path::Path::new(&repo_path))
+                == Self::canonical_root(&active.worktree.path)
+    }
+
+    /// The live run that owns a project's primary checkout, if one has been
+    /// adopted. A terminal run has let go of it, so the checkout is adoptable
+    /// again.
+    fn primary_run_of(&self, project_id: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .find(|(run_id, active)| {
+                !active.run.state.is_terminal()
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                    && self.owns_primary_checkout(run_id, active)
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
     /// The project an entity (plan or run) belongs to.
     fn project_of(&self, entity_id: &str) -> Result<String, String> {
         self.entity_project
@@ -4398,11 +4437,34 @@ impl AppState {
             )
         }
 
+        // Who owns each primary checkout, so the main row can route to its run
+        // after a reload. Resolved up front: the loop below holds a &mut borrow
+        // of the summary cache.
+        let owners: HashMap<String, String> = self
+            .projects
+            .iter()
+            .filter_map(|project| {
+                self.primary_run_of(&project.id)
+                    .map(|run_id| (project.id.clone(), run_id))
+            })
+            .collect();
+        // Ownership changes on its own schedule, so it is stamped onto the
+        // outgoing entry rather than into the cached git summary.
+        let with_owner = |mut entry: Value, project_id: &str| {
+            entry["run_id"] = owners
+                .get(project_id)
+                .cloned()
+                .map_or(Value::Null, Value::String);
+            entry
+        };
+
         let mut entries = Vec::new();
         for i in 0..self.projects.len() {
             if let Some((computed_at, cached)) = &self.projects[i].primary_summary {
                 if computed_at.elapsed() < PRIMARY_SUMMARY_TTL {
-                    entries.push(cached.clone());
+                    let cached = cached.clone();
+                    let project_id = self.projects[i].id.clone();
+                    entries.push(with_owner(cached, &project_id));
                     continue;
                 }
             }
@@ -4443,7 +4505,7 @@ impl AppState {
             self.projects[i].primary_summary =
                 summary.clone().map(|s| (std::time::Instant::now(), s));
             if let Some(summary) = summary {
-                entries.push(summary);
+                entries.push(with_owner(summary, &project_id));
             }
         }
         entries
@@ -6869,11 +6931,19 @@ impl AppState {
         if !is_merge_action && params.get("cleanup").is_some() {
             return Err("cleanup only applies to merge actions".to_string());
         }
-        let adopted = self
-            .runs
-            .get(&run_id)
-            .map(|a| a.adopted)
-            .ok_or("unknown run_id")?;
+        let bound = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        let adopted = bound.adopted;
+        // A merge lands the run's branch on the base branch through the primary
+        // checkout. For a primary run that target IS the checkout being merged
+        // — a no-op when it sits on the base branch, and a merge into the wrong
+        // tree when it does not.
+        if is_merge_action && self.owns_primary_checkout(&run_id, bound) {
+            return Err(
+                "run.git_action: the primary checkout cannot be merged — its branch is what a \
+                 merge would target"
+                    .to_string(),
+            );
+        }
         let cleanup = if is_merge_action {
             merge_cleanup_from(params, adopted)?
         } else {
@@ -7103,9 +7173,16 @@ impl AppState {
         // before deleting the evidence it needs to decide it.
         let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-        let result = self
-            .orch_for(&project_id)
-            .and_then(|orch| orch.abandon_run(&mut active).map_err(err));
+        // Abandoning removes the run's worktree — which for a primary run is
+        // the repository. That run ends by letting go of the checkout instead.
+        let keeps_checkout = self.owns_primary_checkout(&run_id, &active);
+        let result = self.orch_for(&project_id).and_then(|orch| {
+            if keeps_checkout {
+                orch.abandon_run_keeping_checkout(&mut active).map_err(err)
+            } else {
+                orch.abandon_run(&mut active).map_err(err)
+            }
+        });
         if result.is_ok() {
             // The worktree removal inside `abandon_run` is best-effort, so the
             // orphan reaper — which only sweeps tabs whose root is GONE —
@@ -7235,22 +7312,49 @@ impl AppState {
         Ok(json!({ "ok": true }))
     }
 
-    /// Mint a plan-less run around an existing external worktree (`plan_id` None).
+    /// Mint a plan-less run around an existing checkout (`plan_id` None): one of
+    /// the project's external worktrees (`worktree_id`), or its primary
+    /// checkout (`primary: true`) — the repo root as a super-worktree.
+    ///
+    /// The primary checkout has exactly one owner per project, enforced here.
+    /// External adoption can rely on a client-side latch because a worktree
+    /// card is adopted from one place; the repo root is reachable from every
+    /// reload and every second browser, and they must all converge on the run
+    /// that already owns it.
     fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let worktree_id = require_str(params, "worktree_id")?;
         let model_choice = model_choice_from(params)?;
-        // Force a fresh scan: adoption must never act on a stale card.
-        let external = self
-            .external_worktrees(&project_id, true)?
-            .into_iter()
-            .find(|w| w.id == worktree_id)
-            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?;
         let base = self.base_for(&project_id)?;
+        let adopting_primary = params
+            .get("primary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let (checkout, scope) = if adopting_primary {
+            if let Some(run_id) = self.primary_run_of(&project_id) {
+                let active = self.runs.get(&run_id).expect("found by scanning the map");
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+            }
+            let repo_path = self.repo_path_for(&project_id)?;
+            (
+                crate::worktree::describe_primary_checkout(&repo_path, &base)
+                    .map_err(|e| e.to_string())?,
+                AdoptionScope::PrimaryCheckout,
+            )
+        } else {
+            let worktree_id = require_str(params, "worktree_id")?;
+            // Force a fresh scan: adoption must never act on a stale card.
+            (
+                self.external_worktrees(&project_id, true)?
+                    .into_iter()
+                    .find(|w| w.id == worktree_id)
+                    .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?,
+                AdoptionScope::ExternalWorktree,
+            )
+        };
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let active = self
             .orch_for(&project_id)?
-            .adopt_run(RunId::new(&run_id), &external, &base, model_choice)
+            .adopt_run(RunId::new(&run_id), &checkout, &base, model_choice, scope)
             .map_err(err)?;
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
@@ -7270,6 +7374,16 @@ impl AppState {
         parse_worktree_finish_action(&action_name)?;
         let project_id = self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        // Finishing archives a worktree and then removes it. The primary
+        // checkout is the repository itself: there is nothing to file away,
+        // and everything to lose.
+        if self.owns_primary_checkout(&run_id, active) {
+            return Err(
+                "run.finish: the primary checkout cannot be finished or archived — it is the \
+                 repository, not a worktree to clean up"
+                    .to_string(),
+            );
+        }
         if !matches!(active.run.state, RunState::Review | RunState::Merged) {
             return Err(format!(
                 "run.finish: run is {} — Done requires completed work",
@@ -7826,6 +7940,10 @@ impl AppState {
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
+            // Adopted around the repo root, not a worktree beside it: the rail
+            // renders it as the project's "main" row, never as one more
+            // worktree, and its finish/merge controls do not apply.
+            "primary": self.owns_primary_checkout(run_id, active),
             "recovery": active.recovery,
             "can_finish": active.run.state == RunState::Merged
                 || (active.run.state == RunState::Review && active.worktree.path.exists()),
@@ -18782,6 +18900,273 @@ mod tests {
             "releasing a run closes the agent it owned"
         );
         assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
+    }
+
+    // ---- the primary checkout as a super-worktree -----------------------------
+
+    /// Adopt the project's primary checkout — the same verb, the same run, the
+    /// repo root instead of a worktree beside it.
+    fn adopted_primary_run(state: &mut AppState) -> String {
+        let project_id = state.projects[0].id.clone();
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        run_id_of(&adopted)
+    }
+
+    /// The primary checkout adopts exactly like an external worktree, with one
+    /// difference the client cannot enforce: the repo root has a stable
+    /// identity, so a reload or a second browser must converge on ONE owner.
+    #[test]
+    fn run_adopt_primary_owns_the_repo_root_and_is_idempotent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
+        assert_eq!(adopted["result"]["adopted"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["primary"], true, "{adopted:?}");
+        // The primary sits on the base branch — the one state external
+        // adoption refuses, and the normal state here.
+        assert_eq!(adopted["result"]["branch"], "main", "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+        assert_eq!(
+            AppState::canonical_root(std::path::Path::new(
+                adopted["result"]["worktree_path"].as_str().unwrap()
+            )),
+            AppState::canonical_root(&repo),
+            "the primary run works in the repo root: {adopted:?}"
+        );
+
+        let again = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            run_id_of(&again),
+            run_id,
+            "the primary checkout has one owner, whoever asks again"
+        );
+        assert_eq!(
+            state.runs.len(),
+            1,
+            "a second adoption must not mint a second owner"
+        );
+    }
+
+    /// Finishing archives a worktree and removes it. The primary checkout is
+    /// the repository; there is nothing to file away and everything to lose.
+    #[test]
+    fn run_finish_refuses_the_primary_checkout() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_primary_run(&mut state);
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], false, "{finished:?}");
+        assert!(
+            finished["error"]
+                .as_str()
+                .unwrap()
+                .contains("the primary checkout cannot be finished"),
+            "the refusal names the reason: {finished:?}"
+        );
+        assert!(repo.join("README.md").exists(), "the checkout is untouched");
+        assert!(state.runs.contains_key(&run_id), "the run survives");
+    }
+
+    /// Merging the primary checkout would merge the base branch into itself —
+    /// meaningless at best, and at worst a merge whose target is the very
+    /// checkout being merged.
+    #[test]
+    fn run_git_action_refuses_to_merge_the_primary_checkout() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_primary_run(&mut state);
+
+        for action in ["merge", "merge_push"] {
+            let refused = state.handle(req(
+                "run.git_action",
+                json!({ "run_id": run_id, "action": action }),
+            ));
+            assert_eq!(refused["ok"], false, "{action}: {refused:?}");
+            assert!(
+                refused["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the primary checkout cannot be merged"),
+                "{action}: the refusal names the reason: {refused:?}"
+            );
+        }
+        assert!(repo.join("README.md").exists(), "the checkout is untouched");
+    }
+
+    /// Abandon ends the run and takes its agent with it — but a primary run's
+    /// checkout is the repository. `WorktreeManager::remove` starts with
+    /// `remove_dir_all`, so this path has to skip it entirely, and `run.delete`
+    /// after it must not reach for it either.
+    #[test]
+    fn abandoning_a_primary_run_never_touches_the_checkout() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_primary_run(&mut state);
+        let root = AppState::canonical_root(&repo);
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &warm_tui_spec(),
+            AGENT_TAB_ID.to_string(),
+            root.clone(),
+            120,
+            40,
+        )
+        .unwrap();
+        let agent_pid = tab.session.pid().expect("a live agent");
+        state.tabs.insert(TabKey::agent(&root), tab);
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(
+            repo.join("README.md").exists(),
+            "abandoning a primary run must never delete the repository"
+        );
+        assert!(
+            !state.tabs.contains_key(&TabKey::agent(&root)),
+            "the agent goes with the owner that hosted it"
+        );
+        assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
+
+        let deleted = state.handle(req("run.delete", json!({ "run_id": run_id })));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert!(
+            repo.join("README.md").exists(),
+            "clearing the card must never delete the repository"
+        );
+    }
+
+    /// A primary run is an owner like any other: the surfaces that make an
+    /// owner useful reach it through the same verbs.
+    #[test]
+    fn thread_post_reaches_the_primary_runs_thread() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_primary_run(&mut state);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "look at the flaky test" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state.runs[&run_id].thread.has_unread(),
+            "the message is waiting on the primary run's own thread"
+        );
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| item["data"]["body"] == "look at the flaky test"),
+            "{posted:?}"
+        );
+    }
+
+    /// The primary run must never read as one more worktree row: the rail's
+    /// worktree list stays free of it, its view says what it is, and the main
+    /// row names its owner so a reload routes straight to it.
+    #[test]
+    fn the_primary_run_is_flagged_and_never_a_worktree_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let external_run_id = adopted_run(&mut state, &repo, dir.path(), "feature-y");
+        let run_id = adopted_primary_run(&mut state);
+
+        let board = state.handle(req("board.list", json!({})));
+        let runs = board["result"]["runs"].as_array().unwrap();
+        let primary = runs
+            .iter()
+            .find(|run| run["run_id"] == run_id)
+            .unwrap_or_else(|| panic!("the primary run is on the board: {board:?}"));
+        assert_eq!(primary["primary"], true, "{primary:?}");
+        let external = runs
+            .iter()
+            .find(|run| run["run_id"] == external_run_id)
+            .expect("the external run is on the board");
+        assert_eq!(
+            external["primary"], false,
+            "a worktree run is not the primary: {external:?}"
+        );
+
+        let root = AppState::canonical_root(&repo).display().to_string();
+        assert!(
+            board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|worktree| worktree["path"] != root),
+            "the repo root is never an external worktree row: {board:?}"
+        );
+
+        let main_row = board["result"]["primary_changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["project_id"] == project_id)
+            .unwrap_or_else(|| panic!("the main row is on the board: {board:?}"))
+            .clone();
+        assert_eq!(
+            main_row["run_id"], run_id,
+            "the main row names its owner: {main_row:?}"
+        );
+    }
+
+    /// The Agent tab on the main surface: `agent.start` needs an owner, and
+    /// adoption is what gives the primary checkout one. The agent runs in the
+    /// repo root, keyed there like every other worktree's agent.
+    #[tokio::test]
+    async fn agent_start_opens_the_primary_checkouts_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let adopted = call(
+            &handler,
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+
+        let started = call(&handler, "agent.start", json!({ "id": run_id }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            started["result"]["spawned"], "fresh",
+            "the first start opens the agent: {started:?}"
+        );
+        let root = AppState::canonical_root(&repo);
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .tabs
+                .contains_key(&TabKey::agent(&root)),
+            "the primary checkout's agent is keyed on the repo root"
+        );
+        let again = call(&handler, "agent.start", json!({ "id": run_id }));
+        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
     }
 
     #[test]

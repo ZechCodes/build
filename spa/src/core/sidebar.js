@@ -8,7 +8,7 @@
 import { esc } from "./text.js";
 import { defaultRunTab } from "./taskActions.js";
 import { RUN_STATE_LABEL, PLAN_STATE_LABEL } from "./entityPresentation.js";
-import { dotState, railEntries, railWorktrees } from "./rail.js";
+import { dotState, railEntries, railWorktrees, runEntry } from "./rail.js";
 
 export function buildSidebarModel({
   projects,
@@ -31,14 +31,18 @@ export function buildSidebarModel({
     const worktrees = (externalWorktrees || []).filter(
       (w) => w.project_id === p.project_id && visible("worktree", w.worktree_id),
     );
+    const pc = (primaryChanges || []).find((c) => c.project_id === p.project_id) || null;
+    // The run that owns the primary checkout is the project's main row, never
+    // one more entry — the checkout line carries its dot. Only lifted when that
+    // line exists to carry it; without a summary the run stays listed.
+    const primaryRun = pc ? myRuns.find((r) => r.primary) : null;
     const entries = railEntries({
-      runs: myRuns,
+      runs: primaryRun ? myRuns.filter((r) => r !== primaryRun) : myRuns,
       plans: myPlans,
       worktrees,
       projectId: p.project_id,
       nowMs,
     });
-    const pc = (primaryChanges || []).find((c) => c.project_id === p.project_id) || null;
     // The badge counts what is waiting on you and unread — the same question the
     // yellow dot answers, so the two can never disagree.
     const unread =
@@ -61,6 +65,7 @@ export function buildSidebarModel({
             files_changed: pc.files_changed || 0,
             insertions: pc.insertions || 0,
             deletions: pc.deletions || 0,
+            run: primaryRun ? runEntry(primaryRun) : null,
           }
         : null,
     };
@@ -157,13 +162,14 @@ export function checkoutStatusHtml(primary) {
 
 // The project's primary checkout, as the second line of its header: the branch
 // it has out and that branch's git status. No glyph and no label word — its
-// place under the project name says which checkout it is.
+// place under the project name says which checkout it is. When a run owns the
+// checkout, this line is that run's row, so it carries the run's dot.
 function checkoutLine(m, ui) {
   if (!m.primary) return "";
   const active = ui.activeMainProjectId === m.project_id ? "active" : "";
   const title = esc(m.primary.branch) + (m.primary.path ? ` — ${esc(m.primary.path)}` : "");
   return `<div class="srow smain-line ${active}" data-main="${esc(m.project_id)}" title="${title}">
-    <span class="stitle mono">${esc(m.primary.branch)}</span>${checkoutStatusHtml(m.primary)}</div>`;
+    ${m.primary.run ? dotHtml(m.primary.run) : ""}<span class="stitle mono">${esc(m.primary.branch)}</span>${checkoutStatusHtml(m.primary)}</div>`;
 }
 
 /** The `Worktrees ›` row: everything the entries above did not already show —

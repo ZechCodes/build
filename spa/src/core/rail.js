@@ -34,8 +34,10 @@ const ms = (iso) => {
  *  it lives on — a worktree with no goal behind it is still its branch. */
 const nameOf = (entry) => entry.name || entry.branch || "";
 
-/** Normalise a run into a rail entry. */
-function runEntry(run) {
+/** Normalise a run into a rail entry. Exported for the one run that never
+ *  becomes a rail row: the primary checkout's owner, whose entry rides the
+ *  project's checkout line instead. */
+export function runEntry(run) {
   const state = run.state || "";
   return {
     kind: "run",

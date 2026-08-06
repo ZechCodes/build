@@ -136,7 +136,38 @@ describe("buildSidebarModel", () => {
       files_changed: 3,
       insertions: 12,
       deletions: 4,
+      run: null,
     });
+  });
+
+  // The primary checkout's owner (a run adopted around the repo root) is the
+  // project's main row, never one more entry — the checkout line carries it.
+  it("lifts the primary run onto the main row instead of listing it", () => {
+    const m = model({
+      runs: [run(), run({ run_id: "rp", goal: "", branch: "main", primary: true })],
+      primaryChanges: [{ project_id: "p1", branch: "main", files_changed: 0, insertions: 0, deletions: 0 }],
+    });
+    expect(m.entries.map((e) => e.id).sort()).toEqual(["pl1", "r1"]);
+    expect(m.primary.run).toMatchObject({ kind: "run", id: "rp" });
+  });
+
+  it("keeps the primary run listed when there is no checkout line to carry it", () => {
+    const m = model({
+      runs: [run({ run_id: "rp", primary: true })],
+      plans: [],
+      primaryChanges: [],
+    });
+    expect(m.entries.map((e) => e.id)).toEqual(["rp"]);
+    expect(m.primary).toBe(null);
+  });
+
+  it("still counts an unread primary run for the badge", () => {
+    const m = model({
+      runs: [run({ run_id: "rp", primary: true, needs_attention: true })],
+      plans: [],
+      primaryChanges: [{ project_id: "p1", branch: "main", files_changed: 0, insertions: 0, deletions: 0 }],
+    });
+    expect(m.unread).toBe(1);
   });
 
   it("hands worktrees the entries did not show to the Worktrees row", () => {
@@ -172,6 +203,20 @@ describe("a project block", () => {
     expect(html).toContain("relaydb");
     expect(html).toContain("main");
     expect(html).not.toContain("sproj-body");
+  });
+
+  it("puts the primary run's dot on the checkout line, and no extra row", () => {
+    const html = projectHtml(
+      model({
+        runs: [run({ run_id: "rp", goal: "", branch: "main", primary: true, state: "building" })],
+        plans: [],
+        primaryChanges: [{ project_id: "p1", branch: "main", files_changed: 0, insertions: 0, deletions: 0 }],
+      }),
+      ui(),
+    );
+    const mainLine = html.match(/<div class="srow smain-line[^]*?<\/div>/)[0];
+    expect(mainLine).toContain("sdot-working");
+    expect(html).not.toContain('data-run="rp"');
   });
 
   it("renders a row as dot, name, then floating git status", () => {

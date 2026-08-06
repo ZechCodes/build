@@ -1,7 +1,7 @@
 // The run view (a run is a "Task" in the UI): the worktree-scoped surface for
 // implementing a plan. Tabs are Conversation, Stages (multi-stage runs only),
-// Changes (the review diff + request-changes + the merge/git plug), Files, Agent, and one per
-// open terminal. The plan doc left the run entirely — a compact reference header
+// Changes (the review diff + request-changes + the merge/git plug), Files, Agent, one per
+// open terminal, and the tab bar's shared right cluster (Inbox, Archive, project settings). The plan doc left the run entirely — a compact reference header
 // links back to the owning plan (an adopted run shows its goal). Live-polled every
 // 1.6s; the aux tabs (Changes/Files/Agent/terminals) own their own bodies and are
 // never repainted by the poll.
@@ -20,6 +20,7 @@ import { createTaskReview } from "./taskReview.js";
 import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
 import { hashFromRoute } from "../core/router.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
+import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
 
 /** The task surface's tabs, in row order. Agent is a fixture here as it is on
  *  every worktree surface — the run's worktree has one agent and it is always
@@ -65,7 +66,9 @@ export async function renderTask() {
 
   // Aux tabs own their bodies; the poll only keeps the shell + banner current for
   // them. Conversation and Stages are poll-driven and are not aux tabs.
-  const isAuxTab = (tabId) => tabId === "changes" || tabId === "files" || tabId === "agent" || /^term-/.test(tabId);
+  // Cluster tabs own their bodies too — the poll must leave them alone.
+  const isAuxTab = (tabId) =>
+    tabId === "changes" || tabId === "files" || tabId === "agent" || isProjectClusterTab(tabId) || /^term-/.test(tabId);
   const isMultiStage = () => !!(last && last.stages && last.stages.length);
   // A run parked between stages opens on Stages; every other state opens on
   // Changes. A single-stage run never has a Stages tab, so fall back.
@@ -102,6 +105,7 @@ export async function renderTask() {
       onNewTab: () => newTerminal(),
       back: { title: m.project ? `Back to ${m.project}` : "Back to project" },
       onBack: () => goHome(),
+      ...projectClusterShellOptions({ projectId, selectTab: (tabId) => selectTab(tabId) }),
     });
     // A full shell rebuild (state/goal changed) wiped #tabbody — re-mount an aux
     // tab so the poll's early-return leaves a live pane in place.
@@ -134,6 +138,16 @@ export async function renderTask() {
     // each scroll internally); the rest keep the body padding.
     body.classList.toggle("bare", tabId === "agent" || /^term-/.test(tabId));
     body.classList.toggle("flush", tabId === "changes" || tabId === "files");
+    if (isProjectClusterTab(tabId)) {
+      // The project-wide panes behind the tab bar's right cluster: the same
+      // Inbox and Archive every project surface reaches, mounted here.
+      aux = mountProjectClusterTab(body, tabId, {
+        projectId,
+        callRpc: (method, params) => App.call(method, params),
+        navigate: go,
+      });
+      return;
+    }
     if (tabId === "agent") {
       // The run addresses its own agent; the bridge resolves that to the
       // worktree the run works in, which is where the agent actually lives.

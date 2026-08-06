@@ -1,5 +1,5 @@
 // Hash routes: #/notifications (the landing surface), #/settings,
-// #/project/<projectId>       — one project's Inbox,
+// #/project/<projectId>       — one project's primary checkout (Conversation),
 // #/project/<projectId>/<tab> — that project's primary checkout tabs.
 // #/project/<projectId>/task/<runId>/<tab>
 // #/project/<projectId>/issue/<issueId>/<tab>[/<stage>]
@@ -14,28 +14,32 @@ const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
 // falls back to that surface's Conversation default. Terminal tabs (`term-<n>`) are valid
 // on every worktree-backed surface. A run's plan doc moved to the plan route, so
 // a legacy #/task/<id>/plan (and the merged Diff tab) both land on Changes.
+// The tab bar's right cluster (core/projectCluster.js) rides EVERY project
+// surface, so its tabs are addressable on every one of them.
+const clusterTabs = ["inbox", "archive"];
+const runTabs = new Set(["conversation", "changes", "files", "agent", "stages", ...clusterTabs]);
 const runTab = (seg) =>
-  seg === "conversation" || seg === "changes" || seg === "files" || seg === "agent" || seg === "stages" || isTermTab(seg)
-    ? seg
-    : seg === "diff" || seg === "plan"
-      ? "changes"
-      : "conversation";
-// A plan is project-scoped: Conversation, Stages/Plan, and its disposable-worktree
-// agent screen. Plans are not a terminal scope, so `term-<n>` falls back to Conversation.
-const planTab = (seg) => (seg === "review" ? "stages" : seg === "agent" || seg === "stages" ? seg : "conversation");
+  runTabs.has(seg) || isTermTab(seg) ? seg : seg === "diff" || seg === "plan" ? "changes" : "conversation";
+// A plan is project-scoped: Conversation, Stages/Plan, its disposable-worktree
+// agent screen, and the cluster. Plans are not a terminal scope, so `term-<n>`
+// falls back to Conversation.
+const planTabs = new Set(["conversation", "stages", "agent", ...clusterTabs]);
+const planTab = (seg) => (seg === "review" ? "stages" : planTabs.has(seg) ? seg : "conversation");
 // A worktree surface is Conversation + Changes + Files + its ONE Build-owned agent. The Agent
 // tab is a fixture there (surfaceTabs.js AGENT_TAB) — always reachable means
 // reachable by URL too, so a reload or a shared link stays on it.
-const worktreeSurfaceTabs = new Set(["conversation", "changes", "files", "agent"]);
+const worktreeSurfaceTabs = new Set(["conversation", "changes", "files", "agent", ...clusterTabs]);
 const worktreeTab = (seg) => (seg === "diff" ? "changes" : worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "conversation");
 // The project surface IS the primary checkout's worktree surface plus its
-// project-scoped panes (Inbox, Issues, Archive). Same vocabulary for the canonical
+// project-scoped Issues pane. Same vocabulary for the canonical
 // #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias; they differ
 // only in which tab an unknown segment falls back to.
-const projectSurfaceTabs = new Set([...worktreeSurfaceTabs, "inbox", "issues", "archive"]);
+const projectSurfaceTabs = new Set([...worktreeSurfaceTabs, "issues"]);
 const projectSurfaceTab = (seg, fallback) => (projectSurfaceTabs.has(seg) || isTermTab(seg) ? seg : fallback);
 const mainTab = (seg) => projectSurfaceTab(seg, "changes");
-const projectTab = (seg) => projectSurfaceTab(seg, "inbox");
+// The bare project URL is the primary checkout's Conversation — the same landing
+// every other worktree surface has. Inbox keeps its own segment.
+const projectTab = (seg) => projectSurfaceTab(seg, "conversation");
 
 export function routeFromHash(hash) {
   const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
@@ -110,7 +114,7 @@ export function hashFromRoute(route) {
   if (route.name === "main") return `#/project/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
   if (route.name === "project") {
     const base = `#/project/${encodeURIComponent(route.projectId)}`;
-    return !route.tab || route.tab === "inbox" ? base : `${base}/${route.tab}`;
+    return !route.tab || route.tab === "conversation" ? base : `${base}/${route.tab}`;
   }
   if (route.name === "notifications") return "#/notifications";
   if (route.name === "settings") return "#/settings";

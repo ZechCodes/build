@@ -22,11 +22,9 @@ describe("the Agent tab on every worktree surface", () => {
     expect(ids(worktreeSurfaceTabs([TERMINAL]))).toEqual(["conversation", "changes", "files", "agent", "term-1"]);
     expect(ids(projectSurfaceTabs([TERMINAL]))).toEqual([
       "conversation",
-      "inbox",
       "issues",
       "changes",
       "files",
-      "archive",
       "agent",
       "term-1",
     ]);

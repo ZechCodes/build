@@ -9,14 +9,19 @@ describe("project surface chrome", () => {
   it("puts project panes first, then the checkout's agent and terminal tabs", () => {
     expect(projectSurfaceTabs([{ id: "term-1", label: "Terminal 1", closable: true }])).toEqual([
       { id: "conversation", label: "Conversation" },
-      { id: "inbox", label: "Inbox" },
       { id: "issues", label: "Issues" },
       { id: "changes", label: "Changes" },
       { id: "files", label: "Files" },
-      { id: "archive", label: "Archive" },
       { id: "agent", label: "Agent" },
       { id: "term-1", label: "Terminal 1", closable: true },
     ]);
   });
 
+  // Inbox and Archive are project-wide, not primary-checkout panes: they moved to
+  // the tab bar's right cluster, which every project surface carries.
+  it("leaves the project-wide entries to the shared right cluster", () => {
+    const ids = projectSurfaceTabs([]).map((tab) => tab.id);
+    expect(ids).not.toContain("inbox");
+    expect(ids).not.toContain("archive");
+  });
 });

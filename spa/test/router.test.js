@@ -12,7 +12,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/plan/plan-123/review")).toEqual({ name: "plan", id: "plan-123", tab: "stages" });
     expect(routeFromHash("#/plan/plan-123")).toEqual({ name: "plan", id: "plan-123", tab: "conversation" });
     expect(routeFromHash("#/worktree/proj-1/wt-abc")).toEqual({ name: "worktree", projectId: "proj-1", worktreeId: "wt-abc", tab: "conversation" });
-    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
+    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "conversation" });
     expect(routeFromHash("#/project/proj-1/task/run-123/changes")).toEqual({
       name: "task", projectId: "proj-1", id: "run-123", tab: "changes",
     });
@@ -82,7 +82,9 @@ describe("routeFromHash", () => {
   });
 
   it("parses the project inbox and primary-checkout tabs under one URL", () => {
-    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "inbox" });
+    // The bare project URL is the primary checkout's Conversation, as on every
+    // other worktree surface; the Inbox is one tab along, addressable as ever.
+    expect(routeFromHash("#/project/proj-1")).toEqual({ name: "project", projectId: "proj-1", tab: "conversation" });
     expect(routeFromHash("#/project/proj-1/issues").tab).toBe("issues");
     expect(routeFromHash("#/project/proj-1/changes").tab).toBe("changes");
     expect(routeFromHash("#/project/proj-1/files").tab).toBe("files");
@@ -93,7 +95,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/project/proj-1/inbox").tab).toBe("inbox");
     expect(routeFromHash("#/project/proj-1/issues").tab).toBe("issues");
     expect(routeFromHash("#/project/proj-1/agent").tab).toBe("agent");
-    expect(routeFromHash("#/project/proj-1/bogus").tab).toBe("inbox");
+    expect(routeFromHash("#/project/proj-1/bogus").tab).toBe("conversation");
     expect(routeFromHash("#/project/a%20b/files")).toEqual({ name: "project", projectId: "a b", tab: "files" });
   });
 
@@ -102,10 +104,10 @@ describe("routeFromHash", () => {
   // tab regressed on three of the four surfaces once; this pins all of them.
   it("addresses every tab its surface can select, on every surface", () => {
     const selectableTabsBySurface = {
-      "#/project/p/task/r": ["conversation", "stages", "changes", "files", "agent", "term-1"],
-      "#/project/p/plan/pl": ["conversation", "stages", "agent"],
-      "#/project/p/worktree/w": ["conversation", "changes", "files", "agent", "term-1"],
-      "#/project/p": ["inbox", "issues", "changes", "files", "archive", "agent", "term-1"],
+      "#/project/p/task/r": ["conversation", "stages", "changes", "files", "agent", "term-1", "inbox", "archive"],
+      "#/project/p/plan/pl": ["conversation", "stages", "agent", "inbox", "archive"],
+      "#/project/p/worktree/w": ["conversation", "changes", "files", "agent", "term-1", "inbox", "archive"],
+      "#/project/p": ["conversation", "inbox", "issues", "changes", "files", "archive", "agent", "term-1"],
     };
     for (const [base, tabs] of Object.entries(selectableTabsBySurface)) {
       for (const tab of tabs) expect([`${base}/${tab}`, routeFromHash(`${base}/${tab}`).tab]).toEqual([`${base}/${tab}`, tab]);
@@ -218,6 +220,20 @@ describe("hashFromRoute", () => {
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
   });
 
+  // Inbox and Archive left the project row for the tab bar's right cluster; the
+  // URLs that named them keep working, on every surface that now carries it.
+  it("keeps the cluster's tabs addressable on every project surface", () => {
+    const inbox = { name: "project", projectId: "p1", tab: "inbox" };
+    expect(hashFromRoute(inbox)).toBe("#/project/p1/inbox");
+    expect(routeFromHash(hashFromRoute(inbox))).toEqual(inbox);
+    const runArchive = { name: "task", projectId: "p1", id: "r1", tab: "archive" };
+    expect(routeFromHash(hashFromRoute(runArchive))).toEqual(runArchive);
+    const worktreeInbox = { name: "worktree", projectId: "p1", worktreeId: "w1", tab: "inbox" };
+    expect(routeFromHash(hashFromRoute(worktreeInbox))).toEqual(worktreeInbox);
+    const planInbox = { name: "plan", projectId: "p1", id: "pl1", tab: "inbox" };
+    expect(routeFromHash(hashFromRoute(planInbox))).toEqual(planInbox);
+  });
+
   it("round-trips the project surface's Archive tab", () => {
     const route = { name: "project", projectId: "p1", tab: "archive" };
     expect(hashFromRoute(route)).toBe("#/project/p1/archive");
@@ -242,7 +258,7 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "plan", projectId: "p", id: "pl" })).toBe("#/project/p/issue/pl/conversation");
     expect(hashFromRoute({ name: "worktree", projectId: "p", worktreeId: "w" })).toBe("#/project/p/worktree/w/conversation");
     expect(hashFromRoute({ name: "project", projectId: "p" })).toBe("#/project/p");
-    expect(hashFromRoute({ name: "project", projectId: "p", tab: "inbox" })).toBe("#/project/p");
+    expect(hashFromRoute({ name: "project", projectId: "p", tab: "conversation" })).toBe("#/project/p");
   });
 
   it("emits canonical project URLs for legacy main route objects", () => {

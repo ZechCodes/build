@@ -11,6 +11,7 @@ import { setBadge } from "./shared.js";
 import { openBrowser } from "../sheets/browser.js";
 import { openClone } from "../sheets/clone.js";
 import { openNewRepo } from "../sheets/newRepo.js";
+import { isProjectClusterTab } from "../core/projectCluster.js";
 
 const COLLAPSED_KEY = "build.sidebar.collapsed";
 const CLOSED_KEY = "build.sidebar.closedProjects";
@@ -110,9 +111,12 @@ function activeProjectId() {
   return null;
 }
 
+// The checkout line lights up for the primary checkout's own tabs. The tab bar's
+// right cluster (Inbox, Archive) is project-wide, not the checkout's, so standing
+// there leaves the line quiet.
 function activeMainProjectId() {
   const route = App.route;
-  return route.name === "main" || (route.name === "project" && route.tab !== "inbox")
+  return route.name === "main" || (route.name === "project" && !isProjectClusterTab(route.tab))
     ? route.projectId
     : null;
 }

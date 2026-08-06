@@ -12,6 +12,7 @@ import { renderMarkdown } from "../core/markdown.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentTab } from "../core/surfaceTabs.js";
+import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
 import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
@@ -68,9 +69,14 @@ export async function renderPlan() {
   let last = null;
   // Conversation and plan artifacts are separate surfaces. The Agent tab shows
   // only while the plan is non-terminal.
-  let tab = ["conversation", "stages", "agent"].includes(App.route.tab) ? App.route.tab : "conversation";
+  let tab =
+    ["conversation", "stages", "agent"].includes(App.route.tab) || isProjectClusterTab(App.route.tab)
+      ? App.route.tab
+      : "conversation";
   let tabShellCtl = null;
-  let agentPane = null;
+  // The one mounted pane that owns #tabbody: the planning agent's screen, or a
+  // right-cluster tab (Inbox/Archive). The poll never repaints under it.
+  let mountedPane = null;
   // A locally-held RPC failure (abandon/delete/implement/approve) the bridge does
   // not record in last_error; it wins over the polled value so the poll can't wipe
   // it before the user reads it (same rule as task.js).
@@ -127,7 +133,7 @@ export async function renderPlan() {
       clearInterval(App.poll);
       App.poll = null;
     }
-    disposeAgent();
+    disposePane();
     const backLabel = last && last.project_id ? "Back to project" : "Back to notifications";
     root.innerHTML = `<div class="empty gone">This Issue no longer exists.<div><button class="btn" id="goneback">${backLabel}</button></div></div>`;
     const back = $("#goneback");
@@ -145,10 +151,10 @@ export async function renderPlan() {
   // (abandoned) plan has no session, so only Review remains.
   const agentAvailable = (p) => !!p && !PLAN_TERMINAL_STATES.has(p.state);
 
-  const disposeAgent = () => {
-    if (agentPane) {
-      agentPane.dispose();
-      agentPane = null;
+  const disposePane = () => {
+    if (mountedPane) {
+      mountedPane.dispose();
+      mountedPane = null;
     }
   };
 
@@ -275,7 +281,7 @@ export async function renderPlan() {
     // The plan addresses its own agent; the bridge resolves that to the
     // disposable planning worktree, which is where that agent lives — and which
     // is why an approved or abandoned plan has no agent tab at all.
-    agentPane = mountAgentTab(
+    mountedPane = mountAgentTab(
       body,
       { id },
       {
@@ -285,14 +291,29 @@ export async function renderPlan() {
     );
   };
 
-  // Switch surfaces: Review repaints through the poll machinery; Agent owns its
-  // own body and is never touched by the poll.
+  // The project-wide panes behind the tab bar's right cluster: the same Inbox
+  // and Archive every project surface reaches, mounted here.
+  const mountClusterTab = (tabId) => {
+    const body = $("#tabbody");
+    if (!body || !projectId) return;
+    body.classList.remove("bare");
+    mountedPane = mountProjectClusterTab(body, tabId, {
+      projectId,
+      callRpc: (method, params) => App.call(method, params),
+      navigate: go,
+    });
+  };
+
+  // Switch surfaces: Review repaints through the poll machinery; Agent and the
+  // cluster tabs own their own bodies and are never touched by the poll.
   const selectTab = (next) => {
     tab = next;
     replacePlanHash();
     if (tabShellCtl) tabShellCtl.setActive(next);
-    disposeAgent();
-    if (next === "agent") {
+    disposePane();
+    if (isProjectClusterTab(next)) {
+      mountClusterTab(next);
+    } else if (next === "agent") {
       mountAgent();
     } else if (next === "conversation") {
       mountConversationSkeleton();
@@ -325,6 +346,10 @@ export async function renderPlan() {
       tabs,
       active: tab,
       onSelect: (t) => selectTab(t),
+      ...projectClusterShellOptions({
+        projectId: (p && p.project_id) || projectId,
+        selectTab: (t) => selectTab(t),
+      }),
       back: { title: backTitle },
       onBack: () => {
         if (backTarget.name === "task") sessionStorage.removeItem("build.planReturn." + id);
@@ -352,7 +377,8 @@ export async function renderPlan() {
     if (p) showBanner(bannerText(localError, p.last_error));
     // A shell rebuild wiped #tabbody — re-mount the active surface so the poll's
     // early-return leaves a live pane/skeleton in place (mirrors task.js).
-    if (tab === "agent" && p) mountAgent();
+    if (isProjectClusterTab(tab)) mountClusterTab(tab);
+    else if (tab === "agent" && p) mountAgent();
     else if (tab === "conversation") mountConversationSkeleton();
     else mountStagesSkeleton();
   };
@@ -619,7 +645,13 @@ export async function renderPlan() {
     if (needShell) shell(p);
     showBanner(bannerText(localError, p.last_error));
 
-    // The Agent pane owns the body; the poll never repaints it.
+    // The Agent pane and the cluster panes own the body; the poll never repaints
+    // them. A cluster tab entered by URL mounts here instead, once this paint has
+    // learned which project the plan belongs to.
+    if (isProjectClusterTab(tab)) {
+      if (!mountedPane) mountClusterTab(tab);
+      return;
+    }
     if (tab === "agent") return;
 
     if (tab === "conversation") {
@@ -661,7 +693,7 @@ export async function renderPlan() {
   };
 
   App.viewDispose = () => {
-    disposeAgent();
+    disposePane();
   };
 
   shell(null); // route entry: paint the surface-bar skeleton + a loading body at once

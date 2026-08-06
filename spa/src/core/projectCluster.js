@@ -29,9 +29,11 @@ const CLUSTER_TAB_IDS = new Set(["inbox", "archive"]);
 export const isProjectClusterTab = (tabId) => CLUSTER_TAB_IDS.has(tabId);
 
 /** Mount a cluster tab's body into `host`, or return null when the tab belongs to
- *  the surface itself. The returned controller owns its own poll, like every
- *  other mounted pane. */
+ *  the surface itself — or when the surface has not learned its project yet (a
+ *  run entered by URL learns it from its first run.get, and remounts). The
+ *  returned controller owns its own poll, like every other mounted pane. */
 export function mountProjectClusterTab(host, tabId, { projectId, callRpc, navigate }) {
+  if (!projectId) return null;
   if (tabId === "inbox") return mountProjectInbox(host, { projectId, callRpc });
   if (tabId === "archive") return mountArchiveTab(host, { projectId, callRpc, navigate });
   return null;

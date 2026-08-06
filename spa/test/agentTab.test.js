@@ -20,7 +20,16 @@ describe("the Agent tab on every worktree surface", () => {
   it("sits after Files and before the user's terminals, on all three surfaces", () => {
     expect(ids(taskSurfaceTabs({ terminalTabs: [TERMINAL] }))).toEqual(["conversation", "changes", "files", "agent", "term-1"]);
     expect(ids(worktreeSurfaceTabs([TERMINAL]))).toEqual(["conversation", "changes", "files", "agent", "term-1"]);
-    expect(ids(projectSurfaceTabs([TERMINAL]))).toEqual(["inbox", "issues", "changes", "files", "archive", "agent", "term-1"]);
+    expect(ids(projectSurfaceTabs([TERMINAL]))).toEqual([
+      "conversation",
+      "inbox",
+      "issues",
+      "changes",
+      "files",
+      "archive",
+      "agent",
+      "term-1",
+    ]);
   });
 
   it("is there with no terminals open and with no run adopted", () => {

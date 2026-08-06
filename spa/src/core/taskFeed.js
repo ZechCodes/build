@@ -19,6 +19,15 @@ export function subscribeFeed(fn) {
   return () => subscribers.delete(fn);
 }
 
+/** The run that owns a project's primary checkout, or null while nobody has
+ *  adopted it. The bridge stamps the owner onto the feed's primary-changes
+ *  entry, which makes this a READ: a surface can bind to an existing owner
+ *  without minting one. A terminal run has let go, so it is reported as null. */
+export function primaryRunIdFor(feed, projectId) {
+  const entry = ((feed && feed.primaryChanges) || []).find((e) => e.project_id === projectId);
+  return (entry && entry.run_id) || null;
+}
+
 async function tick() {
   try {
     const [board, projectList] = await Promise.all([

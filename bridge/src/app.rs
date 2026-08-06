@@ -204,6 +204,20 @@ struct TermScreen {
     pending: Vec<u8>,
     /// Total output bytes processed — the live-tail cursor.
     total: u64,
+    /// When the last flood-collapse snapshot went out, or `None` if this screen
+    /// has never collapsed one. Rate-limits the collapse; a per-client attach
+    /// snapshot is a different thing and does not touch it.
+    last_flood_snapshot_at: Option<std::time::Instant>,
+    /// How long one flood collapse holds off the next. Always
+    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`] in production; a test widens it so that
+    /// real time cannot slip past the window while the test is doing the work
+    /// the window is supposed to suppress.
+    snapshot_min_interval: Duration,
+    /// Set when a flush dropped its backlog without sending anything. Until the
+    /// rate-limit window reopens and the snapshot ships, this screen owes the
+    /// client a resync and must not send raw output — the bytes it would carry
+    /// are no longer contiguous.
+    snapshot_due: bool,
     cols: u16,
     rows: u16,
 }
@@ -214,6 +228,11 @@ const TERM_FLUSH_MS: u64 = 10;
 /// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
 /// and bounds per-frame size. The vt100 model makes this lossless for the screen.
 const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
+/// Minimum gap between two flood-collapse snapshots on one screen. Bounds a
+/// sustained flood to ~10 screens/sec, which is all a human can perceive —
+/// without it a 10 ms flush cadence would push up to 100 full screens/sec
+/// through the relay and starve every other frame behind them.
+const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
 /// At most this many user terminals daemon-wide, all worktrees combined. An
 /// agent tab never counts against it — there is at most one per worktree, and
 /// it must stay reachable however many shells are open.
@@ -230,9 +249,24 @@ impl TermScreen {
             attached: Vec::new(),
             pending: Vec::new(),
             total: 0,
+            last_flood_snapshot_at: None,
+            snapshot_min_interval: Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS),
+            snapshot_due: false,
             cols,
             rows,
         }
+    }
+
+    /// Test-only: age the last flood-collapse stamp by `ago`, so a screen that
+    /// just collapsed reports the rate-limit window as reopened. The real gap is
+    /// 100 ms; sleeping it in every flood test would be paid on every run for no
+    /// added coverage — only the clock moves, the screen model is untouched.
+    #[cfg(test)]
+    fn backdate_last_flood_snapshot(&mut self, ago: Duration) {
+        self.last_flood_snapshot_at = self.last_flood_snapshot_at.map(|at| {
+            at.checked_sub(ago)
+                .expect("a stamp old enough to age by the rate-limit window")
+        });
     }
 
     /// The current screen serialized as escape sequences — write it to a fresh
@@ -266,18 +300,38 @@ impl TermScreen {
     /// Flush pending bytes as one keyed push to every attached client — raw
     /// output, or a screen snapshot when the backlog crosses the collapse
     /// threshold. Senders whose connection is gone are dropped.
+    ///
+    /// Collapsing is rate-limited to one snapshot per
+    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`]. A flush that crosses the threshold
+    /// inside that window drops its backlog silently and records the debt in
+    /// `snapshot_due`: the vt100 model and the cursor already advanced in
+    /// [`Self::process`], so the screen the next snapshot carries is still
+    /// exactly right. While the debt stands nothing raw may go out — those bytes
+    /// would land on a client whose stream now has a hole in it.
     fn flush(&mut self, term_id: &str) {
-        if self.pending.is_empty() {
+        let collapsing = self.snapshot_due || self.pending.len() > TERM_SNAPSHOT_THRESHOLD;
+        if !collapsing {
+            if self.pending.is_empty() {
+                return;
+            }
+            let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": self.total });
+            self.pending.clear();
+            self.attached.retain(|snd| snd.push(payload.clone()));
             return;
         }
-        let cursor = self.total;
-        let payload = if self.pending.len() > TERM_SNAPSHOT_THRESHOLD {
-            // Too much at once — skip the backlog, send the screen.
-            json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": cursor })
-        } else {
-            json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": cursor })
-        };
+
+        // The backlog is skipped either way — the screen model already holds it.
         self.pending.clear();
+        let window_reopened = self
+            .last_flood_snapshot_at
+            .is_none_or(|at| at.elapsed() >= self.snapshot_min_interval);
+        if !window_reopened {
+            self.snapshot_due = true;
+            return;
+        }
+        self.snapshot_due = false;
+        self.last_flood_snapshot_at = Some(std::time::Instant::now());
+        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
         self.attached.retain(|snd| snd.push(payload.clone()));
     }
 
@@ -9976,6 +10030,9 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
             let term_id = tab.wire_id();
             tab.screen.parser = vt100::Parser::new(tab.screen.rows, tab.screen.cols, 2000);
             tab.screen.pending.clear();
+            // This reset resyncs every attached client, so a snapshot a previous
+            // session's flood left owing is already paid.
+            tab.screen.snapshot_due = false;
             let payload = json!({
                 "type": "term.reset",
                 "term_id": term_id,
@@ -19259,6 +19316,175 @@ mod tests {
         assert_eq!(closed["type"], "term.closed", "{closed:?}");
         assert_eq!(closed["term_id"], wire_id);
         assert_eq!(closed["reason"], "reaped");
+    }
+
+    /// Drain every decrypted push a test sender has captured so far.
+    fn drain_pushes(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        session_key: &str,
+    ) -> Vec<Value> {
+        let mut seen = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            seen.push(SessionSender::decrypt_push(session_key, &message));
+        }
+        seen
+    }
+
+    /// A screen with one observable client attached, ready to flush.
+    ///
+    /// The rate-limit window is widened far past the production 100 ms: a debug
+    /// build parsing 128 KB through vt100 on a machine running the whole suite
+    /// in parallel can itself outlast the real window, which would let a test
+    /// about suppression watch a legitimate snapshot go out. Every test that
+    /// needs the window to reopen says so with `backdate_last_flood_snapshot`.
+    const HELD_FLOOD_WINDOW: Duration = Duration::from_secs(60);
+
+    fn flooded_screen() -> (
+        TermScreen,
+        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        String,
+    ) {
+        let (sender, pushes, session_key) = SessionSender::observable("flood-client");
+        let mut screen = TermScreen::new(80, 24);
+        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
+        screen.register(&sender);
+        (screen, pushes, session_key)
+    }
+
+    /// More than one flush's worth of backlog: enough to cross the collapse
+    /// threshold on its own.
+    fn flood_chunk() -> Vec<u8> {
+        vec![b'x'; TERM_SNAPSHOT_THRESHOLD + 1]
+    }
+
+    /// A flood produces an over-threshold backlog every 10 ms tick. Collapsing
+    /// each one to a full-screen snapshot is ~100 screens/sec through the relay,
+    /// which head-of-line-blocks everything behind it. The first collapse goes
+    /// out; the next one inside the rate-limit window drops its backlog and
+    /// sends nothing at all.
+    #[test]
+    fn a_second_flood_collapse_inside_the_window_sends_nothing() {
+        let (mut screen, mut pushes, session_key) = flooded_screen();
+
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        let first = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(first.len(), 1, "the first collapse goes out: {first:?}");
+        assert_eq!(first[0]["type"], "term.reset", "{first:?}");
+
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        let second = drain_pushes(&mut pushes, &session_key);
+        assert!(
+            second.is_empty(),
+            "a collapse inside the rate-limit window sends nothing: {second:?}"
+        );
+        assert!(
+            screen.pending.is_empty(),
+            "the dropped backlog is cleared, not carried into the next flush"
+        );
+        assert!(
+            screen.snapshot_due,
+            "dropping bytes owes the client a resync snapshot"
+        );
+    }
+
+    /// The tail of a flood is the part a human actually reads. Once the window
+    /// reopens, the owed snapshot goes out on the next flush even if barely any
+    /// bytes arrived in that tick — otherwise the last screen of a flood is the
+    /// one that never ships.
+    #[test]
+    fn the_owed_snapshot_ships_once_the_window_reopens() {
+        let (mut screen, mut pushes, session_key) = flooded_screen();
+
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        drain_pushes(&mut pushes, &session_key);
+        assert!(screen.snapshot_due);
+
+        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
+        let cursor_before_tail = screen.total;
+        screen.process(b"tail");
+        screen.flush("term-1");
+
+        let tail = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(tail.len(), 1, "exactly one resync frame: {tail:?}");
+        assert_eq!(tail[0]["type"], "term.reset", "{tail:?}");
+        assert_eq!(
+            tail[0]["cursor"].as_u64().unwrap(),
+            cursor_before_tail + 4,
+            "the snapshot carries the live cursor: {tail:?}"
+        );
+        assert!(!screen.snapshot_due, "the debt is settled");
+
+        // An empty tick after the debt is settled sends nothing.
+        screen.flush("term-1");
+        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
+    }
+
+    /// Raw `term.output` bytes must be contiguous — the client applies them by
+    /// cursor. Once a flood-collapse has dropped bytes, raw output would paint
+    /// a garbled screen, so nothing but the resync snapshot may go out until the
+    /// debt is settled.
+    #[test]
+    fn no_raw_output_ships_between_a_dropped_backlog_and_its_resync() {
+        let (mut screen, mut pushes, session_key) = flooded_screen();
+
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        screen.process(&flood_chunk());
+        screen.flush("term-1");
+        assert!(screen.snapshot_due);
+        drain_pushes(&mut pushes, &session_key);
+
+        // Small ticks while the debt stands: each one is dropped silently.
+        for _ in 0..5 {
+            screen.process(b"garble");
+            screen.flush("term-1");
+        }
+        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
+        screen.process(b"garble");
+        screen.flush("term-1");
+
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert!(
+            seen.iter().all(|push| push["type"] != "term.output"),
+            "no raw output crosses a gap in the byte stream: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|push| push["type"] == "term.reset")
+                .count(),
+            1,
+            "one resync closes the gap: {seen:?}"
+        );
+    }
+
+    /// The ordinary case — a prompt, a command, some output — is untouched by
+    /// the flood rate limit: raw frames with advancing cursors, no snapshots.
+    #[test]
+    fn small_steady_output_still_ships_raw_with_advancing_cursors() {
+        let (mut screen, mut pushes, session_key) = flooded_screen();
+
+        for line in ["one\r\n", "two\r\n", "three\r\n"] {
+            screen.process(line.as_bytes());
+            screen.flush("term-1");
+        }
+
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert_eq!(seen.len(), 3, "one frame per flush: {seen:?}");
+        assert!(
+            seen.iter().all(|push| push["type"] == "term.output"),
+            "small output never collapses to a snapshot: {seen:?}"
+        );
+        let cursors: Vec<u64> = seen
+            .iter()
+            .map(|push| push["cursor"].as_u64().unwrap())
+            .collect();
+        assert_eq!(cursors, vec![5, 10, 17], "{seen:?}");
+        assert_eq!(output_text(&seen, "term-1"), "one\r\ntwo\r\nthree\r\n");
     }
 
     /// A human can close the browser while waiting on the Agent tab of a

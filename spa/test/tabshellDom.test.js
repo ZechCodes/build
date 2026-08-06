@@ -133,3 +133,86 @@ describe("the + tab menu", () => {
     expect(closed).toEqual(["term-1"]);
   });
 });
+
+// The right cluster: icon tabs pinned to the row's end plus a ⋯ menu. One
+// implementation here, mounted by every project surface.
+const RIGHT_TABS = [{ id: "inbox", glyph: "▤", label: "Inbox" }];
+const MENU_ITEMS = [
+  { id: "archive", label: "Archive", description: "Retired issues and worktrees" },
+  { id: "settings", label: "Project settings", description: "Name, path, base branch" },
+];
+
+function mountWithCluster(handlers = {}) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const selected = [];
+  const picked = [];
+  const controller = mountTabShell(host, {
+    tabs: TABS,
+    active: "changes",
+    rightTabs: RIGHT_TABS,
+    menu: MENU_ITEMS,
+    onSelect: (id) => selected.push(id),
+    onMenuPick: (id) => picked.push(id),
+    ...handlers,
+  });
+  return { host, controller, selected, picked, dots: () => host.querySelector(".tmenu") };
+}
+
+describe("the ⋯ surface menu", () => {
+  it("opens on click with one button per action", () => {
+    const shell = mountWithCluster();
+    expect(menu()).toBeNull();
+    click(shell.dots());
+    expect(menu()).not.toBeNull();
+    const items = [...menu().querySelectorAll(".mi")];
+    expect(items.map((item) => item.tagName)).toEqual(["BUTTON", "BUTTON"]);
+    expect(items.map((item) => item.dataset.action)).toEqual(["archive", "settings"]);
+  });
+
+  it("reports the chosen action and closes", () => {
+    const shell = mountWithCluster();
+    click(shell.dots());
+    click(menu().querySelector('[data-action="archive"]'));
+    expect(shell.picked).toEqual(["archive"]);
+    expect(menu()).toBeNull();
+  });
+
+  it("closes on Escape and on a pointerdown outside, choosing nothing", () => {
+    const shell = mountWithCluster();
+    click(shell.dots());
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(menu()).toBeNull();
+    click(shell.dots());
+    document.body.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true }));
+    expect(menu()).toBeNull();
+    expect(shell.picked).toEqual([]);
+  });
+
+  it("closes when the row repaints", () => {
+    const shell = mountWithCluster();
+    click(shell.dots());
+    shell.controller.setActive("term-1");
+    expect(menu()).toBeNull();
+  });
+
+  it("is absent when the surface passes no menu", () => {
+    const shell = mountWithCluster({ menu: [], onMenuPick: undefined });
+    expect(shell.dots()).toBeNull();
+  });
+});
+
+describe("icon tabs in the right cluster", () => {
+  it("select through the same onSelect as any other tab", () => {
+    const shell = mountWithCluster();
+    click(shell.host.querySelector('.ticon[data-tab="inbox"]'));
+    expect(shell.selected).toEqual(["inbox"]);
+  });
+
+  it("show the active state when the surface selects them", () => {
+    const shell = mountWithCluster();
+    shell.controller.setActive("inbox");
+    expect(shell.host.querySelector('[data-tab="inbox"]').classList.contains("active")).toBe(true);
+    expect(shell.host.querySelector('[data-tab="changes"]').classList.contains("active")).toBe(false);
+  });
+});

@@ -172,6 +172,14 @@ pub fn plan_transition(
         // Blocked / failed: the user's reply resumes drafting.
         (Blocked | Failed, E::Reply) => Ok(Drafting),
 
+        // Blocked asked for help; it never closed the session. The reviewer
+        // answers on the thread (or straight in the terminal) and the same
+        // warm agent may finish, fail, or find itself still stuck — all are
+        // honored, so a blocked plan can never veto the agent's own progress.
+        (Blocked, E::PlanReady) => Ok(PlanReview),
+        (Blocked, E::Failed) => Ok(Failed),
+        (Blocked, E::Blocked) => Ok(Blocked),
+
         // Idle-unreported: the agent was merely quiet. A reply resumes it, but
         // a later `done`/block/fail is still honored — quiescence never
         // decided anything.
@@ -484,6 +492,32 @@ mod tests {
             (PlanEvent::Dispatch, PlanState::Drafting),
             (PlanEvent::WentIdle, PlanState::IdleUnreported),
             (PlanEvent::Failed, PlanState::Failed),
+        ]);
+    }
+
+    #[test]
+    fn blocked_then_late_done_is_honored() {
+        // Blocking asked for help; it never closed the session. The reviewer
+        // can answer on the thread or straight in the terminal, and the same
+        // warm agent finishes — that completion opens the review gate.
+        drive(&[
+            (PlanEvent::Dispatch, PlanState::Drafting),
+            (PlanEvent::Blocked, PlanState::Blocked),
+            (PlanEvent::PlanReady, PlanState::PlanReview),
+        ]);
+    }
+
+    #[test]
+    fn blocked_then_late_failed_or_reblock_is_honored() {
+        drive(&[
+            (PlanEvent::Dispatch, PlanState::Drafting),
+            (PlanEvent::Blocked, PlanState::Blocked),
+            (PlanEvent::Failed, PlanState::Failed),
+        ]);
+        drive(&[
+            (PlanEvent::Dispatch, PlanState::Drafting),
+            (PlanEvent::Blocked, PlanState::Blocked),
+            (PlanEvent::Blocked, PlanState::Blocked),
         ]);
     }
 

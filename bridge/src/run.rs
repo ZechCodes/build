@@ -192,6 +192,14 @@ pub fn run_transition(state: &RunState, event: RunEvent) -> Result<RunState, Ill
         // Blocked / failed: the user's reply resumes building.
         (Blocked | Failed, E::Reply) => Ok(Building),
 
+        // Blocked asked for help; it never closed the session. The reviewer
+        // answers on the thread (or straight in the terminal) and the same
+        // warm agent may finish, fail, or find itself still stuck — all are
+        // honored, so a blocked run can never veto the agent's own progress.
+        (Blocked, E::BuildReady) => Ok(Review),
+        (Blocked, E::Failed) => Ok(Failed),
+        (Blocked, E::Blocked) => Ok(Blocked),
+
         // Idle-unreported: the agent was merely quiet. A reply resumes it, but
         // a later `done`/block/fail is still honored — quiescence never
         // decided anything.
@@ -209,12 +217,16 @@ pub fn run_transition(state: &RunState, event: RunEvent) -> Result<RunState, Ill
         // Multi-stage validation verdicts. The run stays `Building` while a
         // stage's validation agent runs; only the verdict moves the coarse
         // state. The final stage's pass opens merge review; otherwise the run
-        // parks at the between-stages gate. The IdleUnreported arms preserve
-        // the standing rule: quiescence never decided anything, so a late
-        // validation `done` is still honored.
-        (Building | IdleUnreported, E::ValidationPassed { last_stage: true }) => Ok(Review),
-        (Building | IdleUnreported, E::ValidationPassed { last_stage: false }) => Ok(StageGate),
-        (Building | IdleUnreported, E::ValidationFailed) => Ok(StageGate),
+        // parks at the between-stages gate. The IdleUnreported and Blocked
+        // arms preserve the standing rule: neither quiescence nor a plea for
+        // help decided anything, so a late validation `done` is still honored.
+        (Building | IdleUnreported | Blocked, E::ValidationPassed { last_stage: true }) => {
+            Ok(Review)
+        }
+        (Building | IdleUnreported | Blocked, E::ValidationPassed { last_stage: false }) => {
+            Ok(StageGate)
+        }
+        (Building | IdleUnreported | Blocked, E::ValidationFailed) => Ok(StageGate),
 
         // Abandon is legal from any non-terminal state.
         (s, E::Abandon) if !s.is_terminal() => Ok(Abandoned),
@@ -583,6 +595,41 @@ mod tests {
     }
 
     #[test]
+    fn blocked_then_late_done_is_honored() {
+        // Blocking asked for help; it never closed the session. The reviewer
+        // can answer on the thread or straight in the terminal, and the same
+        // warm agent finishes — that completion opens merge review.
+        drive(
+            plan_less_run(),
+            &[
+                (RunEvent::Dispatch, RunState::Building),
+                (RunEvent::Blocked, RunState::Blocked),
+                (RunEvent::BuildReady, RunState::Review),
+            ],
+        );
+    }
+
+    #[test]
+    fn blocked_then_late_failed_or_reblock_is_honored() {
+        drive(
+            plan_less_run(),
+            &[
+                (RunEvent::Dispatch, RunState::Building),
+                (RunEvent::Blocked, RunState::Blocked),
+                (RunEvent::Failed, RunState::Failed),
+            ],
+        );
+        drive(
+            plan_less_run(),
+            &[
+                (RunEvent::Dispatch, RunState::Building),
+                (RunEvent::Blocked, RunState::Blocked),
+                (RunEvent::Blocked, RunState::Blocked),
+            ],
+        );
+    }
+
+    #[test]
     fn interrupt_during_building_surfaces_interrupted() {
         drive(
             plan_less_run(),
@@ -693,6 +740,31 @@ mod tests {
     }
 
     #[test]
+    fn blocked_then_late_validation_verdict_is_honored() {
+        // A validation agent can block (it needs something) and then, once
+        // answered, still deliver its verdict from the same warm session.
+        drive(
+            planned_run(),
+            &[
+                (RunEvent::Dispatch, RunState::Building),
+                (RunEvent::Blocked, RunState::Blocked),
+                (
+                    RunEvent::ValidationPassed { last_stage: false },
+                    RunState::StageGate,
+                ),
+            ],
+        );
+        drive(
+            planned_run(),
+            &[
+                (RunEvent::Dispatch, RunState::Building),
+                (RunEvent::Blocked, RunState::Blocked),
+                (RunEvent::ValidationFailed, RunState::StageGate),
+            ],
+        );
+    }
+
+    #[test]
     fn stage_gate_dispatch_starts_the_next_stage() {
         drive(
             planned_run(),
@@ -769,11 +841,12 @@ mod tests {
 
     #[test]
     fn validation_events_are_rejected_outside_working_states() {
+        // Blocked is deliberately absent: a plea for help decided nothing, so
+        // a late verdict from a nudged validation agent is still honored.
         for state in [
             RunState::Created,
             RunState::StageGate,
             RunState::Review,
-            RunState::Blocked,
             RunState::Failed,
             RunState::Interrupted,
             RunState::Merged,

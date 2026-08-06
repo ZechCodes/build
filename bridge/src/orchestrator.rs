@@ -3796,11 +3796,13 @@ mod tests {
         assert_eq!(run.stages[0].state, StageProgressState::Validating);
     }
 
-    /// A late completion arriving after the run was blocked is out of phase:
-    /// recorded by the caller, but atomically inert here — no stage advance, no
-    /// checkpoint commit, no session swap.
+    /// Blocking asked for help; it never closed the session. A completion
+    /// arriving after the run was blocked is honored exactly like the
+    /// idle-unreported precedent: the stage checkpoints, hands to validation,
+    /// and the verdict still lands — a blocked run never vetoes the agent's
+    /// own progress.
     #[tokio::test]
-    async fn run_blocked_then_late_reports_move_nothing() {
+    async fn run_blocked_then_late_done_is_still_honored() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
@@ -3818,9 +3820,6 @@ mod tests {
         assert_eq!(run.stages[0].state, StageProgressState::Building);
         assert!(!run.auto_advance, "blocked disarms run-all");
 
-        // A completed build report while Blocked is out of phase, and inert
-        // atomically: no stage advance, no commit, no session swap.
-        let before = last_commit_subject(&run.worktree.path);
         std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
         let outcome = orch
             .on_run_done(
@@ -3828,14 +3827,22 @@ mod tests {
                 &plan.stages,
                 done(DonePhase::Build, DoneStatus::Completed, None),
             )
-            .expect("a late completion is out of phase, not an error");
+            .expect("a late completion is honored");
         assert!(
-            matches!(outcome.outcome, ReportOutcome::OutOfPhase(_)),
+            matches!(outcome.outcome, ReportOutcome::Applied),
             "{outcome:?}"
         );
-        assert_eq!(run.run.state, RunState::Blocked);
-        assert_eq!(run.stages[0].state, StageProgressState::Building);
-        assert_eq!(last_commit_subject(&run.worktree.path), before);
+        assert_eq!(run.stages[0].state, StageProgressState::Validating);
+        assert!(
+            outcome.next.is_some(),
+            "the stage hand-off dispatches validation"
+        );
+
+        // The verdict is honored from Blocked too — mid-plan pass parks the
+        // run at the stage gate as usual.
+        orch.on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert_eq!(run.run.state, RunState::StageGate);
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import { renderFilesTab } from "../views/files.js";
+import { STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
 import { esc } from "./text.js";
 
 /**
@@ -165,27 +166,47 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
  *  attaches to an empty screen and shows `idleLabel`. An agent begins when a
  *  human→agent verb delivers a turn, never because a tab was opened.
  *
+ *  `onStart(provider)` receives the harness the human picked from the idle
+ *  cards, and `undefined` from the exited state's Restart (which reruns the
+ *  provider the entity already holds). `selectedProvider` marks the card an
+ *  earlier answer already chose. Omitting `onStart` leaves the tab a viewer.
+ *
  *  Returns { dispose() } — tears down the client view only. */
 export function mountAgentTab(
   host,
   target,
-  { idleLabel = "No agent is currently running", exitedLabel = "The agent exited", onStart } = {},
+  {
+    idleLabel = "No agent is currently running",
+    exitedLabel = "The agent exited",
+    onStart,
+    selectedProvider = null,
+  } = {},
 ) {
   host.innerHTML = `<div class="agentwrap">
     <div class="termpane" id="agentpane"></div>
     <div class="agent-overlay" id="agentOverlay" hidden>
       <p class="agent-overlay-msg" id="agentOverlayMsg"></p>
-      ${onStart ? `<button class="btn primary" id="agentStart"></button>` : ""}
+      ${
+        onStart
+          ? `<div id="agentStartChoices" hidden>${providerCardsHtml(STARTABLE_PROVIDERS, selectedProvider)}</div>
+             <button class="btn primary" id="agentStart" hidden>Restart agent</button>`
+          : ""
+      }
     </div>
   </div>`;
   const shade = host.querySelector("#agentOverlay");
   const message = host.querySelector("#agentOverlayMsg");
-  const start = host.querySelector("#agentStart");
+  const choices = host.querySelector("#agentStartChoices");
+  const restart = host.querySelector("#agentStart");
+  const cards = choices ? [...choices.querySelectorAll(".chooser-card")] : [];
+  const labelOf = (card) => card.querySelector(".chooser-card-label");
+  const providerLabel = (id) => STARTABLE_PROVIDERS.find((provider) => provider.id === id).label;
 
   // Which silence this is. `exited` is the one with a screen behind it worth
   // reading, so its overlay is laid OVER that screen instead of standing in a
-  // blank pane — and it asks to start the agent AGAIN, which is a different
-  // sentence from asking to start one at all.
+  // blank pane — and it asks to start the agent AGAIN on the harness this
+  // worktree already runs, which is a different sentence from asking which
+  // harness should run here at all.
   let exited = false;
   const show = (state, reason) => {
     if (state === "live") {
@@ -196,30 +217,50 @@ export function mountAgentTab(
     shade.hidden = false;
     shade.classList.toggle("over-screen", exited);
     message.textContent = reason || (exited ? exitedLabel : idleLabel);
-    if (start) {
-      start.disabled = false;
-      start.textContent = exited ? "Restart agent" : "Start agent";
+    if (!onStart) return;
+    choices.hidden = exited;
+    restart.hidden = !exited;
+    restart.disabled = false;
+    restart.textContent = "Restart agent";
+    for (const card of cards) {
+      card.disabled = false;
+      labelOf(card).textContent = providerLabel(card.dataset.provider);
     }
   };
 
-  if (start) {
-    start.onclick = async () => {
-      start.disabled = true;
-      start.textContent = "Starting…";
-      try {
-        await onStart();
-        // The agent is up. Its first frame would clear this anyway (the pane is
-        // already attached to the screen it is born onto), but not waiting for a
-        // round trip is what makes the button feel like it did something.
-        shade.hidden = true;
-      } catch (e) {
-        // Standing offer, plus the reason — a start that failed silently would
-        // leave the human pressing a button that never explains itself. `show`
-        // restores the button's label and enables it, so this needs no cleanup
-        // of its own.
-        show(exited ? "exited" : "idle", (e && e.message) || "could not start the agent");
-      }
-    };
+  // One start path for both offers. `busy` is what the pressed control says
+  // while the harness comes up; every other control goes inert, since a second
+  // press in flight would race two harnesses over one worktree.
+  const startAgent = async (provider, busy) => {
+    for (const card of cards) card.disabled = true;
+    if (restart) restart.disabled = true;
+    busy();
+    try {
+      await onStart(provider);
+      // The agent is up. Its first frame would clear this anyway (the pane is
+      // already attached to the screen it is born onto), but not waiting for a
+      // round trip is what makes the press feel like it did something.
+      shade.hidden = true;
+    } catch (e) {
+      // Standing offer, plus the reason — a start that failed silently would
+      // leave the human pressing a control that never explains itself. `show`
+      // restores every label and re-enables them, so this needs no cleanup of
+      // its own.
+      show(exited ? "exited" : "idle", (e && e.message) || "could not start the agent");
+    }
+  };
+
+  for (const card of cards) {
+    card.onclick = () =>
+      startAgent(card.dataset.provider, () => {
+        labelOf(card).textContent = "Starting…";
+      });
+  }
+  if (restart) {
+    restart.onclick = () =>
+      startAgent(undefined, () => {
+        restart.textContent = "Starting…";
+      });
   }
 
   let pane = null;

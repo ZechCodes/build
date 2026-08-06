@@ -640,6 +640,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   display:flex; flex-direction:column; gap:3px; padding:12px 14px;
   background:var(--bg); border:1px solid var(--line); border-radius:12px; }
 .chooser-card:hover { border-color:var(--accent); }
+/* A card mid-start is not an offer: it stops answering to the pointer while the
+   harness it named comes up. */
+.chooser-card:disabled { cursor:default; opacity:.55; }
+.chooser-card:disabled:hover { border-color:var(--line); }
 .chooser-card .chooser-card-label { font-weight:650; color:var(--ink); }
 .chooser-card .chooser-card-desc { font-size:11.5px; color:var(--dim); }
 /* The picked one is the answer, not a hover — it holds the accent on its own. */
@@ -933,6 +937,12 @@ body.sidebar-collapsed #side-open { display:block; }
 .agent-overlay.over-screen { background:color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter:blur(1.5px); }
 .agent-overlay.over-screen .agent-overlay-msg { color:var(--fg); font-weight:500; }
+/* Starting an agent is a choice of harness, so the idle offer is the same
+   bordered card picker the new-worktree sheet asks with — capped and centred
+   here, where it stands in an open pane rather than a sheet's field column. */
+#agentStartChoices[hidden] { display:none; }
+.agent-overlay .chooser { width:min(100%, 380px); }
+.agent-overlay .chooser-card { align-items:center; text-align:center; }
 /* ---- sidebar main (primary checkout) row ---- */
 .smain-line .stitle { font-family:var(--mono); font-size:12px; }
 @media (max-width: 900px) {

@@ -137,7 +137,11 @@ export async function renderTask() {
     if (tabId === "agent") {
       // The run addresses its own agent; the bridge resolves that to the
       // worktree the run works in, which is where the agent actually lives.
-      aux = mountAgentTab(body, { id }, { onStart: () => App.call("agent.start", { id }) });
+      // A card names the harness to start on; Restart names none and reruns the
+      // one the run already holds.
+      aux = mountAgentTab(body, { id }, {
+        onStart: (provider) => App.call("agent.start", { id, ...(provider ? { provider } : {}) }),
+      });
       return;
     }
     if (tabId === "changes") {

@@ -45,6 +45,7 @@ function fakeEl(extra = {}) {
     innerHTML: "",
     classList: { toggle() {}, remove() {}, add() {} },
     appendChild() {},
+    querySelectorAll: () => [], // the idle offer's provider cards, when it has any
     ...extra,
   };
 }

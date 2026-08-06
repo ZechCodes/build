@@ -278,7 +278,10 @@ export async function renderPlan() {
     agentPane = mountAgentTab(
       body,
       { id },
-      { idleLabel: "No planning agent is currently running", onStart: () => App.call("agent.start", { id }) },
+      {
+        idleLabel: "No planning agent is currently running",
+        onStart: (provider) => App.call("agent.start", { id, ...(provider ? { provider } : {}) }),
+      },
     );
   };
 

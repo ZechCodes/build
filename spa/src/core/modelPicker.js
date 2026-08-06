@@ -4,6 +4,14 @@
 
 import { esc } from "./text.js";
 
+/** The harnesses a start can name. The catalog RPC is the authority for models
+ *  and efforts, but a start needs only a provider — so the Agent tab's picker
+ *  renders with the pane, not after a round trip. */
+export const STARTABLE_PROVIDERS = [
+  { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+];
+
 export function providerOptionsHtml(providers, selectedId) {
   return providers
     .map((provider) => `<option value="${esc(provider.id)}"${provider.id === selectedId ? " selected" : ""}>${esc(provider.label)}</option>`)

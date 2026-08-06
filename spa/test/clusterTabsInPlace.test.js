@@ -36,6 +36,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 import { App } from "../src/app.js";
 import { renderWorktree } from "../src/views/worktree.js";
 import { renderTask } from "../src/views/task.js";
+import { renderMain } from "../src/views/mainWorktree.js";
 
 const runPayload = () => ({
   run_id: "r-1",
@@ -155,5 +156,54 @@ describe("project-level tabs stay on the surface that selected them", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(body().querySelector(".issues")).toBeTruthy();
     expect(App.route).toEqual({ name: "task", projectId: "p-1", id: "r-1", tab: "issues" });
+  });
+});
+
+// The tab bar is a tab bar. The branch is in the Changes pane's own header, in
+// the sidebar, and in every commit the surface shows — repeating it in the row
+// bought nothing and cost the row's right edge.
+describe("no surface repeats its branch in the tab bar", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<div id="root" class="surface"></div><div id="sheet"></div><div id="scrim"></div>';
+    App.offline = false;
+    App.poll = null;
+    App.viewDispose = null;
+    App.call = vi.fn(async (method) => rpc(method));
+  });
+  afterEach(() => {
+    if (App.viewDispose) App.viewDispose();
+    if (App.poll) clearInterval(App.poll);
+    App.poll = null;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const barIsBare = () => {
+    expect(document.querySelector(".surface-meta")).toBeNull();
+    expect(document.querySelector(".surface-bar").textContent).not.toContain("build/thing");
+  };
+
+  it("primary checkout", async () => {
+    App.route = { name: "project", projectId: "p-1", tab: "conversation" };
+    await renderMain();
+    await vi.advanceTimersByTimeAsync(0);
+    barIsBare();
+  });
+
+  it("external worktree", async () => {
+    App.route = { name: "worktree", projectId: "p-1", worktreeId: "w-1", tab: "changes" };
+    location.hash = "#/project/p-1/worktree/w-1/changes";
+    await renderWorktree();
+    await vi.advanceTimersByTimeAsync(0);
+    barIsBare();
+  });
+
+  it("run", async () => {
+    App.route = { name: "task", projectId: "p-1", id: "r-1", tab: "conversation" };
+    location.hash = "#/project/p-1/task/r-1/conversation";
+    await renderTask();
+    await vi.advanceTimersByTimeAsync(0);
+    barIsBare();
   });
 });

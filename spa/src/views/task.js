@@ -81,17 +81,13 @@ export async function renderTask() {
     }
   };
 
-  // The tab bar IS the top of the view; the run's identity lives in the sidebar.
-  // The bar carries a compact plan reference (link back to the plan, or the goal
-  // for an adopted run), the state chip, and the header actions.
+  // The tab bar IS the top of the view, and only that: the run's identity lives
+  // in the sidebar, and its branch in the panes that act on it.
   const shell = (t) => {
     const m = t || {};
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="tabrow"></div>
-        <div class="surface-meta">
-          ${m.branch ? `<span class="mono dim" title="${esc(m.worktree_path || "")}">${esc(m.branch)}</span>` : ""}
-        </div>
       </div>
       <div class="task-error" id="taskError" role="alert" hidden></div>
       <div id="tabbody"></div>`;

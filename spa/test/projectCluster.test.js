@@ -4,6 +4,7 @@
 // body-mounting entry point — the surfaces only route.
 
 import { describe, it, expect, vi } from "vitest";
+import { ICON_CIRCLE_DOT, ICON_INBOX } from "../src/core/icons.js";
 import {
   PROJECT_CLUSTER_TABS,
   PROJECT_CLUSTER_MENU,
@@ -23,9 +24,20 @@ describe("the project cluster's entries", () => {
   // (conversation/changes/files/agent/terminals) keep the row's left side.
   it("puts Inbox and Issues on the row as icon tabs with accessible names", () => {
     expect(PROJECT_CLUSTER_TABS).toEqual([
-      { id: "inbox", glyph: "▤", label: "Inbox" },
-      { id: "issues", glyph: "◎", label: "Issues" },
+      { id: "inbox", icon: ICON_INBOX, label: "Inbox" },
+      { id: "issues", icon: ICON_CIRCLE_DOT, label: "Issues" },
     ]);
+  });
+
+  // Recognisable at a glance is the whole point of an icon-only cell: a tray for
+  // the inbox, and the circle-dot every issue tracker uses for issues.
+  it("draws them from the icon set, not from unicode", () => {
+    expect(ICON_INBOX).toContain("lucide-inbox");
+    expect(ICON_CIRCLE_DOT).toContain("lucide-circle-dot");
+    for (const tab of PROJECT_CLUSTER_TABS) {
+      expect(tab.icon).toContain("<svg");
+      expect(tab.icon).toContain('stroke="currentColor"');
+    }
   });
 
   it("puts Archive and Project settings behind the ⋯", () => {
@@ -101,6 +113,35 @@ describe("mountProjectClusterTab", () => {
     pane.dispose();
   });
 
+  // The row shows an icon and nothing else, so the pane is where the user reads
+  // which one they are standing in. One heading, from here, on every surface.
+  it("names each pane in a heading of its own", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ runs: [], plans: [], external_worktrees: [] });
+    for (const [tabId, title] of [
+      ["inbox", "Inbox"],
+      ["issues", "Issues"],
+      ["archive", "Archive"],
+    ]) {
+      const host = hostElement();
+      const pane = mountProjectClusterTab(host, tabId, { projectId: "proj-1", callRpc, navigate: () => {} });
+      await Promise.resolve();
+      const headings = host.querySelectorAll(".board-head h1");
+      expect(headings).toHaveLength(1);
+      expect(headings[0].textContent).toBe(title);
+      pane.dispose();
+    }
+  });
+
+  it("mounts the pane under its heading, not over it", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ plans: [] });
+    const host = hostElement();
+    const pane = mountProjectClusterTab(host, "issues", { projectId: "proj-1", callRpc, navigate: () => {} });
+    await Promise.resolve();
+    expect(host.querySelector(".board-head h1").textContent).toBe("Issues");
+    expect(host.querySelector(".issues")).toBeTruthy();
+    pane.dispose();
+  });
+
   it("mounts nothing until the surface has learned its project", () => {
     for (const tabId of ["inbox", "issues", "archive"]) {
       expect(mountProjectClusterTab(hostElement(), tabId, { projectId: null, callRpc: vi.fn(), navigate: () => {} })).toBeNull();
@@ -108,12 +149,14 @@ describe("mountProjectClusterTab", () => {
   });
 
   it("returns null for a tab it does not own, so the surface mounts its own", () => {
-    const pane = mountProjectClusterTab(hostElement(), "changes", {
+    const host = hostElement();
+    const pane = mountProjectClusterTab(host, "changes", {
       projectId: "proj-1",
       callRpc: vi.fn(),
       navigate: () => {},
     });
     expect(pane).toBeNull();
+    expect(host.innerHTML).toBe(""); // not even a heading: the body is the surface's
   });
 });
 

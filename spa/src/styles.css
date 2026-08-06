@@ -160,13 +160,10 @@ main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
    the page background like every other section. */
 .surface-bar { display:flex; align-items:center; gap:12px; padding:4px 18px;
   background:var(--bg); flex:none; }
-/* The row owns the bar's width so its right cluster lands at the far right,
-   ahead of the surface's own meta (branch/path). */
+/* The row owns the bar's whole width, so its right cluster lands at the far
+   right of the surface. */
 .surface-bar .tabrow { flex:1 1 auto; min-width:0; overflow-x:auto; }
 .surface-bar .tabs { margin-bottom:0; }
-.surface-meta { margin-left:auto; display:flex; gap:10px; align-items:center;
-  font-size:12px; color:var(--dim); padding-left:12px; flex:none; }
-.surface-meta .taskactions { display:flex; gap:8px; }
 .projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
 .project-inbox { width:100%; max-width:1180px; margin:0 auto; container-type:inline-size; }
 /* Worktrees ride a right-hand column when this pane can spare the width, and
@@ -593,7 +590,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .surface-bar.project-surface { flex-wrap:wrap; padding-bottom:8px; }
   .project-surface .tabrow { flex:1 1 100%; order:1; }
   .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
-  .project-surface .surface-meta { display:none; }
   .surface #tabbody { padding:12px 12px 40px; }
   .plan { padding:16px 14px; }
   .panel { padding:14px 12px; }

@@ -50,15 +50,14 @@ const MERGE_RPC = {
 
 /**
  * createWorktreeReview({ projectId, worktreeId, callRpc, adopting, isOffline,
- *                        onAdopted, onFinished, onGone, onMeta }) →
+ *                        onAdopted, onFinished, onGone }) →
  *   { mount(host), unmount(), getBase() } — the gitPane review plug.
  *
  * `adopting` is the view's shared createAdoptingCall: the first mutating action
  * binds the worktree to a task, and every caller must agree on which task that
  * is. `onAdopted()` hands off to it, `onFinished()` leaves the surface after a
- * merge or abandon, `onGone()` fires when the worktree stops resolving without
- * this surface having adopted it, and `onMeta(meta)` keeps the surface bar
- * current with the branch/path the diff reports.
+ * merge or abandon, and `onGone()` fires when the worktree stops resolving
+ * without this surface having adopted it.
  */
 export function createWorktreeReview({
   projectId,
@@ -70,7 +69,6 @@ export function createWorktreeReview({
   onAdopted = () => {},
   onFinished = () => {},
   onGone = () => {},
-  onMeta = () => {},
 }) {
   let host = null;
   let timer = null;
@@ -371,7 +369,6 @@ export function createWorktreeReview({
       path: res.path,
       adoptable: res.adoptable,
     };
-    onMeta(meta);
     const files = filterNoiseFiles(parseDiff(res.patch));
     const key = String(res.adoptable) + " " + res.patch;
     const general = q("#wgeneral");

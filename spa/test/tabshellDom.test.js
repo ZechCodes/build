@@ -136,7 +136,8 @@ describe("the + tab menu", () => {
 
 // The right cluster: icon tabs pinned to the row's end plus a ⋯ menu. One
 // implementation here, mounted by every project surface.
-const RIGHT_TABS = [{ id: "inbox", glyph: "▤", label: "Inbox" }];
+const INBOX_ICON = '<svg class="lucide lucide-inbox"><circle cx="1" cy="1" r="1" /></svg>';
+const RIGHT_TABS = [{ id: "inbox", icon: INBOX_ICON, label: "Inbox" }];
 const MENU_ITEMS = [
   { id: "archive", label: "Archive", description: "Retired issues and worktrees" },
   { id: "settings", label: "Project settings", description: "Name, path, base branch" },
@@ -222,5 +223,18 @@ describe("icon tabs in the right cluster", () => {
     shell.controller.setActive("inbox");
     expect(shell.host.querySelector('[data-tab="inbox"]').classList.contains("active")).toBe(true);
     expect(shell.host.querySelector('[data-tab="changes"]').classList.contains("active")).toBe(false);
+  });
+
+  // A recognisable icon carries the cell; the label is what a screen reader and
+  // a hover both get, so nothing about the tab is lost by dropping the text.
+  it("draw a real SVG, with the label as tooltip and accessible name", () => {
+    const shell = mountWithCluster();
+    const cell = shell.host.querySelector('.ticon[data-tab="inbox"]');
+    expect(cell.querySelector("svg")).toBeTruthy();
+    expect(cell.textContent.trim()).toBe("");
+    expect(cell.getAttribute("title")).toBe("Inbox");
+    expect(cell.getAttribute("aria-label")).toBe("Inbox");
+    expect(shell.dots().querySelector("svg")).toBeTruthy();
+    expect(shell.dots().textContent.trim()).toBe("");
   });
 });

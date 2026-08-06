@@ -75,7 +75,9 @@ describe("tabShellHtml", () => {
   });
 });
 
-const RIGHT_TABS = [{ id: "inbox", glyph: "▤", label: "Inbox" }];
+// An icon tab's cell is an SVG the icon set owns (core/icons.js), not a glyph.
+const INBOX_ICON = '<svg class="lucide lucide-inbox"><circle cx="1" cy="1" r="1" /></svg>';
+const RIGHT_TABS = [{ id: "inbox", icon: INBOX_ICON, label: "Inbox" }];
 const MENU_ITEMS = [
   { id: "archive", label: "Archive", description: "Retired issues and worktrees" },
   { id: "settings", label: "Project settings", description: "Name, path, base branch" },
@@ -88,12 +90,20 @@ describe("tabShellHtml right cluster", () => {
     expect(html).toContain('<div class="tabs-right">');
     expect(html).toContain('data-tab="inbox"');
     expect(html).toContain('aria-label="Inbox"');
-    expect(html).toContain("▤");
+    expect(html).toContain(INBOX_ICON);
     expect(html).toContain('class="t tmenu" data-menu="1"');
-    // The cluster comes after every ordinary tab, and the glyph is the whole
+    // The cluster comes after every ordinary tab, and the icon is the whole
     // cell — the label lives in the tooltip.
     expect(html.indexOf('data-tab="files"')).toBeLessThan(html.indexOf("tabs-right"));
     expect(html).not.toContain(">Inbox<");
+  });
+
+  // The ⋯ is a control like the icon tabs beside it, so it is drawn from the
+  // same set rather than left as the one unicode glyph on the row.
+  it("draws the ⋯ button from the icon set too", () => {
+    const html = tabShellHtml({ tabs, active: "plan", newTabOptions: [], rightTabs: RIGHT_TABS, menu: MENU_ITEMS });
+    expect(html).toContain("lucide-ellipsis");
+    expect(html).not.toContain("⋯");
   });
 
   it("marks a selected icon tab active exactly like an ordinary tab", () => {
@@ -117,17 +127,19 @@ describe("tabShellHtml right cluster", () => {
     expect(html).not.toContain("tmenu");
   });
 
-  it("escapes every icon-tab string", () => {
+  // The icon is markup by definition — a build-time constant from the icon set,
+  // never user data — so it is inlined as-is. Everything around it is escaped.
+  it("escapes every icon-tab string but the icon itself", () => {
     const html = tabShellHtml({
       tabs,
       active: "plan",
       newTabOptions: [],
-      rightTabs: [{ id: '"><img src=x>', glyph: "<b>g</b>", label: "<i>l</i>" }],
+      rightTabs: [{ id: '"><img src=x>', icon: INBOX_ICON, label: "<i>l</i>" }],
     });
     expect(html).not.toContain("<img");
-    expect(html).not.toContain("<b>g</b>");
     expect(html).not.toContain("<i>l</i>");
     expect(html).toContain("&lt;img");
+    expect(html).toContain(INBOX_ICON);
   });
 });
 

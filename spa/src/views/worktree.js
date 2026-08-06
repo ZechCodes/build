@@ -55,7 +55,6 @@ export async function renderWorktree() {
   const terminals = terminalTabsController(scope);
   let shellCtl = null;
   let aux = null;
-  let meta = { branch: "", path: "" };
   // Latched once this surface has handed the worktree over (adopted into a task,
   // merged, abandoned) or found it gone: a late RPC rejection must not repaint
   // over the destination.
@@ -105,14 +104,11 @@ export async function renderWorktree() {
     else renderNotFound();
   };
 
-  // Every worktree-scoped RPC goes through here: git.status keeps the bar's
-  // branch current (the git pane polls it anyway, so the header needs no poll of
-  // its own), and a worktree that stops resolving ends the surface.
+  // Every worktree-scoped RPC goes through here: a worktree that stops resolving
+  // ends the surface.
   const callRpc = async (method, params) => {
     try {
-      const res = await App.call(method, params);
-      if (method === "git.status") refreshHeader(res);
-      return res;
+      return await App.call(method, params);
     } catch (e) {
       if (String(e && e.message).includes("unknown worktree_id")) worktreeGone();
       throw e;
@@ -132,18 +128,14 @@ export async function renderWorktree() {
     onAdopted: () => handoffToTask(),
     onFinished: () => goHome(),
     onGone: () => worktreeGone(),
-    onMeta: (m) => refreshHeader(m),
   });
 
-  // The tab bar is the top of the view; the worktree's identity (branch) rides
-  // the bar's right cluster, path on hover.
+  // The tab bar is the top of the view, and only that: the worktree's branch is
+  // the Changes pane's to report, not the row's.
   const shell = () => {
     root.innerHTML = `
       <div class="surface-bar">
         <div class="tabrow" id="tabrow"></div>
-        <div class="surface-meta">
-          <span class="mono dim" id="wtbranch" title="${esc(meta.path || "")}">${esc(meta.branch || "(detached)")}</span>
-        </div>
       </div>
       <div id="tabbody"></div>`;
     shellCtl = mountTabShell($("#tabrow"), {
@@ -157,22 +149,6 @@ export async function renderWorktree() {
       onBack: () => goHome(),
       ...projectClusterShellOptions({ projectId, selectTab: (tabId) => selectTab(tabId) }),
     });
-  };
-
-  // Keep the bar's branch/path current from whatever reported it last — the git
-  // pane's status polls on Changes, the review plug's diff elsewhere. Guarded
-  // against departure: a response resolving after navigation must not overwrite
-  // the next view's header (#root now belongs to it).
-  const refreshHeader = (source) => {
-    if (leaving || !source) return;
-    const next = { branch: source.branch || "", path: source.path || meta.path || "" };
-    if (next.branch === meta.branch && next.path === meta.path) return;
-    meta = next;
-    const branchEl = root.querySelector("#wtbranch");
-    if (branchEl) {
-      branchEl.textContent = meta.branch || "(detached)";
-      branchEl.title = meta.path || "";
-    }
   };
 
   const selectTab = (tabId) => {

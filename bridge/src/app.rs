@@ -363,11 +363,7 @@ impl TermScreen {
     /// paused client is not fed and a failed push is the only proof left.
     fn ack(&mut self, term_id: &str, session_id: &str, cursor: u64) {
         let total = self.total;
-        let Some(index) = self
-            .attached
-            .iter()
-            .position(|client| client.sender.session_id() == session_id)
-        else {
+        let Some(index) = self.index_of_session(session_id) else {
             return;
         };
         let client = &mut self.attached[index];
@@ -378,12 +374,31 @@ impl TermScreen {
         if !client.paused || client.lag(total) > TERM_UNACKED_BUDGET_BYTES {
             return;
         }
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": total });
+        // PTY bytes arrive on their own channel, so an ack can land between a
+        // `process` and the flush that would have shipped it. Those bytes are
+        // already on the screen this resync serializes, so the next flush must
+        // not hand them to the resumed client a second time as raw output.
+        // Flushing first empties `pending` — the clients that are keeping up
+        // get those bytes now, the paused one is skipped as always — and
+        // leaves the snapshot standing exactly at the live cursor.
+        self.flush(term_id);
+        // The flush drops clients whose connection is gone, so the index has to
+        // be taken again; this client is paused, so it cannot be one of them.
+        let Some(index) = self.index_of_session(session_id) else {
+            return;
+        };
+        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
         let client = &mut self.attached[index];
         client.paused = false;
         if !client.sender.push(payload) {
             self.attached.remove(index);
         }
+    }
+
+    fn index_of_session(&self, session_id: &str) -> Option<usize> {
+        self.attached
+            .iter()
+            .position(|client| client.sender.session_id() == session_id)
     }
 
     /// Push one frame to every client that is keeping up: a client past its
@@ -19806,6 +19821,83 @@ mod tests {
         let resumed = drain_pushes(&mut pushes, &session_key);
         assert_eq!(resumed.len(), 1, "{resumed:?}");
         assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
+    }
+
+    /// Walk one client's frames as that client applies them, and return where
+    /// its stream stands afterwards. A `term.reset` replaces the screen and
+    /// moves the stream to its own cursor; a `term.output` must begin exactly
+    /// where the stream stands, since raw bytes are applied on top of what the
+    /// client already holds. A raw frame that starts behind the stream would be
+    /// re-applied bytes, one that starts ahead of it a hole — both are the
+    /// contiguity break the INVARIANT forbids.
+    fn assert_stream_contiguous(frames: &[Value], start: u64) -> u64 {
+        let mut applied = start;
+        for frame in frames {
+            let cursor = frame["cursor"].as_u64().unwrap();
+            match frame["type"].as_str().unwrap() {
+                "term.reset" => applied = cursor,
+                "term.output" => {
+                    let bytes = b64decode(frame["data"].as_str().unwrap()).unwrap().len() as u64;
+                    assert_eq!(
+                        cursor - bytes,
+                        applied,
+                        "raw output must begin where the client's stream stands: {frame:?}"
+                    );
+                    applied = cursor;
+                }
+                other => panic!("unexpected frame while streaming: {other} in {frame:?}"),
+            }
+        }
+        applied
+    }
+
+    /// PTY bytes arrive on their own channel, so an ack can land between a
+    /// `process` and the flush that would have shipped it. The resync snapshot
+    /// serializes the live screen, which already holds those bytes — so the
+    /// next flush must not also hand them to the resumed client as raw output
+    /// on top of the screen it just applied.
+    #[test]
+    fn an_ack_between_a_process_and_its_flush_does_not_replay_the_snapshotted_bytes() {
+        let (mut screen, (mut resumed_pushes, resumed_key), (mut acking_pushes, acking_key)) =
+            two_client_screen();
+
+        screen.process(&chunk_of(ACK_TEST_CHUNK));
+        screen.flush("term-1");
+        screen.ack("term-1", "client-one", screen.total);
+        screen.ack("term-1", "client-two", screen.total);
+        for _ in 0..16 {
+            flush_chunk_acked_by(&mut screen, "client-two");
+        }
+        drain_pushes(&mut resumed_pushes, &resumed_key);
+        drain_pushes(&mut acking_pushes, &acking_key);
+        let streams_stand_at = screen.total;
+
+        // A chunk lands mid-cycle: processed, not yet flushed, when the paused
+        // client's ack arrives and resyncs it.
+        screen.process(b"mid-cycle");
+        screen.ack("term-1", "client-one", screen.total);
+        screen.process(b"after-resync");
+        screen.flush("term-1");
+
+        let resumed = drain_pushes(&mut resumed_pushes, &resumed_key);
+        assert_eq!(
+            assert_stream_contiguous(&resumed, streams_stand_at),
+            screen.total,
+            "the resumed client ends holding everything the bridge produced: {resumed:?}"
+        );
+
+        // The client that never paused keeps its own contiguous raw stream —
+        // the mid-cycle bytes are shipped to it, not dropped on the floor.
+        let acking = drain_pushes(&mut acking_pushes, &acking_key);
+        assert_eq!(
+            assert_stream_contiguous(&acking, streams_stand_at),
+            screen.total,
+            "the client that kept up misses nothing: {acking:?}"
+        );
+        assert!(
+            output_text(&acking, "term-1").contains("mid-cycle"),
+            "{acking:?}"
+        );
     }
 
     /// A client from before acks existed never sends one, and it must not be

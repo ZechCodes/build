@@ -2,13 +2,16 @@
 // What the Agent tab says when there is no agent to look at.
 //
 // Two different silences, and conflating them is the bug this pins. A worktree
-// nothing has run in yet is INERT — the honest offer is "start one", and
-// starting one is a choice of harness, so the offer is the provider picker
-// itself. A worktree whose harness exited (codex ran its self-update and quit,
-// claude crashed) has a last screen worth reading, and the offer is "start it
-// again" on the provider it already runs — laid OVER that screen rather than
-// replacing it, because what it printed on the way out is usually why you are
-// looking.
+// nothing has run in yet is INERT, and a worktree whose harness exited (codex
+// ran its self-update and quit, claude crashed) has a last screen worth reading
+// — so the MESSAGE differs, and the exited one is laid OVER that screen rather
+// than replacing it, because what it printed on the way out is usually why you
+// are looking.
+//
+// The OFFER is the same in both: the harness this worktree already ran (or the
+// default, where none has) as a wide button, with both providers under it. A
+// restart is a start; the only thing exiting changed is which provider is the
+// obvious one, and that is a label, not a different control.
 //
 // Both were a single 10px pill reading "no active agent session", which told
 // you neither which case you were in nor what to do about it.
@@ -52,10 +55,11 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const host = () => document.body.appendChild(document.createElement("div"));
 const overlay = (el) => el.querySelector("#agentOverlay");
 const message = (el) => el.querySelector("#agentOverlayMsg").textContent;
-const button = (el) => el.querySelector("#agentStart");
-const cards = (el) => [...el.querySelectorAll("#agentStartChoices .chooser-card")];
+const lead = (el) => el.querySelector("#agentStartLead");
+const labelOf = (el) => el.querySelector(".chooser-card-label").textContent;
+const cards = (el) => [...el.querySelectorAll("#agentStartChoices .chooser-cards .chooser-card")];
 const card = (el, provider) => cards(el).find((c) => c.dataset.provider === provider);
-const cardLabel = (el, provider) => card(el, provider).querySelector(".chooser-card-label").textContent;
+const cardLabel = (el, provider) => labelOf(card(el, provider));
 
 beforeEach(() => {
   document.body.innerHTML = "";
@@ -77,11 +81,16 @@ describe("a worktree whose agent has never run", () => {
     expect(message(el)).toBe("No agent is currently running");
     // Which harness runs here has no answer yet, so the offer IS the question.
     expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "codex"]);
-    expect(cards(el).map((c) => c.querySelector(".chooser-card-label").textContent)).toEqual(["Claude Code", "Codex"]);
+    expect(cards(el).map(labelOf)).toEqual(["Claude Code", "Codex"]);
     // Real buttons: reachable, pressable and labelled without a pointer.
     expect(cards(el).every((c) => c.tagName)).toBe(true);
     expect(cards(el).map((c) => c.tagName)).toEqual(["BUTTON", "BUTTON"]);
-    expect(button(el).hidden).toBe(true);
+    // With nothing to go on, the wide button leads with the default — still a
+    // named harness, so pressing it is never a mystery.
+    expect(lead(el).tagName).toBe("BUTTON");
+    expect(lead(el).dataset.provider).toBe("claude");
+    expect(labelOf(lead(el))).toBe("Claude Code");
+    expect(lead(el).textContent).toContain("the default");
     // Centered, not a pill pinned to the top edge.
     expect(overlay(el).className).toContain("agent-overlay");
     expect(overlay(el).classList.contains("over-screen")).toBe(false);
@@ -114,9 +123,10 @@ describe("a worktree whose agent has never run", () => {
     card(el, "codex").click();
     await tick();
     expect(onStart).toHaveBeenCalledWith("codex");
-    // Both cards go inert: a second press while the first is in flight would
-    // start a race between two harnesses over one worktree.
+    // Every control goes inert: a second press while the first is in flight
+    // would start a race between two harnesses over one worktree.
     expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
+    expect(lead(el).disabled).toBe(true);
     expect(cardLabel(el, "codex")).toBe("Starting…");
 
     release();
@@ -135,6 +145,20 @@ describe("a worktree whose agent has never run", () => {
     expect(onStart).toHaveBeenCalledWith("claude");
   });
 
+  it("starts the harness the wide button names, naming it explicitly", async () => {
+    const onStart = vi.fn(async () => {});
+    const el = host();
+    mountAgentTab(el, { id: "run-1" }, { onStart });
+    await tick();
+
+    lead(el).click();
+    await tick();
+    // Never an unnamed start: the button says which harness it runs, so the
+    // call says the same thing.
+    expect(onStart).toHaveBeenCalledWith("claude");
+    expect(labelOf(lead(el))).toBe("Starting…");
+  });
+
   it("keeps the offer standing when the start fails, and says why", async () => {
     const onStart = vi.fn(async () => {
       throw new Error("no worktree to adopt");
@@ -150,6 +174,8 @@ describe("a worktree whose agent has never run", () => {
     expect(message(el)).toContain("no worktree to adopt");
     expect(cards(el).map((c) => c.disabled)).toEqual([false, false]);
     expect(cardLabel(el, "codex")).toBe("Codex");
+    expect(lead(el).disabled).toBe(false);
+    expect(labelOf(lead(el))).toBe("Claude Code");
   });
 });
 
@@ -158,6 +184,7 @@ describe("an agent that exited", () => {
     attachAgent.mockResolvedValue({
       term_id: "agent:wt-2",
       live: false,
+      provider: "codex",
       snapshot: "codex update installed\n",
       cursor: 41,
     });
@@ -167,37 +194,79 @@ describe("an agent that exited", () => {
 
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toBe("The agent exited");
-    expect(button(el).hidden).toBe(false);
-    expect(button(el).textContent).toBe("Restart agent");
-    // A worktree that has run one already HAS a harness — restarting it is not
-    // a fresh choice, so the picker stays out of the way.
-    expect(el.querySelector("#agentStartChoices").hidden).toBe(true);
+    // The same picker as the idle state — a restart IS a start. What exiting
+    // changed is only which harness is the obvious one, and the attach says
+    // which one painted the screen behind this overlay.
+    expect(el.querySelector("#agentStartChoices").hidden).toBe(false);
+    expect(lead(el).dataset.provider).toBe("codex");
+    expect(labelOf(lead(el))).toBe("Codex");
+    expect(lead(el).textContent).toContain("ran here last");
+    expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "codex"]);
+    // No unnamed "Restart agent": every offer here says what it will run.
+    expect(el.querySelector("#agentStart")).toBeNull();
+    expect(el.textContent).not.toContain("Restart");
     // The retained screen is still there underneath — that is the diagnosis.
     expect(overlay(el).classList.contains("over-screen")).toBe(true);
     expect(el.querySelector("#agentpane")).not.toBeNull();
   });
 
-  it("restarts on the provider the entity already holds — it names none", async () => {
-    attachAgent.mockResolvedValue({ term_id: "agent:wt-2", live: false, snapshot: "exit 1\n", cursor: 6 });
+  it("starts the harness that painted the screen, and names it", async () => {
+    attachAgent.mockResolvedValue({
+      term_id: "agent:wt-2",
+      live: false,
+      provider: "codex",
+      snapshot: "exit 1\n",
+      cursor: 6,
+    });
     let release;
     const onStart = vi.fn(() => new Promise((resolve) => (release = resolve)));
     const el = host();
     mountAgentTab(el, { id: "run-2" }, { onStart });
     await tick();
 
-    button(el).click();
+    lead(el).click();
     await tick();
-    expect(onStart.mock.calls[0][0]).toBeUndefined();
-    expect(button(el).disabled).toBe(true);
-    expect(button(el).textContent).toBe("Starting…");
+    expect(onStart).toHaveBeenCalledWith("codex");
+    expect(lead(el).disabled).toBe(true);
+    expect(labelOf(lead(el))).toBe("Starting…");
+    expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
 
     release();
     await tick();
     expect(overlay(el).hidden).toBe(true);
   });
 
+  it("can switch harness on the way back up — the cards are still there", async () => {
+    attachAgent.mockResolvedValue({
+      term_id: "agent:wt-2",
+      live: false,
+      provider: "codex",
+      snapshot: "exit 1\n",
+      cursor: 6,
+    });
+    const onStart = vi.fn(async () => {});
+    const el = host();
+    mountAgentTab(el, { id: "run-2" }, { onStart });
+    await tick();
+
+    card(el, "claude").click();
+    await tick();
+    expect(onStart).toHaveBeenCalledWith("claude");
+  });
+
+  it("leads with the default when the bridge names no harness", async () => {
+    attachAgent.mockResolvedValue({ term_id: "agent:wt-2", live: false, snapshot: "gone\n", cursor: 5 });
+    const el = host();
+    mountAgentTab(el, { id: "run-2" }, { onStart: vi.fn() });
+    await tick();
+
+    expect(message(el)).toBe("The agent exited");
+    expect(lead(el).dataset.provider).toBe("claude");
+    expect(lead(el).textContent).toContain("the default");
+  });
+
   it("flips to the exited offer when a live session dies under the human", async () => {
-    attachAgent.mockResolvedValue({ term_id: "agent:wt-3", live: true, snapshot: "", cursor: 0 });
+    attachAgent.mockResolvedValue({ term_id: "agent:wt-3", live: true, provider: "codex", snapshot: "", cursor: 0 });
     const el = host();
     mountAgentTab(el, { id: "run-3" }, { onStart: vi.fn() });
     await tick();
@@ -206,7 +275,9 @@ describe("an agent that exited", () => {
     paneSpy.lastOpts.onExit("agent_session_ended");
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toBe("The agent exited");
-    expect(button(el).textContent).toBe("Restart agent");
+    // The session that just died is what this worktree ran — the offer leads
+    // with it even though the exit itself carries no payload.
+    expect(lead(el).dataset.provider).toBe("codex");
   });
 });
 
@@ -228,7 +299,7 @@ describe("a surface with nothing that could own an agent", () => {
     await tick();
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toBe("No agent is currently running");
-    expect(button(el)).toBeNull();
+    expect(lead(el)).toBeNull();
     expect(el.querySelector("#agentStartChoices")).toBeNull();
   });
 

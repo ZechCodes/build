@@ -8,7 +8,7 @@
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import { renderFilesTab } from "../views/files.js";
-import { STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
+import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
 import { esc } from "./text.js";
 
 /**
@@ -166,10 +166,10 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
  *  attaches to an empty screen and shows `idleLabel`. An agent begins when a
  *  human→agent verb delivers a turn, never because a tab was opened.
  *
- *  `onStart(provider)` receives the harness the human picked from the idle
- *  cards, and `undefined` from the exited state's Restart (which reruns the
- *  provider the entity already holds). `selectedProvider` marks the card an
- *  earlier answer already chose. Omitting `onStart` leaves the tab a viewer.
+ *  `onStart(provider)` receives the harness the human picked — always named,
+ *  from whichever of the three controls was pressed. `selectedProvider` marks
+ *  the card an earlier answer already chose. Omitting `onStart` leaves the tab
+ *  a viewer.
  *
  *  Returns { dispose() } — tears down the client view only. */
 export function mountAgentTab(
@@ -186,27 +186,40 @@ export function mountAgentTab(
     <div class="termpane" id="agentpane"></div>
     <div class="agent-overlay" id="agentOverlay" hidden>
       <p class="agent-overlay-msg" id="agentOverlayMsg"></p>
-      ${
-        onStart
-          ? `<div id="agentStartChoices" hidden>${providerCardsHtml(STARTABLE_PROVIDERS, selectedProvider)}</div>
-             <button class="btn primary" id="agentStart" hidden>Restart agent</button>`
-          : ""
-      }
+      ${onStart ? `<div id="agentStartChoices" hidden></div>` : ""}
     </div>
   </div>`;
   const shade = host.querySelector("#agentOverlay");
   const message = host.querySelector("#agentOverlayMsg");
   const choices = host.querySelector("#agentStartChoices");
-  const restart = host.querySelector("#agentStart");
-  const cards = choices ? [...choices.querySelectorAll(".chooser-card")] : [];
   const labelOf = (card) => card.querySelector(".chooser-card-label");
   const providerLabel = (id) => STARTABLE_PROVIDERS.find((provider) => provider.id === id).label;
+  const allCards = () => (choices ? [...choices.querySelectorAll(".chooser-card")] : []);
+
+  // The harness this worktree's tab last ran, as the attach reported it — the
+  // retained screen of a dead agent is the only record of which one painted it,
+  // and the entity's own model choice can have moved since.
+  let ranProvider = null;
+
+  // The offer, in both silences: the obvious harness as a wide button, with
+  // both providers under it. A restart IS a start — what exiting changes is
+  // which one is obvious, and that is a label, not a different control.
+  const renderChoices = () => {
+    const leadProvider = ranProvider || DEFAULT_START_PROVIDER;
+    choices.hidden = false;
+    choices.innerHTML = providerCardsHtml(STARTABLE_PROVIDERS, selectedProvider, {
+      leadId: "agentStartLead",
+      lead: {
+        id: leadProvider,
+        label: providerLabel(leadProvider),
+        description: ranProvider ? "ran here last" : "the default",
+      },
+    });
+  };
 
   // Which silence this is. `exited` is the one with a screen behind it worth
   // reading, so its overlay is laid OVER that screen instead of standing in a
-  // blank pane — and it asks to start the agent AGAIN on the harness this
-  // worktree already runs, which is a different sentence from asking which
-  // harness should run here at all.
+  // blank pane.
   let exited = false;
   const show = (state, reason) => {
     if (state === "live") {
@@ -217,23 +230,16 @@ export function mountAgentTab(
     shade.hidden = false;
     shade.classList.toggle("over-screen", exited);
     message.textContent = reason || (exited ? exitedLabel : idleLabel);
-    if (!onStart) return;
-    choices.hidden = exited;
-    restart.hidden = !exited;
-    restart.disabled = false;
-    restart.textContent = "Restart agent";
-    for (const card of cards) {
-      card.disabled = false;
-      labelOf(card).textContent = providerLabel(card.dataset.provider);
-    }
+    // Re-rendering IS the reset: every label and disabled flag comes back with
+    // the fresh markup, so a failed start needs no cleanup of its own.
+    if (onStart) renderChoices();
   };
 
-  // One start path for both offers. `busy` is what the pressed control says
+  // One start path for all three controls. `busy` is what the pressed one says
   // while the harness comes up; every other control goes inert, since a second
   // press in flight would race two harnesses over one worktree.
   const startAgent = async (provider, busy) => {
-    for (const card of cards) card.disabled = true;
-    if (restart) restart.disabled = true;
+    for (const card of allCards()) card.disabled = true;
     busy();
     try {
       await onStart(provider);
@@ -243,32 +249,34 @@ export function mountAgentTab(
       shade.hidden = true;
     } catch (e) {
       // Standing offer, plus the reason — a start that failed silently would
-      // leave the human pressing a control that never explains itself. `show`
-      // restores every label and re-enables them, so this needs no cleanup of
-      // its own.
+      // leave the human pressing a control that never explains itself.
       show(exited ? "exited" : "idle", (e && e.message) || "could not start the agent");
     }
   };
 
-  for (const card of cards) {
-    card.onclick = () =>
+  // Delegated, because the offer is re-rendered on every state change: the
+  // pressed card names its own harness, so no control ever starts an unnamed
+  // one.
+  if (choices) {
+    choices.onclick = (event) => {
+      const card = event.target.closest(".chooser-card");
+      if (!card || card.disabled) return;
       startAgent(card.dataset.provider, () => {
         labelOf(card).textContent = "Starting…";
       });
-  }
-  if (restart) {
-    restart.onclick = () =>
-      startAgent(undefined, () => {
-        restart.textContent = "Starting…";
-      });
+    };
   }
 
   let pane = null;
   let disposed = false;
   mountAgentPane(host.querySelector("#agentpane"), target, {
     // A retained screen with no live session is a harness that ran and stopped;
-    // an empty one never ran at all.
-    onLive: (live, attached) => show(live ? "live" : hasScreen(attached) ? "exited" : "idle"),
+    // an empty one never ran at all. Either way the attach names the harness
+    // the tab runs, which is what the offer leads with once it is gone.
+    onLive: (live, attached) => {
+      if (attached && attached.provider) ranProvider = attached.provider;
+      show(live ? "live" : hasScreen(attached) ? "exited" : "idle");
+    },
     onExit: (reason) => {
       if (reason === "agent_session_ended") show("exited");
     },

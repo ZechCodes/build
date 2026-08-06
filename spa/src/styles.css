@@ -671,6 +671,13 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* The picked one is the answer, not a hover — it holds the accent on its own. */
 .chooser-card.chosen { border-color:var(--accent); background:var(--accent-soft); }
 .chooser-card.chosen .chooser-card-label { color:var(--accent); }
+/* One provider promoted above the row: the obvious answer, spanning the width
+   of the two it is chosen from, so the eye lands on it first without the other
+   one being taken away. */
+.chooser-card-lead { width:100%; align-items:center; text-align:center;
+  border-color:var(--accent); background:var(--accent-soft); }
+.chooser-card-lead .chooser-card-label { color:var(--accent); font-size:14px; }
+.chooser-card-lead:disabled { border-color:var(--line); background:var(--bg); }
 
 /* ---- the create FAB (every page inside a project) ---- */
 /* Two ranked verbs in one stack: the issue FAB always visible, the worktree one
@@ -959,9 +966,10 @@ body.sidebar-collapsed #side-open { display:block; }
 .agent-overlay.over-screen { background:color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter:blur(1.5px); }
 .agent-overlay.over-screen .agent-overlay-msg { color:var(--fg); font-weight:500; }
-/* Starting an agent is a choice of harness, so the idle offer is the same
+/* Starting an agent is a choice of harness, so BOTH empty states offer the same
    bordered card picker the new-worktree sheet asks with — capped and centred
-   here, where it stands in an open pane rather than a sheet's field column. */
+   here, where it stands in an open pane rather than a sheet's field column. An
+   agent that exited differs only in which harness leads it. */
 #agentStartChoices[hidden] { display:none; }
 .agent-overlay .chooser { width:min(100%, 380px); }
 .agent-overlay .chooser-card { align-items:center; text-align:center; }

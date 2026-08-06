@@ -177,7 +177,6 @@ export function mountAgentTab(
   target,
   {
     idleLabel = "No agent is currently running",
-    exitedLabel = "The agent exited",
     onStart,
     selectedProvider = null,
   } = {},
@@ -229,7 +228,11 @@ export function mountAgentTab(
     exited = state === "exited";
     shade.hidden = false;
     shade.classList.toggle("over-screen", exited);
-    message.textContent = reason || (exited ? exitedLabel : idleLabel);
+    // An exited state says nothing of its own: the retained screen behind the
+    // overlay is the explanation, and the picker is the whole offer. The line
+    // still speaks for a start failure (reason) and for the inert idle pane.
+    message.textContent = reason || (exited ? "" : idleLabel);
+    message.hidden = !message.textContent;
     // Re-rendering IS the reset: every label and disabled flag comes back with
     // the fresh markup, so a failed start needs no cleanup of its own.
     if (onStart) renderChoices();

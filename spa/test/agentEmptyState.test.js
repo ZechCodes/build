@@ -193,7 +193,10 @@ describe("an agent that exited", () => {
     await tick();
 
     expect(overlay(el).hidden).toBe(false);
-    expect(message(el)).toBe("The agent exited");
+    // No message: the retained screen behind the overlay already says what
+    // happened, and the picker is the whole offer.
+    expect(message(el)).toBe("");
+    expect(el.querySelector("#agentOverlayMsg").hidden).toBe(true);
     // The same picker as the idle state — a restart IS a start. What exiting
     // changed is only which harness is the obvious one, and the attach says
     // which one painted the screen behind this overlay.
@@ -260,7 +263,7 @@ describe("an agent that exited", () => {
     mountAgentTab(el, { id: "run-2" }, { onStart: vi.fn() });
     await tick();
 
-    expect(message(el)).toBe("The agent exited");
+    expect(message(el)).toBe("");
     expect(lead(el).dataset.provider).toBe("claude");
     expect(lead(el).textContent).toContain("the default");
   });
@@ -274,7 +277,7 @@ describe("an agent that exited", () => {
 
     paneSpy.lastOpts.onExit("agent_session_ended");
     expect(overlay(el).hidden).toBe(false);
-    expect(message(el)).toBe("The agent exited");
+    expect(message(el)).toBe("");
     // The session that just died is what this worktree ran — the offer leads
     // with it even though the exit itself carries no payload.
     expect(lead(el).dataset.provider).toBe("codex");

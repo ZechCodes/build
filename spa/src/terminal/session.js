@@ -27,6 +27,16 @@ const noop = () => {};
  *  the cap is what keeps a pathological flood from growing without bound. */
 const ORPHAN_FRAME_LIMIT = 64;
 
+/** How long a decrypted frame vouches for the connection.
+ *
+ *  Every frame for this client rides ONE FIFO (bridge → relay → browser), so a
+ *  terminal flooding output queues the pong behind its bytes: pinging a busy
+ *  stream measures the backlog, not the connection, and times out on a path
+ *  that is plainly alive. Any frame we decrypted is itself proof the bridge is
+ *  reachable, so within this window we skip the probe entirely — busy is not
+ *  dead. Only real silence past it is worth a ping. */
+const FRAME_PROOF_OF_LIFE_MS = 4000;
+
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     if (typeof getPinnedDeviceKey !== "function") {
@@ -56,6 +66,8 @@ export class TerminalSocket {
     this._orphanFrames = new Map();
     this._agentAttachesInFlight = 0;
     this._agentAttachSeq = 0;
+    // When the last frame decrypted on the CURRENT connection (0 = none yet).
+    this._lastFrameAt = 0;
   }
 
   onStatus(fn) { this._onStatus = fn; } // 'connecting'|'connected'|'disconnected'
@@ -257,6 +269,7 @@ export class TerminalSocket {
   async _connect() {
     const gen = (this._gen = (this._gen || 0) + 1);
     this._connected = false;
+    this._lastFrameAt = 0; // the old connection's traffic vouches for nothing here
     this._onStatus("connecting");
     if (this.transport.ready) await this.transport.ready();
 
@@ -392,6 +405,7 @@ export class TerminalSocket {
       try {
         frame = await this.transport.decryptEnvelope({ sessionKeyB64: this._key, envelope: msg.envelope });
       } catch { continue; }
+      this._lastFrameAt = Date.now(); // whatever it says, the bridge reached us
       const p = frame.payload;
       if (p && p.id !== undefined && p.ok !== undefined) {
         const pend = this._pending.get(p.id);
@@ -456,12 +470,15 @@ export class TerminalSocket {
   }
 
   // Application-level liveness: a relay/bridge/network outage does NOT always
-  // close our socket, so we actively ping. A failed ping means the path to the
-  // bridge is down → show disconnected and reconnect.
+  // close our socket, so we actively ping WHEN NOTHING ELSE IS ARRIVING. A
+  // recently decrypted frame already proves the path, so it suppresses the
+  // probe (see FRAME_PROOF_OF_LIFE_MS); only silence is probed, and a failed
+  // ping means the path to the bridge is down → show disconnected and reconnect.
   async _startLiveness(gen) {
     while (this._gen === gen && !this._closed) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       if (this._gen !== gen || this._closed) return;
+      if (Date.now() - this._lastFrameAt < FRAME_PROOF_OF_LIFE_MS) continue;
       try {
         await this._call("ping", {}, 3000);
       } catch {

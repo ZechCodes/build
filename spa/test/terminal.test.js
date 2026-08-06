@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { TerminalSocket } from "../src/terminal/session.js";
 import { createStatusHub } from "../src/terminal/statusHub.js";
 
@@ -514,6 +514,97 @@ describe("TerminalSocket", () => {
     push(ws, init, { type: "term.output", term_id: "term-1", cursor: 5, data: b64("x") });
     await tick();
     expect(out).toEqual([]);
+    socket.close();
+  });
+});
+
+// The liveness ping shares ONE FIFO with terminal output, so a flooding PTY
+// delays the pong. These tests pin the rule that decides between "busy" and
+// "dead": received frames vouch for the connection, silence does not.
+describe("TerminalSocket liveness", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /** connected(), but driven on fake timers, reporting every status it saw. */
+  async function connectedOnFakeTimers() {
+    FakeWebSocket.instances.length = 0;
+    const socket = makeSocket();
+    const statuses = [];
+    socket.onStatus((s) => statuses.push(s));
+    const started = socket.start();
+    started.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = FakeWebSocket.instances.at(-1);
+    ws.emit("open");
+    await vi.advanceTimersByTimeAsync(0);
+    ws.serverSend({ type: "authenticated" });
+    ws.serverSend({ type: "device_key", device_id: "dev-b", transport_public_key: "pk-b" });
+    await vi.advanceTimersByTimeAsync(0);
+    const init = ws.sent.find((m) => m.type === "session_init");
+    ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
+    await started;
+    return { socket, ws, init, statuses };
+  }
+
+  const pingsSentOn = (ws) =>
+    ws.sent.filter((m) => m.type === "e2ee_envelope" && m.envelope.frameFields.payload.method === "ping");
+
+  it("stays connected while output keeps arriving, even though no ping is ever answered", async () => {
+    const { socket, ws, init, statuses } = await connectedOnFakeTimers();
+    const attaching = socket.attachTerminal("term-flood", { onOutput: () => {}, onSnapshot: () => {} });
+    attaching.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
+    await attaching;
+    statuses.length = 0;
+
+    // 20s of steady PTY output and not one pong: the bridge is busy, not dead.
+    for (let cursor = 1; cursor <= 20; cursor++) {
+      push(ws, init, { type: "term.output", term_id: "term-flood", cursor, data: b64("x") });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(pingsSentOn(ws)).toEqual([]); // data made the probe unnecessary
+    expect(statuses).toEqual([]); // no false disconnect, no reconnect loop
+    socket.close();
+  });
+
+  it("still disconnects an idle socket whose ping goes unanswered", async () => {
+    const { socket, ws, statuses } = await connectedOnFakeTimers();
+    statuses.length = 0;
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(pingsSentOn(ws).length).toBe(1); // silence → probe
+    await vi.advanceTimersByTimeAsync(3000); // the ping's own timeout
+    expect(statuses).toEqual(["disconnected"]);
+
+    const socketsBefore = FakeWebSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(500); // backoff → reconnect
+    expect(FakeWebSocket.instances.length).toBe(socketsBefore + 1);
+    socket.close();
+  });
+
+  it("stops the liveness loop after close()", async () => {
+    const { socket, ws, statuses } = await connectedOnFakeTimers();
+    statuses.length = 0;
+    socket.close();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(pingsSentOn(ws)).toEqual([]);
+    expect(statuses).toEqual([]);
+  });
+
+  it("stops the liveness loop of a superseded generation (no stray disconnect)", async () => {
+    const { socket, ws, statuses } = await connectedOnFakeTimers();
+    statuses.length = 0;
+
+    ws.serverSend({ type: "device_offline", device_id: "dev-b" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual(["disconnected"]);
+
+    // Past the next liveness wake: the old generation's loop must be gone, so
+    // the only status after the loss is the reconnect attempt.
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(pingsSentOn(ws)).toEqual([]);
+    expect(statuses).toEqual(["disconnected", "connecting"]);
     socket.close();
   });
 });

@@ -650,7 +650,6 @@ const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("plan.comment_add", "plan_id"),
     ("plan.comment_resolve", "plan_id"),
     ("plan.message", "plan_id"),
-    ("plan.resume", "plan_id"),
     ("plan.abandon", "plan_id"),
     ("run.request_changes", "run_id"),
     ("run.message", "run_id"),
@@ -658,7 +657,6 @@ const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("run.stage_dispatch", "run_id"),
     ("run.stage_send_notes", "run_id"),
     ("run.set_auto_advance", "run_id"),
-    ("run.resume", "run_id"),
     ("run.abandon", "run_id"),
     ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
@@ -6254,6 +6252,14 @@ impl AppState {
                 ));
             }
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
+            // A reply IS the unblock: the Blocked/Failed/Idle arms exist to
+            // wait for exactly this message, so posting it resumes drafting.
+            // Interrupted is deliberately excluded — its session is gone, and
+            // Drafting must never claim an agent that does not exist.
+            let resume = matches!(
+                active.plan.state,
+                PlanState::Blocked | PlanState::Failed | PlanState::IdleUnreported
+            );
             let implementation_target =
                 self.current_issue_implementation_id(&entity_id)
                     .and_then(|run_id| {
@@ -6263,16 +6269,42 @@ impl AppState {
                     });
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
+            if resume {
+                active
+                    .plan
+                    .apply(crate::plan::PlanEvent::Reply)
+                    .expect("Reply is legal from every parked plan state");
+            }
+            let mut parked_implementation = None;
             if let Some((run_id, worktree_path)) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
-                // must therefore wake that implementation agent.
+                // must therefore wake that implementation agent — and the same
+                // reply rule applies to the run it wakes.
                 nudge_live_agent_tab(&self.tabs, &worktree_path, &run_id);
+                parked_implementation = self
+                    .runs
+                    .get(&run_id)
+                    .filter(|run| {
+                        matches!(
+                            run.run.state,
+                            RunState::Blocked | RunState::Failed | RunState::IdleUnreported
+                        )
+                    })
+                    .map(|_| run_id);
             } else if let Some(worktree) = &active.worktree {
                 nudge_live_agent_tab(&self.tabs, &worktree.path, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             persisted?;
+            if let Some(run_id) = parked_implementation {
+                let mut run = self.take_run(&run_id)?;
+                run.run
+                    .apply(crate::run::RunEvent::Reply)
+                    .expect("Reply is legal from every parked run state");
+                let (_, run_persisted) = self.finish_run_mutation(run_id, run);
+                run_persisted?;
+            }
             return Ok(view);
         }
         if let Some(active) = self.runs.get(&entity_id) {
@@ -6283,6 +6315,12 @@ impl AppState {
                 ));
             }
             let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
+            // Same rule as plans: the reply resumes a parked run (Interrupted
+            // excluded — its session is gone).
+            let resume = matches!(
+                active.run.state,
+                RunState::Blocked | RunState::Failed | RunState::IdleUnreported
+            );
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let worktree_path = active.worktree.path.clone();
             if let Some(issue_id) = issue_id.filter(|id| self.plans.contains_key(id)) {
@@ -6291,11 +6329,27 @@ impl AppState {
                 nudge_live_agent_tab(&self.tabs, &worktree_path, &entity_id);
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
+                if resume {
+                    let mut active = self.take_run(&entity_id)?;
+                    active
+                        .run
+                        .apply(crate::run::RunEvent::Reply)
+                        .expect("Reply is legal from every parked run state");
+                    let (view, run_persisted) = self.finish_run_mutation(entity_id, active);
+                    run_persisted?;
+                    return Ok(view);
+                }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
                 return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
             }
             let mut active = self.take_run(&entity_id)?;
             append_user_thread_messages(&mut active.thread, messages);
+            if resume {
+                active
+                    .run
+                    .apply(crate::run::RunEvent::Reply)
+                    .expect("Reply is legal from every parked run state");
+            }
             nudge_live_agent_tab(&self.tabs, &active.worktree.path, &entity_id);
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
@@ -16904,6 +16958,89 @@ mod tests {
             .unwrap()
             .iter()
             .any(|message| message["body"] == "read this in the implementation"));
+    }
+
+    /// A reply IS the unblock: posting to a parked plan applies the `Reply`
+    /// transition the state machine already defines, so the composer the user
+    /// is typing into resumes drafting instead of leaving the card stranded
+    /// at BLOCKED with no way out.
+    #[test]
+    fn thread_post_to_a_parked_plan_is_the_reply_that_resumes_drafting() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        for parked in [
+            PlanState::Blocked,
+            PlanState::Failed,
+            PlanState::IdleUnreported,
+        ] {
+            let plan = state.handle(req("plan.create", json!({ "goal": "park me" })));
+            let plan_id = plan_id_of(&plan);
+            state.plans.get_mut(&plan_id).unwrap().plan.state = parked;
+
+            let posted = state.handle(req(
+                "thread.post",
+                json!({ "entity_id": plan_id, "body": "here is your answer" }),
+            ));
+            assert_eq!(posted["ok"], true, "{parked:?}: {posted:?}");
+            assert_eq!(
+                posted["result"]["state"], "drafting",
+                "{parked:?}: the reply resumes drafting: {posted:?}"
+            );
+            let active = state.plans.get(&plan_id).unwrap();
+            assert_eq!(active.plan.state, PlanState::Drafting, "{parked:?}");
+        }
+    }
+
+    /// Same rule on the run side: a post addressed to a parked run resumes
+    /// building — the message is the reply the Blocked/Failed/Idle arms wait
+    /// for.
+    #[test]
+    fn thread_post_to_a_parked_run_is_the_reply_that_resumes_building() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        for parked in [
+            RunState::Blocked,
+            RunState::Failed,
+            RunState::IdleUnreported,
+        ] {
+            let (_, run_id) = planned_run_in_review(&mut state, "park the run");
+            state.runs.get_mut(&run_id).unwrap().run.state = parked;
+
+            let posted = state.handle(req(
+                "thread.post",
+                json!({ "entity_id": run_id, "body": "here is your answer" }),
+            ));
+            assert_eq!(posted["ok"], true, "{parked:?}: {posted:?}");
+            assert_eq!(
+                posted["result"]["state"], "building",
+                "{parked:?}: the reply resumes building: {posted:?}"
+            );
+            let active = state.runs.get(&run_id).unwrap();
+            assert_eq!(active.run.state, RunState::Building, "{parked:?}");
+        }
+    }
+
+    /// The Issue owns the conversation, but the reply must still unblock the
+    /// live implementation it wakes: posting to the Issue while its run is
+    /// parked resumes that run.
+    #[test]
+    fn thread_post_addressed_to_issue_unblocks_its_parked_implementation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed unblock");
+        state.runs.get_mut(&run_id).unwrap().run.state = RunState::Blocked;
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "here is your answer" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let active = state.runs.get(&run_id).unwrap();
+        assert_eq!(
+            active.run.state,
+            RunState::Building,
+            "the reply resumes the implementation it nudged"
+        );
     }
 
     #[test]

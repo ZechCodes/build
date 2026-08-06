@@ -19058,6 +19058,33 @@ mod tests {
         );
     }
 
+    /// Which checkout a run owns is read back off the run record's own paths,
+    /// so a restart cannot lose it — and the one-owner rule still holds against
+    /// a run this daemon never minted.
+    #[test]
+    fn a_recovered_primary_run_still_owns_the_checkout() {
+        let (dir, repo) = init_repo();
+        let run_id = {
+            let mut state = qa_state(&repo, dir.path());
+            adopted_primary_run(&mut state)
+        };
+
+        let mut restarted = qa_state(&repo, dir.path());
+        let recovered = restarted.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(recovered["ok"], true, "{recovered:?}");
+        assert_eq!(recovered["result"]["primary"], true, "{recovered:?}");
+        let project_id = restarted.projects[0].id.clone();
+        let readopted = restarted.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(
+            run_id_of(&readopted),
+            run_id,
+            "the owner from before the restart is the owner after it"
+        );
+    }
+
     /// A primary run is an owner like any other: the surfaces that make an
     /// owner useful reach it through the same verbs.
     #[test]

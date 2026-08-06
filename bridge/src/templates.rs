@@ -26,10 +26,11 @@ Settle the conversation before you plan. First answer, with `post_thread_message
 every question the reviewer has asked — in the goal above and in any unread
 message. Then ask your own: if anything you would have to guess at would change
 how this work splits into stages, post all of those questions at once with
-`post_thread_message` and call the `done` tool with phase=\"plan\",
-status=\"blocked\" and one concise sentence saying you are waiting on answers.
-Write no stage documents until the answers are in — resume planning here once
-they are. Only when nothing is left to ask, plan:
+`post_thread_message` — but do not stop and do not wait for answers. Waiting on
+the reviewer is a conversation, never a blocker. Choose the most reasonable
+assumption for each open question, record it in the affected stage document
+under an \"Assumptions\" heading, and keep planning; answers arrive on the thread
+or as plan-review notes, and the revision loop absorbs any correction. Then plan:
 
 Break the work into sequential stages and write one self-contained markdown plan
 document per stage under `.build/plan/`, named `NN-<stage-id>.md` (`01-`, `02-`, …).
@@ -44,8 +45,10 @@ do not implement anything. Write nothing outside `.build/`.
 When the plan is ready, call the `done` tool with phase=\"plan\", status=\"completed\",
 outputs.plan_path=\".build/plan/stages.json\", outputs.stages set to the exact
 contents of the manifest, and set summary to one concise sentence stating what
-was planned. If you cannot proceed, call `done` with status=\"blocked\" and use one
-concise sentence to say what you need.";
+was planned. Reserve status=\"blocked\" for an unexpected environment or
+implementation problem that makes planning impossible (a broken checkout,
+missing tooling) — never for waiting on answers — and use one concise sentence
+to say what is broken.";
 
 const BUILD: &str = "\
 Execute the implementation plan at {plan_path}. The goal is:
@@ -62,9 +65,13 @@ change is committed before you call `done`.
 
 When the work is complete, call the `done` tool with phase=\"build\",
 status=\"completed\", and set summary to one concise sentence stating what was
-completed. If you get stuck, call `done` with status=\"blocked\" (you need something)
-or status=\"failed\" (the approach did not work) and use one concise sentence to say
-what is needed to proceed.";
+completed. If a question arises that only the reviewer can answer, post it with
+`post_thread_message` and keep building what is unambiguous — waiting on the
+reviewer is a conversation, never a blocker. Call `done` with status=\"blocked\"
+only for an unexpected environment or implementation problem you cannot work
+around (broken tooling, a missing dependency), or status=\"failed\" when the
+approach did not work, and use one concise sentence to say what is needed to
+proceed.";
 
 const BUILD_STAGE: &str = "\
 Execute ONE stage of a multi-stage implementation plan. The overall goal is:
@@ -86,9 +93,13 @@ change is committed before you call `done`.
 
 When this stage's work is complete, call the `done` tool with phase=\"build\",
 status=\"completed\", and set summary to one concise sentence stating what was
-completed. If you get stuck, call `done` with status=\"blocked\" (you need something)
-or status=\"failed\" (the approach did not work) and use one concise sentence to say
-what is needed to proceed.";
+completed. If a question arises that only the reviewer can answer, post it with
+`post_thread_message` and keep building what is unambiguous — waiting on the
+reviewer is a conversation, never a blocker. Call `done` with status=\"blocked\"
+only for an unexpected environment or implementation problem you cannot work
+around (broken tooling, a missing dependency), or status=\"failed\" when the
+approach did not work, and use one concise sentence to say what is needed to
+proceed.";
 
 const REVISE: &str = "\
 The reviewer left notes on the plan at {plan_path}:
@@ -135,8 +146,11 @@ change is committed before you call `done`.
 
 When done, call the `done` tool with
 phase=\"build\", status=\"completed\", and one concise sentence in summary stating
-what was fixed. If you get stuck, call `done` with status=\"blocked\" or
-status=\"failed\" and use one concise sentence to say what is needed to proceed.";
+what was fixed. If a question arises that only the reviewer can answer, post it
+with `post_thread_message` and keep going on what is unambiguous. Call `done`
+with status=\"blocked\" only for an unexpected environment or implementation
+problem you cannot work around, or status=\"failed\" when the approach did not
+work, and use one concise sentence to say what is needed to proceed.";
 
 const REVIEW_CHANGES: &str = "\
 The reviewer requested changes on your diff:
@@ -165,8 +179,11 @@ outputs.validation = {\"passed\": true|false, \"findings\": \"...\", \"notes_for
 what was verified and any divergences. `notes_for_next_stage` is markdown the
 next stage's builder should know (surprises, renamed symbols, follow-ups) — use
 \"\" if there is nothing. Use one concise sentence in the summary argument to state
-the verdict. If you cannot complete the review, call `done` with status=\"blocked\"
-or status=\"failed\" and use one concise sentence to say why.";
+the verdict. If a question would change your verdict, post it with
+`post_thread_message` and judge on the evidence in front of you. If an
+unexpected environment or implementation problem prevents the review itself,
+call `done` with status=\"blocked\" or status=\"failed\" and use one concise
+sentence to say why.";
 
 fn phase_template(base: &str) -> String {
     base.to_string()
@@ -216,8 +233,10 @@ A message from the reviewer:
 
 Honor the message, then carry the task to completion and report via the `done`
 tool exactly as your original instructions described (same phase, honest
-status). If the message asks something you cannot resolve from this worktree,
-call `done` with status=\"blocked\" and put the question in the summary.";
+status). If the message asks something only the reviewer can resolve, post your
+question with `post_thread_message` and keep going on what is unambiguous;
+reserve status=\"blocked\" for an unexpected environment or implementation
+problem you cannot work around.";
 
 /// The substitution variables a template can reference.
 #[derive(Debug, Default, Clone)]
@@ -386,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_template_settles_questions_before_writing_stages() {
+    fn plan_template_asks_questions_without_blocking_on_them() {
         let t = Templates::default();
         let converse = t
             .plan
@@ -398,14 +417,50 @@ mod tests {
             .expect("the stage-writing instructions");
         assert!(
             converse < write_stages,
-            "questions are asked and answered before any stage doc is written: {}",
+            "questions are posted before any stage doc is written: {}",
+            t.plan
+        );
+        assert!(
+            t.plan.contains("Assumptions"),
+            "open questions become recorded assumptions, not a parked plan: {}",
+            t.plan
+        );
+        assert!(
+            t.plan.contains("never for waiting on answers"),
+            "blocked is reserved for environment/implementation problems: {}",
             t.plan
         );
         assert!(
             t.plan.contains("status=\"blocked\""),
-            "an unanswered question parks the plan instead of being guessed at: {}",
+            "the escape hatch for a genuinely broken environment remains: {}",
             t.plan
         );
+    }
+
+    #[test]
+    fn blocked_means_environment_or_implementation_everywhere() {
+        // Waiting on the reviewer is a conversation, not a blocker: every
+        // template that teaches `done(blocked)` must scope it to unexpected
+        // environment/implementation problems, never to open questions.
+        let t = Templates::default();
+        for (name, template) in [
+            ("plan", &t.plan),
+            ("build", &t.build),
+            ("build_stage", &t.build_stage),
+            ("fix_stage", &t.fix_stage),
+            ("validate", &t.validate),
+            ("message", &t.message),
+        ] {
+            assert!(
+                template.contains("status=\"blocked\""),
+                "{name} lost its escape hatch: {template}"
+            );
+            assert!(
+                collapse_whitespace(template)
+                    .contains("unexpected environment or implementation problem"),
+                "{name} must scope blocked to environment/implementation problems: {template}"
+            );
+        }
     }
 
     #[test]

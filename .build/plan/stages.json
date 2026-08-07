@@ -1,8 +1,8 @@
 [
   {
-    "id": "terminal-touch-scroll",
-    "title": "Touch scrolling for terminal panes",
-    "path": ".build/plan/01-terminal-touch-scroll.md",
-    "summary": "ghostty-web registers only mouse/wheel listeners, so touch drags do nothing on mobile. Add a pure, TDD'd gesture module (spa/src/terminal/touchScroll.js) that translates one-finger drags and flicks into synthetic pixel-mode WheelEvents (with slop so taps still focus, and rAF momentum), wire it into mountTerminalPane with touch-action:none on the host, and let ghostty's own wheel handler do the rest (scrollback scroll on the normal screen, arrow keys on the alternate screen). Off-the-shelf options were surveyed and ruled out: upstream ghostty-web has no touch scrolling even in its latest prerelease, and gesture libraries are unmaintained or don't cover the terminal-specific glue (tap-to-focus preservation, alt-screen arrow keys, wheel synthesis)."
+    "id": "ipad-pwa",
+    "title": "Make the web client a correct installable iPad PWA",
+    "path": ".build/plan/01-ipad-pwa.md",
+    "summary": "The spa/ web client already ships a manifest, Apple meta tags, correctly sized icons, and a cache-free push service worker, so this stage closes the gaps that make iPad standalone behave wrong rather than adding PWA support from scratch. Add viewport-fit=cover so env(safe-area-inset-*) is non-zero in standalone; broaden the manifest scope from /app/ to / (with start_url still /app/) so the vendored-Skrift /auth/login redirect stays inside the installed app instead of bouncing to Safari; add manifest identity/orientation fields and reconcile theme_color/background_color to the app bg (#fafafa); make theme-color meta light/dark aware; and pad the app shell for iPad safe areas plus suppress standalone overscroll — all inset-based so desktop layout is unchanged. TDD via a new spa/test/pwa.test.js that reads index.html/manifest/styles.css and asserts the PWA fields. The service worker stays cache-free (E2EE never-serve-stale rule); splash screens and offline caching are deferred."
   }
 ]

@@ -12,6 +12,10 @@ const manifest = JSON.parse(
     "utf8",
   ),
 );
+const stylesSource = readFileSync(
+  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
+  "utf8",
+);
 function metaContent(name, media) {
   const tags = indexSource.match(/<meta\s+[^>]+>/g) ?? [];
   const tag = tags.find((candidate) =>
@@ -61,5 +65,12 @@ describe("installable PWA manifest", () => {
         expect.objectContaining({ sizes: "512x512", type: "image/png" }),
       ]),
     );
+  });
+});
+
+describe("standalone shell styles", () => {
+  it("suppresses page overscroll and clears more than just the terminal key bar", () => {
+    expect(stylesSource).toContain("overscroll-behavior");
+    expect(stylesSource.match(/env\(safe-area-inset-bottom/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
 });

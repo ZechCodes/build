@@ -63,6 +63,7 @@
   --term-bg:#15171c; --term-fg:#c3cae0;
 }
 * { box-sizing:border-box; }
+html, body { overscroll-behavior:none; }
 /* The native controls this client does not restyle — checkboxes, the select
    popup, scrollbars — take their cue from color-scheme on :root; the tick
    itself takes the accent. */
@@ -80,7 +81,9 @@ a { color:inherit; }
 #devpick:focus { outline:none; border-color:var(--accent); }
 /* offline banner */
 #offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
-main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
+main { max-width:1180px; margin:0 auto;
+  padding:26px calc(22px + env(safe-area-inset-right, 0px))
+    calc(80px + env(safe-area-inset-bottom, 0px)) 22px; }
 /* board */
 .board-head { display:flex; align-items:flex-start; margin-bottom:22px; }
 .board-head h1 { font-size:24px; margin:0 0 2px; letter-spacing:-.02em; }
@@ -154,7 +157,9 @@ main { max-width:1180px; margin:0 auto; padding:26px 22px 80px; }
    The tab bar is the top of the view; #tabbody is the one scroll container
    (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)
    drop the padding and let the pane own the whole box. */
-main#root.surface { max-width:none; padding:0; height:100vh; height:100dvh;
+main#root.surface { max-width:none;
+  padding:0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
+  height:100vh; height:100dvh;
   display:flex; flex-direction:column; overflow:hidden; }
 /* No rule under it: the selected pill marks the tab row, and the surface shares
    the page background like every other section. */
@@ -444,7 +449,9 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .file td.code .token.class-name, .fsrc .token.class-name { color:var(--violet); }
 .file td.code .token.punctuation, .fsrc .token.punctuation,
 .file td.code .token.operator, .fsrc .token.operator { color:var(--ink2); }
-.actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent); padding:14px 0 4px; display:flex; align-items:center; gap:12px; margin-top:6px; }
+.actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent);
+  padding:14px 0 calc(4px + env(safe-area-inset-bottom, 0px));
+  display:flex; align-items:center; gap:12px; margin-top:6px; }
 .actionbar .hint { color:var(--dim); font-size:12.5px; }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
@@ -508,7 +515,8 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 /* new task sheet */
 .scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
 .scrim.show { display:flex; }
-.sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px var(--shadow); padding:22px 24px; }
+.sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px var(--shadow);
+  padding:22px 24px calc(22px + env(safe-area-inset-bottom, 0px)); }
 .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
 textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
 .field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
@@ -587,7 +595,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .actionbar { flex-wrap:wrap; gap:8px; }
   .actionbar .right { flex-wrap:wrap; gap:8px; }
   select.mini { max-width:44vw; }
-  .sheet { width:94vw; padding:16px 14px; max-height:88vh; overflow-y:auto; }
+  .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
   .sheet .field-row { flex-direction:column; gap:0 !important; }
   .comment-pop { max-width:calc(100vw - 16px); }
   .splitmenu { right:auto; left:0; }
@@ -650,7 +658,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* Two ranked verbs in one stack: the issue FAB always visible, the worktree one
    revealed on hover or keyboard focus. column-reverse so the mini sits ABOVE
    the primary while the primary keeps DOM (and tab) order first. */
-#fab { position:fixed; right:22px; bottom:22px; z-index:40; }
+#fab { position:fixed; right:calc(22px + env(safe-area-inset-right, 0px));
+  bottom:calc(22px + env(safe-area-inset-bottom, 0px)); z-index:40; }
 /* The FAB is fixed over the bottom-right corner, which is exactly where two
    controls already live: the conversation's Send and the sticky action bar's
    right cluster. Both get clearance rather than a fight — vertical for the
@@ -684,7 +693,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 #fab.fab-busy .fab-mini-label::after { content:" \2026"; }
 @media (max-width: 900px) {
   /* Clear of the mobile sidebar toggle and any sticky action bar. */
-  #fab { right:14px; bottom:14px; }
+  #fab { right:calc(14px + env(safe-area-inset-right, 0px));
+    bottom:calc(14px + env(safe-area-inset-bottom, 0px)); }
   .fab { padding:12px 18px; }
   :root { --fab-clear:150px; }
 }
@@ -693,7 +703,9 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 #shell { display:flex; align-items:flex-start; }
 #sidebar { flex:0 0 272px; width:272px; position:sticky; top:0; align-self:stretch;
   height:100vh; display:flex; flex-direction:column; background:var(--bg);
-  padding:10px 12px 12px; }
+  padding:calc(10px + env(safe-area-inset-top, 0px)) 12px
+    calc(12px + env(safe-area-inset-bottom, 0px))
+    calc(12px + env(safe-area-inset-left, 0px)); }
 body.sidebar-collapsed #sidebar { display:none; }
 body.gated #sidebar, body.gated #side-open { display:none !important; }
 #shell main { flex:1; min-width:0; }
@@ -709,13 +721,16 @@ body.gated #sidebar, body.gated #side-open { display:none !important; }
   align-items:center; gap:10px; font-size:11.5px; color:var(--ink2); flex-wrap:wrap; }
 .side-status #devpick { max-width:130px; }
 /* the floating reopen toggle — only when the sidebar is collapsed */
-#side-open { display:none; position:fixed; top:10px; left:10px; z-index:45;
+#side-open { display:none; position:fixed;
+  top:calc(10px + env(safe-area-inset-top, 0px));
+  left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
   background:var(--panel); border:1px solid var(--line); }
 body.sidebar-collapsed #side-open { display:block; }
 .side-head { display:flex; align-items:center; margin:2px 6px 10px; }
 .side-head .side-actions { margin-left:auto; display:flex; gap:2px; }
 .iconbtn { font:inherit; font-size:14px; line-height:1; color:var(--dim); background:none;
-  border:none; border-radius:6px; padding:4px 7px; cursor:pointer; }
+  border:none; border-radius:6px; padding:4px 7px; cursor:pointer;
+  -webkit-tap-highlight-color:transparent; }
 .iconbtn:hover { background:var(--line2); color:var(--ink2); }
 .sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }
@@ -775,6 +790,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .ssec .sseclabel { margin:0 6px 3px; font-size:9.5px; letter-spacing:.05em; font-weight:600; }
 .srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
   font-size:13px; color:var(--ink2); cursor:pointer; }
+.srow.snav { -webkit-tap-highlight-color:transparent; user-select:none; }
 .srow:hover { background:var(--line2); }
 .srow.active { background:var(--accent-soft); color:var(--accent); }
 .srow .sicon { flex:0 0 14px; text-align:center; font-size:11px; color:var(--dim); }
@@ -1024,7 +1040,9 @@ body.sidebar-collapsed #side-open { display:block; }
 
 /* Global notifications (core/notify.js) — errors persist until dismissed,
    successes are transient; detail expands to the full error text. */
-#notices { position:fixed; right:14px; bottom:14px; z-index:200; display:flex; flex-direction:column; gap:8px; max-width:380px; width:calc(100vw - 28px); }
+#notices { position:fixed; right:calc(14px + env(safe-area-inset-right, 0px));
+  bottom:calc(14px + env(safe-area-inset-bottom, 0px)); z-index:200;
+  display:flex; flex-direction:column; gap:8px; max-width:380px; width:calc(100vw - 28px); }
 .notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px var(--shadow); }
 .notice.error { border-left-color:var(--red); }
 .notice.success { border-left-color:var(--green); }

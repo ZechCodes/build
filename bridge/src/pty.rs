@@ -156,6 +156,16 @@ pub struct HarnessSpec {
     /// scripted test harness paints once and would otherwise pay a real TUI's
     /// startup cost on every spawn.
     pub settle: Duration,
+    /// How long the submit key must trail the prompt text.
+    ///
+    /// Zero means text and submit travel in one write — right for scripted
+    /// harnesses reading a plain pipe. A real TUI needs the gap: paste frame
+    /// and Enter written together arrive in ONE stdin read, and claude's
+    /// editor handles the Enter before the paste has committed to its composer
+    /// — the prompt sits there pasted but unsubmitted. The delayed submit is
+    /// written from a detached thread so no caller (some hold the app-wide
+    /// state lock through a delivery) ever sleeps for it.
+    pub submit_delay: Duration,
 }
 
 impl HarnessSpec {
@@ -168,7 +178,14 @@ impl HarnessSpec {
             submit: SubmitKey::Enter,
             unset: Vec::new(),
             settle: DEFAULT_SETTLE,
+            submit_delay: Duration::ZERO,
         }
+    }
+
+    /// Declare how long this harness's submit key must trail the prompt text.
+    pub fn submit_delay(mut self, delay: Duration) -> Self {
+        self.submit_delay = delay;
+        self
     }
 
     /// Remove `key` from the spawned harness's environment.
@@ -202,7 +219,9 @@ impl HarnessSpec {
 
 /// A live agent session bound to a PTY. Cloneable handles share one underlying PTY.
 pub struct PtySession {
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Shared, not owned: a delayed submit key is written from a detached
+    /// thread that outlives the borrow a caller holds on the session.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     /// The output broadcast sender, dropped by the reader thread at PTY EOF so
@@ -217,6 +236,7 @@ pub struct PtySession {
     accepts_paste: Arc<AtomicBool>,
     submit: SubmitKey,
     settle: Duration,
+    submit_delay: Duration,
     /// The child's exit code, cached the first time it is observed. `try_wait`
     /// reaps the child exactly once, so the status must be remembered here or the
     /// crash-detection message ("exit code N") could never recover the code after
@@ -310,7 +330,7 @@ impl PtySession {
         }
 
         Ok(PtySession {
-            writer: Mutex::new(writer),
+            writer: Arc::new(Mutex::new(writer)),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             output_tx,
@@ -318,6 +338,7 @@ impl PtySession {
             accepts_paste,
             submit: spec.submit.clone(),
             settle: spec.settle,
+            submit_delay: spec.submit_delay,
             exit_code: Mutex::new(None),
         })
     }
@@ -344,16 +365,36 @@ impl PtySession {
     /// promises the harness the exact bytes.
     pub fn write_prompt(&self, prompt: &str) -> Result<(), PtyError> {
         let sanitized = strip_bracketed_paste_markers(prompt);
-        let mut writer = self.writer.lock().unwrap();
-        if self.submit == SubmitKey::Enter && sanitized.contains('\n') {
-            writer.write_all(PASTE_START.as_bytes())?;
-            writer.write_all(sanitized.as_bytes())?;
-            writer.write_all(PASTE_END.as_bytes())?;
-        } else {
-            writer.write_all(sanitized.as_bytes())?;
+        {
+            let mut writer = self.writer.lock().unwrap();
+            if self.submit == SubmitKey::Enter && sanitized.contains('\n') {
+                writer.write_all(PASTE_START.as_bytes())?;
+                writer.write_all(sanitized.as_bytes())?;
+                writer.write_all(PASTE_END.as_bytes())?;
+            } else {
+                writer.write_all(sanitized.as_bytes())?;
+            }
+            if self.submit_delay.is_zero() {
+                writer.write_all(self.submit.bytes())?;
+                writer.flush()?;
+                return Ok(());
+            }
+            writer.flush()?;
         }
-        writer.write_all(self.submit.bytes())?;
-        writer.flush()?;
+        // The submit trails the text by the spec's declared delay (see
+        // `HarnessSpec::submit_delay`), written off-thread: a delivery may hold
+        // the app-wide state lock, and sleeping under it would stall every
+        // pump. A failed write here is the child exiting under us — the same
+        // race the caller's exit guard already covers for the text write.
+        let writer = Arc::clone(&self.writer);
+        let delay = self.submit_delay;
+        let submit = self.submit.bytes();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            let mut writer = writer.lock().unwrap();
+            let _ = writer.write_all(submit);
+            let _ = writer.flush();
+        });
         Ok(())
     }
 
@@ -628,6 +669,40 @@ mod tests {
         assert!(
             captured.ends_with("\u{1b}[201~\n"),
             "the frame closes at the end, not mid-prompt: {captured:?}"
+        );
+        session.kill_and_reap();
+    }
+
+    #[tokio::test]
+    async fn submit_delay_separates_the_enter_from_the_paste() {
+        // The coalescing defect this guards: paste frame and Enter written in
+        // one burst arrive in one stdin read, and claude's editor handles the
+        // Enter before the paste has committed to its composer — the text sits
+        // there unsubmitted. The submit must trail the paste by the spec's
+        // declared delay.
+        // Observed at the capture through canonical mode, which buffers the
+        // paste until a line terminator arrives — so the submit's timing IS
+        // the timing of anything reaching the file at all.
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let spec = stdin_capture_spec(&capture).submit_delay(Duration::from_millis(300));
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        let written_at = Instant::now();
+        session
+            .write_prompt("stage two\ndo the next thing")
+            .unwrap();
+        assert!(
+            written_at.elapsed() < Duration::from_millis(200),
+            "write_prompt must not sleep out the delay itself — a delivery can \
+             hold the app-wide state lock across it"
+        );
+
+        capture_containing(&capture, "\u{1b}[201~\n").await;
+        let submitted_after = written_at.elapsed();
+        assert!(
+            submitted_after >= Duration::from_millis(300),
+            "the Enter must trail the paste by the declared delay; it landed after {submitted_after:?}"
         );
         session.kill_and_reap();
     }

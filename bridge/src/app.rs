@@ -888,6 +888,12 @@ struct ExternalScanCache {
 /// that is about to be wiped.
 const REAL_TUI_SETTLE: Duration = Duration::from_millis(750);
 
+/// How long a real TUI's submit key trails the pasted prompt. Written together
+/// they arrive in one stdin read, and claude's editor handles the Enter before
+/// the paste has committed to its composer — the turn sits pasted, never
+/// submitted. Two ink frames of margin over anything observed.
+const REAL_TUI_SUBMIT_DELAY: Duration = Duration::from_millis(200);
+
 /// Session markers a parent agent leaves in the environment. A harness that
 /// finds its own markers treats itself as a nested child of that session rather
 /// than its own — claude disables transcript saving, which breaks the
@@ -932,6 +938,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                     pre_trust_worktree_for_claude(&options.cwd);
                     let mut spec = HarnessSpec::new("claude")
                         .settle(REAL_TUI_SETTLE)
+                        .submit_delay(REAL_TUI_SUBMIT_DELAY)
                         .unset_all(INHERITED_AGENT_MARKERS)
                         .arg("--mcp-config")
                         .arg(".build/mcp.json")
@@ -949,6 +956,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                 AgentProvider::Codex => {
                     let mut spec = HarnessSpec::new("codex")
                         .settle(REAL_TUI_SETTLE)
+                        .submit_delay(REAL_TUI_SUBMIT_DELAY)
                         .unset_all(INHERITED_AGENT_MARKERS)
                         .arg("--dangerously-bypass-approvals-and-sandbox");
                     for arg in choice.harness_args() {

@@ -6,10 +6,11 @@
          just the visual one, so a full-height surface (the terminal and its key bar)
          resizes above the keyboard instead of being covered by it. Browsers that
          ignore it are handled by the key bar's own visualViewport lift. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Build — review is the product</title>
     <link rel="manifest" href="/app/static/manifest.webmanifest" />
-    <meta name="theme-color" content="#fafafa" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#15171c" media="(prefers-color-scheme: dark)" />
     <!-- Parser-blocking and above the bundle: the module below is deferred, so
          without this the first paint is the light theme for every dark-theme
          reader. A file rather than an inline block because the production CSP

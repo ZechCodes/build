@@ -2,11 +2,16 @@
   "name": "Build",
   "short_name": "Build",
   "description": "tmux for coding agents \u2014 E2E encrypted, git-native review.",
+  "id": "/app/",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "/app/",
-  "scope": "/app/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone"],
+  "orientation": "any",
   "background_color": "#fafafa",
-  "theme_color": "#5b62e8",
+  "theme_color": "#fafafa",
   "icons": [
     {
       "src": "/app/static/icon-192.png",

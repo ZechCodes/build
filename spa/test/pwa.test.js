@@ -73,4 +73,26 @@ describe("standalone shell styles", () => {
     expect(stylesSource).toContain("overscroll-behavior");
     expect(stylesSource.match(/env\(safe-area-inset-bottom/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
+
+  // The standalone regression this pins: the page itself scrolled alongside the
+  // rail and the content column, because the frame relied on body scroll with a
+  // sticky 100vh sidebar (100vh overflows the standalone viewport). The frame
+  // is now viewport-locked: the page never scrolls, each column scrolls itself.
+  it("locks the app frame to the viewport instead of scrolling the page", () => {
+    const bodyRule = stylesSource.match(/(^|\n)body \{[^}]+\}/)?.[0] ?? "";
+    expect(bodyRule).toContain("height:100dvh");
+    expect(bodyRule).toContain("flex-direction:column");
+    const shellRule = stylesSource.match(/\n#shell \{[^}]+\}/)?.[0] ?? "";
+    expect(shellRule).toContain("overflow:hidden");
+    expect(shellRule).toContain("min-height:0");
+  });
+
+  it("scrolls the content column and the rail independently", () => {
+    const mainRule = stylesSource.match(/\n#shell main \{[^}]+\}/)?.[0] ?? "";
+    expect(mainRule).toContain("overflow-y:auto");
+    const sidebarRule = stylesSource.match(/\n#sidebar \{[^}]+\}/)?.[0] ?? "";
+    expect(sidebarRule).not.toContain("position:sticky");
+    expect(sidebarRule).not.toContain("100vh");
+    expect(stylesSource).toContain("#sidebar-rail { flex:1; min-height:0; overflow-y:auto;");
+  });
 });

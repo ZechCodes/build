@@ -68,7 +68,15 @@ html, body { overscroll-behavior:none; }
    popup, scrollbars — take their cue from color-scheme on :root; the tick
    itself takes the accent. */
 input[type=checkbox] { accent-color:var(--accent); }
-body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+/* The frame is viewport-locked: the PAGE never scrolls — standalone (PWA) has
+   no browser chrome to hide, and body scroll there meant a third scrollbar on
+   top of the rail's and the content's. dvh with a vh fallback, so the frame
+   tracks the layout viewport the keyboard resizes (interactive-widget). The
+   offline banner and the shell are the only in-flow children; everything else
+   on body is position:fixed. */
+body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:column;
+  background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+#offbar { flex:none; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
 .dim { color:var(--dim); } .ink2 { color:var(--ink2); }
@@ -159,7 +167,9 @@ main { max-width:1180px; margin:0 auto;
    drop the padding and let the pane own the whole box. */
 main#root.surface { max-width:none;
   padding:0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
-  height:100vh; height:100dvh;
+  /* The locked shell provides the height; the surface just fills its column
+     and hands scrolling to #tabbody. */
+  height:100%;
   display:flex; flex-direction:column; overflow:hidden; }
 /* No rule under it: the selected pill marks the tab row, and the surface shares
    the page background like every other section. */
@@ -736,15 +746,17 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 }
 
 /* ---- project sidebar (every page) ---- */
-#shell { display:flex; align-items:flex-start; }
-#sidebar { flex:0 0 272px; width:272px; position:sticky; top:0; align-self:stretch;
-  height:100vh; display:flex; flex-direction:column; background:var(--bg);
+/* The shell fills the locked body and clips: its two columns (rail, main)
+   stretch to its height and each scrolls itself. */
+#shell { flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
+#sidebar { flex:0 0 272px; width:272px; display:flex; flex-direction:column;
+  background:var(--bg);
   padding:calc(10px + env(safe-area-inset-top, 0px)) 12px
     calc(12px + env(safe-area-inset-bottom, 0px))
     calc(12px + env(safe-area-inset-left, 0px)); }
 body.sidebar-collapsed #sidebar { display:none; }
 body.gated #sidebar, body.gated #side-open { display:none !important; }
-#shell main { flex:1; min-width:0; }
+#shell main { flex:1; min-width:0; overflow-y:auto; }
 .side-top { display:flex; align-items:center; margin:0 2px 10px; }
 .side-top .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 .side-top .iconbtn { margin-left:auto; }

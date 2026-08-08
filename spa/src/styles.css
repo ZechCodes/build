@@ -62,6 +62,14 @@
   --hl-bg:#3a2f10; --hl-ln:#4a3c12; --hl-ink:#ffd447; --mark:#4a3c12;
   --term-bg:#15171c; --term-fg:#c3cae0;
 }
+/* ---- layout tokens ----------------------------------------------------------
+   The tab shell's geometry, in one place. Every tab body resolves to this width
+   and these gutters — the one-column layout (.pane-col) and the two-column one
+   (.pane-split) alike — so moving between tabs never moves the content's edges.
+   A pane that states a width of its own is a pane that will drift out of step.
+   The narrow-viewport values live in the one media query below, so both layouts
+   narrow together. */
+:root { --content-max:1180px; --pane-gutter:22px; --pane-top:18px; --pane-bottom:40px; }
 * { box-sizing:border-box; }
 html, body { overscroll-behavior:none; }
 /* The native controls this client does not restyle — checkboxes, the select
@@ -224,12 +232,27 @@ a.plan-ref:hover { text-decoration:underline; }
 /* Plan rows in the rail carry a distinct approved glyph tint. */
 .srow.splan.ready .sicon { color:var(--green); }
 .surface .task-error { margin:10px 18px 0; }
-.surface #tabbody { flex:1; min-height:0; overflow-y:auto; padding:18px 22px 40px; }
+.surface #tabbody { flex:1; min-height:0; overflow-y:auto;
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom); }
 .surface #tabbody.bare { padding:0; overflow:hidden; }
 /* Flush two-pane surfaces (Changes / Files): the tab body owns no padding and
    never scrolls itself — the left rail and the right detail pane each scroll
-   internally at full height, edge-to-edge under the tab bar. */
+   internally at full height, and .pane-split carries the gutters the padded
+   body gives the one-column layout. */
 .surface #tabbody.flush { padding:0; overflow:hidden; }
+/* ---- the two tab layouts ----
+   There are exactly two, and dimensionally they are one: the same width, the
+   same centring, the same gutters, so a tab switch moves nothing but what is
+   inside. .pane-col is a single column in the padded body; .pane-split is two
+   columns in the flush one, each owning its own scroll.
+   (.bare is not one of them — a terminal is deliberately full-bleed.) */
+.pane-col, .pane-split { width:100%; max-width:var(--content-max); margin:0 auto; }
+/* The flush body has no padding of its own, so the split states the shared
+   gutters itself. No bottom gutter: its columns scroll to the frame's edge, and
+   a gap under a live scroller is dead space rather than rhythm — the one-column
+   layout's bottom padding is scroll-end room inside its own scroller. */
+.pane-split { height:100%; min-height:0; display:flex; align-items:stretch;
+  padding:var(--pane-top) var(--pane-gutter) 0; }
 /* task view */
 .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
 .kbd { font-family:var(--mono); border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; padding:0 5px; font-size:11px; color:var(--ink2); }
@@ -629,7 +652,9 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .surface-bar.project-surface { flex-wrap:wrap; padding-bottom:8px; }
   .project-surface .tabrow { flex:1 1 100%; order:1; }
   .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
-  .surface #tabbody { padding:12px 12px 40px; }
+  /* Both layouts narrow from here — the token is the only place the phone's
+     gutter is written. */
+  :root { --pane-gutter:12px; --pane-top:12px; }
   .plan { padding:16px 14px; }
   .panel { padding:14px 12px; }
   .actionbar { flex-wrap:wrap; gap:8px; }

@@ -405,13 +405,15 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
     return true;
   };
 
-  // The persistent skeleton: a flush left rail drives a right pane whose top
-  // carries the toolbar/banner (so the rail runs edge-to-edge to the tab bar)
-  // and whose scrolling body is the detail host. Each region updates
+  // The persistent skeleton: a left rail drives a right pane whose top carries
+  // the toolbar/banner (so the rail runs the pane's full height) and whose
+  // scrolling body is the detail host. The row is the shell's two-column
+  // primitive, so its width and gutters match every other tab. Each region
+  // updates
   // independently so a poll repaint never clobbers the review plug's DOM.
   const paintSkeleton = () => {
     container.innerHTML = `<div class="gitpane">
-      <div class="changes2">
+      <div class="changes2 pane-split">
         <aside class="crail-host"></aside>
         <section class="cdetail">
           <div class="gp-toolbar"></div>

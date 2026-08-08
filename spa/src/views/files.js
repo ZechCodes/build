@@ -132,7 +132,9 @@ export function previewPlaceholderHtml(kind, message = "") {
  * fetches only on navigation/selection.
  */
 export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
-  body.innerHTML = `<div class="files"><div class="ftree" id="ftree"></div><div class="fpreview idle" id="fpreview"></div></div>`;
+  // The tree and the preview are the two columns of the shell's two-column
+  // primitive, so the browser's outer box measures like every other tab.
+  body.innerHTML = `<div class="files pane-split"><div class="ftree" id="ftree"></div><div class="fpreview idle" id="fpreview"></div></div>`;
   const treeEl = body.querySelector("#ftree");
   const previewEl = body.querySelector("#fpreview");
   // The placeholder states render container-less (no panel box), centered in

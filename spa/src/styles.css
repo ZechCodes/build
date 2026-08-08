@@ -406,22 +406,33 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .gitfile .fhead .toggle { margin:0; }
 .gitcommit { max-width:780px; margin:0 auto; }
 .gitmsg { min-height:58px; max-height:160px; }
-/* The Changes surface fills the flush tab body: a full-height flex row whose
-   left rail and right detail pane each own their scroll. */
+/* The Changes surface fills the flush tab body: .changes2 is a .pane-split, so
+   the row's width, centring and gutters are the shell's, and only what is
+   inside the two columns is this pane's own. */
 .gitpane { height:100%; }
-.changes2 { display:flex; align-items:stretch; height:100%; }
+/* Before the skeleton exists (loading, or a scope that no longer resolves) the
+   pane is one message. It stands where the split's first column would, not
+   against the frame the split no longer touches. */
+.gitpane > .empty { padding:var(--pane-top) var(--pane-gutter); }
 /* The commit rail: a flush narrow left sidebar (no card chrome), a single right
    border dividing it from the detail pane, scrolling internally at full height.
-   All padding lives inside the section headers / rows. */
-.crail-host { flex:0 0 300px; max-width:40vw; overflow-y:auto; border-right:1px solid var(--line); }
+   All padding lives inside the section headers / rows. The cap is a share of
+   the pane, not of the window — the split stops at --content-max, so a viewport
+   fraction would measure a box the rail no longer sits in. */
+.crail-host { flex:0 0 300px; max-width:40%; overflow-y:auto; border-right:1px solid var(--line); }
 /* The right pane: a flex column — pinned toolbar/banner over the scrolling
-   detail host (which keeps the old body padding so diff cards read as before). */
+   detail host. Its regions pay the gutter on the divider side only: the split
+   already insets the pane from the frame, and repeating it on the right would
+   stop the diffs short of where every one-column tab's content ends. */
 .cdetail { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
-.cdetail-host { flex:1; min-height:0; overflow-y:auto; padding:18px 22px 40px; }
+.cdetail-host { flex:1; min-height:0; overflow-y:auto;
+  padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
 .gp-toolbar:empty, .gp-banner:empty { display:none; }
-.gp-toolbar { padding:12px 22px; border-bottom:1px solid var(--line); }
-.gp-banner { padding:16px 22px 0; }
-.gp-commit:not(:empty) { flex:none; padding:12px 22px 14px; border-top:1px solid var(--line);
+.gp-toolbar { padding:12px 0 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.gp-banner { padding:16px 0 0 var(--pane-gutter); }
+/* The commit bar is a filled surface, so it keeps its own inset on both sides,
+   the way every card in the one-column layout does. */
+.gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
 .gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
 .crail { overflow:visible; }
@@ -452,6 +463,16 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .cdetail .csub { font-weight:650; font-size:15px; }
 .cdetail .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2); white-space:pre-wrap; margin:8px 0 0; }
 .cdetail .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 14px; }
+/* Stack the rail above the detail column: a capped top strip with a bottom
+   divider, the detail filling the rest. Both two-column panes stack at this one
+   width — the Files tree carries the twin rule under the same query — because a
+   300px rail costs the same room in either, and the pane is now inset from the
+   frame rather than spanning it. */
+@media (max-width: 900px) {
+  .changes2 { flex-direction:column; }
+  .crail-host { flex:0 0 auto; width:100%; max-width:none; max-height:42%;
+    border-right:none; border-bottom:1px solid var(--line); }
+}
 .gitmore { padding:9px 13px 12px; color:var(--accent); font-size:12px; cursor:pointer; }
 .gitmore:hover { text-decoration:underline; }
 .gitmore:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
@@ -674,13 +695,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .comment-pop { max-width:calc(100vw - 16px); }
   .splitmenu { right:auto; left:0; }
   .crow .cauthor { display:none; }
-  /* Stack the flush rail above the detail pane; the rail becomes a capped top
-     strip with a bottom divider, the detail fills the rest. */
-  .changes2 { flex-direction:column; height:100%; }
-  .crail-host { flex:0 0 auto; width:100%; max-width:none; max-height:42%;
-    border-right:none; border-bottom:1px solid var(--line); }
-  .cdetail-host { padding:12px 12px 40px; }
-  .gp-toolbar, .gp-banner { padding-left:12px; padding-right:12px; }
 }
 
 /* ---- the project's Issues tab ---- */
@@ -913,11 +927,12 @@ body.sidebar-collapsed #side-open { display:block; }
 .crumb a:hover { color:var(--accent); }
 .projmeta { color:var(--dim); font-size:12px; }
 /* ---- Files tab (worktree browser) ---- */
-/* Same flush idiom as the Changes rail: a narrow tree sidebar (no card chrome,
-   a single right divider, its own scroll) beside a flush preview pane that fills
-   the rest. All padding lives inside the crumb/rows and the preview head/body. */
-.files { display:flex; align-items:stretch; height:100%; }
-.ftree { flex:0 0 300px; max-width:40vw; border-right:1px solid var(--line);
+/* Same idiom as the Changes pane: .files is a .pane-split, so the shell states
+   the row's width, centring and gutters, and a narrow tree sidebar (no card
+   chrome, a single right divider, its own scroll) sits beside a preview pane
+   that fills the rest. All padding lives inside the crumb/rows and the preview
+   head/body — never the gutter again, which the split already paid. */
+.ftree { flex:0 0 300px; max-width:40%; border-right:1px solid var(--line);
   overflow-y:auto; padding:6px 0; }
 .fpreview { flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; }
 /* placeholder states (nothing selected / loading / error): no panel box,
@@ -1053,9 +1068,10 @@ body.sidebar-collapsed #side-open { display:block; }
 /* ---- sidebar main (primary checkout) row ---- */
 .smain-line .stitle { font-family:var(--mono); font-size:12px; }
 @media (max-width: 900px) {
-  /* Stack the flush tree above the preview: a capped top strip with a bottom
-     divider, the preview filling the rest. */
-  .files { flex-direction:column; height:100%; }
+  /* Stack the tree above the preview: a capped top strip with a bottom divider,
+     the preview filling the rest. The twin of the Changes rail's rule, at the
+     same width — the two-column layout stacks as one layout or not at all. */
+  .files { flex-direction:column; }
   .ftree { flex:0 0 auto; width:100%; max-width:none; max-height:42%;
     border-right:none; border-bottom:1px solid var(--line); }
   .fpreview { min-height:0; }

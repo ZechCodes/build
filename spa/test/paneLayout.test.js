@@ -36,6 +36,25 @@ function declaration(body, property) {
   return found;
 }
 
+/** The at-rule prelude a source position sits under, or null at the top level.
+ *  Two rules that must agree on a breakpoint are only actually pinned together
+ *  when they report the same query. */
+function enclosingAtRule(position) {
+  let depth = 0;
+  let prelude = null;
+  for (let i = 0; i < position; i++) {
+    const character = strippedSource[i];
+    if (character === "@" && depth === 0) {
+      prelude = strippedSource.slice(i, strippedSource.indexOf("{", i)).trim().replace(/\s+/g, " ");
+    } else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) prelude = null;
+    }
+  }
+  return prelude;
+}
+
 const NARROW_QUERY = "@media (max-width: 720px)";
 const narrowQueryAt = strippedSource.indexOf(NARROW_QUERY);
 
@@ -225,6 +244,98 @@ describe("tab layout primitives", () => {
         .map((rule) => rule.selector);
       expect(carriers).toEqual(orphan === "780px" ? [".gitcommit"] : []);
     }
+  });
+
+  // ---- the two-column layout: Changes and Files ----
+  // Their outer box is .pane-split and nothing else. A pane that keeps a
+  // display, a height or a padding of its own is a pane the primitive no longer
+  // governs, which is how the flush body went edge-to-edge in the first place.
+  const TWO_COLUMN_PANES = [".changes2", ".files"];
+
+  it.each(TWO_COLUMN_PANES)("%s leaves its outer box to the primitive", (token) => {
+    for (const rule of rulesMentioning(token)) {
+      expect(rule.body).not.toMatch(/(^|;)\s*(max-)?width\s*:/);
+      expect(rule.body).not.toMatch(/margin[^:]*:[^;]*auto/);
+      expect(declaration(rule.body, "display")).toBeNull();
+      expect(declaration(rule.body, "height")).toBeNull();
+      expect(declaration(rule.body, "padding")).toBeNull();
+    }
+  });
+
+  it("lets the flush body hand the split no geometry to bypass the cap with", () => {
+    const [flush] = rulesFor(".surface #tabbody.flush");
+    expect(flush).toBeTruthy();
+    // The flush body pads nothing and scrolls nothing — the split states the
+    // gutters and the columns own the scroll. If it grew a width or a padding
+    // the two-column pane would measure by the body again, not by the token.
+    expect(flush.body).toMatch(/padding:\s*0/);
+    expect(flush.body).toMatch(/overflow:\s*hidden/);
+    for (const rule of cssRules().filter((rule) => /#tabbody\.flush/.test(rule.selector))) {
+      expect(rule.body).not.toMatch(/(^|;)\s*(max-)?width\s*:/);
+    }
+    // .pane-split itself never scrolls: a scrolling split would move the rail
+    // and the detail column together instead of each in its own frame.
+    const [split] = rulesFor(".pane-split");
+    expect(declaration(split.body, "overflow")).toBeNull();
+  });
+
+  // Each column scrolls itself. This is what the two-column layout is for, and
+  // it is exactly what capping and insetting the pane could break.
+  it.each([
+    [".crail-host", "overflow-y", "auto"],
+    [".cdetail-host", "overflow-y", "auto"],
+    [".ftree", "overflow-y", "auto"],
+    [".fpbody", "overflow", "auto"],
+  ])("keeps %s scrolling internally", (token, property, value) => {
+    const scroller = rulesMentioning(token).find((rule) => declaration(rule.body, property));
+    expect(scroller).toBeTruthy();
+    expect(declaration(scroller.body, property)).toBe(value);
+  });
+
+  it("caps each rail against its pane, not the window", () => {
+    // 40vw was written when the split spanned the viewport. Now it does not, so
+    // a viewport-relative cap measures something the rail no longer sits in.
+    for (const token of [".crail-host", ".ftree"]) {
+      const caps = rulesMentioning(token)
+        .map((rule) => declaration(rule.body, "max-width"))
+        .filter(Boolean);
+      expect(caps).toContain("40%");
+      for (const cap of caps) expect(cap).not.toMatch(/vw/);
+    }
+  });
+
+  it("stacks both two-column panes at one width", () => {
+    const stacked = cssRules().filter(
+      (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
+    );
+    expect(stacked.map((rule) => rule.selector).sort()).toEqual([".changes2", ".files"]);
+    expect(new Set(stacked.map((rule) => enclosingAtRule(rule.at)))).toEqual(
+      new Set(["@media (max-width: 900px)"]),
+    );
+  });
+
+  it("gutters the detail column from the tokens, on the divider side only", () => {
+    // The split already insets the pane from the frame, so the column that
+    // touches the frame pays the gutter once — on its left, against the rail's
+    // divider. Repeating it on the right would stop the diffs 44px short of
+    // where every one-column tab's content ends.
+    for (const token of [".cdetail-host", ".gp-toolbar", ".gp-banner"]) {
+      const [rule] = rulesMentioning(token).filter((rule) => declaration(rule.body, "padding"));
+      expect(rule).toBeTruthy();
+      const sides = declaration(rule.body, "padding").split(/\s+/);
+      expect(sides).toHaveLength(4);
+      expect(sides[1]).toBe("0");
+      expect(sides[3]).toBe("var(--pane-gutter)");
+    }
+  });
+
+  it("stands the Changes pane's pre-skeleton states on the same gutter", () => {
+    // The loading and dead-scope states paint before the split exists, so they
+    // take the gutter from the token rather than sitting against a frame the
+    // split no longer touches.
+    const [message] = cssRules().filter((rule) => rule.selector === ".gitpane > .empty");
+    expect(message).toBeTruthy();
+    expect(declaration(message.body, "padding")).toBe("var(--pane-top) var(--pane-gutter)");
   });
 
   it("leaves the bare (terminal / agent) case full-bleed", () => {

@@ -246,12 +246,21 @@ a.plan-ref:hover { text-decoration:underline; }
    inside. .pane-col is a single column in the padded body; .pane-split is two
    columns in the flush one, each owning its own scroll.
    (.bare is not one of them — a terminal is deliberately full-bleed.) */
-.pane-col, .pane-split { width:100%; max-width:var(--content-max); margin:0 auto; }
+.pane-col, .pane-split { max-width:var(--content-max); margin:0 auto; }
 /* The flush body has no padding of its own, so the split states the shared
-   gutters itself. No bottom gutter: its columns scroll to the frame's edge, and
-   a gap under a live scroller is dead space rather than rhythm — the one-column
-   layout's bottom padding is scroll-end room inside its own scroller. */
-.pane-split { height:100%; min-height:0; display:flex; align-items:stretch;
+   gutters itself. content-box is the whole reason the two layouts measure the
+   same: --content-max has to cap the content, and the gutter has to fall
+   outside the cap, exactly as the padded body does it for the one column. Under
+   the sheet's border-box default the split's gutters would eat into the cap
+   instead, and every viewport wider than the cap would render it narrower than
+   the column and pushed further in.
+   No bottom gutter: its columns scroll to the frame's edge, and a gap under a
+   live scroller is dead space rather than rhythm — the one-column layout's
+   bottom padding is scroll-end room inside its own scroller. The height sheds
+   the top gutter for the same reason the width does not: content-box measures
+   content, and the split must still fill the frame exactly. */
+.pane-split { box-sizing:content-box; height:calc(100% - var(--pane-top));
+  min-height:0; display:flex; align-items:stretch;
   padding:var(--pane-top) var(--pane-gutter) 0; }
 /* task view */
 .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }

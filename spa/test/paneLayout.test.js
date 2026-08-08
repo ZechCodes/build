@@ -150,6 +150,15 @@ function layouts(viewport) {
   };
 }
 
+/** Rules that size a primitive itself, rather than something inside one. Only
+ *  the last compound of each comma part counts: `.pane-split .pane-list` sizes
+ *  the drawer that floats inside the split, and the split's own geometry is no
+ *  more its business than a diff row's is. */
+const targetsPrimitive = (selector) =>
+  selector
+    .split(",")
+    .some((part) => /\.pane-(col|split)\b/.test(part.trim().split(/\s+/).at(-1)));
+
 describe("tab layout primitives", () => {
   it("declares the content width once, as a :root token", () => {
     expect(stylesSource.match(/--content-max:/g) || []).toHaveLength(1);
@@ -160,7 +169,7 @@ describe("tab layout primitives", () => {
 
   it("sizes both layouts from one shared width rule", () => {
     const widthRules = cssRules().filter(
-      (rule) => /\.pane-(col|split)\b/.test(rule.selector) && /\bmax-width\s*:/.test(rule.body),
+      (rule) => targetsPrimitive(rule.selector) && /\bmax-width\s*:/.test(rule.body),
     );
     expect(widthRules).toHaveLength(1);
     const [shared] = widthRules;
@@ -170,7 +179,7 @@ describe("tab layout primitives", () => {
     // Neither layout states a width: a block box already fills what it is
     // given, and a stated 100% would fight the gutters the split adds outside
     // its cap.
-    for (const rule of cssRules().filter((rule) => /\.pane-(col|split)\b/.test(rule.selector))) {
+    for (const rule of cssRules().filter((rule) => targetsPrimitive(rule.selector))) {
       expect(declaration(rule.body, "width")).toBeNull();
     }
   });
@@ -178,7 +187,7 @@ describe("tab layout primitives", () => {
   it("defines each primitive once and never hard-codes its width", () => {
     expect(rulesFor(".pane-col")).toHaveLength(0); // the shared rule is the whole single-column layout
     expect(rulesFor(".pane-split")).toHaveLength(1);
-    for (const rule of cssRules().filter((rule) => /\.pane-(col|split)\b/.test(rule.selector))) {
+    for (const rule of cssRules().filter((rule) => targetsPrimitive(rule.selector))) {
       expect(rule.body).not.toMatch(/max-width:\s*\d/);
     }
   });
@@ -373,12 +382,69 @@ describe("tab layout primitives", () => {
     expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
   });
 
-  it("stacks both two-column panes at one width", () => {
+  // ---- the two-column layout below the stacking width ----
+  // Neither pane stacks any more. A phone given two stacked scrollers spends
+  // half a small screen on the list it is not reading, so the list floats over
+  // the detail instead and a handle pulls it out.
+  it("turns the list column into a drawer instead of stacking the pane", () => {
     const stacked = cssRules().filter(
       (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
     );
-    expect(stacked.map((rule) => rule.selector).sort()).toEqual([".changes2", ".files"]);
-    expect(new Set(stacked.map((rule) => enclosingAtRule(rule.at)))).toEqual(new Set([STACK_QUERY]));
+    expect(stacked).toEqual([]);
+    const [drawer] = cssRules().filter((rule) => rule.selector === ".pane-split .pane-list");
+    expect(drawer).toBeTruthy();
+    expect(enclosingAtRule(drawer.at)).toBe(STACK_QUERY);
+    expect(declaration(drawer.body, "position")).toBe("absolute");
+    expect(declaration(drawer.body, "transform")).toBe("translateX(-100%)");
+    expect(declaration(drawer.body, "width")).toBe("var(--pane-drawer)");
+    // The split is what the drawer measures and floats against, so it is the
+    // containing block — stated once, at every width, where the primitive is.
+    expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
+  });
+
+  it("drawers both panes from one rule, so neither can drift", () => {
+    // The list column belongs to the primitive here, not to Changes and Files
+    // separately: two copies of this is how the stacked strip ended up with two
+    // maintained-in-parallel halves in the first place.
+    for (const token of RAILS) {
+      expect(rulesMentioning(token).filter((rule) => enclosingAtRule(rule.at) === STACK_QUERY)).toEqual([]);
+    }
+  });
+
+  it("rides the handle out with the drawer it opened", () => {
+    const open = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-list");
+    expect(open).toBeTruthy();
+    expect(declaration(open.body, "transform")).toBe("none");
+    const handle = cssRules().find((rule) => rule.selector === ".pane-split.drawer-open .pane-handle");
+    expect(declaration(handle.body, "left")).toBe("var(--pane-drawer)");
+    // One width for the panel and for how far the handle travels — a handle
+    // that stops anywhere but the panel's edge reads as a second control.
+    expect(stylesSource.match(/--pane-drawer:/g) || []).toHaveLength(1);
+  });
+
+  it("keeps the drawer's chrome out of the wide layout entirely", () => {
+    // Both panes carry the handle and the scrim at every width; above the
+    // stacking width there is no drawer, so neither may paint.
+    const [base] = cssRules().filter((rule) => rule.selector === ".pane-scrim, .pane-handle");
+    expect(base).toBeTruthy();
+    expect(declaration(base.body, "display")).toBe("none");
+    expect(enclosingAtRule(base.at)).toBeNull();
+  });
+
+  it("stacks the drawer under the project rail it shares the width with", () => {
+    // Both overlay at the same width. The project rail is the outer surface —
+    // a pane's drawer painting over it would trap the user in the pane.
+    const zIndex = (token) =>
+      Number(
+        declaration(
+          cssRules().find((rule) => rule.selector.includes(token) && declaration(rule.body, "z-index")).body,
+          "z-index",
+        ),
+      );
+    const railFloor = Math.min(zIndex("#sidebar"), zIndex("#side-scrim"));
+    for (const token of [".pane-list", ".pane-scrim", ".pane-handle"]) {
+      expect(zIndex(token)).toBeLessThan(railFloor);
+    }
   });
 
   it("gutters the detail column from the tokens, on the divider side only", () => {

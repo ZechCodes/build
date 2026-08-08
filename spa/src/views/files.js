@@ -11,6 +11,7 @@
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
+import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
@@ -129,14 +130,19 @@ export function previewPlaceholderHtml(kind, message = "") {
  * `scope` is the plain server-resolved scope object ({task_id} / {project_id[,
  * worktree_id]}) spread into every fs.* call; `callRpc(method, params)` is the
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
- * fetches only on navigation/selection.
+ * fetches only on navigation/selection. Returns { dispose() }.
  */
 export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
-  body.innerHTML = `<div class="files pane-split"><div class="ftree" id="ftree"></div><div class="fpreview idle" id="fpreview"></div></div>`;
+  body.innerHTML = `<div class="files pane-split"><div class="ftree pane-list" id="ftree"></div><div class="fpreview idle" id="fpreview"></div>${paneDrawerHtml("files")}</div>`;
   const treeEl = body.querySelector("#ftree");
   const previewEl = body.querySelector("#fpreview");
+  // On a narrow viewport the tree is a drawer over the preview. Only a file
+  // closes it: a directory row is still part of choosing one, and closing the
+  // drawer under a tap that changed nothing but the tree would put the choosing
+  // away mid-choice.
+  const drawer = initPaneDrawer(body.querySelector(".files"), { list: treeEl, closeOnSelect: ".ffile" });
   // The placeholder states render container-less (no panel box), centered in
   // the preview area; only a loaded file gets the bordered panel back.
   const showPlaceholder = (kind, message) => {
@@ -238,6 +244,8 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
     const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
     selectFile(initialPath, row || null);
   });
+
+  return { dispose: () => drawer.dispose() };
 }
 
 export { FS_READ_MAX_BYTES };

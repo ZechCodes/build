@@ -305,13 +305,14 @@ function hasScreen(attached) {
 /**
  * Mount the body for an auxiliary tab (files or a `term-<n>` user terminal) into
  * `host`. Returns { dispose() } — dispose tears down the CLIENT view only
- * (files: no-op; a pane: dispose + detach, never closing the server PTY). Agent
+ * (files: the tree's drawer; a pane: dispose + detach, never closing the server
+ * PTY). Agent
  * tabs are surface-specific (task only) and mounted by the task view directly.
  */
 export function mountAuxTab(host, tabId, { scope, callRpc, onExit, initialPath = null }) {
   if (tabId === "files") {
-    renderFilesTab(host, { scope, callRpc, initialPath });
-    return { dispose() {} };
+    const files = renderFilesTab(host, { scope, callRpc, initialPath });
+    return { dispose: () => files.dispose() };
   }
   host.innerHTML = `<div class="termpane" id="termpane"></div>`;
   const paneHost = host.querySelector("#termpane");

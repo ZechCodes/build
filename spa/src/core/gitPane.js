@@ -19,6 +19,7 @@ import {
   moveActiveIndex,
   AGENT_COMMIT_MESSAGE,
 } from "./gitRender.js";
+import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 
@@ -368,6 +369,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   // the "Create …" row would cut. Survives repaints.
   let branchQuery = "";
   let branchActive = 0; // keyboard cursor over the menu's rows
+  let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -414,7 +416,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   const paintSkeleton = () => {
     container.innerHTML = `<div class="gitpane">
       <div class="changes2 pane-split">
-        <aside class="crail-host"></aside>
+        <aside class="crail-host pane-list"></aside>
         <section class="cdetail">
           <div class="gp-toolbar"></div>
           <div class="gp-banner"></div>
@@ -422,6 +424,14 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
           <div class="gp-commit"></div>
         </section>
       </div></div>`;
+    // The rail is the drawer on a narrow viewport. Both kinds of row it holds —
+    // a set of changes, a commit — put something in the detail column behind
+    // it, so both close it; the "show more" row, which only lengthens the rail,
+    // does not.
+    const split = container.querySelector(".changes2");
+    split.insertAdjacentHTML("beforeend", paneDrawerHtml("commits"));
+    if (drawer) drawer.dispose();
+    drawer = initPaneDrawer(split, { list: split.querySelector(".crail-host"), closeOnSelect: ".rrow, .crow" });
     container.onclick = handleClick;
     container.onchange = handleChange;
     container.onkeydown = (event) => {
@@ -1186,6 +1196,10 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
       if (reviewMounted) {
         review.unmount(); // stop the plug's poll; the view may remount it later
         reviewMounted = false;
+      }
+      if (drawer) {
+        drawer.dispose();
+        drawer = null;
       }
       container.onclick = null;
       container.onchange = null;

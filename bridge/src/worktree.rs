@@ -269,19 +269,34 @@ impl WorktreeManager {
     pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
 
-        // Drop the working directory, then prune git's bookkeeping for it.
+        // Removal's goal is ABSENCE, so every step treats "already gone" as
+        // done: a worktree cleaned up outside Build (`git worktree remove` by
+        // hand, a reaped directory) must not block the verb that only wanted
+        // it gone. Anything still present that fails to go stays an error —
+        // a teardown failure is an error, not a shrug.
         if worktree.path.exists() {
             std::fs::remove_dir_all(&worktree.path)?;
         }
-        let gwt = repo.find_worktree(&worktree.name)?;
-        let mut prune = git2::WorktreePruneOptions::new();
-        prune.valid(true).working_tree(true);
-        gwt.prune(Some(&mut prune))?;
+        // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
+        // via a baffling "could not find '.git/shallow' to stat" — and either
+        // spelling means the same thing: nothing left to prune.
+        match repo.find_worktree(&worktree.name) {
+            Ok(gwt) => {
+                let mut prune = git2::WorktreePruneOptions::new();
+                prune.valid(true).working_tree(true);
+                gwt.prune(Some(&mut prune))?;
+            }
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
 
         // The branch is only deletable once it is no longer checked out.
         if !keep_branch {
-            repo.find_branch(&worktree.branch, git2::BranchType::Local)?
-                .delete()?;
+            match repo.find_branch(&worktree.branch, git2::BranchType::Local) {
+                Ok(mut branch) => branch.delete()?,
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
@@ -797,7 +812,7 @@ mod tests {
     use std::process::Command;
 
     /// Init a repo on `main` with one commit, returning (tempdir, repo_path).
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
+    pub(super) fn init_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -1323,5 +1338,65 @@ mod tests {
             "some subject"
         );
         assert_eq!(derive_adoption_goal("", ""), "Adopted worktree");
+    }
+}
+
+#[cfg(test)]
+mod vanished_worktree_removal {
+    use super::*;
+
+    /// The state an outside cleanup leaves behind: directory removed,
+    /// bookkeeping pruned, branch deleted.
+    fn fully_vanished(repo: &Path, wt: &Worktree) {
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        for args in [vec!["worktree", "prune"], vec!["branch", "-D", &wt.branch]] {
+            let out = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        }
+    }
+
+    #[test]
+    fn removing_an_already_vanished_worktree_succeeds() {
+        // The defect this guards: a planning worktree cleaned up outside Build
+        // (dir, bookkeeping AND branch gone) made remove() fail on git2's
+        // baffling "could not find '.git/shallow' to stat" from find_worktree,
+        // which blocked the plan approve that only wanted the worktree gone.
+        // Removal's goal is absence; finding absence is success.
+        let (dir, repo) = tests::init_repo();
+        let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
+        let wt = manager.create("gone-slug", "main").unwrap();
+        fully_vanished(&repo, &wt);
+
+        manager.remove(&wt, false).expect("absence is the goal");
+    }
+
+    #[test]
+    fn removing_a_vanished_worktree_still_deletes_a_surviving_branch() {
+        // Partial carcass: dir and bookkeeping gone, branch still there — the
+        // branch must still be deleted, not skipped along with the rest.
+        let (dir, repo) = tests::init_repo();
+        let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
+        let wt = manager.create("half-gone", "main").unwrap();
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        manager
+            .remove(&wt, false)
+            .expect("carcass cleanup succeeds");
+        let repo = git2::Repository::open(&repo).unwrap();
+        assert!(
+            repo.find_branch(&wt.branch, git2::BranchType::Local)
+                .is_err(),
+            "the surviving branch is deleted, not skipped"
+        );
     }
 }

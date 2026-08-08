@@ -56,3 +56,13 @@ export function createVersionWatcher({
 
   return { check, start };
 }
+
+/** The push accelerant: the service worker forwards a deploy announcement to
+ *  every open window, and the page re-checks immediately instead of waiting
+ *  out its interval. Anything else on the worker channel is ignored. */
+export function wireServiceWorkerUpdates(watcher, serviceWorkerContainer) {
+  if (!serviceWorkerContainer) return;
+  serviceWorkerContainer.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "app_update") watcher.check();
+  });
+}

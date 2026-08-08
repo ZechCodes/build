@@ -6,7 +6,9 @@
 // moment it must compare.
 
 import { describe, expect, it, vi } from "vitest";
-import { createVersionWatcher } from "../src/core/version.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { createVersionWatcher, wireServiceWorkerUpdates } from "../src/core/version.js";
 
 function harness({ current = "aaa", served = "bbb" } = {}) {
   const onStale = vi.fn();
@@ -90,5 +92,37 @@ describe("the build's version stamp", () => {
     expect(emitted).toEqual([
       { type: "asset", fileName: "version.json", source: JSON.stringify({ version: "sha-123" }) },
     ]);
+  });
+});
+
+describe("wireServiceWorkerUpdates", () => {
+  it("re-checks immediately when the worker announces a deploy", async () => {
+    const { watcher, onStale } = harness();
+    const listeners = {};
+    wireServiceWorkerUpdates(watcher, { addEventListener: (n, fn) => (listeners[n] = fn) });
+    await listeners.message({ data: { type: "app_update" } });
+    expect(onStale).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores unrelated worker messages and a missing container", async () => {
+    const { watcher, onStale } = harness();
+    const listeners = {};
+    wireServiceWorkerUpdates(watcher, { addEventListener: (n, fn) => (listeners[n] = fn) });
+    await listeners.message({ data: { type: "something-else" } });
+    await listeners.message({ data: null });
+    expect(onStale).not.toHaveBeenCalled();
+    wireServiceWorkerUpdates(watcher, undefined); // no worker support: a no-op
+  });
+});
+
+describe("the deploy announcement's service worker handling", () => {
+  // sw.js runs in a worker global and is not importable here; pin the contract
+  // the same way the PWA metadata is pinned — against the source.
+  const swSource = readFileSync(fileURLToPath(new URL("../public/sw.js", import.meta.url)), "utf8");
+
+  it("nudges open windows and collapses repeated announcements", () => {
+    expect(swSource).toContain('postMessage({ type: "app_update" })');
+    expect(swSource).toContain('"build-app-update"');
+    expect(swSource).toContain("app_update:");
   });
 });

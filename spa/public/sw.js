@@ -16,6 +16,7 @@ const KIND_BODY = {
   task_done: "Task finished — diff ready",
   blocked: "Agent needs your attention",
   attention: "Agent needs your attention",
+  app_update: "Build was updated — open for the latest version",
 };
 
 function bodyForKind(kind) {
@@ -42,15 +43,25 @@ self.addEventListener("push", (event) => {
   }
   // tag=task_id so repeated pushes for the same task collapse into one
   // notification instead of stacking; a payload without a task id falls back to a
-  // single shared tag.
-  const tag = taskId ? `build-task-${taskId}` : "build-attention";
+  // single shared tag, and deploy announcements share their own so consecutive
+  // deploys never stack either.
+  const tag = kind === "app_update" ? "build-app-update" : taskId ? `build-task-${taskId}` : "build-attention";
   event.waitUntil(
-    self.registration.showNotification("Build", {
-      body: bodyForKind(kind),
-      tag,
-      renotify: true,
-      data: { url },
-    }),
+    (async () => {
+      // A deploy announcement also nudges every OPEN window right now: the
+      // page re-checks version.json and shows its reload banner without the
+      // human touching the OS notification (which iOS still requires showing).
+      if (kind === "app_update") {
+        const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        for (const w of windows) w.postMessage({ type: "app_update" });
+      }
+      await self.registration.showNotification("Build", {
+        body: bodyForKind(kind),
+        tag,
+        renotify: true,
+        data: { url },
+      });
+    })(),
   );
 });
 

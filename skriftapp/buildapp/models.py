@@ -76,3 +76,16 @@ class EphemeralToken(Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTimeUTC(timezone=True), index=True, nullable=False
     )
+
+
+class AnnouncedAppVersion(Base):
+    """A frontend version the startup announcement has already pushed about.
+
+    One row per announced version, newest row authoritative. Exists so a pod
+    restart or scale-up serving the SAME build stays silent — the app-update
+    push must fire once per deploy, not once per container start.
+    """
+
+    __tablename__ = "announced_app_versions"
+
+    version: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)

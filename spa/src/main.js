@@ -11,7 +11,7 @@ import { $ } from "./dom.js";
 import { App, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
 import { registerPushWorker } from "./push.js";
-import { createVersionWatcher, fetchServedVersion } from "./core/version.js";
+import { createVersionWatcher, fetchServedVersion, wireServiceWorkerUpdates } from "./core/version.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
 import { boot } from "./views/gate.js";
@@ -29,13 +29,17 @@ if (location.pathname.startsWith("/app")) {
   // Watch the served frontend version and offer one reload when this bundle
   // falls behind a deploy — the resume check is what reaches a PWA that slept
   // through it. (start() is a no-op for dev builds.)
-  createVersionWatcher({
+  const versionWatcher = createVersionWatcher({
     currentVersion: import.meta.env.VITE_BUILD_VERSION || "dev",
     fetchVersion: fetchServedVersion,
     onStale: () => {
       $("#verbar").hidden = false;
     },
-  }).start();
+  });
+  versionWatcher.start();
+  // The push accelerant: a deploy announcement from the worker re-checks now
+  // instead of on the next interval, so open clients see the banner in seconds.
+  wireServiceWorkerUpdates(versionWatcher, navigator.serviceWorker);
   $("#verbar-reload").onclick = () => location.reload();
 }
 

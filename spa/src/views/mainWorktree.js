@@ -12,12 +12,15 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { createPrimaryAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, startWorkingTicker } from "../core/thread.js";
 import { subscribeFeed, primaryRunIdFor } from "../core/taskFeed.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { notifyError } from "../core/notify.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
+
+// The Working counter ticks independently of this surface's poll.
+let stopWorkingTicker = null;
 
 /** The project surface's tabs, in row order. The primary checkout is a worktree
  *  like any other, so it carries the same Conversation and Agent fixtures — the
@@ -78,6 +81,8 @@ export function mountPrimaryConversation(
     host.innerHTML = threadHtml({ items: [] }, {
       composer: composerFor("Send a message to adopt this checkout and start its agent…"),
     });
+    if (stopWorkingTicker) stopWorkingTicker();
+    stopWorkingTicker = startWorkingTicker(host);
     wireComposer({
       onSubmit: async (message) => {
         // No provider named: the checkout has no sheet answer to carry (only the
@@ -104,6 +109,8 @@ export function mountPrimaryConversation(
       status: { label: RUN_STATE_LABEL[view.state] || view.state || "", cls: runChipClass(view.state) },
       composer: composerFor("Send a message to the coding agent…"),
     });
+    if (stopWorkingTicker) stopWorkingTicker();
+    stopWorkingTicker = startWorkingTicker(host);
     wireThreadLinks(host, openLink);
     wireComposer({
       onSubmit: (message) => callRpc("thread.post", { entity_id: runId, body: message }),

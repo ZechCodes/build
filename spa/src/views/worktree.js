@@ -19,9 +19,12 @@ import { mountGitPane } from "../core/gitPane.js";
 import { createAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
-import { threadHtml, wireThreadComposer } from "../core/thread.js";
+import { threadHtml, wireThreadComposer, startWorkingTicker } from "../core/thread.js";
 import { notifyError } from "../core/notify.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
+
+// The Working counter ticks independently of this surface's poll.
+let stopWorkingTicker = null;
 
 /** The external-worktree surface's tabs, in row order. Agent is a fixture: this
  *  directory has one agent whether or not Build has ever adopted it, and it is
@@ -181,6 +184,8 @@ export async function renderWorktree() {
           placeholder: "Send a message to adopt this worktree and start its agent…",
         },
       });
+      if (stopWorkingTicker) stopWorkingTicker();
+    stopWorkingTicker = startWorkingTicker(body);
       wireThreadComposer(body, {
         ids: { input: "worktreethreadinput", send: "worktreethreadsend", hint: "worktreethreadhint" },
         readDraft: () => conversationDraft,

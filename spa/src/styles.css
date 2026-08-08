@@ -1092,6 +1092,16 @@ body.sidebar-collapsed #side-open { display:block; }
 .thread-event.blocked .thread-event-content strong { color:var(--red); }
 .thread-event.success .thread-event-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
 .thread-empty { padding:13px 0; color:var(--dim); font-size:12px; }
+/* The Working line: what the agent is doing right now, under the message that
+   asked for it. Quiet by default — it is a status, not an event — with a live
+   dot and a counter that ticks from the moment the agent READ the message. */
+.thread-working { display:flex; align-items:center; gap:8px; margin:6px 0 0 44px;
+  color:var(--green); font-size:12px; font-weight:550; }
+.thread-working-dot { width:7px; height:7px; border-radius:999px; background:var(--green);
+  animation:working-pulse 1.6s ease-in-out infinite; }
+.thread-working-age { color:var(--dim); font-weight:400; font-variant-numeric:tabular-nums; }
+@keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+@media (prefers-reduced-motion: reduce) { .thread-working-dot { animation:none; } }
 .thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 .thread-revision-view { margin-left:44px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
 .thread-revision-head { display:flex; justify-content:space-between; gap:12px; padding:8px 12px; color:var(--dim); font-size:11px; }

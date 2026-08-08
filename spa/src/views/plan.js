@@ -13,7 +13,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentTab } from "../core/surfaceTabs.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -35,6 +35,9 @@ import { notifyError } from "../core/notify.js";
 import { hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
 import { hashFromRoute } from "../core/router.js";
+
+// The Working counter ticks independently of this surface's poll.
+let stopWorkingTicker = null;
 
 // States that carry no plan-level gate yet (no Approve/Implement) — nothing to
 // approve or implement while the agent is still drafting, and nothing once abandoned.
@@ -208,6 +211,8 @@ export async function renderPlan() {
         status: { label: PLAN_STATE_LABEL[p.state] || p.state || "", cls: planChipClass(p.state) },
         actionsId: "issuelifecycle",
       });
+      if (stopWorkingTicker) stopWorkingTicker();
+    stopWorkingTicker = startWorkingTicker(host);
       // Re-mounted per render: this body is rebuilt whenever the thread changes.
       wireActions(p, host.querySelector("#issuelifecycle"));
       wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));

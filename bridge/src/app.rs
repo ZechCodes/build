@@ -9201,6 +9201,7 @@ fn apply_thread_action(
             body,
             anchor,
             links,
+            still_working,
         } => {
             let body = body.trim();
             if body.is_empty() {
@@ -9225,7 +9226,8 @@ fn apply_thread_action(
                 ));
             }
             validate_thread_links(&links)?;
-            let message_id = thread.post_agent_with_links(body, anchor, links, now);
+            let message_id =
+                thread.post_agent_with_links_working(body, anchor, links, now, still_working);
             Ok(json!({ "message_id": message_id }))
         }
     }
@@ -17203,6 +17205,7 @@ mod tests {
                     body: "Which name?".into(),
                     anchor: None,
                     links: Vec::new(),
+                    still_working: false,
                 },
             )
             .unwrap();
@@ -17216,6 +17219,7 @@ mod tests {
                     line_start: None,
                     line_end: None,
                 }],
+                still_working: false,
             },
         );
         assert_eq!(
@@ -17260,6 +17264,7 @@ mod tests {
                     stage_id: stage_b.id,
                     path: stage_b.path,
                 }],
+                still_working: false,
             },
         );
         assert_eq!(
@@ -17272,6 +17277,7 @@ mod tests {
                 body: "open another implementation".into(),
                 anchor: None,
                 links: vec![crate::thread::ThreadLink::Run { run_id: run_b }],
+                still_working: false,
             },
         );
         assert_eq!(

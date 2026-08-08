@@ -140,6 +140,12 @@ pub struct ThreadMessage {
     pub resolved_by_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
+    /// Whether the agent kept working after posting this. Only an agent message
+    /// carries it, and only a progress note sets it: an ordinary reply hands the
+    /// turn back, which is what ends the reviewer-facing "Working" line. Default
+    /// false, so every message written before this existed reads as a handoff.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub still_working: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,13 +379,36 @@ impl Thread {
         links: Vec<ThreadLink>,
         now: impl Into<String>,
     ) -> String {
-        self.post_message(
+        self.post_agent_with_links_working(body, anchor, links, now, false)
+    }
+
+    /// An agent message that says the agent is STILL working — a progress note
+    /// rather than a handoff. Everything else about it is an ordinary post.
+    pub fn post_agent_progress(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        now: impl Into<String>,
+    ) -> String {
+        self.post_agent_with_links_working(body, anchor, Vec::new(), now, true)
+    }
+
+    pub fn post_agent_with_links_working(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        links: Vec<ThreadLink>,
+        now: impl Into<String>,
+        still_working: bool,
+    ) -> String {
+        self.post_message_working(
             MessageRole::Agent,
             false,
             body.into(),
             anchor,
             links,
             now.into(),
+            still_working,
         )
     }
 
@@ -407,9 +436,24 @@ impl Thread {
         links: Vec<ThreadLink>,
         now: String,
     ) -> String {
+        self.post_message_working(role, done, body, anchor, links, now, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn post_message_working(
+        &mut self,
+        role: MessageRole,
+        done: bool,
+        body: String,
+        anchor: Option<MessageAnchor>,
+        links: Vec<ThreadLink>,
+        now: String,
+        still_working: bool,
+    ) -> String {
         let sequence = self.next();
         let id = format!("message-{sequence}");
         self.items.push(ThreadItem::Message(ThreadMessage {
+            still_working,
             id: id.clone(),
             sequence,
             updated_sequence: sequence,
@@ -735,6 +779,42 @@ impl ArtifactKind {
             ArtifactKind::Plan => "plan",
             ArtifactKind::Diff => "diff",
         }
+    }
+}
+
+#[cfg(test)]
+mod working_flag_tests {
+    use super::*;
+
+    /// "Working" has to end when the agent hands back, and only the agent knows
+    /// which of its messages is a progress note and which is the handoff. A
+    /// posted reply hands back by default — a stuck "Working" outlives the work
+    /// it describes, while a progress note that clears the line early costs
+    /// nothing.
+    #[test]
+    fn an_agent_message_hands_back_unless_it_says_it_is_still_working() {
+        let mut thread = Thread::new("run-1");
+        let handoff = thread.post_agent("here is what I found", None, "2026-08-08T03:00:00Z");
+        let update = thread.post_agent_progress("still digging", None, "2026-08-08T03:01:00Z");
+
+        let message = |id: &str| {
+            thread
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ThreadItem::Message(m) if m.id == id => Some(m.clone()),
+                    _ => None,
+                })
+                .expect("the message is on the thread")
+        };
+        assert!(
+            !message(&handoff).still_working,
+            "an ordinary reply gives the turn back"
+        );
+        assert!(
+            message(&update).still_working,
+            "a progress note keeps the agent working"
+        );
     }
 }
 

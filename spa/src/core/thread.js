@@ -233,13 +233,56 @@ function eventHtml(event, agentLabel = "Agent") {
   </div>`;
 }
 
+/** Kinds that end the work outright, whatever the agent last said. */
+const HANDBACK_EVENTS = new Set(["done", "run_failed", "idle_unreported", "blocked", "review_blocked", "abandoned"]);
+
+/**
+ * Which user message (by index) is currently being worked, or -1.
+ *
+ * The agent has READ it (`seen_at`) and has not handed the turn back since: an
+ * ordinary agent reply hands back, a progress note (`still_working`) does not,
+ * and a terminal event always does. Only the newest such message carries the
+ * line — one agent, one thing being worked.
+ */
+export function workingMessageIndex(items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] || {};
+    const data = item.data || {};
+    if (item.type === "message" && data.role === "user" && data.seen_at) return i;
+    if (item.type === "message" && data.role === "agent" && !data.still_working) return -1;
+    if (item.type !== "message" && HANDBACK_EVENTS.has(String(data.kind || "").toLowerCase())) return -1;
+  }
+  return -1;
+}
+
+/** Compact age for the working counter: 12s, 4m, 2h, 3d. */
+export function workingAge(sinceIso, nowMs = Date.now()) {
+  const started = Date.parse(sinceIso);
+  if (!Number.isFinite(started)) return "";
+  const seconds = Math.max(0, Math.floor((nowMs - started) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+/** The line under a message the agent is working on. `data-since` is what the
+ *  ticker re-reads, so the counter keeps moving between thread re-renders. */
+function workingHtml(seenAt) {
+  return `<div class="thread-working" data-since="${esc(seenAt)}">
+    <span class="thread-working-dot" aria-hidden="true"></span>Working<span class="thread-working-age">${esc(workingAge(seenAt))}</span>
+  </div>`;
+}
+
 function timelineHtml(items, agentLabel) {
-  return items.flatMap((item) => {
+  const working = workingMessageIndex(items);
+  return items.flatMap((item, index) => {
     if (item.type !== "message") return [eventHtml(item.data || {}, agentLabel)];
     const message = item.data || {};
     // Old bridges persisted the noisy structured handoff as a chat message.
     if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
-    return [messageHtml(message, agentLabel)];
+    const rendered = messageHtml(message, agentLabel);
+    return index === working ? [rendered, workingHtml(message.seen_at)] : [rendered];
   });
 }
 
@@ -410,4 +453,28 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       submit();
     }
   };
+}
+
+/** Keep every rendered Working counter moving. The thread re-renders on its
+ *  surface's own poll, which is slower than a second, so the age is refreshed
+ *  in place from `data-since` rather than by re-rendering the timeline. Returns
+ *  a stop function; safe to call on a root that holds no working line. */
+export function startWorkingTicker(root, { intervalMs = 1000, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => Date.now() } = {}) {
+  let handle = null;
+  const tick = () => {
+    // A surface that navigated away leaves its root detached; retire with it
+    // rather than ticking against a DOM nobody is looking at.
+    if (root.isConnected === false) return stop();
+    for (const line of root.querySelectorAll(".thread-working")) {
+      const age = line.querySelector(".thread-working-age");
+      if (age) age.textContent = workingAge(line.dataset.since, now());
+    }
+  };
+  const stop = () => {
+    if (handle !== null) clearIntervalImpl(handle);
+    handle = null;
+  };
+  tick();
+  handle = setIntervalImpl(tick, intervalMs);
+  return stop;
 }

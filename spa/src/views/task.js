@@ -17,10 +17,13 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../core/thread.js";
+import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { hashFromRoute } from "../core/router.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
+
+// The Working counter ticks independently of this surface's poll.
+let stopWorkingTicker = null;
 
 /** The task surface's tabs, in row order. Agent is a fixture here as it is on
  *  every worktree surface — the run's worktree has one agent and it is always
@@ -411,6 +414,8 @@ export async function renderTask() {
         placeholder: "Send a message to the coding agent…",
       },
     });
+    if (stopWorkingTicker) stopWorkingTicker();
+    stopWorkingTicker = startWorkingTicker(body);
     wireActions(body.querySelector("#threadlifecycle"), t);
     wireThreadRevisionLinks(body, (revisionId) =>
       App.call("thread.revision", { entity_id: id, revision_id: revisionId }),

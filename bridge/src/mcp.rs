@@ -227,6 +227,9 @@ pub struct Handled {
 pub enum BridgeAction {
     ReadUnreadMessages,
     PostThreadMessage {
+        /// Whether the agent keeps working after this post (a progress note)
+        /// rather than handing the turn back. See the tool description.
+        still_working: bool,
         body: String,
         anchor: Option<crate::thread::MessageAnchor>,
         links: Vec<crate::thread::ThreadLink>,
@@ -375,11 +378,12 @@ impl DoneServer {
                             // means it is the ONE statement guaranteed to still be
                             // in context when an ambiguous message actually arrives.
                             // A pointer would resolve to nothing exactly then.
-                            "description": "Reply in the current Build conversation thread. Post only for a question, necessary pushback or clarification, an explicit request for a response, or a reviewer message that reads as either a question or a directive — for that last case post a one-line clarifying reply rather than silently changing code. Implementing an unambiguous directive needs no reply: the next revision is the acknowledgment. Do not post bare acknowledgments or diff recaps.",
+                            "description": "Reply in the current Build conversation thread. Post only for a question, necessary pushback or clarification, an explicit request for a response, or a reviewer message that reads as either a question or a directive — for that last case post a one-line clarifying reply rather than silently changing code. Implementing an unambiguous directive needs no reply: the next revision is the acknowledgment. Do not post bare acknowledgments or diff recaps. Posting hands the turn back to the reviewer; set still_working=true when you are only reporting progress and will keep going without waiting for an answer.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "body": { "type": "string" },
+                                    "still_working": { "type": "boolean", "description": "True when this is a progress note and you are continuing without waiting for a reply. Omit (false) for an ordinary reply, which hands the turn back." },
                                     "anchor": { "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." },
                                     "links": {
                                         "type": "array",
@@ -497,6 +501,10 @@ impl DoneServer {
                     body: body.to_string(),
                     anchor,
                     links,
+                    still_working: arguments
+                        .get("still_working")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 }),
                 action_id: Some(id),
                 ..Handled::default()
@@ -782,7 +790,7 @@ mod tests {
         );
         assert!(matches!(
             post.action,
-            Some(BridgeAction::PostThreadMessage { ref body, anchor: None, ref links })
+            Some(BridgeAction::PostThreadMessage { ref body, anchor: None, ref links, .. })
                 if body == "Which name should I use?" && links.is_empty()
         ));
         assert!(post.reply.is_none());

@@ -342,7 +342,7 @@ export function threadHtml(thread, options = {}) {
   // runs down. With nothing on the record there is neither, so the empty case
   // says so and the CSS drops both rather than ruling a line beside a sentence.
   const empty = itemCount ? "" : " is-empty";
-  return `<section class="review-thread${empty}">
+  return `<section class="review-thread pane-col${empty}">
     <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
     <div class="thread-items thread-timeline${empty}">${itemCount
       ? renderedItems.join("")

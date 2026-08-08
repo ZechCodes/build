@@ -199,13 +199,13 @@ main#root.surface { max-width:none;
 /* A cluster pane (Inbox / Issues / Archive) names itself: its tab is an icon on
    the row, so the heading is the only place the name is written. The body keeps
    the pane's own full height, so an empty state still centres in it. */
-.cluster-pane { display:flex; flex-direction:column; min-height:100%; width:100%; max-width:1180px; margin:0 auto; }
+.cluster-pane { display:flex; flex-direction:column; min-height:100%; }
 .cluster-pane .board-head { margin-bottom:14px; }
 /* A single 1fr row hands the mounted pane the leftover height as a definite one,
    which is what an empty state's `height:100%` needs; taller content grows the
    row instead, and #tabbody scrolls as always. */
 .cluster-pane .cluster-body { flex:1 1 auto; min-height:0; display:grid; grid-template-rows:1fr; }
-.project-inbox { width:100%; max-width:1180px; margin:0 auto; container-type:inline-size; }
+.project-inbox { container-type:inline-size; }
 /* Worktrees ride a right-hand column when this pane can spare the width, and
    fall back under the main column when it cannot. Containment is scoped to the
    inbox subtree — putting it on #tabbody would apply layout containment to the
@@ -298,7 +298,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .tabs .t.ticon svg, .tabs .t.tmenu svg { width:16px; height:16px; display:block; }
 .tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
 /* plan */
-.plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; max-width:780px; }
+.plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
 .plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:var(--ink); }
 .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
@@ -316,7 +316,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .plan mark.phl { background:var(--mark); color:var(--ink); border-radius:2px; padding:0 1px; }
 /* The plan cockpit's summary: last_summary as markdown, clamped to a few lines
    with an expand affordance shown only when it overflows. */
-.plan-summary { max-width:820px; margin-bottom:16px; }
+.plan-summary { margin-bottom:16px; }
 .plan-summary .ps-body { color:var(--ink2); font-size:13px; }
 .plan-summary .ps-body.clamped { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .plan-summary .ps-body p { margin:0 0 4px; } .plan-summary .ps-body p:last-child { margin-bottom:0; }
@@ -327,7 +327,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .plan-empty { color:var(--dim); font-size:13px; }
 .plan-empty.warn { color:var(--red); }
 /* plan review comments */
-.plan-feedback { max-width:780px; margin-top:14px; }
+.plan-feedback { margin-top:14px; }
 /* Compact composers: a single-line box that grows on focus (the diff-comment
    idiom), shared by the plan / stage / worktree feedback textareas. */
 .plan-general { width:100%; min-height:36px; margin-top:8px; }
@@ -342,7 +342,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .stagehead .runall { display:inline-flex; align-items:center; }
 .stagehead .runall:empty { display:none; }
 .stagehead .hint { color:var(--dim); font-size:12px; }
-.stagelist { max-width:820px; display:flex; flex-direction:column; gap:8px; }
+.stagelist { display:flex; flex-direction:column; gap:8px; }
 .stagerow { display:flex; gap:12px; align-items:flex-start; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 14px; cursor:pointer; }
 .stagerow:hover { border-color:var(--accent); }
 .stagerow .stagenum { font-family:var(--mono); font-size:12px; color:var(--dim); padding-top:2px; }
@@ -353,7 +353,7 @@ a.plan-ref:hover { text-decoration:underline; }
 .cbadge { font-size:11px; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:2px 8px; white-space:nowrap; }
 .stagesummary { color:var(--ink2); font-size:12.5px; margin-top:4px; }
 .stageback { color:var(--accent); cursor:pointer; font-size:13px; margin-bottom:12px; display:inline-block; }
-.stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; max-width:820px; }
+.stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; }
 .stage-validation .sv-head { font-weight:650; font-size:13.5px; margin-bottom:4px; }
 .stage-validation .sv-body { font-size:13px; }
 .stage-validation .sv-body p { margin:6px 0; }
@@ -361,8 +361,8 @@ a.plan-ref:hover { text-decoration:underline; }
 .stage-validation.pass .sv-head { color:var(--green); }
 .stage-validation.fail { background:var(--red-bg); border-color:var(--red); }
 .stage-validation.fail .sv-head { color:var(--red); }
-.fixbar { max-width:820px; margin-bottom:12px; }
-.stagecomments { max-width:820px; margin-top:14px; display:flex; flex-direction:column; gap:8px; }
+.fixbar { margin-bottom:12px; }
+.stagecomments { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
 .commentcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:9px 30px 9px 12px; font-size:13px; position:relative; }
 .commentcard.addressed { border-left-color:var(--green); opacity:.72; }
 .commentcard .cc-x { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
@@ -684,7 +684,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 }
 
 /* ---- the project's Issues tab ---- */
-.issues { width:100%; max-width:1180px; margin:0 auto; }
 /* An empty tab has nothing to scroll, so its message owns the pane: centred on
    both axes, with the verb itself rather than directions to it. */
 .issues-empty { height:100%; display:grid; place-items:center; }
@@ -942,7 +941,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .fppath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .fpsize { color:var(--dim); flex:none; }
 .fpbody { padding:14px; overflow:auto; flex:1; min-height:0; }
-.fpbody .plan { max-width:none; border:none; padding:0; background:none; }
+.fpbody .plan { border:none; padding:0; background:none; }
 .fsrc { margin:0; overflow:auto; }
 .fsrc table { min-width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; }
 .fsrc td { vertical-align:top; white-space:pre; }
@@ -1072,8 +1071,7 @@ body.sidebar-collapsed #side-open { display:block; }
 .confirm-steps { margin:12px 0; padding-left:20px; font-size:13px; color:var(--ink2); display:flex; flex-direction:column; gap:6px; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
-.review-thread { width:min(100%, 920px); margin:18px auto; background:transparent; }
-#planthread { max-width:820px; }
+.review-thread { background:transparent; }
 .thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; font-weight:650; }
 /* Where the entity stands, on the record that explains how it got there.
    (Distinct from .thread-status, which is a message's own Seen/Unread mark.) */

@@ -183,6 +183,50 @@ describe("tab layout primitives", () => {
     },
   );
 
+  // Every one-column pane the four tab-shell surfaces paint into the padded tab
+  // body, and the elements those panes are built from. None may state a width
+  // or a centring margin of its own: .pane-col states both, once, for all of
+  // them, which is the only reason a tab switch no longer moves the content's
+  // edges. (paneAdoption.test.js checks each of these actually carries it.)
+  const ONE_COLUMN_PANES = [
+    ".review-thread",
+    "#planthread",
+    ".cluster-pane",
+    ".project-inbox",
+    ".issues",
+    ".plan",
+    ".plan-summary",
+    ".plan-feedback",
+    ".stagelist",
+    ".stage-validation",
+    ".fixbar",
+    ".stagecomments",
+  ];
+
+  /** Whole selector tokens, so `.issues` never reads out of `.issues-empty` and
+   *  `.plan` never out of `.plan-summary`. */
+  const selectorTokens = (selector) => selector.match(/[.#][-\w]+/g) || [];
+  const rulesMentioning = (token) =>
+    cssRules().filter((rule) => selectorTokens(rule.selector).includes(token));
+
+  it.each(ONE_COLUMN_PANES)("%s states no width and no centring of its own", (token) => {
+    for (const rule of rulesMentioning(token)) {
+      expect(rule.body).not.toMatch(/(^|;)\s*(max-)?width\s*:/);
+      expect(rule.body).not.toMatch(/margin[^:]*:[^;]*auto/);
+    }
+  });
+
+  it("keeps no second content width for a one-column pane to fall back to", () => {
+    // The three the panes above used to carry. 1180px survives only as the
+    // token's value and as the non-surface page's own width.
+    for (const orphan of ["920px", "820px", "780px"]) {
+      const carriers = cssRules()
+        .filter((rule) => new RegExp(`max-width:\\s*${orphan}`).test(rule.body))
+        .map((rule) => rule.selector);
+      expect(carriers).toEqual(orphan === "780px" ? [".gitcommit"] : []);
+    }
+  });
+
   it("leaves the bare (terminal / agent) case full-bleed", () => {
     const [bare] = rulesFor(".surface #tabbody.bare");
     expect(bare).toBeTruthy();

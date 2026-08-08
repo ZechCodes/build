@@ -237,7 +237,10 @@ export function stageBoardHtml(run, stagesData) {
     ? `<div class="empty stagenote">The Issue for this implementation was deleted — showing the run's own stage progress.</div>`
     : "";
 
-  return `
+  // The board is a column of siblings, so the layout primitive goes on a
+  // wrapper: the tab body caps nothing, and a pane that leaves its own width
+  // unstated there runs the whole viewport wide.
+  return `<div class="pane-col">
     ${deletedNote}
     ${reviewBanner}
     <div class="stagehead">
@@ -245,7 +248,8 @@ export function stageBoardHtml(run, stagesData) {
       <span class="hint" id="stageshint"></span>
     </div>
     <div class="stagelist" id="stagelist">${stages.length ? rows : '<div class="empty">No stages yet.</div>'}</div>
-    <div class="stageaction" id="stageaction"></div>`;
+    <div class="stageaction" id="stageaction"></div>
+  </div>`;
 }
 
 /** Render the run-side stage board and wire its run-scoped actions. ctx:

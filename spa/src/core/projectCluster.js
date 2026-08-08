@@ -44,7 +44,7 @@ export const isProjectClusterTab = (tabId) => Object.hasOwn(CLUSTER_TAB_TITLE, t
  *  mounted view — which is also what keeps a pane from titling itself twice.
  *  Returns the element the pane mounts into. */
 function paneUnderHeading(host, tabId) {
-  host.innerHTML = `<div class="cluster-pane">
+  host.innerHTML = `<div class="cluster-pane pane-col">
     <div class="board-head"><div><h1>${CLUSTER_TAB_TITLE[tabId]}</h1></div></div>
     <div class="cluster-body"></div>
   </div>`;

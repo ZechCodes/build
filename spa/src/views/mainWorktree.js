@@ -12,7 +12,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { createPrimaryAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, startWorkingTicker } from "../core/thread.js";
 import { subscribeFeed, primaryRunIdFor } from "../core/taskFeed.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
@@ -78,20 +78,22 @@ export function mountPrimaryConversation(
   // owner. Sending adopts, posts, and stays — refresh() paints what it opened.
   const paintInvitation = () => {
     renderKey = null;
-    host.innerHTML = threadHtml({ items: [] }, {
-      composer: composerFor("Send a message to adopt this checkout and start its agent…"),
-    });
-    if (stopWorkingTicker) stopWorkingTicker();
-    stopWorkingTicker = startWorkingTicker(host);
-    wireComposer({
-      onSubmit: async (message) => {
-        // No provider named: the checkout has no sheet answer to carry (only the
-        // Agent tab's cards ask that question here), so the run is minted on the
-        // bridge's default and the cards switch it later.
-        const runId = await adopting.adopt();
-        return callRpc("thread.post", { entity_id: runId, body: message });
-      },
-      afterSubmit: () => refresh(),
+    paintThreadKeepingPlace(host, () => {
+      host.innerHTML = threadHtml({ items: [] }, {
+        composer: composerFor("Send a message to adopt this checkout and start its agent…"),
+      });
+      if (stopWorkingTicker) stopWorkingTicker();
+      stopWorkingTicker = startWorkingTicker(host);
+      wireComposer({
+        onSubmit: async (message) => {
+          // No provider named: the checkout has no sheet answer to carry (only the
+          // Agent tab's cards ask that question here), so the run is minted on the
+          // bridge's default and the cards switch it later.
+          const runId = await adopting.adopt();
+          return callRpc("thread.post", { entity_id: runId, body: message });
+        },
+        afterSubmit: () => refresh(),
+      });
     });
   };
 
@@ -104,17 +106,19 @@ export function mountPrimaryConversation(
     });
     if (key === renderKey && host.querySelector(".review-thread")) return;
     renderKey = key;
-    host.innerHTML = threadHtml(view.thread, {
-      agentLabel: view.harness,
-      status: { label: RUN_STATE_LABEL[view.state] || view.state || "", cls: runChipClass(view.state) },
-      composer: composerFor("Send a message to the coding agent…"),
-    });
-    if (stopWorkingTicker) stopWorkingTicker();
-    stopWorkingTicker = startWorkingTicker(host);
-    wireThreadLinks(host, openLink);
-    wireComposer({
-      onSubmit: (message) => callRpc("thread.post", { entity_id: runId, body: message }),
-      afterSubmit: () => refresh(),
+    paintThreadKeepingPlace(host, () => {
+      host.innerHTML = threadHtml(view.thread, {
+        agentLabel: view.harness,
+        status: { label: RUN_STATE_LABEL[view.state] || view.state || "", cls: runChipClass(view.state) },
+        composer: composerFor("Send a message to the coding agent…"),
+      });
+      if (stopWorkingTicker) stopWorkingTicker();
+      stopWorkingTicker = startWorkingTicker(host);
+      wireThreadLinks(host, openLink);
+      wireComposer({
+        onSubmit: (message) => callRpc("thread.post", { entity_id: runId, body: message }),
+        afterSubmit: () => refresh(),
+      });
     });
   };
 

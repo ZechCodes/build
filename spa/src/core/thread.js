@@ -353,6 +353,48 @@ export function threadHtml(thread, options = {}) {
   </section>`;
 }
 
+/** How near the end still counts as reading the end. Absorbs the fractional
+ *  scroll heights a zoomed or sub-pixel layout leaves behind. */
+const AT_BOTTOM_SLACK_PX = 32;
+
+/// Paint a conversation with the reader's place kept.
+///
+/// The newest message is the one the human came for and it sits at the END, so
+/// opening a thread lands at the bottom. Every surface then re-renders the whole
+/// timeline on its poll, and writing innerHTML resets scrollTop — which is the
+/// same lever, so both halves live here: a reader already at the end is carried
+/// along with new messages, and a reader who scrolled up is left exactly where
+/// they were rather than yanked back down mid-sentence.
+///
+/// `scroller` is the element that scrolls (the surfaces' `#tabbody`), which is
+/// not always the element `paint` writes into — the issue surface paints a
+/// wrapper inside it. With no scroller this is `paint()` and nothing else.
+export function paintThreadKeepingPlace(scroller, paint) {
+  if (!scroller) {
+    paint();
+    return;
+  }
+  // Nothing rendered yet means this paint is the open: the tab was just
+  // selected, or a shell rebuild wiped the body under it.
+  const opening = !scroller.querySelector(".review-thread");
+  const previousScrollTop = scroller.scrollTop;
+  const wasAtBottom =
+    scroller.scrollHeight - scroller.clientHeight - previousScrollTop <= AT_BOTTOM_SLACK_PX;
+  paint();
+  if (!opening && !wasAtBottom) {
+    scroller.scrollTop = previousScrollTop;
+    return;
+  }
+  const toBottom = () => {
+    scroller.scrollTop = scroller.scrollHeight;
+  };
+  toBottom();
+  // Markdown and web fonts can settle a frame after the content lands, leaving
+  // the open short of the newest message. Only the open re-pins: doing it on a
+  // poll's repaint would fight a reader who scrolled away within that frame.
+  if (opening && typeof requestAnimationFrame === "function") requestAnimationFrame(toBottom);
+}
+
 export function wireThreadRevisionLinks(root, loadRevision) {
   if (!root) return;
   root.querySelectorAll(".thread-revision-link").forEach((button) => {

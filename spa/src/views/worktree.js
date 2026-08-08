@@ -19,7 +19,7 @@ import { mountGitPane } from "../core/gitPane.js";
 import { createAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { takeNewWorktreeMark } from "../core/newWorktree.js";
-import { threadHtml, wireThreadComposer, startWorkingTicker } from "../core/thread.js";
+import { paintThreadKeepingPlace, threadHtml, wireThreadComposer, startWorkingTicker } from "../core/thread.js";
 import { notifyError } from "../core/notify.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
 
@@ -176,29 +176,31 @@ export async function renderWorktree() {
       return;
     }
     if (tabId === "conversation") {
-      body.innerHTML = threadHtml({ items: [] }, {
-        composer: {
-          inputId: "worktreethreadinput",
-          sendId: "worktreethreadsend",
-          hintId: "worktreethreadhint",
-          placeholder: "Send a message to adopt this worktree and start its agent…",
-        },
-      });
-      if (stopWorkingTicker) stopWorkingTicker();
-    stopWorkingTicker = startWorkingTicker(body);
-      wireThreadComposer(body, {
-        ids: { input: "worktreethreadinput", send: "worktreethreadsend", hint: "worktreethreadhint" },
-        readDraft: () => conversationDraft,
-        writeDraft: (value) => {
-          conversationDraft = value;
-        },
-        onSubmit: async (message) => {
-          if (pendingProvider) adopting.setAdoptParams({ provider: pendingProvider });
-          const runId = await adopting.adopt();
-          return App.call("thread.post", { entity_id: runId, body: message });
-        },
-        afterSubmit: () => handoffToTask(),
-        onError: (error) => notifyError("Message failed", error.message),
+      paintThreadKeepingPlace(body, () => {
+        body.innerHTML = threadHtml({ items: [] }, {
+          composer: {
+            inputId: "worktreethreadinput",
+            sendId: "worktreethreadsend",
+            hintId: "worktreethreadhint",
+            placeholder: "Send a message to adopt this worktree and start its agent…",
+          },
+        });
+        if (stopWorkingTicker) stopWorkingTicker();
+        stopWorkingTicker = startWorkingTicker(body);
+        wireThreadComposer(body, {
+          ids: { input: "worktreethreadinput", send: "worktreethreadsend", hint: "worktreethreadhint" },
+          readDraft: () => conversationDraft,
+          writeDraft: (value) => {
+            conversationDraft = value;
+          },
+          onSubmit: async (message) => {
+            if (pendingProvider) adopting.setAdoptParams({ provider: pendingProvider });
+            const runId = await adopting.adopt();
+            return App.call("thread.post", { entity_id: runId, body: message });
+          },
+          afterSubmit: () => handoffToTask(),
+          onError: (error) => notifyError("Message failed", error.message),
+        });
       });
       aux = { dispose() {} };
       return;

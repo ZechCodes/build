@@ -13,7 +13,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentTab } from "../core/surfaceTabs.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -204,43 +204,47 @@ export async function renderPlan() {
       });
       if (key === threadRenderKey && host.firstChild) return;
       threadRenderKey = key;
-      host.innerHTML = threadHtml(p.thread, {
-        initialMessage: p.goal,
-        composer,
-        agentLabel: p.harness,
-        status: { label: PLAN_STATE_LABEL[p.state] || p.state || "", cls: planChipClass(p.state) },
-        actionsId: "issuelifecycle",
-      });
-      if (stopWorkingTicker) stopWorkingTicker();
-    stopWorkingTicker = startWorkingTicker(host);
-      // Re-mounted per render: this body is rebuilt whenever the thread changes.
-      wireActions(p, host.querySelector("#issuelifecycle"));
-      wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
-      wireThreadLinks(host, (link) => {
-        if ((link.kind === "issue_stage" || link.kind === "plan_stage") && link.stage_id) {
-          selectedStageId = link.stage_id;
-          selectTab("stages");
-          return;
-        }
-        const target = issueThreadLinkTarget(link, p, projectId);
-        if (!target) return;
-        if (target.filePath) sessionStorage.setItem(`build.fileLink.${target.route.id}`, target.filePath);
-        go(target.route);
-      });
-      wireThreadComposer(host, {
-        ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
-        readDraft: () => threadDraft,
-        writeDraft: (value) => {
-          threadDraft = value;
-        },
-        onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
-        afterSubmit: () => {
-          threadRenderKey = null;
-          planKey = null;
-          stagesKey = null;
-          paint();
-        },
-        onError: (error) => notifyError("Message failed", error.message),
+      // The issue's thread paints into its own wrapper, but #tabbody is what
+      // scrolls — the reader's place lives on the body, not on the wrapper.
+      paintThreadKeepingPlace($("#tabbody"), () => {
+        host.innerHTML = threadHtml(p.thread, {
+          initialMessage: p.goal,
+          composer,
+          agentLabel: p.harness,
+          status: { label: PLAN_STATE_LABEL[p.state] || p.state || "", cls: planChipClass(p.state) },
+          actionsId: "issuelifecycle",
+        });
+        if (stopWorkingTicker) stopWorkingTicker();
+        stopWorkingTicker = startWorkingTicker(host);
+        // Re-mounted per render: this body is rebuilt whenever the thread changes.
+        wireActions(p, host.querySelector("#issuelifecycle"));
+        wireThreadRevisionLinks(host, (revisionId) => App.call("thread.revision", { entity_id: id, revision_id: revisionId }));
+        wireThreadLinks(host, (link) => {
+          if ((link.kind === "issue_stage" || link.kind === "plan_stage") && link.stage_id) {
+            selectedStageId = link.stage_id;
+            selectTab("stages");
+            return;
+          }
+          const target = issueThreadLinkTarget(link, p, projectId);
+          if (!target) return;
+          if (target.filePath) sessionStorage.setItem(`build.fileLink.${target.route.id}`, target.filePath);
+          go(target.route);
+        });
+        wireThreadComposer(host, {
+          ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+          readDraft: () => threadDraft,
+          writeDraft: (value) => {
+            threadDraft = value;
+          },
+          onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
+          afterSubmit: () => {
+            threadRenderKey = null;
+            planKey = null;
+            stagesKey = null;
+            paint();
+          },
+          onError: (error) => notifyError("Message failed", error.message),
+        });
       });
     }
   };

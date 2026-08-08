@@ -17,7 +17,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
-import { createThreadCache, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { hashFromRoute } from "../core/router.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
@@ -403,37 +403,41 @@ export async function renderTask() {
     });
     if (key === conversationKey && body.querySelector(".review-thread")) return;
     conversationKey = key;
-    body.innerHTML = threadHtml(t.thread, {
-      agentLabel: t.harness,
-      status: { label: RUN_STATE_LABEL[t.state] || t.state || "", cls: runChipClass(t.state) },
-      actionsId: "threadlifecycle",
-      composer: !RUN_TERMINAL_STATES.has(t.state) && {
-        inputId: "runthreadinput",
-        sendId: "runthreadsend",
-        hintId: "runthreadhint",
-        placeholder: "Send a message to the coding agent…",
-      },
-    });
-    if (stopWorkingTicker) stopWorkingTicker();
-    stopWorkingTicker = startWorkingTicker(body);
-    wireActions(body.querySelector("#threadlifecycle"), t);
-    wireThreadRevisionLinks(body, (revisionId) =>
-      App.call("thread.revision", { entity_id: id, revision_id: revisionId }),
-    );
-    wireThreadLinks(body, openThreadLink);
-    wireThreadComposer(body, {
-      ids: { input: "runthreadinput", send: "runthreadsend", hint: "runthreadhint" },
-      readDraft: () => conversationDraft,
-      writeDraft: (value) => {
-        conversationDraft = value;
-      },
-      onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
-      afterSubmit: (view) => {
-        last = { ...view, thread: threadCache.absorb(view.thread) };
-        conversationKey = null;
-        paint();
-      },
-      onError: (error) => showBanner("error: " + error.message.slice(0, 80)),
+    // The lifecycle actions are wired inside the paint: they grow the timeline,
+    // so the thread is only its final height once they are in.
+    paintThreadKeepingPlace(body, () => {
+      body.innerHTML = threadHtml(t.thread, {
+        agentLabel: t.harness,
+        status: { label: RUN_STATE_LABEL[t.state] || t.state || "", cls: runChipClass(t.state) },
+        actionsId: "threadlifecycle",
+        composer: !RUN_TERMINAL_STATES.has(t.state) && {
+          inputId: "runthreadinput",
+          sendId: "runthreadsend",
+          hintId: "runthreadhint",
+          placeholder: "Send a message to the coding agent…",
+        },
+      });
+      if (stopWorkingTicker) stopWorkingTicker();
+      stopWorkingTicker = startWorkingTicker(body);
+      wireActions(body.querySelector("#threadlifecycle"), t);
+      wireThreadRevisionLinks(body, (revisionId) =>
+        App.call("thread.revision", { entity_id: id, revision_id: revisionId }),
+      );
+      wireThreadLinks(body, openThreadLink);
+      wireThreadComposer(body, {
+        ids: { input: "runthreadinput", send: "runthreadsend", hint: "runthreadhint" },
+        readDraft: () => conversationDraft,
+        writeDraft: (value) => {
+          conversationDraft = value;
+        },
+        onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
+        afterSubmit: (view) => {
+          last = { ...view, thread: threadCache.absorb(view.thread) };
+          conversationKey = null;
+          paint();
+        },
+        onError: (error) => showBanner("error: " + error.message.slice(0, 80)),
+      });
     });
   }
 

@@ -247,6 +247,7 @@ jobs:
           file: skriftapp/Containerfile
           build-args: |
             VITE_RELAY_URL=wss://relay.getbuild.ing
+            VITE_BUILD_VERSION=${{ github.sha }}
           push: true
           tags: |
             ${{ env.REGISTRY }}/build-app:latest

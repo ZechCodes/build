@@ -11,6 +11,7 @@ import { $ } from "./dom.js";
 import { App, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
 import { registerPushWorker } from "./push.js";
+import { createVersionWatcher, fetchServedVersion } from "./core/version.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
 import { boot } from "./views/gate.js";
@@ -25,6 +26,17 @@ installTheme();
 // origin — skip under the vite dev server.
 if (location.pathname.startsWith("/app")) {
   registerPushWorker().catch(() => {});
+  // Watch the served frontend version and offer one reload when this bundle
+  // falls behind a deploy — the resume check is what reaches a PWA that slept
+  // through it. (start() is a no-op for dev builds.)
+  createVersionWatcher({
+    currentVersion: import.meta.env.VITE_BUILD_VERSION || "dev",
+    fetchVersion: fetchServedVersion,
+    onStale: () => {
+      $("#verbar").hidden = false;
+    },
+  }).start();
+  $("#verbar-reload").onclick = () => location.reload();
 }
 
 initRouter();

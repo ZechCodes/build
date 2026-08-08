@@ -89,6 +89,14 @@ a { color:inherit; }
 #devpick:focus { outline:none; border-color:var(--accent); }
 /* offline banner */
 #offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
+/* new-version banner: an offer, not a warning — accent, one Reload, never auto.
+   In-flow like #offbar, so the locked shell shrinks under it. */
+#verbar { flex:none; display:flex; align-items:center; gap:12px;
+  background:var(--accent-soft); color:var(--accent);
+  border-bottom:1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding:7px 18px; font-size:12.5px; }
+#verbar[hidden] { display:none; }
+#verbar .btn { padding:3px 12px; font-size:12px; color:var(--accent); border-color:currentColor; background:transparent; }
 main { max-width:1180px; margin:0 auto;
   padding:26px calc(22px + env(safe-area-inset-right, 0px))
     calc(80px + env(safe-area-inset-bottom, 0px)) 22px; }

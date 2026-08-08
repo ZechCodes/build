@@ -3807,7 +3807,10 @@ impl AppState {
                 return if turn_undelivered { None } else { Some(None) };
             };
             if tab.session.has_exited() {
-                return Some(Some(tab.session.exit_code().unwrap_or(-1)));
+                return Some(Some(HarnessExit {
+                    code: tab.session.exit_code().unwrap_or(-1),
+                    epitaph: screen_epitaph(&tab.screen),
+                }));
             }
             let quiet_for = quiet_threshold;
             let painted_recently = tab.session.idle_for() < quiet_for;
@@ -3820,7 +3823,7 @@ impl AppState {
                 Some(None)
             }
         };
-        let idle_plans: Vec<(String, Option<i32>)> = self
+        let idle_plans: Vec<(String, Option<HarnessExit>)> = self
             .plans
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
@@ -3830,10 +3833,10 @@ impl AppState {
                     self.tabs.get(&TabKey::agent(&root)),
                     self.agent_turn_is_undelivered(id),
                 )
-                .map(|code| (id.clone(), code))
+                .map(|exit| (id.clone(), exit))
             })
             .collect();
-        let idle_runs: Vec<(String, Option<i32>)> = self
+        let idle_runs: Vec<(String, Option<HarnessExit>)> = self
             .runs
             .iter()
             .filter(|(_, a)| a.run.state.is_working())
@@ -3843,7 +3846,7 @@ impl AppState {
                     self.tabs.get(&TabKey::agent(&root)),
                     self.agent_turn_is_undelivered(id),
                 )
-                .map(|code| (id.clone(), code))
+                .map(|exit| (id.clone(), exit))
             })
             .collect();
 
@@ -3863,10 +3866,10 @@ impl AppState {
             if let Err(e) = outcome {
                 eprintln!("idle monitor {plan_id}: {e}");
             }
-            if let Some(code) = exit_code {
-                active.last_error = Some(format!("agent exited unexpectedly (exit code {code})"));
+            if let Some(exit) = &exit_code {
+                active.last_error = Some(exit.describe());
             }
-            record_idle_in_thread(&mut active.thread, exit_code);
+            record_idle_in_thread(&mut active.thread, exit_code.as_ref());
             let (_, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {plan_id}: {e}");
@@ -3887,10 +3890,10 @@ impl AppState {
             if let Err(e) = outcome {
                 eprintln!("idle monitor {run_id}: {e}");
             }
-            if let Some(code) = exit_code {
-                active.last_error = Some(format!("agent exited unexpectedly (exit code {code})"));
+            if let Some(exit) = &exit_code {
+                active.last_error = Some(exit.describe());
             }
-            record_idle_in_thread(&mut active.thread, exit_code);
+            record_idle_in_thread(&mut active.thread, exit_code.as_ref());
             let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {run_id}: {e}");
@@ -9660,16 +9663,66 @@ fn record_report_in_thread(
     }
 }
 
+/// How a harness's session ended, as the idle sweep saw it: the exit code, and
+/// the last thing it painted. A crash's only explanation is usually on its own
+/// screen — codex refusing to start a required MCP server, a provider saying
+/// the account is out of quota — and a bare code throws that away.
+#[derive(Debug, Clone)]
+struct HarnessExit {
+    code: i32,
+    epitaph: Option<String>,
+}
+
+impl HarnessExit {
+    /// The crash as one line of `last_error`.
+    fn describe(&self) -> String {
+        match &self.epitaph {
+            Some(said) => format!(
+                "agent exited unexpectedly (exit code {}): {said}",
+                self.code
+            ),
+            None => format!("agent exited unexpectedly (exit code {})", self.code),
+        }
+    }
+}
+
+/// The last words on a retained screen: its final non-empty lines, trimmed and
+/// bounded. `None` for a harness that painted nothing worth repeating.
+fn screen_epitaph(screen: &TermScreen) -> Option<String> {
+    const MAX_LINES: usize = 3;
+    const MAX_CHARS: usize = 240;
+    let contents = screen.parser.screen().contents();
+    let mut lines: Vec<&str> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let tail = lines.split_off(lines.len().saturating_sub(MAX_LINES));
+    let mut said = tail.join(" · ");
+    if said.chars().count() > MAX_CHARS {
+        said = said.chars().take(MAX_CHARS).collect::<String>() + "…";
+    }
+    Some(said)
+}
+
 /// An entity went quiet (or its agent exited) without reporting: record the
 /// reason. The session lineage is deliberately left alone — a quiet agent is
 /// still an agent, and one that exited has already had its session closed by
 /// the pump that saw the EOF.
-fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit_code: Option<i32>) {
+fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit: Option<&HarnessExit>) {
     let now = now_rfc3339();
-    let (event, summary) = match exit_code {
-        Some(code) => (
+    let (event, summary) = match exit {
+        Some(exit) => (
             crate::thread::ThreadEventKind::RunFailed,
-            format!("Agent exited unexpectedly with code {code}"),
+            match &exit.epitaph {
+                Some(said) => {
+                    format!("Agent exited unexpectedly with code {}: {said}", exit.code)
+                }
+                None => format!("Agent exited unexpectedly with code {}", exit.code),
+            },
         ),
         None => (
             crate::thread::ThreadEventKind::IdleUnreported,
@@ -18169,7 +18222,7 @@ mod tests {
         spec: HarnessSpec,
     ) -> TabKey {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, _rx) = Tab::spawn(
+        let (tab, mut rx) = Tab::spawn(
             TabRole::Agent {
                 owner: run_id.to_string(),
                 provider: AgentProvider::default(),
@@ -18183,7 +18236,41 @@ mod tests {
         .expect("the agent tab spawns");
         let key = TabKey::agent(&root);
         state.tabs.insert(key.clone(), tab);
+        drain_pty_into_screen(state, &key, &mut rx);
         key
+    }
+
+    /// Feed whatever the harness has already painted into its tab's screen —
+    /// what `spawn_tab_pump` does in the daemon, done synchronously here so a
+    /// test without a runtime can still speak about the retained screen.
+    fn drain_pty_into_screen(
+        state: &mut AppState,
+        key: &TabKey,
+        rx: &mut broadcast::Receiver<Vec<u8>>,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    if let Some(tab) = state.tabs.get_mut(key) {
+                        tab.screen.process(&chunk);
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    if state
+                        .tabs
+                        .get(key)
+                        .is_some_and(|tab| tab.session.has_exited())
+                    {
+                        // The child is gone and nothing is queued: whatever it
+                        // painted is already on the screen.
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
     }
 
     /// The warm stand-in for a real TUI: it enables bracketed-paste mode (so a
@@ -18227,6 +18314,46 @@ mod tests {
             state.mark_idle_tasks(Duration::from_millis(50)),
             vec!["run-quiet".to_string()],
             "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
+    /// A crash's only explanation is usually the thing the harness printed
+    /// before it died — codex refusing to start its required MCP server, a
+    /// provider saying the account is out of quota. Reporting a bare exit code
+    /// throws that away and leaves the human staring at a retained screen that
+    /// still looks like a session.
+    #[test]
+    fn a_crashed_agent_reports_what_it_printed_before_it_died() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-crashed",
+            RunState::Building,
+            HarnessSpec::new("sh")
+                .arg("-c")
+                .arg("printf 'MCP server build failed to start\n'; exit 1"),
+        );
+        // Let the harness paint its last words and die.
+        std::thread::sleep(Duration::from_millis(300));
+
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_millis(50)),
+            vec!["run-crashed".to_string()]
+        );
+        let reported = state.runs["run-crashed"]
+            .last_error
+            .clone()
+            .expect("a crash is an error worth naming");
+        assert!(
+            reported.contains("exit code 1"),
+            "the code still rides along: {reported}"
+        );
+        assert!(
+            reported.contains("MCP server build failed to start"),
+            "the harness's own last words are the diagnosis: {reported}"
         );
     }
 

@@ -3207,23 +3207,54 @@ mod tests {
 
     #[tokio::test]
     async fn approve_plan_teardown_failure_is_an_error_not_a_shrug() {
+        use std::os::unix::fs::PermissionsExt;
+
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
 
-        // Break the teardown: unregister the worktree behind the plan's back.
+        // A teardown that genuinely CANNOT finish: the worktree is still there
+        // and its parent forbids removing it. (An already-removed worktree is
+        // not this — absence is what removal wanted; see the test below.)
         let worktree = plan.worktree.clone().unwrap();
-        orch.worktrees.remove(&worktree, true).unwrap();
+        let parent = worktree.path.parent().expect("a worktree has a parent");
+        let original = std::fs::metadata(parent).unwrap().permissions();
+        std::fs::set_permissions(parent, PermissionsExt::from_mode(0o500)).unwrap();
 
-        orch.approve_plan(&mut plan)
-            .expect_err("teardown failure must surface");
+        let outcome = orch.approve_plan(&mut plan);
+
+        // Restore first, so a failed assertion below cannot leave the tempdir
+        // undeletable for the rest of the suite.
+        std::fs::set_permissions(parent, original).unwrap();
+        outcome.expect_err("teardown failure must surface");
         assert_eq!(
             plan.plan.state,
             PlanState::PlanReview,
             "the plan stays at its gate so a re-approve retries the teardown"
         );
         assert!(plan.worktree.is_some(), "the worktree record is kept");
+    }
+
+    /// The reviewer-facing bug this guards: a planning worktree cleaned up
+    /// outside Build made "Mark issue ready" fail, because tearing down
+    /// something already absent was read as a teardown failure. Approve only
+    /// wants the worktree gone — and it is.
+    #[tokio::test]
+    async fn approve_plan_succeeds_when_the_worktree_already_vanished() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = plan_in_review(&orch, &store, "plan-1");
+
+        // Cleaned up behind the plan's back: directory, bookkeeping and branch.
+        let worktree = plan.worktree.clone().unwrap();
+        orch.worktrees.remove(&worktree, false).unwrap();
+
+        orch.approve_plan(&mut plan)
+            .expect("an already-gone worktree is the goal, not a failure");
+        assert_eq!(plan.plan.state, PlanState::Approved);
+        assert!(plan.worktree.is_none(), "the plan lets the carcass go");
     }
 
     #[tokio::test]

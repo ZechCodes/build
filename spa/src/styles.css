@@ -416,10 +416,13 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .gitpane > .empty { padding:var(--pane-top) var(--pane-gutter); }
 /* The commit rail: a flush narrow left sidebar (no card chrome), a single right
    border dividing it from the detail pane, scrolling internally at full height.
-   All padding lives inside the section headers / rows. The cap is a share of
-   the pane, not of the window — the split stops at --content-max, so a viewport
-   fraction would measure a box the rail no longer sits in. */
-.crail-host { flex:0 0 300px; max-width:40%; overflow-y:auto; border-right:1px solid var(--line); }
+   All padding lives inside the section headers / rows. Nothing caps its width:
+   flex never grows it past the basis its rows are drawn for, and every cap that
+   could apply only subtracts. A share of the pane is the worst of them — the
+   sidebar is a 272px column here, so 40% of the pane is under the basis in every
+   window from the stacking width up to 1066px, leaving the rail narrower than
+   the stacked strip one pixel below. */
+.crail-host { flex:0 0 300px; overflow-y:auto; border-right:1px solid var(--line); }
 /* The right pane: a flex column — pinned toolbar/banner over the scrolling
    detail host. Its regions pay the gutter on the divider side only: the split
    already insets the pane from the frame, and repeating it on the right would
@@ -470,7 +473,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    frame rather than spanning it. */
 @media (max-width: 900px) {
   .changes2 { flex-direction:column; }
-  .crail-host { flex:0 0 auto; width:100%; max-width:none; max-height:42%;
+  .crail-host { flex:0 0 auto; width:100%; max-height:42%;
     border-right:none; border-bottom:1px solid var(--line); }
 }
 .gitmore { padding:9px 13px 12px; color:var(--accent); font-size:12px; cursor:pointer; }
@@ -931,8 +934,10 @@ body.sidebar-collapsed #side-open { display:block; }
    the row's width, centring and gutters, and a narrow tree sidebar (no card
    chrome, a single right divider, its own scroll) sits beside a preview pane
    that fills the rest. All padding lives inside the crumb/rows and the preview
-   head/body — never the gutter again, which the split already paid. */
-.ftree { flex:0 0 300px; max-width:40%; border-right:1px solid var(--line);
+   head/body — never the gutter again, which the split already paid. Uncapped
+   for the same reason as the commit rail: the basis is the floor, and a cap can
+   only take the tree below it. */
+.ftree { flex:0 0 300px; border-right:1px solid var(--line);
   overflow-y:auto; padding:6px 0; }
 .fpreview { flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; }
 /* placeholder states (nothing selected / loading / error): no panel box,
@@ -1072,7 +1077,7 @@ body.sidebar-collapsed #side-open { display:block; }
      the preview filling the rest. The twin of the Changes rail's rule, at the
      same width — the two-column layout stacks as one layout or not at all. */
   .files { flex-direction:column; }
-  .ftree { flex:0 0 auto; width:100%; max-width:none; max-height:42%;
+  .ftree { flex:0 0 auto; width:100%; max-height:42%;
     border-right:none; border-bottom:1px solid var(--line); }
   .fpreview { min-height:0; }
 }

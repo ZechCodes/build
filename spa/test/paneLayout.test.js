@@ -58,6 +58,13 @@ function enclosingAtRule(position) {
 const NARROW_QUERY = "@media (max-width: 720px)";
 const narrowQueryAt = strippedSource.indexOf(NARROW_QUERY);
 
+/** The one width the shell reorganises at: the project sidebar stops being a
+ *  column and becomes an overlay, and the two-column panes stack. Both halves
+ *  are the same number, which is what makes the transition read as one — the
+ *  test below pins that rather than trusting the constant. */
+const STACK_QUERY = "@media (max-width: 900px)";
+const STACK_WIDTH = 900;
+
 /** Custom properties as the cascade leaves them for a viewport: every :root
  *  rule in source order, minus the narrow-viewport block when it does not
  *  apply. */
@@ -107,6 +114,18 @@ function contentSpan({ available, offset, rule, tokens }) {
   return { left: left + gutter, width: outer - gutter * 2 };
 }
 
+/** What the tab shell actually has to hand a pane. Above the stacking width the
+ *  project sidebar is a column in flow and costs every pane its width; at or
+ *  below it the sidebar is fixed, so it costs nothing. A model that skips this
+ *  reads every desktop pane 272px wider than it renders, which is the difference
+ *  between a rail that fits and one that does not. */
+function shellWidth(viewport) {
+  const inFlow = rulesFor("#sidebar").find(
+    (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "width"),
+  );
+  return viewport > STACK_WIDTH ? viewport - pixels(declaration(inFlow.body, "width"), {}) : viewport;
+}
+
 /** The two layouts as the shell nests them: .pane-col inside the padded tab
  *  body, .pane-split inside the flush one. */
 function layouts(viewport) {
@@ -114,15 +133,16 @@ function layouts(viewport) {
   const shared = cssRules().find((rule) => /\.pane-col\b/.test(rule.selector) && /max-width/.test(rule.body));
   const bodyGutter = sidePadding(declaration(rulesFor(".surface #tabbody")[0].body, "padding"), tokens);
   const [split] = rulesFor(".pane-split");
+  const frame = shellWidth(viewport);
   return {
     col: contentSpan({
-      available: viewport - bodyGutter * 2,
+      available: frame - bodyGutter * 2,
       offset: bodyGutter,
       rule: shared.body,
       tokens,
     }),
     split: contentSpan({
-      available: viewport, // .flush pads nothing; the split states its own gutters
+      available: frame, // .flush pads nothing; the split states its own gutters
       offset: 0,
       rule: `${shared.body};${split.body}`,
       tokens,
@@ -292,16 +312,65 @@ describe("tab layout primitives", () => {
     expect(declaration(scroller.body, property)).toBe(value);
   });
 
-  it("caps each rail against its pane, not the window", () => {
-    // 40vw was written when the split spanned the viewport. Now it does not, so
-    // a viewport-relative cap measures something the rail no longer sits in.
-    for (const token of [".crail-host", ".ftree"]) {
+  const RAILS = [".crail-host", ".ftree"];
+
+  /** How wide a rail renders inside an unstacked split: its flex basis, which it
+   *  neither grows nor shrinks from, minus whatever a cap takes off it. The cap
+   *  can only ever subtract — which is the whole point of measuring it. */
+  function railWidth(token, viewport) {
+    const tokens = tokensAt(viewport);
+    const [rail] = rulesMentioning(token).filter(
+      (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "flex"),
+    );
+    const basis = pixels(declaration(rail.body, "flex").split(/\s+/)[2], tokens);
+    const gutter = sidePadding(declaration(rulesFor(".pane-split")[0].body, "padding"), tokens);
+    const pane = Math.min(shellWidth(viewport) - gutter * 2, pixels("var(--content-max)", tokens));
+    const cap = declaration(rail.body, "max-width");
+    if (!cap) return basis;
+    const against = cap.endsWith("%") ? pane : cap.endsWith("vw") ? viewport : 100;
+    return Math.min(basis, /%|vw/.test(cap) ? (Number.parseFloat(cap) / 100) * against : pixels(cap, tokens));
+  }
+
+  // The rail's basis is the width its branch button, its dates and its stats
+  // were drawn for; a cap that takes room off it hands back a rail that reads
+  // worse than the stacked strip one pixel narrower would. The pane is not the
+  // window — the sidebar is a 272px column above the stacking width — so the
+  // tightest unstacked pane is the one just above it, and that is precisely
+  // where a share-of-the-pane cap bites hardest.
+  it.each([901, 1000, 1065, 1066, 1400, 2000, 3200])(
+    "gives each rail its full basis in a %ipx window",
+    (viewport) => {
+      for (const token of RAILS) {
+        const [rail] = rulesMentioning(token).filter(
+          (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "flex"),
+        );
+        expect(railWidth(token, viewport)).toBe(pixels(declaration(rail.body, "flex").split(/\s+/)[2], {}));
+      }
+    },
+  );
+
+  it("caps neither rail while the split is unstacked", () => {
+    // Nothing left to cap against: the rail cannot grow past its basis, and
+    // below the stacking width it is a full-width strip instead. Any cap here —
+    // a viewport share (which measures a box the split no longer spans) or a
+    // pane share (which the sidebar drags under the basis) — can only subtract.
+    for (const token of RAILS) {
       const caps = rulesMentioning(token)
+        .filter((rule) => enclosingAtRule(rule.at) === null)
         .map((rule) => declaration(rule.body, "max-width"))
         .filter(Boolean);
-      expect(caps).toContain("40%");
-      for (const cap of caps) expect(cap).not.toMatch(/vw/);
+      expect(caps).toEqual([]);
     }
+  });
+
+  it("hands the pane the whole frame at the width it stacks at", () => {
+    // The sidebar leaves the flow under the same query the panes stack under.
+    // Were they different numbers, one of the two transitions would land in a
+    // frame sized for the other.
+    const overlay = rulesFor("#sidebar").find((rule) => declaration(rule.body, "position") === "fixed");
+    expect(overlay).toBeTruthy();
+    expect(enclosingAtRule(overlay.at)).toBe(STACK_QUERY);
+    expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
   });
 
   it("stacks both two-column panes at one width", () => {
@@ -309,9 +378,7 @@ describe("tab layout primitives", () => {
       (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
     );
     expect(stacked.map((rule) => rule.selector).sort()).toEqual([".changes2", ".files"]);
-    expect(new Set(stacked.map((rule) => enclosingAtRule(rule.at)))).toEqual(
-      new Set(["@media (max-width: 900px)"]),
-    );
+    expect(new Set(stacked.map((rule) => enclosingAtRule(rule.at)))).toEqual(new Set([STACK_QUERY]));
   });
 
   it("gutters the detail column from the tokens, on the divider side only", () => {

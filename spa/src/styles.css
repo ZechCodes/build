@@ -808,7 +808,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    right cluster. Both get clearance rather than a fight — vertical for the
    composer (it sits in the scroll, so lifting it clears the FAB at rest),
    horizontal for the action bar (pinned to the bottom, so it can only move in). */
-:root { --fab-clear:184px; }
+:root { --fab-clear:184px; --fab-clear-v:62px; }
 /* The centered conversation column ends before the desktop FAB begins. Keep
    only a little breathing room below its compact composer; sticky action bars
    still need explicit horizontal clearance because they span the viewport. */
@@ -1209,6 +1209,14 @@ body.sidebar-collapsed #side-open { display:block; }
 /* Not a control: the reminder that the keyboard can send, sized down and out
    of the way on the touch screens where it means nothing. */
 .composer-shortcut { color:var(--dim); font:11px var(--mono); opacity:.7; }
+/* Attach and Send are one cluster at the row's right: two controls that act on
+   the message you are writing, kept together so neither reads as stray. */
+.composer-actions { margin-left:auto; display:flex; align-items:center; gap:6px; }
+/* Compact and square-ish on purpose — the create FAB below is a large accent
+   pill, and a second one here made the corner read as two competing verbs. */
+.composer-send { display:inline-flex; align-items:center; gap:6px; border-radius:9px;
+  padding:6px 12px; font-size:12.5px; }
+.composer-send svg { width:15px; height:15px; }
 .composer-attach { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
   border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
 .composer-attach:hover { background:var(--panel); color:var(--ink2); }
@@ -1240,8 +1248,11 @@ body.sidebar-collapsed #side-open { display:block; }
   border:2px dashed var(--accent); color:var(--accent); font-size:12.5px; font-weight:600; }
 .composer.is-dropping .composer-dropmask { display:grid; }
 @media (max-width: 900px) {
-  /* On narrow screens the centered column reaches the fixed create button. */
-  .composer-bar { padding-right:var(--fab-clear); }
+  /* The fixed create button overlaps the composer's bottom-right corner when
+     the thread is scrolled to its end. Clear it DOWNWARD: reserving the width
+     instead stranded Send in the middle of the row, which is the only place a
+     send button should never be. */
+  .thread-composer { margin-bottom:calc(26px + var(--fab-clear-v)); }
   .composer-shortcut { display:none; }
 }
 

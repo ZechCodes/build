@@ -545,6 +545,11 @@ export function wireThreadLinks(root, openLink) {
 /// has landed. `upload` (with the `readAttachments`/`writeAttachments` draft
 /// pair) turns the box into one that takes files; without it the composer is
 /// the plain text box it always was.
+/// The send button's word. It wraps its label so a busy state can rewrite the
+/// word without wiping the icon beside it; an older composer without the span
+/// is still driven directly.
+const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
+
 export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit, upload, readAttachments, writeAttachments }) {
   if (!root) return;
   const input = root.querySelector(`#${ids.input}`);
@@ -590,7 +595,7 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       return;
     }
     send.disabled = true;
-    send.textContent = "sending…";
+    sendLabel(send).textContent = "sending…";
     try {
       const result = await onSubmit(body, tray ? tray.attachments() : []);
       writeDraft("");
@@ -598,13 +603,13 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       fitToText();
       if (tray) tray.clear();
       send.disabled = false;
-      send.textContent = "Send";
+      sendLabel(send).textContent = "Send";
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
       send.disabled = false;
-      send.textContent = "Send";
+      sendLabel(send).textContent = "Send";
       if (onError) onError(error);
     }
   };

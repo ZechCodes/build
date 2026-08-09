@@ -109,7 +109,7 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-event-detail")).toBeNull();
     expect(document.querySelector("details")).toBeNull();
     expect(document.querySelector("#planthreadinput")).not.toBeNull();
-    expect(document.querySelector("#planthreadsend").textContent).toBe("Send");
+    expect(document.querySelector("#planthreadsend .composer-send-label").textContent).toBe("Send");
   });
 
   // The timeline's avatar spine is drawn by the timeline itself, so a
@@ -160,8 +160,8 @@ describe("conversation thread rendering", () => {
     // sitting open at a height nothing has filled yet.
     expect(document.querySelector("#diffthreadinput").rows).toBe(1);
     expect(document.querySelector("#diffthreadhint")).not.toBeNull();
-    expect(document.querySelector("#diffthreadsend").textContent).toBe("Send");
-    expect(document.querySelector("#diffthreadsend").classList.contains("mini")).toBe(true);
+    expect(document.querySelector("#diffthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#diffthreadsend").classList.contains("composer-send")).toBe(true);
   });
 
   it("does not duplicate a sequenced completion message with the legacy fallback", () => {

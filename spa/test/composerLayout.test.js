@@ -23,7 +23,16 @@ describe("the composer action row", () => {
 
   it("keeps the send label addressable so a busy state cannot wipe its icon", () => {
     expect(markup()).toContain('class="composer-send-label"');
-    expect(markup()).toMatch(/<svg[\s\S]*class="composer-send-label"/);
+  });
+
+  it("trails the word with the arrow, the direction a send travels", () => {
+    const html = markup();
+    const button = html.slice(html.indexOf('class="btn primary composer-send"'));
+    const label = button.indexOf("composer-send-label");
+    const icon = button.indexOf("<svg");
+    expect(label).toBeGreaterThan(-1);
+    expect(icon).toBeGreaterThan(label);
+    expect(button.slice(icon, icon + 200)).toContain("lucide-arrow-right");
   });
 
   it("still renders a plain box where there is no upload path", () => {

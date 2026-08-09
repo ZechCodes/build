@@ -13,7 +13,7 @@
 // the view's draft, not the DOM's.
 
 import { esc } from "./text.js";
-import { ICON_ARROW_UP, ICON_PAPERCLIP, ICON_X } from "./icons.js";
+import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -133,7 +133,7 @@ export function composerHtml({ inputId, sendId, hintId, placeholder, attachable 
         <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
           ${attachControls}
-          <button class="btn primary composer-send" id="${esc(sendId)}">${ICON_ARROW_UP}<span class="composer-send-label">Send</span></button>
+          <button class="btn primary composer-send" id="${esc(sendId)}"><span class="composer-send-label">Send</span>${ICON_ARROW_RIGHT}</button>
         </div>
       </div>
       ${attachable ? '<div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>' : ""}

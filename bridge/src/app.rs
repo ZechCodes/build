@@ -9515,6 +9515,12 @@ fn archived_worktree_json(record: &PersistedArchivedWorktree) -> Value {
     })
 }
 
+/// What a read has to tell the agent about the indicator it just started.
+/// Reading stamps `seen_at`, which is what the reviewer sees as "Working" with
+/// a running timer; posting a reply (`still_working` omitted or false) hands the
+/// turn back and stops it.
+const WORKING_INDICATOR_NOTICE: &str = "Reading these marked them seen, which started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you post a reply with post_thread_message — an ordinary reply (still_working omitted or false) hands the turn back and stops it; a progress note (still_working: true) keeps it running. The `done` tool also stops it. Do not leave it running after you have finished.";
+
 fn apply_thread_action(
     thread: &mut crate::thread::Thread,
     artifact: crate::thread::ArtifactKind,
@@ -9522,11 +9528,20 @@ fn apply_thread_action(
     now: &str,
 ) -> Result<Value, String> {
     match action {
-        BridgeAction::ReadUnreadMessages => Ok(json!({
-            "thread_id": thread.id,
-            "agent_id": thread.agent.id,
-            "messages": thread.read_unread(now),
-        })),
+        BridgeAction::ReadUnreadMessages => {
+            let messages = thread.read_unread(now);
+            // Marking a message seen is what starts the reviewer's "Working"
+            // line and its timer, and only a posted reply stops it. The agent
+            // cannot infer that, and the tool result is the one place it is
+            // guaranteed to read at exactly the moment it becomes true.
+            let working = (!messages.is_empty()).then_some(WORKING_INDICATOR_NOTICE);
+            Ok(json!({
+                "thread_id": thread.id,
+                "agent_id": thread.agent.id,
+                "messages": messages,
+                "working": working,
+            }))
+        }
         BridgeAction::PostThreadMessage {
             body,
             anchor,
@@ -19025,6 +19040,46 @@ mod tests {
             state.mark_idle_tasks(Duration::from_millis(50)),
             vec!["run-quiet".to_string()],
             "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
+    /// Reading is what STARTS the reviewer's Working indicator (it stamps
+    /// seen_at), and only a posted reply stops it. An agent that is never told
+    /// that leaves the line running after it has finished — so the read itself
+    /// has to say so, in the one place the agent is guaranteed to look.
+    #[test]
+    fn reading_messages_says_it_started_the_working_indicator() {
+        let mut thread = crate::thread::Thread::new("run-read");
+        thread.post_user("do the thing", None, "2026-08-09T18:00:00Z");
+
+        let read = apply_thread_action(
+            &mut thread,
+            crate::thread::ArtifactKind::Diff,
+            BridgeAction::ReadUnreadMessages,
+            "2026-08-09T18:00:01Z",
+        )
+        .expect("reading succeeds");
+        let notice = read["working"]
+            .as_str()
+            .expect("a read that returned messages explains the indicator it started");
+        assert!(
+            notice.contains("post_thread_message"),
+            "it must name the tool that stops it: {notice}"
+        );
+
+        // Nothing unread: nothing was marked seen, so nothing was started and
+        // there is nothing to explain.
+        let empty = apply_thread_action(
+            &mut thread,
+            crate::thread::ArtifactKind::Diff,
+            BridgeAction::ReadUnreadMessages,
+            "2026-08-09T18:00:02Z",
+        )
+        .expect("an empty read succeeds");
+        assert!(empty["messages"].as_array().unwrap().is_empty());
+        assert!(
+            empty["working"].is_null(),
+            "an empty read starts no indicator: {empty}"
         );
     }
 

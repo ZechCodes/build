@@ -447,12 +447,17 @@ describe("tab layout primitives", () => {
     }
   });
 
+  // The regions of the Changes detail column that pay the divider gutter. The
+  // Files preview is not among them: its head and body carry their own even
+  // padding, so it reads the same at either width.
+  const DIVIDER_SIDE = [".cdetail-host", ".gp-toolbar", ".gp-banner"];
+
   it("gutters the detail column from the tokens, on the divider side only", () => {
     // The split already insets the pane from the frame, so the column that
     // touches the frame pays the gutter once — on its left, against the rail's
     // divider. Repeating it on the right would stop the diffs 44px short of
     // where every one-column tab's content ends.
-    for (const token of [".cdetail-host", ".gp-toolbar", ".gp-banner"]) {
+    for (const token of DIVIDER_SIDE) {
       const [rule] = rulesMentioning(token).filter((rule) => declaration(rule.body, "padding"));
       expect(rule).toBeTruthy();
       const sides = declaration(rule.body, "padding").split(/\s+/);
@@ -460,6 +465,22 @@ describe("tab layout primitives", () => {
       expect(sides[1]).toBe("0");
       expect(sides[3]).toBe("var(--pane-gutter)");
     }
+  });
+
+  it("drops that gutter where the divider is a drawer", () => {
+    // Below the stacking width the list column floats over this one instead of
+    // sitting beside it, so there is no divider left to clear — and a gutter
+    // paid on one side only leaves the diffs off centre in a frame they now
+    // have to themselves. One rule for all three regions, under the query the
+    // drawer appears at.
+    const [evened] = cssRules().filter(
+      (rule) => enclosingAtRule(rule.at) === STACK_QUERY && declaration(rule.body, "padding-left") === "0",
+    );
+    expect(evened).toBeTruthy();
+    expect(evened.selector.split(",").map((part) => part.trim()).sort()).toEqual([...DIVIDER_SIDE].sort());
+    // Only the divider side goes: the vertical rhythm and the scroll-end room
+    // below the last diff are not the gutter's to change.
+    expect(declaration(evened.body, "padding")).toBeNull();
   });
 
   it("stands the Changes pane's pre-skeleton states on the same gutter", () => {

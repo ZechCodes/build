@@ -474,6 +474,14 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .gp-toolbar:empty, .gp-banner:empty { display:none; }
 .gp-toolbar { padding:12px 0 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
 .gp-banner { padding:16px 0 0 var(--pane-gutter); }
+/* Below the stacking width there is no divider to clear — the rail floats over
+   this column instead of sitting beside it — and a gutter paid on one side only
+   leaves the diffs off centre in a frame they now have to themselves. The
+   split's own inset is all either side needs. (Below the base rules, not up
+   with the drawer: same specificity, so the later block is the one that wins.) */
+@media (max-width: 900px) {
+  .cdetail-host, .gp-toolbar, .gp-banner { padding-left:0; }
+}
 /* The commit bar is a filled surface, so it keeps its own inset on both sides,
    the way every card in the one-column layout does. */
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);

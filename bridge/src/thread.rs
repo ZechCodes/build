@@ -784,9 +784,10 @@ impl Thread {
                 ThreadItem::Message(message)
                     if message.done || message.source == MessageSource::Completion => {}
                 ThreadItem::Message(message) => lines.push(format!(
-                    "- {}: {}",
+                    "- {}: {}{}",
                     message.role.as_str(),
-                    message.body.replace('\n', " ")
+                    message.body.replace('\n', " "),
+                    attachment_note(&message.attachments)
                 )),
                 ThreadItem::Event(event) => {
                     if let Some(summary) = &event.summary {
@@ -797,6 +798,20 @@ impl Thread {
         }
         lines.join("\n")
     }
+}
+
+/// The trailer that names a message's files in prose form. The catch-up packet
+/// is markdown, not JSON, so a path only reaches a resumed agent if it is
+/// written into the line.
+fn attachment_note(attachments: &[MessageAttachment]) -> String {
+    if attachments.is_empty() {
+        return String::new();
+    }
+    let paths: Vec<&str> = attachments
+        .iter()
+        .map(|attachment| attachment.path.as_str())
+        .collect();
+    format!(" [attached files, open them: {}]", paths.join(", "))
 }
 
 fn snapshot_contents(contents: &str, max_bytes: usize) -> String {
@@ -889,6 +904,25 @@ mod attachment_tests {
         assert_eq!(
             wire["attachments"][0]["path"],
             ".build/attachments/ab12cd34-screenshot.png"
+        );
+    }
+
+    /// A resumed agent rebuilds the conversation from the catch-up packet, not
+    /// from its mailbox — so a file sent to a previous session has to be named
+    /// there too, or it silently stops existing across a restart.
+    #[test]
+    fn the_catch_up_packet_still_names_the_files_a_message_carried() {
+        let mut thread = Thread::new("run-1");
+        thread.post_user_with_attachments(
+            "look at this",
+            None,
+            vec![image()],
+            "2026-08-09T13:00:00Z",
+        );
+        let catch_up = thread.catch_up_markdown(40);
+        assert!(
+            catch_up.contains(".build/attachments/ab12cd34-screenshot.png"),
+            "{catch_up}"
         );
     }
 

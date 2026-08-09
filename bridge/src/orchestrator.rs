@@ -552,7 +552,8 @@ pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) 
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
          - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
-         - Do not post acknowledgments or diff recaps.\n",
+         - Do not post acknowledgments or diff recaps.\n\
+         - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
     );
     let catch_up = thread.catch_up_markdown(40);
     if !catch_up.is_empty() {

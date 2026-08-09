@@ -364,7 +364,7 @@ impl DoneServer {
                     json!({
                         "tools": [{
                             "name": "read_unread_messages",
-                            "description": "Read unread reviewer messages in your current Build conversation thread. Reading atomically marks them seen.",
+                            "description": "Read unread reviewer messages in your current Build conversation thread. Reading atomically marks them seen. A message may carry files under `attachments` — open every `path` it names before acting on that message.",
                             "inputSchema": { "type": "object", "properties": {} }
                         }, {
                             "name": "post_thread_message",

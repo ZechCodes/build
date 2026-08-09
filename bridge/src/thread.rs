@@ -111,6 +111,21 @@ pub enum ThreadLink {
     Recovery { recovery_id: String },
 }
 
+/// A file the reviewer sent with a message, already written to disk by
+/// `thread.attach`. The message carries only the reference: the bytes live
+/// where the agent's own tools can open them, and where a re-render costs a
+/// read rather than another trip through the thread record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageAttachment {
+    /// What the reviewer called it, for display.
+    pub name: String,
+    /// Where the agent opens it: worktree-relative under `.build/attachments/`
+    /// when the conversation has a checkout, absolute when it does not.
+    pub path: String,
+    pub mime: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
@@ -140,6 +155,11 @@ pub struct ThreadMessage {
     pub resolved_by_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
+    /// Files the reviewer sent with this message. Only a user message carries
+    /// them today; the field defaults empty so records written before
+    /// attachments existed load unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     /// Whether the agent kept working after posting this. Only an agent message
     /// carries it, and only a progress note sets it: an ordinary reply hands the
     /// turn back, which is what ends the reviewer-facing "Working" line. Default
@@ -363,6 +383,24 @@ impl Thread {
         )
     }
 
+    /// A reviewer message that came with files. The attachments are set on the
+    /// message [`post_user`](Self::post_user) just pushed — the last item on the
+    /// thread by construction — rather than threaded through the shared
+    /// post_message arm, which every other caller would then have to pass empty.
+    pub fn post_user_with_attachments(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        attachments: Vec<MessageAttachment>,
+        now: impl Into<String>,
+    ) -> String {
+        let id = self.post_user(body, anchor, now);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.attachments = attachments;
+        }
+        id
+    }
+
     pub fn post_agent(
         &mut self,
         body: impl Into<String>,
@@ -466,6 +504,7 @@ impl Thread {
             anchor,
             resolved_by_revision: None,
             links,
+            attachments: Vec::new(),
         }));
         id
     }
@@ -815,6 +854,54 @@ mod working_flag_tests {
             message(&update).still_working,
             "a progress note keeps the agent working"
         );
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    fn image() -> MessageAttachment {
+        MessageAttachment {
+            name: "screenshot.png".to_string(),
+            path: ".build/attachments/ab12cd34-screenshot.png".to_string(),
+            mime: "image/png".to_string(),
+            size: 4096,
+        }
+    }
+
+    /// The agent reads its mail as JSON, so a file the reviewer attached only
+    /// exists for it if the path rides the message it was sent with.
+    #[test]
+    fn an_attached_file_rides_the_message_the_agent_reads() {
+        let mut thread = Thread::new("run-1");
+        thread.post_user_with_attachments(
+            "look at this",
+            None,
+            vec![image()],
+            "2026-08-09T13:00:00Z",
+        );
+
+        let unread = thread.read_unread("2026-08-09T13:00:01Z");
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].attachments, vec![image()]);
+        let wire = serde_json::to_value(&unread[0]).expect("a message serializes");
+        assert_eq!(
+            wire["attachments"][0]["path"],
+            ".build/attachments/ab12cd34-screenshot.png"
+        );
+    }
+
+    /// Every message written before attachments existed must still load, and a
+    /// message without them must not pay for the field on the wire.
+    #[test]
+    fn a_message_without_attachments_carries_no_attachment_field() {
+        let mut thread = Thread::new("run-1");
+        thread.post_user("no files here", None, "2026-08-09T13:00:00Z");
+        let wire = serde_json::to_value(&thread).expect("a thread serializes");
+        assert!(!wire.to_string().contains("attachments"), "{wire:?}",);
+        let reloaded: Thread = serde_json::from_value(wire).expect("a thread reloads");
+        assert_eq!(reloaded, thread);
     }
 }
 

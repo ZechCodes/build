@@ -2409,7 +2409,11 @@ impl Orchestrator {
         // copy. Build's own sweep already excludes it via pathspec; this ignore
         // closes the agent path too. `.build/plan/*` stays committable (the
         // gitignore itself rides Build's sweep, so the rule persists on-branch).
-        std::fs::write(build_dir.join(".gitignore"), "mcp.json\n")?;
+        //
+        // `attachments/` is held back for the same reason and one more: files
+        // the reviewer sent with a message are conversation, not work, so they
+        // must not appear as an uncommitted change in the diff being reviewed.
+        std::fs::write(build_dir.join(".gitignore"), "mcp.json\nattachments/\n")?;
         // Absolute path to this binary so the harness can spawn it regardless of PATH.
         let exe = std::env::current_exe()
             .ok()

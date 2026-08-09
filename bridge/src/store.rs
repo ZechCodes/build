@@ -357,6 +357,13 @@ impl Store {
         self.dir.join(format!("{task_id}.json"))
     }
 
+    /// Where conversation attachments live when the entity that took them has
+    /// no checkout to put them in. Its own directory, beside the records rather
+    /// than among them: the store root is scanned for legacy task files.
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.dir.join("attachments")
+    }
+
     /// Where the attention map lives: ONE file for runs, plans and worktrees
     /// alike. A bare worktree has no record of its own — it is discovered by
     /// scanning, not persisted — so attention cannot live on the entity, and

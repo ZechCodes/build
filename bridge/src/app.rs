@@ -289,6 +289,19 @@ const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
 const MAX_USER_TERMINALS: usize = 16;
 /// Source/document previews stay tightly capped; playable media gets a larger
 /// bounded response because browsers cannot decode a truncated data URL.
+/// How large one conversation attachment may be. The relay carries an upload
+/// in a single frame ([`MAX_WS_MESSAGE_BYTES`](crate::relay_server::MAX_WS_MESSAGE_BYTES),
+/// 8 MiB) and base64 costs a third on top, so the cap is set where a file plus
+/// its envelope still fits with room to spare — and refused here, with a number
+/// the composer can show, rather than by a dropped socket.
+pub const ATTACHMENT_MAX_BYTES: u64 = 5 * 1_048_576;
+
+/// The one folder a conversation attachment may live in, worktree-relative.
+const ATTACHMENTS_DIR: &str = ".build/attachments";
+
+/// How many files may ride one message.
+const ATTACHMENTS_PER_MESSAGE_MAX: usize = 10;
+
 const FS_READ_MAX_BYTES: u64 = 1_048_576;
 const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
 
@@ -3489,6 +3502,8 @@ impl AppState {
             })),
             "thread.revision" => self.thread_revision(params),
             "thread.post" => self.thread_post(params),
+            "thread.attach" => self.thread_attach(params),
+            "thread.attachment" => self.thread_attachment(params),
             "fs.list" => self.fs_list(params),
             "fs.tree" => self.fs_tree(params),
             "fs.read" => self.fs_read(params),
@@ -6577,7 +6592,12 @@ impl AppState {
                     plan_state_str(&active.plan.state)
                 ));
             }
-            let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Plan)?;
+            let attachments = self.parse_message_attachments(&entity_id, params)?;
+            let messages = parse_thread_post_input(
+                params,
+                crate::thread::ArtifactKind::Plan,
+                !attachments.is_empty(),
+            )?;
             // A reply IS the unblock: the Blocked/Failed/Idle arms exist to
             // wait for exactly this message, so posting it resumes drafting.
             // Interrupted is deliberately excluded — its session is gone, and
@@ -6594,7 +6614,7 @@ impl AppState {
                             .map(|run| (run_id, run.worktree.path.clone()))
                     });
             let mut active = self.take_plan(&entity_id)?;
-            append_user_thread_messages(&mut active.thread, messages);
+            append_user_thread_messages_with_attachments(&mut active.thread, messages, attachments);
             if resume {
                 active
                     .plan
@@ -6640,9 +6660,15 @@ impl AppState {
                     run_state_str(&active.run.state)
                 ));
             }
-            let messages = parse_thread_post_input(params, crate::thread::ArtifactKind::Diff)?;
+            let attachments = self.parse_message_attachments(&entity_id, params)?;
+            let messages = parse_thread_post_input(
+                params,
+                crate::thread::ArtifactKind::Diff,
+                !attachments.is_empty(),
+            )?;
             // Same rule as plans: the reply resumes a parked run (Interrupted
             // excluded — its session is gone).
+            let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
             let resume = matches!(
                 active.run.state,
                 RunState::Blocked | RunState::Failed | RunState::IdleUnreported
@@ -6651,7 +6677,11 @@ impl AppState {
             let worktree_path = active.worktree.path.clone();
             if let Some(issue_id) = issue_id.filter(|id| self.plans.contains_key(id)) {
                 let mut issue = self.take_plan(&issue_id)?;
-                append_user_thread_messages(&mut issue.thread, messages);
+                append_user_thread_messages_with_attachments(
+                    &mut issue.thread,
+                    messages,
+                    attachments,
+                );
                 nudge_live_agent_tab(&self.tabs, &worktree_path, &entity_id);
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
@@ -6669,7 +6699,7 @@ impl AppState {
                 return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
             }
             let mut active = self.take_run(&entity_id)?;
-            append_user_thread_messages(&mut active.thread, messages);
+            append_user_thread_messages_with_attachments(&mut active.thread, messages, attachments);
             if resume {
                 active
                     .run
@@ -6682,6 +6712,208 @@ impl AppState {
             return Ok(view);
         }
         Err("unknown conversation owner".to_string())
+    }
+
+    /// Where this entity's attachments live: the bridge's own store, always,
+    /// and the checkout its agent reads from, when it has one.
+    ///
+    /// Both, because the two homes answer different questions and neither
+    /// answers the other's. A conversation outlives its checkouts — planning
+    /// worktrees are disposable and implementations get archived — so the
+    /// durable copy has to sit somewhere Build owns, or a screenshot from last
+    /// week renders as a broken image. But a sandboxed harness can only be
+    /// relied on to open paths inside its own tree, so the copy the AGENT is
+    /// told about has to be worktree-relative. One upload writes both.
+    fn attachment_homes(&self, entity_id: &str) -> Result<AttachmentHomes, String> {
+        let local = self.local_attachments_dir();
+        if let Some(active) = self.plans.get(entity_id) {
+            // The Issue owns the conversation, but a live implementation owns
+            // the checkout its agent reads from — the same redirection
+            // `thread.post` makes when it decides whom to nudge.
+            let worktree = self
+                .current_issue_implementation_id(entity_id)
+                .and_then(|run_id| self.runs.get(&run_id).map(|run| run.worktree.path.clone()))
+                .or_else(|| active.worktree.as_ref().map(|w| w.path.clone()));
+            return Ok(AttachmentHomes {
+                worktree: worktree.map(|path| path.join(ATTACHMENTS_DIR)),
+                local,
+            });
+        }
+        if let Some(active) = self.runs.get(entity_id) {
+            return Ok(AttachmentHomes {
+                worktree: Some(active.worktree.path.join(ATTACHMENTS_DIR)),
+                local,
+            });
+        }
+        Err("unknown conversation owner".to_string())
+    }
+
+    /// Where attachments go for an entity that has no checkout to put them in.
+    fn local_attachments_dir(&self) -> std::path::PathBuf {
+        self.store
+            .as_ref()
+            .map(|store| store.attachments_dir())
+            .unwrap_or_else(|| self.worktrees_root.join("attachments"))
+    }
+
+    /// Take one file the reviewer is sending with a message and put it where the
+    /// agent can open it. Content-addressed, so re-sending the same screenshot
+    /// costs one copy rather than one per send.
+    ///
+    /// Writing is deliberately separate from posting: the bytes are on disk and
+    /// verified before the message that references them exists, so a message can
+    /// never point at an upload that failed halfway.
+    fn thread_attach(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let filename = require_str(params, "filename")?;
+        let content = b64decode(&require_str(params, "content_b64")?)?;
+        if content.len() as u64 > ATTACHMENT_MAX_BYTES {
+            return Err(format!(
+                "attachment is {} bytes; the limit is {ATTACHMENT_MAX_BYTES} bytes",
+                content.len()
+            ));
+        }
+        if content.is_empty() {
+            return Err("attachment is empty".to_string());
+        }
+        let homes = self.attachment_homes(&entity_id)?;
+        let name = sanitize_attachment_name(&filename);
+        // Content-addressed, so re-sending the same screenshot costs one copy
+        // rather than one per send, and the two homes agree on the leaf name —
+        // which is what lets a read fall back to the durable copy after a
+        // worktree is swept.
+        let stored = format!("{}-{name}", &sha256_hex(&content)[..12]);
+
+        write_attachment(&homes.local, &stored, &content)?;
+        let wire_path = match &homes.worktree {
+            Some(worktree_home) => {
+                write_attachment(worktree_home, &stored, &content)?;
+                // The agent's own `git add -A` runs in this tree, and so does
+                // the diff the human reviews. Conversation is neither.
+                ensure_attachments_ignored(
+                    worktree_home
+                        .parent()
+                        .expect("a worktree home is always .build/attachments"),
+                )
+                .map_err(|e| format!("cannot keep attachments out of git: {e}"))?;
+                format!("{ATTACHMENTS_DIR}/{stored}")
+            }
+            None => homes.local.join(&stored).display().to_string(),
+        };
+        let head = &content[..content.len().min(8192)];
+        Ok(json!({
+            "name": name,
+            "path": wire_path,
+            "mime": mime_hint(std::path::Path::new(&stored), head),
+            "size": content.len(),
+        }))
+    }
+
+    /// Hand an attachment's bytes back to the surface that sent it. The browser
+    /// cannot reach the disk, and routing the read through the entity means no
+    /// caller has to know (or can get wrong) which checkout the file landed in.
+    fn thread_attachment(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let path = require_str(params, "path")?;
+        let target = self.resolve_attachment(&entity_id, &path)?;
+        let content =
+            std::fs::read(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
+        let head = &content[..content.len().min(8192)];
+        Ok(json!({
+            "path": path,
+            "size": content.len(),
+            "mime": mime_hint(&target, head),
+            "content_b64": b64encode(&content),
+        }))
+    }
+
+    /// Resolve a client-supplied attachment path to a real file, refusing
+    /// anything that is not one of this entity's own attachments.
+    ///
+    /// A message body is reviewer input and so is this path, so the check is
+    /// containment after canonicalization — not a prefix match on the string —
+    /// or an "attachment" is an arbitrary-file read primitive with a nice name.
+    ///
+    /// A path recorded against a worktree that has since been swept still
+    /// resolves: both homes store the file under the same content-addressed
+    /// leaf, so the durable copy answers for the one that is gone.
+    fn resolve_attachment(
+        &self,
+        entity_id: &str,
+        path: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let candidate = std::path::Path::new(path);
+        let leaf = candidate.file_name().map(std::path::PathBuf::from);
+        for home in self.attachment_homes(entity_id)?.in_read_order() {
+            let Ok(canonical_home) = std::fs::canonicalize(&home) else {
+                continue;
+            };
+            // A worktree path is written relative to the worktree, which is the
+            // attachments folder's own parent twice over; the leaf retry is
+            // what covers a home the path was not written against.
+            let worktree_relative = home
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|worktree| worktree.join(candidate));
+            let attempts = [
+                candidate.is_absolute().then(|| candidate.to_path_buf()),
+                worktree_relative.filter(|_| !candidate.is_absolute()),
+                leaf.as_ref().map(|leaf| home.join(leaf)),
+            ];
+            for attempt in attempts.into_iter().flatten() {
+                let Ok(resolved) = std::fs::canonicalize(&attempt) else {
+                    continue;
+                };
+                if resolved.starts_with(&canonical_home) && resolved.is_file() {
+                    return Ok(resolved);
+                }
+            }
+        }
+        Err(format!("not an attachment on this conversation: {path}"))
+    }
+
+    /// The files a `thread.post` says it is sending. Name and size are re-read
+    /// from disk rather than trusted: the client's copy is a display hint, and
+    /// the record the agent reads should describe the bytes that exist.
+    fn parse_message_attachments(
+        &self,
+        entity_id: &str,
+        params: &Value,
+    ) -> Result<Vec<crate::thread::MessageAttachment>, String> {
+        let Some(value) = params.get("attachments").filter(|v| !v.is_null()) else {
+            return Ok(Vec::new());
+        };
+        let listed = value.as_array().ok_or("attachments must be an array")?;
+        if listed.len() > ATTACHMENTS_PER_MESSAGE_MAX {
+            return Err(format!(
+                "a message carries at most {ATTACHMENTS_PER_MESSAGE_MAX} attachments"
+            ));
+        }
+        listed
+            .iter()
+            .map(|entry| {
+                let path = entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("each attachment needs a path")?;
+                let resolved = self.resolve_attachment(entity_id, path)?;
+                let size = std::fs::metadata(&resolved)
+                    .map_err(|e| format!("cannot stat the attachment: {e}"))?
+                    .len();
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(sanitize_attachment_name)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| sanitize_attachment_name(path));
+                Ok(crate::thread::MessageAttachment {
+                    name,
+                    path: path.to_string(),
+                    mime: mime_hint(&resolved, b"").to_string(),
+                    size,
+                })
+            })
+            .collect()
     }
 
     fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -8815,6 +9047,95 @@ fn require_path_list(params: &Value) -> Result<Vec<String>, String> {
 /// Normal, so the lexical fence alone cannot catch it). `path` empty means
 /// the scope root itself. Returns the joined (not canonicalized) path — safe
 /// to use for further fs calls once containment is established.
+/// Flatten a filename from the reviewer's machine into one safe leaf.
+///
+/// This is hostile input: it arrives from a file picker, a paste, or a drop, on
+/// any OS, and it decides a name on THIS disk. Everything that could make it
+/// mean a location rather than a name — separators, `..`, control characters,
+/// a leading dot — is removed, and what survives is capped with its extension
+/// kept so the mime hint and the reviewer's eye both still work.
+fn sanitize_attachment_name(raw: &str) -> String {
+    let leaf = raw.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String = leaf
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    if cleaned.is_empty() {
+        return "attachment".to_string();
+    }
+    const NAME_MAX_CHARS: usize = 80;
+    if cleaned.chars().count() <= NAME_MAX_CHARS {
+        return cleaned.to_string();
+    }
+    let extension = std::path::Path::new(cleaned)
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| e.chars().count() <= 12)
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let head: String = cleaned
+        .chars()
+        .take(NAME_MAX_CHARS - extension.chars().count())
+        .collect();
+    format!("{head}{extension}")
+}
+
+/// The folders one conversation's attachments live in.
+struct AttachmentHomes {
+    /// `<worktree>/.build/attachments`, when the entity has a checkout: the
+    /// copy the agent is told about.
+    worktree: Option<std::path::PathBuf>,
+    /// The bridge's own store: the copy that outlives every checkout.
+    local: std::path::PathBuf,
+}
+
+impl AttachmentHomes {
+    /// Worktree first — a path recorded against it should resolve there rather
+    /// than through the fallback, so a stale local copy can never shadow the
+    /// file the agent is actually looking at.
+    fn in_read_order(self) -> Vec<std::path::PathBuf> {
+        self.worktree.into_iter().chain([self.local]).collect()
+    }
+}
+
+fn write_attachment(
+    home: &std::path::Path,
+    stored_name: &str,
+    content: &[u8],
+) -> Result<(), String> {
+    std::fs::create_dir_all(home)
+        .map_err(|e| format!("cannot create the attachments folder: {e}"))?;
+    std::fs::write(home.join(stored_name), content)
+        .map_err(|e| format!("cannot write {stored_name}: {e}"))
+}
+
+/// Keep a worktree's attachments out of every diff and every commit.
+///
+/// `.build/.gitignore` already exists to hold `mcp.json` back from the agent's
+/// own `git add -A`; conversation attachments need exactly the same protection
+/// for the same reason, and appending is idempotent so a worktree scaffolded by
+/// an older build picks the rule up the first time a file is attached to it.
+fn ensure_attachments_ignored(build_dir: &std::path::Path) -> std::io::Result<()> {
+    let ignore = build_dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&ignore).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == "attachments/") {
+        return Ok(());
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("attachments/\n");
+    std::fs::write(&ignore, updated)
+}
+
 pub(crate) fn fenced_scope_path(
     root: &std::path::Path,
     path: &str,
@@ -9347,21 +9668,8 @@ fn parse_thread_inputs(
                 if body.len() > 32_000 {
                     return Err("message body exceeds 32000 bytes".to_string());
                 }
-                let anchor = match message.get("anchor") {
-                    None | Some(Value::Null) => None,
-                    Some(value) => {
-                        let anchor: crate::thread::MessageAnchor =
-                            serde_json::from_value(value.clone())
-                                .map_err(|error| format!("invalid message anchor: {error}"))?;
-                        if anchor.artifact != artifact {
-                            return Err(format!(
-                                "message anchor artifact must be {}",
-                                artifact.as_str()
-                            ));
-                        }
-                        Some(anchor)
-                    }
-                };
+                let anchor =
+                    parse_message_anchor(message.get("anchor").unwrap_or(&Value::Null), artifact)?;
                 Ok((body.to_string(), anchor))
             })
             .collect();
@@ -9381,17 +9689,45 @@ fn parse_thread_inputs(
 /// Parse `thread.post`'s single `body` (+ optional `anchor`) by funneling it
 /// through [`parse_thread_inputs`]'s batch validator, so body limits and
 /// anchor artifact-matching stay single-sourced.
+///
+/// `carries_attachments` waives the non-empty-body rule and nothing else: a
+/// screenshot on its own IS the message, and demanding a caption for it would
+/// only produce "see attached".
 fn parse_thread_post_input(
     params: &Value,
     artifact: crate::thread::ArtifactKind,
+    carries_attachments: bool,
 ) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
-    let wrapped = json!({
-        "messages": [{
-            "body": params.get("body").cloned().unwrap_or(Value::Null),
-            "anchor": params.get("anchor").cloned().unwrap_or(Value::Null),
-        }]
-    });
-    parse_thread_inputs(&wrapped, artifact, "body")
+    let body = params.get("body").cloned().unwrap_or(Value::Null);
+    let anchor = params.get("anchor").cloned().unwrap_or(Value::Null);
+    let empty_body = body.as_str().map(str::trim).unwrap_or_default().is_empty();
+    if carries_attachments && empty_body {
+        let anchor = parse_message_anchor(&anchor, artifact)?;
+        return Ok(vec![(String::new(), anchor)]);
+    }
+    parse_thread_inputs(
+        &json!({ "messages": [{ "body": body, "anchor": anchor }] }),
+        artifact,
+        "body",
+    )
+}
+
+fn parse_message_anchor(
+    value: &Value,
+    artifact: crate::thread::ArtifactKind,
+) -> Result<Option<crate::thread::MessageAnchor>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let anchor: crate::thread::MessageAnchor = serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid message anchor: {error}"))?;
+    if anchor.artifact != artifact {
+        return Err(format!(
+            "message anchor artifact must be {}",
+            artifact.as_str()
+        ));
+    }
+    Ok(Some(anchor))
 }
 
 /// Tell the worktree's agent, in place, that unread thread messages await.
@@ -9451,9 +9787,27 @@ fn append_user_thread_messages(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
 ) {
+    append_user_thread_messages_with_attachments(thread, messages, Vec::new());
+}
+
+/// Append reviewer messages, hanging any attachments off the last of them.
+///
+/// Last rather than first because `thread.post` — the only caller that sends
+/// files — posts exactly one message, and a batch sender's files would belong
+/// with its closing note rather than its first line comment.
+fn append_user_thread_messages_with_attachments(
+    thread: &mut crate::thread::Thread,
+    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    attachments: Vec<crate::thread::MessageAttachment>,
+) {
     let now = now_rfc3339();
-    for (body, anchor) in messages {
-        thread.post_user(body, anchor, &now);
+    let last = messages.len().saturating_sub(1);
+    for (index, (body, anchor)) in messages.into_iter().enumerate() {
+        if index == last && !attachments.is_empty() {
+            thread.post_user_with_attachments(body, anchor, attachments.clone(), &now);
+        } else {
+            thread.post_user(body, anchor, &now);
+        }
     }
 }
 
@@ -17341,6 +17695,348 @@ mod tests {
             0,
             "{drained:?}"
         );
+    }
+
+    // ---- thread.attach: files sent with a conversation message -------------
+
+    const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR one pixel";
+
+    /// The reviewer's file has to become something the AGENT can open. It lands
+    /// in the worktree the agent already works in, the message carries the path,
+    /// and the agent's mail hands it that path verbatim.
+    #[test]
+    fn an_attached_file_lands_in_the_worktree_and_rides_the_message() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "attach a screenshot");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        let attachment = attached["result"].clone();
+        assert_eq!(attachment["name"], "screenshot.png");
+        assert_eq!(attachment["mime"], "image/png");
+        assert_eq!(attachment["size"], ONE_PIXEL_PNG.len());
+        let path = attachment["path"].as_str().unwrap().to_string();
+        assert!(
+            path.starts_with(".build/attachments/"),
+            "an attachment lives in its own fenced folder: {path}"
+        );
+        assert_eq!(
+            std::fs::read(worktree.join(&path)).unwrap(),
+            ONE_PIXEL_PNG,
+            "the bytes must be on disk before the message references them"
+        );
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "body": "the button is misaligned here",
+                "attachments": [attachment],
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        let message = &unread["messages"][0];
+        assert_eq!(message["body"], "the button is misaligned here");
+        assert_eq!(message["attachments"][0]["path"], path);
+        assert_eq!(message["attachments"][0]["name"], "screenshot.png");
+    }
+
+    /// Attachments are conversation, not work. They must never show up as an
+    /// uncommitted change in the diff the human is reviewing, nor ride the
+    /// agent's own `git add -A`.
+    #[test]
+    fn an_attachment_is_invisible_to_git() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "attachments stay out of the diff");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+
+        // -uall, because the default collapses an untracked directory to one
+        // line and would pass whether or not the ignore rule exists.
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain", "-uall"])
+            .current_dir(&worktree)
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&status.stdout).to_string();
+        assert!(
+            !status.contains("attachments"),
+            "git must not see the attachment: {status}"
+        );
+    }
+
+    /// A filename comes straight from the reviewer's machine, so it is hostile
+    /// input: traversal, separators and control characters all get flattened
+    /// into one leaf that cannot leave the attachments folder.
+    #[test]
+    fn a_hostile_filename_cannot_escape_the_attachments_folder() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "hostile names");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "../../../../etc/passwd",
+                "content_b64": b64encode(b"root:x:0:0"),
+            }),
+        ));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        let path = attached["result"]["path"].as_str().unwrap().to_string();
+        assert!(path.starts_with(".build/attachments/"), "{path}");
+        assert!(!path.contains(".."), "{path}");
+        let written = std::fs::canonicalize(worktree.join(&path)).unwrap();
+        assert!(
+            written.starts_with(std::fs::canonicalize(&worktree).unwrap()),
+            "the file must land inside the worktree: {written:?}"
+        );
+    }
+
+    /// The relay carries one frame per attachment, so an upload bigger than the
+    /// frame is refused with a limit the client can show — not a dropped socket.
+    #[test]
+    fn an_oversized_attachment_is_refused_with_its_limit() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "too big");
+
+        let refused = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "huge.bin",
+                "content_b64": b64encode(&vec![0u8; ATTACHMENT_MAX_BYTES as usize + 1]),
+            }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&ATTACHMENT_MAX_BYTES.to_string()),
+            "the refusal must name the limit: {refused:?}"
+        );
+    }
+
+    /// A message may only reference bytes this bridge wrote. Otherwise a post
+    /// is an arbitrary-path read primitive dressed up as a conversation.
+    #[test]
+    fn posting_cannot_reference_a_path_the_bridge_did_not_write() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "no smuggling");
+
+        for path in [
+            ".build/mcp.json",
+            "../../etc/hosts",
+            ".build/attachments/ghost.png",
+        ] {
+            let refused = state.handle(req(
+                "thread.post",
+                json!({
+                    "entity_id": run_id,
+                    "body": "look",
+                    "attachments": [{ "name": "x", "path": path, "mime": "image/png", "size": 1 }],
+                }),
+            ));
+            assert_eq!(refused["ok"], false, "{path} must be refused: {refused:?}");
+        }
+    }
+
+    /// The reviewer's own view has to render what they sent, and the browser
+    /// cannot reach the disk — so the bytes come back through the same entity
+    /// that took them, with no worktree scope for the caller to get wrong.
+    #[test]
+    fn an_attachment_reads_back_for_the_surface_that_sent_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "read it back");
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        let path = attached["result"]["path"].as_str().unwrap().to_string();
+
+        let read = state.handle(req(
+            "thread.attachment",
+            json!({ "entity_id": run_id, "path": path }),
+        ));
+        assert_eq!(read["ok"], true, "{read:?}");
+        assert_eq!(read["result"]["mime"], "image/png");
+        assert_eq!(
+            b64decode(read["result"]["content_b64"].as_str().unwrap()).unwrap(),
+            ONE_PIXEL_PNG
+        );
+
+        let escaped = state.handle(req(
+            "thread.attachment",
+            json!({ "entity_id": run_id, "path": ".build/mcp.json" }),
+        ));
+        assert_eq!(
+            escaped["ok"], false,
+            "only attachments read back: {escaped:?}"
+        );
+    }
+
+    /// A screenshot on its own IS the message. Demanding a caption for a file
+    /// the reviewer already chose to send would just produce "see attached".
+    #[test]
+    fn a_file_can_be_sent_with_no_words_at_all() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "wordless send");
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "body": "",
+                "attachments": [attached["result"].clone()],
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let unread = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(unread["messages"][0]["body"], "");
+        assert_eq!(
+            unread["messages"][0]["attachments"][0]["name"],
+            "screenshot.png"
+        );
+
+        // Only an attachment earns the exemption: an empty send with nothing on
+        // it is still a mistake, and posting it would look like a dropped edit.
+        let empty = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "   " }),
+        ));
+        assert_eq!(empty["ok"], false, "{empty:?}");
+    }
+
+    /// A conversation outlives its checkouts — planning worktrees are
+    /// disposable and implementations get archived — so a screenshot sent last
+    /// week must not render as a broken image once its tree is gone.
+    #[test]
+    fn an_attachment_outlives_the_worktree_it_was_written_into() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "outlive the checkout");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        let path = attached["result"]["path"].as_str().unwrap().to_string();
+        state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "body": "here is the mock",
+                "attachments": [attached["result"].clone()],
+            }),
+        ));
+
+        std::fs::remove_dir_all(worktree.join(".build").join("attachments")).unwrap();
+        let read = state.handle(req(
+            "thread.attachment",
+            json!({ "entity_id": run_id, "path": path }),
+        ));
+        assert_eq!(read["ok"], true, "the durable copy answers: {read:?}");
+        assert_eq!(
+            b64decode(read["result"]["content_b64"].as_str().unwrap()).unwrap(),
+            ONE_PIXEL_PNG
+        );
+    }
+
+    /// An entity with no checkout of its own still takes files — that window is
+    /// exactly when a mock is most useful — and is handed an absolute path,
+    /// since there is no tree for a relative one to mean anything against.
+    #[test]
+    fn an_entity_without_a_worktree_still_takes_an_attachment() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req(
+            "plan.create",
+            json!({ "goal": "attach before dispatch" }),
+        ));
+        let plan_id = plan_id_of(&plan);
+        // plan.create scaffolds a planning worktree; drop it to stand in for
+        // every entity whose checkout does not exist yet or no longer does.
+        state.plans.get_mut(&plan_id).unwrap().worktree = None;
+
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": plan_id,
+                "filename": "screenshot.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        let path = attached["result"]["path"].as_str().unwrap().to_string();
+        assert!(
+            std::path::Path::new(&path).is_absolute(),
+            "with no worktree to be relative to, the path must be openable as-is: {path}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), ONE_PIXEL_PNG);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": plan_id,
+                "body": "here is the mock",
+                "attachments": [attached["result"].clone()],
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let read = state.handle(req(
+            "thread.attachment",
+            json!({ "entity_id": plan_id, "path": path }),
+        ));
+        assert_eq!(read["ok"], true, "{read:?}");
     }
 
     // ---- thread.post: the non-dispatching conversation write ---------------

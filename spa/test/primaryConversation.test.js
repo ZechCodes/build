@@ -81,7 +81,7 @@ describe("the primary checkout's conversation", () => {
     await send(el, "look at the failing test");
 
     expect(bridge.of("run.adopt")).toEqual([{ project_id: "proj-1", primary: true }]);
-    expect(bridge.of("thread.post")).toEqual([{ entity_id: "run-main", body: "look at the failing test" }]);
+    expect(bridge.of("thread.post")).toEqual([{ entity_id: "run-main", body: "look at the failing test", attachments: [] }]);
     // Stays on the main surface: the thread the adopt opened renders in place.
     expect(bridge.of("run.get")[0].run_id).toBe("run-main");
     expect(el.textContent).toContain("on it");
@@ -122,7 +122,7 @@ describe("the primary checkout's conversation", () => {
     await send(el, "next round");
 
     expect(bridge.of("run.adopt")).toEqual([{ project_id: "proj-1", primary: true }]);
-    expect(bridge.of("thread.post")).toEqual([{ entity_id: "run-main", body: "next round" }]);
+    expect(bridge.of("thread.post")).toEqual([{ entity_id: "run-main", body: "next round", attachments: [] }]);
     pane.dispose();
   });
 

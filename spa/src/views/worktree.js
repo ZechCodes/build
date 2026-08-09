@@ -63,6 +63,8 @@ export async function renderWorktree() {
   // over the destination.
   let leaving = false;
   let conversationDraft = "";
+  // The composer's tray, held with the draft rather than in the DOM.
+  let conversationAttachments = [];
 
   const staticTabs = () => worktreeSurfaceTabs(terminals.tabs());
   const replaceWorktreeHash = () => {
@@ -183,6 +185,7 @@ export async function renderWorktree() {
             sendId: "worktreethreadsend",
             hintId: "worktreethreadhint",
             placeholder: "Send a message to adopt this worktree and start its agent…",
+            attachable: true,
           },
         });
         if (stopWorkingTicker) stopWorkingTicker();
@@ -193,10 +196,22 @@ export async function renderWorktree() {
           writeDraft: (value) => {
             conversationDraft = value;
           },
-          onSubmit: async (message) => {
+          readAttachments: () => conversationAttachments,
+          writeAttachments: (next) => {
+            conversationAttachments = next;
+          },
+          // Attaching adopts, exactly as sending does: the file has to belong to
+          // a conversation to be stored against one, and choosing a file for a
+          // message is the same intent one keystroke earlier.
+          upload: async (file, contentBase64) => {
             if (pendingProvider) adopting.setAdoptParams({ provider: pendingProvider });
             const runId = await adopting.adopt();
-            return App.call("thread.post", { entity_id: runId, body: message });
+            return App.call("thread.attach", { entity_id: runId, filename: file.name, content_b64: contentBase64 });
+          },
+          onSubmit: async (message, attachments) => {
+            if (pendingProvider) adopting.setAdoptParams({ provider: pendingProvider });
+            const runId = await adopting.adopt();
+            return App.call("thread.post", { entity_id: runId, body: message, attachments });
           },
           afterSubmit: () => handoffToTask(),
           onError: (error) => notifyError("Message failed", error.message),

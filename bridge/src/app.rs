@@ -6900,6 +6900,15 @@ impl AppState {
                 let size = std::fs::metadata(&resolved)
                     .map_err(|e| format!("cannot stat the attachment: {e}"))?
                     .len();
+                // The same head `thread.attach` typed the file from, so a name
+                // with no extension resolves to the same mime on the record as
+                // it did in the upload's answer.
+                let mut head = Vec::new();
+                std::fs::File::open(&resolved)
+                    .map_err(|e| format!("cannot read the attachment: {e}"))?
+                    .take(8192)
+                    .read_to_end(&mut head)
+                    .map_err(|e| format!("cannot read the attachment: {e}"))?;
                 let name = entry
                     .get("name")
                     .and_then(Value::as_str)
@@ -6909,7 +6918,7 @@ impl AppState {
                 Ok(crate::thread::MessageAttachment {
                     name,
                     path: path.to_string(),
-                    mime: mime_hint(&resolved, b"").to_string(),
+                    mime: mime_hint(&resolved, &head).to_string(),
                     size,
                 })
             })

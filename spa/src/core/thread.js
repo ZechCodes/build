@@ -1,5 +1,12 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
+import {
+  autoGrow,
+  composerHtml,
+  formatAttachmentSize,
+  isImageAttachment,
+  mountComposerAttachments,
+} from "./composer.js";
 
 const EVENT_META = {
   session_started: { label: "Agent session started", icon: "▶" },
@@ -202,6 +209,35 @@ function linksHtml(links) {
     .join("")}</div>`;
 }
 
+/// The files a message came with.
+///
+/// An image is shown, not linked: the reason to attach a screenshot is that
+/// looking at it IS the message, and a chip reading "screenshot.png" makes the
+/// reader click to find out what they were told. Everything else is a chip that
+/// downloads, since the browser has nothing useful to do with a tarball.
+///
+/// `src` is left empty here and filled by [`wireThreadAttachments`] — the
+/// timeline is a string, and the bytes are a round trip away.
+function attachmentsHtml(attachments) {
+  if (!attachments || !attachments.length) return "";
+  return `<div class="thread-attachments">${attachments
+    .map((attachment) => {
+      const path = esc(attachment.path || "");
+      const name = esc(attachment.name || attachment.path || "file");
+      if (isImageAttachment(attachment.mime)) {
+        return `<figure class="thread-attachment-figure">
+          <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          <figcaption>${name}</figcaption>
+        </figure>`;
+      }
+      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}">
+        <span class="thread-attachment-name">${name}</span>
+        <span class="thread-attachment-size">${esc(formatAttachmentSize(attachment.size))}</span>
+      </button>`;
+    })
+    .join("")}</div>`;
+}
+
 function messageHtml(message, agentLabel = "Agent") {
   const user = message.role === "user";
   const status = user
@@ -215,7 +251,8 @@ function messageHtml(message, agentLabel = "Agent") {
     <div class="thread-comment-card">
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${anchorLabel(message.anchor)}
-      <div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
+      ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
+      ${attachmentsHtml(message.attachments)}
       ${linksHtml(message.links)}
     </div>
   </article>`;
@@ -296,19 +333,15 @@ const PLAN_COMPOSER_DEFAULTS = {
 };
 
 // `composer` is falsy (no composer), `true` (plan defaults), or an object
-// overriding ids/placeholder — caller-scoped ids let two thread surfaces (the
-// plan review and the run diff) each mount a composer on one page without
-// colliding.
-function composerHtml(composer) {
+// overriding ids/placeholder/attachable — caller-scoped ids let two thread
+// surfaces (the plan review and the run diff) each mount a composer on one page
+// without colliding.
+function threadComposerHtml(composer) {
   if (!composer) return "";
-  const { inputId, sendId, hintId, placeholder } = {
+  return composerHtml({
     ...PLAN_COMPOSER_DEFAULTS,
     ...(composer === true ? {} : composer),
-  };
-  return `<div class="thread-composer">
-    <textarea id="${esc(inputId)}" rows="2" placeholder="${esc(placeholder)}"></textarea>
-    <div class="thread-composer-actions"><span class="hint" id="${esc(hintId)}"></span><button class="btn primary mini" id="${esc(sendId)}">Send</button></div>
-  </div>`;
+  });
 }
 
 /// The conversation's own status + lifecycle strip.
@@ -349,7 +382,7 @@ export function threadHtml(thread, options = {}) {
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
     ${threadActionsHtml(options.actionsId)}
-    ${composerHtml(options.composer)}
+    ${threadComposerHtml(options.composer)}
   </section>`;
 }
 
@@ -418,6 +451,66 @@ export function wireThreadRevisionLinks(root, loadRevision) {
   });
 }
 
+/// Attachment bytes already fetched, keyed by path.
+///
+/// Safe to hold forever within a session: an attachment is content-addressed
+/// and immutable, so a path always means the same bytes. Worth holding, because
+/// the surfaces re-render the whole timeline on every poll and a conversation
+/// full of screenshots would otherwise re-fetch all of them every second and a
+/// half. Bounded so a long session cannot grow without limit.
+const attachmentDataUrls = new Map();
+const ATTACHMENT_CACHE_MAX = 40;
+
+function rememberAttachment(path, dataUrl) {
+  if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
+    attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
+  }
+  attachmentDataUrls.set(path, dataUrl);
+}
+
+/// Fill the images a rendered timeline is waiting on, and make the file chips
+/// download what they name.
+///
+/// `load(path)` resolves the bridge's `thread.attachment` payload
+/// (`{mime, content_b64}`).
+export function wireThreadAttachments(root, load) {
+  if (!root) return;
+  const dataUrlFor = async (path) => {
+    if (attachmentDataUrls.has(path)) return attachmentDataUrls.get(path);
+    const attachment = await load(path);
+    const dataUrl = `data:${attachment.mime || "application/octet-stream"};base64,${attachment.content_b64 || ""}`;
+    rememberAttachment(path, dataUrl);
+    return dataUrl;
+  };
+
+  root.querySelectorAll("img.thread-attachment-image").forEach((image) => {
+    const path = image.dataset.attachmentPath;
+    if (!path || image.getAttribute("src")) return;
+    dataUrlFor(path).then(
+      (dataUrl) => {
+        image.setAttribute("src", dataUrl);
+      },
+      () => {
+        // A picture that will not load says so where the picture would be,
+        // rather than leaving a silent gap in the conversation.
+        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
+      },
+    );
+  });
+
+  root.querySelectorAll("button.thread-attachment").forEach((chip) => {
+    chip.onclick = async () => {
+      const path = chip.dataset.attachmentPath;
+      if (!path) return;
+      const dataUrl = await dataUrlFor(path);
+      const link = root.ownerDocument.createElement("a");
+      link.href = dataUrl;
+      link.download = chip.dataset.attachmentName || "attachment";
+      link.click();
+    };
+  });
+}
+
 export function wireThreadLinks(root, openLink) {
   if (!root) return;
   root.querySelectorAll(".thread-reference").forEach((button) => {
@@ -448,40 +541,68 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body)` does the transport and resolves when the post has landed.
-export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit }) {
+/// `onSubmit(body, attachments)` does the transport and resolves when the post
+/// has landed. `upload` (with the `readAttachments`/`writeAttachments` draft
+/// pair) turns the box into one that takes files; without it the composer is
+/// the plain text box it always was.
+export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit, upload, readAttachments, writeAttachments }) {
   if (!root) return;
   const input = root.querySelector(`#${ids.input}`);
   const send = root.querySelector(`#${ids.send}`);
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
   if (!input || !send) return;
 
+  const say = (message) => {
+    if (hint) hint.textContent = message;
+  };
+  const tray = upload
+    ? mountComposerAttachments(root, {
+        ids,
+        upload,
+        readAttachments,
+        writeAttachments,
+        onError: say,
+      })
+    : null;
+
   input.value = readDraft();
   input.oninput = () => {
     writeDraft(input.value);
-    if (hint) hint.textContent = "";
+    say("");
   };
+  const fitToText = autoGrow(input);
 
   const submit = async () => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
+    if (tray && tray.busy()) {
+      // The message names its files by path, so posting before they land would
+      // hand the agent a reference to bytes that do not exist yet.
+      say("A file is still attaching…");
+      return;
+    }
     const body = input.value.trim();
-    if (!body) {
-      if (hint) hint.textContent = "Type a message first.";
+    // A file on its own is a message; words are only required when there is
+    // nothing else being sent.
+    if (!body && (!tray || tray.isEmpty())) {
+      say("Type a message first.");
       input.focus();
       return;
     }
     send.disabled = true;
     send.textContent = "sending…";
     try {
-      const result = await onSubmit(body);
+      const result = await onSubmit(body, tray ? tray.attachments() : []);
       writeDraft("");
       input.value = "";
+      fitToText();
+      if (tray) tray.clear();
       send.disabled = false;
       send.textContent = "Send";
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
-      // The text stays put: a failed send must never cost the user their words.
+      // The text and the files stay put: a failed send must never cost the user
+      // their words, and re-picking the files would be worse.
       send.disabled = false;
       send.textContent = "Send";
       if (onError) onError(error);

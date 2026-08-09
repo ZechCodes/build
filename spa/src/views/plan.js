@@ -13,7 +13,7 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { mountTabShell } from "../core/tabshell.js";
 import { mountAgentTab } from "../core/surfaceTabs.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
-import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { planReviewSkeletonHtml } from "../core/planReview.js";
 import { App, go, loadModelCatalog, markEntityRead } from "../app.js";
 import { PLAN_STATE_LABEL, PLAN_TERMINAL_STATES, planChipClass } from "./shared.js";
@@ -107,6 +107,10 @@ export async function renderPlan() {
   let summaryKey = null;
   let threadRenderKey = null;
   let threadDraft = "";
+  // The composer's tray, held with the draft rather than in the DOM: the
+  // timeline repaints on every poll, and a reviewer's files must not vanish
+  // with it.
+  let threadAttachments = [];
   // Cursor cache for the conversation: each poll sends the last-held sequence
   // so the bridge ships only new items, not the whole thread every 1.6s.
   const threadCache = createThreadCache();
@@ -192,6 +196,7 @@ export async function renderPlan() {
         sendId: "planthreadsend",
         hintId: "planthreadhint",
         placeholder: "Send a message to the planning agent…",
+        attachable: true,
       };
       const key = JSON.stringify({
         goal: p.goal || "",
@@ -230,13 +235,21 @@ export async function renderPlan() {
           if (target.filePath) sessionStorage.setItem(`build.fileLink.${target.route.id}`, target.filePath);
           go(target.route);
         });
+        wireThreadAttachments(host, (path) => App.call("thread.attachment", { entity_id: id, path }));
         wireThreadComposer(host, {
           ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
           readDraft: () => threadDraft,
           writeDraft: (value) => {
             threadDraft = value;
           },
-          onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
+          readAttachments: () => threadAttachments,
+          writeAttachments: (next) => {
+            threadAttachments = next;
+          },
+          upload: (file, contentBase64) =>
+            App.call("thread.attach", { entity_id: id, filename: file.name, content_b64: contentBase64 }),
+          onSubmit: (message, attachments) =>
+            App.call("thread.post", { entity_id: id, body: message, attachments }),
           afterSubmit: () => {
             threadRenderKey = null;
             planKey = null;

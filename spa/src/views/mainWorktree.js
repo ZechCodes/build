@@ -12,7 +12,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { createPrimaryAdoptingCall, startAdoptedAgent } from "../core/adoption.js";
-import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, startWorkingTicker } from "../core/thread.js";
 import { subscribeFeed, primaryRunIdFor } from "../core/taskFeed.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
@@ -56,19 +56,28 @@ export function mountPrimaryConversation(
   const threadCache = createThreadCache();
   let renderKey = null;
   let disposed = false;
+  // The composer's tray, held outside the DOM so the poll's repaint cannot take
+  // the reviewer's files with it.
+  let attachments = [];
 
   const composerFor = (placeholder) => ({
     inputId: PRIMARY_COMPOSER_IDS.input,
     sendId: PRIMARY_COMPOSER_IDS.send,
     hintId: PRIMARY_COMPOSER_IDS.hint,
     placeholder,
+    attachable: true,
   });
 
-  const wireComposer = ({ onSubmit, afterSubmit }) =>
+  const wireComposer = ({ onSubmit, afterSubmit, upload }) =>
     wireThreadComposer(host, {
       ids: PRIMARY_COMPOSER_IDS,
       readDraft,
       writeDraft,
+      readAttachments: () => attachments,
+      writeAttachments: (next) => {
+        attachments = next;
+      },
+      upload,
       onSubmit,
       afterSubmit,
       onError: (error) => notifyError("Message failed", error.message),
@@ -85,12 +94,18 @@ export function mountPrimaryConversation(
       if (stopWorkingTicker) stopWorkingTicker();
       stopWorkingTicker = startWorkingTicker(host);
       wireComposer({
-        onSubmit: async (message) => {
+        // Attaching adopts for the same reason sending does: a file is stored
+        // against a conversation, and the checkout has no owner until one asks.
+        upload: async (file, contentBase64) => {
+          const runId = await adopting.adopt();
+          return callRpc("thread.attach", { entity_id: runId, filename: file.name, content_b64: contentBase64 });
+        },
+        onSubmit: async (message, files) => {
           // No provider named: the checkout has no sheet answer to carry (only the
           // Agent tab's cards ask that question here), so the run is minted on the
           // bridge's default and the cards switch it later.
           const runId = await adopting.adopt();
-          return callRpc("thread.post", { entity_id: runId, body: message });
+          return callRpc("thread.post", { entity_id: runId, body: message, attachments: files });
         },
         afterSubmit: () => refresh(),
       });
@@ -115,8 +130,12 @@ export function mountPrimaryConversation(
       if (stopWorkingTicker) stopWorkingTicker();
       stopWorkingTicker = startWorkingTicker(host);
       wireThreadLinks(host, openLink);
+      wireThreadAttachments(host, (path) => callRpc("thread.attachment", { entity_id: runId, path }));
       wireComposer({
-        onSubmit: (message) => callRpc("thread.post", { entity_id: runId, body: message }),
+        upload: (file, contentBase64) =>
+          callRpc("thread.attach", { entity_id: runId, filename: file.name, content_b64: contentBase64 }),
+        onSubmit: (message, files) =>
+          callRpc("thread.post", { entity_id: runId, body: message, attachments: files }),
         afterSubmit: () => refresh(),
       });
     });

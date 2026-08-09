@@ -17,7 +17,7 @@ import { mountTabShell } from "../core/tabshell.js";
 import { terminalTabsController, mountAuxTab, mountAgentTab, AGENT_TAB, NEW_TAB_KINDS } from "../core/surfaceTabs.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { createTaskReview } from "./taskReview.js";
-import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
+import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, startWorkingTicker } from "../core/thread.js";
 import { hashFromRoute } from "../core/router.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
@@ -317,6 +317,10 @@ export async function renderTask() {
   let stagesKey = null;
   let conversationKey = null;
   let conversationDraft = "";
+  // The composer's tray, held with the draft rather than in the DOM: the
+  // timeline repaints on every poll, and a reviewer's files must not vanish
+  // with it.
+  let conversationAttachments = [];
   let linkedFilePath = sessionStorage.getItem(`build.fileLink.${id}`);
   if (linkedFilePath) sessionStorage.removeItem(`build.fileLink.${id}`);
   // The owning plan can be deleted once the run is terminal; once plan.stages
@@ -415,6 +419,7 @@ export async function renderTask() {
           sendId: "runthreadsend",
           hintId: "runthreadhint",
           placeholder: "Send a message to the coding agent…",
+          attachable: true,
         },
       });
       if (stopWorkingTicker) stopWorkingTicker();
@@ -424,13 +429,21 @@ export async function renderTask() {
         App.call("thread.revision", { entity_id: id, revision_id: revisionId }),
       );
       wireThreadLinks(body, openThreadLink);
+      wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: id, path }));
       wireThreadComposer(body, {
         ids: { input: "runthreadinput", send: "runthreadsend", hint: "runthreadhint" },
         readDraft: () => conversationDraft,
         writeDraft: (value) => {
           conversationDraft = value;
         },
-        onSubmit: (message) => App.call("thread.post", { entity_id: id, body: message }),
+        readAttachments: () => conversationAttachments,
+        writeAttachments: (next) => {
+          conversationAttachments = next;
+        },
+        upload: (file, contentBase64) =>
+          App.call("thread.attach", { entity_id: id, filename: file.name, content_b64: contentBase64 }),
+        onSubmit: (message, attachments) =>
+          App.call("thread.post", { entity_id: id, body: message, attachments }),
         afterSubmit: (view) => {
           last = { ...view, thread: threadCache.absorb(view.thread) };
           conversationKey = null;

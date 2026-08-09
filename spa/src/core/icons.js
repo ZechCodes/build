@@ -12,3 +12,5 @@
 export { default as ICON_INBOX } from "lucide-static/icons/inbox.svg?raw";
 export { default as ICON_CIRCLE_DOT } from "lucide-static/icons/circle-dot.svg?raw";
 export { default as ICON_ELLIPSIS } from "lucide-static/icons/ellipsis.svg?raw";
+export { default as ICON_PAPERCLIP } from "lucide-static/icons/paperclip.svg?raw";
+export { default as ICON_X } from "lucide-static/icons/x.svg?raw";

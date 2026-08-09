@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { composerHtml } from "../src/core/composer.js";
 import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
@@ -155,7 +156,9 @@ describe("conversation thread rendering", () => {
     expect(document.querySelectorAll("#planthreadinput")).toHaveLength(1);
     expect(document.querySelectorAll("#diffthreadinput")).toHaveLength(1);
     expect(document.querySelector("#diffthreadinput").placeholder).toBe("Ask the coding agent…");
-    expect(document.querySelector("#diffthreadinput").rows).toBe(2);
+    // One row to start: the box grows to what is typed into it rather than
+    // sitting open at a height nothing has filled yet.
+    expect(document.querySelector("#diffthreadinput").rows).toBe(1);
     expect(document.querySelector("#diffthreadhint")).not.toBeNull();
     expect(document.querySelector("#diffthreadsend").textContent).toBe("Send");
     expect(document.querySelector("#diffthreadsend").classList.contains("mini")).toBe(true);
@@ -309,6 +312,56 @@ describe("structured review messages", () => {
   });
 });
 
+describe("attachments on the record", () => {
+  const withAttachments = (attachments) => ({
+    items: [{ type: "message", data: { role: "user", body: "look at this", created_at: "2026-08-09T12:00:00Z", attachments } }],
+  });
+
+  it("shows an image inline and everything else as a chip you can open", () => {
+    const html = threadHtml(withAttachments([
+      { name: "screenshot.png", path: ".build/attachments/ab12-screenshot.png", mime: "image/png", size: 40960 },
+      { name: "trace.txt", path: ".build/attachments/cd34-trace.txt", mime: "text/plain", size: 2048 },
+    ]));
+    expect(html).toContain('data-attachment-path=".build/attachments/ab12-screenshot.png"');
+    expect(html).toContain("thread-attachment-image");
+    expect(html).toContain("trace.txt");
+    expect(html).toContain("2 KB");
+  });
+
+  it("escapes an attachment name rather than rendering it", () => {
+    const html = threadHtml(withAttachments([
+      { name: '<img src=x onerror="boom">.png', path: ".build/attachments/x.png", mime: "image/png", size: 1 },
+    ]));
+    expect(html).not.toContain("onerror=\"boom\"");
+    expect(html).toContain("&lt;img");
+  });
+
+  it("fills an inline image from the bytes the bridge hands back, once", async () => {
+    document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]))}</div>`;
+    const host = document.querySelector("#host");
+    const asked = [];
+    const load = (path) => {
+      asked.push(path);
+      return Promise.resolve({ mime: "image/png", content_b64: "AAAA" });
+    };
+
+    wireThreadAttachments(host, load);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.querySelector("img.thread-attachment-image").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+
+    // A polling surface re-renders the timeline constantly; the bytes are
+    // content-addressed and immutable, so asking twice is pure waste.
+    document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]))}</div>`;
+    wireThreadAttachments(document.querySelector("#host"), load);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(asked).toEqual([".build/attachments/ab12-shot.png"]);
+  });
+});
+
 describe("thread composer wiring", () => {
   const mount = (ids = { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" }) => {
     document.body.innerHTML = `<div id="host">
@@ -382,5 +435,91 @@ describe("thread composer wiring", () => {
     cmdEnter(input);
     expect(calls).toBe(0);
     expect(host.querySelector("#planthreadhint").textContent).toContain("Type a message");
+  });
+});
+
+describe("sending a message that carries files", () => {
+  const mountWithTray = (overrides = {}) => {
+    document.body.innerHTML = `<div id="host">${composerHtml({
+      inputId: "ti",
+      sendId: "ts",
+      hintId: "th",
+      placeholder: "Say something…",
+      attachable: true,
+    })}</div>`;
+    const host = document.querySelector("#host");
+    const sent = [];
+    let draft = "";
+    let attachments = [];
+    wireThreadComposer(host, {
+      ids: { input: "ti", send: "ts", hint: "th" },
+      readDraft: () => draft,
+      writeDraft: (value) => { draft = value; },
+      readAttachments: () => attachments,
+      writeAttachments: (next) => { attachments = next; },
+      upload: (file) => Promise.resolve({ name: file.name, path: `.build/attachments/x-${file.name}`, mime: file.type || "text/plain", size: file.size }),
+      onSubmit: (body, files) => { sent.push({ body, files }); return Promise.resolve(); },
+      ...overrides,
+    });
+    return { host, sent };
+  };
+  const drop = (host, files) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    event.dataTransfer = { files, items: [], types: ["Files"] };
+    host.dispatchEvent(event);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  it("names the uploaded files on the send and empties the tray after", async () => {
+    const { host, sent } = mountWithTray();
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "see this";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([{ body: "see this", files: [{ name: "shot.png", path: ".build/attachments/x-shot.png", mime: "image/png", size: 1 }] }]);
+    expect(host.querySelectorAll(".composer-chip")).toHaveLength(0);
+  });
+
+  it("sends a file with no words, because the file IS the message", async () => {
+    const { host, sent } = mountWithTray();
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe("");
+  });
+
+  it("waits for a file still going up rather than sending a message that points at nothing", async () => {
+    const { host, sent } = mountWithTray({ upload: () => new Promise(() => {}) });
+    drop(host, [new File(["a"], "slow.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "here";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([]);
+    expect(host.querySelector("#th").textContent).toContain("still attaching");
+  });
+
+  it("keeps the files when the send fails, exactly as it keeps the words", async () => {
+    const { host, sent } = mountWithTray({
+      onSubmit: () => Promise.reject(new Error("relay down")),
+      onError: () => {},
+    });
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "see this";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([]);
+    expect(host.querySelector("#ti").value).toBe("see this");
+    expect(host.querySelectorAll(".composer-chip")).toHaveLength(1);
   });
 });

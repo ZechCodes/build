@@ -3,6 +3,7 @@ import {
   railEntries,
   railWorktrees,
   dotState,
+  mainEntry,
   hasUnreviewedChanges,
   mustShow,
   RAIL_MINIMUM,
@@ -63,6 +64,27 @@ const worktree = (over = {}) => ({
   uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
   attention: { resume_at: ago(2), interacted: true, seen: false },
   can_finish: false,
+  ...over,
+});
+
+const project = (over = {}) => ({ project_id: "p1", name: "relaydb", ...over });
+
+/** One project's `primary_changes` record: the branch its checkout has out, how
+ *  that branch stands against its comparison ref, and what is uncommitted in it.
+ *  It carries no attention of its own — the run that adopted the checkout, if
+ *  any, is where liveness and read-state live. */
+const primaryChange = (over = {}) => ({
+  project_id: "p1",
+  branch: "main",
+  path: "/repos/relaydb",
+  upstream: "origin/main",
+  comparison_ref: "origin/main",
+  ahead: 0,
+  behind: 0,
+  files_changed: 0,
+  insertions: 0,
+  deletions: 0,
+  run_id: null,
   ...over,
 });
 
@@ -286,6 +308,95 @@ describe("whether an entry holds work you have not reviewed", () => {
     expect(mustShow(entry({ attention: { seen: false }, status: { insertions: 1 } }))).toBe(true);
     expect(mustShow(entry({ needsYou: true }))).toBe(false);
     expect(mustShow(entry())).toBe(false);
+  });
+});
+
+// A project's own checkout is work like any other: the main branch is where an
+// adopted agent paints, and where uncommitted changes sit until someone looks.
+describe("a project's main checkout as a row", () => {
+  it("is named by its branch and carries the project it belongs to", () => {
+    const entry = mainEntry({ project: project(), primaryChange: primaryChange() });
+    expect(entry).toMatchObject({
+      kind: "main",
+      id: "p1",
+      project_id: "p1",
+      project_name: "relaydb",
+      name: "main",
+      branch: "main",
+      path: "/repos/relaydb",
+    });
+  });
+
+  it("shows how the checkout stands and what is uncommitted in it", () => {
+    const entry = mainEntry({
+      project: project(),
+      primaryChange: primaryChange({ ahead: 2, behind: 1, insertions: 12, deletions: 4 }),
+    });
+    expect(entry.status).toEqual({
+      ahead: 2,
+      behind: 1,
+      comparisonRef: "origin/main",
+      insertions: 12,
+      deletions: 4,
+      changesLabel: "uncommitted",
+    });
+  });
+
+  it("falls back to the upstream when no comparison ref was reported", () => {
+    const entry = mainEntry({
+      project: project(),
+      primaryChange: primaryChange({ comparison_ref: null }),
+    });
+    expect(entry.status.comparisonRef).toBe("origin/main");
+  });
+
+  it("opens the project's Changes tab", () => {
+    expect(mainEntry({ project: project(), primaryChange: primaryChange() }).route).toEqual({
+      name: "project",
+      projectId: "p1",
+      tab: "changes",
+    });
+  });
+
+  // Nothing has adopted the checkout, so there is no lifecycle to read: it is
+  // quiet until its working tree says otherwise.
+  it("is quiet with no run owning it, and shown the moment it is dirty", () => {
+    const clean = mainEntry({ project: project(), primaryChange: primaryChange() });
+    expect(clean).toMatchObject({ working: false, needsYou: false, changedAt: null, attention: {}, run_id: null });
+    expect(mustShow(clean)).toBe(false);
+    const dirty = mainEntry({
+      project: project(),
+      primaryChange: primaryChange({ files_changed: 1, insertions: 3, deletions: 1 }),
+    });
+    expect(mustShow(dirty)).toBe(true);
+  });
+
+  it("takes its dot and its clock from the run that adopted it", () => {
+    const owner = run({ run_id: "rp", primary: true, state: "building", state_changed_at: ago(3) });
+    const entry = mainEntry({
+      project: project(),
+      primaryChange: primaryChange({ run_id: "rp" }),
+      run: owner,
+    });
+    expect(entry).toMatchObject({ working: true, run_id: "rp", changedAt: Date.parse(ago(3)) });
+    expect(dotState(entry)).toBe("working");
+    expect(mustShow(entry)).toBe(true);
+  });
+
+  it("is unread while its run waits on you and you have not looked", () => {
+    const entry = mainEntry({
+      project: project(),
+      primaryChange: primaryChange(),
+      run: run({
+        run_id: "rp",
+        state: "review",
+        needs_attention: true,
+        attention: { resume_at: ago(30), interacted: true, seen: false },
+      }),
+    });
+    expect(entry.needsYou).toBe(true);
+    expect(dotState(entry)).toBe("unseen");
+    expect(mustShow(entry)).toBe(true);
   });
 });
 

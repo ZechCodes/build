@@ -129,6 +129,44 @@ function worktreeEntry(worktree) {
   };
 }
 
+/** Normalise a project's primary checkout into a rail entry: the main branch as
+ *  a row of its own. The checkout has no lifecycle — an agent working against it
+ *  adopts it as a run first — so liveness and read-state come from the run that
+ *  owns it, and a checkout nobody has adopted is quiet until its working tree
+ *  says otherwise. */
+export function mainEntry({ project, primaryChange, run = null }) {
+  const state = run?.state || "";
+  return {
+    kind: "main",
+    // The row IS the project: one checkout, one project, one identity.
+    id: project.project_id,
+    project_id: project.project_id,
+    project_name: project.name || "",
+    // A main row is named by the branch it has out; there is no goal behind it.
+    name: primaryChange.branch || "",
+    branch: primaryChange.branch || "",
+    path: primaryChange.path || null,
+    state: "",
+    working: WORKING_RUN_STATES.has(state),
+    terminal: false,
+    needsYou: !!run?.needs_attention,
+    changedAt: run ? (ms(run.state_changed_at) ?? ms(run.updated_at)) : null,
+    attention: run?.attention || {},
+    run_id: run?.run_id || primaryChange.run_id || null,
+    // The checkout's own +/- is what sits in it uncommitted; ahead and behind
+    // use whichever ref the bridge compared it against.
+    status: {
+      ahead: primaryChange.ahead ?? null,
+      behind: primaryChange.behind ?? null,
+      comparisonRef: primaryChange.comparison_ref || primaryChange.upstream || null,
+      insertions: primaryChange.insertions ?? 0,
+      deletions: primaryChange.deletions ?? 0,
+      changesLabel: "uncommitted",
+    },
+    route: { name: "project", projectId: project.project_id, tab: "changes" },
+  };
+}
+
 /** The dot: what is true about this entry right now.
  *
  *  A pulse means an agent is working — never merely that a session is open — so

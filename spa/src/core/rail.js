@@ -11,6 +11,10 @@
 // you last poked it — which the daemon maintains, so working on one entry all
 // afternoon never moves it, while picking up something you had left drops it to
 // the bottom.
+//
+// Under all of that sits a floor age cannot reach: anywhere an agent is running,
+// anywhere something unread is waiting on you, and anywhere there are changes
+// nobody has reviewed is always a row, however long ago it happened.
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -136,6 +140,26 @@ export function dotState(entry) {
   return entry.attention?.seen ? "seen" : "unseen";
 }
 
+/** Does this entry hold a diff nobody has signed off on? There is no per-diff
+ *  "reviewed" mark anywhere in Build, so the honest reading is: there is work
+ *  here — uncommitted, or committed ahead of the ref it is compared against —
+ *  and the entry has not been looked at since it last moved. */
+export function hasUnreviewedChanges(entry) {
+  if (dotState(entry) === "seen") return false;
+  const status = entry.status;
+  if (!status) return false;
+  return (status.insertions ?? 0) + (status.deletions ?? 0) > 0 || (status.ahead ?? 0) > 0;
+}
+
+/** The floor: is this entry one the rail is not allowed to drop, whatever its
+ *  age? An agent is running in it, it is waiting on you and you have not looked,
+ *  or it holds changes nobody has reviewed. */
+export function mustShow(entry) {
+  if (entry.working) return true;
+  if (entry.needsYou && dotState(entry) !== "seen") return true;
+  return hasUnreviewedChanges(entry);
+}
+
 /** The sort key: when this stretch of work began. Entries the daemon has never
  *  seen touched fall back to whatever it reported, and anything unparseable
  *  sorts oldest — the top — rather than jumping to the bottom. */
@@ -146,14 +170,18 @@ const sortKey = (entry) => ms(entry.attention?.resume_at) ?? 0;
  *
  * `worktrees` are only eligible as entries once they have been interacted with
  * in Build — one Build cut for you arrives that way, one you made by hand does
- * not, and until then it belongs to the Worktrees row instead.
+ * not, and until then it belongs to the Worktrees row instead. The floor is the
+ * exception: a worktree with an agent in it, or holding work nobody has
+ * reviewed, is exactly what the rail exists to surface, however it was made.
  */
 export function railEntries({ runs = [], plans = [], worktrees = [], projectId, nowMs = Date.now(), minimum = RAIL_MINIMUM } = {}) {
   const mine = (list) => list.filter((x) => x.project_id === projectId);
   const candidates = [
     ...mine(runs).filter((run) => run.state !== "archived").map(runEntry),
     ...mine(plans).map(planEntry),
-    ...mine(worktrees).filter((w) => w.attention?.interacted).map(worktreeEntry),
+    ...mine(worktrees)
+      .map(worktreeEntry)
+      .filter((entry) => entry.attention?.interacted || mustShow(entry)),
   ];
 
   const chosen = new Map();
@@ -161,14 +189,16 @@ export function railEntries({ runs = [], plans = [], worktrees = [], projectId, 
 
   // Everything with an agent mid-flight, and everything that finished within the
   // day — merged, abandoned, or waiting on you. No ceiling: walking in after a
-  // night, all of yesterday's work is the point.
+  // night, all of yesterday's work is the point. Then the floor, which age has
+  // no vote on: unread work waiting on you, and diffs nobody has reviewed.
   //
   // "Alive" is deliberately NOT "non-terminal": a review that has been sitting
   // for a week is not running, and treating it as such would both bury today's
-  // work and leave the backfill below with nothing to do.
+  // work and leave the backfill below with nothing to do. What saves that review
+  // is the floor, and only while it is still unread.
   for (const entry of candidates) {
     const finishedToday = entry.changedAt !== null && nowMs - entry.changedAt <= DAY_MS;
-    if (entry.working || finishedToday) take(entry);
+    if (entry.working || finishedToday || mustShow(entry)) take(entry);
   }
 
   // Still thin? First the work that is waiting on you, newest first — coming

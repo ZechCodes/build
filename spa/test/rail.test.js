@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { railEntries, railWorktrees, dotState, RAIL_MINIMUM } from "../src/core/rail.js";
+import {
+  railEntries,
+  railWorktrees,
+  dotState,
+  hasUnreviewedChanges,
+  mustShow,
+  RAIL_MINIMUM,
+} from "../src/core/rail.js";
 
 const NOW = Date.parse("2026-07-28T09:00:00Z"); // Tuesday morning
 const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
@@ -56,6 +63,23 @@ const worktree = (over = {}) => ({
   uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
   attention: { resume_at: ago(2), interacted: true, seen: false },
   can_finish: false,
+  ...over,
+});
+
+/** A worktree with nothing in it and nothing to say: no agent, no uncommitted
+ *  work, nothing ahead, and already looked at. The floor has no claim on it, so
+ *  it is what a test uses to talk about the ordinary rules. */
+const quietWorktree = (over = {}) => ({
+  ...worktree({
+    agent_working: false,
+    dirty_files: 0,
+    ahead: 0,
+    behind: 0,
+    unpushed: 0,
+    diffstat: { files_changed: 0, insertions: 0, deletions: 0 },
+    uncommitted: { files_changed: 0, insertions: 0, deletions: 0 },
+    attention: { resume_at: ago(24 * 9), interacted: false, seen: true },
+  }),
   ...over,
 });
 
@@ -140,6 +164,131 @@ describe("what the rail shows", () => {
   });
 });
 
+// The floor under everything above: age and the backfill decide how much of the
+// quiet work to show, but they never get a vote on work that is live, unread, or
+// carrying a diff nobody has reviewed.
+describe("what the rail can never drop", () => {
+  it("shows a worktree with an agent in it, though Build never touched it", () => {
+    const entries = railEntries({
+      worktrees: [
+        quietWorktree({
+          worktree_id: "by-hand",
+          agent_working: true,
+          attention: { resume_at: ago(24 * 30), interacted: false, seen: true },
+        }),
+      ],
+      projectId: "p1",
+      nowMs: NOW,
+      minimum: 0,
+    });
+    expect(ids(entries)).toEqual(["by-hand"]);
+  });
+
+  it("shows a worktree holding uncommitted work nobody has looked at, however old", () => {
+    const entries = railEntries({
+      worktrees: [
+        quietWorktree({
+          worktree_id: "dirty",
+          uncommitted: { files_changed: 1, insertions: 3, deletions: 1 },
+          attention: { resume_at: ago(24 * 30), interacted: false, seen: false },
+        }),
+      ],
+      projectId: "p1",
+      nowMs: NOW,
+      minimum: 0,
+    });
+    expect(ids(entries)).toEqual(["dirty"]);
+  });
+
+  it("still leaves a stale, clean, already-seen worktree to the Worktrees row", () => {
+    const worktrees = [quietWorktree({ worktree_id: "settled", name: "settled" })];
+    const entries = railEntries({ worktrees, projectId: "p1", nowMs: NOW, minimum: 0 });
+    expect(entries).toEqual([]);
+    expect(railWorktrees({ worktrees, entries, projectId: "p1" }).map((w) => w.id)).toEqual(["settled"]);
+  });
+
+  // The backfill cannot be what saves it: five entries already fill the list.
+  it("shows a week-old review waiting on you that a busy day would have crowded out", () => {
+    const busy = Array.from({ length: RAIL_MINIMUM }, (_, i) =>
+      run({
+        run_id: `merged-today-${i}`,
+        state: "merged",
+        state_changed_at: ago(2),
+        attention: { resume_at: ago(i + 1), interacted: true, seen: true },
+      }),
+    );
+    const entries = railEntries({
+      runs: [
+        ...busy,
+        run({
+          run_id: "unread-review",
+          state: "review",
+          needs_attention: true,
+          state_changed_at: ago(24 * 7),
+          attention: { resume_at: ago(24 * 7), interacted: true, seen: false },
+        }),
+      ],
+      projectId: "p1",
+      nowMs: NOW,
+    });
+    expect(entries).toHaveLength(RAIL_MINIMUM + 1);
+    expect(ids(entries)).toContain("unread-review");
+  });
+
+  it("does not force-show a stale entry whose diff you have already seen", () => {
+    const entries = railEntries({
+      runs: [
+        run({
+          run_id: "seen-review",
+          state: "review",
+          needs_attention: true,
+          state_changed_at: ago(24 * 6),
+          attention: { resume_at: ago(24 * 6), interacted: true, seen: true },
+        }),
+      ],
+      projectId: "p1",
+      nowMs: NOW,
+      minimum: 0,
+    });
+    expect(entries).toEqual([]);
+  });
+});
+
+describe("whether an entry holds work you have not reviewed", () => {
+  const entry = (over = {}) => ({
+    working: false,
+    needsYou: false,
+    attention: { seen: true },
+    status: { ahead: 0, behind: 0, insertions: 0, deletions: 0 },
+    ...over,
+  });
+
+  it("counts uncommitted work you have not looked at", () => {
+    expect(hasUnreviewedChanges(entry({ attention: { seen: false }, status: { insertions: 3, deletions: 0 } }))).toBe(true);
+  });
+
+  it("counts commits ahead of the comparison ref you have not looked at", () => {
+    expect(hasUnreviewedChanges(entry({ attention: { seen: false }, status: { ahead: 2 } }))).toBe(true);
+  });
+
+  it("counts nothing once you have seen it, however big the diff", () => {
+    expect(hasUnreviewedChanges(entry({ status: { ahead: 9, insertions: 400, deletions: 300 } }))).toBe(false);
+  });
+
+  it("counts nothing when there is no diff to review", () => {
+    expect(hasUnreviewedChanges(entry({ attention: { seen: false } }))).toBe(false);
+    expect(hasUnreviewedChanges(entry({ attention: { seen: false }, status: null }))).toBe(false);
+  });
+
+  it("keeps a live, an unread, or an unreviewed entry — and only those", () => {
+    expect(mustShow(entry({ working: true }))).toBe(true);
+    expect(mustShow(entry({ needsYou: true, attention: { seen: false } }))).toBe(true);
+    expect(mustShow(entry({ attention: { seen: false }, status: { insertions: 1 } }))).toBe(true);
+    expect(mustShow(entry({ needsYou: true }))).toBe(false);
+    expect(mustShow(entry())).toBe(false);
+  });
+});
+
 describe("the order holds still while you work", () => {
   // The rule the whole rail rests on: the daemon keeps resume_at fixed while you
   // keep working on one thing, so its position cannot move under your hands.
@@ -170,12 +319,12 @@ describe("the order holds still while you work", () => {
   });
 });
 
-describe("worktrees only enter once Build knows about them", () => {
-  it("shows one Build cut for you and hides one you made by hand", () => {
+describe("worktrees enter once Build knows them, or once they hold work", () => {
+  it("shows one Build cut for you and hides a quiet one you made by hand", () => {
     const entries = railEntries({
       worktrees: [
         worktree({ worktree_id: "built", attention: { resume_at: ago(1), interacted: true, seen: false } }),
-        worktree({ worktree_id: "by-hand", attention: { resume_at: null, interacted: false, seen: false } }),
+        quietWorktree({ worktree_id: "by-hand", attention: { resume_at: null, interacted: false, seen: true } }),
       ],
       projectId: "p1",
       nowMs: NOW,
@@ -185,8 +334,8 @@ describe("worktrees only enter once Build knows about them", () => {
 
   it("hands the rest to the Worktrees row, ordered by name", () => {
     const worktrees = [
-      worktree({ worktree_id: "zeta", name: "zeta", attention: { interacted: false } }),
-      worktree({ worktree_id: "alpha", name: "alpha", attention: { interacted: false } }),
+      quietWorktree({ worktree_id: "zeta", name: "zeta" }),
+      quietWorktree({ worktree_id: "alpha", name: "alpha" }),
       worktree({ worktree_id: "shown", name: "shown", attention: { resume_at: ago(1), interacted: true } }),
     ];
     const entries = railEntries({ worktrees, projectId: "p1", nowMs: NOW });

@@ -464,6 +464,100 @@ describe("worktrees enter once Build knows them, or once they hold work", () => 
   });
 });
 
+// Asked for one project, the rail answers for that project. Asked for none, it
+// answers for everything Build knows about — one selection, one backfill, one
+// order, with nothing grouped.
+describe("asked about every project at once", () => {
+  it("takes work from every project into one list, ordered by resume point", () => {
+    const entries = railEntries({
+      runs: [
+        run({ run_id: "here-late", project_id: "p1", attention: { resume_at: ago(2), interacted: true, seen: true } }),
+        run({ run_id: "there-early", project_id: "p2", attention: { resume_at: ago(6), interacted: true, seen: true } }),
+        run({ run_id: "here-early", project_id: "p1", attention: { resume_at: ago(9), interacted: true, seen: true } }),
+      ],
+      nowMs: NOW,
+    });
+    expect(ids(entries)).toEqual(["here-early", "there-early", "here-late"]);
+  });
+
+  it("answers exactly as before when asked about one project", () => {
+    const runs = [run(), run({ run_id: "other", project_id: "p2" })];
+    expect(ids(railEntries({ runs, projectId: "p1", nowMs: NOW }))).toEqual(["r1"]);
+  });
+
+  it("backfills a thin list once across all projects, not once per project", () => {
+    const stale = (id, projectId, hours) =>
+      run({
+        run_id: id,
+        project_id: projectId,
+        state: "merged",
+        state_changed_at: ago(24 * 6),
+        attention: { resume_at: ago(hours), interacted: true, seen: true },
+      });
+    const runs = [
+      stale("p1-a", "p1", 24 * 2),
+      stale("p1-b", "p1", 24 * 3),
+      stale("p1-c", "p1", 24 * 4),
+      stale("p2-a", "p2", 24 * 5),
+      stale("p2-b", "p2", 24 * 6),
+      stale("p2-c", "p2", 24 * 7),
+    ];
+    expect(railEntries({ runs, nowMs: NOW })).toHaveLength(RAIL_MINIMUM);
+  });
+
+  it("sorts main rows in with everything else instead of pinning them anywhere", () => {
+    const mains = [
+      mainEntry({
+        project: project({ project_id: "p2", name: "dotfiles" }),
+        primaryChange: primaryChange({ project_id: "p2" }),
+        run: run({ run_id: "rp2", project_id: "p2", attention: { resume_at: ago(5), interacted: true, seen: true } }),
+      }),
+    ];
+    const entries = railEntries({
+      runs: [
+        run({ run_id: "older", attention: { resume_at: ago(8), interacted: true, seen: true } }),
+        run({ run_id: "newer", attention: { resume_at: ago(1), interacted: true, seen: true } }),
+      ],
+      mains,
+      nowMs: NOW,
+    });
+    expect(ids(entries)).toEqual(["older", "p2", "newer"]);
+  });
+
+  it("never drops a main checkout holding uncommitted work, and lets a clean quiet one go", () => {
+    const dirty = mainEntry({
+      project: project(),
+      primaryChange: primaryChange({ files_changed: 1, insertions: 5, deletions: 2 }),
+    });
+    const clean = mainEntry({
+      project: project({ project_id: "p2", name: "dotfiles" }),
+      primaryChange: primaryChange({ project_id: "p2" }),
+    });
+    const entries = railEntries({ mains: [dirty, clean], nowMs: NOW, minimum: 0 });
+    expect(ids(entries)).toEqual(["p1"]);
+  });
+
+  it("keeps main rows out of a project's own rail when they belong elsewhere", () => {
+    const mains = [
+      mainEntry({ project: project(), primaryChange: primaryChange({ files_changed: 1, insertions: 5 }) }),
+      mainEntry({
+        project: project({ project_id: "p2", name: "dotfiles" }),
+        primaryChange: primaryChange({ project_id: "p2", files_changed: 1, insertions: 5 }),
+      }),
+    ];
+    expect(ids(railEntries({ mains, projectId: "p1", nowMs: NOW, minimum: 0 }))).toEqual(["p1"]);
+  });
+
+  it("hands the leftover worktrees of every project to one row, ordered by name", () => {
+    const worktrees = [
+      quietWorktree({ worktree_id: "z", name: "zeta", project_id: "p2" }),
+      quietWorktree({ worktree_id: "a", name: "alpha", project_id: "p1" }),
+    ];
+    const rows = railWorktrees({ worktrees, entries: railEntries({ worktrees, nowMs: NOW, minimum: 0 }) });
+    expect(rows.map((w) => w.name)).toEqual(["alpha", "zeta"]);
+  });
+});
+
 describe("the dot", () => {
   it("pulses only while an agent is working", () => {
     expect(dotState({ working: true, attention: { seen: false } })).toBe("working");

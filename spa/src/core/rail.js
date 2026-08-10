@@ -204,7 +204,12 @@ export function mustShow(entry) {
 const sortKey = (entry) => ms(entry.attention?.resume_at) ?? 0;
 
 /**
- * The project's rail entries, in display order.
+ * The rail entries, in display order — for one project, or for every project at
+ * once when no `projectId` is given. Either way it is one selection, one
+ * backfill and one order; nothing is grouped.
+ *
+ * `mains` are already-built `mainEntry` rows, which take part on exactly the
+ * same terms as everything else.
  *
  * `worktrees` are only eligible as entries once they have been interacted with
  * in Build — one Build cut for you arrives that way, one you made by hand does
@@ -212,14 +217,15 @@ const sortKey = (entry) => ms(entry.attention?.resume_at) ?? 0;
  * exception: a worktree with an agent in it, or holding work nobody has
  * reviewed, is exactly what the rail exists to surface, however it was made.
  */
-export function railEntries({ runs = [], plans = [], worktrees = [], projectId, nowMs = Date.now(), minimum = RAIL_MINIMUM } = {}) {
-  const mine = (list) => list.filter((x) => x.project_id === projectId);
+export function railEntries({ runs = [], plans = [], worktrees = [], mains = [], projectId = null, nowMs = Date.now(), minimum = RAIL_MINIMUM } = {}) {
+  const mine = (list) => (projectId === null ? list : list.filter((x) => x.project_id === projectId));
   const candidates = [
     ...mine(runs).filter((run) => run.state !== "archived").map(runEntry),
     ...mine(plans).map(planEntry),
     ...mine(worktrees)
       .map(worktreeEntry)
       .filter((entry) => entry.attention?.interacted || mustShow(entry)),
+    ...mine(mains),
   ];
 
   const chosen = new Map();
@@ -266,13 +272,14 @@ export function railEntries({ runs = [], plans = [], worktrees = [], projectId, 
 
 /**
  * The worktrees the `Worktrees ›` row holds: everything not already an entry
- * above it. Ordered by name — this is a place to look something up, not a
- * feed — or by recency when the caller asks.
+ * above it, for one project or — with no `projectId` — for every project at
+ * once. Ordered by name, since this is a place to look something up rather than
+ * a feed, or by recency when the caller asks.
  */
-export function railWorktrees({ worktrees = [], entries = [], projectId, by = "name" } = {}) {
+export function railWorktrees({ worktrees = [], entries = [], projectId = null, by = "name" } = {}) {
   const shown = new Set(entries.filter((e) => e.kind === "worktree").map((e) => e.id));
   const rows = worktrees
-    .filter((w) => w.project_id === projectId && !shown.has(w.worktree_id))
+    .filter((w) => (projectId === null || w.project_id === projectId) && !shown.has(w.worktree_id))
     .map(worktreeEntry);
   return by === "recent"
     ? rows.sort((a, b) => (ms(b.attention?.resume_at) ?? 0) - (ms(a.attention?.resume_at) ?? 0))

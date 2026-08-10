@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { buildAllRailModel } from "../src/core/allRail.js";
-import { allRailHtml } from "../src/core/sidebar.js";
+import { allRailHtml, buildSidebarModel, projectHtml } from "../src/core/sidebar.js";
 
 const NOW = Date.parse("2026-07-28T12:00:00Z");
 const iso = (hoursAgo) => new Date(NOW - hoursAgo * 3600 * 1000).toISOString();
@@ -286,6 +286,38 @@ describe("the flat rail's markup", () => {
   it("says which project a row belongs to, since nothing groups it now", () => {
     const html = allRailHtml(model({ runs: [run({ project_id: "p2" })], plans: [] }), ui());
     expect(html).toContain('class="sproj-tag mono">dotfiles<');
+  });
+
+  // Four things do not fit one line of a 272px rail, and the name is what loses.
+  // So the name keeps the first line and the project and status share a second —
+  // a row that ever puts them back together has crushed the name off the rail.
+  it("keeps the name off the line the project and the status share", () => {
+    const html = allRailHtml(model({ runs: [run({ project_id: "p2" })], plans: [] }), ui());
+    const meta = html.match(/<span class="smeta">[^]*?<\/span>\s*<\/div>/)[0];
+    expect(meta).toContain("sproj-tag");
+    expect(meta).toContain("↑3");
+    expect(meta).not.toContain("stitle");
+    expect(html).toContain('<span class="stitle">Fix the thing</span>');
+  });
+
+  // The per-project rail has a heading to say the project, so its rows keep the
+  // single line they have always had.
+  it("leaves a row under a project block on one line", () => {
+    const html = projectHtml(
+      buildSidebarModel({
+        projects,
+        runs: [run()],
+        plans: [],
+        externalWorktrees: [],
+        primaryChanges: [],
+        readIds: new Set(),
+        nowMs: NOW,
+      })[0],
+      ui({ mode: "projects" }),
+    );
+    expect(html).not.toContain("smeta");
+    expect(html).not.toContain("sproj-tag");
+    expect(html).toContain("↑3");
   });
 
   it("shows a main row as its branch and status, with nothing to finish", () => {

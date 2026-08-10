@@ -120,10 +120,17 @@ function statusTitle(status) {
  *  of its own to show. */
 const STATE_LABELS = { ...RUN_STATE_LABEL, ...PLAN_STATE_LABEL };
 
-/** The project a row belongs to, said on the row itself. Only the flat rail
- *  needs it: under a project block the heading already answers this. */
-function projectTagHtml(entry, show) {
-  return show && entry.project_name ? `<span class="sproj-tag mono">${esc(entry.project_name)}</span>` : "";
+/** The flat rail's second line: which project this row lives in, and the git
+ *  status that would otherwise have to fight the name for the first one.
+ *
+ *  A row under a project block carries three things on one line and the heading
+ *  answers the fourth. Without the heading the row has to say the project too,
+ *  and four things do not fit a 272px rail — the name is what loses, which is
+ *  the one thing you are scanning for. So the name keeps the first line, and
+ *  the project and the status share the second. */
+function metaLine(entry, statusHtml) {
+  const tag = entry.project_name ? `<span class="sproj-tag mono">${esc(entry.project_name)}</span>` : "";
+  return tag || statusHtml ? `<span class="smeta">${tag}${statusHtml}</span>` : "";
 }
 
 /** One rail row: `[dot] name [git status]`. The name falls back to the branch —
@@ -161,8 +168,9 @@ function entryRow(entry, ui, { showProject = false } = {}) {
           ? `<button class="btn mini" data-done-worktree="${esc(entry.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
           : "";
   const title = entry.kind === "main" && entry.path ? `${label} — ${entry.path}` : label;
+  const name = `<span class="stitle${entry.kind === "main" ? " mono" : ""}">${esc(label)}</span>`;
   return `<div class="srow sentry ${entry.kind === "main" ? "smain-row " : ""}${entry.id === activeId ? "active" : ""}" ${data} data-project="${esc(entry.project_id)}" title="${esc(title)}">
-    ${dotHtml(entry)}${projectTagHtml(entry, showProject)}<span class="stitle${entry.kind === "main" ? " mono" : ""}">${esc(label)}</span>${right}${done}</div>`;
+    ${dotHtml(entry)}${name}${showProject ? "" : right}${done}${showProject ? metaLine(entry, right) : ""}</div>`;
 }
 
 /** The primary checkout's git status, using its upstream when tracked and the
@@ -205,8 +213,9 @@ function worktreeLine(worktrees, key, open, ui, { showProject = false } = {}) {
             const done = w.can_finish
               ? `<button class="btn mini" data-done-worktree="${esc(w.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
               : "";
+            const status = entryStatusHtml(w.status);
             return `<div class="srow swt-item ${w.id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.id)}" data-project="${esc(w.project_id)}" title="${esc(w.branch || w.name || "")}">
-      ${projectTagHtml(w, showProject)}<span class="stitle mono">${esc(label)}</span>${entryStatusHtml(w.status)}${done}</div>`;
+      <span class="stitle mono">${esc(label)}</span>${showProject ? "" : status}${done}${showProject ? metaLine(w, status) : ""}</div>`;
           },
         )
         .join("")}</div>`

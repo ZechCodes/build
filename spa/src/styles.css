@@ -941,8 +941,13 @@ body.sidebar-collapsed #side-open { display:block; }
    groups a row here, so each one says which project it belongs to, and the
    checkout rows read as branches the way the project header's line does. */
 .side-all { padding:2px 2px 0; }
-.sproj-tag { flex:none; max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+/* The name keeps the first line; the project and the git status share a second,
+   indented past the dot so the names still read as one column down the rail. */
+.side-all .srow { flex-wrap:wrap; row-gap:1px; }
+.smeta { flex:0 0 100%; display:flex; align-items:center; gap:8px; padding-left:17px; }
+.sproj-tag { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-size:11px; color:var(--dim); }
+.side-all .swt-item .smeta { padding-left:0; }
 .srow.smain-row .stitle { font-size:12px; }
 .ssec { margin:6px 0 1px; }
 /* Quieter than the head that anchors the block: smaller, tighter tracking,

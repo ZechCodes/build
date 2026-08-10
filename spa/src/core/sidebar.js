@@ -120,11 +120,26 @@ function statusTitle(status) {
  *  of its own to show. */
 const STATE_LABELS = { ...RUN_STATE_LABEL, ...PLAN_STATE_LABEL };
 
+/** The project a row belongs to, said on the row itself. Only the flat rail
+ *  needs it: under a project block the heading already answers this. */
+function projectTagHtml(entry, show) {
+  return show && entry.project_name ? `<span class="sproj-tag mono">${esc(entry.project_name)}</span>` : "";
+}
+
 /** One rail row: `[dot] name [git status]`. The name falls back to the branch —
- *  a worktree with nothing filed behind it is still its branch. */
-function entryRow(entry, ui) {
+ *  a worktree with nothing filed behind it is still its branch. A main row is
+ *  its project's checkout: named by the branch it has out, and not something you
+ *  finish, so it carries no Done control.
+ *  `opts`: { showProject } — label the row with its project (the flat rail). */
+function entryRow(entry, ui, { showProject = false } = {}) {
   const activeId =
-    entry.kind === "run" ? ui.activeRunId : entry.kind === "plan" ? ui.activePlanId : ui.activeWorktreeId;
+    entry.kind === "run"
+      ? ui.activeRunId
+      : entry.kind === "plan"
+        ? ui.activePlanId
+        : entry.kind === "main"
+          ? ui.activeMainProjectId
+          : ui.activeWorktreeId;
   const label = entry.name || entry.branch || "(untitled)";
   const right = entry.status
     ? entryStatusHtml(entry.status)
@@ -134,7 +149,9 @@ function entryRow(entry, ui) {
       ? `data-run="${esc(entry.id)}" data-tab="${defaultRunTab({ state: entry.state })}"`
       : entry.kind === "plan"
         ? `data-plan="${esc(entry.id)}"`
-        : `data-wt="${esc(entry.id)}"`;
+        : entry.kind === "main"
+          ? `data-main="${esc(entry.id)}"`
+          : `data-wt="${esc(entry.id)}"`;
   const done =
     entry.kind === "plan" && entry.can_archive
       ? `<button class="btn mini" data-done-plan="${esc(entry.id)}" type="button" aria-label="Archive plan ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
@@ -143,8 +160,9 @@ function entryRow(entry, ui) {
         : entry.kind === "worktree" && entry.can_finish
           ? `<button class="btn mini" data-done-worktree="${esc(entry.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
           : "";
-  return `<div class="srow sentry ${entry.id === activeId ? "active" : ""}" ${data} data-project="${esc(entry.project_id)}" title="${esc(label)}">
-    ${dotHtml(entry)}<span class="stitle">${esc(label)}</span>${right}${done}</div>`;
+  const title = entry.kind === "main" && entry.path ? `${label} — ${entry.path}` : label;
+  return `<div class="srow sentry ${entry.kind === "main" ? "smain-row " : ""}${entry.id === activeId ? "active" : ""}" ${data} data-project="${esc(entry.project_id)}" title="${esc(title)}">
+    ${dotHtml(entry)}${projectTagHtml(entry, showProject)}<span class="stitle${entry.kind === "main" ? " mono" : ""}">${esc(label)}</span>${right}${done}</div>`;
 }
 
 /** The primary checkout's git status, using its upstream when tracked and the
@@ -174,11 +192,13 @@ function checkoutLine(m, ui) {
 
 /** The `Worktrees ›` row: everything the entries above did not already show —
  *  worktrees you made outside Build, and ones that have fallen out of the recent
- *  list. A place to look something up, so it is ordered by name. */
-function worktreeLine(m, open, ui) {
-  if (!m.worktrees.length) return "";
+ *  list. A place to look something up, so it is ordered by name.
+ *  `key` is what the fold toggles under: a project id per block, or `__all` for
+ *  the one fold the flat rail has. */
+function worktreeLine(worktrees, key, open, ui, { showProject = false } = {}) {
+  if (!worktrees.length) return "";
   const list = open
-    ? `<div class="swt-list">${m.worktrees
+    ? `<div class="swt-list">${worktrees
         .map(
           (w) => {
             const label = w.name || w.branch || "(detached)";
@@ -186,14 +206,14 @@ function worktreeLine(m, open, ui) {
               ? `<button class="btn mini" data-done-worktree="${esc(w.id)}" type="button" aria-label="Finish worktree ${esc(label)}">Done</button><span class="warn" data-done-error hidden></span>`
               : "";
             return `<div class="srow swt-item ${w.id === ui.activeWorktreeId ? "active" : ""}" data-wt="${esc(w.id)}" data-project="${esc(w.project_id)}" title="${esc(w.branch || w.name || "")}">
-      <span class="stitle mono">${esc(label)}</span>${entryStatusHtml(w.status)}${done}</div>`;
+      ${projectTagHtml(w, showProject)}<span class="stitle mono">${esc(label)}</span>${entryStatusHtml(w.status)}${done}</div>`;
           },
         )
         .join("")}</div>`
     : "";
-  const activeInside = m.worktrees.some((w) => w.id === ui.activeWorktreeId);
-  return `<div class="srow swt-line ${activeInside && !open ? "active" : ""}" data-wtline="${esc(m.project_id)}">
-    <span class="stitle dim">Worktrees <span class="n">${m.worktrees.length}</span></span>
+  const activeInside = worktrees.some((w) => w.id === ui.activeWorktreeId);
+  return `<div class="srow swt-line ${activeInside && !open ? "active" : ""}" data-wtline="${esc(key)}">
+    <span class="stitle dim">Worktrees <span class="n">${worktrees.length}</span></span>
     <span class="swt-caret">${open ? "▾" : "›"}</span></div>${list}`;
 }
 
@@ -217,14 +237,38 @@ export function projectHtml(m, ui) {
   const entries = m.entries.map((entry) => entryRow(entry, ui)).join("");
   return `<div class="${block}">${head}<div class="sproj-body">
     ${entries || '<div class="sempty dim">Nothing running.</div>'}
-    ${worktreeLine(m, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
+    ${worktreeLine(m.worktrees, m.project_id, ui.wtOpen.has(m.project_id), ui)}</div></div>`;
+}
+
+/** The key the flat rail's single Worktrees fold toggles under — no project owns
+ *  it, so it cannot collide with a project id. */
+export const ALL_WORKTREES_KEY = "__all";
+
+/** The header both rails share: which rail you are on, and the add button.
+ *  `ui.mode` is "projects" or "all" (core/railMode.js). */
+function railHeadHtml(ui) {
+  const mode = ui.mode === "all" ? "all" : "projects";
+  const button = (value, label) =>
+    `<button class="railmode ${value === mode ? "active" : ""}" data-railmode="${value}" type="button" aria-pressed="${value === mode}">${label}</button>`;
+  return `<div class="side-head"><span class="railmodes">${button("projects", "Projects")}${button("all", "All")}</span>
+    <span class="side-actions">
+      <button class="iconbtn" id="side-add" title="Add a project">+</button>
+    </span></div>`;
 }
 
 export function sidebarHtml(model, ui) {
   const projects = model.map((m) => projectHtml(m, ui)).join("");
-  return `<div class="side-head"><span class="sseclabel">Projects</span>
-    <span class="side-actions">
-      <button class="iconbtn" id="side-add" title="Add a project">+</button>
-    </span></div>
+  return `${railHeadHtml(ui)}
   <div class="side-projects">${projects || '<div class="dim sempty">No projects yet — add one.</div>'}</div>`;
+}
+
+/** The flat rail: every project's work in one list, each row saying where it
+ *  lives, then the one Worktrees fold holding what the list did not show.
+ *  `model` is core/allRail.js's `{entries, worktrees, unread}`. */
+export function allRailHtml(model, ui) {
+  const entries = model.entries.map((entry) => entryRow(entry, ui, { showProject: true })).join("");
+  return `${railHeadHtml(ui)}
+  <div class="side-all">
+    ${entries || '<div class="sempty dim">Nothing running.</div>'}
+    ${worktreeLine(model.worktrees, ALL_WORKTREES_KEY, ui.wtOpen.has(ALL_WORKTREES_KEY), ui, { showProject: true })}</div>`;
 }

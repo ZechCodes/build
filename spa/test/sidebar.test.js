@@ -390,4 +390,12 @@ describe("sidebarHtml", () => {
     expect(html).toContain('id="side-add"');
     expect(html).toContain("No projects yet");
   });
+
+  it("offers the other rail from the header, with this one marked", () => {
+    const html = sidebarHtml([], ui({ mode: "projects" }));
+    const projects = html.match(/<button[^>]*data-railmode="projects"[^>]*>/)[0];
+    expect(projects).toContain("active");
+    expect(projects).toContain('aria-pressed="true"');
+    expect(html).toMatch(/<button[^>]*data-railmode="all"[^>]*aria-pressed="false"/);
+  });
 });

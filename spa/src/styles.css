@@ -879,6 +879,14 @@ body.sidebar-collapsed #side-open { display:block; }
 .iconbtn:hover { background:var(--line2); color:var(--ink2); }
 .sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }
+/* Which rail you are on: two words where the section label used to be, sized
+   like it so the header keeps its height when you switch. */
+.railmodes { display:flex; gap:2px; }
+.railmode { font:inherit; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  font-weight:700; color:var(--dim); background:none; border:none; border-radius:6px;
+  padding:3px 6px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.railmode:hover { background:var(--line2); color:var(--ink2); }
+.railmode.active { background:var(--accent-soft); color:var(--accent); }
 /* Each project is one bordered rect — no fill, so it reads as a container
    rather than a card stacked on the page. The rect replaces both the old
    between-block margin and the tree guide that used to hang inside it; the
@@ -929,6 +937,13 @@ body.sidebar-collapsed #side-open { display:block; }
    The row backgrounds sit in the padding gap so hover/active never touch the
    line. */
 .sproj-body { padding:2px 0 0 16px; }
+/* The flat rail: the same rows, without the project rect around them. Nothing
+   groups a row here, so each one says which project it belongs to, and the
+   checkout rows read as branches the way the project header's line does. */
+.side-all { padding:2px 2px 0; }
+.sproj-tag { flex:none; max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:11px; color:var(--dim); }
+.srow.smain-row .stitle { font-size:12px; }
 .ssec { margin:6px 0 1px; }
 /* Quieter than the head that anchors the block: smaller, tighter tracking,
    lighter weight — a whisper, not a shout. */

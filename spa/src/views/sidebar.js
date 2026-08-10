@@ -3,7 +3,9 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { buildSidebarModel, sidebarHtml } from "../core/sidebar.js";
+import { allRailHtml, buildSidebarModel, sidebarHtml } from "../core/sidebar.js";
+import { buildAllRailModel } from "../core/allRail.js";
+import { loadRailMode, persistRailMode } from "../core/railMode.js";
 import { confirmAction } from "../core/confirm.js";
 import { wireRailDoneControls } from "../core/railDone.js";
 import { subscribeFeed, refreshFeed } from "../core/taskFeed.js";
@@ -17,7 +19,8 @@ const COLLAPSED_KEY = "build.sidebar.collapsed";
 const CLOSED_KEY = "build.sidebar.closedProjects";
 
 const closedProjects = new Set(JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"));
-const wtOpen = new Set(); // per-session: which projects' worktree lists are unfolded
+const wtOpen = new Set(); // per-session: which worktree lists are unfolded
+let railMode = loadRailMode(localStorage); // "projects" (blocks) or "all" (flat)
 const pendingDone = new Set();
 const doneErrors = new Map();
 let lastFeed = null;
@@ -129,7 +132,7 @@ function draw() {
   if (!lastFeed) return;
   const aside = $("#sidebar-rail");
   if (!aside) return;
-  const model = buildSidebarModel({
+  const source = {
     projects: lastFeed.projects,
     runs: lastFeed.runs,
     plans: lastFeed.plans,
@@ -138,17 +141,23 @@ function draw() {
     readIds: App.readIds,
     nowMs: Date.now(),
     pendingDone,
-  });
-  const scroll = aside.scrollTop;
-  aside.innerHTML = sidebarHtml(model, {
+  };
+  const ui = {
     closed: closedProjects,
     wtOpen,
+    mode: railMode,
     activeRunId: activeRunId(),
     activePlanId: activePlanId(),
     activeProjectId: activeProjectId(),
     activeMainProjectId: activeMainProjectId(),
     activeWorktreeId: activeWorktreeId(),
-  });
+  };
+  const scroll = aside.scrollTop;
+  // Two rails over one feed: blocks per project, or one flat list of everything.
+  // Every handler below is keyed on the row's data attributes, which both rails
+  // render the same way, so the wiring does not care which one is up.
+  aside.innerHTML =
+    railMode === "all" ? allRailHtml(buildAllRailModel(source), ui) : sidebarHtml(buildSidebarModel(source), ui);
   aside.scrollTop = scroll;
   setBadge(
     lastFeed.runs.filter((run) => !pendingDone.has(`run:${run.run_id}`)),
@@ -156,6 +165,15 @@ function draw() {
   );
 
   $("#side-add").onclick = openAddProjectMenu;
+  // Switching rails is a change of view, never of place: you stay on whatever
+  // surface you were reading.
+  aside.querySelectorAll("[data-railmode]").forEach((b) => {
+    b.onclick = () => {
+      railMode = b.dataset.railmode;
+      persistRailMode(railMode, localStorage);
+      draw();
+    };
+  });
   // The chevron toggles; the name navigates to the project page and expands it.
   aside.querySelectorAll("[data-chev]").forEach((b) => {
     b.onclick = () => {

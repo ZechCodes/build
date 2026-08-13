@@ -1498,6 +1498,13 @@ impl AppState {
         store
             .migrate_split_records_to_issues()
             .map_err(|e| e.to_string())?;
+        // Then: move every entity-keyed conversation onto the entity's first
+        // agent. Idempotent (the first agent's id is derived from its owner),
+        // and before the loaders so recovery only ever sees agent-keyed
+        // conversations.
+        store
+            .migrate_threads_to_agents()
+            .map_err(|e| e.to_string())?;
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
         let archived_worktrees = store
@@ -1559,7 +1566,7 @@ impl AppState {
                 .map_err(|e| format!("recover {plan_id}: {e}"))?;
             // Say so on the conversation: unread is event-driven, so a parked
             // plan whose session died goes quiet unless the event exists.
-            active.thread.push_event(
+            active.agents.push_event(
                 crate::thread::ThreadEventKind::Interrupted,
                 Some("Build restarted; the drafting session did not survive".to_string()),
                 None,
@@ -1788,8 +1795,17 @@ impl AppState {
                     let (stages, issue_thread) = self
                         .plans
                         .get(&issue_id)
-                        .map(|issue| (issue.stages.clone(), issue.thread.clone()))
-                        .unwrap_or_else(|| (Vec::new(), crate::thread::Thread::new(&issue_id)));
+                        .map(|issue| (issue.stages.clone(), issue.agents.clone()))
+                        .unwrap_or_else(|| {
+                            (
+                                Vec::new(),
+                                crate::agent::AgentRoster::with_first(
+                                    &issue_id,
+                                    active.model_choice.clone(),
+                                    &now_rfc3339(),
+                                ),
+                            )
+                        });
                     let prompt = recovery_agent_prompt(
                         &recovery_id,
                         &issue_id,
@@ -1907,7 +1923,7 @@ impl AppState {
                         worktree_id: crate::worktree::external_worktree_id(&active.worktree.path),
                     });
                 }
-                issue.thread.push_event_with_links(
+                issue.agents.push_event_with_links(
                     event,
                     Some(summary),
                     None,
@@ -2006,7 +2022,8 @@ impl AppState {
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
-            thread: active.thread.clone(),
+            agents: active.agents.agents().to_vec(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: active.last_summary.clone(),
             last_error: active.last_error.clone(),
             created_at,
@@ -2057,7 +2074,8 @@ impl AppState {
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
-            thread: active.thread.clone(),
+            agents: active.agents.agents().to_vec(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: active.last_summary.clone(),
             last_error: active.last_error.clone(),
             created_at,
@@ -2097,7 +2115,7 @@ impl AppState {
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
         let persisted = self.persist_plan_record(&plan_id, &active);
-        let news = self.conversation_news(&active.thread);
+        let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
         self.push_attention_notify(&plan_id, news, state_kind);
         self.plans.insert(plan_id, active);
@@ -2167,7 +2185,7 @@ impl AppState {
             let Ok(mut active) = self.take_plan(owner) else {
                 return;
             };
-            edit(&mut active.thread);
+            edit(&mut active.agents);
             let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
                 eprintln!("{context} {owner}: {error}");
@@ -2177,7 +2195,7 @@ impl AppState {
         let Ok(mut active) = self.take_run(owner) else {
             return;
         };
-        edit(&mut active.thread);
+        edit(&mut active.agents);
         let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("{context} {owner}: {error}");
@@ -2249,8 +2267,8 @@ impl AppState {
         let sequences: Vec<(String, u64)> = self
             .plans
             .values()
-            .map(|plan| &plan.thread)
-            .chain(self.runs.values().map(|run| &run.thread))
+            .map(|plan| &plan.agents)
+            .chain(self.runs.values().map(|run| &run.agents))
             .map(|thread| (thread.id.clone(), thread.last_sequence()))
             .collect();
         self.conversation_attention_sequence.extend(sequences);
@@ -2443,10 +2461,10 @@ impl AppState {
     /// changing it — chiefly "is anything waiting for this agent".
     fn entity_thread(&self, entity_id: &str) -> Result<&crate::thread::Thread, String> {
         if let Some(plan) = self.plans.get(entity_id) {
-            return Ok(&plan.thread);
+            return Ok(&plan.agents);
         }
         if let Some(run) = self.runs.get(entity_id) {
-            return Ok(&run.thread);
+            return Ok(&run.agents);
         }
         Err("unknown id".to_string())
     }
@@ -2765,7 +2783,7 @@ impl AppState {
         if self.plans.contains_key(entity_id) {
             let mut active = self.take_plan(entity_id)?;
             let result = apply_thread_action(
-                &mut active.thread,
+                &mut active.agents,
                 crate::thread::ArtifactKind::Plan,
                 action,
                 &now,
@@ -2784,7 +2802,7 @@ impl AppState {
         {
             let mut issue = self.take_plan(&issue_id)?;
             let result = apply_thread_action(
-                &mut issue.thread,
+                &mut issue.agents,
                 crate::thread::ArtifactKind::Diff,
                 action,
                 &now,
@@ -2797,7 +2815,7 @@ impl AppState {
         if self.runs.contains_key(entity_id) {
             let mut active = self.take_run(entity_id)?;
             let result = apply_thread_action(
-                &mut active.thread,
+                &mut active.agents,
                 crate::thread::ArtifactKind::Diff,
                 action,
                 &now,
@@ -2931,8 +2949,8 @@ impl AppState {
                 crate::thread::ThreadLink::Recovery { recovery_id } => {
                     let thread = issue_id
                         .as_deref()
-                        .and_then(|id| self.plans.get(id).map(|issue| &issue.thread))
-                        .or_else(|| self.runs.get(entity_id).map(|run| &run.thread));
+                        .and_then(|id| self.plans.get(id).map(|issue| &issue.agents))
+                        .or_else(|| self.runs.get(entity_id).map(|run| &run.agents));
                     let recorded = thread.is_some_and(|thread| {
                         thread.items.iter().any(|item| match item {
                             crate::thread::ThreadItem::Event(event) => event.links.iter().any(
@@ -2991,16 +3009,16 @@ impl AppState {
                 .filter(|(_, stage)| !previous_stage_ids.contains(&stage.id))
                 .map(|(index, stage)| (index, stage.clone()))
                 .collect();
-            append_plan_stage_announcements(&mut active.thread, plan_id, &new_stages);
+            append_plan_stage_announcements(&mut active.agents, plan_id, &new_stages);
         }
         record_report_in_thread(
-            &mut active.thread,
+            &mut active.agents,
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
         if outcome.is_ok() && report_for_thread.status == DoneStatus::Completed {
             if let Some(contents) = self.plan_revision_contents(plan_id, &active) {
-                active.thread.add_revision(
+                active.agents.add_revision(
                     crate::thread::ArtifactKind::Plan,
                     &contents,
                     &now_rfc3339(),
@@ -3128,8 +3146,8 @@ impl AppState {
             .and_then(|issue_id| self.plans.remove(issue_id));
         let conversation = issue
             .as_mut()
-            .map(|issue| &mut issue.thread)
-            .unwrap_or(&mut active.thread);
+            .map(|issue| &mut issue.agents)
+            .unwrap_or(&mut active.agents);
         record_report_in_thread(
             conversation,
             &report_for_thread,
@@ -3350,7 +3368,7 @@ impl AppState {
                     });
                 }
                 issue
-                    .thread
+                    .agents
                     .push_event_with_links(event, Some(summary), None, None, links, &now);
                 let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
                 if let Err(error) = persisted {
@@ -3401,20 +3419,20 @@ impl AppState {
         // thread would never be seen.
         record_report_in_thread(
             plan.as_mut()
-                .map(|plan| &mut plan.thread)
-                .unwrap_or(&mut active.thread),
+                .map(|plan| &mut plan.agents)
+                .unwrap_or(&mut active.agents),
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
         if outcome.is_ok() {
             if let (Some(pid), Some(plan_ref)) = (plan_id.as_deref(), plan.as_mut()) {
                 if let Some(contents) = self.plan_revision_contents(pid, plan_ref) {
-                    plan_ref.thread.add_revision(
+                    plan_ref.agents.add_revision(
                         crate::thread::ArtifactKind::Plan,
                         &contents,
                         &now_rfc3339(),
                     );
-                    active.thread.add_revision(
+                    active.agents.add_revision(
                         crate::thread::ArtifactKind::Plan,
                         &contents,
                         &now_rfc3339(),
@@ -3542,7 +3560,7 @@ impl AppState {
     /// through; a worktree with no conversation has nothing to read.
     fn conversation_last_sequence(&self, entity_id: &str) -> Option<u64> {
         if let Some(plan) = self.plans.get(entity_id) {
-            return Some(plan.thread.last_sequence());
+            return Some(plan.agents.last_sequence());
         }
         let run = self.runs.get(entity_id)?;
         Some(self.conversation_thread_for_run(run).last_sequence())
@@ -4013,7 +4031,7 @@ impl AppState {
             if let Some(exit) = &exit_code {
                 active.last_error = Some(exit.describe());
             }
-            record_idle_in_thread(&mut active.thread, exit_code.as_ref());
+            record_idle_in_thread(&mut active.agents, exit_code.as_ref());
             let (_, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {plan_id}: {e}");
@@ -5404,11 +5422,11 @@ impl AppState {
             .map(|id| id.0.clone())
             .filter(|issue_id| self.plans.contains_key(issue_id));
         let Some(issue_id) = issue_id else {
-            write(&mut active.thread);
+            write(&mut active.agents);
             return Ok(());
         };
         let mut issue = self.take_plan(&issue_id)?;
-        write(&mut issue.thread);
+        write(&mut issue.agents);
         let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
         persisted
     }
@@ -5421,8 +5439,8 @@ impl AppState {
             .plan_id
             .as_ref()
             .and_then(|issue_id| self.plans.get(&issue_id.0))
-            .map(|issue| &issue.thread)
-            .unwrap_or(&run.thread)
+            .map(|issue| &issue.agents)
+            .unwrap_or(&run.agents)
     }
 
     fn record_issue_current_stage_started(
@@ -5440,7 +5458,7 @@ impl AppState {
         };
         let mut issue = self.take_plan(&issue_id)?;
         if let Some(run) = self.runs.get(run_id) {
-            record_current_stage_started(&mut issue.thread, run, stages);
+            record_current_stage_started(&mut issue.agents, run, stages);
         }
         let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
         persisted
@@ -5505,7 +5523,7 @@ impl AppState {
                 .expect("plan_view returns an object")
                 .insert(
                     "thread".to_string(),
-                    active.thread.wire_value_after(after_sequence),
+                    active.agents.wire_value_after(after_sequence),
                 );
         }
         Ok(view)
@@ -5857,7 +5875,7 @@ impl AppState {
                 let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
-                issue.thread.push_event_with_links(
+                issue.agents.push_event_with_links(
                     if worktree_existed {
                         crate::thread::ThreadEventKind::WorktreeReused
                     } else {
@@ -5944,7 +5962,7 @@ impl AppState {
                         &active,
                         &project_root,
                         prompt,
-                        &issue.thread,
+                        &issue.agents,
                     ));
                 let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
@@ -5969,7 +5987,7 @@ impl AppState {
                         path: stage.path.clone(),
                     });
                 }
-                issue.thread.push_event_with_links(
+                issue.agents.push_event_with_links(
                     crate::thread::ThreadEventKind::RecoveryStarted,
                     Some(format!(
                         "Verified recovery started after automatic restore failed: {error}"
@@ -6251,7 +6269,7 @@ impl AppState {
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan(&mut active).map_err(err));
         if outcome.is_ok() {
-            active.thread.push_event(
+            active.agents.push_event(
                 crate::thread::ThreadEventKind::Approved,
                 Some("Plan approved".to_string()),
                 None,
@@ -6271,7 +6289,7 @@ impl AppState {
         let messages = parse_thread_inputs(params, crate::thread::ArtifactKind::Plan, "comments")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
-        append_user_thread_messages(&mut active.thread, messages);
+        append_user_thread_messages(&mut active.agents, messages);
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             let turn = self
@@ -6305,7 +6323,7 @@ impl AppState {
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan_stage(&mut active, &stage_id).map_err(err));
         if outcome.is_ok() {
-            active.thread.push_event(
+            active.agents.push_event(
                 crate::thread::ThreadEventKind::StageApproved,
                 Some(format!("Approved stage “{stage_title}”")),
                 None,
@@ -6364,7 +6382,7 @@ impl AppState {
                 .into_iter()
                 .cloned()
                 .collect();
-            append_stage_comments_to_thread(&mut active.thread, &stage, &comments);
+            append_stage_comments_to_thread(&mut active.agents, &stage, &comments);
         }
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
@@ -6390,7 +6408,7 @@ impl AppState {
         let message = require_str(params, "message")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
-        active.thread.post_user(&message, None, now_rfc3339());
+        active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             let turn = self
@@ -6421,7 +6439,7 @@ impl AppState {
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_plan(&mut active).map_err(err));
         if outcome.is_ok() {
-            active.thread.push_event(
+            active.agents.push_event(
                 crate::thread::ThreadEventKind::Abandoned,
                 Some("Plan abandoned".to_string()),
                 None,
@@ -6531,7 +6549,7 @@ impl AppState {
             };
             active.comments.push(comment.clone());
             active
-                .thread
+                .agents
                 .post_user(body.clone(), thread_anchor, now_rfc3339());
             minted = Some(comment);
             Ok(())
@@ -6562,7 +6580,7 @@ impl AppState {
                 .iter()
                 .find(|stage| stage.id == comment.stage_id)
                 .map(|stage| stage.path.as_str());
-            if let Some(message_index) = active.thread.items.iter().rposition(|item| {
+            if let Some(message_index) = active.agents.items.iter().rposition(|item| {
                 matches!(
                     item,
                     crate::thread::ThreadItem::Message(message)
@@ -6572,7 +6590,7 @@ impl AppState {
                                 == comment.anchor.as_ref().and(stage_path)
                 )
             }) {
-                active.thread.items.remove(message_index);
+                active.agents.items.remove(message_index);
             }
             Ok(())
         })();
@@ -6650,7 +6668,7 @@ impl AppState {
             issue_id: source_plan_id.clone(),
             implementation_id: run_id.clone(),
         };
-        plan.thread.push_event_with_links(
+        plan.agents.push_event_with_links(
             crate::thread::ThreadEventKind::WorktreeCreated,
             Some(format!(
                 "Created the Issue implementation worktree for {run_id}"
@@ -6663,7 +6681,7 @@ impl AppState {
             ],
             now_rfc3339(),
         );
-        plan.thread.push_event_with_links(
+        plan.agents.push_event_with_links(
             crate::thread::ThreadEventKind::ImplementationStarted,
             Some(format!("Implementation started as {run_id}")),
             None,
@@ -6672,7 +6690,7 @@ impl AppState {
             now_rfc3339(),
         );
         if let Some(run) = self.runs.get(&run_id) {
-            record_current_stage_started(&mut plan.thread, run, &plan_docs);
+            record_current_stage_started(&mut plan.agents, run, &plan_docs);
         }
         let (_, plan_persisted) = self.finish_plan_mutation(source_plan_id, plan);
         plan_persisted?;
@@ -6711,11 +6729,11 @@ impl AppState {
         let thread = self
             .plans
             .get(&entity_id)
-            .map(|active| &active.thread)
+            .map(|active| &active.agents)
             .or_else(|| {
-                planned_issue_id.and_then(|id| self.plans.get(id).map(|active| &active.thread))
+                planned_issue_id.and_then(|id| self.plans.get(id).map(|active| &active.agents))
             })
-            .or_else(|| self.runs.get(&entity_id).map(|active| &active.thread))
+            .or_else(|| self.runs.get(&entity_id).map(|active| &active.agents))
             .ok_or("unknown conversation owner")?;
         let revision = thread
             .revisions
@@ -6774,7 +6792,7 @@ impl AppState {
                             .map(|run| (run_id, run.worktree.path.clone()))
                     });
             let mut active = self.take_plan(&entity_id)?;
-            append_user_thread_messages_with_attachments(&mut active.thread, messages, attachments);
+            append_user_thread_messages_with_attachments(&mut active.agents, messages, attachments);
             if resume {
                 active
                     .plan
@@ -6838,7 +6856,7 @@ impl AppState {
             if let Some(issue_id) = issue_id.filter(|id| self.plans.contains_key(id)) {
                 let mut issue = self.take_plan(&issue_id)?;
                 append_user_thread_messages_with_attachments(
-                    &mut issue.thread,
+                    &mut issue.agents,
                     messages,
                     attachments,
                 );
@@ -6859,7 +6877,7 @@ impl AppState {
                 return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
             }
             let mut active = self.take_run(&entity_id)?;
-            append_user_thread_messages_with_attachments(&mut active.thread, messages, attachments);
+            append_user_thread_messages_with_attachments(&mut active.agents, messages, attachments);
             if resume {
                 active
                     .run
@@ -7157,8 +7175,8 @@ impl AppState {
             .and_then(|issue_id| self.plans.remove(issue_id));
         let legacy_run_thread = issue
             .as_ref()
-            .map(|issue| std::mem::replace(&mut active.thread, issue.thread.clone()));
-        append_user_thread_messages(&mut active.thread, messages);
+            .map(|issue| std::mem::replace(&mut active.agents, issue.agents.clone()));
+        append_user_thread_messages(&mut active.agents, messages);
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
@@ -7169,7 +7187,7 @@ impl AppState {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         if let (Some(issue), Some(legacy_thread)) = (&mut issue, legacy_run_thread) {
-            issue.thread = std::mem::replace(&mut active.thread, legacy_thread);
+            issue.agents = std::mem::replace(&mut active.agents, legacy_thread);
         }
         let issue_persisted = match (issue_id, issue) {
             (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue).1),
@@ -7281,8 +7299,8 @@ impl AppState {
                 .into_iter()
                 .cloned()
                 .collect();
-            append_stage_comments_to_thread(&mut active.thread, &stage, &comments);
-            append_stage_comments_to_thread(&mut plan.thread, &stage, &comments);
+            append_stage_comments_to_thread(&mut active.agents, &stage, &comments);
+            append_stage_comments_to_thread(&mut plan.agents, &stage, &comments);
             let turn = self
                 .orch_for(&project_id)?
                 .send_run_stage_notes(&mut active, plan, &stage_id)
@@ -7522,7 +7540,7 @@ impl AppState {
                 }]
             });
         if issue_id.is_none() {
-            active.thread.push_event_with_links(
+            active.agents.push_event_with_links(
                 event,
                 Some(summary.clone()),
                 None,
@@ -7536,7 +7554,7 @@ impl AppState {
         let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
         let issue_persisted = if let Some(issue_id) = issue_id {
             let mut issue = self.take_plan(&issue_id)?;
-            issue.thread.push_event_with_links(
+            issue.agents.push_event_with_links(
                 event,
                 Some(summary),
                 None,
@@ -7607,7 +7625,7 @@ impl AppState {
             self.owning_plan_stage_docs(active)
         };
         let mut active = self.take_run(&run_id)?;
-        active.thread.post_user(&message, None, now_rfc3339());
+        active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
@@ -7656,8 +7674,8 @@ impl AppState {
             self.close_agent_tab(&active.worktree.path);
             // The run is out of the map, so its lineage closes on the thread
             // this call holds rather than through the owner lookup.
-            finish_open_session(&mut active.thread, &now_rfc3339());
-            active.thread.push_event(
+            finish_open_session(&mut active.agents, &now_rfc3339());
+            active.agents.push_event(
                 crate::thread::ThreadEventKind::Abandoned,
                 Some("Run abandoned".to_string()),
                 None,
@@ -7688,7 +7706,7 @@ impl AppState {
                         path: stage.path.clone(),
                     }),
             );
-            issue.thread.push_event_with_links(
+            issue.agents.push_event_with_links(
                 crate::thread::ThreadEventKind::WorktreeDeleted,
                 Some(format!(
                     "Issue worktree deleted; {} unpublished stage(s) are incomplete",
@@ -8115,7 +8133,7 @@ impl AppState {
             }
             if let Some(issue_id) = issue_id {
                 if let Ok(mut issue) = self.take_plan(&issue_id) {
-                    issue.thread.push_event_with_links(
+                    issue.agents.push_event_with_links(
                         crate::thread::ThreadEventKind::WorktreeDeleted,
                         Some(format!(
                             "Implementation worktree disappeared; {} stage(s) were reconciled",
@@ -8137,7 +8155,7 @@ impl AppState {
                     for stage_id in &affected_stages {
                         if let Some(stage) = issue.stages.iter().find(|stage| &stage.id == stage_id)
                         {
-                            issue.thread.push_event_with_links(
+                            issue.agents.push_event_with_links(
                                 crate::thread::ThreadEventKind::StageInvalidated,
                                 Some(format!("Stage “{}” is incomplete", stage.title)),
                                 None,
@@ -8280,7 +8298,7 @@ impl AppState {
                 .unwrap_or_default()
                 .to_string()
         });
-        let unread = self.unread_for(plan_id, &active.thread);
+        let unread = self.unread_for(plan_id, &active.agents);
         json!({
             "issue_id": plan_id,
             "plan_id": plan_id,
@@ -8304,8 +8322,8 @@ impl AppState {
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
-                ThreadDetail::Digest => active.thread.digest_value(),
-                ThreadDetail::Full => active.thread.wire_value(),
+                ThreadDetail::Digest => active.agents.digest_value(),
+                ThreadDetail::Full => active.agents.wire_value(),
             },
             "active_run_id": active_run_id,
             "current_implementation_id": current_implementation.map(|run| run.run.id.0.clone()),
@@ -8568,7 +8586,7 @@ impl AppState {
             .map(|(index, stage)| (index, stage.clone()))
             .collect();
         let plan_id = active.plan.id.0.clone();
-        append_plan_stage_announcements(&mut active.thread, &plan_id, &new_stages);
+        append_plan_stage_announcements(&mut active.agents, &plan_id, &new_stages);
         Ok(())
     }
 
@@ -12303,7 +12321,7 @@ mod tests {
     /// The conversation's open session for `owner`, if it has one.
     fn open_session_count(state: &Arc<Mutex<AppState>>, owner: &str) -> usize {
         state.lock().unwrap().runs[owner]
-            .thread
+            .agents
             .sessions
             .iter()
             .filter(|session| session.ended_at.is_none())
@@ -12362,7 +12380,7 @@ mod tests {
         deliver_pending_agent_turns(&state);
 
         let s = state.lock().unwrap();
-        let thread = &s.runs["run-lineage"].thread;
+        let thread = &s.runs["run-lineage"].agents;
         assert_eq!(
             thread.sessions.len(),
             1,
@@ -12420,7 +12438,7 @@ mod tests {
         }
         let s = state.lock().unwrap();
         assert_eq!(
-            s.runs["run-eof"].thread.sessions.len(),
+            s.runs["run-eof"].agents.sessions.len(),
             1,
             "the dead session is closed, not replaced"
         );
@@ -16428,7 +16446,7 @@ mod tests {
             "a cold agent gets the run context and the conversation protocol: {}",
             queued.cold
         );
-        let posted = state.runs["run-message"].thread.items.iter().any(|item| {
+        let posted = state.runs["run-message"].agents.items.iter().any(|item| {
             matches!(item, crate::thread::ThreadItem::Message(m)
                 if m.body == "prefer the smaller helper")
         });
@@ -16675,7 +16693,7 @@ mod tests {
             "a cold agent is primed with the ordered catalog and stage doc it must revise: {}",
             queued.cold
         );
-        let durable = state.runs[&run_id].thread.items.iter().any(|item| {
+        let durable = state.runs[&run_id].agents.items.iter().any(|item| {
             matches!(item, crate::thread::ThreadItem::Message(m)
                 if m.body.contains("tighten this"))
         });
@@ -17202,7 +17220,7 @@ mod tests {
             "a cold agent gets the plan context AND the instruction: {}",
             queued.cold
         );
-        let durable = state.plans[&notes_plan].thread.items.iter().any(|item| {
+        let durable = state.plans[&notes_plan].agents.items.iter().any(|item| {
             matches!(item, crate::thread::ThreadItem::Message(m)
                 if m.body == "make stage two smaller")
         });
@@ -17229,7 +17247,7 @@ mod tests {
             "{}",
             queued.cold
         );
-        let durable = state.plans[&notes_plan].thread.items.iter().any(|item| {
+        let durable = state.plans[&notes_plan].agents.items.iter().any(|item| {
             matches!(item, crate::thread::ThreadItem::Message(m)
                 if m.body == "prefer smaller stages")
         });
@@ -17728,8 +17746,8 @@ mod tests {
             &fake_run_record("run-thread"),
             ".build/plan.md".into(),
         );
-        active.thread.post_user("rename it", None, now_rfc3339());
-        let revision = active.thread.add_revision(
+        active.agents.post_user("rename it", None, now_rfc3339());
+        let revision = active.agents.add_revision(
             crate::thread::ArtifactKind::Diff,
             "diff --git a/a b/a\n+new",
             &now_rfc3339(),
@@ -17845,7 +17863,7 @@ mod tests {
             &fake_run_record("run-seen"),
             ".build/plan.md".into(),
         );
-        active.thread.post_user("rename it", None, now_rfc3339());
+        active.agents.post_user("rename it", None, now_rfc3339());
         let project_id = state.projects[0].id.clone();
         state.entity_project.insert("run-seen".into(), project_id);
         state.runs.insert("run-seen".into(), active);
@@ -18482,7 +18500,7 @@ mod tests {
         assert_eq!(state.plans[&plan_id].plan.state, plan_state);
         assert_eq!(state.runs[&run_id].run.state, run_state);
         assert!(state.runs[&run_id]
-            .thread
+            .agents
             .items
             .iter()
             .all(|item| !matches!(item, crate::thread::ThreadItem::Message(message) if message.body == "shared implementation note")));
@@ -18493,10 +18511,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["data"]["body"] == "shared implementation note"));
+        let issue_conversation = state.plans[&plan_id].agents.first().thread.id.clone();
         let unread = state
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
             .unwrap();
-        assert_eq!(unread["thread_id"], format!("thread:{plan_id}"));
+        assert_eq!(unread["thread_id"], issue_conversation);
         assert!(unread["messages"]
             .as_array()
             .unwrap()
@@ -18830,7 +18849,7 @@ mod tests {
         .expect("the agent tab spawns");
         let agent_pid = tab.session.pid().expect("the agent has a pid");
         state.tabs.insert(TabKey::agent(&root), tab);
-        state.runs.get_mut(&run_id).unwrap().thread.start_session(
+        state.runs.get_mut(&run_id).unwrap().agents.start_session(
             "claude",
             None,
             None,
@@ -18863,7 +18882,7 @@ mod tests {
             "an abandoned run's agent process is killed and reaped"
         );
         let session = state.runs[&run_id]
-            .thread
+            .agents
             .sessions
             .last()
             .expect("the run had a session");
@@ -19396,7 +19415,7 @@ mod tests {
             .runs
             .get_mut("run-still-there")
             .unwrap()
-            .thread
+            .agents
             .start_session("claude", None, None, "build", &now_rfc3339());
         // Long enough that the PTY has been silent past the threshold below.
         std::thread::sleep(Duration::from_millis(200));
@@ -19412,7 +19431,7 @@ mod tests {
             !state.tabs[&key].session.has_exited(),
             "this test is only meaningful while the agent is still alive"
         );
-        let thread = &state.runs["run-still-there"].thread;
+        let thread = &state.runs["run-still-there"].agents;
         assert!(
             thread.sessions.last().unwrap().ended_at.is_none(),
             "a quiet agent is still in its session: {:?}",
@@ -19672,7 +19691,8 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            thread: crate::thread::Thread::new(id),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -19959,7 +19979,8 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            thread: crate::thread::Thread::new(id),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -19991,7 +20012,8 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            thread: crate::thread::Thread::new(id),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -20272,7 +20294,7 @@ mod tests {
         ));
         assert_eq!(posted["ok"], true, "{posted:?}");
         assert!(
-            state.runs[&run_id].thread.has_unread(),
+            state.runs[&run_id].agents.has_unread(),
             "the message is waiting on the primary run's own thread"
         );
         let items = posted["result"]["thread"]["items"].as_array().unwrap();
@@ -20728,7 +20750,7 @@ mod tests {
         {
             let mut s = state.lock().unwrap();
             let run = s.runs.get_mut("run-waiting").unwrap();
-            run.thread
+            run.agents
                 .post_user("look at the migration", None, "2026-07-29T12:00:00Z");
         }
 
@@ -22271,7 +22293,7 @@ mod tests {
         write: impl FnOnce(&mut crate::thread::Thread),
     ) {
         let issue = state.plans.get_mut(issue_id).expect("the issue exists");
-        write(&mut issue.thread);
+        write(&mut issue.agents);
     }
 
     /// The whole unread rule in one pass: an agent handing back makes the entry
@@ -22691,7 +22713,7 @@ mod tests {
             );
         });
 
-        let conversation = state.plans[&issue_id].thread.clone();
+        let conversation = state.plans[&issue_id].agents.clone();
         let news = state.conversation_news(&conversation);
         assert_eq!(news.attention_reason, Some("done"));
         state.push_attention_notify(&run_id, news, None);
@@ -22712,7 +22734,7 @@ mod tests {
             planned_run_in_review(&mut state, "quiet restart").0
         };
         let reloaded = qa_state(&repo, dir.path());
-        let conversation = reloaded.plans[&issue_id].thread.clone();
+        let conversation = reloaded.plans[&issue_id].agents.clone();
         assert_eq!(
             reloaded.conversation_news(&conversation).attention_reason,
             None

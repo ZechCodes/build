@@ -38,6 +38,7 @@ use std::process::Command;
 
 use portable_pty::PtySize;
 
+use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
@@ -264,9 +265,10 @@ pub struct ActivePlan {
     pub revising_stage_id: Option<String>,
     /// Which model/effort this plan's agents run on (None = harness default).
     pub model_choice: ModelChoice,
-    /// The durable review conversation. Build itself is the stable logical
-    /// owner; individual harness processes are recorded in `sessions`.
-    pub thread: crate::thread::Thread,
+    /// This entity's agents. Each owns its own durable conversation; the
+    /// roster reads as the first agent's, which is what entity-level events
+    /// speak to. Harness processes are recorded per agent in `sessions`.
+    pub agents: AgentRoster,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
     /// The most recent failure surfaced to the reviewer (unpersisted docs,
@@ -292,8 +294,6 @@ impl ActivePlan {
             }),
             _ => None,
         };
-        let mut thread = record.thread.clone();
-        thread.normalize(&record.id);
         ActivePlan {
             plan: Plan {
                 id: PlanId::new(record.id.clone()),
@@ -309,12 +309,8 @@ impl ActivePlan {
             stages: record.stages.clone(),
             comments: record.comments.clone(),
             revising_stage_id: None,
-            model_choice: ModelChoice {
-                provider: record.provider,
-                model: record.model.clone(),
-                effort: record.effort.clone(),
-            },
-            thread,
+            model_choice: record.model_choice(),
+            agents: record.roster(),
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
         }
@@ -407,8 +403,9 @@ pub struct ActiveRun {
     pub publication_attempt: Option<crate::run::PublicationAttempt>,
     /// Which model/effort this run's agents run on (None = harness default).
     pub model_choice: ModelChoice,
-    /// The durable conversation paired with the evolving review diff.
-    pub thread: crate::thread::Thread,
+    /// This entity's agents — see [`ActivePlan::agents`]. A branch carries as
+    /// many as the human adds; they share the one worktree.
+    pub agents: AgentRoster,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
     /// The most recent failure surfaced to the reviewer (merge failure,
@@ -423,8 +420,6 @@ impl ActiveRun {
     /// the convention default). The caller (boot recovery) moves a working
     /// state to `Interrupted` itself.
     pub fn reattach(record: &PersistedRun, plan_path: String) -> Self {
-        let mut thread = record.thread.clone();
-        thread.normalize(&record.id);
         ActiveRun {
             run: Run {
                 id: RunId::new(record.id.clone()),
@@ -448,12 +443,8 @@ impl ActiveRun {
             pending_continuation: record.pending_continuation,
             recovery: record.recovery.clone(),
             publication_attempt: record.publication_attempt.clone(),
-            model_choice: ModelChoice {
-                provider: record.provider,
-                model: record.model.clone(),
-                effort: record.effort.clone(),
-            },
-            thread,
+            model_choice: record.model_choice(),
+            agents: record.roster(),
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
         }
@@ -723,12 +714,12 @@ impl Orchestrator {
         let mut plan = Plan::new(id, goal);
         plan.apply(PlanEvent::Dispatch)?;
 
-        let mut thread = crate::thread::Thread::new(&plan.id.0);
         // The goal is the first turn in the durable conversation. Mark it seen:
         // dispatching the planning session is the agent acting on that prompt.
         let now = crate::store::now_rfc3339();
-        thread.post_user(plan.goal.clone(), None, &now);
-        let _ = thread.read_unread(&now);
+        let mut agents = AgentRoster::with_first(&plan.id.0, model_choice.clone(), &now);
+        agents.post_user(plan.goal.clone(), None, &now);
+        let _ = agents.read_unread(&now);
         let active = ActivePlan {
             plan,
             worktree: Some(worktree),
@@ -738,12 +729,12 @@ impl Orchestrator {
             comments: Vec::new(),
             revising_stage_id: None,
             model_choice,
-            thread,
+            agents,
             last_summary: None,
             last_error: None,
         };
         let prompt = self.render_plan(&self.templates.plan, &active, "");
-        let turn = AgentTurn::dispatched(prompt, &active.thread, "plan");
+        let turn = AgentTurn::dispatched(prompt, &active.agents, "plan");
         Ok((active, turn))
     }
 
@@ -930,7 +921,7 @@ impl Orchestrator {
         active.plan.apply(PlanEvent::SendNotes)?;
         active.last_error = None;
         let prompt = self.render_plan(&self.templates.revise, active, notes);
-        Ok(AgentTurn::posted(prompt, &active.thread, notes, "revise"))
+        Ok(AgentTurn::posted(prompt, &active.agents, notes, "revise"))
     }
 
     /// Make sure the plan has a live planning worktree, re-creating one (with
@@ -1037,7 +1028,7 @@ impl Orchestrator {
         );
         Ok(AgentTurn::posted(
             prompt,
-            &active.thread,
+            &active.agents,
             THREAD_NOTIFICATION,
             "revise",
         ))
@@ -1088,7 +1079,7 @@ impl Orchestrator {
         active.last_error = None;
         Ok(AgentTurn::posted(
             prompt,
-            &active.thread,
+            &active.agents,
             message,
             "message",
         ))
@@ -1124,7 +1115,7 @@ impl Orchestrator {
         };
         active.plan.apply(PlanEvent::Reply)?;
         active.last_error = None;
-        Ok(AgentTurn::dispatched(prompt, &active.thread, "revise"))
+        Ok(AgentTurn::dispatched(prompt, &active.agents, "revise"))
     }
 
     /// Abandon a plan from any non-terminal state: kill the plan agent, mark the
@@ -1273,7 +1264,11 @@ impl Orchestrator {
         let mut run = Run::new(id, Some(plan_link.plan.id.clone()), goal);
         run.apply(RunEvent::Dispatch)?;
 
-        let thread = crate::thread::Thread::new(&run.id.0);
+        let agents = AgentRoster::with_first(
+            &run.id.0,
+            model_choice.clone(),
+            &crate::store::now_rfc3339(),
+        );
         let mut active = ActiveRun {
             run,
             worktree,
@@ -1288,7 +1283,7 @@ impl Orchestrator {
             recovery: None,
             publication_attempt: None,
             model_choice,
-            thread,
+            agents,
             last_summary: None,
             last_error: None,
         };
@@ -1312,7 +1307,7 @@ impl Orchestrator {
         } else {
             self.render_run(&self.templates.build, &active, "", &plan_link.stages)
         };
-        let turn = AgentTurn::dispatched(prompt, &active.thread, "build");
+        let turn = AgentTurn::dispatched(prompt, &active.agents, "build");
         Ok((active, turn))
     }
 
@@ -1523,7 +1518,7 @@ impl Orchestrator {
         );
         Ok(ReportConsumed {
             outcome: ReportOutcome::Applied,
-            next: Some(AgentTurn::dispatched(prompt, &active.thread, "validate")),
+            next: Some(AgentTurn::dispatched(prompt, &active.agents, "validate")),
         })
     }
 
@@ -1740,7 +1735,7 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        Ok(AgentTurn::dispatched(prompt, &active.thread, "build"))
+        Ok(AgentTurn::dispatched(prompt, &active.agents, "build"))
     }
 
     /// Send a validation-failed stage back to a fresh fix session (the run-side
@@ -1786,7 +1781,7 @@ impl Orchestrator {
             doc_index,
             note,
         );
-        Ok(AgentTurn::dispatched(prompt, &active.thread, "build"))
+        Ok(AgentTurn::dispatched(prompt, &active.agents, "build"))
     }
 
     /// Submit a batch of diff comments (the run-side `request_changes`): put the
@@ -1826,7 +1821,7 @@ impl Orchestrator {
                 comments,
                 plan_stage_docs,
             ),
-            &active.thread,
+            &active.agents,
             comments,
             "revise",
         ))
@@ -1895,7 +1890,7 @@ impl Orchestrator {
         active.last_error = None;
         Ok(AgentTurn::posted(
             prompt,
-            &active.thread,
+            &active.agents,
             message,
             "message",
         ))
@@ -1920,7 +1915,7 @@ impl Orchestrator {
         };
         active.run.apply(RunEvent::Reply)?;
         active.last_error = None;
-        Ok(AgentTurn::dispatched(prompt, &active.thread, "resume"))
+        Ok(AgentTurn::dispatched(prompt, &active.agents, "resume"))
     }
 
     /// An interrupted multi-stage build phase, routed by the current stage's
@@ -2041,7 +2036,11 @@ impl Orchestrator {
         run.apply(RunEvent::Dispatch)?;
         run.apply(RunEvent::BuildReady)?;
 
-        let thread = crate::thread::Thread::new(&run.id.0);
+        let agents = AgentRoster::with_first(
+            &run.id.0,
+            model_choice.clone(),
+            &crate::store::now_rfc3339(),
+        );
         Ok(ActiveRun {
             run,
             worktree,
@@ -2058,7 +2057,7 @@ impl Orchestrator {
             recovery: None,
             publication_attempt: None,
             model_choice,
-            thread,
+            agents,
             last_summary: None,
             last_error: None,
         })
@@ -2196,7 +2195,7 @@ impl Orchestrator {
         );
         Ok(AgentTurn::posted(
             prompt,
-            &active.thread,
+            &active.agents,
             THREAD_NOTIFICATION,
             "revise",
         ))
@@ -3398,7 +3397,8 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
-            thread: crate::thread::Thread::new("plan-1"),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("planned it".into()),
             last_error: Some("boom".into()),
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -3454,7 +3454,8 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),
-            thread: crate::thread::Thread::new("run-1"),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("built it".into()),
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),

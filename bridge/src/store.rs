@@ -30,11 +30,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{Agent, AgentRoster};
 use crate::attention::Attention;
 use crate::legacy::{Phase, Stage, StageComment, StageState, TaskKind, TaskState};
-use crate::models::AgentProvider;
+use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc, StageDocState};
 use crate::run::{RunState, StageProgress, StageProgressState};
+use crate::thread::Thread;
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -189,9 +191,16 @@ pub struct PersistedPlan {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// Durable conversation paired with this plan review artifact.
+    /// This entity's agents, each owning its own conversation. Empty only on a
+    /// record written before agents existed — [`Store::migrate_threads_to_agents`]
+    /// (and `AgentRoster::restore` on reattach) fills it from `legacy_thread`.
     #[serde(default)]
-    pub thread: crate::thread::Thread,
+    pub agents: Vec<Agent>,
+    /// The pre-agent, entity-keyed conversation. Read once, by the migration
+    /// that moves it onto the first agent, and empty on every record written
+    /// since.
+    #[serde(rename = "thread", default, skip_serializing_if = "Thread::is_empty")]
+    pub legacy_thread: Thread,
     pub last_summary: Option<String>,
     /// The most recent thing that went wrong for this plan, shown on the card
     /// until the plan advances again.
@@ -267,9 +276,13 @@ pub struct PersistedRun {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
-    /// Durable conversation paired with this run's evolving diff.
+    /// This entity's agents, each owning its own conversation. A branch carries
+    /// as many as the human adds; empty only on a pre-agent record.
     #[serde(default)]
-    pub thread: crate::thread::Thread,
+    pub agents: Vec<Agent>,
+    /// The pre-agent, entity-keyed conversation — see [`PersistedPlan::legacy_thread`].
+    #[serde(rename = "thread", default, skip_serializing_if = "Thread::is_empty")]
+    pub legacy_thread: Thread,
     pub last_summary: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
@@ -281,6 +294,50 @@ pub struct PersistedRun {
     /// to `updated_at`.
     #[serde(default)]
     pub state_changed_at: Option<String>,
+}
+
+impl PersistedPlan {
+    pub fn model_choice(&self) -> ModelChoice {
+        ModelChoice {
+            provider: self.provider,
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+
+    /// This record's agents, with a pre-agent conversation folded onto the
+    /// first one. The reattach path and the boot migration share it, so a
+    /// record loaded before the migration ran reads the same either way.
+    pub fn roster(&self) -> AgentRoster {
+        AgentRoster::restore(
+            &self.id,
+            self.agents.clone(),
+            self.legacy_thread.clone(),
+            self.model_choice(),
+            &self.created_at,
+        )
+    }
+}
+
+impl PersistedRun {
+    pub fn model_choice(&self) -> ModelChoice {
+        ModelChoice {
+            provider: self.provider,
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+
+    /// See [`PersistedPlan::roster`].
+    pub fn roster(&self) -> AgentRoster {
+        AgentRoster::restore(
+            &self.id,
+            self.agents.clone(),
+            self.legacy_thread.clone(),
+            self.model_choice(),
+            &self.created_at,
+        )
+    }
 }
 
 /// Canonical durable Issue aggregate. Planning state, stage-plan review,
@@ -988,6 +1045,63 @@ impl Store {
         Ok(migrated)
     }
 
+    /// Boot migration: move every entity-keyed conversation onto the entity's
+    /// first agent.
+    ///
+    /// Conversations belong to agents now (`thread:<agent_id>`), and every
+    /// record on disk predates that. The first agent's id is derived from its
+    /// owner, so a record already migrated recognises the agent it holds and
+    /// this pass leaves it alone — which is what lets boot run it every time.
+    /// No data is dropped: the entity-keyed copy is emptied only once its items
+    /// are on the agent.
+    ///
+    /// Returns how many records were rewritten.
+    pub fn migrate_threads_to_agents(&self) -> Result<usize, StoreError> {
+        let mut migrated = 0usize;
+        for mut aggregate in self.load_all_issues()? {
+            let mut changed = adopt_first_agent_plan(&mut aggregate.issue);
+            for implementation in &mut aggregate.implementations {
+                changed |= adopt_first_agent_run(implementation);
+            }
+            if changed {
+                let path = self.issue_record_path(&aggregate.issue.id);
+                let json =
+                    serde_json::to_string_pretty(&aggregate).expect("an Issue always serializes");
+                write_record_atomically(&path, &json)?;
+                migrated += 1;
+            }
+        }
+        let plans_dir = self.dir.join("plans");
+        if plans_dir.is_dir() {
+            for entry in std::fs::read_dir(&plans_dir)? {
+                let record_path = entry?.path().join("record.json");
+                if !record_path.is_file() {
+                    continue;
+                }
+                let mut plan: PersistedPlan = read_record(&record_path)?;
+                if adopt_first_agent_plan(&mut plan) {
+                    self.save_plan(&plan)?;
+                    migrated += 1;
+                }
+            }
+        }
+        let runs_dir = self.dir.join("runs");
+        if runs_dir.is_dir() {
+            for entry in std::fs::read_dir(&runs_dir)? {
+                let path = entry?.path();
+                if !is_json_record(&path) {
+                    continue;
+                }
+                let mut run: PersistedRun = read_record(&path)?;
+                if adopt_first_agent_run(&mut run) {
+                    self.save_run(&run)?;
+                    migrated += 1;
+                }
+            }
+        }
+        Ok(migrated)
+    }
+
     /// Promote a legacy plan snapshot (docs sitting directly in
     /// `plans/<task_id>/`) into the canonical `plans/<task_id>/docs/`
     /// location. Copies, never moves — no data is deleted by migration. A
@@ -1143,6 +1257,25 @@ fn copy_tree(
     Ok(copied)
 }
 
+/// Fold a plan record's entity-keyed conversation onto its first agent,
+/// reporting whether the record changed.
+fn adopt_first_agent_plan(record: &mut PersistedPlan) -> bool {
+    let roster = record.roster();
+    let changed = record.agents != roster.agents() || !record.legacy_thread.is_empty();
+    record.agents = roster.agents().to_vec();
+    record.legacy_thread = Thread::default();
+    changed
+}
+
+/// See [`adopt_first_agent_plan`].
+fn adopt_first_agent_run(record: &mut PersistedRun) -> bool {
+    let roster = record.roster();
+    let changed = record.agents != roster.agents() || !record.legacy_thread.is_empty();
+    record.agents = roster.agents().to_vec();
+    record.legacy_thread = Thread::default();
+    changed
+}
+
 // ---- Legacy → split mapping (pure; the migration's translation table) ----
 
 /// The spec's migration split: did this fused task ever progress past the
@@ -1216,7 +1349,8 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
-        thread: crate::thread::Thread::new(&task.id),
+        agents: Vec::new(),
+        legacy_thread: Thread::default(),
         last_summary: task.last_summary.clone(),
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
@@ -1300,7 +1434,8 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
-        thread: crate::thread::Thread::new(&run_id),
+        agents: Vec::new(),
+        legacy_thread: Thread::default(),
         last_summary: task.last_summary.clone(),
         last_error: task.last_error.clone(),
         created_at: task.created_at.clone(),
@@ -1869,7 +2004,8 @@ mod tests {
             provider: AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
-            thread: crate::thread::Thread::new(id),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("planned it".into()),
             last_error: None,
             created_at: "2026-07-01T10:00:00Z".into(),
@@ -1934,7 +2070,8 @@ mod tests {
             provider: AgentProvider::Claude,
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),
-            thread: crate::thread::Thread::new(id),
+            agents: Vec::new(),
+            legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("stage one built".into()),
             last_error: None,
             created_at: "2026-07-01T11:00:00Z".into(),
@@ -2896,5 +3033,98 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("attention")).unwrap();
         std::fs::write(dir.path().join("attention").join("map.json"), "{not json").unwrap();
         assert!(store.load_attention().is_empty());
+    }
+
+    // ================== Threads → agent-keyed conversations ==================
+
+    /// A pre-agent record with a conversation on the entity itself.
+    fn issue_with_a_conversation(store: &Store, issue_id: &str, run_id: &str) {
+        let mut issue = plan_record(issue_id, PlanState::Approved);
+        issue.agents = Vec::new();
+        issue.legacy_thread = crate::thread::Thread::new(issue_id);
+        issue
+            .legacy_thread
+            .post_user("tighten the schema", None, "2026-07-01T10:01:00Z");
+        let mut implementation = run_record(run_id, RunState::Building);
+        implementation.plan_id = Some(issue_id.to_string());
+        implementation.agents = Vec::new();
+        implementation.legacy_thread = crate::thread::Thread::new(run_id);
+        implementation
+            .legacy_thread
+            .post_agent("built it", None, "2026-07-01T11:01:00Z");
+        store.save_issue_plan(&issue).unwrap();
+        store.save_issue_implementation(&implementation).unwrap();
+    }
+
+    #[test]
+    fn a_pre_agent_conversation_becomes_the_entitys_first_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        issue_with_a_conversation(&store, "issue-1", "run-1");
+        let mut adopted = run_record("run-loose", RunState::Building);
+        adopted.plan_id = None;
+        adopted.agents = Vec::new();
+        adopted.legacy_thread = crate::thread::Thread::new("run-loose");
+        adopted
+            .legacy_thread
+            .post_user("carry me across", None, "2026-07-01T12:00:00Z");
+        store.save_run(&adopted).unwrap();
+
+        assert_eq!(store.migrate_threads_to_agents().unwrap(), 2);
+
+        let issues = store.load_all_issues().unwrap();
+        let issue = &issues[0].issue;
+        let first = &issue.agents[0];
+        assert_eq!(first.id, crate::agent::derived_agent_id("issue-1"));
+        assert_eq!(first.ordinal, 1);
+        assert_eq!(first.owner_id, "issue-1");
+        assert_eq!(first.choice.provider, issue.provider);
+        assert_eq!(first.thread.id, format!("thread:{}", first.id));
+        assert_eq!(first.thread.items.len(), 1, "no conversation was lost");
+        assert!(
+            issue.legacy_thread.is_empty(),
+            "the entity-keyed copy is gone: {:?}",
+            issue.legacy_thread
+        );
+
+        let implementation = &issues[0].implementations[0];
+        assert_eq!(
+            implementation.agents[0].id,
+            crate::agent::derived_agent_id("run-1")
+        );
+        assert_eq!(implementation.agents[0].thread.items.len(), 1);
+
+        let loose = store
+            .load_all_runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.id == "run-loose")
+            .expect("the planless run is still there");
+        assert_eq!(loose.agents[0].thread.items.len(), 1);
+    }
+
+    /// Boot runs every migration every time. A second pass must recognise the
+    /// agent it already minted rather than mint a second one beside it.
+    #[test]
+    fn migrating_threads_to_agents_twice_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        issue_with_a_conversation(&store, "issue-1", "run-1");
+
+        assert_eq!(store.migrate_threads_to_agents().unwrap(), 1);
+        let after_first = store.load_all_issues().unwrap();
+        assert_eq!(
+            store.migrate_threads_to_agents().unwrap(),
+            0,
+            "nothing left to move"
+        );
+        assert_eq!(store.load_all_issues().unwrap(), after_first);
+    }
+
+    #[test]
+    fn migrating_an_empty_store_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        assert_eq!(store.migrate_threads_to_agents().unwrap(), 0);
     }
 }

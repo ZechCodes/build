@@ -873,6 +873,140 @@ fn worktree_agent_signals(agent_tab: Option<&Tab>) -> (bool, bool) {
     (agent_working, !agent_working)
 }
 
+/// The `state` a branch row reports when nothing is driving it: a checkout
+/// exists on that branch, and no run owns its lifecycle.
+const CHECKOUT_IDLE_STATE: &str = "idle";
+
+/// The +/− block every work-item row carries, in one shape whatever source it
+/// was read off, plus the two facts Done asks about (see
+/// [`crate::branch::branch_can_finish`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WorkItemStat {
+    /// Everything the branch carries against its base.
+    files_changed: u64,
+    insertions: u64,
+    deletions: u64,
+    /// What is sitting in the tree unsaved.
+    uncommitted_files: u64,
+    uncommitted_insertions: u64,
+    uncommitted_deletions: u64,
+    ahead: Option<u64>,
+    behind: Option<u64>,
+    upstream: Option<String>,
+}
+
+impl WorkItemStat {
+    /// Read off a run's cached diffstat ([`AppState::run_stat`]). A terminal
+    /// run reports a null stat, which reads as an empty one.
+    fn from_run_stat(stat: &Value) -> Self {
+        Self {
+            files_changed: stat["files_changed"].as_u64().unwrap_or(0),
+            insertions: stat["insertions"].as_u64().unwrap_or(0),
+            deletions: stat["deletions"].as_u64().unwrap_or(0),
+            uncommitted_files: stat["uncommitted"]["files_changed"].as_u64().unwrap_or(0),
+            uncommitted_insertions: stat["uncommitted"]["insertions"].as_u64().unwrap_or(0),
+            uncommitted_deletions: stat["uncommitted"]["deletions"].as_u64().unwrap_or(0),
+            ahead: stat["ahead"].as_u64(),
+            behind: stat["behind"].as_u64(),
+            upstream: stat["upstream"].as_str().map(str::to_string),
+        }
+    }
+
+    /// Read off one entry of the external-worktree scan. `dirty_files` is the
+    /// status count, so it sees untracked files the diff cannot.
+    fn from_external_entry(entry: &Value) -> Self {
+        Self {
+            files_changed: entry["diffstat"]["files_changed"].as_u64().unwrap_or(0),
+            insertions: entry["diffstat"]["insertions"].as_u64().unwrap_or(0),
+            deletions: entry["diffstat"]["deletions"].as_u64().unwrap_or(0),
+            uncommitted_files: entry["dirty_files"].as_u64().unwrap_or(0),
+            uncommitted_insertions: entry["uncommitted"]["insertions"].as_u64().unwrap_or(0),
+            uncommitted_deletions: entry["uncommitted"]["deletions"].as_u64().unwrap_or(0),
+            ahead: entry["ahead"].as_u64(),
+            behind: entry["behind"].as_u64(),
+            upstream: entry["upstream"].as_str().map(str::to_string),
+        }
+    }
+
+    /// Read off one entry of the primary-changes summary, whose counts are the
+    /// working tree against HEAD — uncommitted work, and all a checkout with no
+    /// base to compare against can honestly report.
+    fn from_primary_entry(entry: &Value) -> Self {
+        let files_changed = entry["files_changed"].as_u64().unwrap_or(0);
+        let insertions = entry["insertions"].as_u64().unwrap_or(0);
+        let deletions = entry["deletions"].as_u64().unwrap_or(0);
+        Self {
+            files_changed,
+            insertions,
+            deletions,
+            uncommitted_files: files_changed,
+            uncommitted_insertions: insertions,
+            uncommitted_deletions: deletions,
+            ahead: entry["ahead"].as_u64(),
+            behind: entry["behind"].as_u64(),
+            upstream: entry["upstream"].as_str().map(str::to_string),
+        }
+    }
+
+    fn sync(&self) -> crate::branch::BranchSync {
+        crate::branch::BranchSync {
+            uncommitted_files: self.uncommitted_files,
+            ahead: self.ahead,
+            upstream: self.upstream.clone(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "files_changed": self.files_changed,
+            "insertions": self.insertions,
+            "deletions": self.deletions,
+            "uncommitted": {
+                "files_changed": self.uncommitted_files,
+                "insertions": self.uncommitted_insertions,
+                "deletions": self.uncommitted_deletions,
+            },
+            "ahead": self.ahead,
+            "behind": self.behind,
+            "upstream": self.upstream,
+        })
+    }
+}
+
+/// How long the turn in flight has been running, for the toolbar's clock.
+/// `since` is what a ticking client re-reads; `seconds` is the same fact
+/// resolved against the bridge's clock, so a client with a skewed one still
+/// agrees. Null when nothing is being worked.
+fn working_time_json(since: Option<&str>) -> Value {
+    let Some(since) = since else {
+        return Value::Null;
+    };
+    json!({ "since": since, "seconds": seconds_since(since) })
+}
+
+/// Whole seconds between an RFC 3339 timestamp and now, never negative.
+/// `None` when the timestamp cannot be parsed.
+fn seconds_since(started_at: &str) -> Option<u64> {
+    let started =
+        time::OffsetDateTime::parse(started_at, &time::format_description::well_known::Rfc3339)
+            .ok()?;
+    Some(
+        (time::OffsetDateTime::now_utc() - started)
+            .whole_seconds()
+            .max(0) as u64,
+    )
+}
+
+/// What Done asks of a run before it archives the run's worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishRequirement {
+    /// `run.finish`: the run reached a review gate — completed work.
+    CompletedWork,
+    /// `branch.finish`: the branch is committed and pushed, which is exactly
+    /// what the branch row's Done button says (Decisions §Shell and inbox).
+    CommittedAndPushed,
+}
+
 /// The verbs that count as the human acting on an entity, and the param naming
 /// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
 /// a queue you triage by reading and reading one IS engaging with it — while a
@@ -3920,6 +4054,10 @@ impl AppState {
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
             "run.finish" => self.run_finish(params),
+            // Branch surface: the work item the feed and the URLs speak, over
+            // whichever of run / worktree / primary checkout stores it.
+            "branch.get" => self.branch_get(params),
+            "branch.finish" => self.branch_finish(params),
             "worktree.create" => self.worktree_create(params),
             "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
@@ -8175,8 +8313,27 @@ impl AppState {
     fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let action_name = require_str(params, "action")?;
-        parse_worktree_finish_action(&action_name)?;
+        self.finish_run(&run_id, &action_name, FinishRequirement::CompletedWork)
+    }
+
+    /// The shared Done path: check what this caller requires of the run, then
+    /// archive its worktree through `worktree.finish` and retire the run.
+    fn finish_run(
+        &mut self,
+        run_id: &str,
+        action_name: &str,
+        requirement: FinishRequirement,
+    ) -> Result<Value, String> {
+        let run_id = run_id.to_string();
+        parse_worktree_finish_action(action_name)?;
         let project_id = self.project_of(&run_id)?;
+        // Before the run is borrowed: the diffstat needs `&mut self`.
+        let sync = match requirement {
+            FinishRequirement::CommittedAndPushed => {
+                Some(WorkItemStat::from_run_stat(&self.run_stat(&run_id)).sync())
+            }
+            FinishRequirement::CompletedWork => None,
+        };
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         // Finishing archives a worktree and then removes it. The primary
         // checkout is the repository itself: there is nothing to file away,
@@ -8188,11 +8345,25 @@ impl AppState {
                     .to_string(),
             );
         }
-        if !matches!(active.run.state, RunState::Review | RunState::Merged) {
-            return Err(format!(
-                "run.finish: run is {} — Done requires completed work",
-                run_state_str(&active.run.state)
-            ));
+        match requirement {
+            FinishRequirement::CompletedWork => {
+                if !matches!(active.run.state, RunState::Review | RunState::Merged) {
+                    return Err(format!(
+                        "run.finish: run is {} — Done requires completed work",
+                        run_state_str(&active.run.state)
+                    ));
+                }
+            }
+            FinishRequirement::CommittedAndPushed => {
+                let sync = sync.expect("computed for this requirement");
+                if !crate::branch::branch_can_finish(&sync) {
+                    return Err(format!(
+                        "branch.finish: {} still carries work that exists only on this machine — \
+                         commit and push it before Done",
+                        active.worktree.branch
+                    ));
+                }
+            }
         }
         if !active.worktree.path.exists() {
             if active.run.state != RunState::Merged {
@@ -8341,13 +8512,440 @@ impl AppState {
         };
         let external_worktrees = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
+        let items = self.work_items(&external_worktrees, &primary_changes);
         json!({
+            // The feed: one row per work item, branches and issues (Decisions
+            // §Entity model). The keys below it are the same state told the way
+            // the pre-redesign SPA reads it, and keep shipping until it stops.
+            "items": items,
             "issues": plans,
             "plans": plans,
             "runs": runs,
             "external_worktrees": external_worktrees,
             "primary_changes": primary_changes,
         })
+    }
+
+    /// The feed's work items: one row per branch or issue.
+    ///
+    /// Branch rows fold the four ways a branch can be stored — a run, an
+    /// adopted worktree, a worktree Build never cut, the primary checkout —
+    /// into one shape keyed `(project_id, branch)`, and the primary checkout is
+    /// the `main` row. An issue whose implementation is still in flight is
+    /// spoken for by that implementation's branch row and emits none of its
+    /// own. Both rules live in [`crate::branch`].
+    ///
+    /// The scans are passed in rather than taken again: `board_list` already
+    /// paid for them, and re-running them here would double every poll's git
+    /// work.
+    fn work_items(
+        &mut self,
+        external_worktrees: &[Value],
+        primary_changes: &[Value],
+    ) -> Vec<Value> {
+        let run_ids: Vec<String> = self
+            .runs
+            .iter()
+            .filter(|(_, active)| active.run.state != RunState::Archived)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // Diffstats first: they are the one part of a row that needs `&mut`.
+        let stats: HashMap<String, Value> = run_ids
+            .iter()
+            .map(|run_id| (run_id.clone(), self.run_stat(run_id)))
+            .collect();
+        let mut candidates: Vec<crate::branch::WorkItemCandidate> = run_ids
+            .iter()
+            .map(|run_id| {
+                self.branch_candidate_from_run(run_id, stats.get(run_id).unwrap_or(&Value::Null))
+            })
+            .collect();
+        candidates.extend(
+            primary_changes
+                .iter()
+                .filter_map(|entry| self.branch_candidate_from_primary(entry)),
+        );
+        candidates.extend(
+            external_worktrees
+                .iter()
+                .map(|entry| self.branch_candidate_from_external(entry)),
+        );
+        let issue_ids: Vec<String> = self
+            .plans
+            .iter()
+            .filter(|(_, active)| active.plan.archived_at.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        candidates.extend(
+            issue_ids
+                .iter()
+                .map(|issue_id| self.issue_candidate(issue_id)),
+        );
+        crate::branch::fold_work_items(candidates)
+    }
+
+    /// The branch row for a run: the source that knows the most, because it is
+    /// the only one that carries a lifecycle, a conversation and agents.
+    fn branch_candidate_from_run(
+        &self,
+        run_id: &str,
+        stat: &Value,
+    ) -> crate::branch::WorkItemCandidate {
+        let active = self.runs.get(run_id).expect("caller listed this run");
+        let branch = active.worktree.branch.clone();
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let sync = WorkItemStat::from_run_stat(stat);
+        let thread = self.conversation_thread_for_run(active);
+        let unread = self.unread_for(run_id, thread);
+        let working_since = self.working_since_for(run_id, thread);
+        let primary = self.owns_primary_checkout(run_id, active);
+        let title = if active.run.goal.trim().is_empty() {
+            branch.clone()
+        } else {
+            active.run.goal.clone()
+        };
+        let row = json!({
+            "kind": crate::branch::WorkItemKind::Branch.as_str(),
+            "project_id": self.entity_project.get(run_id).cloned().unwrap_or_default(),
+            "project": self.project_name_of(run_id),
+            "branch": branch,
+            "title": title,
+            "state": run_state_str(&active.run.state),
+            "unread": unread.is_unread(),
+            "unread_count": unread.count,
+            "unread_reason": unread.reason,
+            "working": active.run.state.is_working() || working_since.is_some(),
+            "working_time": working_time_json(working_since.as_deref()),
+            "agents": self.agent_digests(run_id),
+            "stat": sync.to_json(),
+            "resume_at": self.attention_json(run_id)["resume_at"],
+            // Finishing archives a worktree and then removes it. The primary
+            // checkout is the repository: there is nothing to file away, and
+            // everything to lose.
+            "can_finish": !primary && crate::branch::branch_can_finish(&sync.sync()),
+            "muted": self.is_muted(run_id),
+            "worktree_path": active.worktree.path.display().to_string(),
+            "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
+            "run_id": run_id,
+            "issue_id": issue_id,
+            "primary": primary,
+        });
+        crate::branch::WorkItemCandidate {
+            kind: crate::branch::WorkItemKind::Branch,
+            key: crate::branch::WorkItemKey::Branch {
+                project_id: self.entity_project.get(run_id).cloned().unwrap_or_default(),
+                branch: active.worktree.branch.clone(),
+            },
+            source: Some(crate::branch::BranchSource::Run),
+            issue_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
+            implementation_active: !active.run.state.is_terminal(),
+            row,
+        }
+    }
+
+    /// The branch row for a project's primary checkout — the `main` row.
+    /// `None` when the checkout has no branch to name it by.
+    fn branch_candidate_from_primary(
+        &self,
+        entry: &Value,
+    ) -> Option<crate::branch::WorkItemCandidate> {
+        let project_id = entry["project_id"].as_str()?.to_string();
+        let branch = entry["branch"].as_str()?.to_string();
+        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let repo_path = project.repo_path.display().to_string();
+        let sync = WorkItemStat::from_primary_entry(entry);
+        let row = json!({
+            "kind": crate::branch::WorkItemKind::Branch.as_str(),
+            "project_id": project_id,
+            "project": project.name,
+            "branch": branch,
+            "title": branch,
+            "state": CHECKOUT_IDLE_STATE,
+            "unread": false,
+            "unread_count": 0,
+            "unread_reason": Value::Null,
+            "working": self.checkout_agent_working(&project.repo_path),
+            "working_time": Value::Null,
+            "agents": Vec::<Value>::new(),
+            "stat": sync.to_json(),
+            "resume_at": Value::Null,
+            // The repository is not a worktree to file away.
+            "can_finish": false,
+            "muted": false,
+            "worktree_path": repo_path,
+            "worktree_id": Value::Null,
+            "run_id": Value::Null,
+            "issue_id": Value::Null,
+            "primary": true,
+        });
+        Some(crate::branch::WorkItemCandidate {
+            kind: crate::branch::WorkItemKind::Branch,
+            key: crate::branch::WorkItemKey::Branch { project_id, branch },
+            source: Some(crate::branch::BranchSource::PrimaryCheckout),
+            issue_id: None,
+            implementation_active: false,
+            row,
+        })
+    }
+
+    /// The branch row for a worktree Build never cut: everything git can see
+    /// about it, and nothing else — it has no run, so it has no agents and no
+    /// conversation.
+    fn branch_candidate_from_external(&self, entry: &Value) -> crate::branch::WorkItemCandidate {
+        let project_id = entry["project_id"].as_str().unwrap_or_default().to_string();
+        let worktree_id = entry["worktree_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let branch = entry["branch"].as_str().map(str::to_string);
+        let path = entry["path"].as_str().unwrap_or_default().to_string();
+        let sync = WorkItemStat::from_external_entry(entry);
+        let title = match (entry["head_subject"].as_str(), branch.as_deref()) {
+            (Some(subject), _) if !subject.trim().is_empty() => subject.to_string(),
+            (_, Some(branch)) => branch.to_string(),
+            _ => path.clone(),
+        };
+        let row = json!({
+            "kind": crate::branch::WorkItemKind::Branch.as_str(),
+            "project_id": project_id,
+            "project": entry["project"],
+            "branch": branch,
+            "title": title,
+            "state": CHECKOUT_IDLE_STATE,
+            "unread": false,
+            "unread_count": 0,
+            "unread_reason": Value::Null,
+            "working": entry["agent_working"].as_bool().unwrap_or(false),
+            "working_time": Value::Null,
+            "agents": Vec::<Value>::new(),
+            "stat": sync.to_json(),
+            "resume_at": entry["attention"]["resume_at"],
+            "can_finish": crate::branch::branch_can_finish(&sync.sync()),
+            "muted": self.is_muted(&worktree_id),
+            "worktree_path": path,
+            "worktree_id": worktree_id.clone(),
+            "run_id": Value::Null,
+            "issue_id": Value::Null,
+            "primary": false,
+        });
+        crate::branch::WorkItemCandidate {
+            kind: crate::branch::WorkItemKind::Branch,
+            key: match &branch {
+                Some(branch) => crate::branch::WorkItemKey::Branch {
+                    project_id,
+                    branch: branch.clone(),
+                },
+                None => crate::branch::WorkItemKey::Checkout { worktree_id },
+            },
+            source: Some(crate::branch::BranchSource::ExternalWorktree),
+            issue_id: None,
+            implementation_active: false,
+            row,
+        }
+    }
+
+    /// The row for an issue: a project-level work item, with no branch and no
+    /// checkout of its own until it is implemented.
+    fn issue_candidate(&self, issue_id: &str) -> crate::branch::WorkItemCandidate {
+        let active = self.plans.get(issue_id).expect("caller listed this issue");
+        let unread = self.unread_for(issue_id, &active.agents);
+        let working_since = self.working_since_for(issue_id, &active.agents);
+        let implementation = self.current_issue_implementation(issue_id);
+        let row = json!({
+            "kind": crate::branch::WorkItemKind::Issue.as_str(),
+            "project_id": self.entity_project.get(issue_id).cloned().unwrap_or_default(),
+            "project": self.project_name_of(issue_id),
+            "branch": Value::Null,
+            "title": active.plan.goal,
+            "state": plan_state_str(&active.plan.state),
+            "unread": unread.is_unread(),
+            "unread_count": unread.count,
+            "unread_reason": unread.reason,
+            "working": active.plan.state.is_working() || working_since.is_some(),
+            "working_time": working_time_json(working_since.as_deref()),
+            "agents": self.agent_digests(issue_id),
+            "stat": Value::Null,
+            "resume_at": self.attention_json(issue_id)["resume_at"],
+            "can_finish": self.plan_implementation_complete(issue_id, active),
+            "muted": self.is_muted(issue_id),
+            "worktree_path": Value::Null,
+            "worktree_id": Value::Null,
+            "run_id": implementation.map(|run| run.run.id.0.clone()),
+            "issue_id": issue_id,
+            "primary": false,
+        });
+        crate::branch::WorkItemCandidate {
+            kind: crate::branch::WorkItemKind::Issue,
+            key: crate::branch::WorkItemKey::Issue {
+                issue_id: issue_id.to_string(),
+            },
+            source: None,
+            issue_id: Some(issue_id.to_string()),
+            implementation_active: false,
+            row,
+        }
+    }
+
+    fn project_name_of(&self, entity_id: &str) -> String {
+        let Some(project_id) = self.entity_project.get(entity_id) else {
+            return String::new();
+        };
+        self.projects
+            .iter()
+            .find(|project| &project.id == project_id)
+            .map(|project| project.name.clone())
+            .unwrap_or_default()
+    }
+
+    fn is_muted(&self, entity_id: &str) -> bool {
+        self.attention
+            .get(entity_id)
+            .is_some_and(|attention| attention.muted)
+    }
+
+    /// When this work item's oldest turn still in flight started — how long the
+    /// ITEM has been working, rather than how long its newest agent has.
+    fn working_since_for(&self, entity_id: &str, thread: &crate::thread::Thread) -> Option<String> {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return thread.working_since().map(str::to_string);
+        };
+        roster
+            .iter()
+            .filter_map(|agent| {
+                let agent_thread = if agent.id == roster.first().id {
+                    thread
+                } else {
+                    &agent.thread
+                };
+                agent_thread.working_since()
+            })
+            .min()
+            .map(str::to_string)
+    }
+
+    /// Whether a Build-owned agent is painting in this checkout right now. The
+    /// tab registry is the only place an agent can be, and its key is the
+    /// checkout root, so a checkout reports its own agent whatever entity (or
+    /// none) currently owns it.
+    fn checkout_agent_working(&self, root: &std::path::Path) -> bool {
+        let root = Self::canonical_root(root);
+        self.tabs
+            .iter()
+            .any(|(key, tab)| key.root == root && key.is_agent() && agent_is_working(tab))
+    }
+
+    /// `branch.get` — resolve `(project_id, branch)` to the work item behind
+    /// it, with the full underlying run view (`run_view`) when a run owns the
+    /// branch and `run: null` when the checkout is bare.
+    fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let branch = require_str(params, "branch")?;
+        if !self.projects.iter().any(|p| p.id == project_id) {
+            return Err(format!("unknown project_id: {project_id}"));
+        }
+        let external_worktrees = self.external_worktrees_json();
+        let primary_changes = self.primary_changes_json();
+        let mut row = self
+            .work_items(&external_worktrees, &primary_changes)
+            .into_iter()
+            .find(|row| {
+                row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
+                    && row["project_id"] == json!(project_id)
+                    && row["branch"] == json!(branch)
+            })
+            .ok_or_else(|| {
+                format!("branch.get: no branch {branch} is checked out in this project")
+            })?;
+        let run_view = row["run_id"].as_str().map(str::to_string).map(|run_id| {
+            let active = self.runs.get(&run_id).expect("the row named a live run");
+            self.run_view(&run_id, active, ThreadDetail::Full)
+        });
+        row["run"] = run_view.unwrap_or(Value::Null);
+        Ok(row)
+    }
+
+    /// `branch.finish` — the inbox entry's Done, for a branch.
+    ///
+    /// Archives the branch's checkout through the same durable path as
+    /// `worktree.finish`, and, when the branch implements an issue, archives
+    /// the issue with it. `unlink: true` is the deeper control that finishes
+    /// the branch alone.
+    fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let branch = require_str(params, "branch")?;
+        let action_name = require_str(params, "action")?;
+        parse_worktree_finish_action(&action_name)?;
+        let unlink = params
+            .get("unlink")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let run_id = self
+            .runs
+            .iter()
+            .find(|(run_id, active)| {
+                !active.run.state.is_terminal()
+                    && active.worktree.branch == branch
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(&project_id)
+            })
+            .map(|(run_id, _)| run_id.clone());
+        let Some(run_id) = run_id else {
+            // No run behind the branch: it is a bare checkout, and the durable
+            // archive path is the same one `run.finish` delegates to.
+            let worktree = self
+                .external_worktrees(&project_id, true)?
+                .into_iter()
+                .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()))
+                .ok_or_else(|| {
+                    format!("branch.finish: no branch {branch} is checked out in this project")
+                })?;
+            let finished = self.worktree_finish(&json!({
+                "project_id": project_id,
+                "worktree_id": worktree.id,
+                "action": action_name,
+            }))?;
+            return Ok(json!({
+                "branch": branch,
+                "run_id": Value::Null,
+                "issue_id": Value::Null,
+                "issue_archived": false,
+                "worktree": finished,
+            }));
+        };
+        let issue_id = self.runs[&run_id]
+            .run
+            .plan_id
+            .as_ref()
+            .map(|id| id.0.clone())
+            .filter(|_| !unlink);
+        // Refuse before the worktree is touched: half of a linked marking is
+        // worse than none, and the way past it is a flag the caller already has.
+        if let Some(issue_id) = &issue_id {
+            let issue = self.plans.get(issue_id).ok_or("unknown issue")?;
+            if issue.plan.archived_at.is_none()
+                && !self.plan_implementation_complete(issue_id, issue)
+            {
+                return Err(format!(
+                    "branch.finish: Done on {branch} also archives the issue it implements, and \
+                     that issue is not implemented yet — pass unlink to finish the branch alone"
+                ));
+            }
+        }
+        let finished =
+            self.finish_run(&run_id, &action_name, FinishRequirement::CommittedAndPushed)?;
+        let issue_archived = match &issue_id {
+            Some(issue_id) => {
+                self.plan_archive(&json!({ "plan_id": issue_id }))?;
+                true
+            }
+            None => false,
+        };
+        Ok(json!({
+            "branch": branch,
+            "run_id": run_id,
+            "issue_id": issue_id,
+            "issue_archived": issue_archived,
+            "worktree": finished,
+        }))
     }
 
     /// Archived plans and external worktrees for one project, grouped by kind.
@@ -24184,5 +24782,330 @@ mod tests {
         assert!(root
             .join(crate::orchestrator::mcp_config_path(&second_agent))
             .is_file());
+    }
+
+    // ==== the branch as the wire-level work item ==============================
+
+    /// The feed, with every poll cache cleared first. All three are 10s TTL, so
+    /// a test that changes git state and re-polls would otherwise be answered
+    /// from the poll before it.
+    fn work_item_rows(state: &mut AppState) -> Vec<Value> {
+        state.run_stat_cache.clear();
+        for index in 0..state.projects.len() {
+            state.projects[index].primary_summary = None;
+            state.projects[index].external_scan = None;
+        }
+        state.handle(req("board.list", json!({})))["result"]["items"]
+            .as_array()
+            .expect("the feed ships work items")
+            .clone()
+    }
+
+    fn branch_row(state: &mut AppState, branch: &str) -> Value {
+        work_item_rows(state)
+            .into_iter()
+            .find(|row| row["kind"] == "branch" && row["branch"] == branch)
+            .unwrap_or_else(|| panic!("{branch} has a row on the feed"))
+    }
+
+    /// A run, a worktree Build never cut, and the primary checkout are three
+    /// ways of storing the same kind of thing. The feed shows one row shape for
+    /// all of them, keyed by branch, and the primary checkout is the `main`
+    /// row.
+    #[test]
+    fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
+        add_external_worktree(&repo, dir.path(), "stray", "feature-stray");
+        let project_id = state.projects[0].id.clone();
+
+        let board = state.handle(req("board.list", json!({})));
+        // The transition keeps the old keys shipping alongside the new one.
+        assert!(board["result"]["runs"].is_array(), "{board:?}");
+        assert!(board["result"]["plans"].is_array(), "{board:?}");
+        assert!(
+            board["result"]["external_worktrees"].is_array(),
+            "{board:?}"
+        );
+
+        let adopted = branch_row(&mut state, "feature-adopted");
+        assert_eq!(adopted["kind"], "branch", "{adopted:?}");
+        assert_eq!(adopted["run_id"], run_id, "{adopted:?}");
+        assert_eq!(adopted["project_id"], project_id, "{adopted:?}");
+        assert_eq!(adopted["title"], "feature-adopted", "{adopted:?}");
+        assert_eq!(adopted["state"], "review", "{adopted:?}");
+        assert!(adopted["issue_id"].is_null(), "{adopted:?}");
+        assert!(
+            adopted["worktree_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("feature-adopted"),
+            "{adopted:?}"
+        );
+        assert_eq!(adopted["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(adopted["unread"], false, "{adopted:?}");
+        assert_eq!(adopted["unread_count"], 0, "{adopted:?}");
+        assert_eq!(adopted["working"], false, "{adopted:?}");
+        assert!(adopted["working_time"].is_null(), "{adopted:?}");
+        assert_eq!(adopted["muted"], false, "{adopted:?}");
+        assert!(adopted["stat"]["insertions"].is_u64(), "{adopted:?}");
+
+        let stray = branch_row(&mut state, "feature-stray");
+        assert_eq!(stray["kind"], "branch", "{stray:?}");
+        assert!(stray["run_id"].is_null(), "{stray:?}");
+        assert!(stray["worktree_id"].is_string(), "{stray:?}");
+        assert_eq!(stray["state"], "idle", "{stray:?}");
+        assert!(
+            stray["worktree_path"].as_str().unwrap().ends_with("stray"),
+            "{stray:?}"
+        );
+
+        let main = branch_row(&mut state, "main");
+        assert_eq!(main["kind"], "branch", "{main:?}");
+        assert!(main["run_id"].is_null(), "{main:?}");
+        assert_eq!(
+            main["worktree_path"],
+            std::fs::canonicalize(&repo).unwrap().display().to_string(),
+            "the main row is the primary checkout: {main:?}"
+        );
+
+        // One row per branch: an adopted worktree is not also an external one.
+        let rows = work_item_rows(&mut state);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["branch"] == "feature-adopted")
+                .count(),
+            1,
+            "{rows:?}"
+        );
+    }
+
+    /// Once implementation starts, the issue's work surfaces as the branch row
+    /// alone — and that row is what carries the issue id.
+    #[test]
+    fn an_issue_speaks_as_its_implementation_while_one_is_in_flight() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let waiting = state.handle(req("plan.create", json!({ "goal": "not started" })));
+        let waiting_id = plan_id_of(&waiting);
+
+        let rows = work_item_rows(&mut state);
+        let issue = rows
+            .iter()
+            .find(|row| row["issue_id"] == json!(waiting_id.clone()))
+            .unwrap_or_else(|| panic!("an unimplemented issue is its own row: {rows:?}"));
+        assert_eq!(issue["kind"], "issue", "{issue:?}");
+        assert_eq!(issue["title"], "not started", "{issue:?}");
+        assert_eq!(issue["state"], "plan_review", "{issue:?}");
+        assert!(issue["branch"].is_null(), "{issue:?}");
+        assert_eq!(issue["can_finish"], false, "{issue:?}");
+
+        let (implemented_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let rows = work_item_rows(&mut state);
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["kind"] == "issue"
+                    && row["issue_id"] == json!(implemented_id.clone())),
+            "the issue row is suppressed while its implementation is live: {rows:?}"
+        );
+        let implementation = rows
+            .iter()
+            .find(|row| row["run_id"] == json!(run_id.clone()))
+            .unwrap_or_else(|| panic!("the implementation is on the feed: {rows:?}"));
+        assert_eq!(implementation["kind"], "branch", "{implementation:?}");
+        assert_eq!(
+            implementation["issue_id"],
+            json!(implemented_id.clone()),
+            "the branch row carries the issue it implements: {implementation:?}"
+        );
+        // The issue's own Done rule is its implementation being complete.
+        let unimplemented = rows
+            .iter()
+            .find(|row| row["issue_id"] == json!(waiting_id.clone()))
+            .expect("the untouched issue still has a row");
+        assert_eq!(unimplemented["can_finish"], false, "{unimplemented:?}");
+
+        // Abandoning the implementation hands the issue its own row back.
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        let rows = work_item_rows(&mut state);
+        assert!(
+            rows.iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(implemented_id)),
+            "a finished implementation stops speaking for its issue: {rows:?}"
+        );
+    }
+
+    /// Done on a branch means the work exists somewhere other than this
+    /// machine: committed AND pushed. The primary checkout is never
+    /// finishable — it is the repository, not a worktree to file away.
+    #[test]
+    fn a_branch_offers_done_only_once_it_is_committed_and_pushed() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        adopted_run(&mut state, &repo, dir.path(), "feature-done");
+        let worktree = dir.path().join("feature-done");
+
+        assert_eq!(
+            branch_row(&mut state, "feature-done")["can_finish"],
+            false,
+            "a branch that was never pushed has nowhere else to be"
+        );
+
+        std::fs::write(worktree.join("work.txt"), "one\n").unwrap();
+        git_in_dir(&worktree, &["add", "."]);
+        git_in_dir(&worktree, &["commit", "-m", "work"]);
+        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        assert_eq!(
+            branch_row(&mut state, "feature-done")["can_finish"],
+            true,
+            "committed and pushed"
+        );
+
+        std::fs::write(worktree.join("work.txt"), "one\ntwo\n").unwrap();
+        assert_eq!(
+            branch_row(&mut state, "feature-done")["can_finish"],
+            false,
+            "an unsaved edit exists only here"
+        );
+        git_in_dir(&worktree, &["commit", "-am", "more"]);
+        assert_eq!(
+            branch_row(&mut state, "feature-done")["can_finish"],
+            false,
+            "an unpushed commit exists only here"
+        );
+
+        let main = branch_row(&mut state, "main");
+        assert_eq!(
+            main["can_finish"], false,
+            "the primary checkout is the repository: {main:?}"
+        );
+    }
+
+    /// `#/project/<id>/branch/<name>` resolves through one verb, to the run
+    /// underneath when there is one and to the bare checkout when there is not.
+    #[test]
+    fn branch_get_resolves_a_branch_to_what_is_underneath_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-routed");
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let project_id = state.projects[0].id.clone();
+
+        let routed = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-routed" }),
+        ));
+        assert_eq!(routed["ok"], true, "{routed:?}");
+        let routed = &routed["result"];
+        assert_eq!(routed["kind"], "branch", "{routed:?}");
+        assert_eq!(routed["run_id"], run_id, "{routed:?}");
+        assert_eq!(routed["run"]["run_id"], run_id, "{routed:?}");
+        assert!(
+            routed["run"]["thread"]["items"].is_array(),
+            "the underlying view carries the full conversation: {routed:?}"
+        );
+
+        let loose = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-loose" }),
+        ));
+        assert_eq!(loose["ok"], true, "{loose:?}");
+        assert!(loose["result"]["run"].is_null(), "{loose:?}");
+        assert!(loose["result"]["worktree_path"].is_string(), "{loose:?}");
+
+        let missing = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "never-existed" }),
+        ));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+    }
+
+    /// Done on an implementation branch marks the worktree and the issue
+    /// together — that is what "linked" means — and the unlink flag is the
+    /// deeper control that finishes only the branch.
+    #[test]
+    fn branch_finish_archives_the_issue_with_it_unless_unlinked() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let (linked_issue, linked_run) = planned_run_in_review(&mut state, "linked done");
+        let linked_branch = state.runs[&linked_run].worktree.branch.clone();
+        let linked_worktree = state.runs[&linked_run].worktree.path.clone();
+        git_in_dir(&linked_worktree, &["push", "-u", "origin", &linked_branch]);
+        let finished = state.handle(req(
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": linked_branch, "action": "delete" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["issue_id"], linked_issue, "{finished:?}");
+        assert_eq!(finished["result"]["issue_archived"], true, "{finished:?}");
+        assert!(
+            state.plans[&linked_issue].plan.archived_at.is_some(),
+            "the issue is archived with its branch"
+        );
+
+        let (kept_issue, kept_run) = planned_run_in_review(&mut state, "unlinked done");
+        let kept_branch = state.runs[&kept_run].worktree.branch.clone();
+        let kept_worktree = state.runs[&kept_run].worktree.path.clone();
+        git_in_dir(&kept_worktree, &["push", "-u", "origin", &kept_branch]);
+        let unlinked = state.handle(req(
+            "branch.finish",
+            json!({
+                "project_id": project_id,
+                "branch": kept_branch,
+                "action": "delete",
+                "unlink": true,
+            }),
+        ));
+        assert_eq!(unlinked["ok"], true, "{unlinked:?}");
+        assert_eq!(unlinked["result"]["issue_archived"], false, "{unlinked:?}");
+        assert!(
+            state.plans[&kept_issue].plan.archived_at.is_none(),
+            "unlink finishes the branch alone"
+        );
+    }
+
+    /// The branch row's Done button and `branch.finish` enforce the same rule,
+    /// so the button never offers something the verb refuses — and a linked
+    /// issue that is not implemented says so, naming the way past it.
+    #[test]
+    fn branch_finish_refuses_unpushed_work_and_an_unfinished_issue() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "not pushed");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        let refused = state.handle(req(
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("push"),
+            "{refused:?}"
+        );
+        assert!(worktree.exists(), "nothing was finished");
+
+        // Pushed, but the issue it implements is no longer complete: the linked
+        // marking refuses rather than half-archiving.
+        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
+        state.runs.get_mut(&run_id).unwrap().stages.pop();
+        let blocked = state.handle(req(
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+        ));
+        assert_eq!(blocked["ok"], false, "{blocked:?}");
+        assert!(
+            blocked["error"].as_str().unwrap().contains("unlink"),
+            "the error names the override: {blocked:?}"
+        );
+        assert!(state.plans[&issue_id].plan.archived_at.is_none());
+        assert!(worktree.exists(), "nothing was finished");
     }
 }

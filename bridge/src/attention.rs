@@ -58,10 +58,19 @@ pub struct Attention {
     /// written before agents existed says about every agent but the first.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_read_sequences: HashMap<String, u64>,
+    /// Whether the human has told this entry to stop asking. A muted entry
+    /// keeps its place in the inbox with live status, and pushes no badge and
+    /// no notification.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
 }
 
 fn is_zero(sequence: &u64) -> bool {
     *sequence == 0
+}
+
+fn is_false(muted: &bool) -> bool {
+    !*muted
 }
 
 fn parse(at: &str) -> Option<OffsetDateTime> {

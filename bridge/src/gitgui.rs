@@ -476,7 +476,7 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
             .iter()
             .filter_map(|entry| {
                 let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
-                if path == crate::diff::MCP_CONFIG_PATH {
+                if crate::diff::is_mcp_config(&path) {
                     return None;
                 }
                 file_status_json(&path, entry.status())
@@ -528,7 +528,7 @@ fn stageable_paths(paths: &[String]) -> Result<Vec<String>, String> {
     }
     Ok(paths
         .iter()
-        .filter(|path| path.as_str() != crate::diff::MCP_CONFIG_PATH)
+        .filter(|path| !crate::diff::is_mcp_config(path.as_str()))
         .map(|path| format!(":(literal){path}"))
         .collect())
 }
@@ -909,7 +909,7 @@ pub fn discard_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     let mut tracked: Vec<String> = Vec::new();
     let mut untracked: Vec<&String> = Vec::new();
     for path in paths {
-        if path.as_str() == crate::diff::MCP_CONFIG_PATH {
+        if crate::diff::is_mcp_config(path.as_str()) {
             continue;
         }
         match repo.status_file(Path::new(path)) {

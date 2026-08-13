@@ -591,6 +591,28 @@ fn append_stage_catalog(
     prompt
 }
 
+/// The worktree-relative name of one owner's MCP config. Every agent gets its
+/// own, because the file names the owner the harness reports `done` for.
+pub fn mcp_config_path(owner_id: &str) -> String {
+    format!(".build/{}", mcp_config_name(owner_id))
+}
+
+fn mcp_config_name(owner_id: &str) -> String {
+    // Agent ids are Crockford base32 with a fixed prefix, so this is always a
+    // plain file name; anything else (a legacy entity id) is sanitized to one.
+    let safe: String = owner_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("mcp-{safe}.json")
+}
+
 /// How the orchestrator launches an agent for a phase.
 #[derive(Clone)]
 pub enum Agent {
@@ -2413,7 +2435,7 @@ impl Orchestrator {
         // `attachments/` is held back for the same reason and one more: files
         // the reviewer sent with a message are conversation, not work, so they
         // must not appear as an uncommitted change in the diff being reviewed.
-        std::fs::write(build_dir.join(".gitignore"), "mcp.json\nattachments/\n")?;
+        std::fs::write(build_dir.join(".gitignore"), "mcp*.json\nattachments/\n")?;
         // Absolute path to this binary so the harness can spawn it regardless of PATH.
         let exe = std::env::current_exe()
             .ok()
@@ -2427,8 +2449,11 @@ impl Orchestrator {
                 }
             }
         });
+        // Per owner, not per worktree: two agents can share one checkout, and
+        // each must report as itself — one shared `mcp.json` would give the
+        // second agent's identity to the first.
         std::fs::write(
-            build_dir.join("mcp.json"),
+            build_dir.join(mcp_config_name(owner_id)),
             serde_json::to_string_pretty(&mcp)?,
         )?;
         Ok(())
@@ -2915,7 +2940,7 @@ mod tests {
         assert!(worktree.path.join("README.md").exists());
 
         // The scaffolded MCP config routes `done` reports back to THIS plan.
-        let mcp = std::fs::read_to_string(worktree.path.join(".build/mcp.json")).unwrap();
+        let mcp = std::fs::read_to_string(worktree.path.join(mcp_config_path("plan-1"))).unwrap();
         assert!(mcp.contains("plan-1"), "{mcp}");
     }
 
@@ -3181,7 +3206,7 @@ mod tests {
             "# Plan v1\n"
         );
         // The fresh worktree is fully scaffolded (done reports must route).
-        assert!(new_path.join(".build/mcp.json").exists());
+        assert!(new_path.join(mcp_config_path("plan-1")).exists());
     }
 
     #[tokio::test]
@@ -3498,7 +3523,7 @@ mod tests {
             "the materialized plan doc baselines the review diff"
         );
         assert!(run.worktree.branch.starts_with("build/"));
-        assert!(run.worktree.path.join(".build/mcp.json").exists());
+        assert!(run.worktree.path.join(mcp_config_path("run-1")).exists());
 
         std::fs::write(run.worktree.path.join("fix.txt"), "fixed\n").unwrap();
         orch.on_run_done(

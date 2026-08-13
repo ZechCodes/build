@@ -138,8 +138,15 @@ pub fn diff_between_commits(
 /// Shared tail of both diff entry points: `old_tree` vs the worktree's dirty
 /// working directory and index (untracked included).
 /// The scaffolded per-owner MCP config: machine-local plumbing, never the
-/// user's work — excluded from every review surface.
+/// user's work — excluded from every review surface. One per agent
+/// (`.build/mcp-<agent_id>.json`), plus the pre-agent `.build/mcp.json` still
+/// sitting in worktrees scaffolded by an older build.
 pub(crate) const MCP_CONFIG_PATH: &str = ".build/mcp.json";
+
+/// Whether a path is one of those configs.
+pub(crate) fn is_mcp_config(path: &str) -> bool {
+    path == MCP_CONFIG_PATH || (path.starts_with(".build/mcp-") && path.ends_with(".json"))
+}
 
 fn delta_path(delta: &git2::DiffDelta) -> String {
     delta
@@ -169,7 +176,7 @@ fn worktree_diff_from_git_diff(diff: &git2::Diff<'_>) -> Result<WorktreeDiff, Di
             path: delta_path(&delta),
             status: map_status(delta.status()),
         })
-        .filter(|file| file.path != MCP_CONFIG_PATH)
+        .filter(|file| !is_mcp_config(&file.path))
         .collect();
 
     // Stats are counted while printing (instead of `diff.stats()`) so the
@@ -178,7 +185,7 @@ fn worktree_diff_from_git_diff(diff: &git2::Diff<'_>) -> Result<WorktreeDiff, Di
     let mut deletions = 0;
     let mut patch = String::new();
     diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        if delta_path(&delta) == MCP_CONFIG_PATH {
+        if is_mcp_config(&delta_path(&delta)) {
             return true;
         }
         match line.origin() {

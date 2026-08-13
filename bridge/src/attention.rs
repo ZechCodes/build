@@ -17,6 +17,8 @@
 //! **Seen** is versioned against the entity's own state clock, not a bare flag:
 //! having read a run on Monday says nothing about the failure it hit on Tuesday.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
@@ -40,15 +42,22 @@ pub struct Attention {
     /// it (RFC3339). `None` = never looked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_state_at: Option<String>,
-    /// How far into the entity's conversation the human has read. Unread is
-    /// derived against this: an attention-class item created past it is what
-    /// makes an entry unread, so a conversation that only reports progress
-    /// leaves the entry alone however much it says.
-    ///
-    /// 0 = never read anything, which is also what every record written before
-    /// this field says.
+    /// How far into the ENTITY's conversation the human had read, before
+    /// conversations belonged to agents. Folded onto the entity's first agent
+    /// by [`adopt_legacy_cursor`](Self::adopt_legacy_cursor) and zero
+    /// thereafter.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub last_read_sequence: u64,
+    /// How far into each AGENT's conversation the human has read. Unread is
+    /// derived against these: an attention-class item created past an agent's
+    /// cursor is what makes its bubble — and the entry above it — unread, so a
+    /// conversation that only reports progress leaves both alone however much
+    /// it says.
+    ///
+    /// A missing agent = never read anything of theirs, which is what a record
+    /// written before agents existed says about every agent but the first.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_read_sequences: HashMap<String, u64>,
 }
 
 fn is_zero(sequence: &u64) -> bool {
@@ -98,13 +107,39 @@ impl Attention {
         self.seen_state_at = Some(state_changed_at.to_string());
     }
 
-    /// Record that the human has read the conversation through `sequence`.
+    /// Record that the human has read one agent's conversation through
+    /// `sequence`.
     ///
     /// Never rewinds: a stale cursor (a second tab still holding the sequence
     /// it loaded with) would otherwise resurrect a badge the human already
     /// cleared.
-    pub fn read_through(&mut self, sequence: u64) {
-        self.last_read_sequence = self.last_read_sequence.max(sequence);
+    pub fn read_through(&mut self, agent_id: &str, sequence: u64) {
+        let cursor = self
+            .agent_read_sequences
+            .entry(agent_id.to_string())
+            .or_default();
+        *cursor = (*cursor).max(sequence);
+    }
+
+    /// How far the human has read one agent's conversation. 0 = never.
+    pub fn cursor_for(&self, agent_id: &str) -> u64 {
+        self.agent_read_sequences
+            .get(agent_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Fold the pre-agent, entity-wide cursor onto the entity's first agent —
+    /// the agent that inherited that conversation.
+    ///
+    /// Idempotent: the legacy value is consumed, so a second call moves
+    /// nothing. It is never applied to any other agent, whose conversations
+    /// began after the human last read anything.
+    pub fn adopt_legacy_cursor(&mut self, first_agent_id: &str) {
+        let legacy = std::mem::take(&mut self.last_read_sequence);
+        if legacy > 0 {
+            self.read_through(first_agent_id, legacy);
+        }
     }
 
     /// Whether the human has seen the entity's current state. An entity that has
@@ -225,13 +260,44 @@ mod tests {
     #[test]
     fn the_read_cursor_advances_and_never_rewinds() {
         let mut attention = Attention::default();
-        assert_eq!(attention.last_read_sequence, 0, "never read anything");
-        attention.read_through(7);
-        assert_eq!(attention.last_read_sequence, 7);
-        attention.read_through(3); // a second tab holding an older cursor
-        assert_eq!(attention.last_read_sequence, 7);
-        attention.read_through(12);
-        assert_eq!(attention.last_read_sequence, 12);
+        assert_eq!(attention.cursor_for("agent-one"), 0, "never read anything");
+        attention.read_through("agent-one", 7);
+        assert_eq!(attention.cursor_for("agent-one"), 7);
+        attention.read_through("agent-one", 3); // a second tab, older cursor
+        assert_eq!(attention.cursor_for("agent-one"), 7);
+        attention.read_through("agent-one", 12);
+        assert_eq!(attention.cursor_for("agent-one"), 12);
+    }
+
+    /// Each agent's badge clears on its own. Reading one conversation through
+    /// must not claim the human has read another.
+    #[test]
+    fn each_agent_carries_its_own_cursor() {
+        let mut attention = Attention::default();
+        attention.read_through("agent-one", 9);
+        assert_eq!(attention.cursor_for("agent-one"), 9);
+        assert_eq!(attention.cursor_for("agent-two"), 0);
+    }
+
+    /// The pre-agent cursor belongs to the agent that inherited the entity's
+    /// conversation — and to no one else.
+    #[test]
+    fn the_pre_agent_cursor_folds_onto_the_first_agent_once() {
+        let stored = serde_json::json!({ "last_read_sequence": 5 });
+        let mut attention: Attention =
+            serde_json::from_value(stored).expect("a pre-agent record loads");
+        attention.adopt_legacy_cursor("agent-first");
+        assert_eq!(attention.cursor_for("agent-first"), 5);
+        assert_eq!(attention.last_read_sequence, 0, "consumed");
+
+        attention.read_through("agent-first", 11);
+        attention.adopt_legacy_cursor("agent-first");
+        assert_eq!(
+            attention.cursor_for("agent-first"),
+            11,
+            "a second fold moves nothing"
+        );
+        assert_eq!(attention.cursor_for("agent-second"), 0);
     }
 
     /// The cursor is new; every record on disk predates it and must still load,
@@ -240,9 +306,10 @@ mod tests {
     fn a_record_written_before_the_cursor_existed_reads_as_never_read() {
         let stored = serde_json::json!({ "last_interaction_at": MON_09 });
         let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
-        assert_eq!(attention.last_read_sequence, 0);
+        assert_eq!(attention.cursor_for("agent-anything"), 0);
         let wire = serde_json::to_value(&attention).unwrap();
         assert!(wire.get("last_read_sequence").is_none(), "{wire:?}");
+        assert!(wire.get("agent_read_sequences").is_none(), "{wire:?}");
     }
 
     #[test]

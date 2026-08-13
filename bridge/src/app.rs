@@ -11216,9 +11216,11 @@ fn record_report_in_thread(
         }
         _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
     };
-    thread.push_event(event, Some(summary), None, None, &now);
-    if event == crate::thread::ThreadEventKind::Done {
-        thread.post_completion(&report.summary, &now);
+    match event {
+        crate::thread::ThreadEventKind::Done => {
+            thread.post_completion(summary, report.outputs.completion_report.as_ref(), &now)
+        }
+        _ => thread.push_event(event, Some(summary), None, None, &now),
     }
     if let Some(completion) = &report.outputs.completion_report {
         thread.remember_completion(completion);
@@ -18601,7 +18603,54 @@ mod tests {
     }
 
     #[test]
-    fn conversation_records_status_details_and_agent_authored_done_messages() {
+    fn a_completed_build_report_is_one_done_event_carrying_the_completion_report() {
+        let mut thread = crate::thread::Thread::new("run-completion");
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Fixed and deployed the renderer.".into(),
+                outputs: DoneOutputs {
+                    completion_report: Some(crate::thread::CompletionReport {
+                        critical_files: vec!["src/render.rs — the new draw path".into()],
+                        risk_notes: vec!["untested on the legacy screen".into()],
+                        decisions: vec!["kept the old entry point".into()],
+                        skips: vec!["no perf pass".into()],
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+            None,
+        );
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let crate::thread::ThreadItem::Event(done) = &thread.items[0] else {
+            panic!("the completion is an event: {:?}", thread.items);
+        };
+        assert_eq!(done.event, crate::thread::ThreadEventKind::Done);
+        assert_eq!(
+            done.summary.as_deref(),
+            Some("Fixed and deployed the renderer.")
+        );
+        let carried = done
+            .completion_report
+            .as_ref()
+            .expect("the report rides the event");
+        assert_eq!(
+            carried.critical_files,
+            vec!["src/render.rs — the new draw path"]
+        );
+        assert_eq!(carried.skips, vec!["no perf pass"]);
+        assert_eq!(
+            thread.last_completion.as_ref(),
+            Some(carried),
+            "a cold session still finds the newest report on the thread"
+        );
+    }
+
+    #[test]
+    fn conversation_records_every_report_outcome_as_its_own_event() {
         let mut thread = crate::thread::Thread::new("run-activity");
         record_report_in_thread(
             &mut thread,
@@ -18669,11 +18718,18 @@ mod tests {
         );
         assert!(thread.items.iter().any(|item| matches!(
             item,
-            crate::thread::ThreadItem::Message(message)
-                if message.role == crate::thread::MessageRole::Agent
-                    && message.done
-                    && message.body == "Fixed and deployed the renderer."
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::Done
+                    && event.summary.as_deref() == Some("Fixed and deployed the renderer.")
         )));
+        assert!(
+            !thread
+                .items
+                .iter()
+                .any(|item| matches!(item, crate::thread::ThreadItem::Message(_))),
+            "a done never writes a companion message: {:?}",
+            thread.items
+        );
     }
 
     #[test]

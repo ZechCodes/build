@@ -355,6 +355,12 @@ pub struct ThreadEvent {
     pub revision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
+    /// The agent's structured handoff, on the `Done` event that reports it.
+    /// Only a completion carries one, and only when the agent wrote one — so
+    /// every other event, and every record written before reports existed,
+    /// omits the field entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_report: Option<CompletionReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,15 +675,30 @@ impl Thread {
         self.last_completion = Some(report.clone());
     }
 
-    pub fn post_completion(&mut self, summary: impl Into<String>, now: impl Into<String>) {
-        self.post_message(
-            MessageRole::Agent,
-            true,
-            summary.into(),
-            None,
-            Vec::new(),
-            now.into(),
-        );
+    /// Record a completion: one `Done` event carrying the agent's summary and,
+    /// when it wrote one, its structured report.
+    ///
+    /// The event IS the record. A completion used to also post an agent
+    /// message repeating the summary, which put one hand-back on the
+    /// conversation twice and made the entry unread twice for it.
+    pub fn post_completion(
+        &mut self,
+        summary: impl Into<String>,
+        report: Option<&CompletionReport>,
+        now: impl Into<String>,
+    ) {
+        let sequence = self.next();
+        self.items.push(ThreadItem::Event(ThreadEvent {
+            id: format!("event-{sequence}"),
+            sequence,
+            event: ThreadEventKind::Done,
+            created_at: now.into(),
+            summary: Some(summary.into()),
+            session_id: None,
+            revision_id: None,
+            links: Vec::new(),
+            completion_report: report.cloned(),
+        }));
     }
 
     fn post_message(
@@ -785,6 +806,7 @@ impl Thread {
             session_id,
             revision_id,
             links,
+            completion_report: None,
         }));
     }
 
@@ -1170,10 +1192,71 @@ mod attention_class_tests {
     }
 
     #[test]
-    fn a_completion_message_reads_as_done_not_as_one_more_agent_message() {
+    fn a_completion_is_one_done_event_and_no_companion_message() {
         let mut thread = Thread::new("run-1");
-        thread.post_completion("implemented the change", "2026-08-13T09:00:00Z");
+        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        assert!(matches!(
+            &thread.items[0],
+            ThreadItem::Event(event)
+                if event.event == ThreadEventKind::Done
+                    && event.summary.as_deref() == Some("implemented the change")
+        ));
         assert_eq!(thread.items[0].attention_reason(), Some("done"));
+    }
+
+    #[test]
+    fn the_done_event_carries_the_completion_report_onto_the_wire() {
+        let mut thread = Thread::new("run-report");
+        let report = CompletionReport {
+            critical_files: vec!["src/thread.rs — the event now carries the report".to_string()],
+            risk_notes: vec!["older records have no report".to_string()],
+            decisions: vec!["kept last_completion for cold sessions".to_string()],
+            skips: vec!["no SPA card yet".to_string()],
+        };
+
+        thread.post_completion(
+            "implemented the change",
+            Some(&report),
+            "2026-08-13T09:00:00Z",
+        );
+
+        let wire = thread.wire_value();
+        let carried = &wire["items"][0]["data"]["completion_report"];
+        assert_eq!(
+            carried["critical_files"][0],
+            "src/thread.rs — the event now carries the report"
+        );
+        assert_eq!(carried["risk_notes"][0], "older records have no report");
+        assert_eq!(
+            carried["decisions"][0],
+            "kept last_completion for cold sessions"
+        );
+        assert_eq!(carried["skips"][0], "no SPA card yet");
+    }
+
+    #[test]
+    fn an_event_without_a_report_omits_the_field() {
+        let mut thread = Thread::new("run-plain");
+        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
+        thread.push_event(
+            ThreadEventKind::RunStarted,
+            None,
+            None,
+            None,
+            "2026-08-13T09:01:00Z",
+        );
+
+        let wire = thread.wire_value();
+        for index in 0..2 {
+            assert!(
+                wire["items"][index]["data"]
+                    .get("completion_report")
+                    .is_none(),
+                "{wire:?}"
+            );
+        }
     }
 
     #[test]
@@ -1520,24 +1603,21 @@ mod tests {
     }
 
     #[test]
-    fn done_is_a_flag_on_the_agent_message_and_follows_the_done_event() {
+    fn the_done_event_is_the_whole_wire_record_of_a_completion() {
         let mut thread = Thread::new("run-done");
-        thread.push_event(
-            ThreadEventKind::Done,
-            Some("Implemented the change".to_string()),
-            None,
-            None,
-            "2026-07-24T12:00:00Z",
-        );
-        thread.post_completion("Implemented the change", "2026-07-24T12:00:00Z");
+        thread.post_agent("here is what I found", None, "2026-07-24T11:00:00Z");
+        thread.post_completion("Implemented the change", None, "2026-07-24T12:00:00Z");
 
         let wire = thread.wire_value();
-        assert_eq!(wire["items"][0]["type"], "event");
-        assert_eq!(wire["items"][0]["data"]["event"], "done");
-        assert_eq!(wire["items"][1]["type"], "message");
-        assert_eq!(wire["items"][1]["data"]["body"], "Implemented the change");
-        assert_eq!(wire["items"][1]["data"]["done"], true);
-        assert!(wire["items"][1]["data"].get("source").is_none(), "{wire:?}");
+        assert_eq!(wire["items"][0]["type"], "message");
+        assert!(wire["items"][0]["data"].get("source").is_none(), "{wire:?}");
+        assert_eq!(wire["items"][1]["type"], "event");
+        assert_eq!(wire["items"][1]["data"]["event"], "done");
+        assert_eq!(
+            wire["items"][1]["data"]["summary"],
+            "Implemented the change"
+        );
+        assert_eq!(wire["items"].as_array().unwrap().len(), 2, "{wire:?}");
     }
 
     #[test]

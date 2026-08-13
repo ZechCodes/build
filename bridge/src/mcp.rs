@@ -308,6 +308,16 @@ impl DoneServer {
                                 },
                                 "required": ["comment_id", "response"]
                             }
+                        },
+                        "completion_report": {
+                            "type": "object",
+                            "description": "Expected when phase=build or phase=revise and status=completed: the handoff a reviewer reads before the diff, and the only durable context a replacement session gets. One short line per entry; leave a list out rather than padding it.",
+                            "properties": {
+                                "critical_files": { "type": "array", "items": { "type": "string" }, "description": "The few files that carry this change, each with why it matters — \"path — what it now does\"." },
+                                "risk_notes": { "type": "array", "items": { "type": "string" }, "description": "What could break and where it would show, including anything you could not verify." },
+                                "decisions": { "type": "array", "items": { "type": "string" }, "description": "Choices a reviewer would otherwise have to reverse-engineer, each with its reason." },
+                                "skips": { "type": "array", "items": { "type": "string" }, "description": "What you deliberately did not do, and why." }
+                            }
                         }
                     }
                 }
@@ -771,7 +781,56 @@ mod tests {
         assert!(outputs["stages"].is_object());
         assert!(outputs["validation"].is_object());
         assert!(outputs["comment_resolutions"].is_object());
-        assert!(outputs.get("completion_report").is_none());
+    }
+
+    #[test]
+    fn tools_list_schema_asks_for_the_completion_report_on_build_and_revise() {
+        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let completion = &v["result"]["tools"][2]["inputSchema"]["properties"]["outputs"]
+            ["properties"]["completion_report"];
+
+        assert_eq!(completion["type"], "object");
+        let described = completion["description"].as_str().unwrap();
+        assert!(described.contains("build"), "{described}");
+        assert!(described.contains("revise"), "{described}");
+        for field in ["critical_files", "risk_notes", "decisions", "skips"] {
+            assert_eq!(completion["properties"][field]["type"], "array", "{field}");
+            assert_eq!(
+                completion["properties"][field]["items"]["type"], "string",
+                "{field}"
+            );
+            assert!(
+                completion["properties"][field]["description"].is_string(),
+                "{field} says what belongs in it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_completion_report_leaves_the_other_lists_empty() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
+        );
+        let report = h.report.unwrap().outputs.completion_report.unwrap();
+        assert_eq!(report.decisions, vec!["kept the old name"]);
+        assert!(report.critical_files.is_empty());
+        assert!(report.risk_notes.is_empty());
+        assert!(report.skips.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_completion_report_is_a_tool_error_not_a_silent_drop() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":"src/main.rs"}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("invalid done arguments"));
+        assert!(h.report.is_none());
     }
 
     #[test]

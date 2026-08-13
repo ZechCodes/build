@@ -185,8 +185,28 @@ unexpected environment or implementation problem prevents the review itself,
 call `done` with status=\"blocked\" or status=\"failed\" and use one concise
 sentence to say why.";
 
+/// What every code-changing phase adds to its `done` call. Appended rather
+/// than written into each template so the four asks cannot drift apart, and so
+/// a project overriding one template still overrides only that one.
+const COMPLETION_REPORT_ASK: &str = "\
+Whenever you report status=\"completed\", set outputs.completion_report on that
+same `done` call. It is what the reviewer reads before the diff, and the only
+context an agent replacing you inherits.
+Four lists of short lines — leave a list out rather than padding it:
+`critical_files` (the few files that carry this change, each with why it
+matters), `risk_notes` (what could break and where it would show, including
+anything you could not verify), `decisions` (choices a reviewer would otherwise
+have to reverse-engineer, each with its reason), and `skips` (what you
+deliberately did not do, and why).";
+
 fn phase_template(base: &str) -> String {
     base.to_string()
+}
+
+/// A template whose phase ends in changed code, so its `done` carries the
+/// completion report.
+fn reporting_template(base: &str) -> String {
+    format!("{base}\n\n{COMPLETION_REPORT_ASK}")
 }
 
 /// The phase templates. Clone-and-edit to override per project.
@@ -207,12 +227,12 @@ impl Default for Templates {
     fn default() -> Self {
         Templates {
             plan: phase_template(PLAN),
-            build: phase_template(BUILD),
-            build_stage: phase_template(BUILD_STAGE),
+            build: reporting_template(BUILD),
+            build_stage: reporting_template(BUILD_STAGE),
             revise: phase_template(REVISE),
             revise_stage: phase_template(REVISE_STAGE),
-            fix_stage: phase_template(FIX_STAGE),
-            review_changes: phase_template(REVIEW_CHANGES),
+            fix_stage: reporting_template(FIX_STAGE),
+            review_changes: reporting_template(REVIEW_CHANGES),
             validate: phase_template(VALIDATE),
             message: phase_template(MESSAGE),
         }
@@ -377,16 +397,23 @@ mod tests {
         assert!(t.plan.contains(".build/"));
         assert!(t.build.contains("phase=\"build\""));
         assert!(t.review_changes.contains("phase=\"revise\""));
-        for template in [
-            &t.plan,
-            &t.build,
-            &t.build_stage,
-            &t.revise,
-            &t.revise_stage,
-            &t.fix_stage,
-            &t.review_changes,
-            &t.validate,
-        ] {
+    }
+
+    #[test]
+    fn every_code_changing_template_asks_for_the_completion_report() {
+        let t = Templates::default();
+        for template in [&t.build, &t.build_stage, &t.fix_stage, &t.review_changes] {
+            assert!(template.contains("outputs.completion_report"), "{template}");
+            for field in ["critical_files", "risk_notes", "decisions", "skips"] {
+                assert!(template.contains(field), "{field} missing from {template}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_plan_document_templates_ask_for_no_completion_report() {
+        let t = Templates::default();
+        for template in [&t.plan, &t.revise, &t.revise_stage, &t.validate] {
             assert!(
                 !template.contains("outputs.completion_report"),
                 "{template}"

@@ -5989,6 +5989,46 @@ impl AppState {
         persisted
     }
 
+    /// Tell the Issue where its implementation got to.
+    ///
+    /// The Issue's conversation is the place the human follows work they asked
+    /// for, and an implementation is a different conversation entirely — so an
+    /// outcome that needs them (done, blocked, failed, merged, abandoned) is
+    /// mirrored there as an event naming the implementation it came from.
+    /// Progress is not mirrored: the Issue's surfaces already read where the
+    /// work got to off the implementation itself.
+    ///
+    /// The feed's dedup rule keeps this from asking twice: while an
+    /// implementation is live the Issue has no row of its own, so a mirrored
+    /// outcome makes exactly one entry unread.
+    fn mirror_run_outcome_to_issue(
+        &mut self,
+        run_id: &str,
+        issue_id: &str,
+        event: crate::thread::ThreadEventKind,
+        summary: String,
+    ) -> Result<(), String> {
+        if !run_outcome_mirrors_to_issue(event) {
+            return Ok(());
+        }
+        let Ok(mut issue) = self.take_plan(issue_id) else {
+            return Ok(());
+        };
+        issue.agents.push_event_with_links(
+            event,
+            Some(summary),
+            None,
+            None,
+            vec![crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            }],
+            now_rfc3339(),
+        );
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        persisted
+    }
+
     /// Canonical conversation owner for a run. Planned runs are implementation
     /// lineage of the Issue and therefore project the Issue thread; planless
     /// adopted runs remain independent worktree entities.
@@ -8284,6 +8324,14 @@ impl AppState {
         let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
         result?;
         persisted?;
+        if let Some(issue_id) = &issue_id {
+            self.mirror_run_outcome_to_issue(
+                &run_id,
+                issue_id,
+                crate::thread::ThreadEventKind::Abandoned,
+                "Implementation abandoned".to_string(),
+            )?;
+        }
         if let Some(issue_id) = issue_id {
             let mut issue = self.take_plan(&issue_id)?;
             let mut links = vec![
@@ -11271,6 +11319,13 @@ fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
         return;
     };
     thread.finish_session(&session_id, now);
+}
+
+/// Whether one of an implementation's events travels to the Issue that owns
+/// it. Exactly the attention class: what needs the human is news wherever they
+/// are watching from, what merely reports progress belongs to the run.
+fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
+    event.class() == crate::thread::EventClass::Attention
 }
 
 fn record_report_in_thread(
@@ -23858,6 +23913,125 @@ mod tests {
         let entry = board_entry(&mut state, &run_id);
         assert_eq!(entry["unread"], false, "{entry:?}");
         assert!(entry["unread_reason"].is_null(), "{entry:?}");
+    }
+
+    /// What reaches the Issue from its implementation: the outcomes, never the
+    /// progress. The rule is the event class, over every kind there is — so a
+    /// kind added later cannot quietly start (or stop) travelling.
+    #[test]
+    fn only_a_runs_attention_outcomes_reach_the_issue_that_owns_it() {
+        for event in crate::thread::ThreadEventKind::ALL {
+            assert_eq!(
+                run_outcome_mirrors_to_issue(event),
+                event.class() == crate::thread::EventClass::Attention,
+                "{event:?}"
+            );
+        }
+        for outcome in [
+            crate::thread::ThreadEventKind::Done,
+            crate::thread::ThreadEventKind::Blocked,
+            crate::thread::ThreadEventKind::RunFailed,
+            crate::thread::ThreadEventKind::Merged,
+            crate::thread::ThreadEventKind::Abandoned,
+        ] {
+            assert!(run_outcome_mirrors_to_issue(outcome), "{outcome:?}");
+        }
+        for progress in [
+            crate::thread::ThreadEventKind::RunStarted,
+            crate::thread::ThreadEventKind::Committed,
+            crate::thread::ThreadEventKind::Pushed,
+            crate::thread::ThreadEventKind::RevisionCreated,
+            crate::thread::ThreadEventKind::StageStarted,
+        ] {
+            assert!(!run_outcome_mirrors_to_issue(progress), "{progress:?}");
+        }
+    }
+
+    /// The Issue's conversation is where the human follows the work they asked
+    /// for, so its implementation being abandoned is news there — and the
+    /// mirrored event says which implementation it came from.
+    #[test]
+    fn abandoning_an_implementation_is_news_on_its_issue() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "mirror the outcome");
+        state.handle(req("entity.seen", json!({ "entity_id": issue_id })));
+
+        // The dedup rule: while the implementation is live the Issue has no row
+        // of its own, so nothing mirrored onto it can ask a second time.
+        let live = work_item_rows(&mut state);
+        assert!(
+            !live
+                .iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id)),
+            "{live:?}"
+        );
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+
+        let issue_thread = &state.plans[&issue_id].agents;
+        let mirrored = issue_thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::Abandoned =>
+                {
+                    Some(event)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mirrored.len(),
+            1,
+            "one abandon, one mirrored event: {:?}",
+            issue_thread.items
+        );
+        assert!(
+            mirrored[0]
+                .links
+                .contains(&crate::thread::ThreadLink::Implementation {
+                    issue_id: issue_id.clone(),
+                    implementation_id: run_id.clone(),
+                }),
+            "the mirror names the implementation it came from: {:?}",
+            mirrored[0]
+        );
+
+        // The finished implementation stops speaking for the issue, whose own
+        // row now says why it needs reading.
+        let rows = work_item_rows(&mut state);
+        let issue = rows
+            .iter()
+            .find(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id))
+            .unwrap_or_else(|| panic!("the issue has its row back: {rows:?}"));
+        assert_eq!(issue["unread"], true, "{issue:?}");
+        assert_eq!(issue["unread_reason"], "abandoned", "{issue:?}");
+    }
+
+    /// A branch nobody planned has no Issue to tell. Its own conversation still
+    /// records the outcome.
+    #[test]
+    fn abandoning_a_run_with_no_issue_mirrors_nowhere() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-planless");
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert!(state.plans.is_empty(), "adoption mints no issue");
+        let own = &state.runs[&run_id].agents;
+        assert!(
+            own.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::Abandoned
+            )),
+            "{:?}",
+            own.items
+        );
     }
 
     /// Reading a stage doc IS engaging with an issue — they are a queue you

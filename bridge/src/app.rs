@@ -1020,7 +1020,6 @@ const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("plan.send_notes", "plan_id"),
     ("plan.stage_send_notes", "plan_id"),
     ("plan.comment_add", "plan_id"),
-    ("plan.comment_resolve", "plan_id"),
     ("plan.message", "plan_id"),
     ("plan.abandon", "plan_id"),
     ("run.request_changes", "run_id"),

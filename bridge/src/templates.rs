@@ -296,61 +296,15 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{prior_notes}", vars.prior_notes)
 }
 
-/// Render the `{comments}` block for a `revise_stage` prompt from a stage's
-/// open plan comments (`crate::plan::StageComment`), in insertion order. Pure —
-/// the orchestrator filters to `Open` comments for one stage before calling
-/// this.
-pub fn assemble_plan_stage_comments(comments: &[crate::plan::StageComment]) -> String {
-    comments
-        .iter()
-        .enumerate()
-        .map(|(index, comment)| {
-            render_one_stage_comment(
-                index + 1,
-                &comment.id,
-                comment
-                    .anchor
-                    .as_ref()
-                    .map(|anchor| (anchor.heading_path.as_slice(), anchor.snippet.as_str())),
-                &comment.body,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// Render one numbered stage comment from its primitive fields — the shared
-/// core both comment-type overloads call, so the prompt shape never forks.
-fn render_one_stage_comment(
-    number: usize,
-    id: &str,
-    anchor: Option<(&[String], &str)>,
-    body: &str,
-) -> String {
-    let heading = match anchor {
-        Some(([], snippet)) => format!(
-            "{number}. [{id}] On the passage: \"{snippet}\"",
-            snippet = collapse_whitespace(snippet),
-        ),
-        Some((heading_path, snippet)) => format!(
-            "{number}. [{id}] Under \"{heading_path}\", on the passage: \"{snippet}\"",
-            heading_path = heading_path.join(" > "),
-            snippet = collapse_whitespace(snippet),
-        ),
-        None => format!("{number}. [{id}] (general)"),
-    };
-    format!("{heading}\n   Comment: {body}")
-}
-
-/// Collapse every run of whitespace to a single space and trim the ends.
-fn collapse_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{CommentAnchor, CommentState, StageComment};
+
+    /// Collapse every run of whitespace to a single space and trim the ends,
+    /// so a template's wording can be asserted across its line wrapping.
+    fn collapse_whitespace(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
 
     #[test]
     fn render_substitutes_every_placeholder() {
@@ -593,70 +547,5 @@ mod tests {
     fn stage_artifact_constants_are_pinned() {
         assert_eq!(STAGES_DIR, ".build/plan");
         assert_eq!(STAGES_MANIFEST_PATH, ".build/plan/stages.json");
-    }
-
-    fn comment(
-        id: &str,
-        anchor: Option<CommentAnchor>,
-        body: &str,
-        state: CommentState,
-    ) -> StageComment {
-        StageComment {
-            id: id.to_string(),
-            stage_id: "database-schema".to_string(),
-            anchor,
-            body: body.to_string(),
-            state,
-            agent_reply: None,
-        }
-    }
-
-    #[test]
-    fn assemble_plan_stage_comments_renders_anchored_and_general_entries() {
-        let comments = vec![
-            comment(
-                "c-3",
-                Some(CommentAnchor {
-                    heading_path: vec!["Database schema".to_string(), "Tables".to_string()],
-                    snippet: "users table gets a soft-delete column".to_string(),
-                }),
-                "use a deleted_at timestamp, not a boolean",
-                CommentState::Open,
-            ),
-            comment(
-                "c-4",
-                None,
-                "this stage feels too big, split the migration from the model changes",
-                CommentState::Open,
-            ),
-        ];
-        let out = assemble_plan_stage_comments(&comments);
-        assert_eq!(
-            out,
-            "1. [c-3] Under \"Database schema > Tables\", on the passage: \"users table gets a soft-delete column\"\n   Comment: use a deleted_at timestamp, not a boolean\n\n2. [c-4] (general)\n   Comment: this stage feels too big, split the migration from the model changes"
-        );
-    }
-
-    #[test]
-    fn assemble_plan_stage_comments_handles_empty_heading_path() {
-        let comments = vec![comment(
-            "c-1",
-            Some(CommentAnchor {
-                heading_path: vec![],
-                snippet: "  a passage   with   extra   whitespace  ".to_string(),
-            }),
-            "tighten this up",
-            CommentState::Open,
-        )];
-        let out = assemble_plan_stage_comments(&comments);
-        assert_eq!(
-            out,
-            "1. [c-1] On the passage: \"a passage with extra whitespace\"\n   Comment: tighten this up"
-        );
-    }
-
-    #[test]
-    fn assemble_plan_stage_comments_empty_slice_is_empty_string() {
-        assert_eq!(assemble_plan_stage_comments(&[]), "");
     }
 }

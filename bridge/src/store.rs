@@ -181,9 +181,12 @@ pub struct PersistedPlan {
     /// single-doc plans.
     #[serde(default)]
     pub stages: Vec<StageDoc>,
-    /// Persisted per-stage plan comments (flat; each carries its `stage_id`).
-    #[serde(default)]
-    pub comments: Vec<crate::plan::StageComment>,
+    /// Retired storage: per-stage plan comments, as records written before
+    /// comments became conversation posts. Read once, by
+    /// [`Store::migrate_stage_comments_to_posts`], and empty on every record
+    /// written since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<StageComment>,
     #[serde(default)]
     pub provider: AgentProvider,
     /// Model/effort the plan's agents run on (None = harness default).
@@ -1102,6 +1105,45 @@ impl Store {
         Ok(migrated)
     }
 
+    /// Boot migration: move every persisted stage comment onto the Issue's
+    /// conversation as a post.
+    ///
+    /// A plan-doc comment is an anchored message now — the same shape a diff
+    /// comment has — so the separate comment record has nowhere left to be
+    /// read from. Run after [`migrate_threads_to_agents`](Self::migrate_threads_to_agents):
+    /// the posts land on the Issue's first agent, which that pass mints.
+    /// Idempotent, because the record's comment list is emptied as its
+    /// comments become posts.
+    ///
+    /// Returns how many records were rewritten.
+    pub fn migrate_stage_comments_to_posts(&self) -> Result<usize, StoreError> {
+        let mut migrated = 0usize;
+        for mut aggregate in self.load_all_issues()? {
+            if post_stored_comments(&mut aggregate.issue) {
+                let path = self.issue_record_path(&aggregate.issue.id);
+                let json =
+                    serde_json::to_string_pretty(&aggregate).expect("an Issue always serializes");
+                write_record_atomically(&path, &json)?;
+                migrated += 1;
+            }
+        }
+        let plans_dir = self.dir.join("plans");
+        if plans_dir.is_dir() {
+            for entry in std::fs::read_dir(&plans_dir)? {
+                let record_path = entry?.path().join("record.json");
+                if !record_path.is_file() {
+                    continue;
+                }
+                let mut plan: PersistedPlan = read_record(&record_path)?;
+                if post_stored_comments(&mut plan) {
+                    self.save_plan(&plan)?;
+                    migrated += 1;
+                }
+            }
+        }
+        Ok(migrated)
+    }
+
     /// Promote a legacy plan snapshot (docs sitting directly in
     /// `plans/<task_id>/`) into the canonical `plans/<task_id>/docs/`
     /// location. Copies, never moves — no data is deleted by migration. A
@@ -1267,6 +1309,48 @@ fn adopt_first_agent_plan(record: &mut PersistedPlan) -> bool {
     changed
 }
 
+/// Post one record's stored comments onto its first agent's conversation and
+/// empty the retired list. `false` when there was nothing stored to move.
+///
+/// The comment's own timestamp was never stored, so a migrated post is dated
+/// by the record it came from — the closest true thing available, and later
+/// than nothing else on the conversation could be.
+fn post_stored_comments(record: &mut PersistedPlan) -> bool {
+    if record.comments.is_empty() {
+        return false;
+    }
+    let mut roster = record.roster();
+    let stages = record.stages.clone();
+    let created_at = record.created_at.clone();
+    let thread = &mut roster.first_mut().thread;
+    for comment in std::mem::take(&mut record.comments) {
+        let path = stages
+            .iter()
+            .find(|stage| stage.id == comment.stage_id)
+            .map(|stage| stage.path.clone())
+            .unwrap_or_default();
+        let anchor = comment.anchor.map(|anchor| crate::thread::DocAnchor {
+            heading_path: anchor.heading_path,
+            snippet: anchor.snippet,
+            line_start: None,
+            line_end: None,
+        });
+        let id = thread.post_doc_comment(
+            &record.id,
+            &comment.stage_id,
+            &path,
+            anchor,
+            comment.body,
+            &created_at,
+        );
+        if comment.state == crate::legacy::CommentState::Addressed {
+            thread.resolve_doc_comment(&id, comment.agent_reply.as_deref().unwrap_or_default());
+        }
+    }
+    record.agents = roster.agents().to_vec();
+    true
+}
+
 /// See [`adopt_first_agent_plan`].
 fn adopt_first_agent_run(record: &mut PersistedRun) -> bool {
     let roster = record.roster();
@@ -1345,7 +1429,7 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         branch,
         plan_path: task.plan_path.clone(),
         stages: task.stages.iter().map(stage_doc_from_legacy).collect(),
-        comments: task.comments.iter().map(plan_comment_from_legacy).collect(),
+        comments: task.comments.clone(),
         provider: AgentProvider::Claude,
         model: task.model.clone(),
         effort: task.effort.clone(),
@@ -1510,27 +1594,6 @@ fn stage_progress_from_legacy(stage: &Stage) -> Option<StageProgress> {
                 notes_for_next_stage: report.notes_for_next_stage.clone(),
             }),
     })
-}
-
-/// A legacy comment carries over to the plan record field-for-field.
-fn plan_comment_from_legacy(comment: &StageComment) -> crate::plan::StageComment {
-    crate::plan::StageComment {
-        id: comment.id.clone(),
-        stage_id: comment.stage_id.clone(),
-        anchor: comment
-            .anchor
-            .as_ref()
-            .map(|anchor| crate::plan::CommentAnchor {
-                heading_path: anchor.heading_path.clone(),
-                snippet: anchor.snippet.clone(),
-            }),
-        body: comment.body.clone(),
-        state: match comment.state {
-            crate::legacy::CommentState::Open => crate::plan::CommentState::Open,
-            crate::legacy::CommentState::Addressed => crate::plan::CommentState::Addressed,
-        },
-        agent_reply: comment.agent_reply.clone(),
-    }
 }
 
 /// The current time as an RFC 3339 UTC string (the store's timestamp format).
@@ -1990,17 +2053,7 @@ mod tests {
                 summary: "Tables and migration.".into(),
                 state: StageDocState::Planned,
             }],
-            comments: vec![crate::plan::StageComment {
-                id: "c-1".into(),
-                stage_id: "database-schema".into(),
-                anchor: Some(crate::plan::CommentAnchor {
-                    heading_path: vec!["Database schema".into()],
-                    snippet: "users table".into(),
-                }),
-                body: "use a deleted_at timestamp".into(),
-                state: crate::plan::CommentState::Open,
-                agent_reply: None,
-            }],
+            comments: Vec::new(),
             provider: AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
@@ -3126,5 +3179,91 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks"));
         assert_eq!(store.migrate_threads_to_agents().unwrap(), 0);
+        assert_eq!(store.migrate_stage_comments_to_posts().unwrap(), 0);
+    }
+
+    // ================== Stage comments → conversation posts ==================
+
+    /// The persisted comments a pre-cutover record carries.
+    fn stored_comments() -> Vec<StageComment> {
+        vec![
+            StageComment {
+                id: "c-1".into(),
+                stage_id: "database-schema".into(),
+                anchor: Some(CommentAnchor {
+                    heading_path: vec!["Database schema".into()],
+                    snippet: "users table".into(),
+                }),
+                body: "use a deleted_at timestamp".into(),
+                state: CommentState::Open,
+                agent_reply: None,
+            },
+            StageComment {
+                id: "c-2".into(),
+                stage_id: "database-schema".into(),
+                anchor: None,
+                body: "this stage is too big".into(),
+                state: CommentState::Addressed,
+                agent_reply: Some("split it in two".into()),
+            },
+        ]
+    }
+
+    /// A comment used to be a record beside the conversation. It is a post on
+    /// the conversation now, and the migration moves every one of them there —
+    /// anchor, body and the agent's answer intact.
+    #[test]
+    fn persisted_stage_comments_become_posts_on_the_issue_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let mut issue = plan_record("issue-1", PlanState::PlanReview);
+        issue.comments = stored_comments();
+        issue.agents = crate::agent::AgentRoster::with_first(
+            "issue-1",
+            crate::models::ModelChoice::default(),
+            "2026-07-01T10:00:00Z",
+        )
+        .agents()
+        .to_vec();
+        store.save_issue_plan(&issue).unwrap();
+
+        assert_eq!(store.migrate_stage_comments_to_posts().unwrap(), 1);
+
+        let migrated = store.load_all_issues().unwrap().remove(0).issue;
+        assert!(migrated.comments.is_empty(), "the storage is retired");
+        let comments = migrated.agents[0].thread.doc_comments();
+        assert_eq!(comments.len(), 2, "{comments:?}");
+        assert_eq!(comments[0].stage_id, "database-schema");
+        assert_eq!(comments[0].path, ".build/plan/01-database-schema.md");
+        assert_eq!(comments[0].body, "use a deleted_at timestamp");
+        assert_eq!(comments[0].state, crate::thread::DocCommentState::Open);
+        assert_eq!(
+            comments[0]
+                .anchor
+                .as_ref()
+                .map(|anchor| anchor.snippet.as_str()),
+            Some("users table")
+        );
+        assert!(comments[1].anchor.is_none(), "{:?}", comments[1]);
+        assert_eq!(comments[1].state, crate::thread::DocCommentState::Addressed);
+        assert_eq!(comments[1].agent_reply.as_deref(), Some("split it in two"));
+    }
+
+    /// Boot runs every migration every time: the second pass has nothing left
+    /// to move and must not post the comments a second time.
+    #[test]
+    fn migrating_stage_comments_twice_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let mut plan = plan_record("plan-1", PlanState::PlanReview);
+        plan.comments = stored_comments();
+        store.save_plan(&plan).unwrap();
+        store.migrate_threads_to_agents().unwrap();
+
+        assert_eq!(store.migrate_stage_comments_to_posts().unwrap(), 1);
+        let after_first = store.load_all_plans().unwrap();
+        assert_eq!(store.migrate_stage_comments_to_posts().unwrap(), 0);
+        assert_eq!(store.load_all_plans().unwrap(), after_first);
+        assert_eq!(after_first[0].agents[0].thread.doc_comments().len(), 2);
     }
 }

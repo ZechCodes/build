@@ -43,9 +43,8 @@ use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, Worktre
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
-    plan_transition, stage_doc_transition, CommentState as PlanCommentState, IllegalPlanTransition,
-    IllegalStageDocTransition, Plan, PlanEvent, PlanId, PlanState,
-    StageComment as PlanStageComment, StageDoc, StageDocEvent, StageDocState, StageManifestEntry,
+    plan_transition, stage_doc_transition, IllegalPlanTransition, IllegalStageDocTransition, Plan,
+    PlanEvent, PlanId, PlanState, StageDoc, StageDocEvent, StageDocState, StageManifestEntry,
 };
 use crate::pty::{HarnessSpec, PtyError};
 use crate::run::{
@@ -54,6 +53,7 @@ use crate::run::{
 };
 use crate::store::{PersistedPlan, PersistedRun, Store, StoreError};
 use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
+use crate::thread::DocComment;
 use crate::worktree::{
     configured_remote_for_branch, derive_adoption_goal, slugify, ExternalWorktree, Worktree,
     WorktreeError, WorktreeManager, PLAN_BRANCH_PREFIX,
@@ -258,8 +258,6 @@ pub struct ActivePlan {
     /// Stage docs: manifest metadata + plan-side review sub-state. Empty for
     /// single-doc plans.
     pub stages: Vec<StageDoc>,
-    /// Persisted per-stage plan comments (flat; each carries its stage_id).
-    pub comments: Vec<PlanStageComment>,
     /// The stage a plan-revision session is (or was last) running for. Not
     /// persisted on the plan record — a restart falls back to a full re-plan.
     pub revising_stage_id: Option<String>,
@@ -307,7 +305,6 @@ impl ActivePlan {
             base_branch: record.base_branch.clone(),
             plan_path: record.plan_path.clone(),
             stages: record.stages.clone(),
-            comments: record.comments.clone(),
             revising_stage_id: None,
             model_choice: record.model_choice(),
             agents: record.roster(),
@@ -329,25 +326,10 @@ impl ActivePlan {
             .ok_or_else(|| format!("unknown stage_id: {stage_id}"))
     }
 
-    /// Open comments on one stage, insertion order.
-    pub fn open_comments_for(&self, stage_id: &str) -> Vec<&PlanStageComment> {
-        self.comments
-            .iter()
-            .filter(|c| c.stage_id == stage_id && c.state == PlanCommentState::Open)
-            .collect()
-    }
-
-    /// Mint the next comment id: "c-<n>", n = 1 + max numeric suffix among the
-    /// plan's existing comment ids — so ids never collide after deletes.
-    pub fn mint_comment_id(&self) -> String {
-        let max_suffix = self
-            .comments
-            .iter()
-            .filter_map(|c| c.id.strip_prefix("c-"))
-            .filter_map(|n| n.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
-        format!("c-{}", max_suffix + 1)
+    /// Open comments on one stage, insertion order. Read off the Issue
+    /// conversation, where the comments live as posts.
+    pub fn open_comments_for(&self, stage_id: &str) -> Vec<DocComment> {
+        self.agents.open_doc_comments_for(stage_id)
     }
 }
 
@@ -748,7 +730,6 @@ impl Orchestrator {
             base_branch: base_branch.to_string(),
             plan_path: DEFAULT_PLAN_PATH.to_string(),
             stages: Vec::new(),
-            comments: Vec::new(),
             revising_stage_id: None,
             model_choice,
             agents,
@@ -877,20 +858,19 @@ impl Orchestrator {
         active.plan.apply(PlanEvent::PlanReady)?;
         if let Some(resolutions) = &report.outputs.comment_resolutions {
             for resolution in resolutions {
-                let matching = active.comments.iter_mut().find(|c| {
-                    c.id == resolution.comment_id
-                        && c.stage_id == stage_id
-                        && c.state == PlanCommentState::Open
-                });
-                match matching {
-                    Some(comment) => {
-                        comment.state = PlanCommentState::Addressed;
-                        comment.agent_reply = Some(resolution.response.clone());
-                    }
-                    None => eprintln!(
+                let answers_this_stage = active
+                    .open_comments_for(&stage_id)
+                    .iter()
+                    .any(|comment| comment.id == resolution.comment_id);
+                if !answers_this_stage
+                    || !active
+                        .agents
+                        .resolve_doc_comment(&resolution.comment_id, &resolution.response)
+                {
+                    eprintln!(
                         "stage revision for {stage_id}: unknown or non-open comment {:?}; skipping",
                         resolution.comment_id
-                    ),
+                    );
                 }
             }
         }
@@ -1028,11 +1008,7 @@ impl Orchestrator {
         // Pure legality first — nothing is dispatched for an illegal revise.
         plan_transition(&active.plan.state, PlanEvent::SendNotes)
             .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
-        let open: Vec<PlanStageComment> = active
-            .open_comments_for(stage_id)
-            .into_iter()
-            .cloned()
-            .collect();
+        let open = active.open_comments_for(stage_id);
         if open.is_empty() {
             return Err(OrchestratorError::Gate(format!(
                 "no open comments on stage {stage_id}"
@@ -2196,11 +2172,7 @@ impl Orchestrator {
         let doc_index = plan
             .stage_doc_index(stage_id)
             .map_err(OrchestratorError::Gate)?;
-        let open: Vec<PlanStageComment> = plan
-            .open_comments_for(stage_id)
-            .into_iter()
-            .cloned()
-            .collect();
+        let open = plan.open_comments_for(stage_id);
         if open.is_empty() {
             return Err(OrchestratorError::Gate(format!(
                 "no open comments on stage {stage_id}"
@@ -2258,21 +2230,20 @@ impl Orchestrator {
             stage_doc_transition(&plan.stages[index].state, StageDocEvent::Revised)?;
         if let Some(resolutions) = &report.outputs.comment_resolutions {
             for resolution in resolutions {
-                let matching = plan.comments.iter_mut().find(|c| {
-                    c.id == resolution.comment_id
-                        && c.stage_id == stage_id
-                        && c.state == PlanCommentState::Open
-                });
-                match matching {
-                    Some(comment) => {
-                        comment.state = PlanCommentState::Addressed;
-                        comment.agent_reply = Some(resolution.response.clone());
-                    }
-                    None => eprintln!(
+                let answers_this_stage = plan
+                    .open_comments_for(&stage_id)
+                    .iter()
+                    .any(|comment| comment.id == resolution.comment_id);
+                if !answers_this_stage
+                    || !plan
+                        .agents
+                        .resolve_doc_comment(&resolution.comment_id, &resolution.response)
+                {
+                    eprintln!(
                         "run stage revision for {stage_id}: unknown or non-open comment {:?}; \
                          skipping",
                         resolution.comment_id
-                    ),
+                    );
                 }
             }
         }
@@ -2693,7 +2664,7 @@ mod tests {
 
     // ---- Plan/Run split seams ----
 
-    use crate::plan::{CommentState as PlanCommentState, PlanState, StageDocState};
+    use crate::plan::{PlanState, StageDocState};
     use crate::run::{RunId, RunState, StageProgressState};
     use crate::store::{PersistedPlan, PersistedRun, Store};
 
@@ -2701,15 +2672,34 @@ mod tests {
         Store::new(dir.path().join("store"))
     }
 
-    fn plan_comment(id: &str, stage_id: &str, state: PlanCommentState) -> PlanStageComment {
-        PlanStageComment {
-            id: id.to_string(),
-            stage_id: stage_id.to_string(),
-            anchor: None,
-            body: format!("comment {id}"),
-            state,
-            agent_reply: None,
-        }
+    /// Leave a reviewer comment on one stage. A comment is a post on the
+    /// Issue's conversation and nowhere else, so this is how a test makes one.
+    /// Returns the comment's id.
+    fn comment_on(plan: &mut ActivePlan, stage_id: &str) -> String {
+        let path = plan
+            .stages
+            .iter()
+            .find(|stage| stage.id == stage_id)
+            .map(|stage| stage.path.clone())
+            .unwrap_or_default();
+        let issue_id = plan.plan.id.0.clone();
+        plan.agents.post_doc_comment(
+            &issue_id,
+            stage_id,
+            &path,
+            None,
+            format!("comment on {stage_id}"),
+            "2026-08-13T09:00:00Z",
+        )
+    }
+
+    /// One comment as the conversation now holds it.
+    fn comment_by_id(plan: &ActivePlan, comment_id: &str) -> crate::thread::DocComment {
+        plan.agents
+            .doc_comments()
+            .into_iter()
+            .find(|comment| comment.id == comment_id)
+            .unwrap_or_else(|| panic!("no comment {comment_id}"))
     }
 
     /// The path of the plan's live disposable worktree (panics when torn down).
@@ -3321,10 +3311,8 @@ mod tests {
         let store = split_store(&dir);
         let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
         plan.stages[0].state = StageDocState::Approved;
-        plan.comments = vec![
-            plan_comment("c-1", "first", PlanCommentState::Open),
-            plan_comment("c-2", "first", PlanCommentState::Open),
-        ];
+        let first_comment = comment_on(&mut plan, "first");
+        let second_comment = comment_on(&mut plan, "first");
 
         // A stage-revision session is in flight for "first" (the dispatching
         // verb lands with the periphery; the state is arranged directly to
@@ -3347,11 +3335,11 @@ mod tests {
                 outputs: DoneOutputs {
                     comment_resolutions: Some(vec![
                         crate::mcp::CommentResolution {
-                            comment_id: "c-1".into(),
+                            comment_id: first_comment.clone(),
                             response: "switched to a timestamp".into(),
                         },
                         crate::mcp::CommentResolution {
-                            comment_id: "c-999".into(),
+                            comment_id: "message-999".into(),
                             response: "unknown id is skipped".into(),
                         },
                     ]),
@@ -3368,11 +3356,16 @@ mod tests {
             "a revised doc resets the stale approval"
         );
         assert_eq!(plan.revising_stage_id, None);
-        let c1 = plan.comments.iter().find(|c| c.id == "c-1").unwrap();
-        assert_eq!(c1.state, PlanCommentState::Addressed);
-        assert_eq!(c1.agent_reply.as_deref(), Some("switched to a timestamp"));
-        let c2 = plan.comments.iter().find(|c| c.id == "c-2").unwrap();
-        assert_eq!(c2.state, PlanCommentState::Open);
+        let answered = comment_by_id(&plan, &first_comment);
+        assert_eq!(answered.state, crate::thread::DocCommentState::Addressed);
+        assert_eq!(
+            answered.agent_reply.as_deref(),
+            Some("switched to a timestamp")
+        );
+        assert_eq!(
+            comment_by_id(&plan, &second_comment).state,
+            crate::thread::DocCommentState::Open
+        );
         assert_eq!(
             store
                 .read_plan_doc("plan-1", ".build/plan/01-first.md")
@@ -3418,7 +3411,7 @@ mod tests {
             branch: Some("plan/add-a-greeting".into()),
             plan_path: ".build/plan.md".into(),
             stages: vec![],
-            comments: vec![plan_comment("c-1", "first", PlanCommentState::Open)],
+            comments: Vec::new(),
             provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
@@ -3442,7 +3435,6 @@ mod tests {
             active.model_choice.model.as_deref(),
             Some("claude-opus-4-8")
         );
-        assert_eq!(active.comments.len(), 1);
         assert_eq!(active.last_error.as_deref(), Some("boom"));
 
         // A record whose worktree was torn down reattaches without one.
@@ -4017,10 +4009,8 @@ mod tests {
         let store = split_store(&dir);
         let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
         plan.stages[0].state = StageDocState::Approved;
-        plan.comments = vec![
-            plan_comment("c-1", "first", PlanCommentState::Open),
-            plan_comment("c-2", "second", PlanCommentState::Open),
-        ];
+        let first_comment = comment_on(&mut plan, "first");
+        comment_on(&mut plan, "second");
 
         let turn = orch
             .send_plan_stage_notes(&mut plan, &store, "first")
@@ -4029,9 +4019,13 @@ mod tests {
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
         let prompt = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
         assert!(prompt.contains("read_unread_messages"), "{prompt}");
+        assert_eq!(
+            turn.warm, THREAD_NOTIFICATION,
+            "the comments travel through MCP; the instruction only points at them"
+        );
         assert!(
-            !prompt.contains("[c-1]"),
-            "comments travel through MCP: {prompt}"
+            !prompt.contains("Comment:"),
+            "no server-rendered comment block: {prompt}"
         );
         assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
 
@@ -4051,7 +4045,7 @@ mod tests {
                 summary: "revised".into(),
                 outputs: DoneOutputs {
                     comment_resolutions: Some(vec![crate::mcp::CommentResolution {
-                        comment_id: "c-1".into(),
+                        comment_id: first_comment.clone(),
                         response: "done".into(),
                     }]),
                     ..DoneOutputs::default()
@@ -4063,8 +4057,8 @@ mod tests {
         assert_eq!(plan.stages[0].state, StageDocState::Planned);
         assert_eq!(plan.revising_stage_id, None);
         assert_eq!(
-            plan.comments.iter().find(|c| c.id == "c-1").unwrap().state,
-            PlanCommentState::Addressed
+            comment_by_id(&plan, &first_comment).state,
+            crate::thread::DocCommentState::Addressed
         );
         assert_eq!(
             store
@@ -4090,7 +4084,7 @@ mod tests {
 
         // Not at the review gate (approved) → the transition is rejected.
         orch.approve_plan(&mut plan).unwrap();
-        plan.comments = vec![plan_comment("c-1", "first", PlanCommentState::Open)];
+        comment_on(&mut plan, "first");
         let err = orch
             .send_plan_stage_notes(&mut plan, &store, "first")
             .expect_err("an approved plan is past the review gate");
@@ -4712,7 +4706,7 @@ mod tests {
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         // The upcoming stage's doc was approved; a reviewer left a comment.
         plan.stages[1].state = StageDocState::Approved;
-        plan.comments = vec![plan_comment("c-1", "second", PlanCommentState::Open)];
+        let comment_id = comment_on(&mut plan, "second");
         let mut run = run_past_first_stage(&orch, &store, &plan, "run-1");
 
         // The revision runs in the RUN's worktree; the run's coarse state is
@@ -4738,7 +4732,7 @@ mod tests {
             summary: "revised".into(),
             outputs: DoneOutputs {
                 comment_resolutions: Some(vec![crate::mcp::CommentResolution {
-                    comment_id: "c-1".into(),
+                    comment_id: comment_id.clone(),
                     response: "reworked the section".into(),
                 }]),
                 ..DoneOutputs::default()
@@ -4772,7 +4766,10 @@ mod tests {
             StageDocState::Planned,
             "a revised doc resets its stale approval"
         );
-        assert_eq!(plan.comments[0].state, PlanCommentState::Addressed);
+        assert_eq!(
+            comment_by_id(&plan, &comment_id).state,
+            crate::thread::DocCommentState::Addressed
+        );
         assert_eq!(
             store
                 .read_plan_doc("plan-1", ".build/plan/02-second.md")
@@ -4788,7 +4785,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
-        plan.comments = vec![plan_comment("c-1", "first", PlanCommentState::Open)];
+        comment_on(&mut plan, "first");
         // A run still building its first stage is not at the gate.
         let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
         let err = orch

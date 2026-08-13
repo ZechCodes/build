@@ -15,6 +15,10 @@ use sha2::{Digest, Sha256};
 pub enum ArtifactKind {
     Plan,
     Diff,
+    /// One stage document of an issue. What a plan-doc comment anchors to: a
+    /// passage of a named file, the same way a diff comment anchors to a
+    /// passage of a hunk.
+    Doc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +316,11 @@ pub struct ThreadMessage {
     pub anchor: Option<MessageAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by_revision: Option<String>,
+    /// The agent's answer to this message, when it is a plan-doc comment a
+    /// revision reported addressed. Nothing else carries one, and no message
+    /// written before doc comments were posts does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_reply: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
     /// Files the reviewer sent with this message. Only a user message carries
@@ -330,6 +339,102 @@ pub struct ThreadMessage {
     /// existed.
     #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
     pub metadata: ItemMetadata,
+}
+
+/// Where a plan-doc comment points inside a stage document: the passage the
+/// reviewer selected, and where it sat when they selected it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocAnchor {
+    /// The chain of enclosing heading *texts* (outermost first). Empty for a
+    /// top-of-doc anchor.
+    #[serde(default)]
+    pub heading_path: Vec<String>,
+    /// The selected passage, trimmed.
+    #[serde(default)]
+    pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<u32>,
+}
+
+impl DocAnchor {
+    /// Whether this anchor names a passage at all. An anchor with no snippet,
+    /// no headings and no lines is the document as a whole, which is what a
+    /// general comment points at.
+    fn names_a_passage(&self) -> bool {
+        !self.snippet.trim().is_empty()
+            || !self.heading_path.is_empty()
+            || self.line_start.is_some()
+    }
+}
+
+/// Whether a plan-doc comment is still waiting on the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DocCommentState {
+    Open,
+    Addressed,
+}
+
+/// One reviewer comment on a stage document, as the conversation holds it.
+///
+/// Derived, never stored: the comment IS the anchored post, so there is one
+/// place a comment can be and one place it can be deleted from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocComment {
+    /// The id of the message that is this comment.
+    pub id: String,
+    pub stage_id: String,
+    /// The stage document, worktree-relative.
+    pub path: String,
+    /// `None` for a comment on the document as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<DocAnchor>,
+    pub body: String,
+    pub state: DocCommentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_reply: Option<String>,
+    pub created_at: String,
+}
+
+/// Read one message as a plan-doc comment, or `None` when it is not one.
+///
+/// A comment is a reviewer message anchored to a doc and linked to the stage
+/// that doc belongs to — both, so ordinary conversation about a stage is never
+/// mistaken for review of it.
+fn doc_comment_of(message: &ThreadMessage) -> Option<DocComment> {
+    if message.role != MessageRole::User {
+        return None;
+    }
+    let anchor = message.anchor.as_ref()?;
+    if anchor.artifact != ArtifactKind::Doc {
+        return None;
+    }
+    let (stage_id, path) = message.links.iter().find_map(|link| match link {
+        ThreadLink::IssueStage { stage_id, path, .. }
+        | ThreadLink::PlanStage { stage_id, path, .. } => Some((stage_id.clone(), path.clone())),
+        _ => None,
+    })?;
+    let doc_anchor = DocAnchor {
+        heading_path: anchor.heading_path.clone(),
+        snippet: anchor.snippet.clone(),
+        line_start: anchor.line_start,
+        line_end: anchor.line_end,
+    };
+    Some(DocComment {
+        id: message.id.clone(),
+        stage_id,
+        path: anchor.path.clone().unwrap_or(path),
+        anchor: doc_anchor.names_a_passage().then_some(doc_anchor),
+        body: message.body.clone(),
+        state: match message.agent_reply {
+            Some(_) => DocCommentState::Addressed,
+            None => DocCommentState::Open,
+        },
+        agent_reply: message.agent_reply.clone(),
+        created_at: message.created_at.clone(),
+    })
 }
 
 /// What one item on a conversation does to the entry that owns it.
@@ -1024,6 +1129,107 @@ impl Thread {
         id
     }
 
+    /// Post a reviewer comment on one stage document.
+    ///
+    /// Plan-doc comments are conversation posts — the same anchored-message
+    /// path diff comments take — so the agent reads them with the tool it
+    /// already reads its messages with, and there is no second place a comment
+    /// can go stale in. `anchor: None` comments the document as a whole.
+    /// Returns the id of the comment (which is the id of the message).
+    pub fn post_doc_comment(
+        &mut self,
+        issue_id: &str,
+        stage_id: &str,
+        path: &str,
+        anchor: Option<DocAnchor>,
+        body: impl Into<String>,
+        now: impl Into<String>,
+    ) -> String {
+        let anchor = anchor.unwrap_or_default();
+        let message_anchor = MessageAnchor {
+            artifact: ArtifactKind::Doc,
+            revision_id: None,
+            path: Some(path.to_string()),
+            side: None,
+            line_start: anchor.line_start,
+            line_end: anchor.line_end,
+            heading_path: anchor.heading_path,
+            snippet: anchor.snippet,
+        };
+        let links = vec![ThreadLink::IssueStage {
+            issue_id: issue_id.to_string(),
+            stage_id: stage_id.to_string(),
+            path: path.to_string(),
+        }];
+        self.post_message(
+            MessageRole::User,
+            false,
+            body.into(),
+            Some(message_anchor),
+            links,
+            now.into(),
+        )
+    }
+
+    /// Every plan-doc comment on this conversation, oldest first.
+    pub fn doc_comments(&self) -> Vec<DocComment> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                ThreadItem::Message(message) => doc_comment_of(message),
+                ThreadItem::Event(_) => None,
+            })
+            .collect()
+    }
+
+    /// The comments one stage is still waiting on, oldest first.
+    pub fn open_doc_comments_for(&self, stage_id: &str) -> Vec<DocComment> {
+        self.doc_comments()
+            .into_iter()
+            .filter(|comment| {
+                comment.stage_id == stage_id && comment.state == DocCommentState::Open
+            })
+            .collect()
+    }
+
+    /// Record the agent's answer to one open comment, which closes it. `false`
+    /// when no open comment has that id.
+    pub fn resolve_doc_comment(&mut self, comment_id: &str, reply: &str) -> bool {
+        let found = self.items.iter().position(|item| {
+            matches!(item, ThreadItem::Message(message)
+                if message.id == comment_id
+                    && message.agent_reply.is_none()
+                    && doc_comment_of(message).is_some())
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        // An in-place mutation of an already-sequenced item, like read_unread:
+        // bump so the cursored polls re-ship the answered comment.
+        let sequence = self.next();
+        let ThreadItem::Message(message) = &mut self.items[index] else {
+            return false;
+        };
+        message.agent_reply = Some(reply.to_string());
+        message.updated_sequence = sequence;
+        true
+    }
+
+    /// Delete one open comment — and with it the post, because the post is the
+    /// comment. `None` when no OPEN comment has that id: an answered comment is
+    /// conversation history.
+    pub fn remove_doc_comment(&mut self, comment_id: &str) -> Option<DocComment> {
+        let index = self.items.iter().position(|item| {
+            matches!(item, ThreadItem::Message(message)
+                if message.id == comment_id
+                    && doc_comment_of(message).is_some_and(|comment| comment.state == DocCommentState::Open))
+        })?;
+        let ThreadItem::Message(message) = self.items.remove(index) else {
+            return None;
+        };
+        doc_comment_of(&message)
+    }
+
     pub fn post_agent(
         &mut self,
         body: impl Into<String>,
@@ -1149,6 +1355,7 @@ impl Thread {
             seen_at: None,
             anchor,
             resolved_by_revision: None,
+            agent_reply: None,
             links,
             attachments: Vec::new(),
         }));
@@ -1562,6 +1769,7 @@ impl ArtifactKind {
         match self {
             ArtifactKind::Plan => "plan",
             ArtifactKind::Diff => "diff",
+            ArtifactKind::Doc => "doc",
         }
     }
 }
@@ -2511,5 +2719,202 @@ mod tests {
             serde_json::from_value::<Vec<ThreadLink>>(value).unwrap(),
             canonical
         );
+    }
+}
+
+#[cfg(test)]
+mod doc_comment_tests {
+    use super::*;
+
+    const NOW: &str = "2026-08-13T09:00:00Z";
+    const STAGE_PATH: &str = ".build/plan/01-database-schema.md";
+
+    fn passage() -> DocAnchor {
+        DocAnchor {
+            heading_path: vec!["Database schema".to_string(), "Tables".to_string()],
+            snippet: "users table gets a soft-delete column".to_string(),
+            line_start: Some(12),
+            line_end: Some(14),
+        }
+    }
+
+    fn commented_stage() -> Thread {
+        let mut thread = Thread::for_agent("agent-1");
+        thread.post_doc_comment(
+            "issue-1",
+            "database-schema",
+            STAGE_PATH,
+            Some(passage()),
+            "use a deleted_at timestamp, not a boolean",
+            NOW,
+        );
+        thread
+    }
+
+    /// A plan-doc comment is a post like any other: an anchored user message on
+    /// the conversation, not a record beside it.
+    #[test]
+    fn a_doc_comment_is_an_anchored_post_on_the_conversation() {
+        let thread = commented_stage();
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let ThreadItem::Message(message) = &thread.items[0] else {
+            panic!("a comment is a message: {:?}", thread.items);
+        };
+        assert_eq!(message.role, MessageRole::User);
+        let anchor = message.anchor.as_ref().expect("an anchored comment");
+        assert_eq!(anchor.artifact, ArtifactKind::Doc);
+        assert_eq!(anchor.path.as_deref(), Some(STAGE_PATH));
+        assert_eq!(anchor.line_start, Some(12));
+        assert_eq!(anchor.line_end, Some(14));
+        assert_eq!(anchor.snippet, passage().snippet);
+        assert!(message.links.contains(&ThreadLink::IssueStage {
+            issue_id: "issue-1".to_string(),
+            stage_id: "database-schema".to_string(),
+            path: STAGE_PATH.to_string(),
+        }));
+        // Posting it derives the same findability as any other item.
+        assert_eq!(message.metadata.stages, vec!["database-schema".to_string()]);
+        assert_eq!(message.metadata.files, vec![STAGE_PATH.to_string()]);
+
+        let comments = thread.doc_comments();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].id, message.id);
+        assert_eq!(comments[0].stage_id, "database-schema");
+        assert_eq!(comments[0].path, STAGE_PATH);
+        assert_eq!(
+            comments[0].body,
+            "use a deleted_at timestamp, not a boolean"
+        );
+        assert_eq!(comments[0].state, DocCommentState::Open);
+        assert_eq!(comments[0].anchor.as_ref(), Some(&passage()));
+        assert_eq!(comments[0].created_at, NOW);
+    }
+
+    /// A comment on the stage as a whole anchors to the document, not a passage
+    /// — and it is still that stage's comment.
+    #[test]
+    fn a_general_comment_points_at_the_document_rather_than_a_passage() {
+        let mut thread = Thread::for_agent("agent-1");
+        thread.post_doc_comment(
+            "issue-1",
+            "database-schema",
+            STAGE_PATH,
+            None,
+            "this stage is too big",
+            NOW,
+        );
+        let comments = thread.doc_comments();
+        assert_eq!(comments.len(), 1);
+        assert!(comments[0].anchor.is_none(), "{:?}", comments[0]);
+        assert_eq!(comments[0].path, STAGE_PATH);
+        assert_eq!(
+            thread.open_doc_comments_for("database-schema").len(),
+            1,
+            "a general comment is still open work on the stage"
+        );
+    }
+
+    /// Ordinary conversation is not a comment, and one stage's comments are not
+    /// another's.
+    #[test]
+    fn open_comments_are_scoped_to_their_stage() {
+        let mut thread = commented_stage();
+        thread.post_doc_comment(
+            "issue-1",
+            "api-surface",
+            ".build/plan/02-api-surface.md",
+            None,
+            "name the endpoint after the resource",
+            NOW,
+        );
+        thread.post_user("unrelated direction", None, NOW);
+        thread.post_agent("and an answer", None, NOW);
+
+        assert_eq!(thread.doc_comments().len(), 2);
+        let open = thread.open_doc_comments_for("api-surface");
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].stage_id, "api-surface");
+    }
+
+    /// The agent's answer lands on the comment it answers, which closes it —
+    /// and the mutation bumps the cursor so a polling client re-ships it.
+    #[test]
+    fn resolving_a_comment_records_the_reply_and_closes_it() {
+        let mut thread = commented_stage();
+        let id = thread.doc_comments()[0].id.clone();
+        let before = thread.last_sequence();
+
+        assert!(thread.resolve_doc_comment(&id, "Switched to deleted_at."));
+        let comment = &thread.doc_comments()[0];
+        assert_eq!(comment.state, DocCommentState::Addressed);
+        assert_eq!(
+            comment.agent_reply.as_deref(),
+            Some("Switched to deleted_at.")
+        );
+        assert!(thread.open_doc_comments_for("database-schema").is_empty());
+        assert!(thread.last_sequence() > before, "the cursor moves");
+
+        assert!(
+            !thread.resolve_doc_comment("message-404", "nothing to answer"),
+            "an unknown comment resolves nothing"
+        );
+        assert!(
+            !thread.resolve_doc_comment(&id, "again"),
+            "an addressed comment is not re-answered"
+        );
+    }
+
+    /// Deleting a comment deletes the post: there is nowhere else it lives.
+    #[test]
+    fn removing_an_open_comment_takes_the_post_with_it() {
+        let mut thread = commented_stage();
+        let id = thread.doc_comments()[0].id.clone();
+
+        let removed = thread.remove_doc_comment(&id).expect("an open comment");
+        assert_eq!(removed.id, id);
+        assert!(thread.items.is_empty(), "{:?}", thread.items);
+        assert!(thread.remove_doc_comment(&id).is_none(), "already gone");
+
+        let mut thread = commented_stage();
+        let id = thread.doc_comments()[0].id.clone();
+        thread.resolve_doc_comment(&id, "done");
+        assert!(
+            thread.remove_doc_comment(&id).is_none(),
+            "an answered comment is history, not a draft"
+        );
+    }
+
+    #[test]
+    fn a_doc_anchor_says_doc_on_the_wire() {
+        assert_eq!(ArtifactKind::Doc.as_str(), "doc");
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::Doc).unwrap(),
+            json!("doc")
+        );
+        let thread = commented_stage();
+        let wire = thread.wire_value();
+        assert_eq!(wire["items"][0]["data"]["anchor"]["artifact"], "doc");
+        assert_eq!(wire["items"][0]["data"]["anchor"]["line_start"], 12);
+        let reloaded: Thread = serde_json::from_value(json!({
+            "id": thread.id,
+            "agent": thread.agent,
+            "items": thread.items,
+        }))
+        .expect("a conversation carrying a doc comment reloads");
+        assert_eq!(reloaded.doc_comments(), thread.doc_comments());
+    }
+
+    /// Every message written before doc comments existed loads, and none of
+    /// them pays for the reply field.
+    #[test]
+    fn a_message_written_before_replies_existed_carries_none() {
+        let mut thread = Thread::for_agent("agent-1");
+        thread.post_user("plain direction", None, NOW);
+        let wire = thread.wire_value();
+        assert!(
+            wire["items"][0]["data"].get("agent_reply").is_none(),
+            "{wire:?}"
+        );
+        assert!(thread.doc_comments().is_empty());
     }
 }

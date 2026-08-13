@@ -33,8 +33,8 @@ use crate::orchestrator::{
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
-    CommentAnchor, CommentState, ImplementationActivity, ImplementationIntent, PlanEvent, PlanId,
-    PlanState, StageComment, StageDoc, StageDocState,
+    ImplementationActivity, ImplementationIntent, PlanEvent, PlanId, PlanState, StageDoc,
+    StageDocState,
 };
 use crate::pty::{HarnessSpec, PtySession};
 use crate::relay::{FrameHandler, SessionSender};
@@ -1669,6 +1669,13 @@ impl AppState {
         store
             .migrate_threads_to_agents()
             .map_err(|e| e.to_string())?;
+        // Then: move every persisted stage comment onto that agent's
+        // conversation, where comments live now. After the agents exist (the
+        // posts need one) and before the loaders, which read comments only off
+        // the conversation.
+        store
+            .migrate_stage_comments_to_posts()
+            .map_err(|e| e.to_string())?;
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
         let archived_worktrees = store
@@ -2182,7 +2189,10 @@ impl AppState {
             branch: worktree.map(|w| w.branch.clone()),
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
-            comments: active.comments.clone(),
+            // Retired storage: comments are posts on the conversation now. The
+            // field stays on the record only so pre-cutover files still load,
+            // and the boot migration empties it.
+            comments: Vec::new(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
@@ -6196,7 +6206,8 @@ impl AppState {
                 object.insert(
                     "comments".to_string(),
                     json!(issue
-                        .comments
+                        .agents
+                        .doc_comments()
                         .iter()
                         .filter(|comment| comment.stage_id == doc.id)
                         .map(comment_json)
@@ -6809,9 +6820,10 @@ impl AppState {
             .map(|doc| {
                 let mut view = plan_stage_json(active, doc);
                 let comments: Vec<Value> = active
-                    .comments
+                    .agents
+                    .doc_comments()
                     .iter()
-                    .filter(|c| c.stage_id == doc.id)
+                    .filter(|comment| comment.stage_id == doc.id)
                     .map(comment_json)
                     .collect();
                 view.as_object_mut()
@@ -6969,19 +6981,6 @@ impl AppState {
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
-        if let Some(stage) = active
-            .stages
-            .iter()
-            .find(|stage| stage.id == stage_id)
-            .cloned()
-        {
-            let comments: Vec<StageComment> = active
-                .open_comments_for(&stage_id)
-                .into_iter()
-                .cloned()
-                .collect();
-            append_stage_comments_to_thread(&mut active.agents, &stage, &comments);
-        }
         let outcome = (|| -> Result<(), String> {
             let store = self.require_store()?;
             let turn = self
@@ -7105,12 +7104,18 @@ impl AppState {
         Ok(json!({ "ok": true }))
     }
 
+    /// Comment on one stage document.
+    ///
+    /// The comment IS a post on the Issue agent's conversation, anchored to the
+    /// passage it is about — the same path a diff comment takes. There is no
+    /// second record: the agent reads it with the tool it reads its messages
+    /// with, and deleting the post deletes the comment.
     fn plan_comment_add(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let body = require_str(params, "body")?;
         let mut active = self.take_plan(&plan_id)?;
-        let mut minted: Option<StageComment> = None;
+        let mut minted: Option<crate::thread::DocComment> = None;
         let outcome = (|| -> Result<(), String> {
             if body.trim().is_empty() {
                 return Err("comment body must not be empty".to_string());
@@ -7127,35 +7132,26 @@ impl AppState {
                 ));
             }
             let anchor = parse_comment_anchor(params.get("anchor"))?;
-            let thread_anchor = anchor.as_ref().map(|anchor| crate::thread::MessageAnchor {
-                artifact: crate::thread::ArtifactKind::Plan,
-                revision_id: None,
-                path: Some(active.stages[index].path.clone()),
-                side: None,
-                line_start: None,
-                line_end: None,
-                heading_path: anchor.heading_path.clone(),
-                snippet: anchor.snippet.clone(),
-            });
-            let comment = StageComment {
-                id: active.mint_comment_id(),
-                stage_id: stage_id.clone(),
+            let path = active.stages[index].path.clone();
+            let id = active.agents.post_doc_comment(
+                &plan_id,
+                &stage_id,
+                &path,
                 anchor,
-                body: body.clone(),
-                state: CommentState::Open,
-                agent_reply: None,
-            };
-            active.comments.push(comment.clone());
-            active
+                body.clone(),
+                now_rfc3339(),
+            );
+            minted = active
                 .agents
-                .post_user(body.clone(), thread_anchor, now_rfc3339());
-            minted = Some(comment);
+                .doc_comments()
+                .into_iter()
+                .find(|comment| comment.id == id);
             Ok(())
         })();
         let (_, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
-        let comment = minted.expect("outcome Ok implies a comment was minted");
+        let comment = minted.expect("outcome Ok implies a comment was posted");
         Ok(json!({ "comment": comment_json(&comment) }))
     }
 
@@ -7164,33 +7160,20 @@ impl AppState {
         let comment_id = require_str(params, "comment_id")?;
         let mut active = self.take_plan(&plan_id)?;
         let outcome = (|| -> Result<(), String> {
-            let index = active
-                .comments
-                .iter()
-                .position(|c| c.id == comment_id)
+            let known = active
+                .agents
+                .doc_comments()
+                .into_iter()
+                .find(|comment| comment.id == comment_id)
                 .ok_or_else(|| format!("unknown comment_id: {comment_id}"))?;
-            if active.comments[index].state != CommentState::Open {
+            if known.state != crate::thread::DocCommentState::Open {
                 return Err("only open comments can be deleted".to_string());
             }
-            let comment = active.comments.remove(index);
-            let stage_path = active
-                .stages
-                .iter()
-                .find(|stage| stage.id == comment.stage_id)
-                .map(|stage| stage.path.as_str());
-            if let Some(message_index) = active.agents.items.iter().rposition(|item| {
-                matches!(
-                    item,
-                    crate::thread::ThreadItem::Message(message)
-                        if message.role == crate::thread::MessageRole::User
-                            && message.body == comment.body
-                            && message.anchor.as_ref().and_then(|anchor| anchor.path.as_deref())
-                                == comment.anchor.as_ref().and(stage_path)
-                )
-            }) {
-                active.agents.items.remove(message_index);
-            }
-            Ok(())
+            active
+                .agents
+                .remove_doc_comment(&comment_id)
+                .map(|_| ())
+                .ok_or_else(|| format!("unknown comment_id: {comment_id}"))
         })();
         let (_, persisted) = self.finish_plan_mutation(plan_id, active);
         outcome?;
@@ -7926,19 +7909,6 @@ impl AppState {
         let mut plan = self.plans.remove(&plan_id);
         let outcome = (|| -> Result<(), String> {
             let plan = plan.as_mut().ok_or("unknown plan_id")?;
-            let stage = plan
-                .stages
-                .iter()
-                .find(|stage| stage.id == stage_id)
-                .cloned()
-                .ok_or_else(|| format!("unknown stage_id: {stage_id}"))?;
-            let comments: Vec<StageComment> = plan
-                .open_comments_for(&stage_id)
-                .into_iter()
-                .cloned()
-                .collect();
-            append_stage_comments_to_thread(&mut active.agents, &stage, &comments);
-            append_stage_comments_to_thread(&mut plan.agents, &stage, &comments);
             let turn = self
                 .orch_for(&project_id)?
                 .send_run_stage_notes(&mut active, plan, &stage_id)
@@ -9933,11 +9903,7 @@ impl AppState {
 /// The wire view of a plan stage doc: id/title/summary/path, its plan-side
 /// review sub-state, and its open-comment count.
 fn plan_stage_json(active: &ActivePlan, doc: &StageDoc) -> Value {
-    let open_comments = active
-        .comments
-        .iter()
-        .filter(|c| c.stage_id == doc.id && c.state == CommentState::Open)
-        .count();
+    let open_comments = active.agents.open_doc_comments_for(&doc.id).len();
     json!({
         "id": doc.id,
         "title": doc.title,
@@ -9985,27 +9951,32 @@ fn run_stage_json(progress: &StageProgress) -> Value {
     })
 }
 
-fn comment_json(c: &StageComment) -> Value {
+/// One stage comment on the wire, read off the conversation that holds it.
+fn comment_json(comment: &crate::thread::DocComment) -> Value {
     json!({
-        "id": c.id,
-        "stage_id": c.stage_id,
-        "anchor": c.anchor.as_ref().map(|a| json!({
-            "heading_path": a.heading_path,
-            "snippet": a.snippet,
+        "id": comment.id,
+        "stage_id": comment.stage_id,
+        "path": comment.path,
+        "anchor": comment.anchor.as_ref().map(|anchor| json!({
+            "heading_path": anchor.heading_path,
+            "snippet": anchor.snippet,
+            "line_start": anchor.line_start,
+            "line_end": anchor.line_end,
         })),
-        "body": c.body,
-        "state": match c.state {
-            CommentState::Open => "open",
-            CommentState::Addressed => "addressed",
+        "body": comment.body,
+        "state": match comment.state {
+            crate::thread::DocCommentState::Open => "open",
+            crate::thread::DocCommentState::Addressed => "addressed",
         },
-        "agent_reply": c.agent_reply,
+        "agent_reply": comment.agent_reply,
     })
 }
 
 /// Parse the optional `anchor` param of `plan.comment_add`: `null`/absent is a
 /// general comment; present, it must carry a string-array `heading_path` and a
-/// string `snippet` (capped server-side at 400 chars).
-fn parse_comment_anchor(value: Option<&Value>) -> Result<Option<CommentAnchor>, String> {
+/// string `snippet` (capped server-side at 400 chars). Optional `line_start` /
+/// `line_end` say where the passage sat when it was selected.
+fn parse_comment_anchor(value: Option<&Value>) -> Result<Option<crate::thread::DocAnchor>, String> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
@@ -10025,11 +9996,27 @@ fn parse_comment_anchor(value: Option<&Value>) -> Result<Option<CommentAnchor>, 
                 .and_then(Value::as_str)
                 .ok_or("anchor.snippet must be a string")?;
             let snippet: String = snippet.chars().take(400).collect();
-            Ok(Some(CommentAnchor {
+            Ok(Some(crate::thread::DocAnchor {
                 heading_path,
                 snippet,
+                line_start: parse_anchor_line(v, "line_start")?,
+                line_end: parse_anchor_line(v, "line_end")?,
             }))
         }
+    }
+}
+
+/// One optional line number of a comment anchor. Absent and `null` both mean
+/// the reviewer selected a passage without line context; anything else must be
+/// a line number.
+fn parse_anchor_line(anchor: &Value, field: &str) -> Result<Option<u32>, String> {
+    match anchor.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|line| u32::try_from(line).ok())
+            .map(Some)
+            .ok_or_else(|| format!("anchor.{field} must be a line number")),
     }
 }
 
@@ -11159,44 +11146,6 @@ fn append_user_thread_messages_with_attachments(
         } else {
             thread.post_user(body, anchor, &now);
         }
-    }
-}
-
-fn append_stage_comments_to_thread(
-    thread: &mut crate::thread::Thread,
-    stage: &StageDoc,
-    comments: &[StageComment],
-) {
-    let now = now_rfc3339();
-    for comment in comments {
-        let body = comment.body.clone();
-        let already_posted = thread.items.iter().any(|item| {
-            matches!(
-                item,
-                crate::thread::ThreadItem::Message(message)
-                    if message.role == crate::thread::MessageRole::User
-                        && message.body == body
-                        && message.anchor.as_ref().and_then(|anchor| anchor.path.as_deref())
-                            == comment.anchor.as_ref().map(|_| stage.path.as_str())
-            )
-        });
-        if already_posted {
-            continue;
-        }
-        let anchor = comment
-            .anchor
-            .as_ref()
-            .map(|anchor| crate::thread::MessageAnchor {
-                artifact: crate::thread::ArtifactKind::Plan,
-                revision_id: None,
-                path: Some(stage.path.clone()),
-                side: None,
-                line_start: None,
-                line_end: None,
-                heading_path: anchor.heading_path.clone(),
-                snippet: anchor.snippet.clone(),
-            });
-        thread.post_user(body, anchor, &now);
     }
 }
 
@@ -17490,6 +17439,102 @@ mod tests {
         assert_eq!(del["error"], "only open comments can be deleted");
     }
 
+    /// A plan-doc comment is a post on the Issue agent's conversation, anchored
+    /// to the passage it is about — and the stage viewer reads its comments
+    /// back off that conversation. There is no second record.
+    #[test]
+    fn a_stage_comment_is_a_doc_anchored_post_the_stage_view_reads_back() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "comment as a post" })));
+        let plan_id = plan_id_of(&plan);
+
+        let added = state.handle(req(
+            "plan.comment_add",
+            json!({
+                "plan_id": plan_id, "stage_id": "first-half", "body": "use a timestamp",
+                "anchor": {
+                    "heading_path": ["Stage: First half"],
+                    "snippet": "the first half",
+                    "line_start": 12,
+                    "line_end": 14,
+                },
+            }),
+        ));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let comment = added["result"]["comment"].clone();
+        let comment_id = comment["id"].as_str().unwrap().to_string();
+        assert_eq!(comment["state"], "open", "{comment:?}");
+        assert_eq!(comment["anchor"]["line_start"], 12, "{comment:?}");
+        assert_eq!(
+            comment["anchor"]["snippet"], "the first half",
+            "{comment:?}"
+        );
+        assert_eq!(
+            comment["path"], ".build/plan/01-first-half.md",
+            "{comment:?}"
+        );
+
+        // The post itself: one anchored user message on the Issue conversation.
+        let thread = &state.plans[&plan_id].agents;
+        let posted = thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Message(message) if message.id == comment_id => {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .next()
+            .unwrap_or_else(|| panic!("the comment is the post: {:?}", thread.items));
+        let anchor = posted.anchor.as_ref().expect("an anchored post");
+        assert_eq!(anchor.artifact, crate::thread::ArtifactKind::Doc);
+        assert_eq!(anchor.path.as_deref(), Some(".build/plan/01-first-half.md"));
+        assert_eq!(posted.body, "use a timestamp");
+
+        // The stage viewer reads it back off the conversation.
+        let stages = state.handle(req("plan.stages", json!({ "plan_id": plan_id })));
+        let first = stages["result"]["stages"][0].clone();
+        assert_eq!(first["open_comments"], 1, "{first:?}");
+        assert_eq!(first["comments"][0]["id"], json!(comment_id), "{first:?}");
+
+        // Deleting the comment deletes the post: there is nowhere else it is.
+        let deleted = state.handle(req(
+            "plan.comment_delete",
+            json!({ "plan_id": plan_id, "comment_id": comment_id }),
+        ));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert!(
+            state.plans[&plan_id].agents.doc_comments().is_empty(),
+            "{:?}",
+            state.plans[&plan_id].agents.items
+        );
+        let stages = state.handle(req("plan.stages", json!({ "plan_id": plan_id })));
+        assert_eq!(stages["result"]["stages"][0]["open_comments"], 0);
+    }
+
+    /// The comments survive a restart because the conversation does — and a
+    /// record written before comments were posts brings its comments across.
+    #[test]
+    fn stage_comments_survive_a_restart_as_posts() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "durable comments" })));
+        let plan_id = plan_id_of(&plan);
+        state.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": plan_id, "stage_id": "first-half", "body": "split further" }),
+        ));
+
+        let mut restarted = qa_state(&repo, dir.path());
+        let comments = restarted.plans[&plan_id].agents.doc_comments();
+        assert_eq!(comments.len(), 1, "{comments:?}");
+        assert_eq!(comments[0].body, "split further");
+        let stages = restarted.handle(req("plan.stages", json!({ "plan_id": plan_id })));
+        assert_eq!(stages["result"]["stages"][0]["open_comments"], 1);
+    }
+
     #[test]
     fn multi_stage_run_gate_rejections() {
         let (dir, repo) = init_repo();
@@ -17942,9 +17987,10 @@ mod tests {
 
     /// Sending a stage's open comments mid-run is a turn for the RUN's worktree
     /// agent (the plan doc is revised where the run can see it). The comments
-    /// land durably on both threads first — but unless the revision turn is
-    /// queued, nothing ever asks the agent to revise the doc and the run stalls
-    /// at the gate with `revising_stage_id` set and no agent working.
+    /// are already posts on the Issue's conversation — the one that agent reads
+    /// its messages from — but unless the revision turn is queued, nothing ever
+    /// asks the agent to revise the doc and the run stalls at the gate with
+    /// `revising_stage_id` set and no agent working.
     #[test]
     fn sending_stage_notes_mid_run_queues_a_revision_turn_for_the_worktrees_one_agent() {
         let (dir, repo) = init_repo();
@@ -18012,11 +18058,15 @@ mod tests {
             "a cold agent is primed with the ordered catalog and stage doc it must revise: {}",
             queued.cold
         );
-        let durable = state.runs[&run_id].agents.items.iter().any(|item| {
-            matches!(item, crate::thread::ThreadItem::Message(m)
-                if m.body.contains("tighten this"))
-        });
-        assert!(durable, "the comments stay durable on the run's thread");
+        let comments = state.plans[&plan_id].agents.doc_comments();
+        assert_eq!(
+            comments
+                .iter()
+                .filter(|comment| comment.body == "tighten this")
+                .count(),
+            1,
+            "the comment is one post on the conversation this agent reads: {comments:?}"
+        );
     }
 
     /// Run-all is the one dispatcher with no human behind each hop: arming it at

@@ -305,39 +305,6 @@ impl StageDoc {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CommentState {
-    Open,
-    Addressed,
-}
-
-/// Where a plan comment anchors inside a stage doc.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommentAnchor {
-    /// The chain of enclosing heading *texts* (raw markdown text, outermost
-    /// first), e.g. ["Database schema", "Tables"]. Empty for a top-of-doc anchor.
-    pub heading_path: Vec<String>,
-    /// The selected passage, trimmed, capped at 400 chars by the producer.
-    pub snippet: String,
-}
-
-/// One persisted, structured plan-review comment on a stage.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StageComment {
-    /// Bridge-minted: "c-<n>", n = 1 + max numeric suffix among the plan's
-    /// existing comment ids (so ids never collide after deletes).
-    pub id: String,
-    pub stage_id: String,
-    /// None = a general comment on the stage (no text anchor).
-    #[serde(default)]
-    pub anchor: Option<CommentAnchor>,
-    pub body: String,
-    pub state: CommentState,
-    #[serde(default)]
-    pub agent_reply: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImplementationIntent {
@@ -808,51 +775,5 @@ mod tests {
         .unwrap();
         assert_eq!(bare.summary, "");
         assert_eq!(bare.state, StageDocState::Planned);
-    }
-
-    #[test]
-    fn stage_comment_serde_with_and_without_anchor() {
-        let anchored = StageComment {
-            id: "c-3".into(),
-            stage_id: "database-schema".into(),
-            anchor: Some(CommentAnchor {
-                heading_path: vec!["Database schema".into(), "Tables".into()],
-                snippet: "users table gets a soft-delete column".into(),
-            }),
-            body: "use a deleted_at timestamp".into(),
-            state: CommentState::Open,
-            agent_reply: None,
-        };
-        let json = serde_json::to_string(&anchored).unwrap();
-        assert!(
-            json.contains("\"open\""),
-            "CommentState is lowercase: {json}"
-        );
-        assert_eq!(
-            serde_json::from_str::<StageComment>(&json).unwrap(),
-            anchored
-        );
-
-        let general = StageComment {
-            id: "c-4".into(),
-            stage_id: "database-schema".into(),
-            anchor: None,
-            body: "split this stage".into(),
-            state: CommentState::Addressed,
-            agent_reply: Some("done".into()),
-        };
-        let json = serde_json::to_string(&general).unwrap();
-        assert!(json.contains("\"addressed\""));
-        assert_eq!(
-            serde_json::from_str::<StageComment>(&json).unwrap(),
-            general
-        );
-
-        // anchor/agent_reply are #[serde(default)]: a minimal comment loads.
-        let minimal: StageComment =
-            serde_json::from_str(r#"{"id":"c-1","stage_id":"s","body":"b","state":"open"}"#)
-                .unwrap();
-        assert_eq!(minimal.anchor, None);
-        assert_eq!(minimal.agent_reply, None);
     }
 }

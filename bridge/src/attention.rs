@@ -321,6 +321,41 @@ mod tests {
         assert!(wire.get("agent_read_sequences").is_none(), "{wire:?}");
     }
 
+    /// Mute is a switch over the record, not a second read cursor. Silencing an
+    /// entry and un-silencing it must leave what was waiting exactly where it
+    /// was, or "stop asking" would quietly mean "mark it all read".
+    #[test]
+    fn muting_says_nothing_about_what_has_been_read() {
+        let mut attention = Attention::default();
+        attention.read_through("agent-one", 4);
+        assert!(!attention.muted, "an entry asks until it is told not to");
+
+        attention.muted = true;
+        assert_eq!(attention.cursor_for("agent-one"), 4);
+        attention.muted = false;
+        assert_eq!(attention.cursor_for("agent-one"), 4);
+    }
+
+    /// Muted is new and rare: every record on disk predates it, and an entry
+    /// nobody silenced must not pay for the field.
+    #[test]
+    fn a_record_written_before_mute_existed_reads_as_unmuted() {
+        let stored = serde_json::json!({ "last_interaction_at": MON_09 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert!(!attention.muted);
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert!(wire.get("muted").is_none(), "{wire:?}");
+
+        let silenced = Attention {
+            muted: true,
+            ..attention
+        };
+        let wire = serde_json::to_value(&silenced).unwrap();
+        assert_eq!(wire["muted"], true, "{wire:?}");
+        let reloaded: Attention = serde_json::from_value(wire).expect("a muted record loads");
+        assert!(reloaded.muted);
+    }
+
     #[test]
     fn an_untouched_entity_sorts_by_its_own_age() {
         let attention = Attention::default();

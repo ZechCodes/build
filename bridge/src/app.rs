@@ -2473,19 +2473,31 @@ impl AppState {
         if first_look || self.notifier.is_none() {
             return;
         }
-        let Some(reason) = news.attention_reason else {
-            return;
-        };
-        let Some(kind) = crate::notify::kind_for_attention(reason, state_kind) else {
-            return;
-        };
-        if !self
-            .notify_throttle
-            .should_notify(entity_id, crate::notify::unix_seconds())
-        {
-            return;
+        if let Some(kind) = self.attention_push_kind(entity_id, news.attention_reason, state_kind) {
+            self.spawn_notify(entity_id.to_string(), kind);
         }
-        self.spawn_notify(entity_id.to_string(), kind);
+    }
+
+    /// What one piece of news pushes as, or `None` when the phone stays dark: a
+    /// muted entry, news that needs nobody, a reason with no push label, or a
+    /// second push inside the entity's debounce window.
+    ///
+    /// Mute is checked before the window is spent, so a silence costs nothing:
+    /// the first news after unmuting pushes instead of sitting out a window it
+    /// never entered.
+    fn attention_push_kind(
+        &mut self,
+        entity_id: &str,
+        reason: Option<&str>,
+        state_kind: Option<&'static str>,
+    ) -> Option<&'static str> {
+        if self.is_muted(entity_id) {
+            return None;
+        }
+        let kind = crate::notify::kind_for_attention(reason?, state_kind)?;
+        self.notify_throttle
+            .should_notify(entity_id, crate::notify::unix_seconds())
+            .then_some(kind)
     }
 
     /// Spawn the actual notify POST off the app lock. A delivery failure only
@@ -3843,6 +3855,12 @@ impl AppState {
         entity_id: &str,
         thread: &crate::thread::Thread,
     ) -> crate::thread::UnreadSummary {
+        // Muted is told here rather than at the cursor: the entry says nothing
+        // is waiting while the cursor keeps the truth, so unmuting shows what
+        // arrived instead of a conversation silently marked read.
+        if self.is_muted(entity_id) {
+            return crate::thread::UnreadSummary::default();
+        }
         // The entry's badge is the union of its agents': the first agent's
         // count comes off the conversation the entity's own surfaces render
         // (an Issue's, for a planned implementation), every other agent's off
@@ -3865,13 +3883,18 @@ impl AppState {
     }
 
     /// What one agent's bubble says: how much of its conversation has needed
-    /// the human since they last read it.
+    /// the human since they last read it. A muted entry silences every bubble
+    /// under it — the entry's badge is the union of theirs, so one that still
+    /// counted would contradict the entry above it.
     fn agent_unread(
         &self,
         entity_id: &str,
         agent: &crate::agent::Agent,
         thread: &crate::thread::Thread,
     ) -> crate::thread::UnreadSummary {
+        if self.is_muted(entity_id) {
+            return crate::thread::UnreadSummary::default();
+        }
         thread.unread_since(self.read_cursor(entity_id, &agent.id))
     }
 
@@ -4061,6 +4084,7 @@ impl AppState {
             "worktree.create" => self.worktree_create(params),
             "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
+            "entity.mute" => self.entity_mute(params),
             "agent.add" => self.agent_add(params),
             "agent.list" => self.agent_list(params),
             "worktree.diff" => self.worktree_diff(params),
@@ -5657,6 +5681,38 @@ impl AppState {
             .map(str::to_string);
         self.see_attention(&entity_id, agent_id.as_deref());
         Ok(json!({ "ok": true }))
+    }
+
+    /// `entity.mute` — the human telling one entry to stop asking, or to start
+    /// again.
+    ///
+    /// A muted entry keeps its place in the inbox with live status: it pushes
+    /// nothing and badges nothing, and that is all mute does. The read cursors
+    /// are untouched, so unmuting shows exactly what was waiting.
+    fn entity_mute(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let muted = params
+            .get("muted")
+            .and_then(Value::as_bool)
+            .ok_or("entity.mute: muted must be true or false")?;
+        if !self.entity_takes_attention(&entity_id) {
+            return Err(format!("entity.mute: unknown entity {entity_id}"));
+        }
+        self.attention.entry(entity_id.clone()).or_default().muted = muted;
+        self.persist_attention();
+        Ok(json!({ "entity_id": entity_id, "muted": muted }))
+    }
+
+    /// Whether `entity_id` names something the attention map keeps a record
+    /// for: a run, an issue, or a worktree the scan can still see. Anything
+    /// else would be written and pruned in the same breath.
+    fn entity_takes_attention(&self, entity_id: &str) -> bool {
+        self.runs.contains_key(entity_id)
+            || self.plans.contains_key(entity_id)
+            || self
+                .attention_worktree_ids()
+                .iter()
+                .any(|id| id == entity_id)
     }
 
     /// `agent.add` — give a branch another agent, with its own conversation.
@@ -9231,6 +9287,8 @@ impl AppState {
             "unread": unread.is_unread(),
             "unread_count": unread.count,
             "unread_reason": unread.reason,
+            // See `run_view`.
+            "muted": self.is_muted(plan_id),
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -9338,6 +9396,9 @@ impl AppState {
             "unread": unread.is_unread(),
             "unread_count": unread.count,
             "unread_reason": unread.reason,
+            // Told the entry to stop asking. The badge above is already zeroed
+            // by it; this is what the inbox renders the control from.
+            "muted": self.is_muted(run_id),
             "attention": self.attention_json(run_id),
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
@@ -23844,6 +23905,165 @@ mod tests {
         // would make every restart a wall of unread.
         let entry = board_entry(&mut reloaded, &run_id);
         assert_eq!(entry["unread"], false, "{entry:?}");
+    }
+
+    // ---- mute: an entry told to stop asking ---------------------------------
+
+    /// The feed row for one entity, whatever kind of work item it folded into.
+    fn work_item_row_for(state: &mut AppState, entity_id: &str) -> Value {
+        let rows = work_item_rows(state);
+        rows.iter()
+            .find(|row| row["run_id"] == json!(entity_id))
+            .or_else(|| rows.iter().find(|row| row["issue_id"] == json!(entity_id)))
+            .unwrap_or_else(|| panic!("{entity_id} has a row on the feed: {rows:?}"))
+            .clone()
+    }
+
+    /// Mute is a switch on the badge, not on the work: the entry keeps its place
+    /// in the inbox with live status, and unmuting shows exactly what was
+    /// waiting — the read cursor never moved.
+    #[test]
+    fn muting_an_entry_silences_its_badge_and_unmuting_brings_it_back() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "mute me");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+
+        let loud = board_entry(&mut state, &run_id);
+        assert_eq!(loud["muted"], false, "an entry asks until told not to");
+        assert_eq!(loud["unread"], true, "{loud:?}");
+        let waiting = loud["unread_count"].as_u64().unwrap();
+        assert!(waiting >= 1, "{loud:?}");
+
+        let silenced = state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": true }),
+        ));
+        assert_eq!(silenced["ok"], true, "{silenced:?}");
+        assert_eq!(silenced["result"]["entity_id"], run_id, "{silenced:?}");
+        assert_eq!(silenced["result"]["muted"], true, "{silenced:?}");
+
+        let quiet = board_entry(&mut state, &run_id);
+        assert_eq!(quiet["muted"], true, "{quiet:?}");
+        assert_eq!(quiet["unread"], false, "{quiet:?}");
+        assert_eq!(quiet["unread_count"], 0, "{quiet:?}");
+        assert!(quiet["unread_reason"].is_null(), "{quiet:?}");
+        assert_eq!(quiet["needs_attention"], false, "{quiet:?}");
+        // Status is not a badge: the entry still says where the work got to.
+        assert_eq!(quiet["state"], loud["state"], "{quiet:?}");
+        assert_eq!(quiet["thread"], loud["thread"], "{quiet:?}");
+
+        // The feed row it renders from says the same, and stays live with it.
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["muted"], true, "{row:?}");
+        assert_eq!(row["unread"], false, "{row:?}");
+        assert_eq!(row["unread_count"], 0, "{row:?}");
+        assert!(row["unread_reason"].is_null(), "{row:?}");
+        assert_eq!(row["state"], loud["state"], "{row:?}");
+        assert!(row["stat"]["insertions"].is_u64(), "{row:?}");
+
+        // Its agent's bubble goes quiet with it — the entry's badge is the union
+        // of theirs, and one that still counted would contradict the other.
+        for bubble in row["agents"].as_array().unwrap() {
+            assert_eq!(bubble["unread_count"], 0, "{bubble:?}");
+        }
+
+        let restored = state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": false }),
+        ));
+        assert_eq!(restored["result"]["muted"], false, "{restored:?}");
+        let loud_again = board_entry(&mut state, &run_id);
+        assert_eq!(loud_again["muted"], false, "{loud_again:?}");
+        assert_eq!(loud_again["unread"], true, "{loud_again:?}");
+        assert_eq!(loud_again["unread_count"], waiting, "{loud_again:?}");
+        assert_eq!(
+            loud_again["unread_reason"], "agent_message",
+            "{loud_again:?}"
+        );
+    }
+
+    /// An issue is an entry like any other, and mute outlives the daemon: a
+    /// silence that reset on restart would be no silence at all.
+    #[test]
+    fn muting_an_issue_survives_a_restart() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let plan = state.handle(req("plan.create", json!({ "goal": "quiet issue" })));
+            let issue_id = plan_id_of(&plan);
+            push_to_issue_conversation(&mut state, &issue_id, |thread| {
+                thread.post_agent("a question", None, now_rfc3339());
+            });
+            let entry = board_entry(&mut state, &issue_id);
+            assert_eq!(entry["unread"], true, "{entry:?}");
+
+            let silenced = state.handle(req(
+                "entity.mute",
+                json!({ "entity_id": issue_id, "muted": true }),
+            ));
+            assert_eq!(silenced["ok"], true, "{silenced:?}");
+            issue_id
+        };
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let entry = board_entry(&mut reloaded, &issue_id);
+        assert_eq!(entry["muted"], true, "{entry:?}");
+        assert_eq!(entry["unread"], false, "{entry:?}");
+        assert_eq!(entry["unread_count"], 0, "{entry:?}");
+        let row = work_item_row_for(&mut reloaded, &issue_id);
+        assert_eq!(row["muted"], true, "{row:?}");
+        assert_eq!(row["unread"], false, "{row:?}");
+    }
+
+    /// Muted means the phone stays dark. Nothing is spent on the silence, so the
+    /// first piece of news after unmuting pushes rather than sitting out a
+    /// debounce window it never entered.
+    #[test]
+    fn a_muted_entry_pushes_nothing_and_burns_no_debounce_window() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "quiet push");
+        let review = crate::notify::kind_for_run_state(&RunState::Review);
+
+        state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": true }),
+        ));
+        assert_eq!(
+            state.attention_push_kind(&run_id, Some("done"), review),
+            None,
+            "a muted entry pushes nothing"
+        );
+
+        state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": false }),
+        ));
+        assert_eq!(
+            state.attention_push_kind(&run_id, Some("done"), review),
+            Some(crate::notify::TASK_DONE_KIND)
+        );
+    }
+
+    #[test]
+    fn entity_mute_refuses_what_it_cannot_silence() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "bad mute");
+
+        let unknown = state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": "run-nowhere", "muted": true }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+
+        let unsaid = state.handle(req("entity.mute", json!({ "entity_id": run_id })));
+        assert_eq!(unsaid["ok"], false, "{unsaid:?}");
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["muted"], false, "a refused call changes nothing");
     }
 
     /// A planned run and its Issue share one conversation. One piece of news on

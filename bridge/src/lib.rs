@@ -33,6 +33,7 @@
 //! Pre-split stores are migrated on boot ([`legacy`](crate::legacy) holds the
 //! old serde shapes solely for that translation).
 
+pub mod agent;
 pub mod app;
 pub mod attention;
 pub mod backoff;

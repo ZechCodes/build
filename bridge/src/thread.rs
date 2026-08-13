@@ -518,6 +518,38 @@ impl Thread {
         }
     }
 
+    /// The conversation of one agent. `thread:<agent_id>`, and the agent
+    /// identity it carries is that same agent — there is exactly one
+    /// conversation per agent, so the two can never name different things.
+    pub fn for_agent(agent_id: &str) -> Self {
+        Thread {
+            id: format!("thread:{agent_id}"),
+            agent: AgentIdentity {
+                id: agent_id.to_string(),
+            },
+            ..Thread::default()
+        }
+    }
+
+    /// Move an existing conversation onto `agent_id`, keeping every item.
+    ///
+    /// This is what the boot migration does to an entity-keyed thread, and what
+    /// a reload does to an agent-keyed one — so it must be idempotent: a thread
+    /// already keyed to this agent comes out unchanged.
+    pub fn rekey_to_agent(&mut self, agent_id: &str) {
+        self.id = format!("thread:{agent_id}");
+        self.agent = AgentIdentity {
+            id: agent_id.to_string(),
+        };
+        self.normalize(agent_id);
+    }
+
+    /// Whether anything has ever happened here. An entity created and never
+    /// touched has an empty conversation, and nothing is lost by replacing it.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.sessions.is_empty() && self.revisions.is_empty()
+    }
+
     /// Fill identity/counters when loading a record written before threads, or
     /// by an older build that did not persist `next_sequence`.
     pub fn normalize(&mut self, owner_id: &str) {

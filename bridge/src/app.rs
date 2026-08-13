@@ -24011,6 +24011,23 @@ mod tests {
         assert_eq!(agents[0]["id"], first_agent);
         assert_eq!(agents[1]["id"], second_agent);
 
+        // The rail renders from the entity's row, so the strip has to ride the
+        // polled surfaces rather than needing a call of its own.
+        let board = state.handle(req("board.list", json!({})));
+        let row = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["run_id"] == json!(run_id.clone()))
+            .expect("the branch is on the board");
+        let bubbles = row["agents"].as_array().unwrap();
+        assert_eq!(bubbles.len(), 2, "{row:?}");
+        assert_eq!(bubbles[1]["id"], second_agent);
+        assert_eq!(bubbles[1]["provider"], "codex");
+        assert_eq!(bubbles[1]["state"], "idle");
+        assert_eq!(bubbles[1]["working"], false);
+        assert_eq!(bubbles[1]["unread_count"], 0);
+
         // A message addressed to the second agent lands in the second agent's
         // conversation and nowhere else.
         let posted = state.handle(req(

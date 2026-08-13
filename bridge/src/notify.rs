@@ -1,9 +1,10 @@
 //! Content-free attention notifications — bridge → api → web push.
 //!
-//! When a task transitions into a state that needs the human (`plan_review`,
-//! `review`, `blocked`, `failed`, `idle_unreported`), the bridge POSTs a signed,
-//! timestamped notify to the api's `/api/push/notify`, which fans a push out to
-//! the owner's browsers. E2EE invariant: the request names the device, the
+//! When an attention-class item lands on an entity's conversation — an agent
+//! reporting done, blocking, failing, going quiet, or simply speaking — the
+//! bridge POSTs a signed, timestamped notify to the api's `/api/push/notify`,
+//! which fans a push out to the owner's browsers. The entity's state is not the
+//! trigger; it only picks the kind's label ([`kind_for_attention`]). E2EE invariant: the request names the device, the
 //! **opaque task id**, and a **generic kind** (`plan_ready`/`task_done`/`blocked`/
 //! `attention`) — never the goal or any task content. The browser renders
 //! kind-specific copy and deep-links to the task; the real state loads only over
@@ -13,9 +14,11 @@
 //! [`notify_challenge`], which mirrors `skriftapp/buildapp/web_push.py`
 //! byte-for-byte; the timestamp bounds replay of a captured request.
 //!
-//! Throttling: [`NotifyThrottle`] fires **at most one notify per task-state
-//! change** — repeated mutations that leave a task in the same state (or in a
-//! state that doesn't need the human) push nothing.
+//! Throttling: [`NotifyThrottle`] fires **at most one notify per entity per
+//! [`NOTIFY_DEBOUNCE_SECONDS`]**. Pushes follow attention-class conversation
+//! events, which arrive in bursts — a done event and the completion message
+//! behind it are one piece of news — so the window, not the state, is what
+//! keeps a phone quiet.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -64,16 +67,29 @@ pub fn kind_for_run_state(state: &RunState) -> Option<&'static str> {
     }
 }
 
-/// Whether a plan state is push-worthy (exactly the states
-/// [`kind_for_plan_state`] maps to a kind).
-pub fn plan_state_needs_push(state: &PlanState) -> bool {
-    kind_for_plan_state(state).is_some()
+/// The push kind for one attention-class item, given the state its entity is
+/// now in.
+///
+/// The state is the better label whenever it has one — a plan at its review
+/// gate is `plan_ready`, a run at its diff gate is `task_done` — and an agent
+/// message arriving on an entity that is otherwise just working has only the
+/// generic kind to offer. Every result is in the api's allowed set.
+///
+/// A boot-recovery interruption pushes nothing: it is raised when the daemon
+/// restarts, where the operator is already at the machine.
+pub fn kind_for_attention(reason: &str, state_kind: Option<&'static str>) -> Option<&'static str> {
+    if reason == crate::thread::ThreadEventKind::Interrupted.as_str() {
+        return None;
+    }
+    Some(state_kind.unwrap_or(ATTENTION_KIND))
 }
 
-/// Whether a run state is push-worthy (exactly the states
-/// [`kind_for_run_state`] maps to a kind).
-pub fn run_state_needs_push(state: &RunState) -> bool {
-    kind_for_run_state(state).is_some()
+/// Now, in unix seconds — the clock [`NotifyThrottle`] debounces against.
+pub fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// The payload POSTed to `/api/push/notify`. Carries the opaque `task_id` and the
@@ -118,37 +134,34 @@ pub fn build_notify_request(
     })
 }
 
-/// At most one notify per task-state change: remembers the last state observed
-/// per task and fires only when the state actually changed into a push-worthy
-/// one. Owns no I/O — the caller sends the push.
+/// How long one entity stays quiet after a push, in seconds.
+pub const NOTIFY_DEBOUNCE_SECONDS: i64 = 60;
+
+/// At most one notify per entity per [`NOTIFY_DEBOUNCE_SECONDS`]. Owns no I/O
+/// and no clock — the caller sends the push and says what time it is, so the
+/// window is testable without sleeping through it.
 #[derive(Debug, Default)]
 pub struct NotifyThrottle {
-    last_state: HashMap<String, String>,
+    last_push_at: HashMap<String, i64>,
 }
 
 impl NotifyThrottle {
-    /// Fires once per change into a plan state that needs the human. Plan and
-    /// run ids are disjoint (`plan-…` / `run-…`), so both entities share the
-    /// one map.
-    pub fn should_notify_plan(&mut self, plan_id: &str, state: &PlanState) -> bool {
-        self.record(plan_id, format!("{state:?}"), plan_state_needs_push(state))
-    }
-
-    /// The run-half twin of [`should_notify_plan`](Self::should_notify_plan).
-    pub fn should_notify_run(&mut self, run_id: &str, state: &RunState) -> bool {
-        self.record(run_id, format!("{state:?}"), run_state_needs_push(state))
-    }
-
-    /// The shared core: remember `state_repr` for `id`, and fire only when this
-    /// observation is a *change* into a push-worthy state. Kept pure of the
-    /// state type so the plan/run twins share one throttle.
-    fn record(&mut self, id: &str, state_repr: String, needs_push: bool) -> bool {
-        let unchanged = self
-            .last_state
-            .get(id)
-            .is_some_and(|previous| previous == &state_repr);
-        self.last_state.insert(id.to_string(), state_repr);
-        !unchanged && needs_push
+    /// Whether `entity_id` may push at `now` (unix seconds), recording the push
+    /// when it may. Plan and run ids are disjoint (`plan-…` / `run-…`), so both
+    /// entities share the one map.
+    ///
+    /// A clock that stepped backwards fires and re-anchors the window rather
+    /// than staying silent until it catches up.
+    pub fn should_notify(&mut self, entity_id: &str, now: i64) -> bool {
+        let within_window = self
+            .last_push_at
+            .get(entity_id)
+            .is_some_and(|last| (0..NOTIFY_DEBOUNCE_SECONDS).contains(&(now - last)));
+        if within_window {
+            return false;
+        }
+        self.last_push_at.insert(entity_id.to_string(), now);
+        true
     }
 }
 
@@ -348,27 +361,62 @@ mod tests {
         }
     }
 
+    /// A burst of attention events is one piece of news. The window opens
+    /// again a minute later, so a genuinely new one still reaches the phone.
     #[test]
-    fn throttle_fires_once_per_plan_and_run_change() {
+    fn throttle_pushes_once_per_entity_per_minute() {
         let mut throttle = NotifyThrottle::default();
-        assert!(throttle.should_notify_plan("plan-1", &PlanState::PlanReview));
-        assert!(!throttle.should_notify_plan("plan-1", &PlanState::PlanReview));
-        // A working state pushes nothing; a fresh review round fires again.
-        assert!(!throttle.should_notify_plan("plan-1", &PlanState::Drafting));
-        assert!(throttle.should_notify_plan("plan-1", &PlanState::PlanReview));
-
-        assert!(throttle.should_notify_run("run-1", &RunState::Review));
-        assert!(!throttle.should_notify_run("run-1", &RunState::Review));
-        assert!(!throttle.should_notify_run("run-1", &RunState::Building));
-        assert!(throttle.should_notify_run("run-1", &RunState::StageGate));
+        assert!(throttle.should_notify("run-1", 1_750_000_000));
+        assert!(!throttle.should_notify("run-1", 1_750_000_001));
+        assert!(!throttle.should_notify("run-1", 1_750_000_000 + NOTIFY_DEBOUNCE_SECONDS - 1));
+        assert!(throttle.should_notify("run-1", 1_750_000_000 + NOTIFY_DEBOUNCE_SECONDS));
+        // The window re-anchors on each push, rather than on the first one.
+        assert!(!throttle.should_notify("run-1", 1_750_000_000 + NOTIFY_DEBOUNCE_SECONDS + 1));
     }
 
     #[test]
     fn throttle_tracks_entities_independently() {
         let mut throttle = NotifyThrottle::default();
-        assert!(throttle.should_notify_run("run-1", &RunState::Review));
-        assert!(throttle.should_notify_run("run-2", &RunState::Review));
-        assert!(!throttle.should_notify_run("run-1", &RunState::Review));
+        assert!(throttle.should_notify("run-1", 1_750_000_000));
+        assert!(throttle.should_notify("run-2", 1_750_000_000));
+        assert!(!throttle.should_notify("run-1", 1_750_000_000));
+    }
+
+    /// A clock that steps backwards must not silence an entity until it
+    /// catches up — silence is the one failure the human cannot see.
+    #[test]
+    fn a_backwards_clock_fires_instead_of_going_quiet() {
+        let mut throttle = NotifyThrottle::default();
+        assert!(throttle.should_notify("run-1", 1_750_000_000));
+        assert!(throttle.should_notify("run-1", 1_740_000_000));
+        assert!(!throttle.should_notify("run-1", 1_740_000_010));
+    }
+
+    #[test]
+    fn attention_takes_its_label_from_the_state_and_stays_quiet_on_a_restart() {
+        // The state has the more specific label whenever it needs the human.
+        assert_eq!(
+            kind_for_attention("done", kind_for_plan_state(&PlanState::PlanReview)),
+            Some(PLAN_READY_KIND)
+        );
+        assert_eq!(
+            kind_for_attention("done", kind_for_run_state(&RunState::Review)),
+            Some(TASK_DONE_KIND)
+        );
+        assert_eq!(
+            kind_for_attention("blocked", kind_for_run_state(&RunState::Blocked)),
+            Some(BLOCKED_KIND)
+        );
+        // An agent message on a working run has only the generic kind.
+        assert_eq!(
+            kind_for_attention("agent_message", kind_for_run_state(&RunState::Building)),
+            Some(ATTENTION_KIND)
+        );
+        // A daemon restart is not news to the operator standing at the machine.
+        assert_eq!(
+            kind_for_attention("interrupted", kind_for_run_state(&RunState::Interrupted)),
+            None
+        );
     }
 
     #[tokio::test]

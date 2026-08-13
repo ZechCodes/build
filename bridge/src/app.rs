@@ -1184,6 +1184,17 @@ fn default_transcript_probe() -> TranscriptProbe {
     })
 }
 
+/// What a mutation tail found on the conversation it just wrote: the thread it
+/// looked at, how far that thread has got, and the newest attention-class item
+/// to land since a tail last looked (`None` when nothing did, or when this is
+/// the first look at that conversation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationNews {
+    thread_id: String,
+    sequence: u64,
+    attention_reason: Option<&'static str>,
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     /// Registered projects (repos) plans and runs can be dispatched to.
@@ -1225,6 +1236,11 @@ pub struct AppState {
     /// it got to — the rail's ordering and colour. Keyed by run id, plan id, or
     /// worktree id alike (a bare worktree has no record of its own).
     attention: HashMap<String, crate::attention::Attention>,
+    /// thread id → how far that conversation had got when a mutation tail last
+    /// looked at it. A push fires when an attention-class item lands past it.
+    /// Keyed by conversation rather than by entity because a planned run and
+    /// its Issue share one thread, and one piece of news is one notification.
+    conversation_attention_sequence: HashMap<String, u64>,
     /// entity id → the wire state string last seen by a mutation tail, so
     /// `entity_state_changed_at` only moves on real transitions.
     entity_last_state: HashMap<String, String>,
@@ -1376,6 +1392,7 @@ impl AppState {
             entity_updated_at: HashMap::new(),
             entity_state_changed_at: HashMap::new(),
             attention: HashMap::new(),
+            conversation_attention_sequence: HashMap::new(),
             entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
             term_shell: resolve_term_shell(),
@@ -1502,6 +1519,10 @@ impl AppState {
         for record in runs {
             self.recover_run(record)?;
         }
+        // Everything on disk has already been announced. Seed the push
+        // watermarks from it so the restart re-announces nothing, and so the
+        // next attention event is news rather than a first observation.
+        self.seed_conversation_attention_sequences();
         // Issue implementation intent is the scheduler's durable source of
         // truth. Reconcile it only after every implementation lineage record
         // has been restored, so an approved waiting stage can resume without
@@ -1536,6 +1557,15 @@ impl AppState {
                 .plan
                 .apply(PlanEvent::Interrupt)
                 .map_err(|e| format!("recover {plan_id}: {e}"))?;
+            // Say so on the conversation: unread is event-driven, so a parked
+            // plan whose session died goes quiet unless the event exists.
+            active.thread.push_event(
+                crate::thread::ThreadEventKind::Interrupted,
+                Some("Build restarted; the drafting session did not survive".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
             state_changed = true;
         }
 
@@ -1797,11 +1827,13 @@ impl AppState {
                 }
             }
         }
+        let mut interrupted = false;
         if !active.run.state.is_terminal() && active.run.state.is_working() {
             active
                 .run
                 .apply(RunEvent::Interrupt)
                 .map_err(|e| format!("recover {run_id}: {e}"))?;
+            interrupted = true;
             state_changed = true;
         }
 
@@ -1818,6 +1850,7 @@ impl AppState {
                         .run
                         .apply(RunEvent::Interrupt)
                         .map_err(|e| format!("recover {run_id}: {e}"))?;
+                    interrupted = true;
                 }
                 active.last_error =
                     Some(format!("project repo missing at {}", record.project_path));
@@ -1885,6 +1918,18 @@ impl AppState {
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
             }
+        }
+
+        if interrupted {
+            self.record_on_run_conversation(&mut active, |thread| {
+                thread.push_event(
+                    crate::thread::ThreadEventKind::Interrupted,
+                    Some("Build restarted; the agent session did not survive".to_string()),
+                    None,
+                    None,
+                    now_rfc3339(),
+                );
+            })?;
         }
 
         // Same restore discipline as recover_plan: a boot transition stamps
@@ -2052,7 +2097,9 @@ impl AppState {
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
         let persisted = self.persist_plan_record(&plan_id, &active);
-        self.push_notify_plan(&plan_id, active.plan.state);
+        let news = self.conversation_news(&active.thread);
+        let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
+        self.push_attention_notify(&plan_id, news, state_kind);
         self.plans.insert(plan_id, active);
         self.reap_orphaned_terminals();
         (view, persisted)
@@ -2075,7 +2122,9 @@ impl AppState {
         self.run_stat_cache.remove(&run_id);
         let view = self.run_view(&run_id, &active, ThreadDetail::Full);
         let persisted = self.persist_run_record(&run_id, &active);
-        self.push_notify_run(&run_id, active.run.state);
+        let news = self.conversation_news(self.conversation_thread_for_run(&active));
+        let state_kind = crate::notify::kind_for_run_state(&active.run.state);
+        self.push_attention_notify(&run_id, news, state_kind);
         self.runs.insert(run_id, active);
         self.reap_orphaned_terminals();
         (view, persisted)
@@ -2193,27 +2242,68 @@ impl AppState {
         self.entity_last_state.insert(entity_id.to_string(), state);
     }
 
-    /// Fire one content-free web-push notify when a plan-state change lands in
-    /// a state that needs the human.
-    fn push_notify_plan(&mut self, plan_id: &str, state: PlanState) {
-        if self.notifier.is_none() || !self.notify_throttle.should_notify_plan(plan_id, &state) {
-            return;
-        }
-        let Some(kind) = crate::notify::kind_for_plan_state(&state) else {
-            return;
-        };
-        self.spawn_notify(plan_id.to_string(), kind);
+    /// Record where every live conversation has got to, without pushing. Called
+    /// once at boot: the store holds history that was announced when it
+    /// happened, and a restart must not announce it again.
+    fn seed_conversation_attention_sequences(&mut self) {
+        let sequences: Vec<(String, u64)> = self
+            .plans
+            .values()
+            .map(|plan| &plan.thread)
+            .chain(self.runs.values().map(|run| &run.thread))
+            .map(|thread| (thread.id.clone(), thread.last_sequence()))
+            .collect();
+        self.conversation_attention_sequence.extend(sequences);
     }
 
-    /// The run-half twin of [`push_notify_plan`](Self::push_notify_plan).
-    fn push_notify_run(&mut self, run_id: &str, state: RunState) {
-        if self.notifier.is_none() || !self.notify_throttle.should_notify_run(run_id, &state) {
+    /// What the mutation tail found on the conversation it just wrote: how far
+    /// it has got, and the newest attention-class item to land since a tail
+    /// last looked.
+    fn conversation_news(&self, thread: &crate::thread::Thread) -> ConversationNews {
+        let observed = self
+            .conversation_attention_sequence
+            .get(&thread.id)
+            .copied();
+        ConversationNews {
+            thread_id: thread.id.clone(),
+            sequence: thread.last_sequence(),
+            attention_reason: observed.and_then(|seen| thread.unread_since(seen).reason),
+        }
+    }
+
+    /// Fire one content-free web-push notify when an attention-class item lands
+    /// on an entity's conversation.
+    ///
+    /// Event-driven, not state-driven: the state only chooses the kind's label
+    /// (a plan at its review gate is `plan_ready`, not a generic attention).
+    /// The watermark moves whether or not the push goes out, so one piece of
+    /// news notifies once even when two entities share the conversation.
+    fn push_attention_notify(
+        &mut self,
+        entity_id: &str,
+        news: ConversationNews,
+        state_kind: Option<&'static str>,
+    ) {
+        let first_look = self
+            .conversation_attention_sequence
+            .insert(news.thread_id, news.sequence)
+            .is_none();
+        if first_look || self.notifier.is_none() {
             return;
         }
-        let Some(kind) = crate::notify::kind_for_run_state(&state) else {
+        let Some(reason) = news.attention_reason else {
             return;
         };
-        self.spawn_notify(run_id.to_string(), kind);
+        let Some(kind) = crate::notify::kind_for_attention(reason, state_kind) else {
+            return;
+        };
+        if !self
+            .notify_throttle
+            .should_notify(entity_id, crate::notify::unix_seconds())
+        {
+            return;
+        }
+        self.spawn_notify(entity_id.to_string(), kind);
     }
 
     /// Spawn the actual notify POST off the app lock. A delivery failure only
@@ -3306,8 +3396,13 @@ impl AppState {
         if let Err(e) = &outcome {
             eprintln!("on_agent_done {run_id}: {e}");
         }
+        // The Issue's thread when there is one: that is the conversation a
+        // planned run's surfaces render, and a report written to the run's own
+        // thread would never be seen.
         record_report_in_thread(
-            &mut active.thread,
+            plan.as_mut()
+                .map(|plan| &mut plan.thread)
+                .unwrap_or(&mut active.thread),
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
@@ -3426,16 +3521,50 @@ impl AppState {
         self.persist_attention();
     }
 
-    /// Record that the human has seen `id` as of its current state clock.
+    /// Record that the human has seen `id` as of its current state clock, and
+    /// has read its conversation through to the end. The read cursor is what
+    /// unread is derived against, so this is the one place a badge clears.
     fn see_attention(&mut self, id: &str) {
         let Some(state_changed_at) = self.entity_state_clock(id) else {
             return;
         };
-        self.attention
-            .entry(id.to_string())
-            .or_default()
-            .see(&state_changed_at);
+        let read_through = self.conversation_last_sequence(id);
+        let attention = self.attention.entry(id.to_string()).or_default();
+        attention.see(&state_changed_at);
+        if let Some(sequence) = read_through {
+            attention.read_through(sequence);
+        }
         self.persist_attention();
+    }
+
+    /// How far the conversation an entity's surfaces render has got. A planned
+    /// run speaks in its Issue's conversation, so that is the thread it is read
+    /// through; a worktree with no conversation has nothing to read.
+    fn conversation_last_sequence(&self, entity_id: &str) -> Option<u64> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return Some(plan.thread.last_sequence());
+        }
+        let run = self.runs.get(entity_id)?;
+        Some(self.conversation_thread_for_run(run).last_sequence())
+    }
+
+    /// What an entry says about itself in the inbox: whether an attention-class
+    /// item landed past the human's read cursor, how many, and why the newest
+    /// one needs them.
+    ///
+    /// This is the whole of `needs_attention` now. A state that needs the human
+    /// is only an input to it, by way of the event that state transition emits.
+    fn unread_for(
+        &self,
+        entity_id: &str,
+        thread: &crate::thread::Thread,
+    ) -> crate::thread::UnreadSummary {
+        let cursor = self
+            .attention
+            .get(entity_id)
+            .map(|attention| attention.last_read_sequence)
+            .unwrap_or(0);
+        thread.unread_since(cursor)
     }
 
     /// The entity's state clock — what a `seen` stamp is versioned against. A
@@ -3908,7 +4037,11 @@ impl AppState {
             if let Some(exit) = &exit_code {
                 active.last_error = Some(exit.describe());
             }
-            record_idle_in_thread(&mut active.thread, exit_code.as_ref());
+            if let Err(e) = self.record_on_run_conversation(&mut active, |thread| {
+                record_idle_in_thread(thread, exit_code.as_ref())
+            }) {
+                eprintln!("idle monitor {run_id}: {e}");
+            }
             let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {run_id}: {e}");
@@ -5251,6 +5384,33 @@ impl AppState {
             .and_then(|pid| self.plans.get(&pid.0))
             .map(|plan| plan.stages.clone())
             .unwrap_or_default()
+    }
+
+    /// Write to the conversation a run speaks in — its Issue's when it has one,
+    /// its own otherwise — and persist whichever record owns it.
+    ///
+    /// The Issue's thread is what every surface of a planned run renders, so a
+    /// report written anywhere else is invisible: the run reads as busy while
+    /// nothing is happening in it.
+    fn record_on_run_conversation(
+        &mut self,
+        active: &mut ActiveRun,
+        write: impl FnOnce(&mut crate::thread::Thread),
+    ) -> Result<(), String> {
+        let issue_id = active
+            .run
+            .plan_id
+            .as_ref()
+            .map(|id| id.0.clone())
+            .filter(|issue_id| self.plans.contains_key(issue_id));
+        let Some(issue_id) = issue_id else {
+            write(&mut active.thread);
+            return Ok(());
+        };
+        let mut issue = self.take_plan(&issue_id)?;
+        write(&mut issue.thread);
+        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+        persisted
     }
 
     /// Canonical conversation owner for a run. Planned runs are implementation
@@ -8120,12 +8280,18 @@ impl AppState {
                 .unwrap_or_default()
                 .to_string()
         });
+        let unread = self.unread_for(plan_id, &active.thread);
         json!({
             "issue_id": plan_id,
             "plan_id": plan_id,
             "goal": active.plan.goal,
             "state": plan_state_str(&active.plan.state),
-            "needs_attention": active.plan.state.needs_attention(),
+            // Event-driven, and `needs_attention` is the same fact under the
+            // name the SPA already reads.
+            "needs_attention": unread.is_unread(),
+            "unread": unread.is_unread(),
+            "unread_count": unread.count,
+            "unread_reason": unread.reason,
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -8216,6 +8382,7 @@ impl AppState {
             .map(|p| p.name.clone())
             .unwrap_or_default();
         let primary = self.owns_primary_checkout(run_id, active);
+        let unread = self.unread_for(run_id, self.conversation_thread_for_run(active));
         json!({
             "run_id": run_id,
             "implementation_id": run_id,
@@ -8223,7 +8390,12 @@ impl AppState {
             "plan_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
             "goal": active.run.goal,
             "state": run_state_str(&active.run.state),
-            "needs_attention": active.run.state.needs_attention(),
+            // Event-driven, and `needs_attention` is the same fact under the
+            // name the SPA already reads.
+            "needs_attention": unread.is_unread(),
+            "unread": unread.is_unread(),
+            "unread_count": unread.count,
+            "unread_reason": unread.reason,
             "attention": self.attention_json(run_id),
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
@@ -19654,7 +19826,11 @@ mod tests {
         assert_eq!(plan["result"]["state"], "interrupted", "{plan:?}");
         let run = state.handle(req("run.get", json!({ "run_id": "run-1" })));
         assert_eq!(run["result"]["state"], "interrupted", "{run:?}");
-        assert_eq!(run["result"]["needs_attention"], true);
+        // Unread is event-driven, so the restart has to say on the conversation
+        // that it killed the session, or a parked task goes quiet.
+        assert_eq!(run["result"]["needs_attention"], true, "{run:?}");
+        assert_eq!(run["result"]["unread_reason"], "interrupted", "{run:?}");
+        assert_eq!(plan["result"]["unread_reason"], "interrupted", "{plan:?}");
     }
 
     #[test]
@@ -22065,7 +22241,7 @@ mod tests {
 
     // ---- attention: what the rail orders and colours itself by ---------------
 
-    fn attention_of(state: &mut AppState, id: &str) -> Value {
+    fn board_entry(state: &mut AppState, id: &str) -> Value {
         let board = state.handle(req("board.list", json!({})));
         for key in ["runs", "plans", "external_worktrees"] {
             if let Some(list) = board["result"][key].as_array() {
@@ -22075,12 +22251,120 @@ mod tests {
                         .or_else(|| entry["plan_id"].as_str())
                         .or_else(|| entry["worktree_id"].as_str());
                     if entry_id == Some(id) {
-                        return entry["attention"].clone();
+                        return entry.clone();
                     }
                 }
             }
         }
         panic!("{id} not on the board: {board:?}");
+    }
+
+    fn attention_of(state: &mut AppState, id: &str) -> Value {
+        board_entry(state, id)["attention"].clone()
+    }
+
+    /// Append one item to the conversation an Issue and its implementation
+    /// share, the way an agent or a lifecycle step would.
+    fn push_to_issue_conversation(
+        state: &mut AppState,
+        issue_id: &str,
+        write: impl FnOnce(&mut crate::thread::Thread),
+    ) {
+        let issue = state.plans.get_mut(issue_id).expect("the issue exists");
+        write(&mut issue.thread);
+    }
+
+    /// The whole unread rule in one pass: an agent handing back makes the entry
+    /// unread and says why, `entity.seen` reads the conversation through, and
+    /// the work happening afterwards updates the entry silently.
+    #[test]
+    fn unread_follows_attention_events_and_entity_seen_clears_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "unread");
+
+        // An agent that reported done has handed back, and nobody has looked.
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], true, "{entry:?}");
+        assert_eq!(entry["needs_attention"], true, "{entry:?}");
+        assert!(entry["unread_count"].as_u64().unwrap() >= 1, "{entry:?}");
+
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], false, "{entry:?}");
+        assert_eq!(entry["unread_count"], 0, "{entry:?}");
+        assert!(entry["unread_reason"].is_null(), "{entry:?}");
+        assert_eq!(entry["needs_attention"], false, "{entry:?}");
+
+        // The work carrying on is not news.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::Committed,
+                Some("Committed 3 files".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+            thread.push_event(
+                crate::thread::ThreadEventKind::RevisionCreated,
+                None,
+                None,
+                None,
+                now_rfc3339(),
+            );
+        });
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(
+            entry["unread"], false,
+            "status events stay quiet: {entry:?}"
+        );
+
+        // The agent handing back is, and the entry says which handoff it was.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::Done,
+                Some("Implemented the change".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        });
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], true, "{entry:?}");
+        assert_eq!(entry["unread_count"], 1, "{entry:?}");
+        assert_eq!(entry["unread_reason"], "done", "{entry:?}");
+
+        // The newest one is what it says, and they accumulate.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread_count"], 2, "{entry:?}");
+        assert_eq!(entry["unread_reason"], "agent_message", "{entry:?}");
+    }
+
+    /// The reviewer's own messages are not news to the reviewer, and a progress
+    /// note is the agent saying it is still going — neither pulls anyone in.
+    #[test]
+    fn a_reviewers_own_message_and_an_agents_progress_note_leave_the_entry_read() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "quiet posts");
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "please rename the helper" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent_progress("still digging", None, now_rfc3339());
+        });
+
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], false, "{entry:?}");
+        assert!(entry["unread_reason"].is_null(), "{entry:?}");
     }
 
     /// Reading a stage doc IS engaging with an issue — they are a queue you
@@ -22383,6 +22667,56 @@ mod tests {
         let after = attention_of(&mut reloaded, &run_id);
         assert_eq!(after["seen"], true, "{after:?}");
         assert_eq!(after["interacted"], true, "{after:?}");
+        // The read cursor with it: a badge derived from a cursor that reset
+        // would make every restart a wall of unread.
+        let entry = board_entry(&mut reloaded, &run_id);
+        assert_eq!(entry["unread"], false, "{entry:?}");
+    }
+
+    /// A planned run and its Issue share one conversation. One piece of news on
+    /// it is one notification, so whichever mutation tail runs second must find
+    /// nothing new — otherwise every done report pushes twice.
+    #[test]
+    fn one_piece_of_news_reaches_the_push_funnel_once() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "one push");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::Done,
+                Some("Implemented the change".to_string()),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        });
+
+        let conversation = state.plans[&issue_id].thread.clone();
+        let news = state.conversation_news(&conversation);
+        assert_eq!(news.attention_reason, Some("done"));
+        state.push_attention_notify(&run_id, news, None);
+        assert_eq!(
+            state.conversation_news(&conversation).attention_reason,
+            None,
+            "the second tail finds the news already taken"
+        );
+    }
+
+    /// Everything in the store was announced when it happened. A restart
+    /// re-reads all of it and must announce none of it again.
+    #[test]
+    fn a_restart_announces_nothing_it_already_announced() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            planned_run_in_review(&mut state, "quiet restart").0
+        };
+        let reloaded = qa_state(&repo, dir.path());
+        let conversation = reloaded.plans[&issue_id].thread.clone();
+        assert_eq!(
+            reloaded.conversation_news(&conversation).attention_reason,
+            None
+        );
     }
 
     #[test]

@@ -947,6 +947,36 @@ impl Thread {
             .unwrap_or(0)
     }
 
+    /// When the turn the agent is working started, or `None` when nothing is
+    /// in flight — the authoritative source of working time.
+    ///
+    /// A turn starts when the agent READS a reviewer message (that read is what
+    /// stamps `seen_at`) and ends when the agent hands the turn back: an
+    /// ordinary reply hands back, a progress note keeps it, and any
+    /// attention-class event ends it outright. Only the newest such message
+    /// carries the turn — one agent, one thing being worked.
+    pub fn working_since(&self) -> Option<&str> {
+        for item in self.items.iter().rev() {
+            match item {
+                ThreadItem::Message(message) => {
+                    if message.role == MessageRole::User {
+                        if let Some(seen_at) = message.seen_at.as_deref() {
+                            return Some(seen_at);
+                        }
+                    } else if message.role == MessageRole::Agent && !message.still_working {
+                        return None;
+                    }
+                }
+                ThreadItem::Event(event) => {
+                    if event.event.class() == EventClass::Attention {
+                        return None;
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// The attention-class items created after `cursor` — the whole of the
     /// unread rule.
     ///
@@ -1234,6 +1264,69 @@ mod working_flag_tests {
             message(&update).still_working,
             "a progress note keeps the agent working"
         );
+    }
+
+    /// Working time is derived from the turn, not from a timer: it starts when
+    /// the agent READS what the human said and ends when the agent hands the
+    /// turn back. Same rule the MCP tool descriptions already teach agents.
+    #[test]
+    fn a_turn_runs_from_the_read_until_the_agent_hands_it_back() {
+        let mut thread = Thread::new("run-working");
+        assert_eq!(thread.working_since(), None, "an empty thread is idle");
+
+        thread.post_user("do the thing", None, "2026-08-13T10:00:00Z");
+        assert_eq!(
+            thread.working_since(),
+            None,
+            "a message nobody has read yet is not work in flight"
+        );
+
+        thread.read_unread("2026-08-13T10:00:05Z");
+        assert_eq!(thread.working_since(), Some("2026-08-13T10:00:05Z"));
+
+        thread.post_agent_progress("halfway", None, "2026-08-13T10:01:00Z");
+        assert_eq!(
+            thread.working_since(),
+            Some("2026-08-13T10:00:05Z"),
+            "a progress note keeps the same turn running"
+        );
+        thread.push_event(
+            ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            "2026-08-13T10:02:00Z",
+        );
+        assert_eq!(
+            thread.working_since(),
+            Some("2026-08-13T10:00:05Z"),
+            "status is the work happening, not the work ending"
+        );
+
+        thread.post_agent("here is what I did", None, "2026-08-13T10:03:00Z");
+        assert_eq!(thread.working_since(), None, "an ordinary reply hands back");
+    }
+
+    /// An agent that reports `done` without saying anything has still handed
+    /// back — the event is the record.
+    #[test]
+    fn an_attention_event_ends_the_turn_with_nothing_said() {
+        let mut thread = Thread::new("run-done");
+        thread.post_user("ship it", None, "2026-08-13T11:00:00Z");
+        thread.read_unread("2026-08-13T11:00:01Z");
+        thread.push_event(
+            ThreadEventKind::Done,
+            None,
+            None,
+            None,
+            "2026-08-13T11:05:00Z",
+        );
+        assert_eq!(thread.working_since(), None);
+
+        // A second message read after the handoff starts a new turn.
+        thread.post_user("one more thing", None, "2026-08-13T11:06:00Z");
+        thread.read_unread("2026-08-13T11:06:02Z");
+        assert_eq!(thread.working_since(), Some("2026-08-13T11:06:02Z"));
     }
 }
 

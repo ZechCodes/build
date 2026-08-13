@@ -4,6 +4,8 @@
 //! run), while individual harness processes are recorded as session lineage.
 //! Messages cost agent tokens; events and revision links do not.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -126,6 +128,163 @@ pub struct MessageAttachment {
     pub size: u64,
 }
 
+/// What one item says about itself so a later search can find it.
+///
+/// Derived once, when the item is written, from the text and the links it
+/// carries — never re-derived by a reader, so a search costs a scan of small
+/// vectors rather than a re-parse of every body ever posted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemMetadata {
+    /// Commit shas named here, lowercase, in the order they appear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<String>,
+    /// Worktree-relative paths that name real files in the checkout, plus the
+    /// paths of links and anchors the bridge already validated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    /// Stage ids this item links to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+}
+
+/// How many of each kind one item may claim. A message naming forty files is
+/// a paste, not a reference, and the index is a pointer either way.
+const MAX_METADATA_ENTRIES: usize = 20;
+
+impl ItemMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty() && self.files.is_empty() && self.stages.is_empty()
+    }
+
+    /// Read an item's findability out of what it says and what it links to.
+    fn derive(
+        text: &str,
+        links: &[ThreadLink],
+        anchor: Option<&MessageAnchor>,
+        scope: &WorktreeScope,
+    ) -> ItemMetadata {
+        let mut metadata = ItemMetadata::default();
+        for token in prose_tokens(text) {
+            if is_commit_sha(token) {
+                push_unique(&mut metadata.commits, token.to_lowercase());
+            } else if metadata.files.len() < MAX_METADATA_ENTRIES
+                && looks_like_a_path(token)
+                // Last, and only under the cap: this is the one check that
+                // touches the disk, so a long paste cannot turn into a long
+                // run of stat calls.
+                && scope.names_a_real_file(token)
+            {
+                push_unique(&mut metadata.files, token.to_string());
+            }
+        }
+        for link in links {
+            match link {
+                ThreadLink::File { path, .. } => push_unique(&mut metadata.files, path.clone()),
+                ThreadLink::Commit { sha } => {
+                    push_unique(&mut metadata.commits, sha.to_lowercase())
+                }
+                ThreadLink::PlanStage { stage_id, path, .. }
+                | ThreadLink::IssueStage { stage_id, path, .. } => {
+                    push_unique(&mut metadata.stages, stage_id.clone());
+                    push_unique(&mut metadata.files, path.clone());
+                }
+                ThreadLink::Run { .. }
+                | ThreadLink::Implementation { .. }
+                | ThreadLink::Worktree { .. }
+                | ThreadLink::Recovery { .. } => {}
+            }
+        }
+        if let Some(path) = anchor.and_then(|anchor| anchor.path.as_ref()) {
+            push_unique(&mut metadata.files, path.clone());
+        }
+        metadata
+    }
+}
+
+/// Add a value the first time it is seen, up to the per-item cap.
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if values.len() >= MAX_METADATA_ENTRIES || values.contains(&value) {
+        return;
+    }
+    values.push(value);
+}
+
+/// The words of a body, with the punctuation people wrap them in removed:
+/// backticks, quotes, brackets and sentence punctuation are how a sentence is
+/// written, not part of the path or sha inside it. A leading dot IS part of a
+/// path (`.build/plan/…`), so only trailing dots are stripped.
+fn prose_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|c: char| {
+                    matches!(
+                        c,
+                        '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+                    ) || matches!(c, ',' | ';' | ':' | '!' | '?' | '*' | '|')
+                })
+                .trim_end_matches('.')
+        })
+        .filter(|token| !token.is_empty())
+}
+
+/// A commit sha: 7 to 40 hex characters carrying at least one digit.
+///
+/// The digit is what keeps all-hex English out of the index — "effaced" and
+/// "defaced" are hex to the letter. A real sha with no digit at all is a
+/// one-in-a-thousand accident, and a `Commit` link records the exact sha
+/// whatever the prose looks like.
+fn is_commit_sha(token: &str) -> bool {
+    (7..=40).contains(&token.len())
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && token.bytes().any(|byte| byte.is_ascii_digit())
+}
+
+/// Whether a token is shaped like a path at all — a directory separator, or a
+/// short extension. Shape alone never records a file; the checkout decides.
+fn looks_like_a_path(token: &str) -> bool {
+    if token.contains('/') {
+        return true;
+    }
+    match token.rsplit_once('.') {
+        Some((stem, extension)) => {
+            !stem.is_empty()
+                && (1..=8).contains(&extension.len())
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+/// Where the conversation's checkout is, when the bridge has told the thread.
+///
+/// Deliberately outside equality and outside the persisted record: two
+/// conversations holding the same items are the same conversation wherever
+/// they happen to be checked out, and a path on this device means nothing to
+/// the next one.
+#[derive(Debug, Clone, Default)]
+pub struct WorktreeScope(Option<PathBuf>);
+
+impl PartialEq for WorktreeScope {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WorktreeScope {}
+
+impl WorktreeScope {
+    /// Whether a token read out of prose names a real file inside the checkout.
+    /// Without a checkout the thread cannot tell a path from a phrase, so it
+    /// claims nothing.
+    fn names_a_real_file(&self, candidate: &str) -> bool {
+        let Some(root) = &self.0 else {
+            return false;
+        };
+        crate::plan::is_worktree_contained_path(candidate) && root.join(candidate).is_file()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
@@ -166,6 +325,11 @@ pub struct ThreadMessage {
     /// false, so every message written before this existed reads as a handoff.
     #[serde(default, skip_serializing_if = "is_false")]
     pub still_working: bool,
+    /// What this message referenced, derived when it was posted. Absent when it
+    /// referenced nothing, and on every message written before findability
+    /// existed.
+    #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
+    pub metadata: ItemMetadata,
 }
 
 /// What one item on a conversation does to the entry that owns it.
@@ -361,6 +525,10 @@ pub struct ThreadEvent {
     /// omits the field entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_report: Option<CompletionReport>,
+    /// What this event referenced, derived when it was pushed. See
+    /// [`ThreadMessage::metadata`].
+    #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
+    pub metadata: ItemMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,6 +596,228 @@ impl ThreadItem {
             None => EventClass::Status,
         }
     }
+
+    /// What this item referenced, as derived when it was written.
+    pub fn metadata(&self) -> &ItemMetadata {
+        match self {
+            ThreadItem::Message(message) => &message.metadata,
+            ThreadItem::Event(event) => &event.metadata,
+        }
+    }
+
+    /// The text a search reads: what a person wrote, or what the bridge wrote
+    /// about the work.
+    pub fn searchable_text(&self) -> String {
+        match self {
+            ThreadItem::Message(message) => message.body.clone(),
+            ThreadItem::Event(event) => completion_text(
+                event.summary.as_deref().unwrap_or_default(),
+                event.completion_report.as_ref(),
+            ),
+        }
+    }
+
+    /// Who this item is from: the two message roles, or `event` for what the
+    /// bridge recorded on its own.
+    pub fn role_token(&self) -> &'static str {
+        match self {
+            ThreadItem::Message(message) => message.role.as_str(),
+            ThreadItem::Event(_) => EVENT_ROLE,
+        }
+    }
+
+    pub fn created_at(&self) -> &str {
+        match self {
+            ThreadItem::Message(message) => &message.created_at,
+            ThreadItem::Event(event) => &event.created_at,
+        }
+    }
+}
+
+/// The role token an event answers to in a query. Not a [`MessageRole`]: an
+/// event has no author.
+pub const EVENT_ROLE: &str = "event";
+
+/// A summary and everything the report beside it says, as one block of text —
+/// what both the index and the search read.
+fn completion_text(summary: &str, report: Option<&CompletionReport>) -> String {
+    let Some(report) = report else {
+        return summary.to_string();
+    };
+    let mut text = String::from(summary);
+    for line in report
+        .critical_files
+        .iter()
+        .chain(&report.risk_notes)
+        .chain(&report.decisions)
+        .chain(&report.skips)
+    {
+        text.push('\n');
+        text.push_str(line);
+    }
+    text
+}
+
+/// What a cold session asks its own conversation for. Every field narrows;
+/// nothing widens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationQuery {
+    /// Case-insensitive substring of the item's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A path, or the tail of one: matches any indexed file containing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// A sha of any length: matches an indexed sha that it prefixes, or that
+    /// prefixes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// A stage id, exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// `user`, `agent` or `event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Only items created after this sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_sequence: Option<u64>,
+    /// How many hits at most, newest first.
+    #[serde(default = "default_query_limit")]
+    pub limit: usize,
+}
+
+/// How many hits a query returns when it does not say.
+pub const DEFAULT_QUERY_LIMIT: usize = 20;
+/// The most any one query returns, however large a limit it asks for.
+pub const MAX_QUERY_LIMIT: usize = 100;
+
+fn default_query_limit() -> usize {
+    DEFAULT_QUERY_LIMIT
+}
+
+impl Default for ConversationQuery {
+    fn default() -> Self {
+        ConversationQuery {
+            text: None,
+            file: None,
+            commit: None,
+            stage: None,
+            role: None,
+            since_sequence: None,
+            limit: DEFAULT_QUERY_LIMIT,
+        }
+    }
+}
+
+impl ConversationQuery {
+    /// The limit actually applied: never zero, never unbounded.
+    pub fn effective_limit(&self) -> usize {
+        self.limit.clamp(1, MAX_QUERY_LIMIT)
+    }
+
+    fn matches(&self, item: &ThreadItem) -> bool {
+        if self
+            .since_sequence
+            .is_some_and(|since| item.sequence() <= since)
+        {
+            return false;
+        }
+        if self
+            .role
+            .as_deref()
+            .is_some_and(|role| !role.eq_ignore_ascii_case(item.role_token()))
+        {
+            return false;
+        }
+        let metadata = item.metadata();
+        if let Some(file) = &self.file {
+            let file = file.to_lowercase();
+            if !metadata
+                .files
+                .iter()
+                .any(|indexed| indexed.to_lowercase().contains(&file))
+            {
+                return false;
+            }
+        }
+        if let Some(commit) = &self.commit {
+            let commit = commit.to_lowercase();
+            if !metadata
+                .commits
+                .iter()
+                .any(|indexed| indexed.starts_with(&commit) || commit.starts_with(indexed))
+            {
+                return false;
+            }
+        }
+        if let Some(stage) = &self.stage {
+            if !metadata
+                .stages
+                .iter()
+                .any(|indexed| indexed.eq_ignore_ascii_case(stage))
+            {
+                return false;
+            }
+        }
+        if let Some(text) = &self.text {
+            if !item
+                .searchable_text()
+                .to_lowercase()
+                .contains(&text.to_lowercase())
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// One search result: enough to decide whether to go read the item, never the
+/// item itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationHit {
+    /// Which conversation this came out of — a search may span more than one.
+    pub thread_id: String,
+    pub sequence: u64,
+    /// `user`, `agent` or `event`.
+    pub role: String,
+    /// The event kind, for an event. Absent on a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub created_at: String,
+    pub excerpt: String,
+    #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
+    pub metadata: ItemMetadata,
+}
+
+/// How much of an item a hit shows. A pointer, not a transcript.
+const EXCERPT_MAX_CHARS: usize = 200;
+
+/// One line of the item, centred on what was asked for when that is somewhere
+/// in the middle of a long body.
+fn excerpt_around(text: &str, needle: Option<&str>) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let characters: Vec<char> = flat.chars().collect();
+    if characters.len() <= EXCERPT_MAX_CHARS {
+        return flat;
+    }
+    let lowered = flat.to_lowercase();
+    let match_start = needle
+        .map(str::to_lowercase)
+        .and_then(|needle| lowered.find(&needle))
+        .map(|byte| lowered[..byte].chars().count())
+        .unwrap_or(0);
+    let end = (match_start + EXCERPT_MAX_CHARS * 3 / 4).clamp(EXCERPT_MAX_CHARS, characters.len());
+    let start = end - EXCERPT_MAX_CHARS;
+    let mut excerpt = String::new();
+    if start > 0 {
+        excerpt.push('…');
+    }
+    excerpt.extend(&characters[start..end]);
+    if end < characters.len() {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 /// What an entry says about itself in the inbox: whether anything has needed
@@ -501,6 +891,10 @@ pub struct Thread {
     pub last_completion: Option<CompletionReport>,
     #[serde(default)]
     next_sequence: u64,
+    /// Where this conversation's checkout is, told to the thread by the daemon
+    /// on its way to a mutation. Never persisted, never compared.
+    #[serde(skip)]
+    scope: WorktreeScope,
 }
 
 fn empty_agent() -> AgentIdentity {
@@ -548,6 +942,14 @@ impl Thread {
             id: agent_id.to_string(),
         };
         self.normalize(agent_id);
+    }
+
+    /// Say which checkout this conversation is about, so a path named in a
+    /// message can be checked against real files before it is indexed. Set on
+    /// the way to a mutation; a thread that was never told stays honest and
+    /// records no files from prose.
+    pub fn set_worktree_root(&mut self, root: impl Into<PathBuf>) {
+        self.scope = WorktreeScope(Some(root.into()));
     }
 
     /// Whether anything has ever happened here. An entity created and never
@@ -687,17 +1089,23 @@ impl Thread {
         report: Option<&CompletionReport>,
         now: impl Into<String>,
     ) {
+        let summary = summary.into();
+        // The report is the densest statement of what the change touched, so it
+        // is indexed with the summary rather than beside it.
+        let metadata =
+            ItemMetadata::derive(&completion_text(&summary, report), &[], None, &self.scope);
         let sequence = self.next();
         self.items.push(ThreadItem::Event(ThreadEvent {
             id: format!("event-{sequence}"),
             sequence,
             event: ThreadEventKind::Done,
             created_at: now.into(),
-            summary: Some(summary.into()),
+            summary: Some(summary),
             session_id: None,
             revision_id: None,
             links: Vec::new(),
             completion_report: report.cloned(),
+            metadata,
         }));
     }
 
@@ -724,10 +1132,12 @@ impl Thread {
         now: String,
         still_working: bool,
     ) -> String {
+        let metadata = ItemMetadata::derive(&body, &links, anchor.as_ref(), &self.scope);
         let sequence = self.next();
         let id = format!("message-{sequence}");
         self.items.push(ThreadItem::Message(ThreadMessage {
             still_working,
+            metadata,
             id: id.clone(),
             sequence,
             updated_sequence: sequence,
@@ -796,6 +1206,12 @@ impl Thread {
         links: Vec<ThreadLink>,
         now: impl Into<String>,
     ) {
+        let metadata = ItemMetadata::derive(
+            summary.as_deref().unwrap_or_default(),
+            &links,
+            None,
+            &self.scope,
+        );
         let sequence = self.next();
         self.items.push(ThreadItem::Event(ThreadEvent {
             id: format!("event-{sequence}"),
@@ -807,6 +1223,7 @@ impl Thread {
             revision_id,
             links,
             completion_report: None,
+            metadata,
         }));
     }
 
@@ -1018,6 +1435,31 @@ impl Thread {
             summary.reason = Some(reason);
         }
         summary
+    }
+
+    /// The items this query names, newest first, bounded by its limit.
+    ///
+    /// The point of the tool this serves: a session that lost its context asks
+    /// what was decided about one thing, instead of replaying the whole log.
+    pub fn search(&self, query: &ConversationQuery) -> Vec<ConversationHit> {
+        self.items
+            .iter()
+            .rev()
+            .filter(|item| query.matches(item))
+            .take(query.effective_limit())
+            .map(|item| ConversationHit {
+                thread_id: self.id.clone(),
+                sequence: item.sequence(),
+                role: item.role_token().to_string(),
+                kind: match item {
+                    ThreadItem::Event(event) => Some(event.event.as_str().to_string()),
+                    ThreadItem::Message(_) => None,
+                },
+                created_at: item.created_at().to_string(),
+                excerpt: excerpt_around(&item.searchable_text(), query.text.as_deref()),
+                metadata: item.metadata().clone(),
+            })
+            .collect()
     }
 
     /// Bounded summary for list surfaces: identity plus counters and the
@@ -1410,6 +1852,390 @@ mod working_flag_tests {
         thread.post_user("one more thing", None, "2026-08-13T11:06:00Z");
         thread.read_unread("2026-08-13T11:06:02Z");
         assert_eq!(thread.working_since(), Some("2026-08-13T11:06:02Z"));
+    }
+}
+
+#[cfg(test)]
+mod findability_tests {
+    use super::*;
+
+    /// A checkout holding exactly the files a test names, so "this path is real"
+    /// is decided by the same filesystem the bridge would ask.
+    fn checkout(files: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temp checkout");
+        for file in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("dirs");
+            std::fs::write(path, "").expect("a file");
+        }
+        dir
+    }
+
+    fn thread_in(dir: &tempfile::TempDir) -> Thread {
+        let mut thread = Thread::new("run-1");
+        thread.set_worktree_root(dir.path());
+        thread
+    }
+
+    fn message_metadata(thread: &Thread) -> ItemMetadata {
+        thread
+            .items
+            .last()
+            .expect("an item was posted")
+            .metadata()
+            .clone()
+    }
+
+    /// The rule that keeps prose out of the file index: a path is recorded only
+    /// when the worktree really has that file. "and/or" and a plausible-looking
+    /// path nobody created are prose, not files.
+    #[test]
+    fn a_path_counts_only_when_the_checkout_really_has_that_file() {
+        let dir = checkout(&["src/parser.rs", "docs/design.md"]);
+        let mut thread = thread_in(&dir);
+        thread.post_user(
+            "Rework `src/parser.rs` and/or docs/design.md, but not src/imaginary.rs. \
+             See main.rs too.",
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+
+        let metadata = message_metadata(&thread);
+        assert_eq!(metadata.files, vec!["src/parser.rs", "docs/design.md"]);
+    }
+
+    /// Punctuation is how people write, not part of the path.
+    #[test]
+    fn a_path_wrapped_in_prose_punctuation_is_still_the_path() {
+        let dir = checkout(&["src/parser.rs"]);
+        let mut thread = thread_in(&dir);
+        thread.post_agent(
+            "I touched (src/parser.rs), then re-read \"src/parser.rs\".",
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(message_metadata(&thread).files, vec!["src/parser.rs"]);
+    }
+
+    /// A conversation with no checkout behind it cannot tell a path from a
+    /// phrase, so it claims no files from prose — but a link the bridge already
+    /// validated is a file whatever the thread knows about disk.
+    #[test]
+    fn without_a_checkout_only_validated_links_name_files() {
+        let mut thread = Thread::new("run-rootless");
+        thread.post_agent_with_links(
+            "Look at src/parser.rs and/or elsewhere.",
+            None,
+            vec![ThreadLink::File {
+                path: "src/lexer.rs".to_string(),
+                line_start: None,
+                line_end: None,
+            }],
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(message_metadata(&thread).files, vec!["src/lexer.rs"]);
+    }
+
+    /// A commit sha is 7-40 hex characters. Requiring a digit is what keeps
+    /// all-hex English ("effaced", "deface") out of the commit index; a real
+    /// sha without a single digit is a one-in-a-thousand accident, and a link
+    /// carries the exact sha anyway.
+    #[test]
+    fn a_commit_is_hex_of_the_right_length_with_a_digit_in_it() {
+        let mut thread = Thread::new("run-commits");
+        thread.post_user(
+            "a1b2c3d effaced deadbeef 0123456789abcdef0123456789abcdef01234567 \
+             abc123 0123456789abcdef0123456789abcdef012345678",
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(
+            message_metadata(&thread).commits,
+            vec!["a1b2c3d", "0123456789abcdef0123456789abcdef01234567"],
+            "short, digit-free and over-long tokens are not shas"
+        );
+    }
+
+    #[test]
+    fn a_commit_link_is_a_commit_however_the_body_reads() {
+        let mut thread = Thread::new("run-commit-link");
+        thread.push_event_with_links(
+            ThreadEventKind::Committed,
+            Some("committed the parser fix".to_string()),
+            None,
+            None,
+            vec![ThreadLink::Commit {
+                sha: "A".repeat(40),
+            }],
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(
+            thread.items.last().unwrap().metadata().commits,
+            vec!["a".repeat(40)],
+            "a sha is indexed lowercase whatever case it arrived in"
+        );
+    }
+
+    #[test]
+    fn a_stage_link_makes_the_item_findable_by_stage() {
+        let mut thread = Thread::new("run-stages");
+        thread.push_event_with_links(
+            ThreadEventKind::StageStarted,
+            Some("Started stage Parser".to_string()),
+            None,
+            None,
+            vec![
+                ThreadLink::IssueStage {
+                    issue_id: "issue-1".to_string(),
+                    stage_id: "parser".to_string(),
+                    path: ".build/plan/01-parser.md".to_string(),
+                },
+                ThreadLink::PlanStage {
+                    plan_id: "issue-1".to_string(),
+                    stage_id: "lexer".to_string(),
+                    path: ".build/plan/02-lexer.md".to_string(),
+                },
+            ],
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(
+            thread.items.last().unwrap().metadata().stages,
+            vec!["parser", "lexer"]
+        );
+    }
+
+    /// The completion report is the densest statement of what a change touched,
+    /// so it is indexed like any other text the agent wrote.
+    #[test]
+    fn a_completion_report_makes_its_critical_files_findable() {
+        let dir = checkout(&["src/parser.rs"]);
+        let mut thread = thread_in(&dir);
+        thread.post_completion(
+            "rewrote the parser",
+            Some(&CompletionReport {
+                critical_files: vec!["src/parser.rs — now streams tokens".to_string()],
+                risk_notes: vec!["reverts cleanly at a1b2c3d".to_string()],
+                decisions: Vec::new(),
+                skips: Vec::new(),
+            }),
+            "2026-08-13T09:00:00Z",
+        );
+        let metadata = thread.items.last().unwrap().metadata().clone();
+        assert_eq!(metadata.files, vec!["src/parser.rs"]);
+        assert_eq!(metadata.commits, vec!["a1b2c3d"]);
+    }
+
+    #[test]
+    fn metadata_ships_on_the_wire_and_an_item_without_any_omits_it() {
+        let dir = checkout(&["src/parser.rs"]);
+        let mut thread = thread_in(&dir);
+        thread.post_user("nothing to see here", None, "2026-08-13T09:00:00Z");
+        thread.post_agent("fixed src/parser.rs", None, "2026-08-13T09:01:00Z");
+
+        let wire = thread.wire_value();
+        assert!(
+            wire["items"][0]["data"].get("metadata").is_none(),
+            "{wire:?}"
+        );
+        assert_eq!(
+            wire["items"][1]["data"]["metadata"]["files"][0],
+            "src/parser.rs"
+        );
+
+        let reloaded: Thread = serde_json::from_value(serde_json::to_value(&thread).unwrap())
+            .expect("a thread with metadata reloads");
+        assert_eq!(reloaded.items, thread.items);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn conversation() -> Thread {
+        let mut thread = Thread::new("run-search");
+        thread.post_user(
+            "Rename the helper in the parser",
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+        thread.post_agent_with_links(
+            "Renamed it; the parser now streams tokens.",
+            None,
+            vec![ThreadLink::File {
+                path: "src/parser.rs".to_string(),
+                line_start: None,
+                line_end: None,
+            }],
+            "2026-08-13T09:01:00Z",
+        );
+        thread.push_event_with_links(
+            ThreadEventKind::Committed,
+            Some("committed the rename".to_string()),
+            None,
+            None,
+            vec![ThreadLink::Commit {
+                sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".to_string(),
+            }],
+            "2026-08-13T09:02:00Z",
+        );
+        thread.push_event_with_links(
+            ThreadEventKind::StageStarted,
+            Some("Started stage Lexer".to_string()),
+            None,
+            None,
+            vec![ThreadLink::IssueStage {
+                issue_id: "issue-1".to_string(),
+                stage_id: "lexer".to_string(),
+                path: ".build/plan/02-lexer.md".to_string(),
+            }],
+            "2026-08-13T09:03:00Z",
+        );
+        thread
+    }
+
+    fn sequences(hits: &[ConversationHit]) -> Vec<u64> {
+        hits.iter().map(|hit| hit.sequence).collect()
+    }
+
+    #[test]
+    fn an_empty_query_returns_the_whole_conversation_newest_first() {
+        let hits = conversation().search(&ConversationQuery::default());
+        assert_eq!(sequences(&hits), vec![4, 3, 2, 1]);
+        assert_eq!(hits[0].role, "event");
+        assert_eq!(hits[0].kind.as_deref(), Some("stage_started"));
+        assert_eq!(hits[0].created_at, "2026-08-13T09:03:00Z");
+        assert_eq!(hits[3].role, "user");
+        assert_eq!(hits[3].kind, None);
+        assert_eq!(hits[3].excerpt, "Rename the helper in the parser");
+        assert_eq!(hits[3].thread_id, "thread:run-search");
+    }
+
+    #[test]
+    fn text_matching_is_case_insensitive_substring() {
+        // Substring, so "RENAME" also finds "Renamed" — a cold session asking
+        // about a word should not have to guess which form was written.
+        let hits = conversation().search(&ConversationQuery {
+            text: Some("RENAME".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&hits), vec![3, 2, 1]);
+        assert!(conversation()
+            .search(&ConversationQuery {
+                text: Some("lexer".to_string()),
+                ..ConversationQuery::default()
+            })
+            .iter()
+            .all(|hit| hit.sequence == 4));
+    }
+
+    #[test]
+    fn each_metadata_filter_narrows_to_the_items_carrying_it() {
+        let thread = conversation();
+
+        let by_file = thread.search(&ConversationQuery {
+            file: Some("parser.rs".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&by_file), vec![2]);
+
+        // A short sha finds the full one it prefixes, and the reverse.
+        let by_short_commit = thread.search(&ConversationQuery {
+            commit: Some("a1b2c3d".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&by_short_commit), vec![3]);
+        let by_full_commit = thread.search(&ConversationQuery {
+            commit: Some("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&by_full_commit), vec![3]);
+        assert!(thread
+            .search(&ConversationQuery {
+                commit: Some("f".repeat(7),),
+                ..ConversationQuery::default()
+            })
+            .is_empty());
+
+        let by_stage = thread.search(&ConversationQuery {
+            stage: Some("lexer".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&by_stage), vec![4]);
+    }
+
+    #[test]
+    fn role_selects_who_said_it_and_events_are_their_own_role() {
+        let thread = conversation();
+        for (role, expected) in [("user", vec![1]), ("agent", vec![2]), ("event", vec![4, 3])] {
+            let hits = thread.search(&ConversationQuery {
+                role: Some(role.to_string()),
+                ..ConversationQuery::default()
+            });
+            assert_eq!(sequences(&hits), expected, "role={role}");
+        }
+    }
+
+    #[test]
+    fn since_sequence_and_limit_bound_the_answer() {
+        let thread = conversation();
+        let since = thread.search(&ConversationQuery {
+            since_sequence: Some(2),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&since), vec![4, 3]);
+
+        let limited = thread.search(&ConversationQuery {
+            limit: 2,
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&limited), vec![4, 3]);
+    }
+
+    #[test]
+    fn filters_combine_rather_than_widen() {
+        let hits = conversation().search(&ConversationQuery {
+            text: Some("rename".to_string()),
+            role: Some("user".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(sequences(&hits), vec![1]);
+    }
+
+    /// A hit is a pointer, not a transcript: the excerpt is bounded and centred
+    /// on what was asked for, so a cold session can decide what to read next
+    /// without paying for the whole conversation.
+    #[test]
+    fn a_long_body_is_excerpted_around_the_match() {
+        let mut thread = Thread::new("run-long");
+        let body = format!(
+            "{} the decisive sentence {}",
+            "x ".repeat(400),
+            "y ".repeat(400)
+        );
+        thread.post_agent(body, None, "2026-08-13T09:00:00Z");
+
+        let hits = thread.search(&ConversationQuery {
+            text: Some("decisive".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(hits.len(), 1);
+        let excerpt = &hits[0].excerpt;
+        assert!(excerpt.contains("the decisive sentence"), "{excerpt}");
+        assert!(
+            excerpt.chars().count() <= 210,
+            "{}",
+            excerpt.chars().count()
+        );
+    }
+
+    #[test]
+    fn a_hit_carries_the_metadata_that_made_it_findable() {
+        let hits = conversation().search(&ConversationQuery {
+            file: Some("src/parser.rs".to_string()),
+            ..ConversationQuery::default()
+        });
+        assert_eq!(hits[0].metadata.files, vec!["src/parser.rs"]);
     }
 }
 

@@ -234,6 +234,11 @@ pub enum BridgeAction {
         anchor: Option<crate::thread::MessageAnchor>,
         links: Vec<crate::thread::ThreadLink>,
     },
+    /// Ask the agent's own conversation history a question. Read-only, and
+    /// scoped by the daemon to what this agent may read.
+    SearchConversation {
+        query: crate::thread::ConversationQuery,
+    },
 }
 
 /// The conversation-aware MCP server. Identity-scoped to one owner (a plan or a run);
@@ -417,6 +422,24 @@ impl DoneServer {
                             "name": "done",
                             "description": "Report the outcome of the current phase. Call with status=completed when the objective is met, status=blocked if you cannot proceed, or status=failed if the approach did not work.",
                             "inputSchema": Self::done_input_schema()
+                        }, {
+                            "name": "search_conversation",
+                            // The one tool a session with no memory of the work
+                            // needs to know exists, so the description says what
+                            // to do INSTEAD of scrolling: ask a question.
+                            "description": "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "query": { "type": "string", "description": "Case-insensitive text to look for in message bodies and event summaries." },
+                                    "file": { "type": "string", "description": "A worktree-relative path, or the tail of one: finds items that referenced that file." },
+                                    "commit": { "type": "string", "description": "A commit sha, short or full: finds items that referenced it." },
+                                    "stage": { "type": "string", "description": "A stage id: finds items linked to that stage." },
+                                    "role": { "type": "string", "enum": ["user", "agent", "event"], "description": "Only what the reviewer wrote, only what an agent wrote, or only what the bridge recorded." },
+                                    "since_sequence": { "type": "integer", "minimum": 0, "description": "Only items after this sequence number — page back through a conversation you have already partly read." },
+                                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+                                }
+                            }
                         }]
                     }),
                 )),
@@ -442,6 +465,23 @@ impl DoneServer {
                 action: Some(BridgeAction::ReadUnreadMessages),
                 action_id: Some(id),
                 ..Handled::default()
+            };
+        }
+        if name == "search_conversation" {
+            let arguments = params
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            return match conversation_query(&arguments) {
+                Ok(query) => Handled {
+                    action: Some(BridgeAction::SearchConversation { query }),
+                    action_id: Some(id),
+                    ..Handled::default()
+                },
+                Err(message) => Handled {
+                    reply: Some(tool_error(id, message)),
+                    ..Handled::default()
+                },
             };
         }
         if name == "post_thread_message" {
@@ -595,6 +635,42 @@ impl DoneServer {
     }
 }
 
+/// Read a `search_conversation` call's arguments into the typed query the
+/// daemon runs. A filter the daemon could not act on (an author nobody is) is
+/// rejected here rather than silently returning nothing.
+fn conversation_query(arguments: &Value) -> Result<crate::thread::ConversationQuery, String> {
+    let text = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let role = text("role");
+    if let Some(role) = &role {
+        if !["user", "agent", crate::thread::EVENT_ROLE].contains(&role.as_str()) {
+            return Err(format!(
+                "role must be one of user, agent, {}",
+                crate::thread::EVENT_ROLE
+            ));
+        }
+    }
+    Ok(crate::thread::ConversationQuery {
+        text: text("query"),
+        file: text("file"),
+        commit: text("commit"),
+        stage: text("stage"),
+        role,
+        since_sequence: arguments.get("since_sequence").and_then(Value::as_u64),
+        limit: arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|limit| limit as usize)
+            .unwrap_or(crate::thread::DEFAULT_QUERY_LIMIT),
+    })
+}
+
 /// A JSON-RPC success response line.
 fn result(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
@@ -654,10 +730,11 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         assert_eq!(tools[0]["name"], "read_unread_messages");
         assert_eq!(tools[1]["name"], "post_thread_message");
         assert_eq!(tools[2]["name"], "done");
+        assert_eq!(tools[3]["name"], "search_conversation");
         assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
     }
 
@@ -831,6 +908,101 @@ mod tests {
             .unwrap()
             .contains("invalid done arguments"));
         assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn tools_list_offers_search_and_tells_a_cold_session_to_use_it() {
+        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let tools = v["result"]["tools"].as_array().unwrap();
+        let search = tools
+            .iter()
+            .find(|tool| tool["name"] == "search_conversation")
+            .expect("the history query tool is advertised");
+
+        let description = search["description"].as_str().unwrap().to_lowercase();
+        // The whole reason the tool exists: a session that lost its context asks
+        // a question instead of replaying the log.
+        assert!(description.contains("search"), "{description}");
+        assert!(
+            description.contains("replay") || description.contains("re-read"),
+            "the description must say what to do INSTEAD of replaying: {description}"
+        );
+        let properties = &search["inputSchema"]["properties"];
+        for field in [
+            "query",
+            "file",
+            "commit",
+            "stage",
+            "role",
+            "since_sequence",
+            "limit",
+        ] {
+            assert!(properties[field].is_object(), "{field} is missing");
+        }
+        assert_eq!(properties["limit"]["default"], 20);
+        let roles = properties["role"]["enum"].as_array().unwrap();
+        assert_eq!(roles, &vec![json!("user"), json!("agent"), json!("event")]);
+    }
+
+    #[test]
+    fn a_search_call_emits_a_typed_query() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"search_conversation","arguments":{"query":"rename","file":"src/parser.rs","commit":"a1b2c3d","stage":"lexer","role":"agent","since_sequence":4,"limit":5}}}"#,
+        );
+        let Some(BridgeAction::SearchConversation { query }) = h.action else {
+            panic!("expected a search action, got {:?}", h.action);
+        };
+        assert_eq!(query.text.as_deref(), Some("rename"));
+        assert_eq!(query.file.as_deref(), Some("src/parser.rs"));
+        assert_eq!(query.commit.as_deref(), Some("a1b2c3d"));
+        assert_eq!(query.stage.as_deref(), Some("lexer"));
+        assert_eq!(query.role.as_deref(), Some("agent"));
+        assert_eq!(query.since_sequence, Some(4));
+        assert_eq!(query.limit, 5);
+        assert!(
+            h.reply.is_none(),
+            "the daemon answers a search, not the parser"
+        );
+    }
+
+    #[test]
+    fn a_search_with_no_arguments_is_the_recent_tail() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"search_conversation","arguments":{}}}"#,
+        );
+        let Some(BridgeAction::SearchConversation { query }) = h.action else {
+            panic!("expected a search action");
+        };
+        assert_eq!(query, crate::thread::ConversationQuery::default());
+        assert_eq!(query.limit, 20);
+    }
+
+    #[test]
+    fn a_search_with_a_role_nobody_has_is_a_tool_error() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"search_conversation","arguments":{"role":"reviewer"}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("role"));
+        assert!(h.action.is_none());
+    }
+
+    #[test]
+    fn a_search_limit_is_clamped_rather_than_honoured_without_bound() {
+        for (asked, applied) in [(0, 1), (5_000, 100)] {
+            let h = server().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{{"name":"search_conversation","arguments":{{"limit":{asked}}}}}}}"#
+            ));
+            let Some(BridgeAction::SearchConversation { query }) = h.action else {
+                panic!("expected a search action");
+            };
+            assert_eq!(query.effective_limit(), applied, "limit={asked}");
+        }
     }
 
     #[test]

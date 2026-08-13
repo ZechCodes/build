@@ -1158,7 +1158,7 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                                 .expect("worktree path serializes")
                         ),
                         "mcp_servers.build.required=true".to_string(),
-                        "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\"]".to_string(),
+                        "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\",\"search_conversation\"]".to_string(),
                         "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
                         // Build writes prompt bytes and Enter back-to-back. Codex's
                         // fallback detector otherwise classifies that stream as a
@@ -3015,6 +3015,9 @@ impl AppState {
         agent_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
+        if let BridgeAction::SearchConversation { query } = &action {
+            return self.search_agent_conversations(entity_id, agent_id, query);
+        }
         if let BridgeAction::PostThreadMessage { links, .. } = &action {
             self.validate_thread_links_for_owner(entity_id, links)?;
         }
@@ -3075,6 +3078,58 @@ impl AppState {
             return Ok(value);
         }
         Err(format!("unknown conversation owner: {entity_id}"))
+    }
+
+    /// Answer a history query out of the conversations this agent may read.
+    ///
+    /// That is its own, and — when it is implementing an Issue — the Issue's,
+    /// which is where its first agent's words are actually recorded. Never
+    /// another entity's: an agent asking about work it was never given must
+    /// come back empty, not informed.
+    fn search_agent_conversations(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+        query: &crate::thread::ConversationQuery,
+    ) -> Result<Value, String> {
+        let mut threads: Vec<&crate::thread::Thread> = Vec::new();
+        if let Some(issue) = self.plans.get(entity_id) {
+            threads.push(&issue.agents.resolve(Some(agent_id))?.thread);
+        } else if let Some(run) = self.runs.get(entity_id) {
+            threads.push(&run.agents.resolve(Some(agent_id))?.thread);
+            if let Some(issue) = run
+                .run
+                .plan_id
+                .as_ref()
+                .and_then(|issue_id| self.plans.get(&issue_id.0))
+            {
+                threads.push(&issue.agents.first().thread);
+            }
+        } else {
+            return Err(format!("unknown conversation owner: {entity_id}"));
+        }
+
+        let mut hits: Vec<crate::thread::ConversationHit> = threads
+            .iter()
+            .flat_map(|thread| thread.search(query))
+            .collect();
+        // One answer out of possibly two conversations, so the ordering the
+        // per-conversation search guarantees has to be re-established across
+        // them: newest first, by when it was said.
+        hits.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then(right.sequence.cmp(&left.sequence))
+        });
+        hits.truncate(query.effective_limit());
+        Ok(json!({
+            "hits": hits,
+            "threads_searched": threads
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<String>>(),
+        }))
     }
 
     /// Validate agent-supplied navigation against the conversation owner. Shape
@@ -5862,12 +5917,38 @@ impl AppState {
             .ok_or_else(|| "no task store configured".to_string())
     }
 
+    /// Take a plan out for mutation, having told its conversations which
+    /// checkout they are about: an Issue's is the checkout of the
+    /// implementation working it right now, or its own planning worktree when
+    /// nothing is implementing it yet.
     fn take_plan(&mut self, plan_id: &str) -> Result<ActivePlan, String> {
-        self.plans.remove(plan_id).ok_or("unknown plan_id".into())
+        let implementation_checkout = self
+            .current_issue_implementation(plan_id)
+            .map(|run| run.worktree.path.clone());
+        let mut active = self
+            .plans
+            .remove(plan_id)
+            .ok_or_else(|| "unknown plan_id".to_string())?;
+        let checkout = implementation_checkout.or_else(|| {
+            active
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.path.clone())
+        });
+        if let Some(checkout) = checkout {
+            locate_conversations(&mut active.agents, &checkout);
+        }
+        Ok(active)
     }
 
     fn take_run(&mut self, run_id: &str) -> Result<ActiveRun, String> {
-        self.runs.remove(run_id).ok_or("unknown run_id".into())
+        let mut active = self
+            .runs
+            .remove(run_id)
+            .ok_or_else(|| "unknown run_id".to_string())?;
+        let checkout = active.worktree.path.clone();
+        locate_conversations(&mut active.agents, &checkout);
+        Ok(active)
     }
 
     /// The owning plan's stage-doc manifest for a run (the caller's join by
@@ -10698,6 +10779,17 @@ fn archived_worktree_json(record: &PersistedArchivedWorktree) -> Value {
 /// turn back and stops it.
 const WORKING_INDICATOR_NOTICE: &str = "Reading these marked them seen, which started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you post a reply with post_thread_message — an ordinary reply (still_working omitted or false) hands the turn back and stops it; a progress note (still_working: true) keeps it running. The `done` tool also stops it. Do not leave it running after you have finished.";
 
+/// Tell every conversation of one entity which checkout it is about.
+///
+/// Findability is derived when an item is written, and a path in prose is only
+/// indexed when the checkout really has that file — so a conversation that was
+/// never located indexes no files at all.
+fn locate_conversations(agents: &mut crate::agent::AgentRoster, checkout: &std::path::Path) {
+    for agent in agents.iter_mut() {
+        agent.thread.set_worktree_root(checkout);
+    }
+}
+
 fn apply_thread_action(
     thread: &mut crate::thread::Thread,
     artifact: crate::thread::ArtifactKind,
@@ -10751,6 +10843,11 @@ fn apply_thread_action(
             let message_id =
                 thread.post_agent_with_links_working(body, anchor, links, now, still_working);
             Ok(json!({ "message_id": message_id }))
+        }
+        // A search spans every conversation the agent may read, which one
+        // thread cannot see — the daemon answers it before dispatch gets here.
+        BridgeAction::SearchConversation { .. } => {
+            Err("search_conversation is answered by the daemon, not one conversation".to_string())
         }
     }
 }
@@ -19088,6 +19185,120 @@ mod tests {
             "run link does not belong to this Issue"
         );
         assert!(state.plans.contains_key(&issue_a));
+    }
+
+    fn text_query(text: &str) -> crate::thread::ConversationQuery {
+        crate::thread::ConversationQuery {
+            text: Some(text.to_string()),
+            ..crate::thread::ConversationQuery::default()
+        }
+    }
+
+    fn agent_says(state: &mut AppState, entity_id: &str, body: &str) {
+        state
+            .on_mcp_action(
+                entity_id,
+                BridgeAction::PostThreadMessage {
+                    body: body.to_string(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{entity_id} could not post: {error}"));
+    }
+
+    /// The scope rule: an agent's history is its own conversation plus the
+    /// Issue it is implementing. Another entity's conversation is not history
+    /// it lost — it is history it was never given.
+    #[test]
+    fn a_search_reads_this_agents_conversations_and_no_one_elses() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_a, run_a) = planned_run_in_review(&mut state, "owner a");
+        let (_issue_b, run_b) = planned_run_in_review(&mut state, "owner b");
+        agent_says(&mut state, &run_a, "the ledger keeps its own clock");
+        agent_says(&mut state, &run_b, "the cache is written twice");
+
+        let own = state
+            .on_mcp_action(
+                &run_a,
+                BridgeAction::SearchConversation {
+                    query: text_query("LEDGER"),
+                },
+            )
+            .unwrap();
+        assert_eq!(own["hits"].as_array().unwrap().len(), 1, "{own:?}");
+        assert!(own["hits"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("the ledger keeps its own clock"));
+        assert_eq!(own["hits"][0]["role"], "agent");
+
+        // The Issue's conversation is where a planned implementation's first
+        // agent actually speaks, so it has to be in scope.
+        let issue_thread = state.plans[&issue_a].agents.first().thread.id.clone();
+        assert!(own["threads_searched"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(issue_thread)));
+
+        let stranger = state
+            .on_mcp_action(
+                &run_a,
+                BridgeAction::SearchConversation {
+                    query: text_query("cache"),
+                },
+            )
+            .unwrap();
+        assert!(
+            stranger["hits"].as_array().unwrap().is_empty(),
+            "another entity's conversation must not be readable: {stranger:?}"
+        );
+        assert!(state
+            .on_mcp_action(
+                "run-nobody-owns",
+                BridgeAction::SearchConversation {
+                    query: text_query("cache"),
+                },
+            )
+            .is_err());
+    }
+
+    /// The whole point of the tool: a session with no memory asks what was
+    /// decided and gets back a pointer with the metadata that found it.
+    #[test]
+    fn a_search_finds_a_message_by_the_file_the_checkout_really_has() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue, run) = planned_run_in_review(&mut state, "index the notes");
+        let checkout = state.runs[&run].worktree.path.clone();
+        std::fs::write(checkout.join("notes.md"), "the notes").expect("a real file");
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": issue,
+                "body": "rewrite notes.md, and ignore imaginary.md and/or the rest",
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let found = state
+            .on_mcp_action(
+                &run,
+                BridgeAction::SearchConversation {
+                    query: crate::thread::ConversationQuery {
+                        file: Some("notes.md".to_string()),
+                        ..crate::thread::ConversationQuery::default()
+                    },
+                },
+            )
+            .unwrap();
+        let hits = found["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{found:?}");
+        assert_eq!(hits[0]["role"], "user");
+        assert_eq!(hits[0]["metadata"]["files"], json!(["notes.md"]));
     }
 
     #[test]

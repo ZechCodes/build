@@ -40,6 +40,19 @@ pub struct Attention {
     /// it (RFC3339). `None` = never looked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_state_at: Option<String>,
+    /// How far into the entity's conversation the human has read. Unread is
+    /// derived against this: an attention-class item created past it is what
+    /// makes an entry unread, so a conversation that only reports progress
+    /// leaves the entry alone however much it says.
+    ///
+    /// 0 = never read anything, which is also what every record written before
+    /// this field says.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_read_sequence: u64,
+}
+
+fn is_zero(sequence: &u64) -> bool {
+    *sequence == 0
 }
 
 fn parse(at: &str) -> Option<OffsetDateTime> {
@@ -83,6 +96,15 @@ impl Attention {
     /// Record that the human has seen the entity as of `state_changed_at`.
     pub fn see(&mut self, state_changed_at: &str) {
         self.seen_state_at = Some(state_changed_at.to_string());
+    }
+
+    /// Record that the human has read the conversation through `sequence`.
+    ///
+    /// Never rewinds: a stale cursor (a second tab still holding the sequence
+    /// it loaded with) would otherwise resurrect a badge the human already
+    /// cleared.
+    pub fn read_through(&mut self, sequence: u64) {
+        self.last_read_sequence = self.last_read_sequence.max(sequence);
     }
 
     /// Whether the human has seen the entity's current state. An entity that has
@@ -198,6 +220,29 @@ mod tests {
         assert!(!attention.has_seen(MON_09));
         attention.see(MON_09);
         assert!(!attention.has_seen("not a timestamp"));
+    }
+
+    #[test]
+    fn the_read_cursor_advances_and_never_rewinds() {
+        let mut attention = Attention::default();
+        assert_eq!(attention.last_read_sequence, 0, "never read anything");
+        attention.read_through(7);
+        assert_eq!(attention.last_read_sequence, 7);
+        attention.read_through(3); // a second tab holding an older cursor
+        assert_eq!(attention.last_read_sequence, 7);
+        attention.read_through(12);
+        assert_eq!(attention.last_read_sequence, 12);
+    }
+
+    /// The cursor is new; every record on disk predates it and must still load,
+    /// and an entity nobody has read must not pay for the field.
+    #[test]
+    fn a_record_written_before_the_cursor_existed_reads_as_never_read() {
+        let stored = serde_json::json!({ "last_interaction_at": MON_09 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert_eq!(attention.last_read_sequence, 0);
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert!(wire.get("last_read_sequence").is_none(), "{wire:?}");
     }
 
     #[test]

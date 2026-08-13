@@ -168,6 +168,23 @@ pub struct ThreadMessage {
     pub still_working: bool,
 }
 
+/// What one item on a conversation does to the entry that owns it.
+///
+/// `Attention` pulls the human in: the entry goes unread and says why.
+/// `Status` updates the entry underneath them and stays quiet. The class is
+/// intrinsic to the item — it is decided here, once, rather than re-derived by
+/// every surface that renders a conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventClass {
+    Attention,
+    Status,
+}
+
+/// The unread reason an agent message carries. Not an event kind: the message
+/// itself is the thing that needs reading.
+pub const AGENT_MESSAGE_REASON: &str = "agent_message";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadEventKind {
@@ -203,6 +220,125 @@ pub enum ThreadEventKind {
     Pushed,
     Merged,
     Abandoned,
+    /// A daemon restart killed the session mid-work. The entity is parked and
+    /// waiting for the human to restart it.
+    Interrupted,
+}
+
+impl ThreadEventKind {
+    /// Every variant, so the wire-token and class rules can be checked over the
+    /// whole enum instead of a sample of it.
+    pub const ALL: [ThreadEventKind; 30] = [
+        ThreadEventKind::SessionStarted,
+        ThreadEventKind::SessionEnded,
+        ThreadEventKind::RunStarted,
+        ThreadEventKind::RunFailed,
+        ThreadEventKind::Blocked,
+        ThreadEventKind::ReviewBlocked,
+        ThreadEventKind::IdleUnreported,
+        ThreadEventKind::Done,
+        ThreadEventKind::RevisionCreated,
+        ThreadEventKind::Approved,
+        ThreadEventKind::StageApproved,
+        ThreadEventKind::StageStarted,
+        ThreadEventKind::StageFailed,
+        ThreadEventKind::ImplementationStarted,
+        ThreadEventKind::WorktreeCreated,
+        ThreadEventKind::WorktreeReused,
+        ThreadEventKind::WorktreeRecreated,
+        ThreadEventKind::WorktreeRecovered,
+        ThreadEventKind::RecoveryStarted,
+        ThreadEventKind::RecoverySucceeded,
+        ThreadEventKind::RecoveryFailed,
+        ThreadEventKind::WorktreeDeleted,
+        ThreadEventKind::StageCompleted,
+        ThreadEventKind::ImplementationArchived,
+        ThreadEventKind::StageInvalidated,
+        ThreadEventKind::Committed,
+        ThreadEventKind::Pushed,
+        ThreadEventKind::Merged,
+        ThreadEventKind::Abandoned,
+        ThreadEventKind::Interrupted,
+    ];
+
+    /// Whether this event needs the human, or merely tells them where things
+    /// got to.
+    ///
+    /// Attention is what an agent hands back: it finished, it stopped, it went
+    /// quiet, or the work reached an outcome that ends the entry. Status is the
+    /// work happening — sessions opening and closing, stages moving, commits
+    /// landing, revisions appearing, checkouts being made and recovered.
+    pub fn class(self) -> EventClass {
+        match self {
+            ThreadEventKind::Done
+            | ThreadEventKind::Blocked
+            | ThreadEventKind::ReviewBlocked
+            | ThreadEventKind::RunFailed
+            | ThreadEventKind::StageFailed
+            | ThreadEventKind::RecoveryFailed
+            | ThreadEventKind::IdleUnreported
+            | ThreadEventKind::Interrupted
+            | ThreadEventKind::Merged
+            | ThreadEventKind::Abandoned => EventClass::Attention,
+            ThreadEventKind::SessionStarted
+            | ThreadEventKind::SessionEnded
+            | ThreadEventKind::RunStarted
+            | ThreadEventKind::RevisionCreated
+            | ThreadEventKind::Approved
+            | ThreadEventKind::StageApproved
+            | ThreadEventKind::StageStarted
+            | ThreadEventKind::StageCompleted
+            | ThreadEventKind::StageInvalidated
+            | ThreadEventKind::ImplementationStarted
+            | ThreadEventKind::ImplementationArchived
+            | ThreadEventKind::WorktreeCreated
+            | ThreadEventKind::WorktreeReused
+            | ThreadEventKind::WorktreeRecreated
+            | ThreadEventKind::WorktreeRecovered
+            | ThreadEventKind::WorktreeDeleted
+            | ThreadEventKind::RecoveryStarted
+            | ThreadEventKind::RecoverySucceeded
+            | ThreadEventKind::Committed
+            | ThreadEventKind::Pushed => EventClass::Status,
+        }
+    }
+
+    /// The stable wire token for this kind — byte-identical to how it
+    /// serializes, so an unread reason and a rendered event name never drift.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadEventKind::SessionStarted => "session_started",
+            ThreadEventKind::SessionEnded => "session_ended",
+            ThreadEventKind::RunStarted => "run_started",
+            ThreadEventKind::RunFailed => "run_failed",
+            ThreadEventKind::Blocked => "blocked",
+            ThreadEventKind::ReviewBlocked => "review_blocked",
+            ThreadEventKind::IdleUnreported => "idle_unreported",
+            ThreadEventKind::Done => "done",
+            ThreadEventKind::RevisionCreated => "revision_created",
+            ThreadEventKind::Approved => "approved",
+            ThreadEventKind::StageApproved => "stage_approved",
+            ThreadEventKind::StageStarted => "stage_started",
+            ThreadEventKind::StageFailed => "stage_failed",
+            ThreadEventKind::ImplementationStarted => "implementation_started",
+            ThreadEventKind::WorktreeCreated => "worktree_created",
+            ThreadEventKind::WorktreeReused => "worktree_reused",
+            ThreadEventKind::WorktreeRecreated => "worktree_recreated",
+            ThreadEventKind::WorktreeRecovered => "worktree_recovered",
+            ThreadEventKind::RecoveryStarted => "recovery_started",
+            ThreadEventKind::RecoverySucceeded => "recovery_succeeded",
+            ThreadEventKind::RecoveryFailed => "recovery_failed",
+            ThreadEventKind::WorktreeDeleted => "worktree_deleted",
+            ThreadEventKind::StageCompleted => "stage_completed",
+            ThreadEventKind::ImplementationArchived => "implementation_archived",
+            ThreadEventKind::StageInvalidated => "stage_invalidated",
+            ThreadEventKind::Committed => "committed",
+            ThreadEventKind::Pushed => "pushed",
+            ThreadEventKind::Merged => "merged",
+            ThreadEventKind::Abandoned => "abandoned",
+            ThreadEventKind::Interrupted => "interrupted",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +389,53 @@ impl ThreadItem {
             ThreadItem::Message(message) => message.sequence.max(message.updated_sequence),
             ThreadItem::Event(event) => event.sequence,
         }
+    }
+
+    /// Why this item needs the human, as a stable token — `None` when it does
+    /// not.
+    ///
+    /// An agent message is the agent handing the turn back, so it needs
+    /// reading; a progress note explicitly keeps the turn, so it does not. A
+    /// message the human wrote themselves never needs their attention.
+    pub fn attention_reason(&self) -> Option<&'static str> {
+        match self {
+            ThreadItem::Event(event) => match event.event.class() {
+                EventClass::Attention => Some(event.event.as_str()),
+                EventClass::Status => None,
+            },
+            ThreadItem::Message(message) => {
+                if message.role != MessageRole::Agent || message.still_working {
+                    return None;
+                }
+                Some(if message.done {
+                    ThreadEventKind::Done.as_str()
+                } else {
+                    AGENT_MESSAGE_REASON
+                })
+            }
+        }
+    }
+
+    pub fn class(&self) -> EventClass {
+        match self.attention_reason() {
+            Some(_) => EventClass::Attention,
+            None => EventClass::Status,
+        }
+    }
+}
+
+/// What an entry says about itself in the inbox: whether anything has needed
+/// the human since they last read the conversation, how much, and why.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnreadSummary {
+    pub count: u64,
+    /// The newest attention item's kind. `None` exactly when `count` is 0.
+    pub reason: Option<&'static str>,
+}
+
+impl UnreadSummary {
+    pub fn is_unread(&self) -> bool {
+        self.count > 0
     }
 }
 
@@ -732,6 +915,27 @@ impl Thread {
             .unwrap_or(0)
     }
 
+    /// The attention-class items created after `cursor` — the whole of the
+    /// unread rule.
+    ///
+    /// Creation sequence, never the in-place mutation bump: marking a message
+    /// seen or resolving a comment moves an item's `updated_sequence`, and
+    /// neither is new news. A status-only stretch of conversation leaves the
+    /// entry read, however long it is.
+    pub fn unread_since(&self, cursor: u64) -> UnreadSummary {
+        let unread = self
+            .items
+            .iter()
+            .filter(|item| item.sequence() > cursor)
+            .filter_map(ThreadItem::attention_reason);
+        let mut summary = UnreadSummary::default();
+        for reason in unread {
+            summary.count += 1;
+            summary.reason = Some(reason);
+        }
+        summary
+    }
+
     /// Bounded summary for list surfaces: identity plus counters and the
     /// latest event, never message bodies or the item array, so the polled
     /// board payload stops growing with conversation length.
@@ -833,6 +1037,135 @@ impl ArtifactKind {
             ArtifactKind::Plan => "plan",
             ArtifactKind::Diff => "diff",
         }
+    }
+}
+
+#[cfg(test)]
+mod attention_class_tests {
+    use super::*;
+
+    #[test]
+    fn every_event_kind_names_itself_the_way_it_serializes() {
+        for kind in ThreadEventKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                json!(kind.as_str()),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// The split the whole inbox rests on: an agent handing back needs the
+    /// human, the work happening does not.
+    #[test]
+    fn handing_back_is_attention_and_working_is_status() {
+        for kind in [
+            ThreadEventKind::Done,
+            ThreadEventKind::Blocked,
+            ThreadEventKind::ReviewBlocked,
+            ThreadEventKind::RunFailed,
+            ThreadEventKind::StageFailed,
+            ThreadEventKind::RecoveryFailed,
+            ThreadEventKind::IdleUnreported,
+            ThreadEventKind::Interrupted,
+            ThreadEventKind::Merged,
+            ThreadEventKind::Abandoned,
+        ] {
+            assert_eq!(kind.class(), EventClass::Attention, "{kind:?}");
+        }
+        for kind in [
+            ThreadEventKind::RunStarted,
+            ThreadEventKind::SessionStarted,
+            ThreadEventKind::SessionEnded,
+            ThreadEventKind::Committed,
+            ThreadEventKind::Pushed,
+            ThreadEventKind::RevisionCreated,
+            ThreadEventKind::StageStarted,
+            ThreadEventKind::StageCompleted,
+            ThreadEventKind::StageApproved,
+            ThreadEventKind::StageInvalidated,
+            ThreadEventKind::ImplementationStarted,
+            ThreadEventKind::WorktreeCreated,
+            ThreadEventKind::RecoveryStarted,
+        ] {
+            assert_eq!(kind.class(), EventClass::Status, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn an_agent_reply_needs_reading_and_its_own_words_never_do() {
+        let mut thread = Thread::new("run-1");
+        thread.post_user("please rename the helper", None, "2026-08-13T09:00:00Z");
+        thread.post_agent_progress("still digging", None, "2026-08-13T09:01:00Z");
+        thread.post_agent("renamed it, here is why", None, "2026-08-13T09:02:00Z");
+
+        let reasons: Vec<Option<&str>> = thread
+            .items
+            .iter()
+            .map(ThreadItem::attention_reason)
+            .collect();
+        assert_eq!(reasons, vec![None, None, Some(AGENT_MESSAGE_REASON)]);
+    }
+
+    #[test]
+    fn a_completion_message_reads_as_done_not_as_one_more_agent_message() {
+        let mut thread = Thread::new("run-1");
+        thread.post_completion("implemented the change", "2026-08-13T09:00:00Z");
+        assert_eq!(thread.items[0].attention_reason(), Some("done"));
+    }
+
+    #[test]
+    fn unread_counts_only_attention_items_past_the_cursor() {
+        let mut thread = Thread::new("run-1");
+        thread.push_event(
+            ThreadEventKind::RunStarted,
+            None,
+            None,
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+        let cursor = thread.last_sequence();
+        thread.push_event(
+            ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            "2026-08-13T09:01:00Z",
+        );
+        thread.post_user("a note of my own", None, "2026-08-13T09:02:00Z");
+        assert_eq!(thread.unread_since(cursor), UnreadSummary::default());
+        assert!(!thread.unread_since(cursor).is_unread());
+
+        thread.post_agent("here is the answer", None, "2026-08-13T09:03:00Z");
+        thread.push_event(
+            ThreadEventKind::Blocked,
+            None,
+            None,
+            None,
+            "2026-08-13T09:04:00Z",
+        );
+        let unread = thread.unread_since(cursor);
+        assert_eq!(unread.count, 2);
+        assert_eq!(unread.reason, Some("blocked"), "the newest one says why");
+        assert!(unread.is_unread());
+
+        // Reading through the whole conversation empties it.
+        assert_eq!(
+            thread.unread_since(thread.last_sequence()),
+            UnreadSummary::default()
+        );
+    }
+
+    /// A message marked seen bumps its `updated_sequence`; that is bookkeeping
+    /// for the cursored polls, not news, and must not resurrect an unread badge.
+    #[test]
+    fn marking_a_message_seen_does_not_make_the_entry_unread_again() {
+        let mut thread = Thread::new("run-1");
+        thread.post_agent("here is the answer", None, "2026-08-13T09:00:00Z");
+        thread.post_user("thanks", None, "2026-08-13T09:01:00Z");
+        let cursor = thread.last_sequence();
+        thread.read_unread("2026-08-13T09:02:00Z");
+        assert_eq!(thread.unread_since(cursor), UnreadSummary::default());
     }
 }
 

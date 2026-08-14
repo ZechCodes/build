@@ -4,6 +4,7 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
+import { inboxListRouteChanged, mountInboxList } from "./inboxView.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
@@ -43,12 +44,14 @@ export function initInboxRail() {
   $("#inbox-collapse").onclick = () => setInboxCollapsed(true);
   $("#inbox-open").onclick = () => setInboxCollapsed(false);
   $("#inbox-scrim").onclick = () => setInboxCollapsed(true);
+  mountInboxList();
   inboxRouteChanged();
 }
 
-/** Keep the rail tracking the route (the account entry today; the entry list
- *  once the inbox view owns it). */
+/** Keep the rail tracking the route: the account entry at its foot, and the
+ *  entry the route is standing on in the list. */
 export function inboxRouteChanged() {
   const account = $("#nav-account");
   if (account) account.classList.toggle("active", App.route.name === "account");
+  inboxListRouteChanged();
 }

@@ -47,6 +47,53 @@ body.inbox-collapsed #inbox-rail { display:none; }
 body.inbox-collapsed #inbox-open { display:block; }
 #inbox-scrim { display:none; }
 
+/* ---- inbox entries ----
+   One list across every project, so a row has to carry its own context: what
+   the work is, which project it lives in, why it needs you, and what it has
+   been doing. The row shell (.srow, .stitle, .badge, .warn) is the shared
+   vocabulary in styles.css; only what the inbox adds lives here. */
+.inbox-entry { align-items:flex-start; gap:8px; padding:7px 6px; margin-bottom:1px; }
+.inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.inbox-entry .sdot { margin-top:5px; }
+.inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
+.inbox-line .stitle { font-size:13px; }
+.inbox-line .badge { flex:none; }
+.inbox-where { gap:8px; font-size:11.5px; color:var(--dim); }
+.inbox-tag { flex:none; max-width:38%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; color:var(--ink2); }
+.inbox-mark { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.inbox-reason { font-size:12px; color:var(--amber); }
+.inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* A muted entry keeps its place and its live status, and stops shouting. */
+.inbox-muted { opacity:.62; }
+.inbox-muted .inbox-reason { color:var(--dim); }
+/* A checkout with no branch is on no URL, so its row opens nothing. */
+.inbox-unroutable { cursor:default; }
+.inbox-entry .warn { font-size:11px; }
+.inbox-entry .warn[hidden] { display:none; }
+
+/* The three states the dot says, in the inbox's own vocabulary: a pulse ONLY
+   while an agent works, amber while something waits on you, quiet once read.
+   (sdot-pulse is defined beside the shared dot in styles.css.) */
+.sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
+.sdot-unread { background:var(--amber); }
+.sdot-inactive { background:var(--line); border:1px solid var(--dim); }
+@media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
+
+/* Done and the ⋯ menu: the row's actions, quiet until the row is hovered or
+   the work is finishable. The menu reuses the split button's popover. */
+.inbox-actions { flex:none; position:relative; display:flex; align-items:center; gap:2px;
+  margin-top:1px; }
+.inbox-more { opacity:0; }
+.inbox-entry:hover .inbox-more, .inbox-entry.active .inbox-more, .inbox-more:focus-visible,
+.inbox-actions:has(.inbox-menu:not([hidden])) .inbox-more { opacity:1; }
+/* The rail's rows are near the top of the viewport, so the menu drops rather
+   than rises, and stays on the row's right edge at every width. */
+.inbox-menu { top:calc(100% + 4px); bottom:auto; right:0; left:auto; min-width:200px; }
+.inbox-clear { font-size:12.5px; margin:14px 8px; }
+
 /* ---- view column (centre) ---- */
 #view {
   display:grid;

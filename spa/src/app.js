@@ -2,7 +2,6 @@
 
 import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute } from "./core/router.js";
-import { loadReadIds, persistReadIds } from "./core/readState.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderIssue } from "./views/issueView.js";
@@ -19,7 +18,11 @@ export const App = {
   route: { name: "inbox" },
   poll: null,
   viewDispose: null, // the current view's teardown (terminal panes, observers)
-  readIds: loadReadIds(localStorage), // persisted; pruned against the feed each tick
+  // Read state is the bridge's: an entity keeps a per-user cursor and
+  // `entity.seen` advances it (core/inboxView.js). Nothing about what has been
+  // read is kept on this device any more; this empty set only keeps the
+  // pre-redesign surfaces that still ask compiling until they are deleted.
+  readIds: new Set(),
   offline: false,
   offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
 
@@ -42,12 +45,10 @@ export async function loadModelCatalog() {
   return App.modelCatalog;
 }
 
-/** Mark one entity read (visiting its surface counts as reading it) and
- *  persist. Badges pick the change up on the next feed tick. */
+/** Vestigial: the same pre-redesign surfaces call this when they open. The
+ *  bridge is told an entry was read by `entity.seen`, from the inbox. */
 export function markEntityRead(id) {
-  if (!id || App.readIds.has(id)) return;
-  App.readIds.add(id);
-  persistReadIds(App.readIds, localStorage);
+  if (id) App.readIds.add(id);
 }
 
 export function rememberSelectedDevice(deviceId) {

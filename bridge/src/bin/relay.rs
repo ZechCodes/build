@@ -253,7 +253,12 @@ async fn serve(
         // bridge stops doing while its heartbeat task keeps writing. The device
         // loop enforces the pong deadline; browsers pong from the WS stack and
         // are not held to it.
-        let mut ping = tokio::time::interval(ping_interval);
+        //
+        // The first ping waits a full interval: a peer that just completed the
+        // handshake has proven liveness, and pinging at spawn races the
+        // `authenticated` greeting for the sink — the greeting must go first.
+        let mut ping =
+            tokio::time::interval_at(tokio::time::Instant::now() + ping_interval, ping_interval);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let message = tokio::select! {

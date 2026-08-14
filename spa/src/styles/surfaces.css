@@ -47,6 +47,33 @@
 .csgeneral { min-height:62px; }
 .csfeedback .cslist:empty { display:none; }
 
+/* ---- the tail of a reading column ------------------------------------------
+   Both work surfaces end their scrolling column with the shared sticky
+   actionbar, so while there is more to read the bar floats over the tail of
+   what is written above it. The primitive's gradient fades to nothing across
+   the bar's own box, which puts the hint and whatever is passing under it in
+   the same pixels — a file header reads through the words that describe what to
+   do with it. Here the bar is opaque over itself and does its fading ABOVE, in
+   a band of the page's own colour, so nothing is ever half-legible under it.
+   (Both columns, one rule: the two surfaces measure the same everywhere else.)
+
+   `scroll-padding-bottom` is the other half: a jump to an anchor — a comment,
+   a stage's heading — stops with the target clear of the bar rather than
+   underneath it. It is the bar's height plus the room the column already pays
+   at its foot. */
+.gitpane .cdetail-host > .actionbar, .issueview .ivviewer > .actionbar {
+  background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
+}
+/* A sticky box cannot travel past its parent's content box, so a column that
+   pays its scroll-end room as bottom padding pins the bar that many pixels
+   above the floor and leaves a strip of the diff scrolling past underneath it.
+   The room moves to the tail itself: the column ends where it is read, and a
+   changeset that ends WITHOUT a bar still gets its last line off the frame. */
+.gitpane .cdetail-host, .issueview .ivviewer { padding-bottom:0;
+  scroll-padding-bottom:calc(var(--pane-bottom) + 58px); }
+.gitpane .cdetail-host > :last-child:not(.actionbar),
+.issueview .ivviewer > :last-child:not(.actionbar) { margin-bottom:var(--pane-bottom); }
+
 /* ---- work surfaces: the issue view -----------------------------------------
    Stages | stage viewer, persistent: the list is a rail the way the commit list
    is a rail, and the viewer is the reading column beside it. Same primitive as

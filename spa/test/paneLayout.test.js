@@ -506,3 +506,43 @@ describe("tab layout primitives", () => {
     expect(bare.body).not.toMatch(/content-max/);
   });
 });
+
+// The work surfaces' reading columns end with the shared sticky actionbar, and
+// a sticky box cannot travel past its parent's content box: scroll-end room
+// paid as the column's bottom padding pins the bar that far above the floor and
+// leaves a strip of the diff scrolling past underneath it. These rules live in
+// styles/surfaces.css — the columns are the surfaces' own, not the primitive's.
+describe("the tail of a reading column", () => {
+  const surfacesSource = readFileSync(
+    fileURLToPath(new URL("../src/styles/surfaces.css", import.meta.url)),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
+  const surfaceRules = () =>
+    [...surfacesSource.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)].map((match) => ({
+      selector: match[1].trim().replace(/\s+/g, " "),
+      body: match[2].trim(),
+    }));
+  const COLUMNS = [".gitpane .cdetail-host", ".issueview .ivviewer"];
+
+  it("pays its scroll-end room on the tail, not on the column", () => {
+    const [column] = surfaceRules().filter(
+      (rule) => rule.selector.split(",").map((part) => part.trim()).join(",") === COLUMNS.join(","),
+    );
+    expect(column).toBeTruthy();
+    expect(declaration(column.body, "padding-bottom")).toBe("0");
+    const [tail] = surfaceRules().filter((rule) => rule.selector.includes(":last-child:not(.actionbar)"));
+    expect(tail).toBeTruthy();
+    expect(declaration(tail.body, "margin-bottom")).toBe("var(--pane-bottom)");
+    for (const column of COLUMNS) expect(tail.selector).toContain(column);
+  });
+
+  it("makes the bar opaque over itself and fades above it", () => {
+    // The primitive's gradient fades to nothing across the bar's own box, which
+    // puts the hint and whatever is passing under it in the same pixels.
+    const [bar] = surfaceRules().filter((rule) => rule.selector.includes("> .actionbar"));
+    expect(bar).toBeTruthy();
+    expect(declaration(bar.body, "background")).toBe("var(--bg)");
+    expect(declaration(bar.body, "box-shadow")).toMatch(/var\(--bg\)$/);
+    for (const column of COLUMNS) expect(bar.selector).toContain(column);
+  });
+});

@@ -240,3 +240,38 @@ describe("comments on any changeset", () => {
     pane.dispose();
   });
 });
+
+describe("the poll freeze holds a review in progress", () => {
+  it("leaves a pending comment (and its tray) alone when the diff moves underneath", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let served = dirtyStatus();
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const callRpc = vi.fn(async (method) => {
+        if (method === "git.status") return served;
+        if (method === "git.log") return log();
+        if (method === "run.request_changes") return { ok: true };
+        return {};
+      });
+      const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
+      await settle();
+      await click(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
+      await click(document.querySelector(".cp-add"));
+      document.querySelector(".cp-input").value = "hold this thought";
+      await click(document.querySelector(".cp-save"));
+      expect(container.querySelector(".pcomment")).toBeTruthy();
+
+      // The agent commits underneath the reviewer: the poll must not rebuild
+      // the changeset out from under the pending comment.
+      served = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+      expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
+      expect(container.textContent).not.toContain("the agent moved on");
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

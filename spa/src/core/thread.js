@@ -32,6 +32,9 @@ const EVENT_META = {
   stage_completed: { label: "Stage completed", icon: "✓", tone: "success" },
   stage_invalidated: { label: "Stage marked incomplete", icon: "!", tone: "blocked" },
   implementation_archived: { label: "Implementation archived", icon: "■" },
+  // A pass that only orders the diff for review: it carries no tone, because
+  // it asks the reviewer for nothing.
+  triaged: { label: "Diff ordered for review", icon: "≡" },
   committed: { label: "Changes committed", icon: "◆", tone: "success" },
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },

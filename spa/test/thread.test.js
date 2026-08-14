@@ -76,6 +76,25 @@ describe("conversation thread rendering", () => {
     ]);
   });
 
+  // The bridge sends a `triaged` event when a review-prioritization pass
+  // finishes. It is status, not a hand-back, so it reads as a fact about the
+  // diff and carries none of the tone a blocked or done entry does.
+  it("names a triage pass rather than falling back to its wire token", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: { event: "triaged", summary: "the crypto change carries the risk" },
+        },
+      ],
+    });
+    const entry = document.querySelector(".thread-event");
+    expect(entry.textContent).toContain("Diff ordered for review");
+    expect(entry.textContent).toContain("the crypto change carries the risk");
+    expect(entry.classList.contains("blocked")).toBe(false);
+    expect(entry.classList.contains("success")).toBe(false);
+  });
+
   it("renders a done-flagged send like any other message after the done entry", () => {
     const html = threadHtml(
       {

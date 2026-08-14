@@ -104,11 +104,15 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:minmax\(0, 1fr\) auto/);
   });
 
-  it("gives the gate the whole frame", () => {
-    const gated = shellCss.match(/body\.gated[^{]*\{[^}]*\}/)[0];
-    for (const region of ["#inbox-rail", "#inbox-open", "#toolbar", "#agent-rail", "#console-region"]) {
-      expect([region, gated.includes(region)]).toEqual([region, true]);
+  it("gives the gate the whole frame, keeping only the compose box", () => {
+    const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
+    for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region", "#inbox-list", ".inbox-foot"]) {
+      expect([region, hidden.includes(region)]).toEqual([region, true]);
     }
+    // Capture works before a device does, so the rail survives the gate as the
+    // carrier for that one control — and takes up no room doing it.
+    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*width:0/);
+    expect(shellCss).toMatch(/body\.gated #compose \{[^}]*position:fixed/);
   });
 
   it("overlays the inbox on a narrow viewport, the way the rail it replaces did", () => {

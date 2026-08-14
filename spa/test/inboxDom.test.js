@@ -9,12 +9,16 @@ import { resolve } from "node:path";
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 let feedItems = [];
+const feedProjects = [
+  { id: "p1", name: "relaydb" },
+  { id: "p2", name: "dotfiles" },
+];
 let subscriber = null;
-const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems }));
+const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     subscriber = fn;
-    fn({ items: feedItems });
+    fn({ items: feedItems, projects: feedProjects });
     return () => {};
   },
   startFeed: () => {},
@@ -95,7 +99,7 @@ const issueRow = (over = {}) => ({
 /** Repaint the rail from a fresh set of rows. */
 const feed = (items) => {
   feedItems = items;
-  subscriber({ items });
+  subscriber({ items, projects: feedProjects });
 };
 
 beforeEach(async () => {
@@ -239,5 +243,132 @@ describe("the inbox rail", () => {
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: false });
     expect(location.hash).toBe("");
+  });
+});
+
+// ---- captures ----------------------------------------------------------------
+// A capture on the rail is a route in progress. The row is where routing is
+// made visible and reversible: it answers the router, retries a route that gave
+// up, and sends a capture somewhere else.
+
+const captureFeedRow = (over = {}) => ({
+  kind: "capture",
+  capture_id: "capture-1",
+  project_id: "",
+  project: "",
+  branch: null,
+  issue_id: null,
+  title: "fix the login redirect",
+  text: "fix the login redirect",
+  state: "routing",
+  created_at: new Date().toISOString(),
+  resume_at: new Date().toISOString(),
+  unread: false,
+  unread_count: 0,
+  unread_reason: null,
+  working: true,
+  working_time: null,
+  agents: [],
+  stat: null,
+  can_finish: false,
+  muted: false,
+  worktree_path: null,
+  worktree_id: null,
+  run_id: null,
+  primary: false,
+  routing: null,
+  question: null,
+  ...over,
+});
+
+const captureRowFor = (id) => document.querySelector(`.capture-entry[data-capture="${id}"]`);
+
+describe("captures on the rail", () => {
+  it("shows a capture the router is still deciding, and never asks the daemon to read it", async () => {
+    feed([captureFeedRow()]);
+    const row = captureRowFor("capture-1");
+    expect(row.textContent).toContain("Deciding where this goes");
+    row.click();
+    await flush();
+    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+  });
+
+  it("opens a routed capture where it was routed", async () => {
+    feed([
+      captureFeedRow({
+        state: "routed",
+        project_id: "p1",
+        project: "relaydb",
+        issue_id: "iss-9",
+        routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+        question: { text: "which project?", asked_at: "t", answer: null },
+        unread: true,
+        unread_count: 1,
+        unread_reason: "router_question",
+      }),
+    ]);
+    captureRowFor("capture-1").click();
+    await flush();
+    expect(location.hash).toBe("#/project/p1/issue/iss-9");
+  });
+
+  it("answers the router's question from the row", async () => {
+    feed([
+      captureFeedRow({
+        state: "unrouted",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "router_question",
+        question: { text: "Which project?", asked_at: "t", answer: null },
+      }),
+    ]);
+    const row = captureRowFor("capture-1");
+    row.querySelector("[data-capture-answer]").value = "the relay";
+    row.querySelector("[data-capture-answer-send]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", text: "the relay" });
+    expect(refreshFeed).toHaveBeenCalled();
+  });
+
+  it("re-fires the router on a route that gave up", async () => {
+    feed([captureFeedRow({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed" })]);
+    captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1" });
+  });
+
+  it("sends a capture somewhere else through the picker on its row", async () => {
+    feed([
+      captureFeedRow({
+        state: "routed",
+        project_id: "p1",
+        project: "relaydb",
+        issue_id: "iss-9",
+        routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+        question: { text: "which project?", asked_at: "t", answer: null },
+        unread: true,
+        unread_reason: "router_question",
+      }),
+    ]);
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    const picker = captureRowFor("capture-1").querySelector(".reroute-menu");
+    expect(picker).toBeTruthy();
+    picker.querySelector('[data-reroute-project="p2"][data-reroute-kind="branch"]').click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "branch" });
+  });
+
+  it("says on the row when a reroute is refused", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.reroute") throw new Error("unknown project_id: p2");
+      return { ok: true };
+    });
+    feed([captureFeedRow({ state: "failed", unread: true, unread_reason: "routing_failed" })]);
+    captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    const error = captureRowFor("capture-1").querySelector("[data-capture-error]");
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toContain("unknown project_id");
   });
 });

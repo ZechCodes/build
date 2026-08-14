@@ -19,14 +19,19 @@ import {
   unlinkDisclosure,
 } from "./inbox.js";
 import { goFromInbox } from "./inboxShell.js";
+import { mergeCaptureRows } from "./compose.js";
+import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 
 let items = [];
+let projects = [];
 let entries = [];
 let openMenuKey = null;
+let rerouteKey = null; // the capture row whose destination picker is open
 const dismissed = new Set(); // entity ids the user just said Done to
 const busy = new Set(); // entity ids with a mutation in flight
 const errors = new Map(); // entity id → the message its row is showing
+const captureErrors = new Map(); // capture id → the message its row is showing
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
@@ -55,14 +60,19 @@ export function noteSelfAction(...entityIds) {
 function draw() {
   const list = $("#inbox-list");
   if (!list) return;
-  entries = inboxEntries({ items, nowMs: Date.now(), dismissed });
+  // The captures this client is holding or watching stand beside the daemon's
+  // own rows; the daemon's copy wins wherever both name the same capture.
+  entries = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
   const scroll = list.scrollTop;
   list.innerHTML = inboxListHtml(entries, {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
+    rerouteKey,
+    projects,
   });
   list.scrollTop = scroll;
   wire(list);
+  wireCaptures(list);
   paintErrors(list);
 }
 
@@ -70,10 +80,9 @@ function draw() {
  *  path), so rows are matched by reading their id back, never by building a
  *  selector out of it. */
 function paintErrors(list) {
-  if (!errors.size) return;
   list.querySelectorAll(".inbox-entry").forEach((row) => {
-    const message = errors.get(row.dataset.entity);
-    const slot = message && row.querySelector("[data-done-error]");
+    const message = errors.get(row.dataset.entity) || captureErrors.get(row.dataset.capture);
+    const slot = message && row.querySelector("[data-done-error], [data-capture-error]");
     if (!slot) return;
     slot.textContent = message;
     slot.hidden = false;
@@ -92,7 +101,7 @@ function wire(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
     row.onclick = (event) => {
       // The row's own controls answer for themselves.
-      if (event.target.closest("[data-done], [data-menu], [data-mute]")) return;
+      if (event.target.closest("[data-done], [data-menu], [data-mute], .capture-question, .inbox-actions")) return;
       openEntry(entryOf(row.dataset.key));
     };
   });
@@ -125,6 +134,91 @@ function wire(list) {
       }
     };
   });
+}
+
+// ---- capture rows -------------------------------------------------------------
+//
+// The three things a user can do to a route: answer the question that is
+// holding it up, retry one that gave up, and send the capture somewhere else.
+// All three go through the daemon's own capture verbs — a reroute by hand and a
+// route by the router are the same kind of thing afterwards.
+
+function wireCaptures(list) {
+  list.querySelectorAll("[data-capture-answer-send]").forEach((control) => {
+    const captureId = control.dataset.captureAnswerSend;
+    // The field is found through the row, never through a selector built out of
+    // an id the daemon minted.
+    const field = control.closest(".capture-entry").querySelector("[data-capture-answer]");
+    control.onclick = (event) => {
+      event.stopPropagation();
+      answerCapture(captureId, field ? field.value : "");
+    };
+    if (field) {
+      field.onkeydown = (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        answerCapture(captureId, field.value);
+      };
+    }
+  });
+  list.querySelectorAll("[data-capture-retry]").forEach((control) => {
+    control.onclick = (event) => {
+      event.stopPropagation();
+      rerouteCapture(control.dataset.captureRetry, null);
+    };
+  });
+  list.querySelectorAll("[data-capture-reroute]").forEach((control) => {
+    control.onclick = (event) => {
+      event.stopPropagation();
+      const key = `capture:${control.dataset.captureReroute}`;
+      rerouteKey = rerouteKey === key ? null : key;
+      draw();
+    };
+  });
+  list.querySelectorAll("[data-reroute-project]").forEach((control) => {
+    control.onclick = (event) => {
+      event.stopPropagation();
+      const captureId = control.closest(".capture-entry").dataset.capture;
+      rerouteKey = null;
+      rerouteCapture(captureId, { projectId: control.dataset.rerouteProject, kind: control.dataset.rerouteKind });
+    };
+  });
+}
+
+async function answerCapture(captureId, raw) {
+  const text = String(raw || "").trim();
+  if (!text || busy.has(captureId)) return;
+  busy.add(captureId);
+  captureErrors.delete(captureId);
+  try {
+    await App.call("capture.answer", { capture_id: captureId, text });
+    await refreshFeed();
+  } catch (error) {
+    captureErrors.set(captureId, messageOf(error));
+  } finally {
+    busy.delete(captureId);
+    draw();
+  }
+}
+
+/** With a destination this routes by hand; with none it re-fires the router,
+ *  which is what the retry on a failed route is. */
+async function rerouteCapture(captureId, destination) {
+  if (busy.has(captureId)) return;
+  busy.add(captureId);
+  captureErrors.delete(captureId);
+  try {
+    await App.call(
+      "capture.reroute",
+      destination ? { capture_id: captureId, project_id: destination.projectId, kind: destination.kind } : { capture_id: captureId },
+    );
+    await refreshFeed();
+  } catch (error) {
+    captureErrors.set(captureId, messageOf(error));
+  } finally {
+    busy.delete(captureId);
+    draw();
+  }
 }
 
 /** Opening an entry reads it — every agent on it — and goes where it lives. */
@@ -214,8 +308,10 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
+  subscribePendingCaptures(draw);
   subscribeFeed((feed) => {
     items = feed.items || [];
+    projects = feed.projects || [];
     // A stale poll while git cleanup runs keeps the dismissed row hidden. Once
     // a feed no longer carries it, the daemon has caught up and the suppression
     // (and any error it left) can be forgotten.

@@ -22,6 +22,7 @@ import {
   refreshDevices,
 } from "./devices.js";
 import { retargetTerminals } from "./terminal/manager.js";
+import { flushCaptures } from "./core/composeView.js";
 import { offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -53,6 +54,12 @@ export function adoptSession(session) {
   App.session = session;
   App.call = session.call;
   paintDevicePicker();
+  // Every live session starts here — the gate's first one, a reconnect, a
+  // device switch — so this is where captures taken with no device to send them
+  // to are handed over.
+  flushCaptures().catch(() => {
+    /* still unreachable: the queue keeps them for the next session */
+  });
 }
 
 function restoreOnline() {

@@ -16,6 +16,9 @@
  */
 export function entityIdOf(row) {
   if (!row) return null;
+  // A capture is not an entity: it holds no conversation, keeps no read cursor,
+  // and names the issue it was routed to — which belongs to the issue's own row.
+  if (row.kind === "capture") return null;
   if (row.kind === "issue") return row.issue_id || null;
   return row.run_id || row.worktree_id || row.issue_id || null;
 }

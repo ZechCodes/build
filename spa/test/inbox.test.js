@@ -261,3 +261,125 @@ describe("the Done confirmations", () => {
     expect(disclosure.confirmLabel.toLowerCase()).toContain("branch");
   });
 });
+
+// ---- captures ----------------------------------------------------------------
+// A capture is unfinished business until the router reaches a destination, so
+// it is a row of the inbox like anything else — with its own states, and the
+// two things a user can do about a route: answer, and send it somewhere else.
+
+const captureItem = (over = {}) => ({
+  kind: "capture",
+  capture_id: "capture-1",
+  project_id: "",
+  project: "",
+  branch: null,
+  issue_id: null,
+  title: "fix the login redirect",
+  text: "fix the login redirect",
+  state: "routing",
+  created_at: ago(0),
+  resume_at: ago(0),
+  unread: false,
+  unread_count: 0,
+  unread_reason: null,
+  working: true,
+  working_time: null,
+  agents: [],
+  stat: null,
+  can_finish: false,
+  muted: false,
+  worktree_path: null,
+  worktree_id: null,
+  run_id: null,
+  primary: false,
+  routing: null,
+  question: null,
+  ...over,
+});
+
+describe("capture rows", () => {
+  const entryOf = (item) => inboxEntries({ items: [item], nowMs: NOW })[0];
+
+  it("name themselves by the capture, never by the destination it was routed to", () => {
+    const entry = entryOf(captureItem({ state: "routed", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" }, issue_id: "iss-9" }));
+    expect(entry.key).toBe("capture:capture-1");
+    expect(entry.entityId).toBeNull(); // a capture takes no attention cursor and no mute
+  });
+
+  it("read as working while nothing has decided about them yet", () => {
+    expect(entryOf(captureItem({ state: "queued" })).state).toBe("working");
+    expect(entryOf(captureItem({ state: "unrouted" })).state).toBe("working");
+    expect(entryOf(captureItem({ state: "routing" })).state).toBe("working");
+  });
+
+  it("say what is happening to them, in the order it happens", () => {
+    expect(inboxRowHtml(entryOf(captureItem({ state: "queued" })), {})).toContain("Waiting for your device");
+    expect(inboxRowHtml(entryOf(captureItem({ state: "routing" })), {})).toContain("Deciding where this goes");
+    expect(inboxRowHtml(entryOf(captureItem({ state: "routing" })), {})).toContain("capture-spinner");
+  });
+
+  it("say where a routed capture went, and offer to send it somewhere else", () => {
+    const entry = entryOf(
+      captureItem({
+        state: "routed",
+        project: "relaydb",
+        routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+        issue_id: "iss-9",
+      }),
+    );
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("→ relaydb as issue");
+    expect(html).toContain('data-capture-reroute="capture-1"');
+  });
+
+  it("offer a retry, and nothing else, when routing failed", () => {
+    const entry = entryOf(captureItem({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed" }));
+    expect(entry.state).toBe("unread");
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("Routing failed");
+    expect(html).toContain('data-capture-retry="capture-1"');
+    expect(html).not.toContain("data-capture-answer");
+  });
+
+  it("ask the router's question on the row, and take the answer there", () => {
+    const entry = entryOf(
+      captureItem({
+        state: "unrouted",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "router_question",
+        question: { text: "Which project is the login redirect in?", asked_at: ago(0), answer: null },
+      }),
+    );
+    expect(entry.reason).toBe("Which project is the login redirect in?");
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("Which project is the login redirect in?");
+    expect(html).toContain('data-capture-answer="capture-1"');
+    expect(html).toContain('data-capture-answer-send="capture-1"');
+  });
+
+  it("open the destination picker on the row that asked for it", () => {
+    const entry = entryOf(captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const projects = [{ id: "p1", name: "relaydb" }, { id: "p2", name: "dotfiles" }];
+    const html = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
+    expect(html).toContain('data-reroute-project="p2"');
+    expect(html).toContain('data-reroute-kind="issue"');
+    expect(html).toContain('data-reroute-kind="branch"');
+    expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
+  });
+
+  it("escape what the user said and what the router asked", () => {
+    const entry = entryOf(
+      captureItem({
+        title: '<img src=x onerror="alert(1)">',
+        state: "unrouted",
+        unread: true,
+        unread_reason: "router_question",
+        question: { text: '<script>alert(2)</script>', asked_at: ago(0), answer: null },
+      }),
+    );
+    const html = inboxRowHtml(entry, {});
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<script>");
+  });
+});

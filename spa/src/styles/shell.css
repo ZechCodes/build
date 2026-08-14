@@ -50,6 +50,53 @@ body.inbox-collapsed #inbox-rail { display:none; }
 body.inbox-collapsed #inbox-open { display:block; }
 #inbox-scrim { display:none; }
 
+/* ---- global compose ----
+   Pinned above the entries, on every route: what you want to get done goes in
+   here and the router decides where it goes. */
+#compose { flex:none; margin:0 0 8px; }
+.compose-prompt { width:100%; text-align:left; cursor:pointer;
+  background:var(--panel); border:1px solid var(--line); border-radius:9px;
+  padding:9px 10px; font-size:12.5px; color:var(--dim); }
+.compose-prompt:hover { border-color:var(--line2); color:var(--ink2); }
+.compose-box { background:var(--panel); border:1px solid var(--line2); border-radius:9px;
+  padding:8px; display:flex; flex-direction:column; gap:6px; }
+.compose-box textarea { width:100%; resize:vertical; font-size:12.5px; }
+.compose-row { display:flex; align-items:center; gap:6px; }
+.compose-row .btn { flex:none; }
+.compose-row .compose-disclose { margin-right:auto; }
+.compose-disclose { background:none; border:0; padding:0; cursor:pointer;
+  font-size:11.5px; color:var(--dim); text-align:left; }
+.compose-disclose:hover { color:var(--ink2); }
+.compose-note { font-size:11.5px; }
+.compose-error { font-size:11.5px; }
+.compose-error[hidden] { display:none; }
+.compose-advanced { border-top:1px solid var(--line); padding-top:8px;
+  display:flex; flex-direction:column; gap:5px; }
+.compose-advanced label, .agent-choice-fields label { font-size:11px; color:var(--dim); }
+.compose-advanced select, .compose-advanced input, .agent-choice-fields select { width:100%; font-size:12px; }
+.compose-kinds { display:flex; gap:6px; }
+.compose-manual { align-self:flex-start; }
+.agent-choice { display:flex; flex-direction:column; gap:5px; }
+.agent-choice-fields { display:flex; flex-direction:column; gap:4px; }
+.agent-choice-fields[hidden] { display:none; }
+
+/* ---- capture rows ----
+   A capture is a route in progress: what was said, what is happening to it, and
+   the two verbs that move it. */
+.capture-entry .capture-status { font-size:11.5px; gap:6px; }
+.capture-spinner { flex:none; width:9px; height:9px; border-radius:50%;
+  border:1.5px solid var(--line2); border-top-color:var(--accent);
+  animation:capture-spin 1s linear infinite; }
+@keyframes capture-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .capture-spinner { animation:none; } }
+.capture-question { display:flex; gap:6px; align-items:center; margin-top:4px; }
+.capture-question .capture-answer { flex:1; min-width:0; font-size:12px; }
+.capture-chip { cursor:pointer; }
+.reroute-menu { top:calc(100% + 4px); right:0; left:auto; bottom:auto; min-width:220px; padding:6px; }
+.reroute-project { display:flex; align-items:center; gap:8px; padding:4px 6px; }
+.reroute-project .mt { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
+.reroute-kinds { flex:none; display:flex; gap:4px; }
+
 /* ---- inbox entries ----
    One list across every project, so a row has to carry its own context: what
    the work is, which project it lives in, why it needs you, and what it has
@@ -309,13 +356,23 @@ body.inbox-collapsed #inbox-open { display:block; }
    beats the display each region states above. */
 #toolbar:empty, #console-region:empty, #agent-rail:empty { display:none; }
 
-/* ---- the gate owns the whole frame ---- */
-body.gated #inbox-rail,
+/* ---- the gate owns the whole frame, except compose ----
+   Compose works before a device does — what is said there is kept and sent when
+   one answers. So the rail stays as a zero-width carrier for that one control,
+   pinned over the gate screen, and everything else the shell owns is gone. */
 body.gated #inbox-open,
 body.gated #inbox-scrim,
 body.gated #toolbar,
 body.gated #agent-rail,
 body.gated #console-region { display:none !important; }
+body.gated #inbox-rail { width:0; padding:0; border-right:0; overflow:visible; background:none; }
+body.gated .inbox-head,
+body.gated #inbox-list,
+body.gated .inbox-foot { display:none !important; }
+body.gated #compose { position:fixed; z-index:50;
+  top:calc(10px + env(safe-area-inset-top, 0px));
+  left:calc(10px + env(safe-area-inset-left, 0px));
+  width:min(92vw, 320px); margin:0; }
 
 /* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
 @media (max-width: 900px) {

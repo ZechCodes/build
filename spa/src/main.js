@@ -14,6 +14,7 @@ import { registerPushWorker } from "./push.js";
 import { createVersionWatcher, fetchServedVersion, wireServiceWorkerUpdates } from "./core/version.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
+import { initCompose } from "./core/composeView.js";
 import { boot } from "./views/gate.js";
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
@@ -45,6 +46,9 @@ if (location.pathname.startsWith("/app")) {
 
 initRouter();
 initDevicePicker();
+// Before the gate: what you want to get done is worth keeping whether or not a
+// device is there to take it.
+initCompose();
 
 $(".logo").onclick = () => go({ name: "inbox" });
 $("#nav-account").onclick = () => go({ name: "account", page: "settings" });

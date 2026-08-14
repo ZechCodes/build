@@ -14,6 +14,7 @@ import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
+import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import {
   branchOptions,
@@ -412,6 +413,9 @@ export function initCompose() {
     syncTracked();
   });
   document.addEventListener("keydown", (event) => {
+    // A modal is a question in flight; opening a box behind it would answer
+    // neither.
+    if (isConfirmOpen()) return;
     if (composeShortcutFires(event)) {
       event.preventDefault();
       openCompose();

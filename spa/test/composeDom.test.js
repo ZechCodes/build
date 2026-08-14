@@ -118,6 +118,17 @@ describe("the c shortcut", () => {
     expect($("#compose-text")).toBeNull();
   });
 
+  it("stays shut behind a modal, which is a question already in flight", async () => {
+    const { confirmAction } = await import("../src/core/confirm.js");
+    const answered = confirmAction({ title: "Done?", intro: "", actions: [], confirmLabel: "Done" });
+    press("c");
+    expect($("#compose-text")).toBeNull();
+    document.querySelector("[data-confirm-cancel]").click();
+    await answered;
+    press("c");
+    expect($("#compose-text")).toBeTruthy();
+  });
+
   it("closes on Escape, keeping nothing that was not sent", () => {
     press("c");
     type("#compose-text", "half a thought");

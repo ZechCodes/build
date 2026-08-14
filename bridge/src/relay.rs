@@ -181,10 +181,68 @@ const LANE_QUEUE_DEPTH: usize = 64;
 /// The method that ends a terminal — and with it the terminal's ordered lane.
 const TERMINAL_CLOSE_METHOD: &str = "term.close";
 
+/// The read verbs whose answer is a snapshot of state the bridge already holds:
+/// asking twice in a row changes nothing and the two answers describe the same
+/// moment. Only these are folded together while they wait for a worker.
+///
+/// The list is explicit, never a prefix rule. `git.stash` and `git.status` share
+/// a namespace and nothing else, and a verb that changes something must run every
+/// time it is sent — folding two `git.commit` frames would drop a commit the
+/// human asked for. Adding a verb here is a claim that running it once for two
+/// callers is the same as running it twice; make that claim deliberately.
+const COALESCED_READ_METHODS: [&str; 4] = ["board.list", "project.list", "git.status", "git.log"];
+
+/// How many callers one fold may answer. A folded read costs no queue slot, so
+/// the fold needs its own bound or it becomes the unbounded growth the queue's
+/// limit exists to prevent. Well past what a real stall produces — a few browser
+/// tabs polling twice a second reach this only after minutes with no worker free —
+/// and past it a read simply queues on its own, where the queue holds the caller.
+const MAX_FOLDED_READS: usize = 256;
+
 /// One decrypted frame waiting for a handler.
 struct Job {
     sender: SessionSender,
     frame: Frame,
+}
+
+/// What identifies a read that can stand in for another: one client asking one
+/// question. `(session_id, method, params)`, with the params carried as their
+/// JSON text rather than a hash — a hash collision here would answer one request
+/// with another request's result, and the text is a few dozen bytes.
+type ReadKey = (String, String, String);
+
+/// The identical reads queued behind one worker, waiting to be answered together.
+struct FoldedRead {
+    /// The newest of them: the one whose handler actually runs. They ask the same
+    /// question of the same session, so any of them would do, and the newest is
+    /// the one whose arrival the answer is guaranteed to postdate.
+    sender: SessionSender,
+    frame: Frame,
+    /// The request id of every folded frame, in arrival order. Each one is
+    /// answered — see [`Dispatcher`] on why none of them may simply be dropped.
+    ids: Vec<Value>,
+}
+
+/// What became of a read offered to the fold.
+enum Folded {
+    /// It joined a fold already waiting; that fold's one answer covers it.
+    Joined,
+    /// It is the first of its kind: it now heads a fold that needs a queue slot.
+    Heads,
+    /// The fold it would have joined is full; it runs on its own. Boxed to keep
+    /// the enum small: the other two arms carry nothing and this one is the rare
+    /// case — only a fold already holding hundreds of callers reaches it.
+    Overflowed(Box<Job>),
+}
+
+/// What the shared queue carries.
+enum QueuedWork {
+    /// One frame, run on its own.
+    Frame(Job),
+    /// A place in line for a set of identical reads. The frames themselves wait
+    /// in [`Dispatcher::folded_reads`] until a worker takes this marker, so a
+    /// poll that arrives while its twin is still queued costs no queue slot.
+    FoldedRead(ReadKey),
 }
 
 /// What an ordered lane can be asked to do.
@@ -209,12 +267,33 @@ enum LaneMessage {
 /// `term_id` goes to a serial lane keyed by that terminal and that session, so a
 /// client's input and acks are handled in the order it sent them. Everything else
 /// is an independent request and runs concurrently.
+///
+/// Identical queued reads are folded together. The same stall left hundreds of
+/// `board.list` polls waiting, each answered with its own full recompute; now the
+/// second and later arrivals of a read already waiting for a worker join the one
+/// in front of them, and one compute answers them all.
+///
+/// **Answer every caller; never drop the older frame.** The browser correlates a
+/// reply by the per-call id it minted (`spa/src/core/session.js`: a `pending` map
+/// keyed by `r<n>`, each entry rejected by a 12 s timer). A dropped frame is not a
+/// request the client forgets about — it is one that hangs until that timer fires
+/// and surfaces as "board.list timed out". So the fold saves the *compute*, not
+/// the reply: the one result is pushed back once per waiting id.
+///
+/// A read that arrives after its twin has started running is not folded into it —
+/// it gets its own compute. The client asked at a moment the running answer
+/// predates, and serving a snapshot older than the question is how a board goes
+/// stale and stays stale.
 struct Dispatcher {
     handler: FrameHandler,
     /// The shared pool queue. Bounded: a full queue makes the read loop wait.
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::Sender<QueuedWork>,
     /// (session_id, term_id) → its serial lane.
     lanes: HashMap<(String, String), mpsc::Sender<LaneMessage>>,
+    /// The reads queued but not yet started, by what they ask. Shared with the
+    /// workers: a worker takes an entry out at the moment it starts computing,
+    /// which is exactly the moment further arrivals must stop joining it.
+    folded_reads: Arc<std::sync::Mutex<HashMap<ReadKey, FoldedRead>>>,
 }
 
 impl Dispatcher {
@@ -223,17 +302,30 @@ impl Dispatcher {
     }
 
     fn with_capacity(handler: FrameHandler, queue_depth: usize, workers: usize) -> Self {
-        let (jobs, rx) = mpsc::channel::<Job>(queue_depth.max(1));
+        let (jobs, rx) = mpsc::channel::<QueuedWork>(queue_depth.max(1));
         // One queue, many workers: whoever is free takes the next frame.
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let folded_reads: Arc<std::sync::Mutex<HashMap<ReadKey, FoldedRead>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
         for _ in 0..workers.max(1) {
             let rx = rx.clone();
             let handler = handler.clone();
+            let folded_reads = folded_reads.clone();
             tokio::spawn(async move {
                 loop {
-                    let job = rx.lock().await.recv().await;
-                    let Some(job) = job else { break };
-                    run_job(&handler, job).await;
+                    let work = rx.lock().await.recv().await;
+                    let Some(work) = work else { break };
+                    match work {
+                        QueuedWork::Frame(job) => run_job(&handler, job).await,
+                        QueuedWork::FoldedRead(key) => {
+                            // Taking the entry out is what closes the fold: from
+                            // here on, the same read queues afresh behind us.
+                            let folded = folded_reads.lock().unwrap().remove(&key);
+                            if let Some(folded) = folded {
+                                run_folded_read(&handler, folded).await;
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -241,27 +333,76 @@ impl Dispatcher {
             handler,
             jobs,
             lanes: HashMap::new(),
+            folded_reads,
         }
     }
 
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     async fn dispatch(&mut self, sender: SessionSender, frame: Frame) {
-        match ordered_lane(&sender, &frame) {
-            Some(key) => {
-                let closing = frame.payload.get("method").and_then(Value::as_str)
-                    == Some(TERMINAL_CLOSE_METHOD);
-                let lane = self.lane(key.clone());
-                let _ = lane.send(LaneMessage::Run(Job { sender, frame })).await;
-                if closing {
-                    // A terminal id is minted once and never reused, so its close
-                    // is the last frame its lane can carry. Letting the sender go
-                    // ends the lane as soon as it has run that close.
-                    self.lanes.remove(&key);
-                }
+        if let Some(key) = ordered_lane(&sender, &frame) {
+            let closing =
+                frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
+            let lane = self.lane(key.clone());
+            let _ = lane.send(LaneMessage::Run(Job { sender, frame })).await;
+            if closing {
+                // A terminal id is minted once and never reused, so its close
+                // is the last frame its lane can carry. Letting the sender go
+                // ends the lane as soon as it has run that close.
+                self.lanes.remove(&key);
             }
+            return;
+        }
+        let job = match read_key(&sender, &frame) {
+            Some(key) => match self.fold_into_queued_read(key.clone(), sender, frame) {
+                Folded::Joined => return, // an identical read is waiting; it answers both
+                Folded::Heads => {
+                    if self
+                        .jobs
+                        .send(QueuedWork::FoldedRead(key.clone()))
+                        .await
+                        .is_err()
+                    {
+                        // No workers left to take the marker: don't leave the
+                        // frames parked in a map nothing will ever drain.
+                        self.folded_reads.lock().unwrap().remove(&key);
+                    }
+                    return;
+                }
+                Folded::Overflowed(job) => *job,
+            },
+            None => Job { sender, frame },
+        };
+        let _ = self.jobs.send(QueuedWork::Frame(job)).await;
+    }
+
+    /// Join a read to an identical one already waiting for a worker, if there is
+    /// one and it has room.
+    fn fold_into_queued_read(&self, key: ReadKey, sender: SessionSender, frame: Frame) -> Folded {
+        let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+        let mut folded_reads = self.folded_reads.lock().unwrap();
+        match folded_reads.get_mut(&key) {
+            Some(waiting) if waiting.ids.len() < MAX_FOLDED_READS => {
+                waiting.ids.push(id);
+                // Run the newest frame of the fold, so the answer postdates the
+                // last question it answers.
+                waiting.sender = sender;
+                waiting.frame = frame;
+                Folded::Joined
+            }
+            // A full fold: this read takes a queue slot of its own, which is what
+            // puts the caller back under the queue's bound.
+            Some(_) => Folded::Overflowed(Box::new(Job { sender, frame })),
             None => {
-                let _ = self.jobs.send(Job { sender, frame }).await;
+                folded_reads.insert(
+                    key,
+                    FoldedRead {
+                        sender,
+                        frame,
+                        ids: vec![id],
+                    },
+                );
+                Folded::Heads
             }
         }
     }
@@ -341,6 +482,57 @@ fn ordered_lane(sender: &SessionSender, frame: &Frame) -> Option<(String, String
         .and_then(|params| params.get("term_id"))
         .and_then(Value::as_str)?;
     Some((sender.session_id().to_string(), term_id.to_string()))
+}
+
+/// What this frame asks, if it is a read whose answer can serve another caller
+/// asking the same thing. `None` for every other frame — including any read that
+/// names a `term_id`, which never reaches here (terminal traffic is a lane).
+///
+/// The params go into the key as their JSON text. `serde_json` orders object keys
+/// (its map is a `BTreeMap`), so two frames carrying the same params produce the
+/// same text; were that ever to stop holding, the only effect is a fold that does
+/// not happen — equal text always means equal params, never the reverse.
+fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
+    let method = frame.payload.get("method").and_then(Value::as_str)?;
+    if !COALESCED_READ_METHODS.contains(&method) {
+        return None;
+    }
+    let params = frame
+        .payload
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Some((
+        sender.session_id().to_string(),
+        method.to_string(),
+        params.to_string(),
+    ))
+}
+
+/// Run one read for every caller that asked it: compute once, then push that one
+/// result back under each waiting request id.
+async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
+    let FoldedRead { sender, frame, ids } = folded;
+    let handler = handler.clone();
+    let answering = sender.clone();
+    let answer = match tokio::task::spawn_blocking(move || handler(answering, frame)).await {
+        Ok(payload) => payload,
+        // The handler panicked (or the runtime is shutting down). Answer anyway:
+        // a client that never hears back waits forever.
+        Err(_) => json!({ "ok": false, "error": "handler failed" }),
+    };
+    for id in ids {
+        let mut for_caller = answer.clone();
+        match for_caller.as_object_mut() {
+            // The handler stamped the running frame's id; each caller needs its
+            // own, or its `pending` entry never resolves.
+            Some(payload) => {
+                payload.insert("id".into(), id);
+            }
+            None => continue,
+        }
+        sender.push(for_caller);
+    }
 }
 
 /// Run one handler on a blocking thread and send its answer back.
@@ -813,6 +1005,9 @@ mod dispatcher_tests {
 
     /// A flood parks in a bounded queue: once it is full the dispatch call waits
     /// instead of growing memory without end.
+    ///
+    /// Each frame here asks a different question (`page` differs), so none of them
+    /// folds into another — the bound is what is being tested, not the fold.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_full_queue_makes_the_caller_wait() {
         let blocked = Arc::new(AtomicBool::new(true));
@@ -830,7 +1025,10 @@ mod dispatcher_tests {
         for id in 0..3u64 {
             tokio::time::timeout(
                 Duration::from_millis(500),
-                dispatcher.dispatch(sender.clone(), request(id, "board.list", json!({}))),
+                dispatcher.dispatch(
+                    sender.clone(),
+                    request(id, "board.list", json!({ "page": id })),
+                ),
             )
             .await
             .expect("the worker and the queue take the first three");
@@ -838,7 +1036,10 @@ mod dispatcher_tests {
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(200),
-                dispatcher.dispatch(sender.clone(), request(3, "board.list", json!({})))
+                dispatcher.dispatch(
+                    sender.clone(),
+                    request(3, "board.list", json!({ "page": 3 }))
+                )
             )
             .await
             .is_err(),
@@ -848,12 +1049,65 @@ mod dispatcher_tests {
         blocked.store(false, Ordering::SeqCst);
         tokio::time::timeout(
             Duration::from_secs(5),
-            dispatcher.dispatch(sender, request(4, "board.list", json!({}))),
+            dispatcher.dispatch(sender, request(4, "board.list", json!({ "page": 4 }))),
         )
         .await
         .expect("a drained queue takes frames again");
         let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
         assert_eq!(answered["id"], 0, "the queued work still ran");
+    }
+
+    /// A fold costs no queue slot, so it must carry its own bound: without one, a
+    /// client stuck in a reconnect loop could park unbounded frames in it and get
+    /// back the memory growth the bounded queue exists to prevent. Past the cap a
+    /// read queues normally, where the queue's own limit holds the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fold_stops_growing_and_hands_the_overflow_back_to_the_queue() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let handler = counting_handler(gate.clone(), computed.clone(), started);
+        let mut dispatcher = Dispatcher::with_capacity(handler, 256, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-flood");
+
+        dispatcher
+            .dispatch(sender.clone(), request(0, "hold", json!({})))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("the only worker is busy");
+
+        let overflowing = MAX_FOLDED_READS as u64 + 2;
+        for id in 1..=overflowing {
+            dispatcher
+                .dispatch(sender.clone(), request(id, "board.list", json!({})))
+                .await;
+        }
+        // Read the fold while the worker is still held, but assert after letting
+        // it go: a `hold` handler left spinning by a panicking assertion hangs the
+        // whole test binary at runtime shutdown instead of failing.
+        let folded_now: usize = dispatcher
+            .folded_reads
+            .lock()
+            .unwrap()
+            .values()
+            .map(|folded| folded.ids.len())
+            .sum();
+        gate.store(false, Ordering::SeqCst);
+        assert_eq!(folded_now, MAX_FOLDED_READS, "the fold stops at its cap");
+
+        let mut ids = answered_ids(&mut rx, &key, overflowing as usize + 1).await;
+        ids.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(
+            ids,
+            (0..=overflowing).map(Value::from).collect::<Vec<Value>>(),
+            "the two that overflowed the fold are answered too"
+        );
+        assert_eq!(
+            computed.lock().unwrap().len(),
+            3,
+            "one compute for the fold, one for each read that overflowed it"
+        );
     }
 
     /// A terminal's lane lives as long as the terminal: the close still runs, and
@@ -933,6 +1187,199 @@ mod dispatcher_tests {
                 .await
                 .expect("the spawned task ran"),
             Some("pump")
+        );
+    }
+
+    /// A handler that blocks until `gate` is cleared, recording every method it
+    /// was asked to compute and answering with the caller's id.
+    fn counting_handler(
+        gate: Arc<AtomicBool>,
+        computed: Arc<Mutex<Vec<(String, Value)>>>,
+        started: mpsc::UnboundedSender<()>,
+    ) -> FrameHandler {
+        Arc::new(move |_sender, frame| {
+            let method = frame.payload["method"].as_str().unwrap_or("").to_string();
+            let params = frame.payload["params"].clone();
+            if method == "hold" {
+                let _ = started.send(());
+                while gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            } else {
+                computed.lock().unwrap().push((method, params));
+            }
+            json!({ "id": frame.payload["id"], "ok": true, "result": { "served": true } })
+        })
+    }
+
+    /// Collect `count` answers off one session, as ids.
+    async fn answered_ids(
+        rx: &mut mpsc::UnboundedReceiver<Message>,
+        key: &str,
+        count: usize,
+    ) -> Vec<Value> {
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            ids.push(next_push(rx, key, Duration::from_secs(5)).await["id"].clone());
+        }
+        ids
+    }
+
+    /// The tail of the incident: after a stall, hundreds of identical `board.list`
+    /// polls sit queued and the old bridge answered every one with a full
+    /// recompute. Now the queue holds one of them: it is computed once and every
+    /// caller that asked for it gets that answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn identical_queued_reads_are_computed_once_and_answered_to_every_caller() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let handler = counting_handler(gate.clone(), computed.clone(), started);
+        // One worker: the hold occupies it, so every read below waits in the queue.
+        let mut dispatcher = Dispatcher::with_capacity(handler, 256, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-poll");
+
+        dispatcher
+            .dispatch(sender.clone(), request(0, "hold", json!({})))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("the only worker is busy before the reads queue behind it");
+
+        for id in 1..=40u64 {
+            dispatcher
+                .dispatch(sender.clone(), request(id, "board.list", json!({})))
+                .await;
+        }
+        gate.store(false, Ordering::SeqCst);
+
+        let mut ids = answered_ids(&mut rx, &key, 41).await;
+        ids.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(
+            ids,
+            (0..=40u64).map(Value::from).collect::<Vec<Value>>(),
+            "every poller gets an answer — a dropped frame is an RPC that times out in the browser"
+        );
+        assert_eq!(
+            *computed.lock().unwrap(),
+            vec![("board.list".to_string(), json!({}))],
+            "forty identical polls cost one recompute"
+        );
+    }
+
+    /// Coalescing folds together only requests whose answer is the same answer:
+    /// same client, same method, same params. Anything else is its own compute.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reads_are_folded_together_only_when_client_method_and_params_all_match() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let handler = counting_handler(gate.clone(), computed.clone(), started);
+        let mut dispatcher = Dispatcher::with_capacity(handler, 256, 1);
+        let (one, mut one_rx, one_key) = SessionSender::observable("s-one");
+        let (two, mut two_rx, two_key) = SessionSender::observable("s-two");
+
+        dispatcher
+            .dispatch(one.clone(), request(0, "hold", json!({})))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("the only worker is busy");
+
+        for id in 1..=3u64 {
+            // Same client, same params: one compute.
+            dispatcher
+                .dispatch(one.clone(), request(id, "git.log", json!({ "p": "a" })))
+                .await;
+            // Same client, different params: a different answer, its own compute.
+            dispatcher
+                .dispatch(
+                    one.clone(),
+                    request(id + 10, "git.log", json!({ "p": "b" })),
+                )
+                .await;
+            // A different client asking the same thing: its own compute, because a
+            // client's answer is pushed into its own session.
+            dispatcher
+                .dispatch(
+                    two.clone(),
+                    request(id + 20, "git.log", json!({ "p": "a" })),
+                )
+                .await;
+        }
+        gate.store(false, Ordering::SeqCst);
+
+        let mut on_one = answered_ids(&mut one_rx, &one_key, 7).await;
+        on_one.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(
+            on_one,
+            vec![0u64, 1, 2, 3, 11, 12, 13]
+                .into_iter()
+                .map(Value::from)
+                .collect::<Vec<Value>>()
+        );
+        let mut on_two = answered_ids(&mut two_rx, &two_key, 3).await;
+        on_two.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(
+            on_two,
+            vec![21u64, 22, 23]
+                .into_iter()
+                .map(Value::from)
+                .collect::<Vec<Value>>()
+        );
+
+        let mut ran: Vec<String> = computed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(method, params)| format!("{method} {params}"))
+            .collect();
+        ran.sort();
+        assert_eq!(
+            ran,
+            vec![
+                "git.log {\"p\":\"a\"}".to_string(),
+                "git.log {\"p\":\"a\"}".to_string(),
+                "git.log {\"p\":\"b\"}".to_string(),
+            ],
+            "three distinct answers, three computes — one per (client, method, params)"
+        );
+    }
+
+    /// A verb that changes something means what it says every time it is said.
+    /// Two `git.commit` frames are two commits; folding them would silently drop
+    /// work the human asked for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_verb_that_changes_something_is_never_folded() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let handler = counting_handler(gate.clone(), computed.clone(), started);
+        let mut dispatcher = Dispatcher::with_capacity(handler, 256, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-writer");
+
+        dispatcher
+            .dispatch(sender.clone(), request(0, "hold", json!({})))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("the only worker is busy");
+
+        for id in 1..=5u64 {
+            dispatcher
+                .dispatch(
+                    sender.clone(),
+                    request(id, "git.commit", json!({ "message": "same" })),
+                )
+                .await;
+        }
+        gate.store(false, Ordering::SeqCst);
+
+        let _ = answered_ids(&mut rx, &key, 6).await;
+        assert_eq!(
+            computed.lock().unwrap().len(),
+            5,
+            "every commit runs — a write is never folded into the one before it"
         );
     }
 

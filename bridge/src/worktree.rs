@@ -672,27 +672,26 @@ fn parse_worktree_block(
         })
         .ok()?;
 
-    let diffstat = crate::diff::diff_against_merge_base(&canonical_path, base_branch)
+    // Counts only — the board never shows this tree's patch, so never render one.
+    let diffstat = crate::diff::stat_against_merge_base(&canonical_path, base_branch)
         .inspect_err(|e| {
             eprintln!(
                 "discover_external_worktrees: diff failed for {}: {e}",
                 canonical_path.display()
             );
         })
-        .ok()?
-        .stat();
+        .ok()?;
 
     // What is sitting in this tree unsaved — the +/− the rail shows. Distinct
     // from the diffstat above, which is everything the branch carries.
-    let uncommitted = crate::diff::diff_uncommitted(&canonical_path)
+    let uncommitted = crate::diff::stat_uncommitted(&canonical_path)
         .inspect_err(|e| {
             eprintln!(
                 "discover_external_worktrees: uncommitted diff failed for {}: {e}",
                 canonical_path.display()
             );
         })
-        .ok()?
-        .stat();
+        .ok()?;
 
     let comparison = branch_comparison(repo, &commit, branch.as_deref(), base_branch);
 

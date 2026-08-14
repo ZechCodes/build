@@ -15,6 +15,13 @@ use tokio::sync::mpsc;
 /// Where plan-phase work is supposed to stay confined.
 pub const PLAN_SCOPE_PREFIX: &str = ".build/";
 
+/// A file larger than this is binary as far as both diff paths are concerned:
+/// libgit2 renders it as `Binary files … differ` (no lines), and the stat path
+/// counts no lines for it. One threshold on both paths is what keeps the cheap
+/// stat equal to the rendered patch's numbers — and keeps a stray 200 MB log
+/// file out of the review surface.
+pub const LARGE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Roll-up counts for the quiet progress state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DiffStat {
@@ -96,8 +103,24 @@ pub fn diff_against_base(
     base_branch: &str,
 ) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
-    let base_tree = repo.revparse_single(base_branch)?.peel_to_tree()?;
+    let base_tree = base_tree(&repo, base_branch)?;
     diff_tree_to_dirty_workdir(&repo, Some(&base_tree))
+}
+
+/// [`diff_against_base`]'s counts alone, without rendering the patch. This is
+/// the poll-surface entry point: the numbers cost a tree walk, not a full
+/// patch of every file in the worktree.
+pub fn stat_against_base(worktree_path: &Path, base_branch: &str) -> Result<DiffStat, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let base_tree = base_tree(&repo, base_branch)?;
+    stat_tree_to_dirty_workdir(&repo, Some(&base_tree))
+}
+
+fn base_tree<'repo>(
+    repo: &'repo git2::Repository,
+    base_branch: &str,
+) -> Result<git2::Tree<'repo>, DiffError> {
+    Ok(repo.revparse_single(base_branch)?.peel_to_tree()?)
 }
 
 /// The worktree's total delta from its fork point with `base_branch`: the
@@ -111,11 +134,28 @@ pub fn diff_against_merge_base(
     base_branch: &str,
 ) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(worktree_path)?;
+    let merge_base_tree = merge_base_tree(&repo, base_branch)?;
+    diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
+}
+
+/// [`diff_against_merge_base`]'s counts alone, without rendering the patch.
+pub fn stat_against_merge_base(
+    worktree_path: &Path,
+    base_branch: &str,
+) -> Result<DiffStat, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let merge_base_tree = merge_base_tree(&repo, base_branch)?;
+    stat_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
+}
+
+fn merge_base_tree<'repo>(
+    repo: &'repo git2::Repository,
+    base_branch: &str,
+) -> Result<git2::Tree<'repo>, DiffError> {
     let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
     let head_commit = repo.head()?.peel_to_commit()?;
     let merge_base_id = repo.merge_base(base_commit.id(), head_commit.id())?;
-    let merge_base_tree = repo.find_commit(merge_base_id)?.tree()?;
-    diff_tree_to_dirty_workdir(&repo, Some(&merge_base_tree))
+    Ok(repo.find_commit(merge_base_id)?.tree()?)
 }
 
 /// Render an immutable commit-to-commit range. Inputs must be full object ids,
@@ -157,19 +197,169 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
         .unwrap_or_default()
 }
 
+/// The options both dirty-workdir paths share. `with_untracked_content` is the
+/// one difference: the review surface loads new files so it can print them, the
+/// stat surface never does — it counts their lines off disk instead.
+fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
+    let mut opts = git2::DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(with_untracked_content)
+        .max_size(LARGE_FILE_BYTES as i64);
+    opts
+}
+
 fn diff_tree_to_dirty_workdir(
     repo: &git2::Repository,
     old_tree: Option<&git2::Tree>,
 ) -> Result<WorktreeDiff, DiffError> {
-    let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
+    let mut opts = dirty_workdir_options(true);
     let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
 }
 
+fn stat_tree_to_dirty_workdir(
+    repo: &git2::Repository,
+    old_tree: Option<&git2::Tree>,
+) -> Result<DiffStat, DiffError> {
+    let mut opts = dirty_workdir_options(false);
+    let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
+    diff_stat_without_rendering(repo, &diff)
+}
+
+/// The roll-up counts of `diff`, computed from libgit2's own line stats rather
+/// than from a rendered patch.
+///
+/// Two wrinkles keep the numbers identical to the rendered patch's:
+/// * The excluded MCP config's lines are subtracted back out — it must count
+///   for nothing, exactly as it prints nothing.
+/// * Untracked files carry no content here (that load is the expensive part),
+///   so their added lines are counted off disk by [`added_lines`].
+fn diff_stat_without_rendering(
+    repo: &git2::Repository,
+    diff: &git2::Diff<'_>,
+) -> Result<DiffStat, DiffError> {
+    let stats = diff.stats()?;
+    let mut insertions = stats.insertions();
+    let mut deletions = stats.deletions();
+    let mut files_changed = 0usize;
+
+    for (index, delta) in diff.deltas().enumerate() {
+        let path = delta_path(&delta);
+        if is_mcp_config(&path) {
+            if let Some(patch) = git2::Patch::from_diff(diff, index)? {
+                let (_context, added, removed) = patch.line_stats()?;
+                insertions = insertions.saturating_sub(added);
+                deletions = deletions.saturating_sub(removed);
+            }
+            continue;
+        }
+        files_changed += 1;
+        if delta.status() == git2::Delta::Untracked {
+            if let Some(workdir) = repo.workdir() {
+                insertions += added_lines(&workdir.join(&path));
+            }
+        }
+    }
+
+    Ok(DiffStat {
+        files_changed,
+        insertions,
+        deletions,
+    })
+}
+
+/// How many lines an untracked file adds, counted by streaming its bytes —
+/// never by loading it into a patch.
+///
+/// Returns 0 for everything libgit2 would render as `Binary files … differ`:
+/// files past [`LARGE_FILE_BYTES`], files holding a NUL byte or a wide-encoding
+/// byte-order mark, and files whose non-printable bytes outweigh their
+/// printable ones (libgit2's own text heuristic). A symlink is its target path:
+/// one line, never followed.
+fn added_lines(path: &Path) -> usize {
+    use std::io::BufRead;
+
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() {
+        return 1;
+    }
+    if !metadata.is_file() || metadata.len() > LARGE_FILE_BYTES {
+        return 0;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut newlines = 0usize;
+    let mut printable = 0usize;
+    let mut nonprintable = 0usize;
+    let mut last_byte = None;
+    let mut at_start = true;
+    loop {
+        let Ok(chunk) = reader.fill_buf() else {
+            return 0;
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        if at_start {
+            at_start = false;
+            if starts_with_wide_bom(chunk) {
+                return 0;
+            }
+        }
+        for &byte in chunk {
+            match byte {
+                0 => return 0,
+                b'\n' => newlines += 1,
+                _ => {}
+            }
+            if byte > 0x1F && byte != 0x7F {
+                printable += 1;
+            } else if !matches!(byte, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ') {
+                nonprintable += 1;
+            }
+        }
+        last_byte = chunk.last().copied();
+        let consumed = chunk.len();
+        reader.consume(consumed);
+    }
+    if (printable >> 7) < nonprintable {
+        return 0;
+    }
+    match last_byte {
+        None => 0,
+        // A final line without its newline is still an added line.
+        Some(b'\n') => newlines,
+        Some(_) => newlines + 1,
+    }
+}
+
+/// A UTF-16/32 byte-order mark, which libgit2 reads as "this is binary".
+fn starts_with_wide_bom(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF])
+}
+
+// Counts the render path's patch walks so a test can prove the stat path never
+// takes it. Thread-local: each test owns its own count.
+#[cfg(test)]
+thread_local! {
+    static PATCH_PRINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn patch_prints_on_this_thread() -> usize {
+    PATCH_PRINTS.with(|count| count.get())
+}
+
 fn worktree_diff_from_git_diff(diff: &git2::Diff<'_>) -> Result<WorktreeDiff, DiffError> {
+    #[cfg(test)]
+    PATCH_PRINTS.with(|count| count.set(count.get() + 1));
+
     let files: Vec<ChangedFile> = diff
         .deltas()
         .map(|delta| ChangedFile {
@@ -289,24 +479,43 @@ pub fn diff_against_head(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
     diff_tree_to_dirty_workdir(&repo, Some(&head_tree))
 }
 
+/// [`diff_against_head`]'s counts alone, without rendering the patch.
+pub fn stat_against_head(repo_path: &Path) -> Result<DiffStat, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = repo.head()?.peel_to_tree()?;
+    stat_tree_to_dirty_workdir(&repo, Some(&head_tree))
+}
+
 /// Like [`diff_against_head`], but an unborn HEAD (a repo with no commits yet)
 /// diffs against the empty tree instead of failing — the git-GUI status
 /// surface must keep working in a brand-new repository.
 pub fn diff_uncommitted(repo_path: &Path) -> Result<WorktreeDiff, DiffError> {
     let repo = git2::Repository::open(repo_path)?;
-    let head_tree = match repo.head() {
-        Ok(head) => Some(head.peel_to_tree()?),
+    let head_tree = head_tree_if_born(&repo)?;
+    diff_tree_to_dirty_workdir(&repo, head_tree.as_ref())
+}
+
+/// [`diff_uncommitted`]'s counts alone, without rendering the patch.
+pub fn stat_uncommitted(repo_path: &Path) -> Result<DiffStat, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = head_tree_if_born(&repo)?;
+    stat_tree_to_dirty_workdir(&repo, head_tree.as_ref())
+}
+
+/// HEAD's tree, or `None` in a repository that has no commits yet.
+fn head_tree_if_born(repo: &git2::Repository) -> Result<Option<git2::Tree<'_>>, DiffError> {
+    match repo.head() {
+        Ok(head) => Ok(Some(head.peel_to_tree()?)),
         Err(e)
             if matches!(
                 e.code(),
                 git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
             ) =>
         {
-            None
+            Ok(None)
         }
-        Err(e) => return Err(e.into()),
-    };
-    diff_tree_to_dirty_workdir(&repo, head_tree.as_ref())
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +523,118 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// Everything the cheap stat and the rendered patch must agree on: a
+    /// tracked modification, a tracked deletion, a staged addition, untracked
+    /// text without a trailing newline, an untracked binary, an untracked file
+    /// past [`LARGE_FILE_BYTES`], and the excluded MCP config.
+    fn mixed_fixture() -> (tempfile::TempDir, PathBuf) {
+        let (dir, repo) = init_repo();
+        std::fs::write(repo.join("tracked-delete.txt"), "gone\nlines\n").unwrap();
+        std::fs::write(repo.join("tracked-modify.txt"), "one\ntwo\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "fixture"]);
+
+        std::fs::write(repo.join("tracked-modify.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::remove_file(repo.join("tracked-delete.txt")).unwrap();
+        std::fs::write(repo.join("staged-add.txt"), "staged\n").unwrap();
+        run_git(&repo, &["add", "staged-add.txt"]);
+        std::fs::write(repo.join("untracked.txt"), "alpha\nbeta\nno-newline").unwrap();
+        std::fs::write(repo.join("untracked.bin"), [0u8, 1, 2, 0, 255, b'\n']).unwrap();
+        std::fs::write(
+            repo.join("huge.txt"),
+            "x\n".repeat(LARGE_FILE_BYTES as usize / 2 + 1),
+        )
+        .unwrap();
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{\n\"mcpServers\": {}\n}\n").unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn stat_equals_the_rendered_patch_numbers() {
+        let (_dir, repo) = mixed_fixture();
+
+        let stat = stat_uncommitted(&repo).unwrap();
+        // Six changed paths; the MCP config is not one of them.
+        assert_eq!(stat.files_changed, 6, "{stat:?}");
+        // +1 modified line, +1 staged line, +3 untracked text lines; the binary
+        // and the oversize file contribute nothing. -2 for the deletion.
+        assert_eq!(stat.insertions, 5, "{stat:?}");
+        assert_eq!(stat.deletions, 2, "{stat:?}");
+
+        assert_eq!(stat, diff_uncommitted(&repo).unwrap().stat());
+        assert_eq!(
+            stat_against_head(&repo).unwrap(),
+            diff_against_head(&repo).unwrap().stat()
+        );
+        assert_eq!(
+            stat_against_base(&repo, "main").unwrap(),
+            diff_against_base(&repo, "main").unwrap().stat()
+        );
+        assert_eq!(
+            stat_against_merge_base(&repo, "main").unwrap(),
+            diff_against_merge_base(&repo, "main").unwrap().stat()
+        );
+    }
+
+    #[test]
+    fn the_stat_path_never_runs_the_patch_printer() {
+        let (_dir, repo) = mixed_fixture();
+        assert_eq!(patch_prints_on_this_thread(), 0);
+
+        stat_uncommitted(&repo).unwrap();
+        stat_against_head(&repo).unwrap();
+        stat_against_base(&repo, "main").unwrap();
+        stat_against_merge_base(&repo, "main").unwrap();
+        assert_eq!(
+            patch_prints_on_this_thread(),
+            0,
+            "the stat path rendered a patch"
+        );
+
+        // The spy is wired up: the render path does move it.
+        diff_uncommitted(&repo).unwrap();
+        assert_eq!(patch_prints_on_this_thread(), 1);
+    }
+
+    #[test]
+    fn an_untracked_symlink_counts_as_its_target_path() {
+        let (_dir, repo) = init_repo();
+        std::os::unix::fs::symlink("README.md", repo.join("link.md")).unwrap();
+
+        let rendered = diff_uncommitted(&repo).unwrap();
+        assert_eq!(rendered.files().len(), 1, "{:?}", rendered.files());
+        assert_eq!(stat_uncommitted(&repo).unwrap(), rendered.stat());
+    }
+
+    #[test]
+    fn stat_excludes_the_scaffolded_mcp_config_even_once_it_is_tracked() {
+        let (_dir, repo) = init_repo();
+        std::fs::create_dir_all(repo.join(".build")).unwrap();
+        std::fs::write(repo.join(".build/mcp.json"), "{\n}\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "mcp"]);
+
+        // A tracked change to the config contributes to neither count.
+        std::fs::write(repo.join(".build/mcp.json"), "{\n\"a\": 1\n}\n").unwrap();
+        std::fs::write(repo.join("visible.txt"), "real work\n").unwrap();
+
+        let stat = stat_uncommitted(&repo).unwrap();
+        assert_eq!(stat.files_changed, 1, "{stat:?}");
+        assert_eq!(stat.insertions, 1, "{stat:?}");
+        assert_eq!(stat.deletions, 0, "{stat:?}");
+        assert_eq!(stat, diff_uncommitted(&repo).unwrap().stat());
+    }
 
     /// A repo on `main` with one commit; returns (tempdir, repo_path).
     fn init_repo() -> (tempfile::TempDir, PathBuf) {

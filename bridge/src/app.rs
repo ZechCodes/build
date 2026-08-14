@@ -5187,21 +5187,18 @@ impl AppState {
                 .ok()
                 .map(|repo| head_sync_counts(repo, &project.base_branch))
                 .unwrap_or((None, None, None, None));
-            let summary = match crate::diff::diff_against_head(&project.repo_path) {
-                Ok(diff) => {
-                    let stat = diff.stat();
-                    Some(json!({
-                        "project_id": project_id,
-                        "branch": branch,
-                        "upstream": upstream,
-                        "comparison_ref": comparison_ref,
-                        "ahead": ahead,
-                        "behind": behind,
-                        "files_changed": stat.files_changed,
-                        "insertions": stat.insertions,
-                        "deletions": stat.deletions,
-                    }))
-                }
+            let summary = match crate::diff::stat_against_head(&project.repo_path) {
+                Ok(stat) => Some(json!({
+                    "project_id": project_id,
+                    "branch": branch,
+                    "upstream": upstream,
+                    "comparison_ref": comparison_ref,
+                    "ahead": ahead,
+                    "behind": behind,
+                    "files_changed": stat.files_changed,
+                    "insertions": stat.insertions,
+                    "deletions": stat.deletions,
+                })),
                 Err(e) => {
                     eprintln!("primary_changes {project_id}: {e}");
                     None
@@ -10024,9 +10021,10 @@ impl AppState {
             });
         let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
         let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
-        let uncommitted = crate::diff::diff_uncommitted(&active.worktree.path)
-            .map(|diff| {
-                let stat = diff.stat();
+        // Counts only: this poll surface ships numbers, so it must never pay to
+        // render (or even load) the worktree's patch text.
+        let uncommitted = crate::diff::stat_uncommitted(&active.worktree.path)
+            .map(|stat| {
                 json!({
                     "files_changed": stat.files_changed,
                     "insertions": stat.insertions,
@@ -10035,9 +10033,8 @@ impl AppState {
             })
             .unwrap_or(Value::Null);
         let stat =
-            crate::diff::diff_against_base(&active.worktree.path, &active.worktree.base_branch)
-                .map(|diff| {
-                    let s = diff.stat();
+            crate::diff::stat_against_base(&active.worktree.path, &active.worktree.base_branch)
+                .map(|s| {
                     json!({
                         "files_changed": s.files_changed,
                         "insertions": s.insertions,

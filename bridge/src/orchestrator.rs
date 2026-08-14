@@ -1820,11 +1820,16 @@ impl Orchestrator {
     /// The worktree's agent is never ended and never replaced: the reviewer is
     /// mid conversation with a process, and killing it to say something to it
     /// throws away the context that made the review worth having.
+    /// `conversation_agent` names whose conversation the comments were posted
+    /// to, for the catch-up packet a cold spawn opens on. `None` is the roster
+    /// standing on the run — the first agent's, which the caller may have
+    /// swapped for the Issue's.
     pub fn run_request_changes(
         &self,
         active: &mut ActiveRun,
         plan_stage_docs: &[StageDoc],
         comments: &str,
+        conversation_agent: Option<&str>,
     ) -> Result<AgentTurn, OrchestratorError> {
         if let Some(stage_id) = active.current_stage_id.clone() {
             if let Some(progress) = active.stage_progress(&stage_id) {
@@ -1841,14 +1846,20 @@ impl Orchestrator {
         }
         active.run.apply(RunEvent::RequestChanges)?;
         active.last_error = None;
+        let rendered = self.render_run(
+            &self.templates.review_changes,
+            active,
+            comments,
+            plan_stage_docs,
+        );
+        let conversation = &active
+            .agents
+            .resolve(conversation_agent)
+            .map_err(OrchestratorError::Gate)?
+            .thread;
         Ok(AgentTurn::posted(
-            self.render_run(
-                &self.templates.review_changes,
-                active,
-                comments,
-                plan_stage_docs,
-            ),
-            &active.agents,
+            rendered,
+            conversation,
             comments,
             "revise",
         ))
@@ -4401,7 +4412,7 @@ mod tests {
         );
 
         let turn = orch
-            .run_request_changes(&mut single, &[], "tweak it")
+            .run_request_changes(&mut single, &[], "tweak it", None)
             .unwrap();
         assert_eq!(single.run.state, RunState::Building);
         let cold = posted_turn_halves(&turn, "revise", "tweak it");
@@ -4425,7 +4436,7 @@ mod tests {
             StageProgressState::Validating
         );
         let err = orch
-            .run_request_changes(&mut run, &plan.stages, "no")
+            .run_request_changes(&mut run, &plan.stages, "no", None)
             .expect_err("cannot redirect a validating stage");
         assert!(err.to_string().contains("awaiting validation"), "{err}");
     }

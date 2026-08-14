@@ -738,8 +738,8 @@ struct PendingAgentTurn {
     root: std::path::PathBuf,
     /// The plan/run whose lifecycle this turn moves.
     owner: String,
-    /// The agent that hears it. Entity-level work always addresses the
-    /// entity's first agent.
+    /// The agent that hears it. Entity-level work addresses the entity's first
+    /// agent; a verb the rail addressed names the agent whose bubble was open.
     agent_id: String,
     model_choice: ModelChoice,
     /// For a tab that had to be spawned: the full run context.
@@ -759,10 +759,11 @@ impl PendingAgentTurn {
         Self::for_run_agent(owner, &agent_id, active, turn)
     }
 
-    /// The same, for a caller holding a run whose roster is temporarily
-    /// standing in for its Issue's — `run.request_changes` swaps the two so the
-    /// comments land on the conversation the Issue renders, and the turn must
-    /// still reach the run's OWN agent.
+    /// The same, for a caller that knows which of the run's agents it means:
+    /// `run.request_changes` addresses the agent whose conversation the
+    /// reviewer was reading, and — when that is the first one — swaps the run's
+    /// roster for its Issue's so the comments land on the conversation the
+    /// Issue renders. Either way the turn must reach the run's OWN agent.
     fn for_run_agent(owner: &str, agent_id: &str, active: &ActiveRun, turn: AgentTurn) -> Self {
         PendingAgentTurn {
             root: AppState::canonical_root(&active.worktree.path),
@@ -3908,6 +3909,44 @@ impl AppState {
         Some(self.conversation_thread_for_run(run))
     }
 
+    /// The conversation a caller means: the agent it named, or the entity's
+    /// first — whose thread IS the entity's own (a planned implementation
+    /// speaks in its Issue's). An id that names no agent here is refused rather
+    /// than answered with somebody else's conversation.
+    fn agent_conversation(
+        &self,
+        entity_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<&crate::thread::Thread, String> {
+        let roster = self.entity_agents(entity_id)?;
+        let agent = roster.resolve(agent_id)?;
+        if roster.first().id == agent.id {
+            return Ok(self.entity_conversation(entity_id).unwrap_or(&agent.thread));
+        }
+        Ok(&agent.thread)
+    }
+
+    /// The `thread` a detail poll ships when it asked for one in particular:
+    /// the named agent's conversation, whole or only past what the client
+    /// already holds. `None` when the poll named no agent and carried no
+    /// cursor — the view's own thread already is exactly that.
+    fn detail_thread_value(
+        &self,
+        entity_id: &str,
+        params: &Value,
+    ) -> Result<Option<Value>, String> {
+        let addressed = addressed_agent(params);
+        let cursor = thread_cursor(params);
+        if addressed.is_none() && cursor.is_none() {
+            return Ok(None);
+        }
+        let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
+        Ok(Some(match cursor {
+            Some(after_sequence) => thread.wire_value_after(after_sequence),
+            None => thread.wire_value(),
+        }))
+    }
+
     /// What an entry says about itself in the inbox: whether an attention-class
     /// item landed past the human's read cursor, how many, and why the newest
     /// one needs them.
@@ -6162,16 +6201,12 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
         let mut view = self.plan_view(&plan_id, active, ThreadDetail::Full);
-        // The detail poll's optional cursor: ship only conversation items the
-        // client does not already hold. Absent → the full backward-compatible
-        // thread.
-        if let Some(after_sequence) = thread_cursor(params) {
+        // See `run_get`. An issue carries exactly one agent, so naming it is a
+        // check rather than a choice — but the check still holds.
+        if let Some(thread) = self.detail_thread_value(&plan_id, params)? {
             view.as_object_mut()
                 .expect("plan_view returns an object")
-                .insert(
-                    "thread".to_string(),
-                    active.agents.wire_value_after(after_sequence),
-                );
+                .insert("thread".to_string(), thread);
         }
         Ok(view)
     }
@@ -6809,10 +6844,14 @@ impl AppState {
             .current_issue_implementation_id(&issue_id)
             .ok_or("issue has no active implementation")?;
         let mut run_params = params.clone();
-        run_params
+        let object = run_params
             .as_object_mut()
-            .ok_or("issue params must be an object")?
-            .insert("run_id".to_string(), json!(run_id));
+            .ok_or("issue params must be an object")?;
+        object.insert("run_id".to_string(), json!(run_id));
+        // An `agent_id` an Issue surface sends names the ISSUE's one agent,
+        // which is not on the implementation's roster: the implementation agent
+        // it maps to is that run's first, which is what the verb defaults to.
+        object.remove("agent_id");
         match action {
             "fix" => self.run_stage_fix(&run_params)?,
             "diff" => {
@@ -7323,17 +7362,13 @@ impl AppState {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
-        // The detail poll's optional cursor: ship only conversation items the
-        // client does not already hold. Absent → the full backward-compatible
-        // thread.
-        if let Some(after_sequence) = thread_cursor(params) {
+        // Which conversation, and how much of it: the rail's open bubble names
+        // the agent, and the client's cursor says what it already holds.
+        // Neither → the full backward-compatible thread the view already built.
+        if let Some(thread) = self.detail_thread_value(&run_id, params)? {
             view.as_object_mut()
                 .expect("run_view returns an object")
-                .insert(
-                    "thread".to_string(),
-                    self.conversation_thread_for_run(active)
-                        .wire_value_after(after_sequence),
-                );
+                .insert("thread".to_string(), thread);
         }
         Ok(view)
     }
@@ -7829,22 +7864,44 @@ impl AppState {
             self.owning_plan_stage_docs(active)
         };
         let mut active = self.take_run(&run_id)?;
-        // Captured before the swap below hands the run its Issue's roster: the
-        // turn belongs to the run's own agent, whichever conversation the
-        // comments land in.
-        let run_agent_id = active.agents.first().id.clone();
+        // Whose conversation the reviewer was reading: the rail's open bubble,
+        // or the branch's first agent — the one every surface that predates the
+        // rail meant. Resolved on the run's OWN roster, before the swap below
+        // can hand it the Issue's.
+        let addressed = addressed_agent(params);
+        let run_agent_id = active.agents.resolve(addressed.as_deref())?.id.clone();
+        let addresses_first_agent = active.agents.first().id == run_agent_id;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        // An implementation's FIRST agent speaks in its Issue's conversation —
+        // that is the one every Issue surface renders. An agent the human added
+        // to the branch speaks in its own, and the Issue is left alone.
         let mut issue = issue_id
             .as_ref()
+            .filter(|_| addresses_first_agent)
             .and_then(|issue_id| self.plans.remove(issue_id));
         let legacy_run_thread = issue
             .as_ref()
             .map(|issue| std::mem::replace(&mut active.agents, issue.agents.clone()));
-        append_user_thread_messages(&mut active.agents, messages);
+        // After the swap the roster standing on the run is the Issue's, where
+        // the run's own agent id does not exist: its first agent IS the
+        // conversation the comments just landed in.
+        let conversation_agent = (!addresses_first_agent).then(|| run_agent_id.clone());
+        append_user_thread_messages(
+            &mut active
+                .agents
+                .resolve_mut(conversation_agent.as_deref())?
+                .thread,
+            messages,
+        );
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
-                .run_request_changes(&mut active, &plan_docs, NEW_THREAD_MESSAGES_PROMPT)
+                .run_request_changes(
+                    &mut active,
+                    &plan_docs,
+                    NEW_THREAD_MESSAGES_PROMPT,
+                    conversation_agent.as_deref(),
+                )
                 .map_err(err)?;
             self.pending_agent_turns
                 .push(PendingAgentTurn::for_run_agent(
@@ -9059,11 +9116,24 @@ impl AppState {
             .ok_or_else(|| {
                 format!("branch.get: no branch {branch} is checked out in this project")
             })?;
-        let run_view = row["run_id"].as_str().map(str::to_string).map(|run_id| {
-            let active = self.runs.get(&run_id).expect("the row named a live run");
-            self.run_view(&run_id, active, ThreadDetail::Full)
-        });
-        row["run"] = run_view.unwrap_or(Value::Null);
+        row["run"] = match row["run_id"].as_str().map(str::to_string) {
+            Some(run_id) => {
+                let active = self.runs.get(&run_id).expect("the row named a live run");
+                let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
+                // The branch surface sits under the rail: it reads the
+                // conversation of whichever agent's bubble is open. See
+                // `run_get`.
+                if let Some(thread) = self.detail_thread_value(&run_id, params)? {
+                    view["thread"] = thread;
+                }
+                view
+            }
+            // A checkout Build owns no run in has no agent to name.
+            None => match addressed_agent(params) {
+                Some(agent_id) => return Err(format!("unknown agent_id: {agent_id}")),
+                None => Value::Null,
+            },
+        };
         Ok(row)
     }
 
@@ -10322,6 +10392,17 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 /// the full backward-compatible thread instead of an error.
 fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
+}
+
+/// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
+/// client with no bubble open yet means the entity's own conversation, which is
+/// its first agent's.
+fn addressed_agent(params: &Value) -> Option<String> {
+    params
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
 }
 
 /// A resolved `git.*` scope: the repository directory the RPC operates on,
@@ -25651,6 +25732,335 @@ mod tests {
         assert!(root
             .join(crate::orchestrator::mcp_config_path(&second_agent))
             .is_file());
+    }
+
+    /// The bodies of a detail poll's conversation, in wire order.
+    fn thread_bodies(view: &Value) -> Vec<String> {
+        view["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a thread ships items: {view:?}"))
+            .iter()
+            .filter_map(|item| item["data"]["body"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Whether a conversation holds a message with exactly this body.
+    fn thread_holds(thread: &crate::thread::Thread, body: &str) -> bool {
+        thread.items.iter().any(|item| match item {
+            crate::thread::ThreadItem::Message(message) => message.body == body,
+            crate::thread::ThreadItem::Event(_) => false,
+        })
+    }
+
+    /// A branch with two agents, each with one thing said to it — the setup
+    /// every per-agent selection test starts from.
+    fn branch_with_two_conversations(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        branch: &str,
+    ) -> (String, String, String) {
+        let run_id = adopted_run(state, repo, dir, branch);
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        for (agent_id, body) in [
+            (&first_agent, "first-agent-marker"),
+            (&second_agent, "second-agent-marker"),
+        ] {
+            let posted = state.handle(req(
+                "thread.post",
+                json!({ "entity_id": run_id, "agent_id": agent_id, "body": body }),
+            ));
+            assert_eq!(posted["ok"], true, "{posted:?}");
+        }
+        (run_id, first_agent, second_agent)
+    }
+
+    /// A detail poll answers with the conversation of the agent it named. The
+    /// rail's bubble is the selector, so `run.get`/`branch.get` have to be able
+    /// to say WHICH conversation — and an id that names no agent on this entity
+    /// is an error, never a silent fall back to the first one's.
+    #[test]
+    fn a_detail_poll_answers_with_the_named_agents_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, first_agent, second_agent) =
+            branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-two-threads");
+
+        // Named nothing: the conversation every surface before the rail asked
+        // for — the entity's first agent's.
+        let default_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            thread_bodies(&default_view["result"]["thread"]),
+            vec!["first-agent-marker".to_string()],
+            "{default_view:?}"
+        );
+
+        let first_view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "agent_id": first_agent }),
+        ));
+        assert_eq!(
+            thread_bodies(&first_view["result"]["thread"]),
+            vec!["first-agent-marker".to_string()],
+            "{first_view:?}"
+        );
+
+        let second_view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "agent_id": second_agent }),
+        ));
+        assert_eq!(
+            thread_bodies(&second_view["result"]["thread"]),
+            vec!["second-agent-marker".to_string()],
+            "{second_view:?}"
+        );
+
+        let unknown = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "agent_id": "agent-NOSUCHTHING" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown:?}"
+        );
+    }
+
+    /// `branch.get` is the branch surface's read, and it carries the run's view
+    /// whole — including which agent's conversation the caller asked for.
+    #[test]
+    fn branch_get_carries_the_named_agents_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, _, second_agent) =
+            branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-branch-threads");
+        let project_id = state.projects[0].id.clone();
+
+        let default_row = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-branch-threads" }),
+        ));
+        assert_eq!(
+            thread_bodies(&default_row["result"]["run"]["thread"]),
+            vec!["first-agent-marker".to_string()],
+            "{default_row:?}"
+        );
+
+        let selected = state.handle(req(
+            "branch.get",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-branch-threads",
+                "agent_id": second_agent
+            }),
+        ));
+        assert_eq!(
+            thread_bodies(&selected["result"]["run"]["thread"]),
+            vec!["second-agent-marker".to_string()],
+            "{selected:?}"
+        );
+
+        let unknown = state.handle(req(
+            "branch.get",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-branch-threads",
+                "agent_id": "agent-NOSUCHTHING"
+            }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown:?}"
+        );
+    }
+
+    /// The delta cursor is per conversation: a sequence held for one agent's
+    /// thread must be applied to THAT thread, and the totals it is checked
+    /// against must be that thread's too. Cursoring one agent can never drain
+    /// another's.
+    #[test]
+    fn the_thread_cursor_is_read_against_the_named_agents_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, _, second_agent) =
+            branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-cursor-threads");
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "agent_id": second_agent, "body": "and one more" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let full = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "agent_id": second_agent }),
+        ));
+        let items = full["result"]["thread"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "{full:?}");
+        let cursor = items[0]["data"]["sequence"].as_u64().unwrap();
+
+        let delta = state.handle(req(
+            "run.get",
+            json!({
+                "run_id": run_id,
+                "agent_id": second_agent,
+                "thread_after_sequence": cursor
+            }),
+        ));
+        assert_eq!(
+            thread_bodies(&delta["result"]["thread"]),
+            vec!["and one more".to_string()],
+            "{delta:?}"
+        );
+        assert_eq!(delta["result"]["thread"]["thread_total"], 2, "{delta:?}");
+
+        // The same cursor against the FIRST agent's conversation reads its own
+        // sequences: its one message is older, so it is already held.
+        let other = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_after_sequence": cursor }),
+        ));
+        assert!(
+            thread_bodies(&other["result"]["thread"]).is_empty(),
+            "{other:?}"
+        );
+        assert_eq!(other["result"]["thread"]["thread_total"], 1, "{other:?}");
+    }
+
+    /// An issue carries exactly one agent session, so naming it is a check
+    /// rather than a choice — but the check has to hold: an id that is not this
+    /// issue's agent is refused instead of answering with the issue's own.
+    #[test]
+    fn issue_get_honors_the_agent_it_was_addressed_to() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue = state.handle(req("plan.create", json!({ "goal": "one conversation" })));
+        let issue_id = plan_id_of(&issue);
+        let agent_id = state.plans[&issue_id].agents.first().id.clone();
+
+        let named = state.handle(req(
+            "issue.get",
+            json!({ "issue_id": issue_id, "agent_id": agent_id }),
+        ));
+        assert_eq!(named["ok"], true, "{named:?}");
+        let default_view = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            named["result"]["thread"]["items"], default_view["result"]["thread"]["items"],
+            "the issue's one agent IS the issue's conversation"
+        );
+
+        let unknown = state.handle(req(
+            "issue.get",
+            json!({ "issue_id": issue_id, "agent_id": "agent-NOSUCHTHING" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown:?}"
+        );
+    }
+
+    /// Review comments land in the conversation the reviewer was reading. The
+    /// Changes surface sits under the rail, so the agent whose bubble is open
+    /// is the agent the comments are addressed to — and the turn they queue
+    /// goes to that agent's PTY, not to the branch's first.
+    #[test]
+    fn request_changes_lands_on_the_named_agents_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "review with two agents");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let addressed = state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "agent_id": second_agent,
+                "messages": [{ "body": "second-agent-comment", "anchor": null }]
+            }),
+        ));
+        assert_eq!(addressed["ok"], true, "{addressed:?}");
+
+        // The comments are on the addressed agent's own thread, and nowhere
+        // else: not on the branch's first agent, not on the Issue the first
+        // agent speaks in.
+        let second_thread = &state.runs[&run_id]
+            .agents
+            .by_id(&second_agent)
+            .expect("the added agent is on the roster")
+            .thread;
+        assert!(
+            thread_holds(second_thread, "second-agent-comment"),
+            "{second_thread:?}"
+        );
+        assert!(
+            !thread_holds(&state.plans[&issue_id].agents, "second-agent-comment"),
+            "the Issue's conversation belongs to the first agent"
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a change request is a turn");
+        assert_eq!(queued.agent_id, second_agent);
+        assert_ne!(queued.agent_id, first_agent);
+        assert!(
+            queued.cold.contains("second-agent-comment"),
+            "a cold spawn catches up on ITS conversation: {}",
+            queued.cold
+        );
+
+        // Named nothing, the comments still land where every surface before the
+        // rail put them: the first agent's conversation, which for a planned
+        // implementation is the Issue's.
+        let defaulted = state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "messages": [{ "body": "first-agent-comment", "anchor": null }]
+            }),
+        ));
+        assert_eq!(defaulted["ok"], true, "{defaulted:?}");
+        assert!(
+            thread_holds(&state.plans[&issue_id].agents, "first-agent-comment"),
+            "{:?}",
+            state.plans[&issue_id].agents.items
+        );
+        assert_eq!(
+            state.pending_agent_turns.last().unwrap().agent_id,
+            first_agent
+        );
+
+        let unknown = state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "agent_id": "agent-NOSUCHTHING",
+                "messages": [{ "body": "nowhere", "anchor": null }]
+            }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown:?}"
+        );
     }
 
     // ==== the branch as the wire-level work item ==============================

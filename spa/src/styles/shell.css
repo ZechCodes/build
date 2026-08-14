@@ -233,8 +233,10 @@ body.inbox-collapsed #inbox-open { display:block; }
 .rail-body-tui { overflow:hidden; padding:0; }
 .rail-body-tui .agentwrap, .rail-body-tui .termpane { height:100%; }
 /* Inside the rail the conversation is a column, not a page: the avatar gutter
-   the wide surfaces rule is too much of 400px to give away. */
+   the wide surfaces rule is too much of 400px to give away, and the panel head
+   has already said whose conversation this is. */
 .rail-body .review-thread { padding:0; }
+.rail-body .thread-title { display:none; }
 .rail-body .thread-composer, .rail-body .thread-revision-view { margin-left:0; }
 
 @media (max-width: 760px) {

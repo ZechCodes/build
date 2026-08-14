@@ -758,6 +758,59 @@ mod dispatcher_tests {
         );
     }
 
+    /// `term.input` and `term.ack` are the pairing the protocol names: an ack the
+    /// bridge handles before the input it acknowledges is flow control run
+    /// backwards. Interleaved on one terminal, the two methods share a lane and
+    /// run in arrival order — even with a slow frame at the head and idle workers
+    /// that would happily run the acks early.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn input_and_ack_on_one_terminal_stay_in_arrival_order() {
+        let seen: Arc<Mutex<Vec<(u64, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            let id = frame.payload["id"].as_u64().unwrap_or_default();
+            let method = frame.payload["method"].as_str().unwrap_or_default();
+            // The input at the head is slow: were the acks behind it dispatched
+            // to the shared pool, the idle workers would record them first.
+            if id == 0 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            recorder.lock().unwrap().push((id, method.to_string()));
+            json!({ "id": id, "ok": true })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 64, 8);
+
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        let sent: Vec<(u64, String)> = (0..12u64)
+            .map(|id| {
+                let method = if id % 2 == 0 {
+                    "term.input"
+                } else {
+                    "term.ack"
+                };
+                (id, method.to_string())
+            })
+            .collect();
+        for (id, method) in &sent {
+            dispatcher
+                .dispatch(
+                    sender.clone(),
+                    request(*id, method, json!({ "term_id": "term-1" })),
+                )
+                .await;
+        }
+
+        for (id, _) in &sent {
+            let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
+            assert_eq!(answered["id"], *id, "responses come back in arrival order");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            sent,
+            "input and ack handlers ran in arrival order on the shared lane"
+        );
+    }
+
     /// A flood parks in a bounded queue: once it is full the dispatch call waits
     /// instead of growing memory without end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

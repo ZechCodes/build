@@ -39,6 +39,7 @@ import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
+import { createTriageOverrides } from "./triageOverride.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -505,10 +506,25 @@ export function mountGitPane(
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus });
 
+  // Disagreeing with the pass. Only a run has a pass to disagree with (and a
+  // run_id to name in the RPC), so a bare worktree or the primary checkout
+  // mounts none and its stack draws no offers.
+  const overrides = commentsSupported(scope)
+    ? createTriageOverrides({
+        post: ({ hunk_id, direction, note }) =>
+          callRpc("triage.override", { run_id: scope.run_id, hunk_id, direction, note }),
+        onChange: () => render(),
+      })
+    : null;
+
+  /** The pass as the reviewer's latest word makes it: what this pane renders,
+   *  and what it decides to repaint on. */
+  const currentTriage = () => (overrides ? overrides.apply(triage()) : triage());
+
   /** The freeze key for one poll: the repo's own, plus what the triage overlay
    *  is drawing from. A pass landing (or a re-pass reclassifying) moves nothing
    *  in git, so without it the ordering would wait for the next commit. */
-  const pollKeyNow = (status, log) => [gitPollKey(status, log), triageFingerprint(triage())].join("\x03");
+  const pollKeyNow = (status, log) => [gitPollKey(status, log), triageFingerprint(currentTriage())].join("\x03");
 
   // Comments are a conversation post, so they exist where there is an agent to
   // post to. One layer serves every changeset: switching selection keeps the
@@ -535,10 +551,13 @@ export function mountGitPane(
   const triageOverlay = (patch) => {
     if (!commentsSupported(scope)) return null;
     return {
-      triage: triage(),
+      triage: currentTriage(),
       patch: patch || "",
       dial: trustDial,
       expandedGroups: expandedGroups.get(String(selected)) || null,
+      // The offers are on the hunks of the changeset the pass actually read;
+      // a hunk it never named renders none (core/triageModel).
+      overridable: Boolean(overrides),
     };
   };
 
@@ -1206,6 +1225,10 @@ export function mountGitPane(
       render();
       return;
     }
+    // Disagreeing with where the pass put a hunk. This runs BEFORE the comment
+    // and fold handling: the offer sits on a hunk row inside a capped file, and
+    // either would otherwise eat the press as "expand me" or "comment here".
+    if (overrides && overrides.handleClick(event)) return;
     // The trust dial: the reviewer says how much of the pass's reading they
     // want. Remembered per project, so the answer is asked once.
     if (target.closest(".tdial")) {
@@ -1386,6 +1409,7 @@ export function mountGitPane(
         drawer = null;
       }
       if (commentLayer) commentLayer.dispose();
+      if (overrides) overrides.dispose();
       container.onclick = null;
     },
   };

@@ -11,6 +11,10 @@ import {
   saveTrustDial,
   triageSummaryLine,
   triageFingerprint,
+  applyTriageOverride,
+  applyTriageOverrides,
+  overrideDirectionFor,
+  unsettledOverrides,
 } from "../src/core/triageModel.js";
 
 /** A one-hunk patch for `path` whose changed line is `line`. */
@@ -56,6 +60,8 @@ describe("planChangesetTriage", () => {
         rationale: "changes how the key is sealed",
         untriaged: false,
         overridden: false,
+        overrideDirection: "",
+        note: "",
         group: "",
       },
     ]);
@@ -171,6 +177,95 @@ describe("planChangesetTriage", () => {
   });
 });
 
+// The reviewer's half of the overlay. A disagreement is applied to the plan the
+// moment it is made — before the bridge has answered — so the same pure join
+// that renders the pass's reading renders the reviewer's correction of it, and
+// the two are told apart on the hunk.
+describe("overriding what the pass decided", () => {
+  const PASS = triageOf([
+    { hunk_id: ids["src/crypto.rs"], level: "critical", rationale: "the seal" },
+    { hunk_id: ids["Cargo.toml"], level: "low", group: "Version bumps", rationale: "a version string" },
+  ]);
+
+  const markFor = (result, path) =>
+    result.sections.flatMap((section) => section.files).find((file) => file.path === path).triageHunks[0];
+
+  it("names the disagreement each hunk offers, and none where there is nothing to disagree with", () => {
+    const result = plan(PASS);
+    expect(overrideDirectionFor(markFor(result, "src/crypto.rs"))).toBe("collapse");
+    expect(overrideDirectionFor(markFor(result, "Cargo.toml"))).toBe("surface");
+    // A hunk the pass never named: there is no decision here to disagree with.
+    expect(overrideDirectionFor(markFor(result, "docs/readme.md"))).toBe(null);
+  });
+
+  it("offers the way back on a hunk the reviewer already moved", () => {
+    const surfaced = applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "surface" });
+    expect(overrideDirectionFor(markFor(plan(surfaced), "Cargo.toml"))).toBe("collapse");
+    const collapsed = applyTriageOverride(PASS, { hunk_id: ids["src/crypto.rs"], direction: "collapse" });
+    expect(overrideDirectionFor(markFor(plan(collapsed), "src/crypto.rs"))).toBe("surface");
+  });
+
+  it("moves a collapsed hunk into the stack, leaving the pass's own reading untouched", () => {
+    const overridden = applyTriageOverride(PASS, {
+      hunk_id: ids["Cargo.toml"],
+      direction: "surface",
+      note: "a version bump is how the last outage shipped",
+    });
+    expect(PASS.overrides).toEqual([]); // pure: the pass it was given is unchanged
+    const result = plan(overridden);
+    const normal = result.sections.find((section) => section.kind === "normal");
+    expect(pathsIn(normal)).toContain("Cargo.toml");
+    const mark = markFor(result, "Cargo.toml");
+    expect(mark.overridden).toBe(true);
+    expect(mark.overrideDirection).toBe("surface");
+    expect(mark.note).toBe("a version bump is how the last outage shipped");
+  });
+
+  it("folds a surfaced hunk into a group of the reviewer's own, not the pass's", () => {
+    const result = plan(applyTriageOverride(PASS, { hunk_id: ids["src/crypto.rs"], direction: "collapse" }));
+    expect(result.sections.find((section) => section.kind === "critical")).toBeUndefined();
+    const group = result.sections.find((section) => section.name === "Collapsed by you");
+    expect(pathsIn(group)).toEqual(["src/crypto.rs"]);
+    expect(markFor(result, "src/crypto.rs").overrideDirection).toBe("collapse");
+  });
+
+  it("keeps one word per hunk: saying it again replaces what was said before", () => {
+    const once = applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "surface", note: "first" });
+    const twice = applyTriageOverride(once, { hunk_id: ids["Cargo.toml"], direction: "collapse", note: "second" });
+    expect(twice.overrides).toEqual([{ hunk_id: ids["Cargo.toml"], direction: "collapse", note: "second" }]);
+  });
+
+  it("refuses a direction it cannot render rather than dropping the hunk somewhere", () => {
+    expect(() => applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "delete" })).toThrow(/surface/);
+    expect(() => applyTriageOverride(PASS, { direction: "surface" })).toThrow(/hunk/);
+    expect(() => applyTriageOverride(null, { hunk_id: "h1", direction: "surface" })).toThrow(/pass/);
+  });
+
+  it("applies a whole queue of them in order", () => {
+    const result = applyTriageOverrides(PASS, [
+      { hunk_id: ids["Cargo.toml"], direction: "surface" },
+      { hunk_id: ids["src/crypto.rs"], direction: "collapse" },
+    ]);
+    expect(result.overrides.map((override) => override.direction)).toEqual(["surface", "collapse"]);
+  });
+
+  // What a client holds while the bridge catches up: an override it has sent
+  // stays applied locally until the pass comes back carrying it, and is dropped
+  // the moment it does — so the reviewer never sees their own decision flicker.
+  it("holds a sent override only until the pass comes back carrying it", () => {
+    const pending = [
+      { hunk_id: ids["Cargo.toml"], direction: "surface" },
+      { hunk_id: ids["src/crypto.rs"], direction: "collapse" },
+    ];
+    expect(unsettledOverrides(PASS, pending)).toEqual(pending);
+    const answered = applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "surface", note: "" });
+    expect(unsettledOverrides(answered, pending)).toEqual([pending[1]]);
+    // An answer that says something else about the hunk is not this one.
+    const otherWay = applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "collapse" });
+    expect(unsettledOverrides(otherWay, pending)).toEqual(pending);
+  });
+});
+
 describe("triageFingerprint", () => {
   const hunks = [{ hunk_id: "h1", level: "critical", rationale: "the seal" }];
 
@@ -189,6 +284,12 @@ describe("triageFingerprint", () => {
     expect(triageFingerprint(triageOf(hunks))).not.toBe(
       triageFingerprint(triageOf(hunks, { overrides: [{ hunk_id: "h1", direction: "collapse", at: "now" }] })),
     );
+  });
+
+  it("moves when the reviewer's note lands on a disagreement already made", () => {
+    const bare = triageOf(hunks, { overrides: [{ hunk_id: "h1", direction: "collapse" }] });
+    const noted = triageOf(hunks, { overrides: [{ hunk_id: "h1", direction: "collapse", note: "it is a rename" }] });
+    expect(triageFingerprint(bare)).not.toBe(triageFingerprint(noted));
   });
 
   it("tells a missing pass apart from an empty one", () => {

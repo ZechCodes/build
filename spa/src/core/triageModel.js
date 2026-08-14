@@ -51,24 +51,80 @@ function classifiedHunks(triage) {
       rationale: hunk.rationale || "",
       group: hunk.group || "",
       overridden: false,
+      overrideDirection: "",
+      note: "",
     });
   }
   for (const override of (triage && triage.overrides) || []) {
     if (!override || !override.hunk_id) continue;
     const classified = byId.get(override.hunk_id);
     if (!classified) continue;
+    const said = { overridden: true, overrideDirection: override.direction, note: override.note || "" };
     if (override.direction === "surface") {
-      byId.set(override.hunk_id, { ...classified, level: "normal", group: "", overridden: true });
+      byId.set(override.hunk_id, { ...classified, ...said, level: "normal", group: "" });
     } else if (override.direction === "collapse") {
       byId.set(override.hunk_id, {
         ...classified,
+        ...said,
         level: "low",
         group: classified.group || READER_COLLAPSED_GROUP,
-        overridden: true,
       });
     }
   }
   return byId;
+}
+
+/** The two ways a reviewer can disagree with a pass, as the wire says them. */
+const OVERRIDE_DIRECTIONS = ["surface", "collapse"];
+
+/**
+ * The disagreement one hunk offers the reviewer, or null when it offers none.
+ *
+ * A surfaced critical offers to be collapsed and a collapsed hunk offers to be
+ * kept surfaced — the two moves the doc names. A hunk the reviewer has already
+ * moved offers the way back, so nothing is a one-way door. A hunk the pass left
+ * in the middle of the stack, or never named at all, offers nothing: there is
+ * no decision there to disagree with, and a control on every row would be noise
+ * over the whole diff.
+ */
+export function overrideDirectionFor(mark) {
+  if (!mark || !mark.hunk_id || mark.untriaged) return null;
+  if (mark.overridden) return mark.overrideDirection === "surface" ? "collapse" : "surface";
+  if (mark.level === "critical") return "collapse";
+  if (mark.level === "low") return "surface";
+  return null;
+}
+
+/**
+ * applyTriageOverride(triage, { hunk_id, direction, note }) → a NEW triage
+ * carrying that disagreement.
+ *
+ * This is how an override reaches the screen before the bridge has answered:
+ * the same join that renders the pass renders the pass-plus-what-the-reviewer-
+ * just-said, so the stack re-orders on the tap rather than on the next poll.
+ * At most one word per hunk — saying it again replaces what was said before,
+ * which is what the bridge records too.
+ */
+export function applyTriageOverride(triage, { hunk_id, direction, note = "" } = {}) {
+  if (!triage) throw new Error("triage override: there is no pass to disagree with");
+  if (!hunk_id) throw new Error("triage override: a disagreement names the hunk it is about");
+  if (!OVERRIDE_DIRECTIONS.includes(direction))
+    throw new Error(`triage override: unknown direction ${direction} — expected surface or collapse`);
+  const kept = (triage.overrides || []).filter((override) => override.hunk_id !== hunk_id);
+  return { ...triage, overrides: [...kept, { hunk_id, direction, note: note || "" }] };
+}
+
+export function applyTriageOverrides(triage, overrides) {
+  return (overrides || []).reduce((carried, override) => applyTriageOverride(carried, override), triage);
+}
+
+/** The overrides a client has sent that the pass has not come back carrying —
+ *  what it still has to hold on top of the bridge's answer. An override the
+ *  pass now states is the bridge's to render, and holding a copy of it would
+ *  only mean rendering the reviewer's decision from two places. */
+export function unsettledOverrides(triage, pending) {
+  const settled = new Map(((triage && triage.overrides) || []).map((override) => [override.hunk_id, override.direction]));
+  return (pending || []).filter((override) => settled.get(override.hunk_id) !== override.direction);
 }
 
 /** The hunk ids of `patch`, queued per file path in patch order, so a file that
@@ -101,6 +157,8 @@ function markFile(file, queue, classified) {
       rationale: known ? known.rationale : "",
       untriaged: !known,
       overridden: Boolean(known && known.overridden),
+      overrideDirection: known ? known.overrideDirection : "",
+      note: known ? known.note : "",
       group: known ? known.group : "",
     });
   }
@@ -245,7 +303,7 @@ export function triageFingerprint(triage) {
     .map((hunk) => `${hunk.hunk_id}:${hunk.level}:${hunk.group || ""}:${hunk.rationale || ""}`)
     .join(",");
   const overrides = (triage.overrides || [])
-    .map((override) => `${override.hunk_id}:${override.direction}`)
+    .map((override) => `${override.hunk_id}:${override.direction}:${override.note || ""}`)
     .join(",");
   return [triage.based_on || "", triage.stale ? "stale" : "fresh", hunks, overrides].join("\x1f");
 }

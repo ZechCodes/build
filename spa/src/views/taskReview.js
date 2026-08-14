@@ -107,6 +107,10 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
       };
     },
     submit: (messages) => callRpc("run.request_changes", { run_id: taskId, ...agentSelection.scope(), messages }),
+    // The reviewer's disagreement with the pass. It lands on the run's own
+    // triage, and in the conversation of the agent that wrote the rationale.
+    submitOverride: ({ hunk_id, direction, note }) =>
+      callRpc("triage.override", { run_id: taskId, hunk_id, direction, note }),
     revisionId: () => currentRevisionId(getTask()?.thread, "diff"),
     statusHtml: () =>
       getTask() && getTask().state === "building"

@@ -84,6 +84,19 @@
    a touch screen a tap focuses the chip and reveals the same line. */
 .hchip .hrationale { display:none; color:var(--dim); }
 .hchip:hover .hrationale, .hchip:focus .hrationale, .hchip:focus-within .hrationale { display:inline; }
+/* The reviewer's own reading of a hunk, told apart from the pass's: it reads as
+   a fact about who decided, not as a level. */
+.hchip.overridden { color:var(--ink); border:1px solid var(--line); }
+
+/* The offer to disagree, on the hunk the decision was about. It sits quiet
+   until the row is under the pointer — the diff is what is being read here, and
+   a control on every classified hunk would compete with it. */
+.toverride { font:inherit; font-size:11px; font-family:var(--mono); margin-left:8px; padding:1px 8px;
+  color:var(--dim); background:none; border:1px dashed var(--line3); border-radius:999px;
+  cursor:pointer; opacity:0; transition:opacity .12s ease; }
+tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
+.toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; }
+@media (hover: none) { .toverride { opacity:1; } }
 
 /* The pending-comment tray under a changeset: what has been written but not yet
    sent, plus the general note and the send controls. */

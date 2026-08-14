@@ -20,6 +20,7 @@ import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
+import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 
 export const REVIEW_POLL_MS = 1600;
@@ -56,6 +57,8 @@ export function emptyStackHtml(totalFiles, changedOnly) {
  *   reports `triage` renders the plain stack, with no overlay and no label.
  * - `submit(messages)` sends the anchored comment posts; omitting it makes the
  *   surface read-only.
+ * - `submitOverride({ hunk_id, direction, note })` sends the reviewer's
+ *   disagreement with where the pass put a hunk; omitting it draws no offers.
  * - `revisionId()` names the revision the anchors belong to.
  * - `renderIdleActions(actionsHost, hintHost)` fills the actionbar while no
  *   comment is pending; it returns whether it drew anything.
@@ -66,6 +69,7 @@ export function emptyStackHtml(totalFiles, changedOnly) {
 export function createReviewPlug({
   fetchDiff,
   submit = null,
+  submitOverride = null,
   revisionId = () => null,
   hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   renderIdleActions = () => false,
@@ -89,6 +93,20 @@ export function createReviewPlug({
   let triageProject = null;
   let trustDial = false;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
+  // Disagreeing with the pass: applied to the stack on the tap, sent after, and
+  // held here only until the pass comes back carrying it.
+  const overrides = submitOverride
+    ? createTriageOverrides({
+        post: submitOverride,
+        onChange: () => {
+          diffKey = null; // the reading changed under an unchanged patch
+          render();
+        },
+      })
+    : null;
+  /** The pass as the reviewer's latest word makes it — what is rendered, and
+   *  what the poll compares against. */
+  const currentTriage = () => (overrides ? overrides.apply(triageReport) : triageReport);
 
   // Re-review memory, per plug instance (per session): what the reviewer saw
   // when they last sent comments, which files they have ticked off as read, and
@@ -149,7 +167,13 @@ export function createReviewPlug({
           review:
             triageReport === undefined
               ? null
-              : { triage: triageReport, patch: renderedPatch, dial: trustDial, expandedGroups },
+              : {
+                  triage: currentTriage(),
+                  patch: renderedPatch,
+                  dial: trustDial,
+                  expandedGroups,
+                  overridable: Boolean(overrides),
+                },
         })
       : emptyStackHtml(renderedFiles.length, changedOnlyFilter);
     host.innerHTML =
@@ -209,6 +233,10 @@ export function createReviewPlug({
         render();
         return;
       }
+      // Disagreeing with where the pass put a hunk, before the comment layer
+      // sees the press: the offer sits on a hunk row, and a line tap there
+      // would otherwise open a comment on it.
+      if (overrides && overrides.handleClick(event)) return;
       const groupHead = event.target.closest(".tgrouphead");
       if (groupHead) {
         const name = groupHead.dataset.group;
@@ -244,7 +272,7 @@ export function createReviewPlug({
       String(payload.key ?? ""),
       String(commentableNow),
       String(trustDial),
-      triageFingerprint(triageReport),
+      triageFingerprint(currentTriage()),
       payload.patch,
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
@@ -278,6 +306,7 @@ export function createReviewPlug({
       if (timer) clearInterval(timer);
       timer = null;
       if (commentLayer) commentLayer.dispose();
+      if (overrides) overrides.dispose();
       if (host) {
         host.onclick = null;
         host.onchange = null;

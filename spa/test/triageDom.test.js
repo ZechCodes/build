@@ -193,6 +193,129 @@ describe("the triage overlay in the Changes pane", () => {
   });
 });
 
+// Every triage decision is overridable, and the reviewer's word is the one the
+// surface renders from the moment they give it — not from the next poll.
+describe("disagreeing with the pass in the Changes pane", () => {
+  /** A pane over a pass the test can move under it, plus what the pane said to
+   *  the bridge. `override` decides what `triage.override` answers. */
+  const openWithPass = async ({ override = async () => ({}) } = {}) => {
+    let pass = TRIAGE;
+    const calls = [];
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return dirtyStatus();
+      if (method === "git.log") return log();
+      if (method === "triage.override") {
+        calls.push(params);
+        return override(params);
+      }
+      return {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, {
+      scope: { run_id: "run-1" },
+      projectId: "proj-1",
+      triage: () => pass,
+      callRpc,
+    });
+    mounted.push(pane);
+    await settle();
+    return { container, calls, echo: (updated) => (pass = updated) };
+  };
+
+  /** Press an offer and answer its note popover. */
+  const disagree = async (control, note = "") => {
+    control.click();
+    if (note) document.querySelector(".cp-input").value = note;
+    document.querySelector(".cp-save").click();
+    await settle();
+  };
+
+  it("collapses a surfaced critical on the tap, and tells the bridge what was said", async () => {
+    const { container, calls } = await openWithPass();
+    await disagree(
+      container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'),
+      "a rename, nothing more",
+    );
+
+    expect(calls).toEqual([
+      {
+        run_id: "run-1",
+        hunk_id: ids["src/crypto.rs"],
+        direction: "collapse",
+        note: "a rename, nothing more",
+      },
+    ]);
+    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    const collapsed = container.querySelector('.tgroup .file[data-file="src/crypto.rs"]');
+    expect(collapsed).toBeTruthy();
+    const chip = collapsed.querySelector(".hchip.overridden");
+    expect(chip.textContent).toContain("your call: collapsed");
+    expect(chip.textContent).toContain("a rename, nothing more");
+  });
+
+  it("keeps a hunk surfaced from inside the group it was folded into", async () => {
+    const { container, calls } = await openWithPass();
+    container.querySelector(".tgrouphead").click();
+    await settle();
+    await disagree(container.querySelector('.tgroup .toverride[data-direction="surface"]'));
+
+    expect(calls).toEqual([
+      { run_id: "run-1", hunk_id: ids["Cargo.toml"], direction: "surface", note: "" },
+    ]);
+    const surfaced = container.querySelector('.tsection.tnormal .file[data-file="Cargo.toml"]');
+    expect(surfaced).toBeTruthy();
+    expect(surfaced.querySelector(".hchip.overridden").textContent).toContain("your call: surfaced");
+    // And the way back is what it now offers.
+    expect(surfaced.querySelector(".toverride").dataset.direction).toBe("collapse");
+  });
+
+  it("holds the correction through the polls before the pass carries it, and never doubles it", async () => {
+    const { container, echo } = await openWithPass();
+    await disagree(container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'));
+
+    // The pass has not caught up yet: the reviewer's reading must not flicker.
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    await settle();
+    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);
+
+    // Now it does, and the surface renders the disagreement from the pass alone.
+    echo({ ...TRIAGE, overrides: [{ hunk_id: ids["src/crypto.rs"], direction: "collapse", note: "" }] });
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    await settle();
+    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);
+  });
+
+  it("puts the hunk back when the bridge refuses the correction, and says so", async () => {
+    const { container } = await openWithPass({
+      override: async () => {
+        throw new Error("the pass on run-1 did not classify that hunk");
+      },
+    });
+    await disagree(container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'));
+
+    expect(container.querySelector('.tsection.tcritical .file').dataset.file).toBe("src/crypto.rs");
+    expect(container.querySelector(".hchip.overridden")).toBeNull();
+    expect(document.querySelector("#notices .notice")).toBeTruthy();
+  });
+
+  it("offers nothing on a surface with no run to disagree on behalf of", async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "git.status") return dirtyStatus();
+      if (method === "git.log") return log();
+      return {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, { scope: { project_id: "proj-1" }, callRpc });
+    mounted.push(pane);
+    await settle();
+    expect(container.querySelector(".toverride")).toBeNull();
+  });
+});
+
 describe("the triage overlay on the aggregate review stack", () => {
   const mountPlug = async (payload) => {
     const host = document.createElement("div");
@@ -233,6 +356,31 @@ describe("the triage overlay on the aggregate review stack", () => {
   it("leaves a surface that plugs no triage in exactly as it was", async () => {
     const { host, plug } = await mountPlug({});
     expect(host.querySelector(".triagebar")).toBeNull();
+    plug.unmount();
+  });
+
+  it("posts the reviewer's disagreement and re-orders the stack on the tap", async () => {
+    const submitOverride = vi.fn(async () => ({}));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const plug = createReviewPlug({
+      fetchDiff: async () => ({ patch: DIRTY_PATCH, triage: TRIAGE, projectId: "proj-1" }),
+      submitOverride,
+    });
+    plug.mount(host);
+    await settle();
+
+    host.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]').click();
+    document.querySelector(".cp-save").click();
+    await settle();
+
+    expect(submitOverride).toHaveBeenCalledWith({
+      hunk_id: ids["src/crypto.rs"],
+      direction: "collapse",
+      note: "",
+    });
+    expect(host.querySelector(".tsection.tcritical")).toBeNull();
+    expect(host.querySelector('.tgroup .file[data-file="src/crypto.rs"]')).toBeTruthy();
     plug.unmount();
   });
 });

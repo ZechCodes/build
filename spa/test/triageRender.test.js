@@ -122,3 +122,58 @@ describe("diffStackHtml with a triage overlay", () => {
     expect(html).not.toContain('data-file="uv.lock"'); // collapsed, as before
   });
 });
+
+// Every triage decision is overridable (the issue doc's fourth principle), and
+// the offer sits on the hunk the decision was about.
+describe("the override controls on an ordered stack", () => {
+  const overridable = (review) => stack({ overridable: true, ...review });
+
+  const controlsIn = (html, path) => {
+    const file = html.slice(html.indexOf(`data-file="${path}"`));
+    return file.slice(0, file.indexOf("</table>"));
+  };
+
+  it("offers to collapse a surfaced critical and to keep a collapsed hunk surfaced", () => {
+    const html = overridable({ triage: triage() });
+    const critical = controlsIn(html, "src/crypto.rs");
+    expect(critical).toContain(`data-direction="collapse"`);
+    expect(critical).toContain(`data-hunk="${ids["src/crypto.rs"]}"`);
+    expect(critical).toContain("Collapse");
+    const collapsed = controlsIn(html, "Cargo.toml");
+    expect(collapsed).toContain(`data-direction="surface"`);
+    expect(collapsed).toContain("Keep surfaced");
+  });
+
+  it("offers nothing on a hunk the pass never named", () => {
+    const html = overridable({ triage: triage({ hunks: [{ hunk_id: ids["src/crypto.rs"], level: "critical" }] }) });
+    expect(controlsIn(html, "Cargo.toml")).not.toContain("toverride");
+  });
+
+  it("draws no controls where the surface cannot post one", () => {
+    expect(stack({ triage: triage() })).not.toContain("toverride");
+  });
+
+  it("says on the hunk when the reading there is the reviewer's own, and what they said", () => {
+    const html = overridable({
+      triage: triage({
+        overrides: [{ hunk_id: ids["Cargo.toml"], direction: "surface", note: "this bump shipped the outage" }],
+      }),
+    });
+    const overridden = controlsIn(html, "Cargo.toml");
+    expect(overridden).toContain('class="hchip overridden"');
+    expect(overridden).toContain("your call: surfaced");
+    expect(overridden).toContain("this bump shipped the outage");
+    // And the way back is the control it now offers.
+    expect(overridden).toContain(`data-direction="collapse"`);
+  });
+
+  it("escapes what the reviewer wrote", () => {
+    const html = overridable({
+      triage: triage({
+        overrides: [{ hunk_id: ids["Cargo.toml"], direction: "surface", note: '<img src=x onerror="boom">' }],
+      }),
+    });
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+});

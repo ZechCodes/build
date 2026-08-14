@@ -117,6 +117,31 @@ describe("conversation thread rendering", () => {
     expect(entry.classList.contains("success")).toBe(false);
   });
 
+  // The whole disagreement, in the conversation: which file, the claim the pass
+  // made about it, and what the reviewer said back — each its own line, so the
+  // agent reading this can see which of its own claims was not believed.
+  it("shows the hunk's context on an override: the file, the rejected rationale, the reviewer's note", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: {
+            event: "triage_overridden",
+            summary:
+              "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.\n\n" +
+              "Triage said: a mechanical rename\n\nkey derivation is never boilerplate",
+          },
+        },
+      ],
+    });
+    const detail = document.querySelector(".thread-event .thread-event-detail");
+    expect(detail.textContent).toContain("src/crypto.rs");
+    expect(detail.textContent).toContain("Triage said: a mechanical rename");
+    expect(detail.textContent).toContain("key derivation is never boilerplate");
+    // Three claims, three paragraphs — not one run-on line.
+    expect(detail.querySelectorAll("p").length).toBe(3);
+  });
+
   it("renders a done-flagged send like any other message after the done entry", () => {
     const html = threadHtml(
       {

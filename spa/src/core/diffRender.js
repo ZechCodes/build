@@ -7,7 +7,7 @@ import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
-import { planChangesetTriage, triageSummaryLine } from "./triageModel.js";
+import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
 /** The code-cell HTML for one diff row. On a dotenv file a secret-like line is
  *  masked (a click-to-reveal spoiler span, both old and new values independent);
@@ -30,7 +30,7 @@ function codeCellHtml(text, lang, maskDotenv) {
  *  per-line (each row tokenized on its own) — an accepted tradeoff for a
  *  multi-line grammar, since diff rows arrive one line at a time. `maskDotenv`
  *  (set by the caller for a dotenv file path) masks secret-like line content. */
-export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks = null } = {}) {
+export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks = null, overridable = false } = {}) {
   let hunkIndex = 0;
   return rows
     .map((r) => {
@@ -39,27 +39,60 @@ export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks 
       const mark = hunkMarks ? hunkMarks[hunkIndex] : null;
       hunkIndex++;
       const attributes = mark ? ` data-hunk="${esc(mark.hunk_id || "")}" data-level="${esc(mark.level)}"` : "";
-      return `<tr class="hunk"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}${hunkChipHtml(mark)}</td></tr>`;
+      return `<tr class="hunk"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}${hunkChipHtml(mark, overridable)}</td></tr>`;
     })
     .join("");
 }
 
-/** The level chip on a hunk row: on a surfaced critical (carrying the pass's
- *  one-line rationale, on hover as a title and on tap as a revealed line), and
- *  on a hunk the pass never named, so an ordering with holes in it says so
- *  rather than implying every unchipped hunk was read. Nothing else is chipped:
- *  a collapsed group's header already says what its hunks are, and chipping
- *  every normal hunk would be noise over the whole stack. */
-function hunkChipHtml(mark) {
+/** What a hunk row carries besides its code: the pass's claim about it, the
+ *  reviewer's answer to that claim, and — where the surface can post one — the
+ *  offer to disagree.
+ *
+ *  The level chip goes on a surfaced critical (carrying the pass's one-line
+ *  rationale, on hover as a title and on tap as a revealed line) and on a hunk
+ *  the pass never named, so an ordering with holes in it says so rather than
+ *  implying every unchipped hunk was read. Nothing else is chipped: a collapsed
+ *  group's header already says what its hunks are, and chipping every normal
+ *  hunk would be noise over the whole stack. */
+function hunkChipHtml(mark, overridable = false) {
   if (!mark) return "";
   if (mark.untriaged)
     return `<span class="hchip untriaged" title="the triage pass did not classify this hunk">untriaged</span>`;
-  if (mark.level !== "critical") return "";
   const rationale = mark.rationale || "";
-  const overridden = mark.overridden ? '<span class="hchip-note">your call</span>' : "";
-  return `<span class="hchip critical" tabindex="0" title="${esc(rationale)}">critical${overridden}${
-    rationale ? `<span class="hrationale">${esc(rationale)}</span>` : ""
-  }</span>`;
+  const level =
+    mark.level === "critical"
+      ? `<span class="hchip critical" tabindex="0" title="${esc(rationale)}">critical${
+          rationale ? `<span class="hrationale">${esc(rationale)}</span>` : ""
+        }</span>`
+      : "";
+  return level + overrideChipHtml(mark) + (overridable ? overrideButtonHtml(mark) : "");
+}
+
+/** The chip that says this hunk sits where it sits because the reviewer said
+ *  so, not because the pass did — and, when they left one, why. Without it a
+ *  reviewer coming back to a stack could not tell their own corrections from
+ *  the pass's reading, and a repaint would look like the pass had changed its
+ *  mind. */
+function overrideChipHtml(mark) {
+  if (!mark.overridden) return "";
+  const surfaced = mark.overrideDirection === "surface";
+  const note = mark.note || "";
+  const title = note || (surfaced ? "you kept this hunk in the stack" : "you collapsed this hunk");
+  return `<span class="hchip overridden" tabindex="0" title="${esc(title)}">your call: ${
+    surfaced ? "surfaced" : "collapsed"
+  }${note ? `<span class="hchip-note">${esc(note)}</span>` : ""}</span>`;
+}
+
+/** The offer to disagree, on the hunk the decision was about: a surfaced
+ *  critical offers to be collapsed, a collapsed hunk offers to be kept
+ *  surfaced, and a hunk the reviewer already moved offers the way back. */
+function overrideButtonHtml(mark) {
+  const direction = overrideDirectionFor(mark);
+  if (!direction) return "";
+  const surfacing = direction === "surface";
+  return `<button class="toverride" data-hunk="${esc(mark.hunk_id)}" data-direction="${direction}" title="${
+    surfacing ? "disagree: this needs reading" : "disagree: this does not need reading"
+  }">${surfacing ? "Keep surfaced" : "Collapse"}</button>`;
 }
 
 /** HTML for parsed diff files (core/diff.js parseDiff output). The path is
@@ -86,7 +119,14 @@ function hunkChipHtml(mark) {
  *  existing two-click confirm idiom is what fires it. */
 export function diffFilesHtml(
   files,
-  { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null } = {},
+  {
+    commentable = false,
+    changedSince = null,
+    viewed = null,
+    withViewedToggle = false,
+    fileMenu = null,
+    overridable = false,
+  } = {},
 ) {
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   return files
@@ -104,6 +144,7 @@ export function diffFilesHtml(
         <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, {
           maskDotenv: isDotenvPath(f.path),
           hunkMarks: f.triageHunks || null,
+          overridable,
         })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
     })
@@ -185,14 +226,16 @@ function triageGroupHtml(section, { expanded, fileOptions }) {
 /** The readable files of one changeset, ordered by triage when a surface plugs
  *  the overlay in.
  *
- *  `review` is `{ triage, patch, dial, expandedGroups }`: the run's triage
- *  payload (or null), the patch those files came from (the hunk ids live
- *  there), whether the reviewer has turned the overlay off, and the groups they
- *  have opened. Null `review` — a surface that has no triage to render — takes
- *  the plain stack, unchanged. */
-function reviewStackHtml(files, review, fileOptions) {
-  if (!review) return diffFilesHtml(files, fileOptions);
-  const { triage = null, patch = "", dial = false, expandedGroups = null } = review;
+ *  `review` is `{ triage, patch, dial, expandedGroups, overridable }`: the run's
+ *  triage payload (or null), the patch those files came from (the hunk ids live
+ *  there), whether the reviewer has turned the overlay off, the groups they
+ *  have opened, and whether this surface can post their disagreements. Null
+ *  `review` — a surface that has no triage to render — takes the plain stack,
+ *  unchanged. */
+function reviewStackHtml(files, review, options) {
+  if (!review) return diffFilesHtml(files, options);
+  const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
+  const fileOptions = { ...options, overridable };
   // The dial renders the untriaged stack, and says so — the pass is still
   // there, and one click puts it back.
   if (dial)

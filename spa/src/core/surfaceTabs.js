@@ -8,8 +8,50 @@
 // term_id.
 
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
+import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
+
+/** What every surface says while the machine is out of reach. One sentence, in
+ *  the chip over a live pane and in the place of a pane that could not attach. */
+export const RECONNECTING_MESSAGE = "reconnecting to your machine…";
+
+/**
+ * Run `retry` the next time the shared terminal socket reports a connection —
+ * immediately, if it already has one. Returns { dispose() }; the watch is
+ * one-shot and disposing it before the socket returns cancels the retry.
+ *
+ * The socket owns the reconnect and its backoff, so a surface whose attach was
+ * cut off waits for THAT rather than retrying on a schedule of its own: retries
+ * on a timer are what piled up behind a socket that was never coming back.
+ */
+export function whenTerminalReconnects(retry) {
+  let waiting = true; // still expecting a connection
+  let disposed = false;
+  let unsubscribe = null;
+  const release = () => {
+    if (unsubscribe) unsubscribe();
+    unsubscribe = null;
+  };
+  unsubscribe = subscribeTerminalStatus((status) => {
+    if (!waiting || status !== "connected") return;
+    waiting = false;
+    // Off the subscribe call: the hub reports the current status DURING
+    // subscribe, and running the retry inline would fire before there is an
+    // unsubscribe to release — leaving the watch behind.
+    setTimeout(() => {
+      release();
+      if (!disposed) retry();
+    }, 0);
+  });
+  return {
+    dispose() {
+      disposed = true;
+      waiting = false;
+      release();
+    },
+  };
+}
 
 /**
  * Overlay a `.termpane` host with a connectivity chip + dim-while-offline, driven
@@ -23,7 +65,7 @@ export function attachConnectionOverlay(host) {
   const chip = document.createElement("div");
   chip.className = "term-conn";
   chip.hidden = true;
-  chip.textContent = "reconnecting to your machine…";
+  chip.textContent = RECONNECTING_MESSAGE;
   host.appendChild(chip);
   const unsubscribe = subscribeTerminalStatus((status) => {
     const offline = status !== "connected";
@@ -205,26 +247,44 @@ export function mountAgentTab(
 
   let pane = null;
   let disposed = false;
-  mountAgentPane(host.querySelector("#agentpane"), target, {
-    // A retained screen with no live session is a harness that ran and stopped;
-    // an empty one never ran at all. Either way the attach names the harness
-    // the tab runs, which is what the offer leads with once it is gone.
-    onLive: (live, attached) => {
-      if (attached && attached.provider) ranProvider = attached.provider;
-      show(live ? "live" : hasScreen(attached) ? "exited" : "idle");
-    },
-    onExit: (reason) => {
-      if (reason === "agent_session_ended") show("exited");
-    },
-  }).then(
-    (p) => (disposed ? p.dispose() : (pane = p)),
-    // An unresolvable address (a plan whose worktree is gone, a deleted run) is
-    // the empty state too — the offer stands, the surface is intact.
-    () => show("idle"),
-  );
+  let reconnectWatch = null;
+  const mountPane = () => {
+    reconnectWatch = null;
+    mountAgentPane(host.querySelector("#agentpane"), target, {
+      // A retained screen with no live session is a harness that ran and stopped;
+      // an empty one never ran at all. Either way the attach names the harness
+      // the tab runs, which is what the offer leads with once it is gone.
+      onLive: (live, attached) => {
+        if (attached && attached.provider) ranProvider = attached.provider;
+        show(live ? "live" : hasScreen(attached) ? "exited" : "idle");
+      },
+      onExit: (reason) => {
+        if (reason === "agent_session_ended") show("exited");
+      },
+    }).then(
+      (p) => (disposed ? p.dispose() : (pane = p)),
+      (error) => {
+        if (disposed) return;
+        // A lost socket says nothing about this worktree — the agent may well be
+        // running on the other side of it. Say the machine is out of reach and
+        // attach again when it is back, instead of standing here as an empty
+        // worktree until the human navigates away and comes back.
+        if (isTerminalSocketLost(error)) {
+          show("idle", RECONNECTING_MESSAGE);
+          reconnectWatch = whenTerminalReconnects(mountPane);
+          return;
+        }
+        // An unresolvable address (a plan whose worktree is gone, a deleted run)
+        // is the empty state — the offer stands, the surface is intact.
+        show("idle");
+      },
+    );
+  };
+  mountPane();
   return {
     dispose() {
       disposed = true;
+      if (reconnectWatch) reconnectWatch.dispose();
       if (pane) pane.dispose();
     },
   };

@@ -824,6 +824,98 @@ describe("TerminalSocket output acks", () => {
   });
 });
 
+// A caller that asks the socket for something before it is up waits on
+// whenConnected(). A wait that only ever RESOLVES is the wedge amplifier: when
+// the socket dies, every waiter hangs forever, the surfaces that asked never
+// finish, and their retries stack behind a socket that is not coming back on
+// its own. Every wait ends — with a connection, or with a typed loss.
+describe("a caller waiting on a socket that is lost", () => {
+  /** A started-but-not-yet-connected socket, with its first WebSocket. */
+  async function connecting(overrides) {
+    FakeWebSocket.instances.length = 0;
+    const socket = makeSocket(overrides);
+    const statuses = [];
+    socket.onStatus((s) => statuses.push(s));
+    const started = socket.start();
+    started.catch(() => {});
+    await tick();
+    return { socket, started, statuses, ws: FakeWebSocket.instances.at(-1) };
+  }
+
+  it("rejects pending whenConnected waiters with a typed loss instead of hanging", async () => {
+    const { socket, ws } = await connecting();
+    const waiting = socket.whenConnected();
+    ws.close(); // the relay drops us mid-handshake
+    await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
+    socket.close();
+  });
+
+  it("rejects the calls that were waiting on it, so nothing stacks behind a dead socket", async () => {
+    const { socket, ws } = await connecting();
+    const attaching = socket.attachTerminal("term-1", { cols: 80, rows: 24, onSnapshot: () => {} });
+    const listing = socket.listTerminals({ run_id: "run-3" });
+    const creating = socket.createTerminal({ run_id: "run-3" }, 80, 24);
+    ws.close();
+    await expect(attaching).rejects.toMatchObject({ name: "TerminalSocketLost" });
+    await expect(listing).rejects.toMatchObject({ name: "TerminalSocketLost" });
+    await expect(creating).rejects.toMatchObject({ name: "TerminalSocketLost" });
+    // Nothing was ever put on the wire: the socket died before the wait ended.
+    expect(callsOn(ws, "term.attach")).toEqual([]);
+    socket.close();
+  });
+
+  it("rejects again on the next failed connect, rather than swallowing a later waiter", async () => {
+    const { socket, ws } = await connecting();
+    ws.close();
+    await tick();
+    const waiting = socket.whenConnected(); // asked while the reconnect is in flight
+    await new Promise((r) => setTimeout(r, 600));
+    FakeWebSocket.instances.at(-1).close(); // …and that attempt dies too
+    await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
+    socket.close();
+  });
+
+  it("rejects waiters on close(), and every wait asked of a closed socket", async () => {
+    const { socket } = await connecting();
+    const waiting = socket.whenConnected();
+    socket.close();
+    await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "closed" });
+    await expect(socket.whenConnected()).rejects.toMatchObject({ reason: "closed" });
+  });
+
+  it("reports the loss (and reconnects) when the connect dies before there is a socket to close", async () => {
+    // transport.ready() throws on the first attempt: there is no WebSocket yet,
+    // so no close event will ever arrive to end the waits or trigger a retry.
+    let failing = true;
+    const brittle = {
+      ...fakeTransport,
+      ready: async () => {
+        if (failing) {
+          failing = false;
+          throw new Error("crypto not ready");
+        }
+      },
+    };
+    FakeWebSocket.instances.length = 0;
+    const socket = makeSocket({ transport: brittle });
+    const statuses = [];
+    socket.onStatus((s) => statuses.push(s));
+    const started = socket.start();
+    const waiting = socket.whenConnected();
+    await expect(started).rejects.toThrow(/crypto not ready/);
+    await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
+    expect(statuses).toEqual(["connecting", "disconnected"]);
+
+    // …and the socket comes back on its own backoff.
+    await new Promise((r) => setTimeout(r, 600));
+    const ws = FakeWebSocket.instances.at(-1);
+    expect(ws).toBeDefined();
+    await handshake(ws);
+    expect(statuses.at(-1)).toBe("connected");
+    socket.close();
+  });
+});
+
 describe("createStatusHub (per-pane connectivity fan-out)", () => {
   it("delivers the current status to a new subscriber, but only once a status is known", () => {
     const hub = createStatusHub();

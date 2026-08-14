@@ -48,6 +48,26 @@ const FRAME_PROOF_OF_LIFE_MS = 4000;
  *  would put an RPC behind every flush of a flood. */
 const TERM_ACK_THROTTLE_MS = 250;
 
+/**
+ * The socket was not there for a caller that needed it.
+ *
+ * `reason` is `disconnected` — the connection was lost and a reconnect is
+ * already on its own backoff — or `closed`, the socket was shut for good.
+ * Callers tell this apart from a bridge error about the terminal itself:
+ * a lost socket is a state to wait out (attach again once it is back), not a
+ * failure to report to the human as if the terminal were gone.
+ */
+export class TerminalSocketLost extends Error {
+  constructor(reason) {
+    super(`terminal socket ${reason}`);
+    this.name = "TerminalSocketLost";
+    this.reason = reason;
+  }
+}
+
+/** Whether a rejection is "the socket was not there". */
+export const isTerminalSocketLost = (error) => error instanceof TerminalSocketLost;
+
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
     if (typeof getPinnedDeviceKey !== "function") {
@@ -89,10 +109,24 @@ export class TerminalSocket {
     await this._connect();
   }
 
-  /** Resolve once the socket is connected (immediately if it already is). */
+  /**
+   * Settle once the socket is connected (immediately if it already is).
+   *
+   * Every wait ENDS: a connection resolves it, and a lost or closed socket
+   * rejects it with a TerminalSocketLost. A wait that could only ever resolve
+   * left every caller of a dead socket hanging — the surface that asked never
+   * finished, and its retries piled up behind a socket that was not coming back
+   * without one of them noticing.
+   */
   whenConnected() {
     if (this._connected) return Promise.resolve();
-    return new Promise((resolve) => this._connectWaiters.push(resolve));
+    if (this._closed) return Promise.reject(new TerminalSocketLost("closed"));
+    return new Promise((resolve, reject) => this._connectWaiters.push({ resolve, reject }));
+  }
+
+  /** End every wait on a connection that is not coming. */
+  _failConnectWaiters(reason) {
+    for (const { reject } of this._connectWaiters.splice(0)) reject(new TerminalSocketLost(reason));
   }
 
   // ---- terminal lifecycle (all ride this one socket) --------------------
@@ -315,6 +349,8 @@ export class TerminalSocket {
   close() {
     this._closed = true;
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
+    // Nobody is waiting for a connection that will never be attempted again.
+    this._failConnectWaiters("closed");
     try { this._ws && this._ws.close(); } catch { /* ignore */ }
   }
 
@@ -328,7 +364,14 @@ export class TerminalSocket {
     this._connected = false;
     this._lastFrameAt = 0; // the old connection's traffic vouches for nothing here
     this._onStatus("connecting");
-    if (this.transport.ready) await this.transport.ready();
+    try {
+      if (this.transport.ready) await this.transport.ready();
+    } catch (e) {
+      // No socket was ever opened, so no close event will report this: say it
+      // here, or every waiter hangs on a connect that already gave up.
+      this._onLost(gen);
+      throw e;
+    }
 
     const ws = new this.WS(`${this.url}/ws/client`);
     this._ws = ws;
@@ -410,10 +453,15 @@ export class TerminalSocket {
       this._onStatus("connected");
       this._backoff = 400;
       this._connected = true;
-      this._connectWaiters.splice(0).forEach((resolve) => resolve());
+      this._connectWaiters.splice(0).forEach(({ resolve }) => resolve());
       this._startLiveness(gen);
     } catch (e) {
       try { ws.close(); } catch { /* ignore */ }
+      // A close event normally lands the loss (and the retry) for us, but a
+      // connect that dies before the socket opens — or before there is a socket
+      // at all — has no event to ride: without this, its waiters hang and
+      // nothing ever reconnects.
+      this._onLost(gen);
       throw e;
     }
   }
@@ -609,8 +657,12 @@ export class TerminalSocket {
     // Every pending ack was read on the connection that just died: the bridge
     // it would report to is gone, and the re-attach rebases each cursor anyway.
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
-    for (const { reject } of this._pending.values()) reject(new Error("disconnected"));
+    for (const { reject } of this._pending.values()) reject(new TerminalSocketLost("disconnected"));
     this._pending.clear();
+    // Whoever was waiting for this connection is waiting for one that is gone.
+    // The next one is already on its way (below); a caller that wants it says so
+    // by asking again, rather than by holding a promise nothing will settle.
+    this._failConnectWaiters("disconnected");
     const delay = this._backoff;
     this._backoff = Math.min(this._backoff * 2, 8000);
     setTimeout(() => {

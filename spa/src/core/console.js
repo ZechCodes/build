@@ -22,9 +22,10 @@ import {
   toggledConsoleSize,
   writeConsoleSize,
 } from "./consoleModel.js";
-import { attachConnectionOverlay } from "./surfaceTabs.js";
+import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
 import { esc } from "./text.js";
 import { terminalManager } from "../terminal/manager.js";
+import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
 
@@ -56,7 +57,11 @@ export function terminalTabsController(scope) {
     async load() {
       try {
         terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id }));
-      } catch {
+      } catch (error) {
+        // A machine we cannot reach has not answered the question — reading its
+        // silence as "no terminals" is how a shut-looking console gets a shell
+        // opened next to the ones already running in that checkout.
+        if (isTerminalSocketLost(error)) throw error;
         terms = []; // an unknown/unresolvable scope means "no terminals"
       }
       return terms;
@@ -140,10 +145,23 @@ export function mountConsole(host, context) {
   let selected = chosenTerminal.get(key) || null;
   let loading = false;
   let unresolved = false; // the branch named no directory to stand in
+  let unreachable = false; // the machine did not answer — not the same as empty
   let pane = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
+  let reconnectWatch = null; // the one-shot wait for the socket to come back
   let disposed = false;
+
+  /** Do this again once the terminal socket is back. Only one wait at a time:
+   *  the list and the pane are steps of the same mount, so the later one
+   *  replaces whatever the earlier one was waiting to redo. */
+  const retryWhenReconnected = (retry) => {
+    if (reconnectWatch) reconnectWatch.dispose();
+    reconnectWatch = whenTerminalReconnects(() => {
+      reconnectWatch = null;
+      if (!disposed) retry();
+    });
+  };
 
   // ---- the terminals ---------------------------------------------------------
 
@@ -176,8 +194,21 @@ export function mountConsole(host, context) {
       return;
     }
     terms = terminalTabsController(scope);
-    await terms.load();
+    try {
+      await terms.load();
+    } catch {
+      // The socket was not there. Nothing was listed, so nothing is known yet:
+      // say the machine is out of reach and ask again when it is back.
+      terms = null;
+      loading = false;
+      unreachable = true;
+      if (disposed) return;
+      paint();
+      retryWhenReconnected(ensureTerminals);
+      return;
+    }
     loading = false;
+    unreachable = false;
     if (disposed) return;
     const ids = terms.ids();
     selected = (wantedHere && ids.includes(wantedHere) ? wantedHere : null) || (ids.includes(selected) ? selected : ids[0]) || null;
@@ -292,6 +323,9 @@ export function mountConsole(host, context) {
 
   const emptyHtml = () => {
     if (loading) return `<span class="dim">Opening…</span>`;
+    // No offer to open a shell while the machine is out of reach — creating one
+    // needs the same socket the listing just failed on.
+    if (unreachable) return `<span class="dim">${esc(RECONNECTING_MESSAGE)}</span>`;
     if (unresolved) return `<span class="dim">There is no checkout here to open a terminal in.</span>`;
     return `<span class="dim">No terminals are open in this checkout.</span>
       <button type="button" class="btn console-start">Open a terminal</button>`;
@@ -318,6 +352,19 @@ export function mountConsole(host, context) {
       },
       (error) => {
         if (disposed || paneTermId !== termId) return;
+        // The socket died under the attach: the PTY is fine, this browser just
+        // cannot see it. Say so where the screen would be, and mount again when
+        // the socket is back — a terminal called "unavailable" here would stay
+        // that way until the human clicked something.
+        if (isTerminalSocketLost(error)) {
+          paneHost.innerHTML = `<div class="empty">${esc(RECONNECTING_MESSAGE)}</div>`;
+          retryWhenReconnected(() => {
+            if (paneTermId !== termId) return; // the console is showing something else now
+            paneTermId = null; // …otherwise mount this terminal afresh
+            paintBody();
+          });
+          return;
+        }
         // "unknown term_id" = the terminal is gone (exited, closed elsewhere,
         // reaped while the console was shut): drop the tab rather than leave a
         // blank pane that fails identically on every click.
@@ -368,6 +415,8 @@ export function mountConsole(host, context) {
     dispose() {
       disposed = true;
       document.removeEventListener("keydown", onKeydown);
+      if (reconnectWatch) reconnectWatch.dispose();
+      reconnectWatch = null;
       disposePane();
       host.innerHTML = "";
       delete host.dataset.size;

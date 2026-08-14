@@ -1034,6 +1034,11 @@ struct BranchDispatchCreations {
     /// The checkout `branch.dispatch` cut for itself, when the branch it was
     /// asked for did not exist yet.
     minted_worktree: Option<crate::worktree::Worktree>,
+    /// Whether the branch under that checkout is one this call cut. A dispatch
+    /// onto a named branch that already existed adds a checkout for it and
+    /// nothing more: the branch is somebody's work, so cleanup takes the
+    /// directory and leaves the ref.
+    minted_branch: bool,
     /// The run `branch.dispatch` adopted the checkout into, minted or found.
     adopted_run: Option<String>,
 }
@@ -11008,9 +11013,10 @@ impl AppState {
                                 instruction,
                             )?;
                             let worktree_id = crate::worktree::external_worktree_id(
-                                &Self::canonical_root(&minted.path),
+                                &Self::canonical_root(&minted.worktree.path),
                             );
-                            created.minted_worktree = Some(minted);
+                            created.minted_worktree = Some(minted.worktree);
+                            created.minted_branch = minted.branch_was_cut;
                             worktree_id
                         }
                     };
@@ -11118,9 +11124,9 @@ impl AppState {
         project_id: &str,
         branch: Option<&str>,
         instruction: &str,
-    ) -> Result<crate::worktree::Worktree, String> {
+    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
         let base = self.base_for(project_id)?;
-        let worktree = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
+        let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
             Some(name) => self
                 .orch_for(project_id)?
                 .create_worktree_on_named_branch(name, &base)
@@ -11132,15 +11138,19 @@ impl AppState {
                         "branch.dispatch: {name:?} has no letter or number to name a branch after"
                     ));
                 }
-                self.orch_for(project_id)?
-                    .create_bare_worktree(&crate::worktree::slugify(name), &base)
-                    .map_err(err)?
+                crate::worktree::NamedBranchCheckout {
+                    worktree: self
+                        .orch_for(project_id)?
+                        .create_bare_worktree(&crate::worktree::slugify(name), &base)
+                        .map_err(err)?,
+                    branch_was_cut: true,
+                }
             }
         };
         // The checkout must be visible to the adoption that follows it, and to
         // the very next board poll, rather than up to a scan interval later.
         self.invalidate_external_scan(project_id);
-        Ok(worktree)
+        Ok(checkout)
     }
 
     /// Put back what a failed `branch.dispatch` created, newest first.
@@ -11148,7 +11158,8 @@ impl AppState {
     /// Best-effort and quiet: the call has already failed, and the caller is
     /// told about that failure, not about the tidying. A checkout the dispatch
     /// only adopted is un-adopted and left on disk with every file intact —
-    /// only one Build cut for itself is removed.
+    /// only one Build cut for itself is removed, and its branch goes with it
+    /// only if Build cut that too.
     fn undo_branch_dispatch(&mut self, project_id: &str, created: BranchDispatchCreations) {
         if let Some(run_id) = created.adopted_run {
             if let Err(error) = self.run_release(&json!({ "run_id": run_id })) {
@@ -11157,7 +11168,8 @@ impl AppState {
         }
         if let Some(worktree) = created.minted_worktree {
             match self.orch_for(project_id) {
-                Ok(orch) => orch.discard_worktree(&worktree),
+                Ok(orch) if created.minted_branch => orch.discard_worktree(&worktree),
+                Ok(orch) => orch.discard_checkout_keeping_branch(&worktree),
                 Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
             }
             self.invalidate_external_scan(project_id);
@@ -29216,6 +29228,45 @@ mod tests {
                 "{step:?} left the branch ref it cut"
             );
         }
+    }
+
+    /// A named branch that existed before the call is checked out, not cut. So
+    /// when the dispatch then fails, cleanup takes the directory it added and
+    /// leaves the branch: those commits are somebody's work, and nobody asked
+    /// Build to delete them.
+    #[test]
+    fn branch_dispatch_cleanup_keeps_a_branch_it_only_checked_out() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        {
+            let opened = git2::Repository::open(&repo).unwrap();
+            let head = opened.head().unwrap().peel_to_commit().unwrap();
+            opened
+                .branch("build/started-by-hand", &head, false)
+                .unwrap();
+        }
+        state.dispatch_fault = Some(BranchDispatchStep::Adopt);
+
+        let failed = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "build/started-by-hand",
+                "instruction": "pick this up",
+            }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(
+            local_branch_exists(&repo, "build/started-by-hand").unwrap(),
+            "a branch the dispatch only checked out is not its to delete"
+        );
+        assert!(
+            !dir.path().join("wt").join("started-by-hand").exists(),
+            "the checkout it added is gone"
+        );
+        assert!(state.runs.is_empty());
     }
 
     /// A checkout that was there before the call is handed back exactly as it

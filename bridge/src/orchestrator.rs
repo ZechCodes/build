@@ -1259,12 +1259,14 @@ impl Orchestrator {
 
     /// The same bare checkout, on a branch the caller named in full. Used when
     /// a dispatch was given a branch name rather than words to name one after:
-    /// the name is a name, so it is cut exactly as given, `build/` or not.
+    /// the name is a name, so it is cut exactly as given, `build/` or not — and
+    /// an existing branch is checked out rather than cut a second time, which
+    /// is what the answer's `branch_was_cut` tells teardown.
     pub fn create_worktree_on_named_branch(
         &self,
         branch: &str,
         base_branch: &str,
-    ) -> Result<Worktree, OrchestratorError> {
+    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self.worktrees.create_on_branch(branch, base_branch)?)
     }
 
@@ -2420,7 +2422,18 @@ impl Orchestrator {
     /// deleted from the board. A failed cleanup is logged, never fatal — deleting
     /// the task record is what removes it, and a stray worktree is only clutter.
     pub fn discard_worktree(&self, worktree: &Worktree) {
-        if let Err(e) = self.worktrees.remove(worktree, /* keep_branch */ false) {
+        self.discard_checkout(worktree, /* keep_branch */ false)
+    }
+
+    /// The same teardown, for a checkout whose branch Build did not cut: the
+    /// directory goes and the ref stays. A dispatch that checked out a branch
+    /// somebody else made and then failed must hand that branch back whole.
+    pub fn discard_checkout_keeping_branch(&self, worktree: &Worktree) {
+        self.discard_checkout(worktree, /* keep_branch */ true)
+    }
+
+    fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
+        if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
             eprintln!("discard_worktree {}: {e}", worktree.name);
         }
     }

@@ -92,6 +92,16 @@ pub fn is_usable_branch_name(name: &str) -> bool {
         && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
 }
 
+/// A checkout added for a branch named in full, and whether that branch is one
+/// the call cut. Tearing the checkout down deletes the branch only when the
+/// answer is yes: a branch that was already there holds work nobody asked Build
+/// to remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedBranchCheckout {
+    pub worktree: Worktree,
+    pub branch_was_cut: bool,
+}
+
 /// Owns worktree creation and teardown for a single project repository.
 pub struct WorktreeManager {
     repo_path: PathBuf,
@@ -164,11 +174,15 @@ impl WorktreeManager {
     /// and owns the namespace, this one is handed the whole name and owns
     /// nothing but the directory. A branch that already exists is checked out
     /// rather than cut, so dispatching onto work started by hand reaches it.
+    ///
+    /// The answer says which of those two happened, because teardown turns on
+    /// it: a branch that was already there is somebody's work, and removing the
+    /// checkout must not take it with them.
     pub fn create_on_branch(
         &self,
         branch: &str,
         base_branch: &str,
-    ) -> Result<Worktree, WorktreeError> {
+    ) -> Result<NamedBranchCheckout, WorktreeError> {
         if !is_usable_branch_name(branch) {
             return Err(WorktreeError::Command(format!(
                 "{branch:?} is not a branch name"
@@ -186,7 +200,8 @@ impl WorktreeManager {
         }
 
         let branch_ref = format!("refs/heads/{branch}");
-        if repo.find_reference(&branch_ref).is_err() {
+        let branch_was_cut = repo.find_reference(&branch_ref).is_err();
+        if branch_was_cut {
             let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
             repo.branch(branch, &base_commit, false)?;
         }
@@ -196,11 +211,14 @@ impl WorktreeManager {
         opts.reference(Some(&reference));
         repo.worktree(&name, &path, Some(&opts))?;
 
-        Ok(Worktree {
-            name,
-            path,
-            branch: branch.to_string(),
-            base_branch: base_branch.to_string(),
+        Ok(NamedBranchCheckout {
+            worktree: Worktree {
+                name,
+                path,
+                branch: branch.to_string(),
+                base_branch: base_branch.to_string(),
+            },
+            branch_was_cut,
         })
     }
 
@@ -960,21 +978,22 @@ mod tests {
         let mgr = manager(&dir, &repo);
 
         let prefixed = mgr.create_on_branch("build/csv-export", "main").unwrap();
-        assert_eq!(prefixed.branch, "build/csv-export");
-        assert_eq!(prefixed.name, "csv-export");
-        assert!(prefixed.path.join("README.md").exists());
+        assert_eq!(prefixed.worktree.branch, "build/csv-export");
+        assert_eq!(prefixed.worktree.name, "csv-export");
+        assert!(prefixed.branch_was_cut, "nothing was on that name before");
+        assert!(prefixed.worktree.path.join("README.md").exists());
 
         // A name with no namespace stays with no namespace: nothing is added to
         // what the caller asked for.
         let plain = mgr.create_on_branch("hotfix", "main").unwrap();
-        assert_eq!(plain.branch, "hotfix");
-        assert_eq!(plain.name, "hotfix");
+        assert_eq!(plain.worktree.branch, "hotfix");
+        assert_eq!(plain.worktree.name, "hotfix");
 
         // A namespace that is not this manager's is kept whole in the directory
         // name, so two branches never share one directory.
         let foreign = mgr.create_on_branch("feature/csv-export", "main").unwrap();
-        assert_eq!(foreign.branch, "feature/csv-export");
-        assert_eq!(foreign.name, "feature-csv-export");
+        assert_eq!(foreign.worktree.branch, "feature/csv-export");
+        assert_eq!(foreign.worktree.name, "feature-csv-export");
 
         let r = git2::Repository::open(&repo).unwrap();
         for branch in ["build/csv-export", "hotfix", "feature/csv-export"] {
@@ -995,16 +1014,26 @@ mod tests {
         let head = r.head().unwrap().peel_to_commit().unwrap();
         r.branch("build/started-by-hand", &head, false).unwrap();
 
-        let worktree = mgr
+        let added = mgr
             .create_on_branch("build/started-by-hand", "main")
             .unwrap();
 
-        assert_eq!(worktree.branch, "build/started-by-hand");
-        let checkout = git2::Repository::open(&worktree.path).unwrap();
+        assert_eq!(added.worktree.branch, "build/started-by-hand");
+        assert!(
+            !added.branch_was_cut,
+            "the branch was already there, and removing this checkout must not take it"
+        );
+        let checkout = git2::Repository::open(&added.worktree.path).unwrap();
         assert_eq!(
             checkout.head().unwrap().shorthand(),
             Some("build/started-by-hand")
         );
+
+        // And teardown that keeps the branch does exactly that.
+        mgr.remove(&added.worktree, /* keep_branch */ true).unwrap();
+        assert!(r
+            .find_branch("build/started-by-hand", git2::BranchType::Local)
+            .is_ok());
     }
 
     #[test]

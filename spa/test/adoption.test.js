@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createAdoptingCall, createPrimaryAdoptingCall } from "../src/core/adoption.js";
+import { createAdopters, createAdoptingCall, createPrimaryAdoptingCall } from "../src/core/adoption.js";
 
 describe("createAdoptingCall", () => {
   it("adopts on the first runCall, then issues the method with the minted run_id", async () => {
@@ -130,5 +130,45 @@ describe("createPrimaryAdoptingCall", () => {
     await adopting.adopt();
 
     expect(adopting.adoptedRunId()).toBe("run-2");
+  });
+});
+
+// A branch view has two surfaces that can each mutate first — the agent rail
+// and the Changes review — and each one adopting on its own would ask the
+// bridge for two owners of the same checkout.
+describe("createAdopters", () => {
+  const scopeCall = () => vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-7" } : { ok: true }));
+
+  it("hands every surface on one checkout the same adopter", async () => {
+    const call = scopeCall();
+    const adopterFor = createAdopters(call);
+    const scope = { project_id: "p1", worktree_id: "wt-3" };
+
+    const rail = adopterFor(scope);
+    const review = adopterFor({ ...scope });
+    expect(review).toBe(rail);
+
+    await Promise.all([rail.adopt(), review.adopt()]);
+    expect(call.mock.calls.filter((c) => c[0] === "run.adopt")).toHaveLength(1);
+  });
+
+  it("keeps two checkouts apart", () => {
+    const adopterFor = createAdopters(scopeCall());
+    const one = adopterFor({ project_id: "p1", worktree_id: "wt-3" });
+    const other = adopterFor({ project_id: "p1", worktree_id: "wt-4" });
+    expect(other).not.toBe(one);
+  });
+
+  it("adopts the primary checkout when the scope names no worktree", async () => {
+    const call = scopeCall();
+    const adopterFor = createAdopters(call);
+    await adopterFor({ project_id: "p1" }).adopt();
+    expect(call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
+  });
+
+  it("has no adopter for a checkout Build already owns, or for no checkout at all", () => {
+    const adopterFor = createAdopters(scopeCall());
+    expect(adopterFor({ run_id: "run-3" })).toBe(null);
+    expect(adopterFor(null)).toBe(null);
   });
 });

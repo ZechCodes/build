@@ -121,8 +121,10 @@ export function panelHeadHtml(who, mode) {
  * `{ kind: "issue", projectId, issueId }`, optionally carrying a `selection`
  * (core/agentSelection.js) — the shared handle the surface beside the rail
  * reads, so its polls and its review comments name the agent whose bubble is
- * open. Returns `{ dispose() }`; disposing tears down the client view only —
- * PTYs and conversations are the daemon's.
+ * open — and an `adopting` supplier, the view's adopter for the checkout under
+ * it (core/adoption.js `createAdopters`), so the rail does not claim a checkout
+ * a sibling surface is claiming too. Returns `{ dispose() }`; disposing tears
+ * down the client view only — PTYs and conversations are the daemon's.
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
@@ -154,9 +156,15 @@ export function mountAgentRail(host, context) {
   const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
   const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
 
-  /** The adopting caller for a checkout Build owns nothing in. Made once the
-   *  payload says which checkout it is, and kept — it holds the run it mints. */
+  /** The adopting caller for a checkout Build owns nothing in.
+   *
+   *  A view whose other surfaces can adopt too owns the adopter and hands it
+   *  down (`context.adopting`), so the rail and the Changes review claim the
+   *  checkout once between them. Standing alone, the rail makes its own once
+   *  the payload says which checkout it is, and keeps it — it holds the run it
+   *  mints. */
   const adoptingCall = () => {
+    if (context.adopting) return context.adopting() || null;
     if (!adopting && entity.adoptable && entity.projectId) {
       const call = (method, params) => App.call(method, params);
       adopting = entity.primary

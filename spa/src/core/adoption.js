@@ -71,6 +71,43 @@ export function createPrimaryAdoptingCall(call, projectId) {
   return createScopedAdoptingCall(call, { project_id: projectId, primary: true });
 }
 
+/** What checkout a scope names, as one string — the key an adopter is kept
+ *  under. A scope Build already owns (a run) needs no adopter and has no key. */
+function checkoutKey(scope) {
+  if (!scope || !scope.project_id || scope.run_id) return null;
+  return scope.worktree_id ? `worktree:${scope.worktree_id}` : `primary:${scope.project_id}`;
+}
+
+/**
+ * The adopters of one view: one per checkout, made on demand and kept.
+ *
+ * A view can have more than one surface able to mutate first — the branch view
+ * has two, the agent rail and the Changes review — and an adopter each would
+ * race to mint two owners of the same checkout. `createAdopters` hands them
+ * all the same one.
+ *
+ * `call` is App.call-shaped (injected for tests). The returned lookup takes a
+ * git scope (views/branchView.js `branchScope`) and answers the adopter for it,
+ * or null where nothing is to be adopted: a run already owns that checkout, or
+ * the row names none.
+ */
+export function createAdopters(call) {
+  const byCheckout = new Map();
+  return (scope) => {
+    const key = checkoutKey(scope);
+    if (!key) return null;
+    if (!byCheckout.has(key)) {
+      byCheckout.set(
+        key,
+        scope.worktree_id
+          ? createAdoptingCall(call, scope.project_id, scope.worktree_id)
+          : createPrimaryAdoptingCall(call, scope.project_id),
+      );
+    }
+    return byCheckout.get(key);
+  };
+}
+
 /** Start a checkout's agent from the Agent tab, adopting the checkout on the
  *  way (an agent needs an owner for `done` to report to).
  *

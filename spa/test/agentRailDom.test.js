@@ -32,6 +32,7 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mount
 const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
+const { createAdoptingCall } = await import("../src/core/adoption.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude", state: "live",
@@ -251,6 +252,23 @@ describe("the first message", () => {
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", body: "start here" });
     expect(callsTo("thread.post")[0].params.agent_id).toBeUndefined();
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-9" });
+  });
+
+  // The rail is one of two surfaces on a branch that can mutate first, so the
+  // view above it owns the adopter and hands it down. Adopting on its own here
+  // would mint a second owner of the checkout the Changes review just claimed.
+  it("adopts through the adopter the view hands it", async () => {
+    payload = branchRow({ run_id: null, run: null, agents: [] });
+    const shared = createAdoptingCall((method, params) => App.call(method, params), "p1", "wt-3");
+    await shared.adopt();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", adopting: () => shared });
+
+    panel().querySelector("#railinput").value = "start here";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("run.adopt")).toHaveLength(1);
+    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", body: "start here" });
   });
 
   it("leaves an issue's first message to start its own planning agent", async () => {

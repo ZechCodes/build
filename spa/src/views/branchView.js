@@ -27,7 +27,7 @@ import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
-import { createAdoptingCall } from "../core/adoption.js";
+import { createAdopters } from "../core/adoption.js";
 import { noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
 import "../styles/shell.css";
@@ -89,7 +89,6 @@ export async function renderBranch() {
   // carries that agent's conversation, and the review comments Changes sends go
   // into it — so the choice lives in a handle they share.
   const agentSelection = createAgentSelection();
-  const rail = mountAgentRail($("#agent-rail"), { kind: "branch", projectId, branch, selection: agentSelection });
 
   let disposed = false;
   let row = null; // the branch.get payload: the feed row plus `run`
@@ -97,9 +96,22 @@ export async function renderBranch() {
   let mountedKey = null; // what the body was mounted over: tab + review key
   let reviewPlug = null; // ONE instance per backing, so pending comments survive
   let reviewKey = null;
-  let adopting = null; // the bare worktree's adopt-on-first-mutation caller
 
   const callRpc = (method, params) => App.call(method, params);
+  // Two surfaces here can mutate an unclaimed checkout first — the rail's first
+  // message and the review's first comment or action — and near-simultaneous
+  // adoptions would ask for two owners of one checkout. Both take their adopter
+  // from here, so the checkout is claimed once.
+  const adopterFor = createAdopters(callRpc);
+  const adoptingHere = () => adopterFor(branchScope(row, projectId));
+
+  const rail = mountAgentRail($("#agent-rail"), {
+    kind: "branch",
+    projectId,
+    branch,
+    selection: agentSelection,
+    adopting: adoptingHere,
+  });
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
@@ -127,12 +139,11 @@ export async function renderBranch() {
           onMerged: () => finished(),
         });
       } else {
-        adopting = createAdoptingCall(callRpc, scope.project_id, scope.worktree_id);
         reviewPlug = createWorktreeReview({
           projectId: scope.project_id,
           worktreeId: scope.worktree_id,
           callRpc,
-          adopting,
+          adopting: adopterFor(scope),
           isOffline: () => App.offline,
           // Adoption keeps the URL — the same branch now stands on a run, so
           // the surface re-resolves and the Changes rail re-mounts run-backed.

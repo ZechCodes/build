@@ -314,6 +314,18 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  it("does not claim an agent is drafting an issue nothing has started on", async () => {
+    // A created issue is inert: the router files it and nothing runs until the
+    // first message. Saying an agent is drafting would put a worker on the
+    // surface that does not exist.
+    const { host, view, calls } = await mount({ issue: issuePayload({ state: "created", stages: [] }), stages: [] });
+    const viewer = host.querySelector(".ivviewer").textContent;
+    expect(viewer).not.toContain("drafting the plan");
+    expect(viewer).toContain("first message");
+    expect(calls.some(([method]) => method === "issue.stage_doc")).toBe(false);
+    view.dispose();
+  });
+
   it("latches a deleted issue instead of repainting over it", async () => {
     const gone = [];
     const { host, view, calls } = await mount({

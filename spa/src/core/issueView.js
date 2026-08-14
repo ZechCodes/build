@@ -253,7 +253,15 @@ export function mountIssueView(
    *  drafting one. It takes no comments — the bridge anchors a doc comment to a
    *  stage, and there is no stage to anchor to. */
   const renderSingleDoc = (viewerHost) => {
-    if (issue.state === "created" || issue.state === "drafting") {
+    // A created issue is inert — the router files it and nothing runs until the
+    // first message — so the two states say different things: only "drafting"
+    // has an agent to speak of.
+    if (issue.state === "created") {
+      viewerHost.innerHTML =
+        '<div class="plan plan-loading">No plan yet — your first message starts the planning agent.</div>';
+      return;
+    }
+    if (issue.state === "drafting") {
       viewerHost.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
       return;
     }

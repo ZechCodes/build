@@ -11,8 +11,8 @@ from here. Companion doc: `UX Redesign Decisions.md` (the binding design).
 | UX Architecture: Inbox and Control Plane | 01KZVK8Q2TQ2H9THHNJBV8GKTJ | done (validated, marked in Do) |
 | Phase 1: Conversation Threads | 01KY5NK17WBNW2J8DVC0239F39 | done (validated, marked in Do) |
 | Bridge wedge (2026-08-13 incident) | 01KZYZYMK4GQVHBWXY0C364K60 | done (validated, marked in Do) |
-| Capture and Router Agent | 01KZVK8Q2TQ2H9THHNJBV8GKTK | in flight — Stage C workflow |
-| Phase 2: Review Prioritization | 01KY5NKASCR6R5JQCYPCJZZMMS | queued (Stage D) |
+| Capture and Router Agent | 01KZVK8Q2TQ2H9THHNJBV8GKTK | done (validated, marked in Do) |
+| Phase 2: Review Prioritization | 01KY5NKASCR6R5JQCYPCJZZMMS | done (validated, marked in Do) |
 | Phase 3: Implementation Graphs | 01KY5NKNN1TMQB808EEQMABD66 | skipped — reviewer decision 2026-08-14: the redesign is UX-scoped; graphs are new capability, left open in Do |
 
 Marking off = `fields.status = {type: text, value: done}` via Do's
@@ -41,11 +41,29 @@ asyncpg against the `getdo` schema. The Do MCP is not connected.
 - Bridge wedge — dispatch off the relay read loop (bounded workers, ordered
   per-terminal lanes), patch-free run_stat, stale-while-revalidate diff
   caches, per-session request coalescing, SPA waiter rejection. Validated.
-- Stage C (running): captures store, branch.dispatch, router session kind +
-  scoped MCP tool surface, global compose + advanced panel, decision-rule
-  test suite, E2E + validation.
-- Stage D (queued): Phase 2 triage — hunk-level, triage phase turn seeded by
-  completion reports, overlay in Changes, overrides, SWR persistence.
+- Stage C — captures store, branch.dispatch, router session kind + scoped
+  MCP tool surface, global compose + advanced panel, decision-rule test
+  suite. Live E2E passed (real claude + codex routers). Validated.
+- Stage D — Phase 2 triage: cross-language hunk ids, triage phase turn
+  seeded by completion reports, persisted results with staleness/re-triage,
+  overrides + .build/review-rules.json seed, Changes overlay (criticals
+  first, collapsed rationale groups, trust dial), plus Stage C polish.
+  Live E2E passed with a real agent producing a triaged diff. Validated.
+
+## Follow-ups surfaced by the E2E passes (not blocking, unfiled)
+
+- Harness prompt delivery is timing-calibrated (paste-wait constants);
+  the durable fix is delivery-by-observation (wait for the paste echo).
+- Router sessions are not reaped when a codex TUI wedges; plus a harness
+  startup race. Both pre-existing infra, exposed during Stage D E2E.
+- The router cannot see plain git branches (list_work is board-only), so a
+  capture naming an un-checked-out branch routes to an issue.
+- Overrides are offered only on critical/low hunks the pass classified;
+  normal-level and commit-changeset hunks show no control.
+- Second agent's own provider/model ignored on cold spawn (entity's choice
+  used); reachable since request_changes can address agent 2.
+- board.list legacy keys still ship (SPA still reads a few); coordinated
+  removal pending. Cross-session request coalescing likewise.
 - Stage E: SKIPPED. Phase 3 graphs judged new capability rather than UX;
   dropped from this effort by the reviewer. Its Do issue stays open and the
   Decisions doc's graph section is design-only, unbuilt.

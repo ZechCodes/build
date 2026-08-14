@@ -217,6 +217,10 @@ export function mountIssueView(
     });
     wireStageList(listHost);
     const viewerHost = container.querySelector(".ivviewer");
+    if (!stages().length) {
+      renderSingleDoc(viewerHost);
+      return;
+    }
     const stage = selectedStage();
     const state = paneState();
     viewerHost.innerHTML = stageViewerHtml({
@@ -225,7 +229,6 @@ export function mountIssueView(
       docHtml: docHtmlFor(state),
       comments: (stage && stage.comments) || [],
     });
-    if (!stages().length) renderSingleDoc(viewerHost);
     if (stage) {
       const feedback = viewerHost.querySelector(".ivstagefeedback");
       if (feedback) feedback.innerHTML = commentLayer.trayHtml();
@@ -496,6 +499,9 @@ export function mountIssueView(
     selectedStageId = stageId;
     docErrors.delete(stageId);
     stageDoc = null;
+    // A pending doc comment names a passage of the stage it was written on, and
+    // the verb that posts it names that stage too — so it does not travel to
+    // another one.
     commentLayer.clear();
     onSelectStage(stageId);
     renderedKey = null;

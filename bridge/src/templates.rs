@@ -5,7 +5,7 @@
 //! (harness-agnostic, user-overridable, zero special cases). Variables: `{goal}`,
 //! `{plan_path}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
 //! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
-//! `{findings}`, `{prior_notes}`.
+//! `{findings}`, `{prior_notes}`, `{capture_text}`, `{user_answer}`.
 
 /// Where the plan file lives by convention (the agent reports the real path back
 /// via `done`, so this is a default, not a hardcode). Legacy single-plan / Quick
@@ -185,6 +185,46 @@ unexpected environment or implementation problem prevents the review itself,
 call `done` with status=\"blocked\" or status=\"failed\" and use one concise
 sentence to say why.";
 
+const ROUTER: &str = "\
+You are the ROUTER. Something was captured from the user and nothing has decided
+where it goes. Deciding is your whole job: read, decide, act once, exit.
+
+What the user said:
+
+{capture_text}
+
+Their answer to a question you asked earlier (empty when you have not asked one):
+
+{user_answer}
+
+You are not in a repository. This directory is scratch space Build hands you and
+deletes the moment you exit — write nothing that has to outlive this session.
+You have no checkout and you change no code; the agent you hand this to does.
+
+Your tools: `list_projects` (every project on this device), `list_work` (the
+branches and issues in flight), `read_conversation` (read one of them; read-only),
+`create_issue`, `dispatch_branch`, `ask_user`, and `done`. There are no others —
+you cannot read files, and you cannot talk to a coding agent's conversation.
+
+The decision rule, in order:
+
+1. Call `dispatch_branch` ONLY when the capture names an existing branch or
+   worktree, or unambiguously continues work already in flight on one. Read that
+   branch's conversation with `read_conversation` before you believe it does.
+2. Otherwise call `create_issue` on the project the capture most likely belongs
+   to. An issue is inert — a record, no worktree, no agent — so a wrong guess
+   costs the user one tap. A branch dispatch starts an agent that changes code,
+   so a wrong guess costs them a diff to unpick. When in doubt, file the issue.
+3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
+   time is the friction this surface exists to remove; a best-guess issue is
+   almost always the better answer.
+
+Call exactly one of `create_issue`, `dispatch_branch` or `ask_user`, then call
+`done` with phase=\"route\", status=\"completed\" and one concise sentence saying
+where the capture went and why. If nothing lets you decide, call `done` with
+status=\"failed\" and one concise sentence saying what stopped you — the capture
+goes back to the user with a retry.";
+
 /// What every code-changing phase adds to its `done` call. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
 /// a project overriding one template still overrides only that one.
@@ -221,6 +261,9 @@ pub struct Templates {
     pub review_changes: String,
     pub validate: String,
     pub message: String,
+    /// The one template that belongs to no phase of a piece of work: routing
+    /// decides which piece of work the capture is.
+    pub router: String,
 }
 
 impl Default for Templates {
@@ -235,6 +278,7 @@ impl Default for Templates {
             review_changes: reporting_template(REVIEW_CHANGES),
             validate: phase_template(VALIDATE),
             message: phase_template(MESSAGE),
+            router: phase_template(ROUTER),
         }
     }
 }
@@ -277,6 +321,10 @@ pub struct Vars<'a> {
     pub findings: &'a str,
     /// `notes_for_next_stage` from the previous stage's validation report.
     pub prior_notes: &'a str,
+    /// What the user said, verbatim, for the `router` template.
+    pub capture_text: &'a str,
+    /// The user's answer to the router's clarifying question, or "".
+    pub user_answer: &'a str,
 }
 
 /// Render a template by substituting every `{var}` placeholder.
@@ -294,6 +342,8 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{stage_start_sha}", vars.stage_start_sha)
         .replace("{findings}", vars.findings)
         .replace("{prior_notes}", vars.prior_notes)
+        .replace("{capture_text}", vars.capture_text)
+        .replace("{user_answer}", vars.user_answer)
 }
 
 #[cfg(test)]
@@ -541,6 +591,77 @@ mod tests {
         assert!(!out.contains("{goal}"));
         assert!(!out.contains("{plan_path}"));
         assert!(out.contains("add a greeting"));
+    }
+
+    /// The decision rule is the router's whole contract, so the template has to
+    /// state it in the order it is applied — and has to say why the fallback is
+    /// an issue rather than a branch, because that asymmetry is the rule.
+    #[test]
+    fn the_router_template_carries_the_decision_rule_in_order() {
+        let router = collapse_whitespace(&Templates::default().router);
+        let dispatch = router.find("`dispatch_branch` ONLY when").expect("rule 1");
+        let issue = router
+            .find("Otherwise call `create_issue`")
+            .expect("rule 2");
+        let ask = router.find("`ask_user` ONLY when").expect("rule 3");
+        assert!(dispatch < issue && issue < ask, "{router}");
+
+        assert!(
+            router.contains("names an existing branch or worktree")
+                && router.contains("unambiguously continues work already in flight"),
+            "the branch test must be stated, not implied: {router}"
+        );
+        assert!(
+            router.contains("even the project is ambiguous"),
+            "a question is reserved for an ambiguous project: {router}"
+        );
+        assert!(
+            router.contains("An issue is inert") && router.contains("starts an agent that changes"),
+            "the template must say why the cheap side is the default: {router}"
+        );
+    }
+
+    /// A router has no checkout and no coding tools, and its `done` reports the
+    /// one phase it has.
+    #[test]
+    fn the_router_template_names_its_whole_tool_inventory_and_its_scratch() {
+        let router = collapse_whitespace(&Templates::default().router);
+        for tool in [
+            "list_projects",
+            "list_work",
+            "read_conversation",
+            "create_issue",
+            "dispatch_branch",
+            "ask_user",
+            "done",
+        ] {
+            assert!(router.contains(tool), "{tool} missing from {router}");
+        }
+        for coding_tool in ["read_unread_messages", "post_thread_message"] {
+            assert!(
+                !router.contains(coding_tool),
+                "{coding_tool} is not on the router's surface: {router}"
+            );
+        }
+        assert!(router.contains("You are not in a repository"), "{router}");
+        assert!(router.contains("phase=\"route\""), "{router}");
+        assert!(router.contains("status=\"failed\""), "{router}");
+    }
+
+    #[test]
+    fn the_router_template_substitutes_the_capture_and_the_answer() {
+        let out = render(
+            &Templates::default().router,
+            &Vars {
+                capture_text: "fix the login redirect",
+                user_answer: "the bridge",
+                ..Vars::default()
+            },
+        );
+        assert!(out.contains("fix the login redirect"));
+        assert!(out.contains("the bridge"));
+        assert!(!out.contains("{capture_text}"));
+        assert!(!out.contains("{user_answer}"));
     }
 
     #[test]

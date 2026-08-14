@@ -469,7 +469,10 @@ fn mcp_stdio() {
     let socket = std::env::var("BRIDGE_MCP_SOCKET").ok();
     let session_token = std::env::var("BRIDGE_MCP_TOKEN").ok();
 
-    let server = build_bridge::mcp::DoneServer::new(&owner_id);
+    // The owner id decides the tool surface: a router session's id is prefixed,
+    // so which tools a harness is offered can never disagree with which kind of
+    // session it is.
+    let server = build_bridge::mcp::DoneServer::for_owner(&owner_id);
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
     let _ = server.run_stdio(

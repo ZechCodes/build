@@ -98,6 +98,12 @@ pub struct Capture {
     pub routing: Option<CaptureRouting>,
     #[serde(default)]
     pub question: Option<CaptureQuestion>,
+    /// Destinations this capture was sent to and then moved off. A misroute
+    /// whose artifact could not be taken back — a branch an agent already
+    /// worked — is kept, and this is what keeps it reachable from the capture
+    /// instead of orphaned beside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rerouted_from: Vec<CaptureRouting>,
 }
 
 impl Capture {
@@ -114,6 +120,7 @@ impl Capture {
             state: CaptureState::Unrouted,
             routing: None,
             question: None,
+            rerouted_from: Vec::new(),
         }
     }
 
@@ -160,6 +167,82 @@ impl Capture {
             recovered.state = CaptureState::Unrouted;
         }
         recovered
+    }
+
+    /// The record as the router picks it up: in the router's hands. Re-firing a
+    /// capture that already failed, or one holding a question that has now been
+    /// answered, is the same transition — the router is looking at it again.
+    pub fn routing_started(&self) -> Capture {
+        Capture {
+            state: CaptureState::Routing,
+            ..self.clone()
+        }
+    }
+
+    /// The record once the router reached a destination. A route is a decision,
+    /// so it is terminal for the capture: what it became is the presence now.
+    ///
+    /// Routing something that was already routed is a reroute, and the
+    /// destination it is moving off is remembered rather than overwritten — the
+    /// artifact there may be work nobody can take back.
+    pub fn routed_to(&self, routing: CaptureRouting) -> Capture {
+        let mut rerouted_from = self.rerouted_from.clone();
+        if let Some(previous) = &self.routing {
+            rerouted_from.push(previous.clone());
+        }
+        Capture {
+            state: CaptureState::Routed,
+            routing: Some(routing),
+            rerouted_from,
+            ..self.clone()
+        }
+    }
+
+    /// The record once the router asked the user something.
+    ///
+    /// The state goes BACK to unrouted, because a question is not a route:
+    /// nothing has been decided, and the answer is what lets the router decide.
+    /// The unanswered question is what keeps the row on the feed and what it
+    /// says it needs.
+    pub fn asked(&self, question: CaptureQuestion) -> Capture {
+        Capture {
+            state: CaptureState::Unrouted,
+            question: Some(question),
+            ..self.clone()
+        }
+    }
+
+    /// The record once the user answered. Refused when nothing asked: an answer
+    /// to no question is a message with nowhere to go.
+    pub fn answered(&self, text: impl Into<String>) -> Result<Capture, String> {
+        let question = self
+            .question
+            .as_ref()
+            .ok_or("the router has not asked anything about this capture")?;
+        if question.answer.is_some() {
+            return Err("that question has already been answered".to_string());
+        }
+        Ok(Capture {
+            question: Some(CaptureQuestion {
+                answer: Some(text.into()),
+                ..question.clone()
+            }),
+            ..self.clone()
+        })
+    }
+
+    /// The record once the router gave up — or stopped without deciding, which
+    /// is the same thing from the user's side. A capture that already reached a
+    /// destination is left alone: a router exiting after a route is a router
+    /// that finished.
+    pub fn routing_failed(&self) -> Capture {
+        if self.state == CaptureState::Routed {
+            return self.clone();
+        }
+        Capture {
+            state: CaptureState::Failed,
+            ..self.clone()
+        }
     }
 
     /// What a row calls this capture: its first non-empty line, cut to a width
@@ -334,6 +417,104 @@ mod tests {
         assert_eq!(loaded.state, CaptureState::Unrouted);
         assert!(loaded.routing.is_none());
         assert!(loaded.question.is_none());
+    }
+
+    /// Every transition answers with a new record and leaves the one it read
+    /// alone: the store owns when a change is written, not these.
+    #[test]
+    fn the_routing_transitions_are_readings_of_the_record() {
+        let unrouted = capture(CaptureState::Unrouted);
+
+        let routing = unrouted.routing_started();
+        assert_eq!(routing.state, CaptureState::Routing);
+        assert_eq!(unrouted.state, CaptureState::Unrouted);
+
+        let routed = routing.routed_to(CaptureRouting {
+            project_id: "proj-1".to_string(),
+            kind: CaptureTarget::Issue,
+            target_id: "plan-7".to_string(),
+            routed_at: "2026-08-13T10:00:05Z".to_string(),
+            rationale: Some("no branch names this work".to_string()),
+        });
+        assert_eq!(routed.state, CaptureState::Routed);
+        assert_eq!(routed.routing.as_ref().unwrap().target_id, "plan-7");
+        assert!(routed.rerouted_from.is_empty());
+        assert_eq!(routing.state, CaptureState::Routing);
+    }
+
+    /// A reroute never overwrites where the capture has already been: the
+    /// artifact there may be work, and work nobody can point at is work lost.
+    #[test]
+    fn rerouting_remembers_the_destination_it_moved_off() {
+        let routing = |target: &str| CaptureRouting {
+            project_id: "proj-1".to_string(),
+            kind: CaptureTarget::Issue,
+            target_id: target.to_string(),
+            routed_at: "2026-08-13T10:00:05Z".to_string(),
+            rationale: None,
+        };
+        let first = capture(CaptureState::Unrouted).routed_to(routing("plan-7"));
+        let second = first.routed_to(routing("plan-8"));
+        let third = second.routed_to(routing("plan-9"));
+
+        assert_eq!(third.routing.as_ref().unwrap().target_id, "plan-9");
+        let left_behind: Vec<&str> = third
+            .rerouted_from
+            .iter()
+            .map(|routing| routing.target_id.as_str())
+            .collect();
+        assert_eq!(left_behind, vec!["plan-7", "plan-8"]);
+    }
+
+    /// A question is not a route. The record goes back to where the router
+    /// picks work up, because the answer is what lets it decide at all.
+    #[test]
+    fn asking_returns_the_capture_to_unrouted_and_keeps_it_on_the_feed() {
+        let asking = capture(CaptureState::Routing).asked(question(None));
+        assert_eq!(asking.state, CaptureState::Unrouted);
+        assert!(asking.awaiting_answer());
+        assert!(asking.is_on_the_feed());
+        assert_eq!(asking.unread_reason(), Some("router_question"));
+
+        let answered = asking.answered("the bridge").unwrap();
+        assert!(!answered.awaiting_answer());
+        assert_eq!(
+            answered.question.as_ref().unwrap().answer.as_deref(),
+            Some("the bridge")
+        );
+        assert_eq!(
+            answered.question.as_ref().unwrap().text,
+            asking.question.as_ref().unwrap().text,
+            "answering never rewrites the question"
+        );
+    }
+
+    #[test]
+    fn an_answer_needs_an_unanswered_question_to_answer() {
+        assert!(capture(CaptureState::Unrouted).answered("x").is_err());
+        let answered = capture(CaptureState::Unrouted).asked(question(Some("the bridge")));
+        assert!(answered.answered("again").is_err());
+    }
+
+    /// A router that stopped without deciding leaves the capture needing the
+    /// user; one that stopped after deciding leaves a decision alone.
+    #[test]
+    fn failing_marks_only_a_capture_that_never_reached_a_destination() {
+        for undecided in [
+            CaptureState::Unrouted,
+            CaptureState::Routing,
+            CaptureState::Failed,
+        ] {
+            assert_eq!(
+                capture(undecided).routing_failed().state,
+                CaptureState::Failed
+            );
+        }
+        assert_eq!(
+            capture(CaptureState::Routed).routing_failed().state,
+            CaptureState::Routed,
+            "a router exiting after a route is a router that finished"
+        );
     }
 
     #[test]

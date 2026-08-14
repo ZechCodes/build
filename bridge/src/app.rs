@@ -725,6 +725,21 @@ enum Spawned {
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
 
+/// Who is on the other end of an authenticated MCP control frame.
+///
+/// The kind decides the tool surface, and it is read off the identity the frame
+/// authenticated with — never off the frame's own claim about itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AddressedSession {
+    /// An agent working a plan or a run.
+    Coding { entity_id: String, agent_id: String },
+    /// A router deciding where one capture goes.
+    Router {
+        capture_id: String,
+        agent_id: String,
+    },
+}
+
 /// An [`AgentTurn`] addressed to a worktree, waiting for the state lock to be
 /// free.
 ///
@@ -1551,7 +1566,14 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                                 .expect("worktree path serializes")
                         ),
                         "mcp_servers.build.required=true".to_string(),
-                        "mcp_servers.build.enabled_tools=[\"read_unread_messages\",\"post_thread_message\",\"done\",\"search_conversation\"]".to_string(),
+                        // The tools this session's surface actually has. A
+                        // router allow-listed for a coding agent's tools would
+                        // be a session with nothing it can call.
+                        format!(
+                            "mcp_servers.build.enabled_tools={}",
+                            serde_json::to_string(&mcp_tool_names(&options.owner_id))
+                                .expect("tool names serialize")
+                        ),
                         "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
                         // Build writes prompt bytes and Enter back-to-back. Codex's
                         // fallback detector otherwise classifies that stream as a
@@ -1569,6 +1591,28 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                 }
             },
         ))
+    }
+}
+
+/// The tools a session owned by `owner_id` may call, for the harnesses that
+/// want an allow-list up front. One source: the surface the id names.
+fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
+    match crate::mcp::McpSurface::for_owner(owner_id) {
+        crate::mcp::McpSurface::Coding => vec![
+            "read_unread_messages",
+            "post_thread_message",
+            "done",
+            "search_conversation",
+        ],
+        crate::mcp::McpSurface::Router => vec![
+            "list_projects",
+            "list_work",
+            "read_conversation",
+            "create_issue",
+            "dispatch_branch",
+            "ask_user",
+            "done",
+        ],
     }
 }
 
@@ -1777,6 +1821,16 @@ pub struct AppState {
     /// capture id. Durable from the moment it is taken — the router runs after
     /// the write, never instead of it.
     captures: HashMap<String, crate::capture::Capture>,
+    /// The routing decisions in flight, keyed by the capture each one is about.
+    /// Single-flight per capture: one router at a time decides where one thing
+    /// the user said goes, however many times something asks for it to.
+    router_sessions: HashMap<String, crate::router::RouterSession>,
+    /// Build's own state directory — where router scratch is cut, beside the
+    /// store rather than inside any repository.
+    state_root: std::path::PathBuf,
+    /// The provider/model routing runs on when the config file names one.
+    /// `None` is the account default at low effort.
+    router_choice: Option<ModelChoice>,
     /// Finished external worktrees keyed by their stable path-derived id.
     /// Loaded from the store at boot; project association is resolved by the
     /// canonical project path because project ids are re-minted.
@@ -1965,6 +2019,9 @@ impl AppState {
             runs: HashMap::new(),
             store: None,
             captures: HashMap::new(),
+            router_sessions: HashMap::new(),
+            state_root: default_state_root(),
+            router_choice: None,
             archived_worktrees: HashMap::new(),
             entity_created_at: HashMap::new(),
             entity_updated_at: HashMap::new(),
@@ -2038,6 +2095,20 @@ impl AppState {
                 if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
                     self.projects_dir = expand_tilde(dir);
                 }
+                // Routing runs on the account default at low effort unless this
+                // names something else. A choice the harness would refuse is
+                // dropped rather than kept: a router that cannot spawn would
+                // fail every capture on the device.
+                if let Some(choice) = cfg
+                    .get("router_model")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<ModelChoice>(value).ok())
+                {
+                    match choice.validate() {
+                        Ok(()) => self.router_choice = Some(choice),
+                        Err(error) => eprintln!("config router_model: {error}; using the default"),
+                    }
+                }
                 for p in cfg
                     .get("projects")
                     .and_then(Value::as_array)
@@ -2073,6 +2144,13 @@ impl AppState {
     /// gone. A corrupt task file is a hard error naming the file — boot fails
     /// rather than silently dropping a task.
     pub fn with_task_store(mut self, dir: impl Into<std::path::PathBuf>) -> Result<Self, String> {
+        let dir = dir.into();
+        // Router scratch belongs beside the store, in Build's own state
+        // directory: one place that is neither a repository nor a temp dir the
+        // system may clear under a running session.
+        if let Some(parent) = dir.parent() {
+            self.state_root = parent.to_path_buf();
+        }
         let store = Store::new(dir);
         // First: migrate any legacy fused-task records into the split's plan
         // and run records (idempotent; a store with only new-format records is
@@ -2750,6 +2828,13 @@ impl AppState {
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
     fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
+        // A router owns no conversation — it decides which one the capture
+        // becomes. What its session start records is that there is now a
+        // process to have lost, which is what makes a dead one detectable.
+        if let Some(session) = self.router_sessions.get_mut(&turn.owner) {
+            session.started = true;
+            return;
+        }
         self.edit_owner_thread("record_agent_session_start", &turn.owner, |thread| {
             open_session_lineage(thread, turn)
         });
@@ -2807,6 +2892,14 @@ impl AppState {
     /// sweep, which now reads a working entity with no agent tab as the anomaly
     /// it is. This method's whole job is the reason.
     fn record_agent_delivery_failure(&mut self, turn: &PendingAgentTurn, error: &str) {
+        // A router that never reached a harness is a route that failed, and the
+        // capture is where that has to show — there is no entity behind it to
+        // carry the reason.
+        if self.router_sessions.contains_key(&turn.owner) {
+            eprintln!("router {}: {error}", turn.owner);
+            self.settle_router_session(&turn.owner);
+            return;
+        }
         let reason = format!("could not reach the agent: {error}");
         // Plan and run ids are disjoint, so the owner lookup is the router.
         if self.plans.contains_key(&turn.owner) {
@@ -2958,6 +3051,7 @@ impl AppState {
         };
         let cfg = json!({
             "projects_dir": self.projects_dir.display().to_string(),
+            "router_model": self.router_choice,
             "projects": self.projects.iter().map(|p| json!({
                 "path": p.repo_path.display().to_string(),
                 "base_branch": p.base_branch,
@@ -3085,6 +3179,25 @@ impl AppState {
         agent_id: Option<&str>,
     ) -> Result<crate::agent::Agent, String> {
         self.entity_agents(entity_id)?.resolve(agent_id).cloned()
+    }
+
+    /// What an authenticated agent id turns out to be: a coding session working
+    /// an entity, or a router session deciding a capture. Nothing else can
+    /// reach the control socket, and the two get different tools.
+    fn addressed_session(&self, agent_id: String) -> Option<AddressedSession> {
+        if crate::router::is_router_agent(&agent_id) {
+            return self.capture_of_router_agent(&agent_id).map(|capture_id| {
+                AddressedSession::Router {
+                    capture_id,
+                    agent_id,
+                }
+            });
+        }
+        self.entity_of_agent(&agent_id)
+            .map(|entity_id| AddressedSession::Coding {
+                entity_id,
+                agent_id,
+            })
     }
 
     /// Which entity owns an agent id. The MCP control plane authenticates an
@@ -3658,13 +3771,50 @@ impl AppState {
                             let guard = state.lock().unwrap();
                             authenticated_mcp_owner(&v, &guard.mcp_session_tokens)
                                 .map(str::to_string)
-                                .and_then(|agent_id| {
-                                    guard
-                                        .entity_of_agent(&agent_id)
-                                        .map(|entity_id| (entity_id, agent_id))
-                                })
+                                .and_then(|agent_id| guard.addressed_session(agent_id))
                         };
-                        let Some((entity_id, agent_id)) = addressed else {
+                        // A router session is neither a plan nor a run, and its
+                        // tools are not a coding agent's. The split is made
+                        // here, once, off the authenticated identity — so a
+                        // harness writing its own frames still only ever
+                        // reaches the surface it was spawned on.
+                        if let Some(AddressedSession::Router {
+                            capture_id,
+                            agent_id: _,
+                        }) = &addressed
+                        {
+                            let capture_id = capture_id.clone();
+                            if let Ok(report) = serde_json::from_value::<DoneReport>(
+                                v.get("report").cloned().unwrap_or(Value::Null),
+                            ) {
+                                state.lock().unwrap().on_router_done(&capture_id, report);
+                                continue;
+                            }
+                            if let Ok(action) = serde_json::from_value::<BridgeAction>(
+                                v.get("request").cloned().unwrap_or(Value::Null),
+                            ) {
+                                let response = match state
+                                    .lock()
+                                    .unwrap()
+                                    .on_router_mcp_action(&capture_id, action)
+                                {
+                                    Ok(result) => json!({ "ok": true, "result": result }),
+                                    Err(error) => json!({ "ok": false, "error": error }),
+                                };
+                                // A dispatch queues the branch agent's first
+                                // turn; sending it needs the lock free.
+                                deliver_pending_agent_turns(&state);
+                                let _ = write_half.write_all(response.to_string().as_bytes()).await;
+                                let _ = write_half.write_all(b"\n").await;
+                                let _ = write_half.flush().await;
+                            }
+                            continue;
+                        }
+                        let Some(AddressedSession::Coding {
+                            entity_id,
+                            agent_id,
+                        }) = addressed
+                        else {
                             let response =
                                 json!({ "ok": false, "error": "unauthorized MCP session" });
                             let _ = write_half.write_all(response.to_string().as_bytes()).await;
@@ -3735,6 +3885,15 @@ impl AppState {
         agent_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
+        // The router's tools reach across every project and create work. A
+        // coding agent is scoped to the checkout it was given, and stays there
+        // however its harness frames the request.
+        if action.surface() != crate::mcp::McpSurface::Coding {
+            return Err(format!(
+                "{} is a router tool; this session works one checkout",
+                action.tool_name()
+            ));
+        }
         if let BridgeAction::SearchConversation { query } = &action {
             return self.search_agent_conversations(entity_id, agent_id, query);
         }
@@ -4826,6 +4985,8 @@ impl AppState {
             "capture.create" => self.capture_create(params),
             "capture.list" => Ok(self.capture_list()),
             "capture.get" => self.capture_get(params),
+            "capture.answer" => self.capture_answer(params),
+            "capture.reroute" => self.capture_reroute(params),
             "archive.list" => self.archive_list(params),
             "archived.list" => Ok(self.archived_list()),
             // Canonical Issue surface. The existing plan id and plan-store path
@@ -5233,9 +5394,20 @@ impl AppState {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(poll_interval).await;
-                let demoted = state.lock().unwrap().mark_idle_tasks(quiet_threshold);
+                let (demoted, routers) = {
+                    let mut app = state.lock().unwrap();
+                    // A router process that died mid-decision told nobody, and
+                    // its capture would otherwise read as being routed forever.
+                    (
+                        app.mark_idle_tasks(quiet_threshold),
+                        app.reap_finished_router_sessions(),
+                    )
+                };
                 for task_id in demoted {
                     eprintln!("idle monitor: {task_id} went idle without a done report");
+                }
+                for capture_id in routers {
+                    eprintln!("idle monitor: the router on {capture_id} stopped");
                 }
             }
         });
@@ -6862,12 +7034,79 @@ impl AppState {
         self.require_store()?
             .save_capture(&capture)
             .map_err(|e| e.to_string())?;
-        let record = capture_json(&capture);
-        self.captures.insert(capture.id.clone(), capture);
-        // The router fires from here (its trigger lands with the router
-        // itself). It reads the stored record, never this in-memory copy, so a
-        // restart mid-route re-fires from exactly what survived.
-        Ok(record)
+        let capture_id = capture.id.clone();
+        self.captures.insert(capture_id.clone(), capture);
+        // Only now: the text is safe, so a router that never starts costs a
+        // routing decision and nothing else. A failure to start IS the routing
+        // decision failing, and the capture says so rather than sitting in a
+        // state nothing will ever move it out of.
+        if let Err(error) = self.begin_routing(&capture_id) {
+            eprintln!("capture {capture_id}: could not start the router: {error}");
+            self.mark_routing_failed(&capture_id);
+        }
+        self.capture_get(&json!({ "capture_id": capture_id }))
+    }
+
+    /// `capture.answer` — the user answers the router's question, and the
+    /// router looks at the capture again with the answer in hand.
+    fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
+        let capture_id = require_str(params, "capture_id")?;
+        let text = require_str(params, "text")?;
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("capture.answer: text is empty — that answers nothing".to_string());
+        }
+        let answered = self
+            .captures
+            .get(&capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?
+            .answered(text)?;
+        self.save_capture(answered)?;
+        if let Err(error) = self.begin_routing(&capture_id) {
+            eprintln!("capture {capture_id}: could not re-fire the router: {error}");
+            self.mark_routing_failed(&capture_id);
+        }
+        self.capture_get(&json!({ "capture_id": capture_id }))
+    }
+
+    /// `capture.reroute` — the user moves a capture the router got wrong.
+    ///
+    /// With a `project_id` this routes by hand, through the very internals the
+    /// router's own tools use: one path to a destination, so a manual route and
+    /// a routed one are the same kind of thing afterwards. With none it re-fires
+    /// the router, which is what the one-tap retry on a failed route is.
+    fn capture_reroute(&mut self, params: &Value) -> Result<Value, String> {
+        let capture_id = require_str(params, "capture_id")?;
+        if !self.captures.contains_key(&capture_id) {
+            return Err(format!("unknown capture_id: {capture_id}"));
+        }
+        let Some(project_id) = params
+            .get("project_id")
+            .and_then(Value::as_str)
+            .filter(|project_id| !project_id.is_empty())
+            .map(str::to_string)
+        else {
+            self.begin_routing(&capture_id)?;
+            return self.capture_get(&json!({ "capture_id": capture_id }));
+        };
+        let kind = params
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::capture::CaptureTarget::Issue.as_str())
+            .to_string();
+        // A router still deciding this capture would route it a second time on
+        // top of the user's own choice.
+        self.abandon_router_session(&capture_id);
+        let text = self.captures[&capture_id].text.clone();
+        let rationale = Some("rerouted by the user".to_string());
+        match kind.as_str() {
+            "issue" => self.route_to_issue(&capture_id, &project_id, &text, rationale),
+            "branch" => self.route_to_branch(&capture_id, &project_id, None, &text, rationale),
+            other => Err(format!(
+                "capture.reroute: {other:?} is not a destination — branch and issue are the work"
+            )),
+        }?;
+        self.capture_get(&json!({ "capture_id": capture_id }))
     }
 
     fn capture_list(&self) -> Value {
@@ -6967,6 +7206,451 @@ impl AppState {
             implementation_active: false,
             row,
         }
+    }
+
+    // ---- Routing --------------------------------------------------------------
+
+    /// Write a capture through: the store first, then the map, so the record on
+    /// disk is never behind the one this process is answering from.
+    fn save_capture(&mut self, capture: crate::capture::Capture) -> Result<(), String> {
+        self.require_store()?
+            .save_capture(&capture)
+            .map_err(|e| e.to_string())?;
+        self.captures.insert(capture.id.clone(), capture);
+        Ok(())
+    }
+
+    /// The router gave up, or never got started. Quiet, because every caller is
+    /// already reporting the failure that led here.
+    fn mark_routing_failed(&mut self, capture_id: &str) {
+        let Some(failed) = self
+            .captures
+            .get(capture_id)
+            .map(crate::capture::Capture::routing_failed)
+        else {
+            return;
+        };
+        if let Err(error) = self.save_capture(failed) {
+            eprintln!("capture {capture_id}: could not record the failed route: {error}");
+        }
+    }
+
+    /// Put the router on a capture: a session in a scratch directory of its
+    /// own, with the capture, the decision rule and its tools.
+    ///
+    /// Single-flight per capture. Everything that can ask for a route — the
+    /// capture arriving, an answered question, a manual retry — asks through
+    /// here, and a capture already being decided is left to the router deciding
+    /// it rather than given a second one that would race it to a destination.
+    fn begin_routing(&mut self, capture_id: &str) -> Result<(), String> {
+        if self.router_sessions.contains_key(capture_id) {
+            return Ok(());
+        }
+        let capture = self
+            .captures
+            .get(capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?
+            .clone();
+        // The router routes TO projects; with none there is no destination to
+        // reach and no point spawning one to discover that.
+        let project_id = self.default_project()?;
+        let choice = crate::router::router_model_choice(
+            self.default_agent_provider(),
+            self.router_choice.as_ref(),
+        );
+        let session = crate::router::RouterSession::new(capture_id, &self.state_root, choice);
+        std::fs::create_dir_all(&session.scratch_dir).map_err(|error| {
+            format!(
+                "could not cut router scratch at {}: {error}",
+                session.scratch_dir.display()
+            )
+        })?;
+        // Written before the turn is queued: the router reads the record, and
+        // the record has to say it is being routed before anything can read it.
+        self.save_capture(capture.routing_started())?;
+        let prompt = crate::templates::render(
+            &crate::templates::Templates::default().router,
+            &crate::templates::Vars {
+                capture_text: &capture.text,
+                user_answer: capture
+                    .question
+                    .as_ref()
+                    .and_then(|question| question.answer.as_deref())
+                    .unwrap_or(""),
+                ..crate::templates::Vars::default()
+            },
+        );
+        self.entity_project
+            .insert(capture_id.to_string(), project_id);
+        self.pending_agent_turns.push(PendingAgentTurn {
+            root: session.scratch_dir.clone(),
+            owner: capture_id.to_string(),
+            agent_id: session.agent_id.clone(),
+            model_choice: session.choice.clone(),
+            // A router is one decision long, so there is no warm half: every
+            // turn it ever hears is the whole job.
+            cold: prompt.clone(),
+            warm: prompt,
+            phase: "route",
+        });
+        self.router_sessions.insert(capture_id.to_string(), session);
+        Ok(())
+    }
+
+    /// The provider a device routes on when nothing has been configured: the
+    /// same default `models.list` reports as the account's.
+    fn default_agent_provider(&self) -> AgentProvider {
+        AgentProvider::default()
+    }
+
+    /// The capture a router session speaks for, from the agent id its harness
+    /// authenticated with.
+    fn capture_of_router_agent(&self, agent_id: &str) -> Option<String> {
+        self.router_sessions
+            .values()
+            .find(|session| session.agent_id == agent_id)
+            .map(|session| session.capture_id.clone())
+    }
+
+    /// Execute one router tool against Build.
+    ///
+    /// The scope gate is here rather than only in the tool inventory the router
+    /// is shown: the surface a session is on is a property of the session, and
+    /// a harness that writes its own frames must not reach past it.
+    fn on_router_mcp_action(
+        &mut self,
+        capture_id: &str,
+        action: BridgeAction,
+    ) -> Result<Value, String> {
+        if action.surface() != crate::mcp::McpSurface::Router {
+            return Err(format!(
+                "{} is a coding agent's tool; this session routes captures",
+                action.tool_name()
+            ));
+        }
+        // A router reaches one destination. A second route from the same
+        // session would leave two artifacts and one record naming one of them.
+        // The user is not bound by this: rerouting is exactly the act of
+        // choosing a second destination, and it settles the first one.
+        if matches!(
+            action,
+            BridgeAction::CreateIssue { .. } | BridgeAction::DispatchBranch { .. }
+        ) {
+            self.require_undecided(capture_id)?;
+        }
+        match action {
+            BridgeAction::ListProjects => Ok(self.project_list()),
+            BridgeAction::ListWork => Ok(self.router_work_digest()),
+            BridgeAction::ReadConversation {
+                entity_id,
+                agent_id,
+                limit,
+            } => self.router_read_conversation(&entity_id, agent_id.as_deref(), limit),
+            BridgeAction::CreateIssue {
+                project_id,
+                goal,
+                rationale,
+            } => self.route_to_issue(capture_id, &project_id, &goal, rationale),
+            BridgeAction::DispatchBranch {
+                project_id,
+                branch,
+                instruction,
+                rationale,
+            } => self.route_to_branch(
+                capture_id,
+                &project_id,
+                branch.as_deref(),
+                &instruction,
+                rationale,
+            ),
+            BridgeAction::AskUser { question } => self.router_ask_user(capture_id, &question),
+            coding_tool => Err(format!(
+                "{} is a coding agent's tool; this session routes captures",
+                coding_tool.tool_name()
+            )),
+        }
+    }
+
+    /// The work in flight, small enough for a router to read in one go: what
+    /// each item is, where it lives, and whether anyone is working it.
+    fn router_work_digest(&mut self) -> Value {
+        let items = self.board_list();
+        let work: Vec<Value> = items["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row["kind"] != "capture")
+            .map(|row| {
+                json!({
+                    "kind": row["kind"],
+                    "entity_id": row["run_id"].as_str().or_else(|| row["issue_id"].as_str()).or_else(|| row["worktree_id"].as_str()),
+                    "project_id": row["project_id"],
+                    "project": row["project"],
+                    "branch": row["branch"],
+                    "issue_id": row["issue_id"],
+                    "title": row["title"],
+                    "state": row["state"],
+                    "working": row["working"],
+                })
+            })
+            .collect();
+        json!({ "work": work })
+    }
+
+    /// One work item's conversation, as the catch-up the agents themselves are
+    /// given. Read-only: the router has no way to post here, by design — it
+    /// hands work over, it does not join it.
+    fn router_read_conversation(
+        &self,
+        entity_id: &str,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let agent = self.entity_agents(entity_id)?.resolve(agent_id)?;
+        Ok(json!({
+            "entity_id": entity_id,
+            "agent_id": agent.id,
+            "transcript": agent.thread.catch_up_markdown(limit),
+        }))
+    }
+
+    /// The default destination: an inert issue on the best-guess project — a
+    /// record, no worktree, no agent, until the user opens it.
+    fn route_to_issue(
+        &mut self,
+        capture_id: &str,
+        project_id: &str,
+        goal: &str,
+        rationale: Option<String>,
+    ) -> Result<Value, String> {
+        let issue = self.plan_create(&json!({
+            "project_id": project_id,
+            "goal": goal,
+            "dispatch": false,
+        }))?;
+        let issue_id = issue["issue_id"]
+            .as_str()
+            .ok_or("the issue was filed under no id")?
+            .to_string();
+        self.record_routing(
+            capture_id,
+            crate::capture::CaptureRouting {
+                project_id: project_id.to_string(),
+                kind: crate::capture::CaptureTarget::Issue,
+                target_id: issue_id.clone(),
+                routed_at: now_rfc3339(),
+                rationale,
+            },
+        )?;
+        Ok(json!({ "issue_id": issue_id, "project_id": project_id, "dispatched": false }))
+    }
+
+    /// The confident destination: an agent on a branch, working. One call, and
+    /// `branch.dispatch` owns the unwinding if any part of it fails — a router
+    /// is the worst possible owner of a half-built branch.
+    fn route_to_branch(
+        &mut self,
+        capture_id: &str,
+        project_id: &str,
+        branch: Option<&str>,
+        instruction: &str,
+        rationale: Option<String>,
+    ) -> Result<Value, String> {
+        let dispatched = self.branch_dispatch(&json!({
+            "project_id": project_id,
+            "branch": branch,
+            "instruction": instruction,
+        }))?;
+        let branch = dispatched["branch"]
+            .as_str()
+            .ok_or("the dispatch named no branch")?
+            .to_string();
+        self.record_routing(
+            capture_id,
+            crate::capture::CaptureRouting {
+                project_id: project_id.to_string(),
+                kind: crate::capture::CaptureTarget::Branch,
+                target_id: branch,
+                routed_at: now_rfc3339(),
+                rationale,
+            },
+        )?;
+        Ok(dispatched)
+    }
+
+    /// The router asks the one question that would let it decide. The capture
+    /// goes back to unrouted — a question is not a route — and the question is
+    /// what the inbox entry says it needs.
+    fn router_ask_user(&mut self, capture_id: &str, question: &str) -> Result<Value, String> {
+        let question = question.trim();
+        if question.is_empty() {
+            return Err("ask_user: the question is empty".to_string());
+        }
+        let capture = self
+            .captures
+            .get(capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        if capture.awaiting_answer() {
+            return Err("you have already asked about this capture".to_string());
+        }
+        let asked = capture.asked(crate::capture::CaptureQuestion {
+            text: question.to_string(),
+            asked_at: now_rfc3339(),
+            answer: None,
+        });
+        self.save_capture(asked)?;
+        Ok(json!({ "capture_id": capture_id, "asked": question }))
+    }
+
+    /// Whether a capture is still the router's to decide.
+    fn require_undecided(&self, capture_id: &str) -> Result<(), String> {
+        let capture = self
+            .captures
+            .get(capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        if capture.state == crate::capture::CaptureState::Routed {
+            return Err(
+                "this capture already has a destination; the user reroutes it from here"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Record where a capture went, and settle what it was routed to before.
+    ///
+    /// An inert issue nobody has touched is archived — it was never anything
+    /// but a guess, and leaving it would put a second row on the feed for one
+    /// piece of work. Anything else is kept and stays reachable through the
+    /// capture's own record, because work already done is nobody's to discard.
+    fn record_routing(
+        &mut self,
+        capture_id: &str,
+        routing: crate::capture::CaptureRouting,
+    ) -> Result<(), String> {
+        let capture = self
+            .captures
+            .get(capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        let previous = capture.routing.clone();
+        let routed = capture.routed_to(routing);
+        self.save_capture(routed)?;
+        if let Some(previous) = previous {
+            self.release_misrouted_artifact(&previous);
+        }
+        Ok(())
+    }
+
+    /// Take back what a misroute created, when there is anything to take back.
+    fn release_misrouted_artifact(&mut self, routing: &crate::capture::CaptureRouting) {
+        if routing.kind != crate::capture::CaptureTarget::Issue {
+            return;
+        }
+        if !self.issue_is_untouched_and_inert(&routing.target_id) {
+            return;
+        }
+        let Ok(mut active) = self.take_plan(&routing.target_id) else {
+            return;
+        };
+        active.plan.archived_at = Some(now_rfc3339());
+        let (_, persisted) = self.finish_plan_mutation(routing.target_id.clone(), active);
+        if let Err(error) = persisted {
+            eprintln!("reroute: could not archive {}: {error}", routing.target_id);
+        }
+    }
+
+    /// Whether an issue is still exactly what the router filed: a record with
+    /// its goal on it, no checkout, no implementation, and nothing said to it.
+    fn issue_is_untouched_and_inert(&self, issue_id: &str) -> bool {
+        let Some(active) = self.plans.get(issue_id) else {
+            return false;
+        };
+        let implemented = self
+            .runs
+            .values()
+            .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id));
+        active.plan.state == PlanState::Created
+            && active.plan.archived_at.is_none()
+            && active.worktree.is_none()
+            && !implemented
+            // The goal itself is the one item `create_plan` seeds. Anything past
+            // it is somebody having said something to this issue.
+            && active.agents.len() == 1
+            && active.agents.first().thread.items.len() <= 1
+    }
+
+    /// A router reported. Whatever it said, the session is over — and a capture
+    /// with no destination and no question outstanding is a route that failed,
+    /// which is the state the feed offers a retry from.
+    fn on_router_done(&mut self, capture_id: &str, report: DoneReport) {
+        if report.status != DoneStatus::Completed {
+            eprintln!("router {capture_id}: {}", report.summary);
+        }
+        self.settle_router_session(capture_id);
+    }
+
+    /// End a router session and tidy up after it: the harness, the scratch
+    /// directory, and the capture's state if the router left it undecided.
+    fn settle_router_session(&mut self, capture_id: &str) {
+        let undecided = self.captures.get(capture_id).is_some_and(|capture| {
+            capture.state != crate::capture::CaptureState::Routed && !capture.awaiting_answer()
+        });
+        if undecided {
+            self.mark_routing_failed(capture_id);
+        }
+        self.abandon_router_session(capture_id);
+    }
+
+    /// Stop the router working on a capture and wipe what it was working in,
+    /// without judging the capture — the caller owns that.
+    fn abandon_router_session(&mut self, capture_id: &str) {
+        let Some(session) = self.router_sessions.remove(capture_id) else {
+            return;
+        };
+        let root = Self::canonical_root(&session.scratch_dir);
+        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
+            let wire_id = tab.wire_id();
+            tab.session.kill_and_reap();
+            tab.screen.push_closed(&wire_id, "agent_session_ended");
+        }
+        self.mcp_session_tokens.remove(&session.agent_id);
+        self.entity_project.remove(capture_id);
+        // Bridge-owned, per capture, and holding nothing but what the harness
+        // wrote for itself — so it goes with the session that made it.
+        if let Err(error) = std::fs::remove_dir_all(&session.scratch_dir) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "router {capture_id}: could not wipe {}: {error}",
+                    session.scratch_dir.display()
+                );
+            }
+        }
+    }
+
+    /// Settle every router whose harness has stopped without reporting.
+    ///
+    /// A process that dies mid-decision tells nobody, so the capture would sit
+    /// in `routing` for the daemon's whole life with no router behind it. Only
+    /// sessions that actually started are considered: one still on its way to a
+    /// harness has no process to have lost.
+    fn reap_finished_router_sessions(&mut self) -> Vec<String> {
+        let finished: Vec<String> = self
+            .router_sessions
+            .values()
+            .filter(|session| session.started)
+            .filter(|session| {
+                !self.agent_is_live(
+                    &Self::canonical_root(&session.scratch_dir),
+                    &session.agent_id,
+                )
+            })
+            .map(|session| session.capture_id.clone())
+            .collect();
+        for capture_id in &finished {
+            self.settle_router_session(capture_id);
+        }
+        finished
     }
 
     // ---- Plan surface ---------------------------------------------------------
@@ -11612,6 +12296,13 @@ fn default_projects_dir() -> std::path::PathBuf {
     expand_tilde("~/.build/projects")
 }
 
+/// Build's own state directory, `~/.build` — where the store lives, and where
+/// router scratch is cut. Overridden by whatever directory the store is
+/// actually configured at, so a test's temp store keeps its scratch beside it.
+fn default_state_root() -> std::path::PathBuf {
+    expand_tilde("~/.build")
+}
+
 /// Derive a project folder name from a clone URL: the last path segment with a
 /// trailing `.git` stripped (`git@host:org/repo.git` → `repo`).
 fn repo_name_from_url(url: &str) -> String {
@@ -12381,6 +13072,13 @@ fn apply_thread_action(
         BridgeAction::SearchConversation { .. } => {
             Err("search_conversation is answered by the daemon, not one conversation".to_string())
         }
+        // The router's tools are about which work item a capture becomes, so
+        // none of them is a thread operation. The socket refuses them before
+        // this point; this arm is the type system agreeing.
+        router_tool => Err(format!(
+            "{} is a router tool and reaches no conversation",
+            router_tool.tool_name()
+        )),
     }
 }
 
@@ -13449,7 +14147,17 @@ fn ensure_agent_tab(
                         tab.screen.push_closed(&wire_id, "closed");
                     }
                 }
-                let project_id = s.project_of(owner)?;
+                // A router session belongs to no project — deciding which one
+                // the capture belongs to is its job. Any project's
+                // orchestrator builds the same harness spec for it, since the
+                // spec is made from the cwd and the owner id alone.
+                let project_id = match s.project_of(owner) {
+                    Ok(project_id) => project_id,
+                    Err(unknown) if crate::router::is_router_agent(agent_id) => {
+                        s.default_project().map_err(|_| unknown)?
+                    }
+                    Err(unknown) => return Err(unknown),
+                };
                 let orch = s.orch_for(&project_id)?;
                 // Unconditional: under `--strict-mcp-config` a missing config
                 // kills the harness before it reads a byte of the prompt, and
@@ -28713,7 +29421,10 @@ mod tests {
             .to_string();
         assert!(capture_id.starts_with("capture-"), "{capture_id}");
         assert_eq!(record["text"], "fix the login redirect");
-        assert_eq!(record["state"], "unrouted");
+        assert_eq!(
+            record["state"], "routing",
+            "the text was kept, and only then was anything asked to route it"
+        );
         assert_eq!(record["routing"], Value::Null);
         assert_eq!(record["question"], Value::Null);
 
@@ -28769,11 +29480,11 @@ mod tests {
         assert_eq!(unknown["ok"], false, "{unknown:?}");
     }
 
-    /// An unrouted capture is a row on the feed, in the row shape every work
-    /// item ships: what it says, that nothing has been decided, and none of the
-    /// branch facts it does not have.
+    /// A capture the router is still deciding is a row on the feed, in the row
+    /// shape every work item ships: what it says, that nothing has been
+    /// decided yet, and none of the branch facts it does not have.
     #[test]
-    fn an_unrouted_capture_is_a_feed_row() {
+    fn a_capture_being_routed_is_a_feed_row() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let created = state.handle(req(
@@ -28788,11 +29499,11 @@ mod tests {
         assert_eq!(row["capture_id"], capture_id.as_str());
         assert_eq!(row["title"], "fix the login redirect");
         assert_eq!(row["text"], "fix the login redirect\nand the toast");
-        assert_eq!(row["state"], "unrouted");
+        assert_eq!(row["state"], "routing");
         assert_eq!(row["unread"], false, "nothing has asked the user anything");
         assert_eq!(row["unread_count"], 0);
         assert_eq!(row["unread_reason"], Value::Null);
-        assert_eq!(row["working"], false);
+        assert_eq!(row["working"], true, "the router has it");
         assert_eq!(row["branch"], Value::Null);
         assert_eq!(row["run_id"], Value::Null);
         assert_eq!(row["issue_id"], Value::Null);
@@ -28923,5 +29634,639 @@ mod tests {
             states.iter().all(|state| *state != "routing"),
             "the reset is written, not just remembered: {states:?}"
         );
+    }
+
+    // ==== the router: what decides where a capture goes ======================
+
+    /// Take a capture and hand back its id and the router session deciding it —
+    /// the fixture every routing test starts from, standing in for the harness
+    /// that would otherwise be driving these tools.
+    fn captured(state: &mut AppState, text: &str) -> (String, String) {
+        let created = state.handle(req("capture.create", json!({ "text": text })));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let capture_id = created["result"]["id"].as_str().unwrap().to_string();
+        let agent_id = state.router_sessions[&capture_id].agent_id.clone();
+        (capture_id, agent_id)
+    }
+
+    fn capture_record(state: &mut AppState, capture_id: &str) -> Value {
+        let fetched = state.handle(req("capture.get", json!({ "capture_id": capture_id })));
+        assert_eq!(fetched["ok"], true, "{fetched:?}");
+        fetched["result"].clone()
+    }
+
+    /// A capture arriving puts a router on it: its own session, its own scratch
+    /// directory outside every repository, and a turn carrying the decision
+    /// rule — spawned reactively, off the record that was already written.
+    #[test]
+    fn a_capture_puts_a_router_on_it_in_a_scratch_directory_of_its_own() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut state, "fix the login redirect");
+
+        assert!(
+            crate::router::is_router_agent(&agent_id),
+            "{agent_id} must say what kind of session it is"
+        );
+        let session = state.router_sessions[&capture_id].clone();
+        assert_eq!(
+            session.scratch_dir,
+            dir.path().join("router-scratch").join(&capture_id)
+        );
+        assert!(
+            session.scratch_dir.is_dir(),
+            "the scratch is cut before the spawn"
+        );
+        assert!(
+            !session.scratch_dir.starts_with(&repo),
+            "a router never works inside a checkout: {}",
+            session.scratch_dir.display()
+        );
+        assert_eq!(
+            session.choice.effort.as_deref(),
+            Some("low"),
+            "routing is cheap thinking over a lot of context"
+        );
+
+        let turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == capture_id)
+            .expect("the router is given a turn");
+        assert_eq!(turn.agent_id, agent_id);
+        assert_eq!(turn.root, session.scratch_dir);
+        assert_eq!(turn.phase, "route");
+        assert!(turn.cold.contains("fix the login redirect"));
+        assert!(turn.cold.contains("dispatch_branch"));
+        assert_eq!(
+            turn.cold, turn.warm,
+            "a router is one decision long: there is no conversation to continue"
+        );
+        assert_eq!(capture_record(&mut state, &capture_id)["state"], "routing");
+    }
+
+    /// One capture, one router. Everything that can ask for a route asks
+    /// through one door, and a capture already being decided is left to the
+    /// router deciding it.
+    #[test]
+    fn a_capture_being_routed_is_never_given_a_second_router() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut state, "ship it");
+        state.pending_agent_turns.clear();
+
+        state.begin_routing(&capture_id).unwrap();
+        state.begin_routing(&capture_id).unwrap();
+
+        assert_eq!(state.router_sessions[&capture_id].agent_id, agent_id);
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the router already deciding this capture is the one deciding it"
+        );
+    }
+
+    /// The default destination. `create_issue` files a record and starts
+    /// nothing, and the capture's record says where it went and why.
+    #[test]
+    fn create_issue_files_an_inert_issue_and_writes_the_route_through() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+
+        let filed = state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: Some("no branch names this work".to_string()),
+                },
+            )
+            .unwrap();
+        let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+
+        assert_eq!(state.plans[&issue_id].plan.state, PlanState::Created);
+        assert!(
+            state.plans[&issue_id].worktree.is_none(),
+            "inert: no worktree"
+        );
+        assert!(
+            !state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == issue_id),
+            "inert: no agent until the user opens it"
+        );
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "routed");
+        assert_eq!(record["routing"]["kind"], "issue");
+        assert_eq!(record["routing"]["target_id"], issue_id.as_str());
+        assert_eq!(record["routing"]["project_id"], project_id.as_str());
+        assert_eq!(record["routing"]["rationale"], "no branch names this work");
+
+        // On disk, not just in this process.
+        let on_disk = Store::new(dir.path().join("store"))
+            .load_all_captures()
+            .unwrap();
+        assert_eq!(
+            on_disk[0].routing.as_ref().unwrap().target_id,
+            issue_id,
+            "the route survives the daemon that made it"
+        );
+    }
+
+    /// The confident destination. `dispatch_branch` is the one-call handoff, so
+    /// the router never owns a half-built branch.
+    #[test]
+    fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "finish the toast on the login branch");
+        state.pending_agent_turns.clear();
+
+        let dispatched = state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::DispatchBranch {
+                    project_id: project_id.clone(),
+                    branch: None,
+                    instruction: "finish the toast".to_string(),
+                    rationale: Some("continues the login work".to_string()),
+                },
+            )
+            .unwrap();
+        let branch = dispatched["branch"].as_str().unwrap().to_string();
+        assert!(dispatched["run_id"].is_string());
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "a dispatch is an agent already working"
+        );
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "routed");
+        assert_eq!(record["routing"]["kind"], "branch");
+        assert_eq!(record["routing"]["target_id"], branch.as_str());
+        assert_eq!(record["routing"]["rationale"], "continues the login work");
+    }
+
+    /// A question is not a route: the capture goes back to where the router
+    /// picks work up, and says what it needs from the user.
+    #[test]
+    fn ask_user_puts_the_question_on_the_captures_own_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::AskUser {
+                    question: "which project is this about?".to_string(),
+                },
+            )
+            .unwrap();
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "unrouted", "nothing was routed");
+        assert_eq!(record["question"]["text"], "which project is this about?");
+        assert_eq!(record["question"]["answer"], Value::Null);
+
+        let row = capture_rows(&mut state).remove(0);
+        assert_eq!(row["unread"], true);
+        assert_eq!(row["unread_reason"], "router_question");
+    }
+
+    /// The answer comes back and the router looks again — with the answer in
+    /// the prompt, because that is the whole reason it asked.
+    #[test]
+    fn an_answer_re_fires_the_router_with_the_answer_in_hand() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, first_agent) = captured(&mut state, "make the thing faster");
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::AskUser {
+                    question: "which project is this about?".to_string(),
+                },
+            )
+            .unwrap();
+        // The asking router reported and went away, as a router that asked does.
+        state.on_router_done(
+            &capture_id,
+            DoneReport {
+                phase: DonePhase::Route,
+                status: DoneStatus::Completed,
+                summary: "asked which project".to_string(),
+                outputs: crate::mcp::DoneOutputs::default(),
+            },
+        );
+        assert!(!state.router_sessions.contains_key(&capture_id));
+        assert_eq!(
+            capture_record(&mut state, &capture_id)["state"],
+            "unrouted",
+            "a router that asked is not a router that failed"
+        );
+        state.pending_agent_turns.clear();
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "text": "the bridge" }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(answered["result"]["state"], "routing");
+        assert_eq!(answered["result"]["question"]["answer"], "the bridge");
+
+        let session = state.router_sessions[&capture_id].clone();
+        assert_ne!(
+            session.agent_id, first_agent,
+            "a fresh session decides again"
+        );
+        let turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == capture_id)
+            .expect("the router is re-fired");
+        assert!(turn.cold.contains("the bridge"), "{}", turn.cold);
+        assert!(turn.cold.contains("make the thing faster"));
+    }
+
+    #[test]
+    fn an_answer_needs_a_question_and_some_words() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "ship it");
+
+        let unasked = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "text": "the bridge" }),
+        ));
+        assert_eq!(unasked["ok"], false, "{unasked:?}");
+
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::AskUser {
+                    question: "which project?".to_string(),
+                },
+            )
+            .unwrap();
+        let blank = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "text": "  " }),
+        ));
+        assert_eq!(blank["ok"], false, "{blank:?}");
+    }
+
+    /// A router that stops without deciding leaves the capture needing the
+    /// user, with a retry — and takes its scratch directory with it.
+    #[test]
+    fn a_router_that_reports_without_routing_marks_the_capture_failed() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "ship it");
+        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+
+        state.on_router_done(
+            &capture_id,
+            DoneReport {
+                phase: DonePhase::Route,
+                status: DoneStatus::Failed,
+                summary: "nothing here says which project".to_string(),
+                outputs: crate::mcp::DoneOutputs::default(),
+            },
+        );
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "failed");
+        assert!(!state.router_sessions.contains_key(&capture_id));
+        assert!(!scratch.exists(), "the scratch goes with the session");
+
+        let row = capture_rows(&mut state).remove(0);
+        assert_eq!(row["unread"], true);
+        assert_eq!(row["unread_reason"], "routing_failed");
+    }
+
+    /// A router that reported a route is a router that finished: the same
+    /// settle leaves the decision alone and only tidies up after the process.
+    #[test]
+    fn a_router_that_routed_keeps_its_route_when_it_reports() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id,
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+
+        state.on_router_done(
+            &capture_id,
+            DoneReport {
+                phase: DonePhase::Route,
+                status: DoneStatus::Completed,
+                summary: "filed an issue".to_string(),
+                outputs: crate::mcp::DoneOutputs::default(),
+            },
+        );
+
+        assert_eq!(capture_record(&mut state, &capture_id)["state"], "routed");
+        assert!(!scratch.exists());
+        assert!(
+            capture_rows(&mut state).is_empty(),
+            "what it became is the presence"
+        );
+    }
+
+    /// A router process that died mid-decision told nobody, so the sweep is
+    /// what turns "no process" into a capture the user can act on. A session
+    /// still on its way to a harness has no process to have lost.
+    #[test]
+    fn the_sweep_fails_a_capture_whose_router_died_and_spares_one_still_starting() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (starting, _) = captured(&mut state, "still on its way");
+        let (died, _) = captured(&mut state, "its router died");
+
+        assert!(
+            state.reap_finished_router_sessions().is_empty(),
+            "nothing has started, so nothing has stopped"
+        );
+
+        // The one whose harness came up, and then went away with it.
+        state.router_sessions.get_mut(&died).unwrap().started = true;
+        assert_eq!(state.reap_finished_router_sessions(), vec![died.clone()]);
+
+        assert_eq!(capture_record(&mut state, &died)["state"], "failed");
+        assert!(!state.router_sessions.contains_key(&died));
+        assert_eq!(
+            capture_record(&mut state, &starting)["state"],
+            "routing",
+            "a spawn in flight is not a dead router"
+        );
+        assert!(state.router_sessions.contains_key(&starting));
+    }
+
+    /// The user moves a misroute. The untouched inert issue the router guessed
+    /// at is archived — it was only ever a guess, and two rows for one piece of
+    /// work is a lie.
+    #[test]
+    fn rerouting_off_an_untouched_issue_archives_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        let filed = state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+        let guessed = filed["issue_id"].as_str().unwrap().to_string();
+
+        let rerouted = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
+        ));
+        assert_eq!(rerouted["ok"], true, "{rerouted:?}");
+        assert_eq!(rerouted["result"]["routing"]["kind"], "branch");
+        assert_eq!(
+            rerouted["result"]["rerouted_from"][0]["target_id"],
+            guessed.as_str(),
+            "where it has been stays on the record"
+        );
+        assert!(
+            state.plans[&guessed].plan.archived_at.is_some(),
+            "an untouched guess is taken back"
+        );
+    }
+
+    /// An issue somebody has already spoken to is not a guess any more, and a
+    /// branch an agent worked is work. Both are kept, and stay reachable from
+    /// the capture rather than orphaned beside it.
+    #[test]
+    fn rerouting_keeps_a_destination_that_has_been_worked() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let (touched_capture, _) = captured(&mut state, "fix the login redirect");
+        let filed = state
+            .on_router_mcp_action(
+                &touched_capture,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+        let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+        // The user opened it and said something: no longer a guess nobody read.
+        let spoken_to = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start with the redirect loop" }),
+        ));
+        assert_eq!(spoken_to["ok"], true, "{spoken_to:?}");
+
+        let rerouted = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": touched_capture, "project_id": project_id, "kind": "issue" }),
+        ));
+        assert_eq!(rerouted["ok"], true, "{rerouted:?}");
+        assert!(
+            state.plans[&issue_id].plan.archived_at.is_none(),
+            "an issue with something said to it is nobody's to archive"
+        );
+        assert_eq!(
+            rerouted["result"]["rerouted_from"][0]["target_id"],
+            issue_id.as_str()
+        );
+
+        let (branch_capture, _) = captured(&mut state, "finish the toast");
+        state
+            .on_router_mcp_action(
+                &branch_capture,
+                BridgeAction::DispatchBranch {
+                    project_id: project_id.clone(),
+                    branch: None,
+                    instruction: "finish the toast".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+        let dispatched_branch = capture_record(&mut state, &branch_capture)["routing"]["target_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let runs_before = state.runs.len();
+
+        let moved = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": branch_capture, "project_id": project_id, "kind": "issue" }),
+        ));
+        assert_eq!(moved["ok"], true, "{moved:?}");
+        assert_eq!(
+            state.runs.len(),
+            runs_before,
+            "the branch's work is untouched"
+        );
+        assert_eq!(
+            moved["result"]["rerouted_from"][0]["target_id"],
+            dispatched_branch.as_str()
+        );
+    }
+
+    /// A failed route's retry is the same door: no destination named, so the
+    /// router decides again.
+    #[test]
+    fn a_reroute_with_no_destination_re_fires_the_router() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, first_agent) = captured(&mut state, "ship it");
+        state.on_router_done(
+            &capture_id,
+            DoneReport {
+                phase: DonePhase::Route,
+                status: DoneStatus::Failed,
+                summary: "could not decide".to_string(),
+                outputs: crate::mcp::DoneOutputs::default(),
+            },
+        );
+        assert_eq!(capture_record(&mut state, &capture_id)["state"], "failed");
+        state.pending_agent_turns.clear();
+
+        let retried = state.handle(req("capture.reroute", json!({ "capture_id": capture_id })));
+        assert_eq!(retried["ok"], true, "{retried:?}");
+        assert_eq!(retried["result"]["state"], "routing");
+        assert_ne!(state.router_sessions[&capture_id].agent_id, first_agent);
+        assert!(state
+            .pending_agent_turns
+            .iter()
+            .any(|turn| turn.owner == capture_id));
+    }
+
+    /// One capture, one destination. A router that already routed cannot route
+    /// again — that would leave two artifacts and a record naming one.
+    #[test]
+    fn a_routed_capture_refuses_a_second_route_from_the_router() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "ship it");
+        let file = |state: &mut AppState| {
+            state.on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "ship it".to_string(),
+                    rationale: None,
+                },
+            )
+        };
+        file(&mut state).unwrap();
+        let again = file(&mut state).unwrap_err();
+        assert!(again.contains("already has a destination"), "{again}");
+    }
+
+    /// The two surfaces are enforced where the frames arrive, not only in the
+    /// tool list a session is shown: a harness that writes its own frames still
+    /// only reaches the surface it was spawned on.
+    #[test]
+    fn neither_session_kind_can_call_the_others_tools() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let goal = "add a greeting";
+        let plan = state.handle(req("plan.create", json!({ "goal": goal })));
+        let plan_id = plan["result"]["issue_id"].as_str().unwrap().to_string();
+        let (capture_id, _) = captured(&mut state, "ship it");
+
+        let coding_reaching_out = state
+            .on_mcp_action(&plan_id, BridgeAction::ListProjects)
+            .unwrap_err();
+        assert!(
+            coding_reaching_out.contains("list_projects")
+                && coding_reaching_out.contains("router tool"),
+            "{coding_reaching_out}"
+        );
+
+        let router_reaching_in = state
+            .on_router_mcp_action(&capture_id, BridgeAction::ReadUnreadMessages)
+            .unwrap_err();
+        assert!(
+            router_reaching_in.contains("read_unread_messages")
+                && router_reaching_in.contains("coding agent's tool"),
+            "{router_reaching_in}"
+        );
+    }
+
+    /// The read half of the router's surface: every project on the device, the
+    /// work in flight across all of them, and one work item's conversation.
+    #[test]
+    fn the_router_reads_across_every_project_and_writes_to_none_of_them() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let plan = state.handle(req("plan.create", json!({ "goal": "add a greeting" })));
+        let issue_id = plan["result"]["issue_id"].as_str().unwrap().to_string();
+        let (capture_id, _) = captured(&mut state, "ship it");
+
+        let projects = state
+            .on_router_mcp_action(&capture_id, BridgeAction::ListProjects)
+            .unwrap();
+        assert_eq!(projects["projects"].as_array().unwrap().len(), 1);
+
+        let work = state
+            .on_router_mcp_action(&capture_id, BridgeAction::ListWork)
+            .unwrap();
+        let rows = work["work"].as_array().unwrap();
+        assert!(
+            rows.iter().any(|row| row["entity_id"] == issue_id.as_str()),
+            "the issue in flight is what the router checks a capture against: {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|row| row["kind"] != "capture"),
+            "a capture is not work yet: {rows:?}"
+        );
+
+        let conversation = state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::ReadConversation {
+                    entity_id: issue_id.clone(),
+                    agent_id: None,
+                    limit: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(conversation["entity_id"], issue_id.as_str());
+        assert!(conversation["transcript"]
+            .as_str()
+            .unwrap()
+            .contains("add a greeting"));
+
+        let unknown = state.on_router_mcp_action(
+            &capture_id,
+            BridgeAction::ReadConversation {
+                entity_id: "run-nowhere".to_string(),
+                agent_id: None,
+                limit: 10,
+            },
+        );
+        assert!(unknown.is_err(), "{unknown:?}");
     }
 }

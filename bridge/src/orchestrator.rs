@@ -856,7 +856,7 @@ impl Orchestrator {
                 self.consume_plan_stage_revision(active, store, &report)?;
             }
             (
-                DonePhase::Build | DonePhase::Validate | DonePhase::Recover,
+                DonePhase::Build | DonePhase::Validate | DonePhase::Recover | DonePhase::Route,
                 DoneStatus::Completed,
             ) => {
                 return Err(OrchestratorError::Gate(format!(
@@ -1236,6 +1236,7 @@ impl Orchestrator {
                 stage_start_sha: "",
                 findings: "",
                 prior_notes: "",
+                ..Vars::default()
             },
         );
         append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
@@ -1499,6 +1500,15 @@ impl Orchestrator {
                 // any in-flight build session smuggle manifest/doc edits.
                 return Err(OrchestratorError::Gate(
                     "a run session reported phase=plan; plan reports belong to plans".to_string(),
+                ));
+            }
+            (DonePhase::Route, DoneStatus::Completed) => {
+                // A routing report belongs to a router session, which owns no
+                // checkout and therefore no run.
+                return Err(OrchestratorError::Gate(
+                    "a run session reported phase=route; routing reports belong to router \
+                     sessions"
+                        .to_string(),
                 ));
             }
             // A mid-run stage-doc revision does not advance the build: its
@@ -2491,6 +2501,7 @@ impl Orchestrator {
                 stage_start_sha,
                 findings,
                 prior_notes,
+                ..Vars::default()
             },
         );
         append_stage_catalog(rendered, plan_stage_docs, |stage_id| {

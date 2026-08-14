@@ -28,6 +28,9 @@ pub enum DonePhase {
     Validate,
     /// A branch-lineage recovery agent reporting a nonce-bound result.
     Recover,
+    /// A router session reporting where it sent a capture. The only phase on
+    /// the router surface, and never on a coding agent's.
+    Route,
 }
 
 /// The agent's claim about how the phase ended.
@@ -239,19 +242,214 @@ pub enum BridgeAction {
     SearchConversation {
         query: crate::thread::ConversationQuery,
     },
+    /// Every project on this device. Router only.
+    ListProjects,
+    /// The branches and issues in flight, as a digest. Router only.
+    ListWork,
+    /// One work item's conversation, read-only. Router only.
+    ReadConversation {
+        entity_id: String,
+        agent_id: Option<String>,
+        limit: usize,
+    },
+    /// File an inert issue: a record, no worktree, no agent. Router only.
+    CreateIssue {
+        project_id: String,
+        goal: String,
+        rationale: Option<String>,
+    },
+    /// Put an agent on a branch with an instruction. Router only.
+    DispatchBranch {
+        project_id: String,
+        branch: Option<String>,
+        instruction: String,
+        rationale: Option<String>,
+    },
+    /// Ask the user the one question that unblocks a routing decision. Router
+    /// only.
+    AskUser {
+        question: String,
+    },
+}
+
+/// How many conversation items `read_conversation` returns when the router does
+/// not say.
+const DEFAULT_CONVERSATION_LIMIT: usize = 40;
+
+/// The most it will return however much the router asks for: the router is
+/// triaging, not reading the whole history of a branch.
+const MAX_CONVERSATION_LIMIT: usize = 200;
+
+impl BridgeAction {
+    /// The tool this action came from, for errors that have to name it.
+    pub fn tool_name(&self) -> &'static str {
+        match self {
+            BridgeAction::ReadUnreadMessages => "read_unread_messages",
+            BridgeAction::PostThreadMessage { .. } => "post_thread_message",
+            BridgeAction::SearchConversation { .. } => "search_conversation",
+            BridgeAction::ListProjects => "list_projects",
+            BridgeAction::ListWork => "list_work",
+            BridgeAction::ReadConversation { .. } => "read_conversation",
+            BridgeAction::CreateIssue { .. } => "create_issue",
+            BridgeAction::DispatchBranch { .. } => "dispatch_branch",
+            BridgeAction::AskUser { .. } => "ask_user",
+        }
+    }
+
+    /// Which surface this action belongs to. The socket enforces it against the
+    /// session that sent it, so a harness cannot reach the other surface's tools
+    /// by writing the frame itself.
+    pub fn surface(&self) -> McpSurface {
+        match self {
+            BridgeAction::ReadUnreadMessages
+            | BridgeAction::PostThreadMessage { .. }
+            | BridgeAction::SearchConversation { .. } => McpSurface::Coding,
+            BridgeAction::ListProjects
+            | BridgeAction::ListWork
+            | BridgeAction::ReadConversation { .. }
+            | BridgeAction::CreateIssue { .. }
+            | BridgeAction::DispatchBranch { .. }
+            | BridgeAction::AskUser { .. } => McpSurface::Router,
+        }
+    }
+}
+
+/// Which set of tools a session gets.
+///
+/// Not a permission flag on one server: two surfaces, and a session is on
+/// exactly one of them for its whole life. A coding agent never sees the
+/// router's tools and a router never sees a coding agent's, so neither can
+/// reach the other's by asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpSurface {
+    Coding,
+    Router,
+}
+
+impl McpSurface {
+    /// The surface an owner id names. The id itself carries the answer — a
+    /// router session's id is prefixed — so the surface can never disagree with
+    /// the session it was resolved for.
+    pub fn for_owner(owner_id: &str) -> McpSurface {
+        if crate::router::is_router_agent(owner_id) {
+            McpSurface::Router
+        } else {
+            McpSurface::Coding
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpSurface::Coding => "coding",
+            McpSurface::Router => "router",
+        }
+    }
 }
 
 /// The conversation-aware MCP server. Identity-scoped to one owner (a plan or a run);
 /// `owner_id` is opaque here — the daemon disambiguates it by owner lookup.
 pub struct DoneServer {
     owner_id: String,
+    surface: McpSurface,
 }
 
 impl DoneServer {
+    /// The coding-agent surface, for a session owned by a plan or a run.
     pub fn new(owner_id: impl Into<String>) -> Self {
         DoneServer {
             owner_id: owner_id.into(),
+            surface: McpSurface::Coding,
         }
+    }
+
+    /// The surface `owner_id` names. The one constructor the stdio entry point
+    /// uses, so which tools a session gets is decided by who it is rather than
+    /// by a flag someone has to remember to pass.
+    pub fn for_owner(owner_id: impl Into<String>) -> Self {
+        let owner_id = owner_id.into();
+        let surface = McpSurface::for_owner(&owner_id);
+        DoneServer { owner_id, surface }
+    }
+
+    pub fn surface(&self) -> McpSurface {
+        self.surface
+    }
+
+    /// The JSON Schema for the router's `done`. One phase, because a router has
+    /// one: it routed, or it could not.
+    fn router_done_input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "phase": { "type": "string", "enum": ["route"] },
+                "status": { "type": "string", "enum": ["completed", "failed"] },
+                "summary": { "type": "string", "description": "One concise sentence saying where the capture went and why. If you could not route it, say what stopped you." }
+            },
+            "required": ["phase", "status", "summary"]
+        })
+    }
+
+    /// The router's tools. Read broadly, write in exactly two places (an inert
+    /// issue, a branch dispatch), and one way to ask the user something.
+    fn router_tools() -> Value {
+        json!([{
+            "name": "list_projects",
+            "description": "Every project on this device, with its id, name and repository path. Start here: a capture is routed to a project before it is routed to anything else.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }, {
+            "name": "list_work",
+            "description": "The branches and issues in flight across every project: what each one is, which project it belongs to, its state, and whether an agent is working it right now. This is what you check the capture against before you believe it continues existing work.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }, {
+            "name": "read_conversation",
+            "description": "Read one work item's conversation, newest last. Read-only — you cannot post to it. Use it to confirm a capture really continues the work on a branch before dispatching to it; a branch whose conversation is about something else is not the destination.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity_id": { "type": "string", "description": "The run_id or issue_id from list_work." },
+                    "agent_id": { "type": "string", "description": "Which agent's conversation, when the item has several. Omit for the item's own." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 40 }
+                },
+                "required": ["entity_id"]
+            }
+        }, {
+            "name": "create_issue",
+            "description": "File an inert issue on a project: a record with the capture as its goal, no worktree and no agent until the user opens it. This is the default destination — a wrong guess costs the user one tap, and they can reroute it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_id": { "type": "string" },
+                    "goal": { "type": "string", "description": "What the user wants done, in their terms. Keep their words; do not turn a sentence into a specification." },
+                    "rationale": { "type": "string", "description": "One line on why this project and why an issue. The user reads it when deciding whether you got it right." }
+                },
+                "required": ["project_id", "goal"]
+            }
+        }, {
+            "name": "dispatch_branch",
+            "description": "Put an agent on a branch with this instruction, creating or adopting the checkout as needed. Use ONLY when the capture names an existing branch or worktree, or unambiguously continues work already in flight on one — this starts an agent that changes code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project_id": { "type": "string" },
+                    "branch": { "type": "string", "description": "The existing branch the work continues on. Omit only when the capture is new branch work whose name comes from the instruction." },
+                    "instruction": { "type": "string", "description": "What the agent should do, in the user's terms." },
+                    "rationale": { "type": "string", "description": "One line on why this branch is the destination." }
+                },
+                "required": ["project_id", "instruction"]
+            }
+        }, {
+            "name": "ask_user",
+            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so a best-guess inert issue is nearly always better. The question reaches them as the capture's own inbox entry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "question": { "type": "string" } },
+                "required": ["question"]
+            }
+        }, {
+            "name": "done",
+            "description": "Report the routing outcome and end the session. Call it after create_issue, dispatch_branch or ask_user — or with status=failed when nothing let you decide.",
+            "inputSchema": Self::router_done_input_schema()
+        }])
     }
 
     /// The JSON Schema for the `done` tool's arguments.
@@ -366,13 +564,17 @@ impl DoneServer {
                         json!({
                             "protocolVersion": version,
                             "capabilities": { "tools": {} },
-                            "serverInfo": { "name": format!("build-bridge[{}]", self.owner_id), "version": env!("CARGO_PKG_VERSION") }
+                            "serverInfo": { "name": format!("build-{}[{}]", self.surface.as_str(), self.owner_id), "version": env!("CARGO_PKG_VERSION") }
                         }),
                     )),
                     report: None,
                     ..Handled::default()
                 }
             }
+            "tools/list" if self.surface == McpSurface::Router => Handled {
+                reply: Some(result(id, json!({ "tools": Self::router_tools() }))),
+                ..Handled::default()
+            },
             "tools/list" => Handled {
                 reply: Some(result(
                     id,
@@ -460,6 +662,9 @@ impl DoneServer {
             .and_then(|p| p.get("name"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        if self.surface == McpSurface::Router {
+            return self.handle_router_tools_call(id, name, params);
+        }
         if name == "read_unread_messages" {
             return Handled {
                 action: Some(BridgeAction::ReadUnreadMessages),
@@ -592,6 +797,92 @@ impl DoneServer {
             Err(e) => Handled {
                 reply: Some(tool_error(id, e.to_string())),
                 report: None,
+                ..Handled::default()
+            },
+        }
+    }
+
+    /// The router surface's `tools/call`. Every tool but `done` is a daemon
+    /// action: the router asks Build, and Build — not this parser — decides
+    /// whether the answer is allowed.
+    fn handle_router_tools_call(&self, id: Value, name: &str, params: Option<&Value>) -> Handled {
+        let arguments = params
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let text = |field: &str| {
+            arguments
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let required = |field: &'static str| text(field).ok_or(format!("{field} is required"));
+        let action = match name {
+            "list_projects" => Ok(BridgeAction::ListProjects),
+            "list_work" => Ok(BridgeAction::ListWork),
+            "read_conversation" => {
+                required("entity_id").map(|entity_id| BridgeAction::ReadConversation {
+                    entity_id,
+                    agent_id: text("agent_id"),
+                    limit: arguments
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .map(|limit| limit as usize)
+                        .unwrap_or(DEFAULT_CONVERSATION_LIMIT)
+                        .clamp(1, MAX_CONVERSATION_LIMIT),
+                })
+            }
+            "create_issue" => required("project_id").and_then(|project_id| {
+                Ok(BridgeAction::CreateIssue {
+                    project_id,
+                    goal: required("goal")?,
+                    rationale: text("rationale"),
+                })
+            }),
+            "dispatch_branch" => required("project_id").and_then(|project_id| {
+                Ok(BridgeAction::DispatchBranch {
+                    project_id,
+                    branch: text("branch"),
+                    instruction: required("instruction")?,
+                    rationale: text("rationale"),
+                })
+            }),
+            "ask_user" => required("question").map(|question| BridgeAction::AskUser { question }),
+            "done" => {
+                return match serde_json::from_value::<DoneArgs>(arguments)
+                    .map_err(|error| format!("invalid done arguments: {error}"))
+                    .and_then(|args| {
+                        if args.phase == DonePhase::Route {
+                            Ok(args)
+                        } else {
+                            Err("a router reports phase=\"route\"".to_string())
+                        }
+                    })
+                    .and_then(|args| DoneReport::from_args(args).map_err(|e| e.to_string()))
+                {
+                    Ok(report) => Handled {
+                        reply: Some(tool_ok(id, &report.summary)),
+                        report: Some(report),
+                        ..Handled::default()
+                    },
+                    Err(message) => Handled {
+                        reply: Some(tool_error(id, message)),
+                        ..Handled::default()
+                    },
+                }
+            }
+            other => Err(format!("unknown tool: {other}")),
+        };
+        match action {
+            Ok(action) => Handled {
+                action: Some(action),
+                action_id: Some(id),
+                ..Handled::default()
+            },
+            Err(message) => Handled {
+                reply: Some(tool_error(id, message)),
                 ..Handled::default()
             },
         }
@@ -1245,6 +1536,224 @@ mod tests {
         let h = server().handle_message("{not json");
         let v = parse(&h.reply.unwrap());
         assert_eq!(v["error"]["code"], -32700);
+    }
+
+    // ==== the router surface ================================================
+
+    fn router() -> DoneServer {
+        DoneServer::for_owner("router-abc")
+    }
+
+    fn tool_names(server: &DoneServer) -> Vec<String> {
+        let h = server.handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        parse(&h.reply.unwrap())["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// The id decides the surface, so a session cannot be handed the wrong tool
+    /// set by anything forgetting to say which one it is.
+    #[test]
+    fn the_owner_id_decides_which_surface_a_session_is_on() {
+        assert_eq!(
+            DoneServer::for_owner("router-abc").surface(),
+            McpSurface::Router
+        );
+        assert_eq!(
+            DoneServer::for_owner("agent-01H").surface(),
+            McpSurface::Coding
+        );
+        assert_eq!(DoneServer::new("router-abc").surface(), McpSurface::Coding);
+    }
+
+    /// Two surfaces, and nothing on both but `done`. A coding agent never sees
+    /// a router tool and a router never sees a coding one.
+    #[test]
+    fn the_two_surfaces_share_only_done() {
+        assert_eq!(
+            tool_names(&router()),
+            vec![
+                "list_projects",
+                "list_work",
+                "read_conversation",
+                "create_issue",
+                "dispatch_branch",
+                "ask_user",
+                "done",
+            ]
+        );
+        assert_eq!(
+            tool_names(&server()),
+            vec![
+                "read_unread_messages",
+                "post_thread_message",
+                "done",
+                "search_conversation",
+            ],
+            "the coding surface is unchanged by the router's arrival"
+        );
+    }
+
+    /// The router's `done` reports the one phase a router has, so the schema
+    /// cannot invite it to claim it built something.
+    #[test]
+    fn the_routers_done_reports_only_routing() {
+        let h = router().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        let v = parse(&h.reply.unwrap());
+        let schema = &v["result"]["tools"][6]["inputSchema"];
+        assert_eq!(schema["properties"]["phase"]["enum"], json!(["route"]));
+        assert_eq!(
+            schema["properties"]["status"]["enum"],
+            json!(["completed", "failed"])
+        );
+
+        let routed = router().handle_message(
+            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"done","arguments":{"phase":"route","status":"completed","summary":"filed an issue on the bridge"}}}"#,
+        );
+        let report = routed.report.expect("a routing report");
+        assert_eq!(report.phase, DonePhase::Route);
+        assert_eq!(report.summary, "filed an issue on the bridge");
+
+        let wrong_phase = router().handle_message(
+            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"built it"}}}"#,
+        );
+        assert_eq!(
+            parse(&wrong_phase.reply.unwrap())["result"]["isError"],
+            true
+        );
+        assert!(wrong_phase.report.is_none());
+    }
+
+    /// The parser's whole job on this surface: turn a tool call into the typed
+    /// action the daemon executes, and refuse one it cannot act on.
+    #[test]
+    fn every_router_tool_emits_its_typed_action() {
+        let call = |name: &str, arguments: &str| {
+            router().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":50,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+            ))
+        };
+
+        assert!(matches!(
+            call("list_projects", "{}").action,
+            Some(BridgeAction::ListProjects)
+        ));
+        assert!(matches!(
+            call("list_work", "{}").action,
+            Some(BridgeAction::ListWork)
+        ));
+        assert!(matches!(
+            call("read_conversation", r#"{"entity_id":"run-1","agent_id":"agent-2","limit":5}"#).action,
+            Some(BridgeAction::ReadConversation { ref entity_id, ref agent_id, limit })
+                if entity_id == "run-1" && agent_id.as_deref() == Some("agent-2") && limit == 5
+        ));
+        assert!(matches!(
+            call("create_issue", r#"{"project_id":"proj-1","goal":"fix the redirect","rationale":"no branch names it"}"#).action,
+            Some(BridgeAction::CreateIssue { ref project_id, ref goal, ref rationale })
+                if project_id == "proj-1" && goal == "fix the redirect"
+                    && rationale.as_deref() == Some("no branch names it")
+        ));
+        assert!(matches!(
+            call("dispatch_branch", r#"{"project_id":"proj-1","branch":"build/login","instruction":"finish the toast"}"#).action,
+            Some(BridgeAction::DispatchBranch { ref project_id, ref branch, ref instruction, rationale: None })
+                if project_id == "proj-1" && branch.as_deref() == Some("build/login")
+                    && instruction == "finish the toast"
+        ));
+        assert!(matches!(
+            call("ask_user", r#"{"question":"which project?"}"#).action,
+            Some(BridgeAction::AskUser { ref question }) if question == "which project?"
+        ));
+    }
+
+    #[test]
+    fn a_router_tool_call_missing_what_it_needs_is_a_tool_error() {
+        for (name, arguments, wanted) in [
+            ("read_conversation", "{}", "entity_id"),
+            ("create_issue", r#"{"project_id":"proj-1"}"#, "goal"),
+            ("dispatch_branch", r#"{"instruction":"go"}"#, "project_id"),
+            ("ask_user", r#"{"question":"   "}"#, "question"),
+        ] {
+            let h = router().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+            ));
+            let v = parse(&h.reply.unwrap());
+            assert_eq!(v["result"]["isError"], true, "{name}");
+            assert!(
+                v["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(wanted),
+                "{name}: {v}"
+            );
+            assert!(h.action.is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_read_conversation_limit_is_clamped_rather_than_honoured_without_bound() {
+        for (asked, applied) in [(0, 1), (5_000, 200)] {
+            let h = router().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{{"name":"read_conversation","arguments":{{"entity_id":"run-1","limit":{asked}}}}}}}"#
+            ));
+            let Some(BridgeAction::ReadConversation { limit, .. }) = h.action else {
+                panic!("expected a read action");
+            };
+            assert_eq!(limit, applied, "limit={asked}");
+        }
+    }
+
+    /// Neither surface can reach the other's tools by naming them.
+    #[test]
+    fn each_surface_refuses_the_others_tools() {
+        let coding_asking_for_router = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}"#,
+        );
+        assert_eq!(
+            parse(&coding_asking_for_router.reply.unwrap())["result"]["isError"],
+            true
+        );
+        assert!(coding_asking_for_router.action.is_none());
+
+        let router_asking_for_coding = router().handle_message(
+            r#"{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"read_unread_messages","arguments":{}}}"#,
+        );
+        assert_eq!(
+            parse(&router_asking_for_coding.reply.unwrap())["result"]["isError"],
+            true
+        );
+        assert!(router_asking_for_coding.action.is_none());
+    }
+
+    /// The socket enforces the same split on the frames themselves, so it needs
+    /// each action to say which surface it belongs to.
+    #[test]
+    fn every_action_names_its_tool_and_its_surface() {
+        for (action, name, surface) in [
+            (
+                BridgeAction::ReadUnreadMessages,
+                "read_unread_messages",
+                McpSurface::Coding,
+            ),
+            (
+                BridgeAction::ListProjects,
+                "list_projects",
+                McpSurface::Router,
+            ),
+            (BridgeAction::ListWork, "list_work", McpSurface::Router),
+            (
+                BridgeAction::AskUser {
+                    question: "which?".to_string(),
+                },
+                "ask_user",
+                McpSurface::Router,
+            ),
+        ] {
+            assert_eq!(action.tool_name(), name);
+            assert_eq!(action.surface(), surface, "{name}");
+        }
     }
 
     #[test]

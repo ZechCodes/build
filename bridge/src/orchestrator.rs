@@ -1257,6 +1257,17 @@ impl Orchestrator {
         Ok(self.worktrees.create(slug, base_branch)?)
     }
 
+    /// The same bare checkout, on a branch the caller named in full. Used when
+    /// a dispatch was given a branch name rather than words to name one after:
+    /// the name is a name, so it is cut exactly as given, `build/` or not.
+    pub fn create_worktree_on_named_branch(
+        &self,
+        branch: &str,
+        base_branch: &str,
+    ) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.create_on_branch(branch, base_branch)?)
+    }
+
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
     /// (the MCP config carries the run id), and spawn the first build session.
     ///

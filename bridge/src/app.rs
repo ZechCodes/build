@@ -4247,15 +4247,15 @@ impl AppState {
                 eprintln!("on_agent_done {run_id}: {e}");
                 Err(e)
             }
-            // Build's agent is persistent, so it reports whenever it finishes a
-            // turn — including one the human started at a review gate, which no
-            // lifecycle event accepts. Enforcement is by observation: the report
-            // is recorded on the conversation below and nothing moves.
+            // Build's agents are persistent and a branch carries several, so a
+            // report arrives whenever any of them finishes a turn — a turn the
+            // human started at a review gate, or one a dispatch handed a second
+            // agent. No lifecycle event accepts those, and none should:
+            // enforcement is by observation, so the report is recorded on the
+            // conversation below and the branch's own state stays put.
             Ok(ReportConsumed { outcome, next }) => {
                 if let ReportOutcome::OutOfPhase(illegal) = &outcome {
-                    eprintln!(
-                        "on_agent_done {run_id}: out-of-phase report ({illegal}); recorded only"
-                    );
+                    eprintln!("{}", out_of_phase_log(run_id, illegal));
                 }
                 // A stage that built hands itself to validation: the same
                 // agent, a new turn. Queued rather than written here — the done
@@ -7115,11 +7115,18 @@ impl AppState {
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
         self.abandon_router_session(&capture_id);
+        // The branch the user named, if they named one. Without it the branch
+        // is named after what was said — the same rule the router dispatches by.
+        let branch = params
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty());
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
             "issue" => self.route_to_issue(&capture_id, &project_id, &text, rationale),
-            "branch" => self.route_to_branch(&capture_id, &project_id, None, &text, rationale),
+            "branch" => self.route_to_branch(&capture_id, &project_id, branch, &text, rationale),
             other => Err(format!(
                 "capture.reroute: {other:?} is not a destination — branch and issue are the work"
             )),
@@ -10997,7 +11004,8 @@ impl AppState {
                         None => {
                             let minted = self.cut_branch_for_dispatch(
                                 project_id,
-                                branch.as_deref().unwrap_or(instruction),
+                                branch.as_deref(),
+                                instruction,
                             )?;
                             let worktree_id = crate::worktree::external_worktree_id(
                                 &Self::canonical_root(&minted.path),
@@ -11098,24 +11106,37 @@ impl AppState {
             .map(|worktree| worktree.id))
     }
 
-    /// Cut the branch a dispatch has nowhere else to put its work, through
-    /// `worktree.create`'s naming — from the branch the caller asked for, or,
-    /// with none, from the instruction itself.
+    /// Cut the branch a dispatch has nowhere else to put its work.
+    ///
+    /// A `branch` that is already a branch name is used exactly as it stands —
+    /// the caller named a ref, and re-deriving one from it is how
+    /// `build/csv-export` became `build/build-csv-export`. Anything else is
+    /// words about the work (the router's guess, or the instruction itself when
+    /// no branch was named), and words are slugified into Build's namespace.
     fn cut_branch_for_dispatch(
         &mut self,
         project_id: &str,
-        name: &str,
+        branch: Option<&str>,
+        instruction: &str,
     ) -> Result<crate::worktree::Worktree, String> {
-        if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
-            return Err(format!(
-                "branch.dispatch: {name:?} has no letter or number to name a branch after"
-            ));
-        }
         let base = self.base_for(project_id)?;
-        let worktree = self
-            .orch_for(project_id)?
-            .create_bare_worktree(&crate::worktree::slugify(name), &base)
-            .map_err(err)?;
+        let worktree = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
+            Some(name) => self
+                .orch_for(project_id)?
+                .create_worktree_on_named_branch(name, &base)
+                .map_err(err)?,
+            None => {
+                let name = branch.unwrap_or(instruction);
+                if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
+                    return Err(format!(
+                        "branch.dispatch: {name:?} has no letter or number to name a branch after"
+                    ));
+                }
+                self.orch_for(project_id)?
+                    .create_bare_worktree(&crate::worktree::slugify(name), &base)
+                    .map_err(err)?
+            }
+        };
         // The checkout must be visible to the adoption that follows it, and to
         // the very next board poll, rather than up to a scan interval later.
         self.invalidate_external_scan(project_id);
@@ -13488,6 +13509,23 @@ fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
 /// are watching from, what merely reports progress belongs to the run.
 fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
+}
+
+/// What the daemon says about a `done` the branch's lifecycle does not accept.
+///
+/// Branch state belongs to the branch, not to whoever is talking to it
+/// (Decisions §Entity model): a branch carries several agents, and one
+/// dispatched onto a branch that is already sitting at a review gate finishing
+/// its own instruction is that model working exactly as designed. So the report
+/// is recorded, its attention event fires, the branch stays where it is — and
+/// the line says so, instead of reading like a rejected transition somebody
+/// needs to go and fix.
+fn out_of_phase_log(run_id: &str, illegal: &crate::run::IllegalRunTransition) -> String {
+    format!(
+        "on_agent_done {run_id}: dispatched-agent report recorded; branch state unchanged \
+         ({:?} while the branch is {:?})",
+        illegal.event, illegal.from
+    )
 }
 
 fn record_report_in_thread(
@@ -20911,6 +20949,60 @@ mod tests {
         assert!(
             !events.iter().any(|e| e["data"]["event"] == "run_failed"),
             "a report Build cannot apply is not a failure: {events:?}"
+        );
+    }
+
+    /// The report the branch's state does not accept still needs the user: it
+    /// is an agent saying it finished. So it lands as an attention event and
+    /// the entry says why, while the branch stays exactly where it was.
+    #[test]
+    fn a_dispatched_agents_report_at_a_review_gate_asks_for_the_user() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "already reviewed");
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Tidied the imports you mentioned".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(got["result"]["state"], "review", "{got:?}");
+        assert_eq!(
+            got["result"]["unread"], true,
+            "an agent reporting it finished is something the user is told: {got:?}"
+        );
+        assert_eq!(got["result"]["unread_reason"], "done", "{got:?}");
+    }
+
+    /// And the daemon says so in its own voice. Branch state belongs to the
+    /// branch, so a report that moves nothing is the design working — the line
+    /// it writes must not read like a transition somebody has to go and fix.
+    #[test]
+    fn the_out_of_phase_line_says_the_branch_is_unchanged_not_that_something_failed() {
+        let line = out_of_phase_log(
+            "run-1",
+            &crate::run::IllegalRunTransition {
+                from: crate::run::RunState::Review,
+                event: crate::run::RunEvent::BuildReady,
+            },
+        );
+
+        assert!(
+            line.contains("dispatched-agent report recorded; branch state unchanged"),
+            "{line}"
+        );
+        assert!(line.contains("run-1") && line.contains("Review"), "{line}");
+        assert!(
+            !line.contains("illegal") && !line.contains("not valid"),
+            "the words of a rejected transition have no business here: {line}"
         );
     }
 
@@ -28964,6 +29056,64 @@ mod tests {
         assert_eq!(row["branch"], json!(branch), "{row:?}");
     }
 
+    /// A branch the caller named is a name, not a description of one. It is cut
+    /// exactly as given — a `build/` prefix is the caller's, not something to
+    /// add a second time — and only words with no branch name in them get
+    /// slugified into Build's namespace.
+    #[test]
+    fn branch_dispatch_cuts_a_named_branch_exactly_as_it_was_given() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let dispatch = |state: &mut AppState, branch: &str| {
+            state.handle(req(
+                "branch.dispatch",
+                json!({
+                    "project_id": project_id,
+                    "branch": branch,
+                    "instruction": "Add a CSV export",
+                }),
+            ))
+        };
+
+        // Prefixed: the namespace is already there, so nothing adds it again.
+        let prefixed = dispatch(&mut state, "build/csv-export");
+        assert_eq!(prefixed["ok"], true, "{prefixed:?}");
+        assert_eq!(
+            prefixed["result"]["branch"], "build/csv-export",
+            "{prefixed:?}"
+        );
+
+        // Plain: a name with no namespace is left with none.
+        let plain = dispatch(&mut state, "hotfix-login");
+        assert_eq!(plain["ok"], true, "{plain:?}");
+        assert_eq!(plain["result"]["branch"], "hotfix-login", "{plain:?}");
+
+        // Not a name at all: the words name the branch, in Build's namespace.
+        let described = dispatch(&mut state, "Add a CSV export, please");
+        assert_eq!(described["ok"], true, "{described:?}");
+        assert_eq!(
+            described["result"]["branch"], "build/add-a-csv-export-please",
+            "{described:?}"
+        );
+
+        for branch in [
+            "build/csv-export",
+            "hotfix-login",
+            "build/add-a-csv-export-please",
+        ] {
+            assert!(
+                local_branch_exists(&repo, branch).unwrap(),
+                "{branch} was cut"
+            );
+        }
+        assert!(
+            !local_branch_exists(&repo, "build/build-csv-export").unwrap(),
+            "a named branch is never slugified into a second namespace"
+        );
+    }
+
     /// A dispatch that names a branch already in flight joins that checkout —
     /// and still gets its own agent, because an instruction is never dropped
     /// into a conversation someone else is having.
@@ -30171,6 +30321,46 @@ mod tests {
         assert_eq!(
             moved["result"]["rerouted_from"][0]["target_id"],
             dispatched_branch.as_str()
+        );
+    }
+
+    /// Rerouting to a branch takes the branch's name. The user moving a
+    /// misroute usually knows exactly where it should have gone, and a
+    /// destination picker that cannot say which branch is not a destination
+    /// picker. With no name the words still name it, as they do for the router.
+    #[test]
+    fn rerouting_to_a_branch_dispatches_onto_the_branch_it_names() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (named, _) = captured(&mut state, "add the CSV export");
+        let (unnamed, _) = captured(&mut state, "add the CSV export");
+
+        let rerouted = state.handle(req(
+            "capture.reroute",
+            json!({
+                "capture_id": named,
+                "project_id": project_id,
+                "kind": "branch",
+                "branch": "build/csv-export",
+            }),
+        ));
+        assert_eq!(rerouted["ok"], true, "{rerouted:?}");
+        assert_eq!(rerouted["result"]["routing"]["kind"], "branch");
+        assert_eq!(
+            rerouted["result"]["routing"]["target_id"], "build/csv-export",
+            "the capture reads as routed to the branch the user named: {rerouted:?}"
+        );
+        assert!(local_branch_exists(&repo, "build/csv-export").unwrap());
+
+        let by_words = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": unnamed, "project_id": project_id, "kind": "branch" }),
+        ));
+        assert_eq!(by_words["ok"], true, "{by_words:?}");
+        assert_eq!(
+            by_words["result"]["routing"]["target_id"], "build/add-the-csv-export",
+            "{by_words:?}"
         );
     }
 

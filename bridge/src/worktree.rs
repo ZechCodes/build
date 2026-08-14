@@ -67,6 +67,31 @@ pub fn slugify(goal: &str) -> String {
     }
 }
 
+/// Whether a caller-supplied branch name can be cut exactly as it was given.
+///
+/// A dispatch's `branch` is either a name or a description of one, and the two
+/// are told apart here: git's own rules for a ref, narrowed to segments of
+/// letters, digits, `.`, `_` and `-`. That narrowing is what makes the name safe
+/// to fold into a directory as well as a ref — and it puts every sentence
+/// ("Add CSV export, please") on the slugify path, where it belongs.
+pub fn is_usable_branch_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 200 {
+        return false;
+    }
+    let segments: Vec<&str> = name.split('/').collect();
+    let segment_is_usable = |segment: &&str| {
+        !segment.is_empty()
+            && !segment.starts_with('.')
+            && !segment.starts_with('-')
+            && !segment.ends_with(".lock")
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    segments.iter().all(segment_is_usable)
+        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+}
+
 /// Owns worktree creation and teardown for a single project repository.
 pub struct WorktreeManager {
     repo_path: PathBuf,
@@ -131,6 +156,64 @@ impl WorktreeManager {
             branch,
             base_branch: base_branch.to_string(),
         })
+    }
+
+    /// Add a worktree for the branch `branch`, spelled exactly as it was given.
+    ///
+    /// The counterpart to [`create`](Self::create): that one is handed a slug
+    /// and owns the namespace, this one is handed the whole name and owns
+    /// nothing but the directory. A branch that already exists is checked out
+    /// rather than cut, so dispatching onto work started by hand reaches it.
+    pub fn create_on_branch(
+        &self,
+        branch: &str,
+        base_branch: &str,
+    ) -> Result<Worktree, WorktreeError> {
+        if !is_usable_branch_name(branch) {
+            return Err(WorktreeError::Command(format!(
+                "{branch:?} is not a branch name"
+            )));
+        }
+        let repo = git2::Repository::open(&self.repo_path)?;
+        std::fs::create_dir_all(&self.worktrees_root)?;
+
+        let stem = self.directory_name_for(branch);
+        let mut name = stem.clone();
+        let mut n = 2;
+        while repo.find_worktree(&name).is_ok() || self.worktrees_root.join(&name).exists() {
+            name = format!("{stem}-{n}");
+            n += 1;
+        }
+
+        let branch_ref = format!("refs/heads/{branch}");
+        if repo.find_reference(&branch_ref).is_err() {
+            let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+            repo.branch(branch, &base_commit, false)?;
+        }
+        let reference = repo.find_reference(&branch_ref)?;
+        let path = self.worktrees_root.join(&name);
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        repo.worktree(&name, &path, Some(&opts))?;
+
+        Ok(Worktree {
+            name,
+            path,
+            branch: branch.to_string(),
+            base_branch: base_branch.to_string(),
+        })
+    }
+
+    /// The directory a named branch lands in: its segments joined by hyphens,
+    /// minus this manager's own namespace, which every directory here is
+    /// already inside. `build/csv-export` → `csv-export`, `feature/csv-export`
+    /// → `feature-csv-export`, so two namespaces never claim one directory.
+    fn directory_name_for(&self, branch: &str) -> String {
+        let mut segments: Vec<&str> = branch.split('/').collect();
+        if segments.len() > 1 && segments[0] == self.branch_prefix {
+            segments.remove(0);
+        }
+        segments.join("-")
     }
 
     /// Whether a candidate name is already in use as a branch, a registered
@@ -834,6 +917,102 @@ mod tests {
 
     fn manager(dir: &tempfile::TempDir, repo: &Path) -> WorktreeManager {
         WorktreeManager::new(repo, dir.path().join("worktrees"))
+    }
+
+    #[test]
+    fn a_usable_branch_name_is_one_git_and_the_filesystem_both_take() {
+        for name in [
+            "build/csv-export",
+            "csv-export",
+            "feature/api/v2",
+            "release-1.2",
+            "fix_the_thing",
+        ] {
+            assert!(is_usable_branch_name(name), "{name:?} is a branch name");
+        }
+        for name in [
+            "",
+            "add a csv export",
+            "Add CSV export, please",
+            "build/",
+            "/build",
+            "build//x",
+            "-dashed",
+            ".hidden",
+            "build/..",
+            "build/x.lock",
+            "back\\slash",
+            "star*",
+            "tilde~1",
+        ] {
+            assert!(
+                !is_usable_branch_name(name),
+                "{name:?} is a description, not a branch name"
+            );
+        }
+    }
+
+    /// A name the caller gave is a name, not a description: the branch is cut
+    /// exactly as asked, and the directory it lands in is derived from it.
+    #[test]
+    fn create_on_branch_cuts_the_branch_exactly_as_it_was_named() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+
+        let prefixed = mgr.create_on_branch("build/csv-export", "main").unwrap();
+        assert_eq!(prefixed.branch, "build/csv-export");
+        assert_eq!(prefixed.name, "csv-export");
+        assert!(prefixed.path.join("README.md").exists());
+
+        // A name with no namespace stays with no namespace: nothing is added to
+        // what the caller asked for.
+        let plain = mgr.create_on_branch("hotfix", "main").unwrap();
+        assert_eq!(plain.branch, "hotfix");
+        assert_eq!(plain.name, "hotfix");
+
+        // A namespace that is not this manager's is kept whole in the directory
+        // name, so two branches never share one directory.
+        let foreign = mgr.create_on_branch("feature/csv-export", "main").unwrap();
+        assert_eq!(foreign.branch, "feature/csv-export");
+        assert_eq!(foreign.name, "feature-csv-export");
+
+        let r = git2::Repository::open(&repo).unwrap();
+        for branch in ["build/csv-export", "hotfix", "feature/csv-export"] {
+            assert!(
+                r.find_branch(branch, git2::BranchType::Local).is_ok(),
+                "{branch} was cut"
+            );
+        }
+    }
+
+    /// A branch that already exists is checked out, not cut again — dispatching
+    /// onto work someone started by hand is the whole point of naming a branch.
+    #[test]
+    fn create_on_branch_checks_out_a_branch_that_already_exists() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let r = git2::Repository::open(&repo).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("build/started-by-hand", &head, false).unwrap();
+
+        let worktree = mgr
+            .create_on_branch("build/started-by-hand", "main")
+            .unwrap();
+
+        assert_eq!(worktree.branch, "build/started-by-hand");
+        let checkout = git2::Repository::open(&worktree.path).unwrap();
+        assert_eq!(
+            checkout.head().unwrap().shorthand(),
+            Some("build/started-by-hand")
+        );
+    }
+
+    #[test]
+    fn create_on_branch_refuses_a_name_that_is_not_a_branch_name() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let refused = mgr.create_on_branch("add a csv export", "main");
+        assert!(refused.is_err(), "{refused:?}");
     }
 
     #[test]

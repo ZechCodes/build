@@ -431,7 +431,7 @@ impl DoneServer {
                 "type": "object",
                 "properties": {
                     "project_id": { "type": "string" },
-                    "branch": { "type": "string", "description": "The existing branch the work continues on. Omit only when the capture is new branch work whose name comes from the instruction." },
+                    "branch": { "type": "string", "description": "The existing branch the work continues on, spelled exactly as it is — it is used as given, prefix and all. Omit only when the capture is new branch work whose name comes from the instruction." },
                     "instruction": { "type": "string", "description": "What the agent should do, in the user's terms." },
                     "rationale": { "type": "string", "description": "One line on why this branch is the destination." }
                 },

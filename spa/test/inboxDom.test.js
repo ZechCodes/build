@@ -221,8 +221,10 @@ describe("the inbox rail", () => {
   });
 
   it("mutes an entry from its own menu, on the derived entity id", async () => {
+    expect(rowFor("run-1").querySelector(".inbox-menu").hidden).toBe(true);
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
+    expect(rowFor("run-1").querySelector(".inbox-menu").hidden).toBe(false);
     rowFor("run-1").querySelector("[data-mute]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });

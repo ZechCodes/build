@@ -215,10 +215,13 @@ describe("the rendered rows", () => {
 
   it("offer mute in the entry's own menu, and say so when it is already muted", () => {
     const [entry] = inboxEntries({ items: [branch({ muted: true })], nowMs: NOW });
-    const html = inboxRowHtml(entry, { openMenuId: "run-1" });
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain('data-mute="run-1"');
     expect(html).toContain("Unmute");
     expect(html).toContain("inbox-muted");
+    // The open menu is the one whose row was asked for; a shut one is hidden.
+    expect(html).toMatch(/class="splitmenu inbox-menu">/);
+    expect(inboxRowHtml(entry, {})).toMatch(/class="splitmenu inbox-menu" hidden>/);
   });
 
   it("escape everything the repo named", () => {

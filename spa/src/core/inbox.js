@@ -218,7 +218,7 @@ export function inboxRowHtml(entry, ui = {}) {
       ${entry.facts ? `<div class="inbox-facts">${esc(entry.facts)}</div>` : ""}
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${done}${menuHtml(entry, ui.openMenuId === entry.entityId)}</div>
+    <div class="inbox-actions">${done}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 

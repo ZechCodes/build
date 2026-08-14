@@ -4980,6 +4980,24 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
+    /// The live run that already owns the checkout a client names by
+    /// `worktree_id`. Adoption takes the worktree off the external list, so the
+    /// id is re-derived from each run's canonical worktree root — the same way
+    /// the scanner minted it. A terminal run has let go of the checkout, so it
+    /// does not answer here.
+    fn run_owning_worktree_id(&self, project_id: &str, worktree_id: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .find(|(run_id, active)| {
+                !active.run.state.is_terminal()
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                    && crate::worktree::external_worktree_id(&Self::canonical_root(
+                        &active.worktree.path,
+                    )) == worktree_id
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
     /// The project an entity (plan or run) belongs to.
     fn project_of(&self, entity_id: &str) -> Result<String, String> {
         self.entity_project
@@ -8705,6 +8723,10 @@ impl AppState {
             )
         } else {
             let worktree_id = require_str(params, "worktree_id")?;
+            if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
+                let active = self.runs.get(&run_id).expect("found by scanning the map");
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+            }
             // Force a fresh scan: adoption must never act on a stale card.
             (
                 self.external_worktrees(&project_id, true)?
@@ -22381,6 +22403,47 @@ mod tests {
             "releasing a run closes the agent it owned"
         );
         assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
+    }
+
+    /// A branch view has two surfaces that can each mutate first — the agent
+    /// rail and the Changes review — so two adoptions of the same checkout can
+    /// arrive back to back. The second must land on the run the first minted.
+    #[test]
+    fn run_adopt_external_worktree_is_idempotent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("feature-x"))
+            .expect("the external worktree is discoverable")
+            .id;
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+
+        let again = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            run_id_of(&again),
+            run_id,
+            "a second adoption answers with the run that already owns the checkout"
+        );
+        assert_eq!(
+            state.runs.len(),
+            1,
+            "a second adoption must not mint a second owner"
+        );
     }
 
     // ---- the primary checkout as a super-worktree -----------------------------

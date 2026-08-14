@@ -6270,9 +6270,9 @@ impl AppState {
     fn issue_stages(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
-        if !issue.is_multi_stage() {
-            return Err("not a multi-stage issue".to_string());
-        }
+        // An issue with no stages yet answers with the empty list that is the
+        // truth: the surface asks issue.get and issue.stages together on every
+        // poll, and refusing here left a fresh issue's page loading forever.
         let implementation = self.current_issue_implementation(&issue_id);
         let stages = issue
             .stages
@@ -16484,6 +16484,29 @@ mod tests {
                 .iter()
                 .any(|item| item["kind"] == "issue" && item["issue_id"] == json!(issue_id.clone())),
             "{board:?}"
+        );
+    }
+
+    /// An issue that has no stages yet still answers `issue.stages` — with the
+    /// empty list that is the truth. The surface reads issue.get and
+    /// issue.stages together on every poll, so an error here (the old "not a
+    /// multi-stage issue" refusal) left a fresh issue's page loading forever.
+    #[test]
+    fn an_issue_with_no_stages_answers_with_an_empty_stage_list() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        let stages = state.handle(req("issue.stages", json!({ "issue_id": issue_id })));
+
+        assert_eq!(stages["ok"], true, "{stages:?}");
+        assert_eq!(stages["result"]["issue_id"], issue_id);
+        assert!(
+            stages["result"]["stages"].as_array().unwrap().is_empty(),
+            "{stages:?}"
         );
     }
 

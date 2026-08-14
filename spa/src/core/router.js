@@ -1,121 +1,170 @@
-// Hash routes: #/notifications (the landing surface), #/settings,
-// #/project/<projectId>       — one project's primary checkout (Conversation),
-// #/project/<projectId>/<tab> — that project's primary checkout tabs.
-// #/project/<projectId>/task/<runId>/<tab>
-// #/project/<projectId>/issue/<issueId>/<tab>[/<stage>]
-// Legacy plan routes parse to the same internal surface and canonicalize on write.
-// #/project/<projectId>/worktree/<worktreeId>/<tab>
-// The old top-level task/plan/worktree/main forms remain legacy aliases.
+// Hash routes for the three-panel shell. There are two work items and two
+// global surfaces, and that is the whole vocabulary:
+//   #/inbox                                     — the landing surface
+//   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
+//   #/project/<projectId>/issue/<issueId>[/stage/<stageId>]
+//   #/account[/<page>]                          — page is settings | devices | archive
+//
+// Every URL the pre-redesign client could mint still opens the nearest of
+// those. Conversation and Agent are the agent rail now, terminals are the
+// console, and Diff merged into Changes, so those tabs all fold into Changes;
+// the old right-cluster tabs (Inbox, Issues, Archive) named project-wide panes
+// and go to the global surface that owns them.
+//
+// Some legacy URLs name an entity by an id whose branch this module cannot
+// know (a run id, a worktree id, an issue with no project in the URL, a
+// project's primary checkout). Those parse to a `resolve` route: the app looks
+// the id up in the feed (core/routeResolve.js) and rewrites the hash.
+//
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
-const isTermTab = (seg) => /^term-\d+$/.test(seg || "");
+const BRANCH_TABS = new Set(["changes", "files"]);
+const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
 
-// Each surface has its own valid tab vocabulary; an unknown/absent segment
-// falls back to that surface's Conversation default. Terminal tabs (`term-<n>`) are valid
-// on every worktree-backed surface. A run's plan doc moved to the plan route, so
-// a legacy #/task/<id>/plan (and the merged Diff tab) both land on Changes.
-// The tab bar's right cluster (core/projectCluster.js) rides EVERY project
-// surface, so its tabs are addressable on every one of them.
-const clusterTabs = ["inbox", "issues", "archive"];
-const runTabs = new Set(["conversation", "changes", "files", "agent", "stages", ...clusterTabs]);
-const runTab = (seg) =>
-  runTabs.has(seg) || isTermTab(seg) ? seg : seg === "diff" || seg === "plan" ? "changes" : "conversation";
-// A plan is project-scoped: Conversation, Stages/Plan, its disposable-worktree
-// agent screen, and the cluster. Plans are not a terminal scope, so `term-<n>`
-// falls back to Conversation.
-const planTabs = new Set(["conversation", "stages", "agent", ...clusterTabs]);
-const planTab = (seg) => (seg === "review" ? "stages" : planTabs.has(seg) ? seg : "conversation");
-// A worktree surface is Conversation + Changes + Files + its ONE Build-owned agent. The Agent
-// tab is a fixture there (surfaceTabs.js AGENT_TAB) — always reachable means
-// reachable by URL too, so a reload or a shared link stays on it.
-const worktreeSurfaceTabs = new Set(["conversation", "changes", "files", "agent", ...clusterTabs]);
-const worktreeTab = (seg) => (seg === "diff" ? "changes" : worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : "conversation");
-// The project surface IS the primary checkout's worktree surface — same tabs,
-// same cluster (Issues moved into it, so #/project/<id>/issues still resolves).
-// The canonical #/project/<id>/<tab> form and the legacy #/main/<id>/<tab> alias
-// differ only in which tab an unknown segment falls back to.
-const projectSurfaceTab = (seg, fallback) => (worktreeSurfaceTabs.has(seg) || isTermTab(seg) ? seg : fallback);
-const mainTab = (seg) => projectSurfaceTab(seg, "changes");
-// The bare project URL is the primary checkout's Conversation — the same landing
-// every other worktree surface has. Inbox keeps its own segment.
-const projectTab = (seg) => projectSurfaceTab(seg, "conversation");
+const isTermTab = (segment) => /^term-\d+$/.test(segment || "");
+// Tab segments a pre-redesign URL could carry. They are not destinations any
+// more, but they still have to be RECOGNIZED as tabs — otherwise a trailing
+// `conversation` would read as part of a slashed branch name.
+const RETIRED_TABS = new Set(["conversation", "agent", "stages", "diff", "plan", "review", "inbox", "issues", "archive"]);
+const isTabSegment = (segment) => BRANCH_TABS.has(segment) || RETIRED_TABS.has(segment) || isTermTab(segment);
+
+// The retired tabs that named a project-wide pane rather than the entity's own
+// work surface: whichever entity carried them, they belong to a global route.
+const clusterRoute = (segment) =>
+  segment === "inbox" || segment === "issues"
+    ? { name: "inbox" }
+    : segment === "archive"
+      ? { name: "account", page: "archive" }
+      : null;
+
+// Files is the one entity tab that kept its name; everything else lands on
+// Changes, including nothing at all.
+const branchTab = (segment) => (BRANCH_TABS.has(segment) ? segment : "changes");
+
+const inbox = () => ({ name: "inbox" });
+
+/** A legacy stage deep-link: `<tab>/<stageId>` where the tab is one of the
+ *  retired plan tabs (stages, review, conversation…). Returns the stage id, or
+ *  undefined when the segments name no stage. */
+function legacyStage(tabSegment, stageSegment) {
+  if (!stageSegment) return undefined;
+  return tabSegment === "stage" || isTabSegment(tabSegment) ? stageSegment : undefined;
+}
+
+/** `#/project/<p>/issue/<id>[…]` — the project is in the URL, so this is the
+ *  canonical issue route no matter which legacy tail follows the id. */
+function issueRoute(projectId, id, tailSegments) {
+  const cluster = clusterRoute(tailSegments[0]);
+  if (cluster) return cluster;
+  const route = { name: "issue", projectId, id };
+  const stage = legacyStage(tailSegments[0], tailSegments[1]);
+  if (stage) route.stage = stage;
+  return route;
+}
+
+/** The tail of a branch URL: every segment after `branch/`. A slashed branch
+ *  name survives both encoded (one segment) and hand-typed (several), and a
+ *  lone segment is always the branch — a branch may be named `changes`. */
+function branchRoute(projectId, tailSegments) {
+  if (!tailSegments.length) return inbox();
+  const last = tailSegments[tailSegments.length - 1];
+  const trailingTab = tailSegments.length > 1 && isTabSegment(last);
+  if (trailingTab) {
+    const cluster = clusterRoute(last);
+    if (cluster) return cluster;
+  }
+  return {
+    name: "branch",
+    projectId,
+    branch: (trailingTab ? tailSegments.slice(0, -1) : tailSegments).join("/"),
+    tab: trailingTab ? branchTab(last) : "changes",
+  };
+}
+
+/** A legacy entity URL whose branch this module cannot know. `kind` says what
+ *  the id is; the app resolves it against the feed. */
+function resolveRoute(kind, { projectId, id, tabSegment }) {
+  const cluster = clusterRoute(tabSegment);
+  if (cluster) return cluster;
+  const route = { name: "resolve", kind };
+  if (projectId) route.projectId = projectId;
+  if (id) route.id = id;
+  route.tab = branchTab(tabSegment);
+  return route;
+}
+
+/** A legacy issue URL with no project in it: same parking spot, but issues have
+ *  stages instead of tabs. */
+function resolveIssueRoute(id, tailSegments) {
+  const cluster = clusterRoute(tailSegments[0]);
+  if (cluster) return cluster;
+  const route = { name: "resolve", kind: "issue", id };
+  const stage = legacyStage(tailSegments[0], tailSegments[1]);
+  if (stage) route.stage = stage;
+  return route;
+}
 
 export function routeFromHash(hash) {
-  const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
+  const parts = (hash || "")
+    .replace(/^#\/?/, "")
+    .split("/")
+    .filter(Boolean)
+    .map(decodeURIComponent);
   switch (parts[0]) {
-    case "notifications":
-      return { name: "notifications" };
+    case "inbox":
+      return inbox();
+    case "account":
+      return { name: "account", page: ACCOUNT_PAGES.has(parts[1]) ? parts[1] : "settings" };
     case "settings":
-      return { name: "settings" };
+      return { name: "account", page: "settings" };
     case "task":
-      if (!parts[1]) return { name: "notifications" };
-      return { name: "task", id: decodeURIComponent(parts[1]), tab: runTab(parts[2]) };
+      if (!parts[1]) return inbox();
+      return resolveRoute("run", { id: parts[1], tabSegment: parts[2] });
     case "issue":
-    case "plan": {
-      if (!parts[1]) return { name: "notifications" };
-      // An optional 4th segment deep-links one stage plan document.
-      const route = { name: "plan", id: decodeURIComponent(parts[1]), tab: planTab(parts[2]) };
-      if (parts[3]) route.stage = decodeURIComponent(parts[3]);
-      return route;
-    }
+    case "plan":
+      if (!parts[1]) return inbox();
+      return resolveIssueRoute(parts[1], parts.slice(2));
     case "worktree":
-      if (!parts[1] || !parts[2]) return { name: "notifications" };
-      return {
-        name: "worktree",
-        projectId: decodeURIComponent(parts[1]),
-        worktreeId: decodeURIComponent(parts[2]),
-        tab: worktreeTab(parts[3]),
-      };
+      if (!parts[1] || !parts[2]) return inbox();
+      return resolveRoute("worktree", { projectId: parts[1], id: parts[2], tabSegment: parts[3] });
     case "main":
-      if (!parts[1]) return { name: "notifications" };
-      return { name: "project", projectId: decodeURIComponent(parts[1]), tab: mainTab(parts[2]) };
+      if (!parts[1]) return inbox();
+      return resolveRoute("primary", { projectId: parts[1], tabSegment: parts[2] });
     case "project": {
-      if (!parts[1]) return { name: "notifications" };
-      const projectId = decodeURIComponent(parts[1]);
-      if (parts[2] === "task") {
-        if (!parts[3]) return { name: "notifications" };
-        return { name: "task", projectId, id: decodeURIComponent(parts[3]), tab: runTab(parts[4]) };
-      }
+      if (!parts[1]) return inbox();
+      const projectId = parts[1];
+      if (parts[2] === "branch") return branchRoute(projectId, parts.slice(3));
       if (parts[2] === "issue" || parts[2] === "plan") {
-        if (!parts[3]) return { name: "notifications" };
-        const route = { name: "plan", projectId, id: decodeURIComponent(parts[3]), tab: planTab(parts[4]) };
-        if (parts[5]) route.stage = decodeURIComponent(parts[5]);
-        return route;
+        if (!parts[3]) return inbox();
+        return issueRoute(projectId, parts[3], parts.slice(4));
+      }
+      if (parts[2] === "task") {
+        if (!parts[3]) return inbox();
+        return resolveRoute("run", { projectId, id: parts[3], tabSegment: parts[4] });
       }
       if (parts[2] === "worktree") {
-        if (!parts[3]) return { name: "notifications" };
-        return { name: "worktree", projectId, worktreeId: decodeURIComponent(parts[3]), tab: worktreeTab(parts[4]) };
+        if (!parts[3]) return inbox();
+        return resolveRoute("worktree", { projectId, id: parts[3], tabSegment: parts[4] });
       }
-      return { name: "project", projectId, tab: projectTab(parts[2]) };
+      // Everything else under a project was the primary checkout's surface.
+      return resolveRoute("primary", { projectId, tabSegment: parts[2] });
     }
-    case "board":
-      // The board is gone; stale bookmarks land on the notifications surface.
-      return { name: "notifications" };
     default:
-      return { name: "notifications" };
+      // #/notifications, #/board and anything unknown: the inbox is the landing
+      // surface, so it is also the fallback.
+      return inbox();
   }
 }
 
 export function hashFromRoute(route) {
-  if (route.name === "task") {
-    const leaf = `task/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
-    return route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
+  const encode = encodeURIComponent;
+  if (route.name === "branch" && route.projectId && route.branch) {
+    return `#/project/${encode(route.projectId)}/branch/${encode(route.branch)}/${branchTab(route.tab)}`;
   }
-  if (route.name === "plan") {
-    const leaf = `issue/${encodeURIComponent(route.id)}/${route.tab || "conversation"}`;
-    const base = route.projectId ? `#/project/${encodeURIComponent(route.projectId)}/${leaf}` : `#/${leaf}`;
-    return route.stage ? `${base}/${encodeURIComponent(route.stage)}` : base;
+  if (route.name === "issue" && route.projectId && route.id) {
+    const base = `#/project/${encode(route.projectId)}/issue/${encode(route.id)}`;
+    return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
   }
-  if (route.name === "worktree") {
-    const leaf = `worktree/${encodeURIComponent(route.worktreeId)}/${route.tab || "conversation"}`;
-    return `#/project/${encodeURIComponent(route.projectId)}/${leaf}`;
-  }
-  if (route.name === "main") return `#/project/${encodeURIComponent(route.projectId)}/${route.tab || "changes"}`;
-  if (route.name === "project") {
-    const base = `#/project/${encodeURIComponent(route.projectId)}`;
-    return !route.tab || route.tab === "conversation" ? base : `${base}/${route.tab}`;
-  }
-  if (route.name === "notifications") return "#/notifications";
-  if (route.name === "settings") return "#/settings";
-  return "#/notifications";
+  if (route.name === "account") return `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`;
+  return "#/inbox";
 }

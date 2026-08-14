@@ -297,7 +297,7 @@ export function mountIssueView(
     });
     listHost.querySelectorAll(".ivlin-row[data-run]").forEach((row) => {
       row.onclick = () => {
-        const route = lineageRoute({ run_id: row.dataset.run }, currentProjectId());
+        const route = lineageRoute({ run_id: row.dataset.run, branch: row.dataset.branch }, currentProjectId());
         if (route) navigate(route);
       };
     });

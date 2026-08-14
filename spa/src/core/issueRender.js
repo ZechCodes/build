@@ -63,7 +63,7 @@ export function lineageHtml(lineage) {
   const rows = (lineage || [])
     .map((implementation) => {
       const state = implementation.state || "created";
-      return `<div class="ivlin-row" data-run="${esc(implementation.run_id || implementation.implementation_id || "")}">
+      return `<div class="ivlin-row" data-run="${esc(implementation.run_id || implementation.implementation_id || "")}"${implementation.branch ? ` data-branch="${esc(implementation.branch)}"` : ""}>
         <span class="ivlin-branch mono">${esc(implementation.branch || "(no branch)")}</span>
         <span class="chip ${runChipClass(state)}">${esc(RUN_STATE_LABEL[state] || String(state).toUpperCase())}</span>
       </div>`;

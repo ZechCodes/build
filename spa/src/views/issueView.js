@@ -1,57 +1,43 @@
 // The issue work item's surface: two persistent columns, the planned stages and
 // the stage viewer. No tabs — the conversation is the agent rail.
 //
-// This is the shell of that surface: it reads the issue and its stages from the
-// bridge so the columns are real, and leaves the stage document, the comments
-// and the worktree/agent assignment control to the items that fill them.
-//
-// Stage titles are written by agents: untrusted, escaped.
+// Thin by design — the surface itself is core/issueView.js, which owns its
+// poll, its repaint freeze, the doc-comment layer and the worktree/agent
+// assignment control. This file is the route's host: it names the issue, keeps
+// the URL on the open stage, and mounts the rail and the console beside it.
 
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
-import { App, go } from "../app.js";
+import { App, go, loadModelCatalog } from "../app.js";
+import { hashFromRoute } from "../core/router.js";
+import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
 import "../styles/shell.css";
-
-/** Pure: the stage column. `selected` is a stage id, or null for none. */
-export function stageColumnHtml(stages, selected) {
-  if (!stages || !stages.length) return `<div class="sempty dim">No stages planned yet.</div>`;
-  return stages
-    .map(
-      (stage) =>
-        `<div class="srow${stage.id === selected ? " active" : ""}" data-stage="${esc(stage.id)}">` +
-        `<span class="stitle">${esc(stage.title || stage.id)}</span>` +
-        `<span class="sstate">${esc(stage.state || "")}</span></div>`,
-    )
-    .join("");
-}
-
-/** The issue's stages in the shape the column reads, from whatever the bridge
- *  answered. Pure. */
-export function stagesFrom(payload) {
-  return (payload?.stages || []).map((stage) => ({
-    id: stage.stage_id || stage.id,
-    title: stage.title || stage.name,
-    state: stage.state,
-  }));
-}
+import "../styles/surfaces.css";
 
 export async function renderIssue() {
   const root = $("#root");
-  const { projectId, id } = App.route;
+  const id = App.route.id;
+  let projectId = App.route.projectId || null;
+  let selectedStageId = App.route.stage || null;
   root.className = "surface";
-  root.innerHTML = `
-    <div id="tabbody" class="flush">
-      <div class="issue-cols">
-        <div class="issue-stages" id="issue-stages"><div class="sempty dim">Loading…</div></div>
-        <div class="issue-stage-view" id="issue-stage-view">
-          <!-- TODO(integration): the stage document and its comments are the
-               plan track's; this is the seam they mount into. -->
-          <div class="shell-stub"><h2>Stage</h2><p>The stage document and its comments render here.</p></div>
-        </div>
-      </div>
-    </div>`;
+  root.innerHTML = '<div id="tabbody" class="flush"></div>';
+
+  // Looking at an issue is seeing it — the dot settles until it moves again.
+  App.call("entity.seen", { entity_id: id }).catch(() => {});
+
+  // The open stage rides the hash without re-routing, so the selection is
+  // shareable and survives a reload.
+  const syncHash = () => {
+    App.route = {
+      name: "issue",
+      ...(projectId ? { projectId } : {}),
+      id,
+      ...(selectedStageId ? { stage: selectedStageId } : {}),
+    };
+    history.replaceState(null, "", hashFromRoute(App.route));
+  };
+
   // An issue's agent runs on the primary checkout, so that is the directory its
   // console opens terminals in.
   const consolePanel = mountConsole($("#console-region"), { kind: "issue", projectId, issueId: id });
@@ -59,27 +45,32 @@ export async function renderIssue() {
   // it — including the first message, which is what starts it.
   const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id });
 
-  const paint = async () => {
-    let stages = [];
-    try {
-      stages = stagesFrom(await App.call("issue.stages", { issue_id: id }));
-    } catch {
-      // An issue with nothing planned has no stages to answer with — which a
-      // freshly filed one never does, since its planning agent starts on the
-      // first message. That is an empty column, not a column still loading.
-      stages = [];
-    }
-    const column = $("#issue-stages");
-    if (!column) return;
-    column.innerHTML = stageColumnHtml(stages, App.route.stage || null);
-    column.querySelectorAll("[data-stage]").forEach((row) => {
-      row.onclick = () => go({ name: "issue", projectId, id, stage: row.dataset.stage });
-    });
-  };
+  const view = mountIssueView($("#tabbody"), {
+    issueId: id,
+    projectId,
+    initialStageId: selectedStageId,
+    callRpc: (method, params) => App.call(method, params),
+    navigate: go,
+    loadCatalog: loadModelCatalog,
+    onSelectStage: (stageId) => {
+      selectedStageId = stageId;
+      syncHash();
+    },
+    // The route may have arrived without a project (a legacy #/issue/<id>
+    // link); the first payload says which one it is, and the URL catches up.
+    onProject: (project) => {
+      projectId = project;
+      syncHash();
+    },
+    onGone: () => go({ name: "inbox" }),
+  });
+
+  // The surface polls itself; App.poll holds it too, so the shell's own
+  // route-change teardown stops it even before viewDispose runs.
+  App.poll = view.poll;
   App.viewDispose = () => {
+    view.dispose();
     rail.dispose();
     consolePanel.dispose();
   };
-  await paint();
-  App.poll = setInterval(paint, 4000);
 }

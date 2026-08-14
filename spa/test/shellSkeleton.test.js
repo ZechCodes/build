@@ -33,7 +33,19 @@ const { consoleHeadHtml } = await import("../src/core/console.js");
 
 const rpc = (method) => {
   if (method === "branch.get") return { kind: "branch", branch: "build/login", state: "building", stat: "+4 −1" };
-  if (method === "issue.stages") return { stages: [{ stage_id: "s1", title: "First half", state: "implemented" }] };
+  if (method === "issue.get")
+    return {
+      issue_id: "i-1",
+      project_id: "p-1",
+      goal: "Rebuild",
+      state: "plan_review",
+      docs_available: false,
+      stages: [{ id: "s1", state: "planned" }],
+      implementation_lineage: [],
+      thread: { items: [] },
+    };
+  if (method === "issue.stages")
+    return { stages: [{ id: "s1", title: "First half", state: "planned", approval: "planned", execution: "pending" }] };
   return {};
 };
 
@@ -153,7 +165,7 @@ describe("render dispatch", () => {
     App.route = { name: "issue", projectId: "p-1", id: "i-1" };
     render();
     await flush();
-    expect(root().querySelector(".issue-cols")).toBeTruthy();
+    expect(root().querySelector(".ivsplit")).toBeTruthy();
     expect(root().querySelector("#branch-tabs")).toBeNull();
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });

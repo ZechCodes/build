@@ -115,13 +115,13 @@ export function docMarkerGroups(comments) {
   return [...groups.values()];
 }
 
-/** Where an implementation in the lineage lives. Today that is its run's
- *  Changes surface; the branch route the Decisions doc specifies replaces this
- *  target once the shell ships it, and this is the one place it changes. */
+/** Where an implementation in the lineage lives: its branch's Changes surface
+ *  (`#/project/<id>/branch/<name>/changes`). An implementation the bridge
+ *  names no branch for has nowhere to open — the row reads, but does not
+ *  navigate. */
 export function lineageRoute(implementation, projectId) {
-  const runId = implementation && (implementation.run_id || implementation.implementation_id);
-  if (!runId) return null;
-  return { name: "task", projectId, id: runId, tab: "changes" };
+  if (!implementation || !implementation.branch || !projectId) return null;
+  return { name: "branch", projectId, branch: implementation.branch, tab: "changes" };
 }
 
 // ---- the worktree/agent assignment control ---------------------------------

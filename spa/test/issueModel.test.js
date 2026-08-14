@@ -132,15 +132,16 @@ describe("docMarkerGroups", () => {
 describe("lineageRoute", () => {
   it("routes an implementation to the branch's changes", () => {
     expect(lineageRoute({ run_id: "run-1", branch: "build/x" }, "p1")).toEqual({
-      name: "task",
+      name: "branch",
       projectId: "p1",
-      id: "run-1",
+      branch: "build/x",
       tab: "changes",
     });
   });
 
-  it("has nowhere to send an implementation with no run", () => {
-    expect(lineageRoute({ branch: "build/x" }, "p1")).toBeNull();
+  it("has nowhere to send an implementation with no branch or no project", () => {
+    expect(lineageRoute({ run_id: "run-1" }, "p1")).toBeNull();
+    expect(lineageRoute({ branch: "build/x" }, null)).toBeNull();
     expect(lineageRoute(null, "p1")).toBeNull();
   });
 });

@@ -265,7 +265,7 @@ describe("the issue view", () => {
     expect(rows).toHaveLength(2);
     expect(rows[1].textContent).toContain("build/two");
     rows[1].click();
-    expect(routed).toEqual([{ name: "task", projectId: "proj-1", id: "run-2", tab: "changes" }]);
+    expect(routed).toEqual([{ name: "branch", projectId: "proj-1", branch: "build/two", tab: "changes" }]);
     view.dispose();
   });
 

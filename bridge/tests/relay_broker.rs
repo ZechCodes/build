@@ -34,13 +34,20 @@ struct RelayProcess {
 
 impl RelayProcess {
     fn start(api_url: &str) -> RelayProcess {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_relay"))
+        RelayProcess::start_with(api_url, &[])
+    }
+
+    fn start_with(api_url: &str, extra_env: &[(&str, &str)]) -> RelayProcess {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_relay"));
+        command
             .env("RELAY_PORT", "0")
             .env("API_INTERNAL_URL", api_url)
             .env("RELAY_INTERNAL_SECRET", INTERNAL_SECRET)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("relay binary starts");
+            .stdout(Stdio::piped());
+        for (name, value) in extra_env {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("relay binary starts");
         let stdout = child.stdout.take().expect("stdout piped");
         let mut lines = BufReader::new(stdout).lines();
         let banner = lines
@@ -198,10 +205,16 @@ async fn expect_disconnect(ws: &mut Ws) {
     }
 }
 
-/// Assert nothing arrives on this socket for a beat (negative routing checks).
+/// Assert no ROUTED frame arrives on this socket for a beat (negative routing
+/// checks). Ping/Pong keepalives are connection plumbing, not routed traffic.
 async fn expect_silence(ws: &mut Ws) {
-    if let Ok(unexpected) = tokio::time::timeout(Duration::from_millis(400), ws.next()).await {
-        panic!("expected silence, got {unexpected:?}");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+    loop {
+        match tokio::time::timeout_at(deadline, ws.next()).await {
+            Err(_) => return, // the window elapsed in silence
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+            Ok(unexpected) => panic!("expected silence, got {unexpected:?}"),
+        }
     }
 }
 
@@ -416,6 +429,167 @@ async fn client_disconnect_sends_session_closed_to_the_device() {
     let notice = recv_json(&mut device_ws).await;
     assert_eq!(notice["type"], "session_closed");
     assert_eq!(notice["session_id"], "s-gone");
+}
+
+#[tokio::test]
+async fn silent_device_is_severed_and_reported_offline() {
+    // The device promised a heartbeat every HEARTBEAT_INTERVAL_S when it
+    // authenticated. One that goes completely silent — a wedged bridge whose
+    // event loop stopped reading and writing — must be severed at the liveness
+    // deadline and reported offline, not stay registered forever while every
+    // frame routed to it disappears.
+    let api = mock_api().await;
+    let device = identity::generate("wedged");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "2")]);
+
+    let mut client = authed_client(&relay).await;
+    let mut device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    // The device sends nothing at all. The relay must cut it loose…
+    expect_disconnect(&mut device_ws).await;
+    // …and tell the owner's browsers the truth instead of leaving them waiting.
+    let offline = recv_json(&mut client).await;
+    assert_eq!(offline["type"], "device_offline");
+    assert_eq!(offline["device_id"], device.device_id.as_str());
+}
+
+#[tokio::test]
+async fn heartbeating_and_reading_device_outlives_the_liveness_deadline() {
+    let api = mock_api().await;
+    let device = identity::generate("healthy");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "1")]);
+
+    let mut device_ws = authed_device(&relay, &device).await;
+    // A healthy device both writes (heartbeats) and reads (which answers the
+    // relay's pings). Keep doing both well past several liveness windows: the
+    // connection must hold.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        device_ws
+            .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
+            .await
+            .expect("heartbeat sends on a live connection");
+        // Poll the socket briefly: this is what a live read loop does, and it is
+        // what lets the WebSocket library answer the relay's pings.
+        match tokio::time::timeout(Duration::from_millis(200), device_ws.next()).await {
+            Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {
+                panic!("relay severed a healthy device")
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn device_that_heartbeats_but_never_reads_is_severed() {
+    // The 2026-08-13 wedge shape: the bridge's heartbeat task kept writing while
+    // its read loop was stuck grinding, so the socket filled with unread frames
+    // and every browser hung on "Waiting for your device". Heartbeats alone must
+    // not count as liveness — only answering the relay's pings proves the read
+    // loop is alive, and a device that writes without ever reading must be
+    // severed and reported offline.
+    let api = mock_api().await;
+    let device = identity::generate("write-only");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "1")]);
+
+    let mut client = authed_client(&relay).await;
+    let device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    // Split the socket: write heartbeats forever, never poll the read half —
+    // so the relay's pings are never answered.
+    let (mut sink, stream) = device_ws.split();
+    std::mem::forget(stream);
+    let heartbeats = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if sink
+                .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
+                .await
+                .is_err()
+            {
+                return; // severed: exactly what the test expects
+            }
+        }
+    });
+
+    let offline = recv_json(&mut client).await;
+    assert_eq!(offline["type"], "device_offline");
+    assert_eq!(offline["device_id"], device.device_id.as_str());
+    heartbeats.abort();
+}
+
+#[tokio::test]
+async fn device_that_stops_reading_is_severed_and_reported_offline() {
+    // The incident shape: the device's socket stays open but it stops draining
+    // its receive buffer. Relay writes back up, a write stalls past the limit —
+    // the device must then be fully deregistered and browsers told it's offline.
+    // Before the fix the stalled writer died alone, leaving the device
+    // registered and every frame routed to it silently dropped.
+    let api = mock_api().await;
+    let device = identity::generate("deaf");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(
+        &api.uri(),
+        &[
+            ("RELAY_WRITE_STALL_S", "1"),
+            // Liveness alone must not be what severs this connection.
+            ("RELAY_DEVICE_LIVENESS_S", "600"),
+        ],
+    );
+
+    let mut client = authed_client(&relay).await;
+    let device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    client
+        .send(Message::Text(
+            json!({
+                "type": "session_init",
+                "session_id": "s-flood",
+                "route_to": format!("device:{}", device.device_id),
+                "session_init": {"device_id": device.device_id},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+
+    // Stop reading from the device socket entirely (drop polls it no further),
+    // then flood frames at it until kernel buffers fill and a relay write stalls.
+    std::mem::forget(device_ws);
+    let payload = "x".repeat(1024 * 1024);
+    for _ in 0..24 {
+        let frame = json!({
+            "type": "e2ee_envelope",
+            "session_id": "s-flood",
+            "payload": payload,
+        })
+        .to_string();
+        if client.send(Message::Text(frame)).await.is_err() {
+            break; // the relay may drop us once the device is severed — fine
+        }
+    }
+
+    // The stalled write must sever the device and push device_offline.
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(30), client.next())
+            .await
+            .expect("device_offline within 30s of the stall")
+            .expect("client connection stays open")
+            .expect("frame reads");
+        if let Message::Text(text) = frame {
+            let msg: Value = serde_json::from_str(&text).expect("frame is json");
+            if msg["type"] == "device_offline" {
+                assert_eq!(msg["device_id"], device.device_id.as_str());
+                break;
+            }
+        }
+    }
 }
 
 #[tokio::test]

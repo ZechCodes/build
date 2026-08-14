@@ -1,8 +1,14 @@
 [
   {
-    "id": "ipad-pwa",
-    "title": "Make the web client a correct installable iPad PWA",
-    "path": ".build/plan/01-ipad-pwa.md",
-    "summary": "The spa/ web client already ships a manifest, Apple meta tags, correctly sized icons, and a cache-free push service worker, so this stage closes the gaps that make iPad standalone behave wrong rather than adding PWA support from scratch. Add viewport-fit=cover so env(safe-area-inset-*) is non-zero in standalone; broaden the manifest scope from /app/ to / (with start_url still /app/) so the vendored-Skrift /auth/login redirect stays inside the installed app instead of bouncing to Safari; add manifest identity/orientation fields and reconcile theme_color/background_color to the app bg (#fafafa); make theme-color meta light/dark aware; and pad the app shell for iPad safe areas plus suppress standalone overscroll — all inset-based so desktop layout is unchanged. TDD via a new spa/test/pwa.test.js that reads index.html/manifest/styles.css and asserts the PWA fields. The service worker stays cache-free (E2EE never-serve-stale rule); splash screens and offline caching are deferred."
+    "id": "rail-selection-algorithm",
+    "title": "The rail's selection algorithm: never drop live, unread, or unreviewed work",
+    "path": ".build/plan/01-rail-selection-algorithm.md",
+    "summary": "Extend spa/src/core/rail.js — the one pure module that decides which entries the side rail shows and in what order — so it can serve both rails. Add a never-drop floor (mustShow / hasUnreviewedChanges: an agent running, unread work waiting on you, or a diff you have not reviewed is always an entry, whatever its age and regardless of the backfill minimum), which also promotes agent-running and dirty never-interacted worktrees out of the Worktrees fold in the existing per-project rail. Add mainEntry() turning a project's primary_changes record plus the run that has adopted that checkout into an entry of the same shape as run/plan/worktree entries, so main branches can be rail rows. Make railEntries/railWorktrees select across every project when no projectId is given, and accept main entries as candidates. Pure, TDD in spa/test/rail.test.js; no view changes."
+  },
+  {
+    "id": "all-rail-mode",
+    "title": "The \"All\" rail mode: every worktree, issue and main branch in one list",
+    "path": ".build/plan/02-all-rail-mode.md",
+    "summary": "Add the alternate side-rail mode: one flat list of every run, issue, worktree and project main checkout, ungrouped, selected and ordered by Stage 01's shared algorithm with one global backfill. New pure core/railMode.js (mode remembered in localStorage, defaulting to Projects) and core/allRail.js (buildAllRailModel: main rows per project, primary run lifted onto its main row, pendingDone suppression, cross-project unread count, one combined leftover Worktrees fold). Extend core/sidebar.js with a shared header carrying a Projects | All switch, an entryRow main-kind arm plus an optional project label, and allRailHtml; views/sidebar.js dispatches on the mode while every existing row handler, Done control and active-row rule stays as is; styles.css gains the switch, the project tag and the flat list. TDD in new test/railMode.test.js and test/allRail.test.js, then a browser pass with the spa:verify skill."
   }
 ]

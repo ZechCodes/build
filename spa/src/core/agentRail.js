@@ -18,6 +18,7 @@
 // comes off that payload's agents[].
 
 import { App, go } from "../app.js";
+import { whenVisible } from "./visibility.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentTitle, providerLabel, railBubbles, railEntity, selectAgentId } from "./agentRailModel.js";
@@ -532,7 +533,7 @@ export function mountAgentRail(host, context) {
 
   paint();
   refresh();
-  poll = setInterval(refresh, RAIL_POLL_MS);
+  poll = setInterval(whenVisible(refresh), RAIL_POLL_MS);
 
   return {
     dispose() {

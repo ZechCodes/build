@@ -7,6 +7,7 @@
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
+import { whenVisible } from "../core/visibility.js";
 import { archiveListHtml, archiveRows } from "../core/archive.js";
 
 const POLL_MS = 15000;
@@ -67,5 +68,5 @@ export function renderArchive() {
   // The read is not awaited: the page (and the account nav above it) must be on
   // screen even when the device is unreachable and the read never lands.
   load();
-  App.poll = setInterval(load, POLL_MS);
+  App.poll = setInterval(whenVisible(load), POLL_MS);
 }

@@ -19,6 +19,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
+import { whenVisible } from "../core/visibility.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -235,5 +236,5 @@ export async function renderBranch() {
   // to whatever is mounted now. Claiming it here would orphan an interval that
   // reads a dead branch forever — the leaked-poller slowdown.
   if (disposed) return;
-  App.poll = setInterval(refresh, ROW_POLL_MS);
+  App.poll = setInterval(whenVisible(refresh), ROW_POLL_MS);
 }

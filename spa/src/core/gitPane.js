@@ -45,6 +45,7 @@ import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
+import { whenVisible } from "./visibility.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -1395,7 +1396,7 @@ export function mountGitPane(
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
   poll();
-  const timer = setInterval(poll, GIT_PANE_POLL_MS);
+  const timer = setInterval(whenVisible(poll), GIT_PANE_POLL_MS);
 
   return {
     dispose() {

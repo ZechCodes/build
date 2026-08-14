@@ -11,7 +11,7 @@
 
 import { esc } from "../core/text.js";
 import { renderMarkdown } from "../core/markdown.js";
-import { slugifyHeading, buildHeadingPath } from "../core/anchors.js";
+import { anchorLocationLabel, slugifyHeading, buildHeadingPath } from "../core/anchors.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -156,11 +156,9 @@ function validationBanner(kind, heading, bodyMarkdown) {
 // comments show the agent's reply and are muted.
 export function commentCard(comment) {
   const anchor = comment.anchor;
-  const breadcrumb = anchor
-    ? anchor.heading_path && anchor.heading_path.length
-      ? esc(anchor.heading_path.join(" > "))
-      : "(top of doc)"
-    : "(general)";
+  // Where it points, said the same way every review surface says it: the
+  // heading chain, else the doc the bridge names on the comment, plus lines.
+  const breadcrumb = esc(anchorLocationLabel(anchor ? { ...anchor, path: anchor.path || comment.path } : null));
   const lastHeading = anchor && anchor.heading_path && anchor.heading_path.length ? anchor.heading_path[anchor.heading_path.length - 1] : "";
   const snippet = anchor && anchor.snippet ? `<span class="cc-snip">${esc(anchor.snippet.replace(/\s+/g, " ").trim().slice(0, 200))}</span>` : "";
   const addressed = comment.state === "addressed";

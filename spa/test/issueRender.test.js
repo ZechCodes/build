@@ -7,6 +7,7 @@ import {
   lineageHtml,
   assignmentHtml,
   stageViewerHtml,
+  docCommentCardHtml,
   docMarkerParts,
 } from "../src/core/issueRender.js";
 
@@ -176,5 +177,38 @@ describe("docMarkerParts", () => {
     const parts = docMarkerParts({ key: "wire", headingPath: ["Wire"], comments: [{ id: "m" }], open: 0, total: 2 });
     expect(parts.className).toContain("addressed");
     expect(parts.title).toContain("addressed");
+  });
+});
+
+describe("docCommentCardHtml", () => {
+  const comment = (overrides = {}) => ({
+    id: "message-7",
+    path: "docs/stage-1.md",
+    body: "be concrete",
+    state: "open",
+    ...overrides,
+  });
+
+  it("is addressed by the id of the message it IS", () => {
+    const html = docCommentCardHtml(comment({ anchor: { heading_path: ["Plan"], snippet: "x", line_start: 4, line_end: 6 } }));
+    expect(html).toContain('data-id="message-7"');
+    expect(html).toContain('data-del="message-7"');
+  });
+
+  it("says where it points: the heading chain and the lines it was written on", () => {
+    const html = docCommentCardHtml(comment({ anchor: { heading_path: ["Plan", "Schema"], snippet: "sqlite", line_start: 12, line_end: 18 } }));
+    expect(html).toContain("Plan &gt; Schema:12-18");
+  });
+
+  it("falls back to the doc the bridge says it is on when no heading encloses it", () => {
+    const html = docCommentCardHtml(comment({ anchor: { heading_path: [], snippet: "sqlite", line_start: 3, line_end: 3 } }));
+    expect(html).toContain("docs/stage-1.md:3");
+  });
+
+  it("calls an unanchored comment general, and offers no withdraw once addressed", () => {
+    const html = docCommentCardHtml(comment({ state: "addressed", agent_reply: "done", anchor: null }));
+    expect(html).toContain("(general)");
+    expect(html).toContain("cc-reply");
+    expect(html).not.toContain("cc-x");
   });
 });

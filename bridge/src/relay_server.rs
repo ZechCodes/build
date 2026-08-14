@@ -34,6 +34,12 @@ pub const REPLAY_TTL: Duration = Duration::from_secs(2 * AUTH_SKEW.as_secs());
 /// base64 ciphertext of terminal chunks and diffs; anything past this is abusive.
 pub const MAX_WS_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
+/// The heartbeat cadence the relay advertises to a device in its `authenticated`
+/// greeting. The device promises a `{"type":"heartbeat"}` frame this often; the
+/// default liveness deadline below is derived from it, so the advertisement and
+/// the enforcement can never drift apart.
+pub const HEARTBEAT_INTERVAL_S: u64 = 30;
+
 /// Hard cap on the bytes queued to one peer's writer. A browser that stops reading
 /// (backgrounded tab, stalled TCP) while its device streams terminal output would
 /// otherwise grow an unbounded queue until the relay OOMs. Past the cap, sends to
@@ -116,11 +122,18 @@ pub fn outbound_channel() -> (Outbound, OutboundReceiver) {
 ///   `RELAY_API_URL`, then `http://127.0.0.1:8080` for dev).
 /// - `RELAY_INTERNAL_SECRET` — sent as `X-Internal-Secret` on every api call; unset or
 ///   blank means dev mode where the api trusts localhost instead.
+/// - `RELAY_DEVICE_LIVENESS_S` — sever a device that sends no frame for this long
+///   (default `3 × HEARTBEAT_INTERVAL_S`). A wedged bridge that stops reading and
+///   writing must be deregistered and reported offline, not stay "online" forever.
+/// - `RELAY_WRITE_STALL_S` — a single WebSocket write blocked this long means the
+///   peer stopped reading; the connection is severed (default 30).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayConfig {
     pub port: u16,
     pub api_url: String,
     pub internal_secret: Option<String>,
+    pub device_liveness_timeout: Duration,
+    pub write_stall_timeout: Duration,
 }
 
 impl RelayConfig {
@@ -140,12 +153,36 @@ impl RelayConfig {
             .trim_end_matches('/')
             .to_string();
         let internal_secret = lookup("RELAY_INTERNAL_SECRET").filter(|s| !s.is_empty());
+        let device_liveness_timeout =
+            positive_seconds(&lookup, "RELAY_DEVICE_LIVENESS_S", 3 * HEARTBEAT_INTERVAL_S)?;
+        let write_stall_timeout = positive_seconds(&lookup, "RELAY_WRITE_STALL_S", 30)?;
         Ok(RelayConfig {
             port,
             api_url,
             internal_secret,
+            device_liveness_timeout,
+            write_stall_timeout,
         })
     }
+}
+
+/// Parse an env var as a positive whole number of seconds, defaulting when unset.
+/// Zero is rejected along with garbage: a zero timeout severs every peer instantly,
+/// which is never what a deployment meant.
+fn positive_seconds(
+    lookup: impl Fn(&str) -> Option<String>,
+    name: &str,
+    default_secs: u64,
+) -> Result<Duration, String> {
+    let secs = match lookup(name) {
+        Some(raw) => raw
+            .parse::<u64>()
+            .ok()
+            .filter(|secs| *secs > 0)
+            .ok_or_else(|| format!("{name} is not a positive number of seconds: {raw:?}"))?,
+        None => default_secs,
+    };
+    Ok(Duration::from_secs(secs))
 }
 
 /// Whether a raw request prefix is a plain `GET /health` probe (kubelet, LB) rather
@@ -938,11 +975,15 @@ mod tests {
             ("RELAY_PORT", "9000"),
             ("API_INTERNAL_URL", "http://api.8ly.svc:8080/"),
             ("RELAY_INTERNAL_SECRET", "s3cret"),
+            ("RELAY_DEVICE_LIVENESS_S", "120"),
+            ("RELAY_WRITE_STALL_S", "10"),
         ]);
         let config = RelayConfig::from_lookup(|k| vars.get(k).map(|v| v.to_string())).unwrap();
         assert_eq!(config.port, 9000);
         assert_eq!(config.api_url, "http://api.8ly.svc:8080");
         assert_eq!(config.internal_secret.as_deref(), Some("s3cret"));
+        assert_eq!(config.device_liveness_timeout, Duration::from_secs(120));
+        assert_eq!(config.write_stall_timeout, Duration::from_secs(10));
     }
 
     #[test]
@@ -951,6 +992,36 @@ mod tests {
         assert_eq!(config.port, 8799);
         assert_eq!(config.api_url, "http://127.0.0.1:8080");
         assert_eq!(config.internal_secret, None);
+        assert_eq!(
+            config.device_liveness_timeout,
+            Duration::from_secs(3 * HEARTBEAT_INTERVAL_S)
+        );
+        assert_eq!(config.write_stall_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn device_liveness_default_tolerates_missed_heartbeats() {
+        // The device heartbeats every HEARTBEAT_INTERVAL_S; the liveness deadline
+        // must allow at least two missed beats, or a single dropped frame on a
+        // healthy connection severs the device.
+        let config = RelayConfig::from_lookup(|_| None).unwrap();
+        assert!(config.device_liveness_timeout >= Duration::from_secs(2 * HEARTBEAT_INTERVAL_S));
+    }
+
+    #[test]
+    fn relay_config_rejects_unparseable_timeouts() {
+        let bad_liveness: HashMap<&str, &str> =
+            HashMap::from([("RELAY_DEVICE_LIVENESS_S", "soon")]);
+        assert!(RelayConfig::from_lookup(|k| bad_liveness.get(k).map(|v| v.to_string())).is_err());
+
+        let zero_liveness: HashMap<&str, &str> = HashMap::from([("RELAY_DEVICE_LIVENESS_S", "0")]);
+        assert!(
+            RelayConfig::from_lookup(|k| zero_liveness.get(k).map(|v| v.to_string())).is_err(),
+            "a zero liveness window would sever every device instantly"
+        );
+
+        let bad_stall: HashMap<&str, &str> = HashMap::from([("RELAY_WRITE_STALL_S", "0")]);
+        assert!(RelayConfig::from_lookup(|k| bad_stall.get(k).map(|v| v.to_string())).is_err());
     }
 
     #[test]

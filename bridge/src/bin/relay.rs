@@ -43,7 +43,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use build_bridge::relay_server::{
     self, AuthOutcome, DeviceAuth, DeviceRecord, Outbound, RelayConfig, RelayState, ReplayGuard,
-    AUTH_SKEW, MAX_WS_MESSAGE_BYTES, REPLAY_TTL,
+    AUTH_SKEW, HEARTBEAT_INTERVAL_S, MAX_WS_MESSAGE_BYTES, REPLAY_TTL,
 };
 
 /// How long shutdown waits for connection tasks to say goodbye before exiting anyway.
@@ -54,9 +54,6 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// An accepted client must send its `authenticate` frame within this.
 const CLIENT_AUTH_DEADLINE: Duration = Duration::from_secs(10);
-/// A single WS write stalled longer than this means the peer stopped reading —
-/// sever the connection instead of queueing into it forever.
-const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a connected device's approval is re-checked at the api, so revoking
 /// a device actually severs its live relay connection (not just future ones).
 const DEVICE_REVALIDATION_INTERVAL: Duration = Duration::from_secs(60);
@@ -235,23 +232,50 @@ async fn serve(
     // One writer owns the sink; peers queue text payloads to it through a
     // byte-bounded channel, and a stalled TCP write severs the peer — one slow
     // reader can never grow relay memory without limit.
+    //
+    // The writer's death must tear down the WHOLE connection, not just the sink:
+    // `writer_gone` completes when the writer task exits abnormally, and the serve
+    // loops treat that as a disconnect. Without it a stalled write left the peer
+    // registered with a dead outbound — every frame routed to it silently dropped
+    // while browsers were told the device was still online.
+    let write_stall_timeout = shared.config.write_stall_timeout;
     let (out_tx, mut out_rx) = relay_server::outbound_channel();
+    let (writer_gone_tx, mut writer_gone) = tokio::sync::oneshot::channel::<()>();
     let writer = tokio::spawn(async move {
+        // Dropped (without send) on any exit path: severance and panic alike
+        // resolve `writer_gone`, while the graceful path below sends first.
+        let graceful = writer_gone_tx;
         while let Some(text) = out_rx.recv().await {
-            match tokio::time::timeout(WRITE_STALL_TIMEOUT, sink.send(Message::Text(text))).await {
+            match tokio::time::timeout(write_stall_timeout, sink.send(Message::Text(text))).await {
                 Ok(Ok(())) => {}
                 _ => return, // peer gone, or it stopped reading: sever
             }
         }
         // Every sender is gone: this peer is being disconnected on purpose (cleanup
         // or shutdown) — say goodbye with a proper Close frame, not a dropped stream.
+        let _ = graceful.send(());
         let _ = sink.send(Message::Close(None)).await;
     });
 
     if upgrade.path == "/ws/device" {
-        serve_device(&shared, &upgrade, out_tx, &mut source, &mut shutdown).await;
+        serve_device(
+            &shared,
+            &upgrade,
+            out_tx,
+            &mut source,
+            &mut shutdown,
+            &mut writer_gone,
+        )
+        .await;
     } else {
-        serve_client(&shared, out_tx, &mut source, &mut shutdown).await;
+        serve_client(
+            &shared,
+            out_tx,
+            &mut source,
+            &mut shutdown,
+            &mut writer_gone,
+        )
+        .await;
     }
 
     // All out_tx clones die with the state cleanup above, which lets the writer
@@ -276,6 +300,7 @@ async fn serve_device(
     out_tx: Outbound,
     source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
     shutdown: &mut broadcast::Receiver<()>,
+    writer_gone: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
     let (device_id, timestamp, signature) = match (
         upgrade.device_id.clone(),
@@ -330,7 +355,7 @@ async fn serve_device(
         let _ = client.send(online_notice.clone());
     }
     let _ = out_tx.send(
-        json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":30}).to_string(),
+        json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":HEARTBEAT_INTERVAL_S}).to_string(),
     );
     report_status(shared, &device_id, true).await;
     eprintln!("device {device_id}: authenticated (owner {owner})");
@@ -343,6 +368,14 @@ async fn serve_device(
         DEVICE_REVALIDATION_INTERVAL,
     );
     revalidate.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // The device promised a heartbeat every HEARTBEAT_INTERVAL_S. Hold it to
+    // that: any inbound frame resets the deadline; a device that goes silent —
+    // a wedged bridge whose event loop stopped reading and writing — is severed
+    // and reported offline instead of staying "online" while every frame routed
+    // to it disappears.
+    let liveness_timeout = shared.config.device_liveness_timeout;
+    let mut liveness_deadline = tokio::time::Instant::now() + liveness_timeout;
 
     loop {
         let message = tokio::select! {
@@ -359,8 +392,20 @@ async fn serve_device(
                 }
                 continue;
             }
+            _ = tokio::time::sleep_until(liveness_deadline) => {
+                eprintln!(
+                    "device {device_id}: no frame within {}s (liveness); severing",
+                    liveness_timeout.as_secs()
+                );
+                break;
+            }
+            _ = &mut *writer_gone => {
+                eprintln!("device {device_id}: writer severed (stalled or failed write); severing");
+                break;
+            }
             _ = shutdown.recv() => break,
         };
+        liveness_deadline = tokio::time::Instant::now() + liveness_timeout;
         let Message::Text(text) = message else {
             if matches!(message, Message::Close(_)) {
                 break;
@@ -432,6 +477,7 @@ async fn serve_client(
     out_tx: Outbound,
     source: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
     shutdown: &mut broadcast::Receiver<()>,
+    writer_gone: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
     // The browser gets exactly one frame while unauthenticated: it must be a text
     // `authenticate` frame carrying a valid gateway token — sent promptly — or the
@@ -483,6 +529,10 @@ async fn serve_client(
                 Some(Ok(message)) => message,
                 _ => break,
             },
+            _ = &mut *writer_gone => {
+                eprintln!("client {client_id}: writer severed (stalled or failed write); severing");
+                break;
+            }
             _ = shutdown.recv() => break,
         };
         let Message::Text(text) = message else {

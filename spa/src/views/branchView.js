@@ -1,12 +1,13 @@
 // The branch work item's surface: two tabs, Changes and Files, and nothing
 // else — the conversation is the agent rail and the terminals are the console.
 //
-// This is the shell of that surface. It reads the branch row from the bridge
-// (`branch.get`, the redesigned wire) so the identity and status on screen are
-// real, and hands each tab a mount point the pane items fill.
+// The row is just tabs now. Which branch this is, which project it lives in,
+// how long its agent has been working and what the diff weighs are the
+// toolbar's (core/toolbar.js), one row above; the surface below states only
+// what is inside it.
 //
-// A branch name and a title come from the repo and from agents: untrusted, and
-// escaped everywhere they are painted.
+// A branch name comes from the repo: untrusted, and escaped everywhere it is
+// painted.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -20,15 +21,6 @@ const BRANCH_TABS = [
   { id: "files", label: "Files" },
 ];
 
-/** The branch's status, as the toolbar's right side reads it: working time and
- *  the diffstat. Pure. */
-export function branchStatusHtml(row) {
-  if (!row) return "";
-  const stat = row.stat ? `<span class="sstat">${esc(row.stat)}</span>` : "";
-  const state = row.state ? `<span class="sstate">${esc(row.state)}</span>` : "";
-  return `${state}${stat}`;
-}
-
 export async function renderBranch() {
   const root = $("#root");
   const { projectId, branch } = App.route;
@@ -37,7 +29,6 @@ export async function renderBranch() {
   root.innerHTML = `
     <div class="surface-bar">
       <div class="tabrow" id="branch-tabs"></div>
-      <div class="projectactions" id="branch-status"></div>
     </div>
     <div id="tabbody">
       <div class="shell-stub">
@@ -53,19 +44,8 @@ export async function renderBranch() {
     });
   mountConsoleRegion($("#console-region"));
 
-  const paintStatus = async () => {
-    try {
-      const view = await App.call("branch.get", { project_id: projectId, branch });
-      const status = $("#branch-status");
-      if (status) status.innerHTML = branchStatusHtml(view);
-    } catch {
-      /* the next tick retries; a stale status must not blank the surface */
-    }
-  };
   App.viewDispose = () => {
     const region = $("#console-region");
     if (region) region.innerHTML = "";
   };
-  await paintStatus();
-  App.poll = setInterval(paintStatus, 4000);
 }

@@ -112,6 +112,65 @@ body.inbox-collapsed #inbox-open { display:block; }
 #shell main#root { min-width:0; min-height:0; }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
+/* ---- the view area's toolbar ----
+   Where you are standing, said as one sentence: project / branch-or-issue, both
+   halves opening the same menu. The right side carries the two facts about the
+   work that are true wherever you are in it — how long its agent has been at it
+   and what the diff weighs — plus the ⋯ the tab row's right cluster used to be. */
+.toolbar { display:flex; align-items:center; gap:2px; padding:0 10px 0 12px;
+  height:38px; min-width:0; }
+.tb-sel { display:flex; align-items:center; gap:5px; min-width:0; max-width:42%;
+  font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
+  border-radius:6px; padding:4px 6px; cursor:pointer; }
+.tb-sel:hover { background:var(--panel2); }
+.tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tb-project .tb-name { font-weight:600; }
+.tb-caret { flex:none; font-size:9px; color:var(--dim); }
+.tb-sep { color:var(--line); flex:none; }
+.tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+.tb-status { display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--dim); }
+.tb-working { color:var(--accent); }
+.tb-stat { color:var(--dim); }
+
+/* Both menus hang off their anchor, fixed to the viewport like the tab row's:
+   the toolbar is a short row and would clip a child popup. The item shape
+   (.mi > .mt + .md) is the shared menu vocabulary in styles.css. */
+.tbmenu { z-index:60; width:min(340px, calc(100vw - 16px));
+  max-height:min(70vh, 520px); display:flex; flex-direction:column;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:0 10px 30px var(--shadow); padding:6px; overflow:hidden; }
+.tbmenu .mi { display:flex; flex-direction:column; gap:1px; width:100%;
+  text-align:left; padding:6px 8px; border:none; border-radius:6px;
+  background:none; font:inherit; color:var(--ink); cursor:pointer; }
+.tbmenu .mi:hover, .tbmenu .mi:focus-visible { background:var(--accent-soft); }
+.tbmenu .mi .mt { font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tbmenu .mi .md { font-size:11px; color:var(--dim); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.tbmenu .mi.current .mt { font-weight:600; }
+.tbmenu-list { flex:1 1 auto; min-height:0; overflow-y:auto; }
+.tb-filter { flex:none; width:100%; margin-bottom:4px; padding:6px 8px;
+  font:inherit; font-size:12.5px; color:var(--ink);
+  background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+.tb-group { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--dim); padding:8px 8px 3px; }
+.tb-none { font-size:12px; padding:2px 8px 6px; }
+.tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
+
+/* The create form the two ⌄ creates swap the list for: one field, because one
+   field is all either of them needs. */
+.tb-create { display:flex; flex-direction:column; gap:6px; padding:4px; }
+.tb-create-head { font-size:12.5px; font-weight:600; }
+.tb-create-hint { font-size:11.5px; }
+.tb-create-label { font-size:11px; color:var(--dim); }
+.tb-create input, .tb-create textarea { width:100%; font:inherit; font-size:12.5px;
+  color:var(--ink); background:var(--bg); border:1px solid var(--line);
+  border-radius:6px; padding:6px 8px; resize:vertical; }
+.tb-create-row { display:flex; align-items:center; gap:6px; }
+.tb-create-preview { flex:1; font-size:11px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.tb-create-error { font-size:11px; }
+.tb-create-error[hidden] { display:none; }
+
 /* ---- agent rail (right edge of the view body) ---- */
 #agent-rail { display:flex; min-height:0; border-left:1px solid var(--line);
   background:var(--bg); }

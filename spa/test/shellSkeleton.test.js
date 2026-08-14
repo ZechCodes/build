@@ -134,9 +134,11 @@ describe("render dispatch", () => {
     const bar = document.querySelector("#console-region .console-bar");
     expect(bar).toBeTruthy();
     expect(bar.getAttribute("aria-expanded")).toBe("false");
-    // The status comes from the redesigned wire, not from run.get.
-    expect(App.call).toHaveBeenCalledWith("branch.get", { project_id: "p-1", branch: "build/login" });
-    expect(root().querySelector("#branch-status").textContent).toContain("building");
+    // The row is tabs and nothing else: the identity and the status are the
+    // toolbar's (core/toolbar.js), and the project cluster is gone.
+    expect(root().querySelector("#branch-status")).toBeNull();
+    expect(root().querySelector(".tabs-right")).toBeNull();
+    expect(root().querySelector(".tback")).toBeNull();
   });
 
   it("navigates between the branch tabs by URL", async () => {

@@ -8,6 +8,7 @@ import { renderIssue } from "./views/issueView.js";
 import { renderAccount } from "./views/account.js";
 import { renderResolving } from "./views/resolving.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
+import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -99,6 +100,7 @@ export function render() {
     App.viewDispose = null;
   }
   inboxRouteChanged(); // keep the rail tracking the route
+  toolbarRouteChanged(); // …and the toolbar naming where you are standing
   // The shell's grid owns the columns; #root is one cell. A view states its own
   // chrome (`surface` for a full-height work surface, nothing for a reading
   // page), so the outgoing view's never leaks into the incoming one.

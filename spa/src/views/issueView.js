@@ -56,8 +56,10 @@ export async function renderIssue() {
     try {
       stages = stagesFrom(await App.call("issue.stages", { issue_id: id }));
     } catch {
-      /* the next tick retries */
-      return;
+      // An issue with nothing planned has no stages to answer with — which a
+      // freshly filed one never does, since its planning agent starts on the
+      // first message. That is an empty column, not a column still loading.
+      stages = [];
     }
     const column = $("#issue-stages");
     if (!column) return;

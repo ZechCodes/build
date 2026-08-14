@@ -13,6 +13,7 @@ import { lookupDevice, approveDevice } from "../api.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { initInboxRail } from "../core/inboxShell.js";
+import { initToolbar } from "../core/toolbar.js";
 
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
@@ -46,6 +47,7 @@ async function enterApp() {
   setConn('<span class="dot"></span>connected');
   startFeed();
   initInboxRail();
+  initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
 }
 

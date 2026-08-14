@@ -21,11 +21,15 @@ import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
+import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { branchNamePreview, toolbarIdentity, toolbarMenuModel, toolbarStatus } from "./toolbarModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
+/** Names the create form's three harness controls, so its panel and compose's
+ *  can be open at once without either answering for the other. */
+const CHOICE_PREFIX = "tb-choice";
 
 let feed = { items: [], projects: [] };
 let scopedProjectId = null;
@@ -262,7 +266,16 @@ function paintMenu() {
   });
   open.element.querySelectorAll("[data-create]").forEach((row) => {
     row.onclick = () => {
-      open.create = { kind: row.dataset.create, busy: false, error: "", value: "" };
+      // The harness starts at the account's defaults — the panel is where a
+      // create says otherwise, and it starts shut.
+      open.create = {
+        kind: row.dataset.create,
+        busy: false,
+        error: "",
+        value: "",
+        choice: loadAgentDefaults(),
+        choiceOpen: false,
+      };
       paintMenu();
     };
   });
@@ -287,6 +300,37 @@ const CREATE_COPY = {
   },
 };
 
+/** The harness question, on the create that can answer it.
+ *
+ *  An issue carries its agent's provider, model and effort from the moment it
+ *  is filed. A new branch carries no agent at all — nothing runs there until an
+ *  agent is added or a dispatch names one — so asking would be asking about
+ *  something that does not exist yet. */
+function createChoiceHtml() {
+  if (open.create.kind !== "issue") return "";
+  return agentChoicePanelHtml(App.modelCatalog || { providers: [] }, open.create.choice, {
+    prefix: CHOICE_PREFIX,
+    open: open.create.choiceOpen,
+  });
+}
+
+function wireCreateChoice(host) {
+  const holder = host.querySelector(".agent-choice");
+  if (!holder) return;
+  holder.querySelector("[data-agent-choice-toggle]").onclick = () => {
+    open.create.choiceOpen = !open.create.choiceOpen;
+    paintCreate();
+  };
+  const onChange = (changed) => () => {
+    open.create.choice = reconcileAgentChoice(readAgentChoice(host, CHOICE_PREFIX), changed);
+    paintCreate();
+  };
+  const control = (field) => holder.querySelector(`#${CHOICE_PREFIX}-${field}`);
+  control("provider").onchange = onChange({ providerChanged: true });
+  control("model").onchange = onChange({ modelChanged: true });
+  control("effort").onchange = onChange({});
+}
+
 function paintCreate() {
   const { kind, busy, error, value } = open.create;
   const copy = CREATE_COPY[kind];
@@ -306,6 +350,7 @@ function paintCreate() {
           ? `<textarea id="tb-create-input" rows="3" placeholder="${esc(copy.placeholder)}">${esc(value)}</textarea>`
           : `<input id="tb-create-input" type="text" class="path" placeholder="${esc(copy.placeholder)}" autocomplete="off" value="${esc(value)}" />`
       }
+      ${createChoiceHtml()}
       <div class="tb-create-row">
         <span class="dim mono tb-create-preview" id="tb-create-preview"></span>
         <button class="btn mini" data-create-cancel type="button">Cancel</button>
@@ -313,6 +358,7 @@ function paintCreate() {
       </div>
       <div class="warn tb-create-error"${error ? "" : " hidden"}>${esc(error)}</div>
     </div>`;
+  wireCreateChoice(open.element);
   const input = open.element.querySelector("#tb-create-input");
   input.focus();
   input.setSelectionRange(caret, caret);
@@ -337,15 +383,10 @@ function paintCreate() {
   open.element.querySelector("[data-create-go]").onclick = () => submitCreate(input.value);
 }
 
-/** The account's agent defaults, as create params. An empty preference sends
+/** The create's harness choice, as create params. An empty choice sends
  *  nothing and the daemon's own default stands. */
 function agentParams() {
-  const defaults = loadAgentDefaults();
-  const params = {};
-  for (const field of ["provider", "model", "effort"]) {
-    if (defaults[field]) params[field] = defaults[field];
-  }
-  return params;
+  return agentChoiceParams(App.modelCatalog || { providers: [] }, open.create.choice);
 }
 
 async function submitCreate(raw) {

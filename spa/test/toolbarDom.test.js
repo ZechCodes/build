@@ -200,6 +200,37 @@ describe("creating from the menu", () => {
     expect(location.hash).toBe("#/project/p1/issue/plan-9");
   });
 
+  it("carries the harness picker on the issue create — the same panel compose asks with", async () => {
+    App.modelCatalog = {
+      default_provider: "claude",
+      providers: [
+        { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus", supports_effort: true }], efforts: ["low"] },
+      ],
+    };
+    openJump("project").querySelector('[data-create="issue"]').click();
+    const input = menu().querySelector("#tb-create-input");
+    input.value = "Add a /health endpoint";
+    input.dispatchEvent(new Event("input"));
+    menu().querySelector("[data-agent-choice-toggle]").click();
+    const model = menu().querySelector("#tb-choice-model");
+    model.value = "opus";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    menu().querySelector("[data-create-go]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("issue.create", {
+      goal: "Add a /health endpoint",
+      project_id: "p1",
+      dispatch: false,
+      provider: "claude",
+      model: "opus",
+    });
+  });
+
+  it("asks no harness question of a branch create, which starts no agent to answer for", () => {
+    openJump("project").querySelector('[data-create="branch"]').click();
+    expect(menu().querySelector("[data-agent-choice-toggle]")).toBeNull();
+  });
+
   it("says what went wrong without losing what was typed", async () => {
     App.call = vi.fn(async () => {
       throw new Error("a worktree named that already exists");

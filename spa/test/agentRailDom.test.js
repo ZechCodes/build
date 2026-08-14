@@ -153,6 +153,19 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
   });
 
+  it("leaves a live screen alone while the rail keeps polling", async () => {
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+    const before = panel();
+    vi.advanceTimersByTime(5000);
+    await flush();
+    // The same panel element, the same pane: a poll must not re-attach a PTY.
+    expect(panel()).toBe(before);
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+  });
+
   it("tells the daemon an agent's conversation has been read while it is open at the end", async () => {
     payload = branchRow({ agents: [agent({ unread_count: 2, unread_reason: "done" })] });
     await mount();

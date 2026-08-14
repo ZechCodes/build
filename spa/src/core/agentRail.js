@@ -187,14 +187,31 @@ export function mountAgentRail(host, context) {
 
   // ---- painting -------------------------------------------------------------
 
+  /// Paint the strip, and put the panel in or take it out.
+  ///
+  /// The strip is rewritten every tick — it is a handful of buttons and its
+  /// whole job is to be current. The PANEL element is not: it is where a live
+  /// PTY hangs, and a poll that replaced it would tear a terminal down and
+  /// re-attach it every second and a half. So the panel is created when the
+  /// human opens it, removed when they shut it, and otherwise left alone.
   const paint = () => {
     if (disposed) return;
-    const bubbles = railBubbles({ agents: entity.agents, selectedId, kind: entity.kind });
-    host.innerHTML = `${expanded ? '<div class="rail-panel" id="rail-panel"></div>' : ""}
-      <div class="rail-strip">${stripHtml(bubbles)}</div>`;
-    host.querySelectorAll("[data-bubble]").forEach((bubble) => {
+    if (!host.querySelector(".rail-strip")) host.innerHTML = `<div class="rail-strip"></div>`;
+    const strip = host.querySelector(".rail-strip");
+    strip.innerHTML = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
+    strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
       bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
     });
+    let panel = host.querySelector("#rail-panel");
+    if (expanded && !panel) {
+      panel = document.createElement("div");
+      panel.className = "rail-panel";
+      panel.id = "rail-panel";
+      host.insertBefore(panel, strip);
+    } else if (!expanded && panel) {
+      disposeTui();
+      panel.remove();
+    }
     if (expanded) paintPanel();
   };
 
@@ -203,21 +220,23 @@ export function mountAgentRail(host, context) {
     if (!panel) return;
     const agent = agentOf(selectedId);
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
-    // The head is rewritten every paint, and the body only when the mode it is
-    // showing changed — a live PTY must not be torn down by a poll tick.
+    // The body is rebuilt only when what it is showing changed — which face of
+    // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = `${mode}:${selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       panel.innerHTML = `${panelHeadHtml(who, mode)}<div class="rail-body" id="rail-body"></div>`;
+      panel.dataset.head = who;
       panel.dataset.body = wantedBody;
       wireHead(panel);
       if (mode === "tui") mountTui();
-    } else {
-      const head = panel.querySelector(".rail-head");
-      if (head) {
-        head.outerHTML = panelHeadHtml(who, mode);
-        wireHead(panel);
-      }
+    } else if (panel.dataset.head !== who) {
+      // The name changed under the panel (an agent whose provider was picked
+      // after the fact). Nothing else in the head can move on a poll, and
+      // rewriting it every tick would eat a press that landed mid-repaint.
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode);
+      panel.dataset.head = who;
+      wireHead(panel);
     }
     if (mode === "chat") paintChat();
   };

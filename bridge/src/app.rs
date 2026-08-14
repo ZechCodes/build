@@ -13624,6 +13624,13 @@ fn record_report_in_thread(
             crate::thread::ThreadEventKind::Blocked,
             report.summary.clone(),
         ),
+        // A finished triage pass is not an agent handing work back: nothing
+        // waits on it and nobody has to answer it. It updates the review
+        // surface, and says so quietly.
+        None if report.phase == DonePhase::Triage => (
+            crate::thread::ThreadEventKind::Triaged,
+            report.summary.clone(),
+        ),
         None if report.status == DoneStatus::Failed => (
             crate::thread::ThreadEventKind::RunFailed,
             report.summary.clone(),
@@ -21328,6 +21335,54 @@ mod tests {
             .expect("a new revision is triaged again");
         assert_eq!(queued.phase, "triage");
         assert!(queued.warm.contains(&second_revision), "{}", queued.warm);
+    }
+
+    /// Triage asks the reviewer for nothing, so it must not ring their bell.
+    /// A pass finishing is status — it updates the review surface and says so
+    /// quietly, unlike the `done` that produced the diff in the first place.
+    #[test]
+    fn a_finished_triage_pass_updates_the_surface_without_asking_for_the_user() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-quietly");
+        std::fs::write(
+            state.runs[&run_id].worktree.path.join("crypto.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "built".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+
+        let summary_before =
+            state.handle(req("run.get", json!({ "run_id": run_id })))["result"]["summary"].clone();
+        let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            view["result"]["unread"], false,
+            "a background pass is not something the user is called to: {view:?}"
+        );
+        let events = view["result"]["thread"]["items"]
+            .as_array()
+            .expect("the conversation ships with the run");
+        assert!(
+            events.iter().any(|item| item["data"]["event"] == "triaged"),
+            "the pass is on the record, as status: {events:?}"
+        );
+        assert_eq!(
+            view["result"]["summary"], summary_before,
+            "the card says exactly what it said before the pass: {view:?}"
+        );
     }
 
     /// A revision nobody has changed is not re-triaged: the agent's turn is

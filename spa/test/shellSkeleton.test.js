@@ -208,6 +208,11 @@ describe("the console", () => {
   it("takes the bottom row of the view column, and overlays it at full size", () => {
     expect(shellCss).toMatch(/#console-region \{[^}]*height:var\(--console-bar\)/);
     expect(shellCss).toMatch(/#console-region\[data-size="half"\] \{[^}]*height:var\(--console-half\)/);
-    expect(shellCss).toMatch(/#console-region\[data-size="full"\] \{[^}]*position:absolute/);
+    const full = shellCss.match(/#console-region\[data-size="full"\] \{[^}]*\}/)[0];
+    expect(full).toMatch(/position:absolute/);
+    // …and never over the toolbar or the bubble strip: where you are standing
+    // and what every agent is doing stay legible under an open console.
+    expect(full).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
+    expect(full).toMatch(/right:var\(--agent-strip\)/);
   });
 });

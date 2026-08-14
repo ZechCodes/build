@@ -259,8 +259,11 @@ body.inbox-collapsed #inbox-open { display:block; }
 #console-region { flex:none; border-top:1px solid var(--line); background:var(--bg);
   height:var(--console-bar); transition:height .16s ease; }
 #console-region[data-size="half"] { height:var(--console-half); }
-#console-region[data-size="full"] { position:absolute; left:0; right:0;
-  top:var(--toolbar-h); bottom:0; height:auto; z-index:34;
+/* The overlay clears two things it must never cover: the toolbar (and its
+   rule), which says where you are standing, and the bubble strip, which says
+   what every agent on this work item is doing. */
+#console-region[data-size="full"] { position:absolute; left:0; right:var(--agent-strip);
+  top:calc(var(--toolbar-h) + 1px); bottom:0; height:auto; z-index:34;
   box-shadow:0 -8px 24px var(--shadow-soft); }
 @media (prefers-reduced-motion: reduce) { #console-region { transition:none; } }
 

@@ -17,6 +17,7 @@
    region scrolls itself. A grid rather than a flex row, so the columns are
    definite and nothing inside can push a region wider than its share. */
 #shell {
+  flex:1 1 auto; /* the body is a viewport-locked flex column; the shell is the row that takes all of it */
   display:grid;
   grid-template-columns:auto minmax(0, 1fr);
   min-height:0;

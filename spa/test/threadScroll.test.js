@@ -11,8 +11,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { paintThreadKeepingPlace, threadHtml } from "../src/core/thread.js";
-import { mountPrimaryConversation } from "../src/views/mainWorktree.js";
-import { createPrimaryAdoptingCall } from "../src/core/adoption.js";
 
 /** jsdom has no layout, so the scroller states its own geometry: a viewport
  *  short enough that the thread overflows it. */
@@ -109,52 +107,15 @@ describe("a conversation opens at its newest message", () => {
   });
 });
 
-// jsdom rebases import.meta.url onto the fake document location, so the view
-// sources are read from the package root the runner starts in.
-// One surface driven for real, so the wiring is proved and not just asserted:
-// the primary checkout's conversation is the pane that mounts standalone.
-describe("a mounted conversation lands on the newest message", () => {
-  const runView = (...bodies) => ({
-    state: "review",
-    harness: "Claude Code",
-    thread: {
-      items: bodies.map((body, index) => ({
-        type: "message",
-        data: { role: "agent", body, sequence: index + 1, created_at: "2026-08-06T12:00:00Z" },
-      })),
-    },
-  });
+const sourceOf = (file) => readFileSync(resolve("src", file), "utf8");
 
-  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-  it("opens at the bottom and holds a reader who scrolled up through a refresh", async () => {
-    const bridge = { view: runView("first") };
-    const callRpc = vi.fn(async (method) => (method === "run.get" ? bridge.view : { ok: true }));
-    const adopting = createPrimaryAdoptingCall(callRpc, "proj-1");
-    adopting.seedAdoptedRun("run-main");
-    const body = scroller();
-
-    const pane = mountPrimaryConversation(body, { adopting, callRpc, pollMs: 0 });
-    await tick();
-    expect(body.textContent).toContain("first");
-    expect(body.scrollTop).toBe(1000);
-
-    body.scrollTop = 140;
-    bridge.view = runView("first", "second");
-    await pane.refresh();
-    expect(body.textContent).toContain("second");
-    expect(body.scrollTop).toBe(140);
-    pane.dispose();
-  });
-});
-
-const viewSource = (file) => readFileSync(resolve("src/views", file), "utf8");
-
-const SURFACES_WITH_A_CONVERSATION = ["task.js", "worktree.js", "mainWorktree.js", "plan.js"];
+// The conversation lives in the agent rail now; the plan surface is the last
+// pre-redesign one still painting a thread of its own.
+const SURFACES_WITH_A_CONVERSATION = ["core/agentRail.js", "views/plan.js"];
 
 describe("every surface's conversation scrolls the same way", () => {
   it.each(SURFACES_WITH_A_CONVERSATION)("%s wraps every thread paint in the shared helper", (file) => {
-    const source = viewSource(file);
+    const source = sourceOf(file);
     const bodyLines = source.split("\n").filter((line) => !/^import\b/.test(line.trim()));
     const threadPaints = bodyLines.join("\n").match(/threadHtml\(/g) || [];
     const wrapped = bodyLines.join("\n").match(/paintThreadKeepingPlace\(/g) || [];
@@ -162,7 +123,8 @@ describe("every surface's conversation scrolls the same way", () => {
     expect(wrapped).toHaveLength(threadPaints.length);
   });
 
-  it.each(SURFACES_WITH_A_CONVERSATION)("%s owns no scrolling of its own", (file) => {
-    expect(viewSource(file)).not.toContain("scrollTop");
+  // Reading where the reader is standing is fair; moving them is the helper's.
+  it.each(SURFACES_WITH_A_CONVERSATION)("%s never moves the scroller itself", (file) => {
+    expect(sourceOf(file)).not.toMatch(/scrollTop\s*=/);
   });
 });

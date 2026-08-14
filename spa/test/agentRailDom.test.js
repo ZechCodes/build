@@ -31,6 +31,7 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mount
 
 const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { createAgentSelection } = await import("../src/core/agentSelection.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude", state: "live",
@@ -133,6 +134,47 @@ describe("the bubble strip", () => {
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
     expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
+  });
+
+  it("publishes which agent is open, so the surfaces beside it ask about the same one", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    const selection = createAgentSelection();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
+    // The rail opens on the first agent, and its next poll asks about it.
+    expect(selection.get()).toBe("ag-1");
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(callsTo("branch.get").at(-1).params).toMatchObject({ agent_id: "ag-1" });
+
+    bubbles()[1].click();
+    await flush();
+    expect(selection.get()).toBe("ag-2");
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(callsTo("branch.get").at(-1).params).toMatchObject({ agent_id: "ag-2" });
+  });
+
+  it("lets go of an agent the work item no longer has, instead of asking after it forever", async () => {
+    const selection = createAgentSelection();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
+    expect(selection.get()).toBe("ag-1");
+
+    // The run behind the branch was replaced: the daemon refuses the id rather
+    // than answering with somebody else's conversation.
+    const refusing = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "branch.get" && params.agent_id) throw new Error("unknown agent_id: ag-1");
+      return refusing(method, params);
+    });
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(selection.get()).toBe(null);
+
+    // …and the next read asks the question that can be answered.
+    vi.advanceTimersByTime(2000);
+    await flush();
+    expect(callsTo("branch.get").at(-1).params.agent_id).toBe(undefined);
   });
 });
 

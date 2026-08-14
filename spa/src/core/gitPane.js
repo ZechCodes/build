@@ -35,6 +35,7 @@ import {
   commentsSupported,
   hasUncommittedChanges,
 } from "./changesModel.js";
+import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { parseDiff } from "./diff.js";
@@ -367,7 +368,19 @@ export function taskAgentCommitOptions(state, goal) {
  *  `onNavigate` is reserved for future cross-surface links. */
 export function mountGitPane(
   container,
-  { scope, callRpc, agentCommitOptions = [], review = null, revisionId = () => null, onNavigate = null } = {},
+  {
+    scope,
+    callRpc,
+    agentCommitOptions = [],
+    review = null,
+    revisionId = () => null,
+    onNavigate = null,
+    // Whose conversation the comments written here belong in: the agent whose
+    // bubble is open in the rail beside this pane. Mounted without one (the
+    // standalone Files/Changes hosts), the daemon answers with the entity's
+    // first agent, which is what this surface always meant.
+    agentSelection = createAgentSelection(),
+  } = {},
 ) {
   void onNavigate; // accepted per the pane contract; no link targets yet
   let disposed = false;
@@ -486,7 +499,7 @@ export function mountGitPane(
   const commentLayer = commentable
     ? createCommentLayer({
         submit: async (messages) => {
-          await callRpc("run.request_changes", { run_id: scope.run_id, messages });
+          await callRpc("run.request_changes", { run_id: scope.run_id, ...agentSelection.scope(), messages });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
           reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles);

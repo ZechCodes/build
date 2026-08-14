@@ -9,6 +9,7 @@
 // The plug instance (and its pending comments) belongs to the task view, so
 // remounts — tab switches, shell rebuilds — keep review state.
 
+import { createAgentSelection } from "../core/agentSelection.js";
 import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { currentRevisionId } from "../core/thread.js";
@@ -66,14 +67,17 @@ export function reviewHint(task) {
 }
 
 /**
- * createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) →
- *   { mount(host), unmount() } — the gitPane review plug for a task.
+ * createTaskReview({ taskId, callRpc, getTask, isOffline, agentSelection,
+ *   onMerged }) → { mount(host), unmount() } — the gitPane review plug for a
+ * task.
  *
  * getTask() returns the task view's freshest run payload. The conversation
  * belongs to the agent that owns it; this plug owns only the diff, the pending
- * review comments, and the review git actions.
+ * review comments, and the review git actions. `agentSelection` says which of
+ * the branch's agents is being reviewed — the one whose bubble is open — so the
+ * comments land in the conversation the reviewer was reading.
  */
-export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) {
+export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSelection = createAgentSelection(), onMerged }) {
   // ONE single-flight latch for the git split button, owned by the plug — not
   // by each repaint. Without a shared latch, mid-merge the poll would replace
   // the disabled "merging…" button with an enabled Merge that can dispatch a
@@ -93,7 +97,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       if (!task) return null;
       return { patch: diff.patch, key: task.state, commentable: COMMENTABLE_STATES.includes(task.state) };
     },
-    submit: (messages) => callRpc("run.request_changes", { run_id: taskId, messages }),
+    submit: (messages) => callRpc("run.request_changes", { run_id: taskId, ...agentSelection.scope(), messages }),
     revisionId: () => currentRevisionId(getTask()?.thread, "diff"),
     statusHtml: () =>
       getTask() && getTask().state === "building"

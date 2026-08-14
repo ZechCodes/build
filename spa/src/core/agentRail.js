@@ -21,6 +21,7 @@ import { App, go } from "../app.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentTitle, providerLabel, railBubbles, railEntity, selectAgentId } from "./agentRailModel.js";
+import { createAgentSelection } from "./agentSelection.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed } from "./taskFeed.js";
@@ -117,14 +118,19 @@ export function panelHeadHtml(who, mode) {
  * Mount the rail for one work item.
  *
  * `context` is `{ kind: "branch", projectId, branch }` or
- * `{ kind: "issue", projectId, issueId }`. Returns `{ dispose() }`; disposing
- * tears down the client view only — PTYs and conversations are the daemon's.
+ * `{ kind: "issue", projectId, issueId }`, optionally carrying a `selection`
+ * (core/agentSelection.js) — the shared handle the surface beside the rail
+ * reads, so its polls and its review comments name the agent whose bubble is
+ * open. Returns `{ dispose() }`; disposing tears down the client view only —
+ * PTYs and conversations are the daemon's.
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
   const key = railKey(context);
+  const selection = context.selection || createAgentSelection();
   let entity = railEntity(null, context.kind);
   let selectedId = chosenAgent.get(key) || null;
+  selection.set(selectedId);
   let expanded = readExpanded();
   let mode = panelModes.get(key) || "chat";
   let poll = null;
@@ -136,6 +142,14 @@ export function mountAgentRail(host, context) {
   let sending = false; // a first message is adopting/starting — do not repaint over it
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
+  /** Open this agent's conversation, and tell everything else on screen: the
+   *  bubble strip is the selector for the whole work item, not just the rail. */
+  const chooseAgent = (id) => {
+    selectedId = id || null;
+    if (selectedId) chosenAgent.set(key, selectedId);
+    else chosenAgent.delete(key);
+    selection.set(selectedId);
+  };
   const draftKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
   const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
   const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
@@ -170,18 +184,34 @@ export function mountAgentRail(host, context) {
   };
 
   const refresh = async () => {
+    const asked = selectedId;
     let payload;
     try {
       payload = await detail();
-    } catch {
-      // A branch that stopped resolving (finished, renamed) leaves the rail as
-      // it was rather than blanking the conversation under the reader.
+    } catch (error) {
+      // The agent we asked about is not on this work item any more — its run
+      // was replaced, or it was retired. The daemon refuses rather than
+      // answering with somebody else's conversation, so let the choice go and
+      // the next tick reopens on whichever agent is here now. Without this the
+      // rail would ask the same refused question forever.
+      if (asked && /agent_id/.test((error && error.message) || "")) {
+        chooseAgent(null);
+        threadCache.reset();
+        threadAgentId = null;
+      }
+      // Anything else — a branch that stopped resolving (finished, renamed) —
+      // leaves the rail as it was rather than blanking the conversation under
+      // the reader.
       return;
     }
     if (disposed) return;
+    // The human opened a different bubble while this read was in flight: it
+    // answers about the conversation they just left, and folding its delta into
+    // the cache the switch just cleared would show one agent's words under
+    // another's name. Drop it; the next tick asks about the right one.
+    if (asked !== selectedId) return;
     entity = railEntity(payload, context.kind);
-    selectedId = selectAgentId(entity.agents, selectedId);
-    if (selectedId) chosenAgent.set(key, selectedId);
+    chooseAgent(selectAgentId(entity.agents, selectedId));
     if (!sending) paint();
   };
 
@@ -385,8 +415,7 @@ export function mountAgentRail(host, context) {
           ...(agent ? { agent_id: agent.id } : {}),
         });
         if (started && started.agent_id) {
-          selectedId = started.agent_id;
-          chosenAgent.set(key, selectedId);
+          chooseAgent(started.agent_id);
           threadCache.reset();
           threadAgentId = selectedId;
         }
@@ -406,8 +435,7 @@ export function mountAgentRail(host, context) {
       return;
     }
     if (type === "agent" && agentId && agentId !== selectedId) {
-      selectedId = agentId;
-      chosenAgent.set(key, agentId);
+      chooseAgent(agentId);
       threadCache.reset();
       threadAgentId = agentId;
       expanded = true;

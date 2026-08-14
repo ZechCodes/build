@@ -13,6 +13,7 @@
 // file is the wiring.
 
 import { esc } from "./text.js";
+import { createAgentSelection } from "./agentSelection.js";
 import { docCommentAnchor } from "./notes.js";
 import { renderMarkdown } from "./markdown.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -108,6 +109,10 @@ export function mountIssueView(
     onGone = () => {},
     pollMs = ISSUE_VIEW_POLL_MS,
     initialStageId = null,
+    // Whose conversation this surface is reading and writing into. An issue
+    // carries exactly one agent session, so this all but always names it — but
+    // it is the rail's bubble that says so, and the poll asks with it.
+    agentSelection = createAgentSelection(),
   } = {},
 ) {
   let disposed = false;
@@ -123,6 +128,7 @@ export function mountIssueView(
   let renderedKey = null;
   let actionsInFlight = 0;
   let threadCursor = 0;
+  let threadAgentId = agentSelection.get(); // whose conversation the cursor is in
   let drawer = null;
   // The plan of an issue that has no stage manifest at all (a migrated issue
   // predating stages): one doc, read-only, so it is still readable here.
@@ -162,7 +168,7 @@ export function mountIssueView(
           anchor: docCommentAnchor(comment),
         });
       }
-      if (general) await callRpc("thread.post", { entity_id: issueId, body: general });
+      if (general) await callRpc("thread.post", { entity_id: issueId, ...agentSelection.scope(), body: general });
       renderedKey = null;
       await refresh();
     },
@@ -566,9 +572,19 @@ export function mountIssueView(
     if (disposed || gone) return;
     let payload;
     let stagesPayload;
+    // A cursor is a position in ONE conversation: opening a different agent's
+    // makes what this view holds somebody else's, so the next read is whole.
+    if (agentSelection.get() !== threadAgentId) {
+      threadAgentId = agentSelection.get();
+      threadCursor = 0;
+    }
     try {
       [payload, stagesPayload] = await Promise.all([
-        callRpc("issue.get", { issue_id: issueId, ...(threadCursor ? { thread_after_sequence: threadCursor } : {}) }),
+        callRpc("issue.get", {
+          issue_id: issueId,
+          ...agentSelection.scope(),
+          ...(threadCursor ? { thread_after_sequence: threadCursor } : {}),
+        }),
         callRpc("issue.stages", { issue_id: issueId }),
       ]);
     } catch (e) {

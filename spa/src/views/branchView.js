@@ -22,6 +22,7 @@ import { App, go } from "../app.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
+import { createAgentSelection } from "../core/agentSelection.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
@@ -83,8 +84,12 @@ export async function renderBranch() {
   // terminals. Shut unless the last visit left it open.
   const consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
   // The agents beside the work, not instead of it: the rail belongs to this
-  // branch, so it is mounted with the surface and torn down with it.
-  const rail = mountAgentRail($("#agent-rail"), { kind: "branch", projectId, branch });
+  // branch, so it is mounted with the surface and torn down with it. Which
+  // bubble is open is the whole surface's business — the row this view reads
+  // carries that agent's conversation, and the review comments Changes sends go
+  // into it — so the choice lives in a handle they share.
+  const agentSelection = createAgentSelection();
+  const rail = mountAgentRail($("#agent-rail"), { kind: "branch", projectId, branch, selection: agentSelection });
 
   let disposed = false;
   let row = null; // the branch.get payload: the feed row plus `run`
@@ -118,6 +123,7 @@ export async function renderBranch() {
           callRpc,
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
+          agentSelection,
           onMerged: () => finished(),
         });
       } else {
@@ -171,6 +177,7 @@ export async function renderBranch() {
       callRpc,
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
+      agentSelection,
     });
   };
 
@@ -179,7 +186,7 @@ export async function renderBranch() {
   const refresh = async (force = false) => {
     let payload;
     try {
-      payload = await callRpc("branch.get", { project_id: projectId, branch });
+      payload = await callRpc("branch.get", { project_id: projectId, branch, ...agentSelection.scope() });
     } catch {
       // The branch stopped resolving: merged away, renamed, or the worktree is
       // gone. A row we already painted stays; a first read that fails says so.

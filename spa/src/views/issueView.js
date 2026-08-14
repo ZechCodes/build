@@ -12,6 +12,7 @@ import { hashFromRoute } from "../core/router.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
+import { createAgentSelection } from "../core/agentSelection.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -42,12 +43,16 @@ export async function renderIssue() {
   // console opens terminals in.
   const consolePanel = mountConsole($("#console-region"), { kind: "issue", projectId, issueId: id });
   // An issue carries exactly one agent session, and this is where you talk to
-  // it — including the first message, which is what starts it.
-  const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id });
+  // it — including the first message, which is what starts it. The surface
+  // beside the rail reads and writes that same conversation, so both are given
+  // the one handle that says which agent it is.
+  const agentSelection = createAgentSelection();
+  const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id, selection: agentSelection });
 
   const view = mountIssueView($("#tabbody"), {
     issueId: id,
     projectId,
+    agentSelection,
     initialStageId: selectedStageId,
     callRpc: (method, params) => App.call(method, params),
     navigate: go,

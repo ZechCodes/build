@@ -171,15 +171,46 @@ export class TerminalSocket {
   /** Move an agent registration onto the wire id the bridge just named, and
    *  hand it whatever frames arrived under that id while it was unknown. */
   _rekeyAgent(currentId, entry, wireId) {
-    if (!wireId || wireId === currentId) return;
+    if (!wireId || wireId === currentId) {
+      if (wireId) entry.onTermId(wireId);
+      return;
+    }
     if (this._terms.get(currentId) === entry) this._terms.delete(currentId);
     this._terms.set(wireId, entry);
     entry.termId = wireId; // a pending ack must name the id the bridge knows
+    entry.awaitingBirth = false;
     const outran = this._orphanFrames.get(wireId);
     if (outran) {
       this._orphanFrames.delete(wireId);
       entry.preAttach.unshift(...outran);
     }
+    // Keystrokes and resizes are addressed by the caller, from the id it was
+    // told — so a screen that moved has to say so, or every key after the
+    // agent's birth goes to an id the bridge no longer knows.
+    entry.onTermId(wireId);
+  }
+
+  /**
+   * The birth of an agent on a screen that was mounted before it existed.
+   *
+   * A worktree with no agent can only be addressed BY the worktree, so its
+   * attach answers `agent:<worktree_id>` — a placeholder for the screen the
+   * agent will be born onto. The newborn's frames carry `agent:<agent_id>`
+   * instead, opening with the pump's start-of-session wipe: that reset is the
+   * only thing that names the id, so it is what the waiting screen follows.
+   *
+   * Only a screen that is WAITING for a birth can claim one (its attach found
+   * no agent at all: not live, no provider), and only when it is the single
+   * one waiting — with two, nothing here can say which worktree the newborn
+   * belongs to, and guessing would paint one panel with another's session.
+   */
+  _adoptAgentBirth(p) {
+    if (p.type !== "term.reset" || !String(p.term_id || "").startsWith("agent:")) return null;
+    const waiting = [...this._terms].filter(([, entry]) => entry.kind === "agent" && entry.awaitingBirth);
+    if (waiting.length !== 1) return null;
+    const [placeholderId, entry] = waiting[0];
+    this._rekeyAgent(placeholderId, entry, p.term_id);
+    return this._terms.get(p.term_id) === entry ? entry : null;
   }
 
   /** One agent attach finished (either way). With none left in flight, nothing
@@ -225,6 +256,10 @@ export class TerminalSocket {
     entry.onSnapshot(b64decodeBytes(r.snapshot));
     if (entry.kind === "agent") {
       entry.live = !!r.live;
+      // No session and no harness behind the screen means no agent has ever run
+      // in this worktree: the id just handed back names the WORKTREE, and the
+      // agent that is born here will push under its own (see _adoptAgentBirth).
+      entry.awaitingBirth = !r.live && !r.provider;
       // The attach result rides along: a dead agent WITH a retained screen ran
       // and stopped, a dead agent with a blank one never ran, and only the
       // payload can tell those apart.
@@ -263,10 +298,14 @@ export class TerminalSocket {
       attached: false, // pushes buffer in preAttach until the attach response applies
       preAttach: [],
       live: false, // agent kind: last reported session liveness
+      // agent kind: this screen is a worktree's placeholder, waiting for the
+      // agent that will be born onto it to name itself.
+      awaitingBirth: false,
       onOutput: opts.onOutput || noop,
       onSnapshot: opts.onSnapshot || noop,
       onClosed: opts.onClosed || noop,
       onLive: opts.onLive || noop,
+      onTermId: opts.onTermId || noop,
     };
     this._terms.set(termId, entry);
     return entry;
@@ -437,7 +476,9 @@ export class TerminalSocket {
         continue;
       }
       if (!p || !p.term_id) continue;
-      const entry = this._terms.get(p.term_id);
+      // An id nothing answers to is either the agent this client is waiting to
+      // be born (follow it) or a screen we don't render.
+      const entry = this._terms.get(p.term_id) || this._adoptAgentBirth(p);
       if (!entry) {
         // Either a term we don't render (drop it) or an agent whose wire id an
         // in-flight attach is about to reveal (hold it for that attach).

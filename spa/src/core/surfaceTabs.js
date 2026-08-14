@@ -127,7 +127,11 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
   let termId = null; // learned from the attach; null until then, and after a failed one
   return mountTerminalPane(host, {
     attach: (opts) =>
-      manager.attachAgent(target, { ...opts, onLive }).then((r) => {
+      // onTermId, not just the attach result: a screen mounted on a worktree
+      // with no agent is keyed by the WORKTREE until one is born, and the
+      // socket follows the newborn's id (session.js). Keystrokes have to
+      // follow it too.
+      manager.attachAgent(target, { ...opts, onLive, onTermId: (id) => { termId = id; } }).then((r) => {
         termId = r.term_id;
         return r;
       }),

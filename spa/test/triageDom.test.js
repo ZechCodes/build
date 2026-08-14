@@ -305,6 +305,44 @@ describe("disagreeing with the pass in the Changes pane", () => {
     expect(document.querySelector("#notices .notice")).toBeTruthy();
   });
 
+  // The aggregate entry hands its detail pane to the review plug, which brings
+  // its own overlay and its own override layer. Two layers claiming one press
+  // would post the same disagreement twice.
+  it("leaves the presses inside the review plug to the plug", async () => {
+    const calls = [];
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return dirtyStatus();
+      if (method === "git.log") return log();
+      if (method === "triage.override") calls.push(params);
+      return {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, {
+      scope: { run_id: "run-1" },
+      projectId: "proj-1",
+      triage: () => TRIAGE,
+      callRpc,
+      review: {
+        getBase: () => "main",
+        mount: (host) => {
+          host.innerHTML = `<button class="toverride" data-hunk="${ids["src/crypto.rs"]}" data-direction="collapse">Collapse</button>`;
+        },
+        unmount: () => {},
+      },
+    });
+    mounted.push(pane);
+    await settle();
+
+    container.querySelector('.rrow[data-sel="review"]').click();
+    await settle();
+    container.querySelector(".cdetail-host .toverride").click();
+    await settle();
+
+    expect(document.querySelector(".comment-pop")).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
   it("offers nothing on a surface with no run to disagree on behalf of", async () => {
     const callRpc = vi.fn(async (method) => {
       if (method === "git.status") return dirtyStatus();

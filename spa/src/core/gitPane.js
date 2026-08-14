@@ -1228,7 +1228,9 @@ export function mountGitPane(
     // Disagreeing with where the pass put a hunk. This runs BEFORE the comment
     // and fold handling: the offer sits on a hunk row inside a capped file, and
     // either would otherwise eat the press as "expand me" or "comment here".
-    if (overrides && overrides.handleClick(event)) return;
+    // While the review plug owns the detail pane it owns its overlay too — this
+    // layer must not also claim it, or one press would post two disagreements.
+    if (!reviewMounted && overrides && overrides.handleClick(event)) return;
     // The trust dial: the reviewer says how much of the pass's reading they
     // want. Remembered per project, so the answer is asked once.
     if (target.closest(".tdial")) {

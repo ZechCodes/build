@@ -510,3 +510,10 @@ describe("branchMenuHtml", () => {
     expect(html).toContain("&lt;img");
   });
 });
+
+describe("outsidePressDismisses — the file header's ⋯", () => {
+  it("closes an abandoned file menu, which would otherwise freeze the poll", () => {
+    expect(outsidePressDismisses({ inside: false, branchMenuOpen: false, hasPendingConfirm: false, fileMenuOpen: true })).toBe(true);
+    expect(outsidePressDismisses({ inside: true, branchMenuOpen: false, hasPendingConfirm: false, fileMenuOpen: true })).toBe(false);
+  });
+});

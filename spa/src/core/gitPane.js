@@ -313,9 +313,9 @@ export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, acti
  *  pending confirm (an inside press never does — the pane's own handlers own
  *  it). Without this, an abandoned menu/confirm freezes the poll indefinitely
  *  (S5), since interactionActive stays true until a click inside disarms it. */
-export function outsidePressDismisses({ inside, branchMenuOpen, hasPendingConfirm }) {
+export function outsidePressDismisses({ inside, branchMenuOpen, hasPendingConfirm, fileMenuOpen = false }) {
   if (inside) return false;
-  return Boolean(branchMenuOpen || hasPendingConfirm);
+  return Boolean(branchMenuOpen || hasPendingConfirm || fileMenuOpen);
 }
 
 /** The commit split-button option list: the plain Commit action first (primary),
@@ -963,6 +963,9 @@ export function mountGitPane(
         if (!disposed) actionError(e);
         return;
       }
+      // The menu belonged to a file that may not exist any more — and an open
+      // menu freezes the poll, so it closes with the action that fired from it.
+      fileMenuPath = null;
       await applyStatusResult(status);
     });
 
@@ -1257,10 +1260,18 @@ export function mountGitPane(
   // an abandoned menu/confirm keeps interactionActive true and freezes the poll
   // until the user clicks back inside (S5). Removed on dispose.
   const onOutsidePointerDown = (event) => {
-    if (!outsidePressDismisses({ inside: container.contains(event.target), branchMenuOpen, hasPendingConfirm: pendingConfirm !== null }))
+    if (
+      !outsidePressDismisses({
+        inside: container.contains(event.target),
+        branchMenuOpen,
+        hasPendingConfirm: pendingConfirm !== null,
+        fileMenuOpen: fileMenuPath !== null,
+      })
+    )
       return;
     if (branchMenuOpen) resetBranchMenu();
     else clearConfirm();
+    fileMenuPath = null; // an abandoned file menu must not freeze the poll
     render();
   };
   document.addEventListener("pointerdown", onOutsidePointerDown);

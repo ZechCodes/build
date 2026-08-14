@@ -109,7 +109,7 @@ describe("mountProjectClusterTab", () => {
     });
     await Promise.resolve();
     host.querySelector(".issue-row").click();
-    expect(routes).toEqual([{ name: "plan", projectId: "proj-1", id: "pl-1", tab: "conversation" }]);
+    expect(routes).toEqual([{ name: "plan", projectId: "proj-1", id: "pl-1", tab: "stages" }]);
     pane.dispose();
   });
 

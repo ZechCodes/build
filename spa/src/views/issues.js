@@ -70,7 +70,8 @@ export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue,
   const draw = (plans) => {
     host.innerHTML = issuesHtml(bucketIssues(plans, projectId));
     host.querySelectorAll(".issue-row[data-plan]").forEach((row) => {
-      row.onclick = () => navigate({ name: "plan", projectId, id: row.dataset.plan, tab: "conversation" });
+      // An issue row opens the issue view itself — one surface, no tab to pick.
+      row.onclick = () => navigate({ name: "plan", projectId, id: row.dataset.plan, tab: "stages" });
     });
     const newIssue = host.querySelector("[data-newissue]");
     if (newIssue && onNewIssue) newIssue.onclick = () => onNewIssue();

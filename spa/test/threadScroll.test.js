@@ -150,7 +150,10 @@ describe("a mounted conversation lands on the newest message", () => {
 
 const viewSource = (file) => readFileSync(resolve("src/views", file), "utf8");
 
-const SURFACES_WITH_A_CONVERSATION = ["task.js", "worktree.js", "mainWorktree.js", "plan.js"];
+// The issue view (plan.js) is not here: an issue's conversation belongs to its
+// agent, and an agent's conversation lives in the rail beside every surface —
+// the issue view paints stage artifacts and no thread of its own.
+const SURFACES_WITH_A_CONVERSATION = ["task.js", "worktree.js", "mainWorktree.js"];
 
 describe("every surface's conversation scrolls the same way", () => {
   it.each(SURFACES_WITH_A_CONVERSATION)("%s wraps every thread paint in the shared helper", (file) => {

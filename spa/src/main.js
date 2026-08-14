@@ -46,9 +46,8 @@ if (location.pathname.startsWith("/app")) {
 initRouter();
 initDevicePicker();
 
-$(".logo").onclick = () => go({ name: "notifications" });
-$("#nav-notif").onclick = () => go({ name: "notifications" });
-$("#nav-account").onclick = () => go({ name: "settings" });
+$(".logo").onclick = () => go({ name: "inbox" });
+$("#nav-account").onclick = () => go({ name: "account", page: "settings" });
 $("#scrim").onclick = (e) => {
   if (e.target === $("#scrim")) requestSheetDismiss();
 };

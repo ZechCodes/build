@@ -37,7 +37,7 @@ describe("gone-latch (DOM)", () => {
     vi.useRealTimers();
   });
 
-  it("plan: latches the gone state, stops fetching, and routes back to notifications", async () => {
+  it("plan: latches the gone state, stops fetching, and routes back to the inbox", async () => {
     const calls = installGoneRpc("unknown plan_id: p-gone");
     App.route = { name: "plan", id: "p-gone", tab: "review" };
     location.hash = "#/plan/p-gone/review";
@@ -55,7 +55,8 @@ describe("gone-latch (DOM)", () => {
     expect(root.textContent).toContain("This Issue no longer exists");
 
     document.getElementById("goneback").click();
-    expect(location.hash).toBe("#/notifications");
+    // The way out of a gone entity is the landing surface — the inbox.
+    expect(location.hash).toBe("#/inbox");
   });
 
   it("task: latches the gone state and stops the poll", async () => {
@@ -74,7 +75,8 @@ describe("gone-latch (DOM)", () => {
     expect(root.textContent).toContain("This task no longer exists");
 
     document.getElementById("goneback").click();
-    expect(location.hash).toBe("#/notifications");
+    // The way out of a gone entity is the landing surface — the inbox.
+    expect(location.hash).toBe("#/inbox");
   });
 
   it("a transient error does NOT latch — the poll keeps retrying", async () => {

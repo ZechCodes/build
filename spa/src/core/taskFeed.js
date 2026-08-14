@@ -10,9 +10,9 @@ const subscribers = new Set();
 let timer = null;
 let last = null;
 
-/** Subscribe to feed snapshots ({plans, runs, externalWorktrees, projects,
- *  primaryChanges}); the current snapshot (if any) is delivered immediately.
- *  Returns unsubscribe. */
+/** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
+ *  projects, primaryChanges}); the current snapshot (if any) is delivered
+ *  immediately. Returns unsubscribe. */
 export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (last) fn(last);
@@ -35,6 +35,10 @@ async function tick() {
       App.call("project.list"),
     ]);
     last = {
+      // The redesigned feed: one row per work item (branch or issue). The
+      // legacy collections below still ship, and still feed what has not moved
+      // over yet.
+      items: board.items || [],
       plans: board.plans || [],
       runs: board.runs || [],
       externalWorktrees: board.external_worktrees || [],

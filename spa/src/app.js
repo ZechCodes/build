@@ -3,24 +3,20 @@
 import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute } from "./core/router.js";
 import { loadReadIds, persistReadIds } from "./core/readState.js";
-import { renderNotifications } from "./views/notifications.js";
-import { renderSettings } from "./views/settings.js";
-import { renderTask } from "./views/task.js";
-import { renderPlan } from "./views/plan.js";
-import { renderWorktree } from "./views/worktree.js";
-import { renderMain } from "./views/mainWorktree.js";
-import { sidebarRouteChanged } from "./views/sidebar.js";
+import { renderInbox } from "./views/inbox.js";
+import { renderBranch } from "./views/branchView.js";
+import { renderIssue } from "./views/issueView.js";
+import { renderAccount } from "./views/account.js";
+import { renderResolving } from "./views/resolving.js";
+import { inboxRouteChanged } from "./core/inboxShell.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
-import { mountFab } from "./core/fab.js";
-import { openNewIssue } from "./sheets/newIssue.js";
-import { openNewWorktree } from "./sheets/newWorktree.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
 export const App = {
   call: null, // RPC into the live E2EE session (session.call)
   session: null, // { call, deviceId, close }
-  route: { name: "notifications" },
+  route: { name: "inbox" },
   poll: null,
   viewDispose: null, // the current view's teardown (terminal panes, observers)
   readIds: loadReadIds(localStorage), // persisted; pruned against the feed each tick
@@ -46,7 +42,7 @@ export async function loadModelCatalog() {
   return App.modelCatalog;
 }
 
-/** Mark one run/plan read (visiting its surface counts as reading it) and
+/** Mark one entity read (visiting its surface counts as reading it) and
  *  persist. Badges pick the change up on the next feed tick. */
 export function markEntityRead(id) {
   if (!id || App.readIds.has(id)) return;
@@ -75,34 +71,15 @@ export function initRouter() {
   });
 }
 
-export function setActiveNav(name) {
-  const target = { notifications: "#nav-notif", settings: "#nav-account" }[name] || null;
-  ["#nav-notif", "#nav-account"].forEach((s) => {
-    const row = $(s);
-    if (row) row.classList.toggle("active", s === target);
-  });
-}
-
-/// The create FAB rides every page INSIDE a project (its own surface, a run, a
-/// worktree, an issue) and nothing else — Notifications and Account have no
-/// project to file against. Rebuilt per navigation so it always files into the
-/// project you are looking at.
-function paintFab() {
-  const host = $("#fab");
-  if (!host) return;
-  const projectId = App.route.projectId || null;
-  const inProject = !!projectId && ["project", "main", "task", "worktree", "plan"].includes(App.route.name);
-  if (!inProject || App.gated) {
-    host.innerHTML = "";
-    return;
-  }
-  mountFab(host, {
-    onNewIssue: () => openNewIssue({ projectId }),
-    // Both verbs open a sheet: a worktree needs a name (it becomes the branch and
-    // the directory) and a tool, and neither can be guessed.
-    onNewWorktree: () => openNewWorktree({ projectId }),
-  });
-}
+// Every route is one of five surfaces: the inbox (the landing route), a branch,
+// an issue, an account page, or the holding screen a pre-redesign URL waits on.
+const VIEWS = {
+  inbox: renderInbox,
+  branch: renderBranch,
+  issue: renderIssue,
+  account: renderAccount,
+  resolve: renderResolving,
+};
 
 export function render() {
   if (App.poll) {
@@ -120,17 +97,10 @@ export function render() {
     }
     App.viewDispose = null;
   }
-  setActiveNav(App.route.name);
-  sidebarRouteChanged(); // keep the rail's active row tracking the route
-  paintFab();
-  // Worktree-backed surfaces (task/worktree/project) are full-height tab shells;
-  // every other view keeps the centered reading column.
-  const surfaceRoutes = ["task", "worktree", "main", "project", "plan"];
-  $("#root").classList.toggle("surface", surfaceRoutes.includes(App.route.name));
-  if (App.route.name === "notifications") renderNotifications();
-  else if (App.route.name === "settings") renderSettings();
-  else if (App.route.name === "worktree") renderWorktree();
-  else if (App.route.name === "main" || App.route.name === "project") renderMain();
-  else if (App.route.name === "plan") renderPlan();
-  else renderTask();
+  inboxRouteChanged(); // keep the rail tracking the route
+  // The shell's grid owns the columns; #root is one cell. A view states its own
+  // chrome (`surface` for a full-height work surface, nothing for a reading
+  // page), so the outgoing view's never leaks into the incoming one.
+  $("#root").className = "";
+  (VIEWS[App.route.name] || renderInbox)();
 }

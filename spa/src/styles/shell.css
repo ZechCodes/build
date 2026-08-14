@@ -1,0 +1,112 @@
+/* ---- the three-panel shell -------------------------------------------------
+   One layout for every non-modal view: the inbox rail (global, persistent),
+   the view column, and the agent rail at the view's right edge. The rail and
+   the console belong to the view column, not to the page, so the inbox is
+   never covered by them.
+
+   Tokens only — this file states geometry, styles.css states the palette. */
+:root {
+  --inbox-rail:288px;   /* the inbox rail's docked width */
+  --agent-strip:0px;    /* the bubble strip's width; the rail sets it once it has bubbles */
+  --console-bar:34px;   /* the collapsed console bar */
+}
+
+/* The frame is viewport-locked (styles.css body): the page never scrolls, each
+   region scrolls itself. A grid rather than a flex row, so the columns are
+   definite and nothing inside can push a region wider than its share. */
+#shell {
+  display:grid;
+  grid-template-columns:auto minmax(0, 1fr);
+  min-height:0;
+  overflow:hidden;
+}
+
+/* ---- inbox rail (left) ---- */
+#inbox-rail {
+  width:var(--inbox-rail);
+  display:flex; flex-direction:column; min-height:0;
+  background:var(--bg);
+  border-right:1px solid var(--line);
+  padding:calc(10px + env(safe-area-inset-top, 0px)) 10px
+    calc(10px + env(safe-area-inset-bottom, 0px))
+    calc(10px + env(safe-area-inset-left, 0px));
+}
+body.inbox-collapsed #inbox-rail { display:none; }
+.inbox-head { display:flex; align-items:center; margin:0 2px 10px; }
+.inbox-head .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
+.inbox-head .iconbtn { margin-left:auto; }
+#inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
+.inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
+  flex-direction:column; gap:8px; }
+.inbox-foot #devpick { max-width:100%; }
+/* The floating reopen toggle, only while the rail is away. */
+#inbox-open { display:none; position:fixed;
+  top:calc(10px + env(safe-area-inset-top, 0px));
+  left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
+  background:var(--panel); border:1px solid var(--line); }
+body.inbox-collapsed #inbox-open { display:block; }
+#inbox-scrim { display:none; }
+
+/* ---- view column (centre) ---- */
+#view {
+  display:grid;
+  grid-template-rows:auto minmax(0, 1fr) auto;
+  min-width:0; min-height:0; overflow:hidden;
+}
+#toolbar { flex:none; border-bottom:1px solid var(--line); }
+#view-body { display:grid; grid-template-columns:minmax(0, 1fr) auto;
+  min-width:0; min-height:0; overflow:hidden; }
+/* #root is a grid cell now, not a flex child: it fills its share. A reading
+   page scrolls itself; a view that wants the full-height tab shell adds
+   `.surface` and hands scrolling to its own body (that geometry lives in
+   styles.css, beside the panes that read it), so it keeps its clip. */
+#shell main#root { min-width:0; min-height:0; }
+#shell main#root:not(.surface) { overflow-y:auto; }
+
+/* ---- agent rail (right edge of the view body) ---- */
+#agent-rail { display:flex; min-height:0; border-left:1px solid var(--line);
+  background:var(--bg); }
+
+/* ---- console (bottom of the view column) ---- */
+#console-region { flex:none; border-top:1px solid var(--line); background:var(--bg); }
+.console-bar { display:flex; align-items:center; gap:8px; width:100%;
+  height:var(--console-bar); padding:0 12px;
+  font:inherit; font-size:12px; color:var(--dim);
+  background:none; border:none; text-align:left; }
+.console-bar .console-caret { font-size:10px; }
+.console-bar[disabled] { cursor:default; }
+
+/* A region no view has filled yet must not pay a row of the grid. Last, so it
+   beats the display each region states above. */
+#toolbar:empty, #console-region:empty, #agent-rail:empty { display:none; }
+
+/* ---- the gate owns the whole frame ---- */
+body.gated #inbox-rail,
+body.gated #inbox-open,
+body.gated #inbox-scrim,
+body.gated #toolbar,
+body.gated #agent-rail,
+body.gated #console-region { display:none !important; }
+
+/* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
+@media (max-width: 900px) {
+  #inbox-rail { position:fixed; left:0; top:0; bottom:0; height:auto; z-index:40;
+    box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
+  body:not(.inbox-collapsed):not(.gated) #inbox-scrim {
+    display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
+}
+
+/* ---- shell view stubs (filled in by the views that land on top of them) ---- */
+.shell-stub { display:grid; place-content:center; gap:6px; text-align:center;
+  height:100%; padding:40px 22px; color:var(--dim); }
+.shell-stub h2 { margin:0; font-size:16px; color:var(--ink2); }
+.shell-stub p { margin:0; font-size:13px; max-width:42ch; }
+/* The issue view's two columns: stages, then the stage viewer. No tabs. */
+.issue-cols { display:grid; grid-template-columns:minmax(0, 280px) minmax(0, 1fr);
+  min-height:0; height:100%; }
+.issue-stages { overflow-y:auto; border-right:1px solid var(--line); padding:12px; }
+.issue-stage-view { overflow-y:auto; padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom); }
+@media (max-width: 760px) {
+  .issue-cols { grid-template-columns:minmax(0, 1fr); grid-template-rows:auto minmax(0, 1fr); }
+  .issue-stages { border-right:none; border-bottom:1px solid var(--line); max-height:40%; }
+}

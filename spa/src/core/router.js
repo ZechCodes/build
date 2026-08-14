@@ -9,7 +9,9 @@
 // those. Conversation and Agent are the agent rail now, terminals are the
 // console, and Diff merged into Changes, so those tabs all fold into Changes;
 // the old right-cluster tabs (Inbox, Issues, Archive) named project-wide panes
-// and go to the global surface that owns them.
+// and go to the global surface that owns them. A `term-<n>` tab lands on
+// Changes too, and carries the terminal it named as `term`: the console opens
+// on it (core/consoleModel.js), which is where that tab now lives.
 //
 // Some legacy URLs name an entity by an id whose branch this module cannot
 // know (a run id, a worktree id, an issue with no project in the URL, a
@@ -40,6 +42,10 @@ const clusterRoute = (segment) =>
 // Files is the one entity tab that kept its name; everything else lands on
 // Changes, including nothing at all.
 const branchTab = (segment) => (BRANCH_TABS.has(segment) ? segment : "changes");
+
+// A terminal tab named a terminal, and that outlived the tab: the surface it
+// opens is the branch, with the console open on it.
+const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
@@ -78,6 +84,7 @@ function branchRoute(projectId, tailSegments) {
     projectId,
     branch: (trailingTab ? tailSegments.slice(0, -1) : tailSegments).join("/"),
     tab: trailingTab ? branchTab(last) : "changes",
+    ...(trailingTab ? termOf(last) : null),
   };
 }
 
@@ -90,7 +97,7 @@ function resolveRoute(kind, { projectId, id, tabSegment }) {
   if (projectId) route.projectId = projectId;
   if (id) route.id = id;
   route.tab = branchTab(tabSegment);
-  return route;
+  return { ...route, ...termOf(tabSegment) };
 }
 
 /** A legacy issue URL with no project in it: same parking spot, but issues have

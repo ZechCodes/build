@@ -151,6 +151,25 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     }
   });
 
+  // A terminal tab named a terminal, and the terminal outlived the tab: the
+  // surface is the entity's Changes, with the console open on that terminal.
+  it("carries the terminal a term-<n> tab named", () => {
+    expect(routeFromHash("#/project/p/branch/main/term-3")).toEqual({
+      name: "branch", projectId: "p", branch: "main", tab: "changes", term: "term-3",
+    });
+    expect(routeFromHash("#/task/r/term-1")).toEqual({ name: "resolve", kind: "run", id: "r", tab: "changes", term: "term-1" });
+    expect(routeFromHash("#/worktree/p/w/term-12")).toEqual({
+      name: "resolve", kind: "worktree", projectId: "p", id: "w", tab: "changes", term: "term-12",
+    });
+    expect(routeFromHash("#/main/p/term-2")).toEqual({ name: "resolve", kind: "primary", projectId: "p", tab: "changes", term: "term-2" });
+    // Every other tab names no terminal.
+    expect(routeFromHash("#/project/p/branch/main/diff").term).toBeUndefined();
+    // A branch NAMED like a terminal tab is still a branch.
+    expect(routeFromHash("#/project/p/branch/term-3")).toEqual({
+      name: "branch", projectId: "p", branch: "term-3", tab: "changes",
+    });
+  });
+
   // The old tab bar's right cluster named project-wide panes, not the entity's
   // work: they belong to the global surfaces that own them now.
   it("sends the cluster tabs to the global surface that owns them", () => {

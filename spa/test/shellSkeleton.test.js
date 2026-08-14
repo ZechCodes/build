@@ -29,7 +29,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 const { App, render } = await import("../src/app.js");
 const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
-const { consoleBarHtml } = await import("../src/core/consoleRegion.js");
+const { consoleHeadHtml } = await import("../src/core/console.js");
 
 const rpc = (method) => {
   if (method === "branch.get") return { kind: "branch", branch: "build/login", state: "building", stat: "+4 −1" };
@@ -193,9 +193,21 @@ describe("render dispatch", () => {
   });
 });
 
-describe("the console slot", () => {
-  it("is a shut bar until the console lands", () => {
-    expect(consoleBarHtml()).toContain('aria-expanded="false"');
-    expect(consoleBarHtml()).toContain("Console");
+describe("the console", () => {
+  it("is a shut bar until it is opened, and a head with terminals once it is", () => {
+    const shut = consoleHeadHtml({ size: "collapsed" });
+    expect(shut).toContain('aria-expanded="false"');
+    expect(shut).toContain("Console");
+    expect(shut).not.toContain("console-tabs");
+    const open = consoleHeadHtml({ size: "half", tabs: [{ id: "term-1", label: "Terminal 1" }], selected: "term-1" });
+    expect(open).toContain('aria-expanded="true"');
+    expect(open).toContain("Terminal 1");
+    expect(open).toContain("console-grow");
+  });
+
+  it("takes the bottom row of the view column, and overlays it at full size", () => {
+    expect(shellCss).toMatch(/#console-region \{[^}]*height:var\(--console-bar\)/);
+    expect(shellCss).toMatch(/#console-region\[data-size="half"\] \{[^}]*height:var\(--console-half\)/);
+    expect(shellCss).toMatch(/#console-region\[data-size="full"\] \{[^}]*position:absolute/);
   });
 });

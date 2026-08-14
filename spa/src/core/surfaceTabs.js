@@ -1,15 +1,15 @@
-// Shared terminal/agent/files tab machinery for the three worktree-backed
-// surfaces (task, external worktree, primary "main" checkout). The tab-row
-// rendering is tabshell.js; this owns the DYNAMIC tab set (user terminals) and
-// the mounting of a terminal/agent/files body — identical behavior everywhere
-// (§7.2). Panes ride the ONE shared terminal socket (manager.js), demuxed by
-// term_id; fs.* ride the app RPC session.
+// The agent's PTY, as a mountable body.
+//
+// One agent screen per worktree, addressed the way the calling surface knows
+// that worktree, with the idle offer laid over it when nothing is running. The
+// agent rail's TUI mode is what mounts it; the human's own shells are the
+// console's (core/console.js), and the two share only the connectivity overlay
+// below. Panes ride the ONE shared terminal socket (manager.js), demuxed by
+// term_id.
 
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { renderFilesTab } from "../views/files.js";
 import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
-import { esc } from "./text.js";
 
 /**
  * Overlay a `.termpane` host with a connectivity chip + dim-while-offline, driven
@@ -37,77 +37,6 @@ export function attachConnectionOverlay(host) {
       host.classList.remove("term-offline");
     },
   };
-}
-
-/** The one Build-owned agent of a worktree, as a tab.
- *
- *  A FIXTURE on every worktree surface: never closable, never minted by the
- *  human, present whether or not an agent has ever run there. It is where every
- *  human→agent path lands, so it must always be somewhere you can look. */
-export const AGENT_TAB = { id: "agent", label: "Agent" };
-
-/** What the tab row's `+` can open: the user's login shell, and nothing else.
- *
- *  A worktree has exactly one agent, Build owns it, and it lives in the Agent
- *  tab — so the `+` cannot mint a second one. It used to offer an unmanaged
- *  claude/codex session here: an agent with no `done` tool, no owner and no
- *  lifecycle, running in the same directory as the real one. */
-export const NEW_TAB_KINDS = [
-  { id: "shell", label: "Terminal", description: "your login shell in this directory" },
-];
-
-/** Track a surface's open user terminals: list on mount, create from the `+`,
- *  close on `×`. Labels are ordinals over list/creation order. */
-export function terminalTabsController(scope) {
-  const manager = terminalManager();
-  let terms = []; // [{ term_id }] in list/creation order
-  const labelOf = (termId) => {
-    const index = terms.findIndex((t) => t.term_id === termId);
-    return index < 0 ? "" : `Terminal ${index + 1}`;
-  };
-  return {
-    ids: () => terms.map((t) => t.term_id),
-    /** The tab descriptors for the shell: closable, ordinal-labeled. */
-    tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id), closable: true })),
-    label: labelOf,
-    has: (termId) => terms.some((t) => t.term_id === termId),
-    async load() {
-      try {
-        terms = (await manager.listTerminals(scope)).map((t) => ({ term_id: t.term_id }));
-      } catch {
-        terms = []; // an unknown/unresolvable scope means "no terminals"
-      }
-      return terms;
-    },
-    /** Open one of the user's shells in this surface's directory. */
-    async create() {
-      const r = await manager.createTerminal(scope, 80, 24);
-      terms.push({ term_id: r.term_id });
-      return r.term_id;
-    },
-    async close(termId) {
-      try {
-        await manager.closeTerminal(termId);
-      } finally {
-        terms = terms.filter((t) => t.term_id !== termId);
-      }
-    },
-    /** Drop a terminal locally (it exited/was reaped server-side already). */
-    drop(termId) {
-      terms = terms.filter((t) => t.term_id !== termId);
-    },
-  };
-}
-
-/** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { onExit }) {
-  const manager = terminalManager();
-  return mountTerminalPane(host, {
-    attach: (opts) => manager.attachTerminal(termId, opts),
-    input: (data) => manager.input(termId, data),
-    resize: (cols, rows) => manager.resize(termId, cols, rows),
-    onExit,
-  });
 }
 
 /** Mount a worktree's agent pane.
@@ -304,50 +233,4 @@ export function mountAgentTab(
 /** Whether an attach came back with a screen the human can still read. */
 function hasScreen(attached) {
   return !!(attached && attached.snapshot && attached.snapshot.length);
-}
-
-/**
- * Mount the body for an auxiliary tab (files or a `term-<n>` user terminal) into
- * `host`. Returns { dispose() } — dispose tears down the CLIENT view only
- * (files: the tree's drawer; a pane: dispose + detach, never closing the server
- * PTY). Agent
- * tabs are surface-specific (task only) and mounted by the task view directly.
- */
-export function mountAuxTab(host, tabId, { scope, callRpc, onExit, initialPath = null }) {
-  if (tabId === "files") {
-    const files = renderFilesTab(host, { scope, callRpc, initialPath });
-    return { dispose: () => files.dispose() };
-  }
-  host.innerHTML = `<div class="termpane" id="termpane"></div>`;
-  const paneHost = host.querySelector("#termpane");
-  const manager = terminalManager();
-  let pane = null;
-  let conn = null;
-  let disposed = false;
-  mountUserTerminalPane(paneHost, tabId, { onExit }).then(
-    (p) => {
-      if (disposed) {
-        p.dispose();
-        return;
-      }
-      pane = p;
-      conn = attachConnectionOverlay(paneHost);
-    },
-    (e) => {
-      if (disposed) return;
-      // "unknown term_id" = the terminal is gone (exited/closed elsewhere/reaped
-      // while this tab was unmounted). §7.2: drop the tab — never a blank pane
-      // that fails identically on every click. Other failures stay visible.
-      if (/unknown term_id/.test((e && e.message) || "")) onExit("reaped");
-      else paneHost.innerHTML = `<div class="empty">terminal unavailable: ${esc((e && e.message) || "error")}</div>`;
-    },
-  );
-  return {
-    dispose() {
-      disposed = true;
-      if (conn) conn.dispose();
-      if (pane) pane.dispose();
-      manager.detach(tabId);
-    },
-  };
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Isolate mountAuxTab's failure handling: the pane just forwards the manager's
-// attach rejection (no ghostty/wasm in node), and the manager is a test double.
+// Isolate the agent pane's wiring: the pane just forwards the manager's attach
+// (no ghostty/wasm in node), and the manager is a test double. The user's own
+// terminals live in the console now — their tests are consoleDom.test.js.
 const fakeManager = {
   listTerminals: vi.fn(),
   createTerminal: vi.fn(),
@@ -26,9 +27,8 @@ vi.mock("../src/terminal/pane.js", () => ({
     return { dispose: vi.fn() };
   },
 }));
-vi.mock("../src/views/files.js", () => ({ renderFilesTab: vi.fn() }));
 
-import { mountAuxTab, mountAgentPane, mountAgentTab, terminalTabsController, AGENT_TAB, NEW_TAB_KINDS } from "../src/core/surfaceTabs.js";
+import { mountAgentPane, mountAgentTab } from "../src/core/surfaceTabs.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -79,75 +79,6 @@ beforeEach(() => {
     return agentAttachResult;
   });
   paneSpy.lastOpts = null;
-});
-
-describe("terminalTabsController labels", () => {
-  it("uses readable terminal names for listed and newly-created sessions", async () => {
-    fakeManager.listTerminals.mockResolvedValue([{ term_id: "term-a" }, { term_id: "term-b" }]);
-    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-c" });
-    const controller = terminalTabsController({ project_id: "p1" });
-    await controller.load();
-    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Terminal 2"]);
-    await controller.create();
-    expect(controller.label("term-c")).toBe("Terminal 3");
-  });
-
-  // Every tab the human opens is a shell. The one agent of a worktree is
-  // Build's, lives in the Agent tab, and is never one of these — a `+` that
-  // could mint a claude session put a second, unmanaged agent in the same
-  // directory as the real one.
-  it("calls every user tab a Terminal, whatever a daemon reports about it", async () => {
-    fakeManager.listTerminals.mockResolvedValue([
-      { term_id: "term-a", kind: "shell" },
-      { term_id: "term-b", kind: "claude" },
-    ]);
-    const controller = terminalTabsController({ project_id: "p1" });
-    await controller.load();
-    expect(controller.tabs().map((tab) => tab.label)).toEqual(["Terminal 1", "Terminal 2"]);
-  });
-
-  it("asks term.create for nothing but a shell in this surface's directory", async () => {
-    fakeManager.listTerminals.mockResolvedValue([]);
-    fakeManager.createTerminal.mockResolvedValue({ term_id: "term-x" });
-    const controller = terminalTabsController({ run_id: "run-1" });
-    await controller.load();
-    await controller.create();
-    expect(fakeManager.createTerminal).toHaveBeenCalledWith({ run_id: "run-1" }, 80, 24);
-    expect(controller.label("term-x")).toBe("Terminal 1");
-  });
-});
-
-describe("mountAuxTab attach failure (§7.2: a stale terminal tab must drop, not blank)", () => {
-  it("an unknown term_id rejection reports onExit('reaped') so the tab is dropped", async () => {
-    fakeManager.attachTerminal.mockRejectedValue(new Error("unknown term_id"));
-    const host = fakeHost();
-    const exits = [];
-    mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
-    await tick();
-    expect(exits).toEqual(["reaped"]);
-  });
-
-  it("any other failure renders an error in the pane instead of a silent blank", async () => {
-    fakeManager.attachTerminal.mockRejectedValue(new Error("rpc term.attach timeout"));
-    const host = fakeHost();
-    const exits = [];
-    mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
-    await tick();
-    expect(exits).toEqual([]);
-    expect(host.paneHost.innerHTML).toContain("timeout");
-  });
-
-  it("a failure after dispose stays quiet (no onExit for a tab already gone)", async () => {
-    let rejectAttach;
-    fakeManager.attachTerminal.mockReturnValue(new Promise((_, reject) => (rejectAttach = reject)));
-    const host = fakeHost();
-    const exits = [];
-    const ctl = mountAuxTab(host, "term-3", { scope: { run_id: "t1" }, callRpc: async () => ({}), onExit: (r) => exits.push(r) });
-    ctl.dispose();
-    rejectAttach(new Error("unknown term_id"));
-    await tick();
-    expect(exits).toEqual([]);
-  });
 });
 
 describe("mountAgentPane surfaces a dropped input error (S3, pairs with B1)", () => {
@@ -201,11 +132,6 @@ describe("mountAgentPane addresses a worktree and keys itself by the bridge's an
 // The Agent tab is a FIXTURE on every worktree surface — mounting it must never
 // spawn an agent. A worktree nothing has run in renders its empty state.
 describe("mountAgentTab", () => {
-  it("is the same tab on every surface: never closable, never minted by the human", () => {
-    expect(AGENT_TAB).toEqual({ id: "agent", label: "Agent" });
-    expect(NEW_TAB_KINDS.map((kind) => kind.id)).toEqual(["shell"]);
-  });
-
   it("mounts a pane without asking anything to start", async () => {
     agentAttachResult = { term_id: "agent:wt-8", live: false, snapshot: "", cursor: 0 };
     mountAgentTab(fakeHost(), { project_id: "p1", worktree_id: "wt-8" }, { onStart: vi.fn() });

@@ -10,7 +10,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
-import { mountConsoleRegion } from "../core/consoleRegion.js";
+import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
 import "../styles/shell.css";
 
@@ -52,7 +52,9 @@ export async function renderIssue() {
         </div>
       </div>
     </div>`;
-  mountConsoleRegion($("#console-region"));
+  // An issue's agent runs on the primary checkout, so that is the directory its
+  // console opens terminals in.
+  const consolePanel = mountConsole($("#console-region"), { kind: "issue", projectId, issueId: id });
   // An issue carries exactly one agent session, and this is where you talk to
   // it — including the first message, which is what starts it.
   const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id });
@@ -76,8 +78,7 @@ export async function renderIssue() {
   };
   App.viewDispose = () => {
     rail.dispose();
-    const region = $("#console-region");
-    if (region) region.innerHTML = "";
+    consolePanel.dispose();
   };
   await paint();
   App.poll = setInterval(paint, 4000);

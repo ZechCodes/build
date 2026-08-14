@@ -7,6 +7,7 @@ import { renderBranch } from "./views/branchView.js";
 import { renderIssue } from "./views/issueView.js";
 import { renderAccount } from "./views/account.js";
 import { renderResolving } from "./views/resolving.js";
+import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
@@ -65,10 +66,22 @@ export function go(route) {
   else render();
 }
 
+/** The route the URL names.
+ *
+ *  A pre-redesign `term-<n>` URL also names a terminal, and the canonical URL
+ *  it rewrites to has nowhere to keep it — the console is not a tab any more.
+ *  So it is handed to the console here, at the one place every URL is read,
+ *  and the next console to mount opens on it. */
+function readRoute() {
+  const route = routeFromHash(location.hash);
+  if (route.term) markConsoleTerminal(route.term);
+  return route;
+}
+
 export function initRouter() {
-  App.route = routeFromHash(location.hash);
+  App.route = readRoute();
   window.addEventListener("hashchange", () => {
-    App.route = routeFromHash(location.hash);
+    App.route = readRoute();
     if (!App.gated) render();
   });
 }

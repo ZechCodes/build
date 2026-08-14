@@ -13,7 +13,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { tabShellHtml } from "../core/tabshell.js";
-import { mountConsoleRegion } from "../core/consoleRegion.js";
+import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
 import "../styles/shell.css";
 
@@ -47,14 +47,15 @@ export async function renderBranch() {
     .forEach((cell) => {
       cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
     });
-  mountConsoleRegion($("#console-region"));
+  // The basement, at the bottom of the view column: this branch's checkout, as
+  // terminals. Shut unless the last visit left it open.
+  const consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
   // The agents beside the work, not instead of it: the rail belongs to this
   // branch, so it is mounted with the surface and torn down with it.
   const rail = mountAgentRail($("#agent-rail"), { kind: "branch", projectId, branch });
 
   App.viewDispose = () => {
     rail.dispose();
-    const region = $("#console-region");
-    if (region) region.innerHTML = "";
+    consolePanel.dispose();
   };
 }

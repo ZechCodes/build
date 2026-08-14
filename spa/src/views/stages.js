@@ -139,7 +139,7 @@ const commentBadge = (n) => (n > 0 ? `<span class="cbadge">${n} 💬</span>` : "
 
 // The enclosing heading chain for a selection anchor inside a rendered doc:
 // collect the h1/h2/h3 at or before the anchor node, then reduce to the
-// enclosing chain (anchors.js). Reused by planStages.js's comment composer.
+// enclosing chain (anchors.js). The issue view has its own (issueDocComments.js).
 export function headingPathFor(docEl, anchorNode) {
   const preceding = Array.from(docEl.querySelectorAll("h1, h2, h3"))
     .filter((h) => h.compareDocumentPosition(anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING || h.contains(anchorNode))
@@ -153,7 +153,7 @@ function validationBanner(kind, heading, bodyMarkdown) {
 }
 
 // One persisted comment card. Open comments carry a delete affordance; addressed
-// comments show the agent's reply and are muted. Reused by planStages.js.
+// comments show the agent's reply and are muted.
 export function commentCard(comment) {
   const anchor = comment.anchor;
   const breadcrumb = anchor
@@ -176,7 +176,7 @@ export function commentCard(comment) {
 
 // Bind an async RPC to a button: disable + label while in flight, restore +
 // raise a persistent expandable error notification on failure (G2 — the notice
-// carries the full message), repaint on success. Reused by planStages.js.
+// carries the full message), repaint on success.
 export function bindAction(button, busyLabel, run) {
   button.onclick = async () => {
     const original = button.textContent;

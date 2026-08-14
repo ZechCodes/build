@@ -110,6 +110,10 @@ function paint() {
     kind: standing.kind,
     label: standing.label,
   });
+  // A repaint replaces the very buttons a menu hangs off, so an open menu is
+  // re-pointed at the new one — otherwise its anchor is a detached node and the
+  // selector that opened it stops toggling it shut.
+  if (open) open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
   host.querySelectorAll("[data-select]").forEach((control) => {
     control.onclick = (event) => {
       event.stopPropagation();
@@ -171,7 +175,7 @@ function closeMenu() {
 }
 
 function openJumpMenu(anchor) {
-  open = { ...menuShell(anchor, "tbmenu"), mode: "jump", query: "", create: null };
+  open = { ...menuShell(anchor, "tbmenu"), select: anchor.dataset.select, mode: "jump", query: "", create: null };
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
   if (filter) filter.focus();
@@ -397,7 +401,7 @@ async function createIssue(projectId, goal) {
  *  now (the inbox is global, so an archive of it is too); settings is the
  *  project's own sheet. */
 function openSurfaceMenu(anchor) {
-  open = { ...menuShell(anchor, "tbmenu tbmenu-actions"), mode: "more" };
+  open = { ...menuShell(anchor, "tbmenu tbmenu-actions"), select: anchor.dataset.select, mode: "more" };
   open.element.innerHTML = `
     <button class="mi" data-action="archive" type="button" role="menuitem"><span class="mt">Archive</span>
       <span class="md">Work that has been finished</span></button>

@@ -159,6 +159,14 @@ describe("the one menu both halves open", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(menu()).toBeNull();
   });
+
+  it("still toggles shut after the feed repaints the button it hangs off", async () => {
+    openJump("project");
+    await refreshFeed(); // a poll lands under the open menu
+    expect(menu()).toBeTruthy();
+    bar().querySelector('[data-select="project"]').click();
+    expect(menu()).toBeNull();
+  });
 });
 
 describe("creating from the menu", () => {

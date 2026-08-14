@@ -6,7 +6,7 @@
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
-import { planReviewSkeletonHtml } from "../src/core/planReview.js";
+import { mountIssueView } from "../src/core/issueView.js";
 import { stageBoardHtml } from "../src/views/stages.js";
 import { mountProjectClusterTab } from "../src/core/projectCluster.js";
 import { mountGitPane } from "../src/core/gitPane.js";
@@ -32,15 +32,26 @@ describe("the panes the surfaces paint carry .pane-col", () => {
     }
   });
 
-  it("wraps the issue's plan/stage pane in the primitive", () => {
-    const host = paneRoot(planReviewSkeletonHtml());
-    const pane = host.firstElementChild;
-    expect(pane.classList.contains("pane-col")).toBe(true);
-    // The pane's contents are unchanged — the wrapper is geometry only.
-    expect(pane.querySelector("#planmeta")).toBeTruthy();
-    expect(pane.querySelector("#plansummary")).toBeTruthy();
-    expect(pane.querySelector("#planbody")).toBeTruthy();
-    expect(host.querySelectorAll(".pane-col")).toHaveLength(1);
+  // The issue view is two columns, not one, so its primitive is the split the
+  // Changes and Files surfaces use — same width, same gutters, same drawer.
+  it("gives the issue view the two-column primitive", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = mountIssueView(host, {
+      issueId: "issue-1",
+      callRpc: async (method) => {
+        if (method === "issue.get")
+          return { issue_id: "issue-1", plan_id: "issue-1", goal: "Ship", state: "plan_review", docs_available: true };
+        if (method === "issue.stages") return { stages: [{ id: "s1", title: "Wire", state: "planned", comments: [] }] };
+        return { stage_id: "s1", contents: "# Wire" };
+      },
+    });
+    for (let i = 0; i < 12 && !host.querySelector(".ivsplit"); i++) await Promise.resolve();
+    const split = host.querySelector(".ivsplit");
+    expect(split.classList.contains("pane-split")).toBe(true);
+    expect(split.querySelector(".ivstages").classList.contains("pane-list")).toBe(true);
+    expect(host.querySelectorAll(".pane-col")).toHaveLength(0);
+    view.dispose();
   });
 
   it("wraps the run's stage board in the primitive", () => {

@@ -24,7 +24,6 @@ import {
   gitToolbarHtml,
   gitStateBannerHtml,
   branchMenuHtml,
-  uncommittedHtml,
 } from "../src/core/gitRender.js";
 
 // ---- decision helpers --------------------------------------------------
@@ -512,44 +511,9 @@ describe("branchMenuHtml", () => {
   });
 });
 
-describe("uncommittedHtml — per-file discard", () => {
-  const status = (overrides = {}) => ({
-    branch: "main",
-    head: "f".repeat(40),
-    files: [{ path: "a.js", staged: "none", index_status: "M", worktree_status: "M" }],
-    stat: { files_changed: 1, insertions: 1, deletions: 0 },
-    patch: "",
-    ...overrides,
-  });
-
-  it("omits the discard affordance by default (older bridge / no repo controls)", () => {
-    expect(uncommittedHtml(status())).not.toContain("gitdiscard");
-  });
-
-  it("renders a per-file discard button when repo controls are enabled", () => {
-    const html = uncommittedHtml(status(), { repoControls: true });
-    expect(html).toContain("gitdiscard");
-    expect(html).toContain('data-path="a.js"');
-  });
-
-  it("shows the armed confirm label for the pending path only", () => {
-    const html = uncommittedHtml(
-      status({ files: [
-        { path: "a.js", staged: "none", index_status: "M", worktree_status: "M" },
-        { path: "b.js", staged: "none", index_status: "M", worktree_status: "M" },
-      ] }),
-      { repoControls: true, pendingConfirm: "discard:a.js" },
-    );
-    expect(html).toContain("Discard changes?");
-    // exactly one armed button
-    expect((html.match(/gitdiscard[^"]*armed/g) || []).length).toBe(1);
-  });
-
-  it("escapes the path in the discard button data attribute", () => {
-    const html = uncommittedHtml(
-      status({ files: [{ path: '"><img src=x>', staged: "none", index_status: "?", worktree_status: "?" }], patch: "" }),
-      { repoControls: true },
-    );
-    expect(html).not.toContain("<img");
+describe("outsidePressDismisses — the file header's ⋯", () => {
+  it("closes an abandoned file menu, which would otherwise freeze the poll", () => {
+    expect(outsidePressDismisses({ inside: false, branchMenuOpen: false, hasPendingConfirm: false, fileMenuOpen: true })).toBe(true);
+    expect(outsidePressDismisses({ inside: true, branchMenuOpen: false, hasPendingConfirm: false, fileMenuOpen: true })).toBe(false);
   });
 });

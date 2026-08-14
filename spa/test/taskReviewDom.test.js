@@ -49,7 +49,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     plug.mount(host);
     await vi.advanceTimersByTimeAsync(0); // flush the first paint
 
-    const primary = host.querySelector("#diffactions .btn.primary:not(.caret)");
+    const primary = host.querySelector(".csactions .btn.primary:not(.caret)");
     expect(primary).toBeTruthy();
     expect(primary.textContent).toBe("Merge");
 
@@ -64,7 +64,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     // Two full poll ticks while the RPC is in flight: the button must stay the
     // same disabled busy button — not a fresh enabled remount.
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
-    const after = host.querySelector("#diffactions .btn.primary:not(.caret)");
+    const after = host.querySelector(".csactions .btn.primary:not(.caret)");
     expect(after.disabled).toBe(true);
     expect(after.textContent).toBe("merging…");
     expect(document.querySelectorAll(".modal-scrim")).toHaveLength(0);
@@ -96,7 +96,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     plug.mount(host);
     await vi.advanceTimersByTimeAsync(0);
 
-    const lead = host.querySelector("#diffactions .btn.primary:not(.caret)");
+    const lead = host.querySelector(".csactions .btn.primary:not(.caret)");
     expect(lead.textContent).toBe("Commit");
     expect(host.querySelector('[data-action="merge_prune"]')).toBe(null);
     plug.unmount();

@@ -1,0 +1,129 @@
+/* ---- work surfaces: Changes ------------------------------------------------
+   The rebuilt Changes surface's own rules. Every colour here is a theme token
+   from styles.css (:root / :root[data-theme="dark"]) — nothing in this file
+   hard-codes a colour, so both themes are carried by the same rules. Layout
+   tokens (--pane-gutter and friends) come from the same place: this surface
+   sits in the shell's two-column primitive and states no width of its own. */
+
+/* The changeset header: what this set of changes is, and its counts. */
+.csheader { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:0 0 14px; }
+.csheader .cstitle { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; }
+.csheader.commitheader { display:block; margin-bottom:16px; }
+/* A commit's identity line and body reuse the commit-detail type scale. */
+.csheader.commitheader .csub { font-weight:650; font-size:15px; }
+.csheader.commitheader .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2);
+  white-space:pre-wrap; margin:8px 0 0; }
+.csheader.commitheader .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 0; }
+.csplaceholder { color:var(--dim); font-size:13px; padding:6px 0 0; }
+.ftrunc { color:var(--amber); font-size:11.5px; margin:0 0 12px; }
+
+/* The rail's Uncommitted entry carries +/− counts, not a file count, so its
+   subline is a number pair rather than a word. */
+.crail .rrow .rsub .pm { margin-left:0; display:inline-flex; gap:6px; font-family:var(--mono); }
+
+/* The per-file ⋯: the file's own verbs, disclosed in the header rather than in
+   a floating layer — the file block clips its own overflow, and a menu that
+   gets clipped is a menu nobody can click. */
+.fmenu-host { display:inline-flex; align-items:center; gap:6px; flex:none; }
+.fmenu { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:3px 6px; cursor:pointer; }
+.fmenu:hover { background:var(--accent-soft); color:var(--accent); }
+.fmenu[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
+.fmenu-pop { display:inline-flex; gap:6px; }
+
+/* Generated files are collapsed, never filtered away: one count line at the
+   bottom of the stack, and the whole group opens from it. */
+.noisegroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
+.noisegroup.open { border-style:solid; border-color:var(--line); }
+.noisehead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
+  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px; }
+.noisehead:hover { color:var(--accent); background:var(--line2); }
+.noisegroup.open .noisehead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
+.noisefiles { padding:12px 12px 2px; }
+
+/* The pending-comment tray under a changeset: what has been written but not yet
+   sent, plus the general note and the send controls. */
+.csfeedback { margin-top:18px; }
+.csgeneral { min-height:62px; }
+.csfeedback .cslist:empty { display:none; }
+
+/* ---- work surfaces: the issue view -----------------------------------------
+   Stages | stage viewer, persistent: the list is a rail the way the commit list
+   is a rail, and the viewer is the reading column beside it. Same primitive as
+   Changes (.pane-split + .pane-list), so the two surfaces measure the same and
+   the narrow-viewport drawer is the one the shell already owns. Every colour is
+   a theme token. */
+.issueview { height:100%; }
+.issueview > .empty { padding:var(--pane-top) var(--pane-gutter); }
+.ivstages { flex:0 0 320px; overflow-y:auto; border-right:1px solid var(--line);
+  padding:0 0 var(--pane-bottom); }
+.ivviewer { flex:1; min-width:0; overflow-y:auto;
+  padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
+@media (max-width: 900px) { .ivviewer { padding-left:0; } }
+
+/* The issue's own head: what it is, where it stands, and its gate. */
+.ivhead { padding:14px 13px 12px; border-bottom:1px solid var(--line); }
+.ivtitle { font-weight:650; font-size:14.5px; color:var(--ink); }
+.ivmeta { display:flex; align-items:center; gap:8px; margin-top:7px; }
+.ivmeta .chip { margin-left:0; }
+.ivproject { font-size:11.5px; color:var(--dim); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.ivgate { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+.ivgate:empty { display:none; }
+/* A section label inside the rail — the same quiet header the commit rail uses. */
+.ivsec { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
+  text-transform:uppercase; }
+
+/* The stage list is rows in a rail, not cards on a page: the card chrome the
+   run-side board wears would put a border inside a bordered column. */
+.ivstages .stagelist { gap:0; }
+.ivstages .stagerow { background:none; border:0; border-top:1px solid var(--line2);
+  border-radius:0; padding:10px 13px; gap:10px; }
+.ivstages .stagerow:hover { background:var(--line2); border-color:var(--line2); }
+.ivstages .stagerow.sel { background:var(--accent-soft); }
+.ivstages .stagerow.sel .stagetitle { color:var(--accent); }
+.ivstages .stagerow .stagetitle { font-size:13px; }
+.ivstages .empty { padding:12px 13px; }
+
+/* The assignment control: one line saying what the handoff would be, opening
+   onto the targets and the overrides the dispatch carries. */
+.ivassign { border-top:1px solid var(--line); }
+.ivassign-head { display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+  width:100%; text-align:left; font:inherit; background:none; border:none; cursor:pointer;
+  padding:11px 13px; }
+.ivassign-head:hover { background:var(--line2); }
+.ivassign-sum { font-size:12px; color:var(--ink2); }
+.ivassign.open .ivassign-sum { color:var(--accent); }
+.ivassign-body { padding:2px 13px 14px; display:flex; flex-direction:column; gap:9px; }
+.ivfield { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--dim); }
+.ivfield select, .ivfield input { font:inherit; font-size:13px; color:var(--ink);
+  background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px; }
+.ivfield select:disabled, .ivfield option:disabled { color:var(--dim); }
+.ivassign-gap { font-size:11.5px; color:var(--amber); display:flex; flex-direction:column; gap:4px; }
+
+/* The implementations an issue has had: its children, each one a branch. */
+.ivlineage { border-top:1px solid var(--line); padding:11px 13px 4px; }
+.ivlin-row { display:flex; align-items:center; gap:8px; padding:7px 0; cursor:pointer;
+  font-size:12.5px; }
+.ivlin-row:hover .ivlin-branch { color:var(--accent); text-decoration:underline; }
+.ivlin-branch { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink2); }
+.ivlineage .chip { margin-left:auto; }
+
+/* The viewer's head, and what it says when no stage is open. */
+.ivstagehead { display:flex; align-items:center; gap:10px; margin:0 0 12px; }
+.ivstagetitle { font-weight:650; font-size:15px; color:var(--ink); }
+.ivstagehead .chip { margin-left:0; }
+.ivplaceholder { color:var(--dim); font-size:13px; padding:var(--pane-top) 0 0; }
+
+/* A doc comment hangs in the margin of the passage it names: the marker rides
+   the heading it anchors to, so what has been said about a section is visible
+   from the section rather than only from a list under the doc. */
+.docmarker { float:right; margin:0 0 0 10px; font:inherit; font-size:11px; line-height:1;
+  color:var(--accent); background:var(--accent-soft); border:none; border-radius:999px;
+  padding:4px 9px; cursor:pointer; }
+.docmarker:hover { background:var(--accent); color:var(--accent-ink); }
+.docmarker.addressed { color:var(--green); background:var(--green-bg); }
+.docmarker.addressed:hover { background:var(--green); color:var(--bg); }
+/* A heading with an unsent comment on it, marked while the comment is pending. */
+.plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }

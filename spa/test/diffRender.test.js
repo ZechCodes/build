@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffFilesHtml, diffRowsHtml } from "../src/core/diffRender.js";
+import { diffFilesHtml, diffRowsHtml, diffStackHtml } from "../src/core/diffRender.js";
 
 const files = [
   {
@@ -178,5 +178,82 @@ describe("dotenv secret masking in diff rows", () => {
     expect(html).toContain("spoiler");
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img");
+  });
+});
+
+describe("per-file ⋯ menu (staging is gone; discard moved here)", () => {
+  const files = [{ path: "src/a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] }];
+
+  it("renders no menu control unless the changeset offers one", () => {
+    expect(diffFilesHtml(files)).not.toContain("fmenu");
+  });
+
+  it("renders no stage checkbox anywhere — commit is commit-all", () => {
+    expect(diffFilesHtml(files, { commentable: true, fileMenu: {} })).not.toContain("stagebox");
+  });
+
+  it("puts discard behind the file header's ⋯", () => {
+    const html = diffFilesHtml(files, { fileMenu: { openPath: "src/a.js" } });
+    expect(html).toContain('class="fmenu"');
+    expect(html).toContain("gitdiscard");
+    expect(html).toContain('data-path="src/a.js"');
+  });
+
+  it("keeps the menu shut until its own file's ⋯ is open", () => {
+    const html = diffFilesHtml(files, { fileMenu: {} });
+    expect(html).toContain('class="fmenu"');
+    expect(html).not.toContain("gitdiscard");
+  });
+
+  it("arms the discard with the two-click confirm label", () => {
+    const html = diffFilesHtml(files, { fileMenu: { openPath: "src/a.js", pendingConfirm: "discard:src/a.js" } });
+    expect(html).toContain("Discard changes?");
+    expect(html).toContain("armed");
+  });
+
+  it("escapes the path in the menu's data attributes", () => {
+    const evil = [{ path: '"><img src=x>', status: "EDIT", add: 1, del: 0, rows: [] }];
+    expect(diffFilesHtml(evil, { fileMenu: { openPath: '"><img src=x>' } })).not.toContain("<img");
+  });
+});
+
+describe("diffStackHtml — collapse, never hide", () => {
+  const source = { path: "src/main.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] };
+  const lock = { path: "uv.lock", status: "EDIT", add: 9, del: 9, rows: [{ t: "add", n: 1, text: "y" }] };
+  const meta = { path: ".build/state.json", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "z" }] };
+
+  it("renders source files as full stacked diffs", () => {
+    const html = diffStackHtml([source]);
+    expect(html).toContain('data-file="src/main.py"');
+    expect(html).not.toContain("noisegroup");
+  });
+
+  it("collapses noise into one counted group at the bottom instead of dropping it", () => {
+    const html = diffStackHtml([source, lock, meta]);
+    expect(html).toContain("noisegroup");
+    expect(html).toContain("2 generated files");
+    // the group sits below the source stack, and its diffs are not rendered yet
+    expect(html.indexOf("noisegroup")).toBeGreaterThan(html.indexOf('data-file="src/main.py"'));
+    expect(html).not.toContain('data-file="uv.lock"');
+  });
+
+  it("renders the noise diffs once the group is expanded", () => {
+    const html = diffStackHtml([source, lock], { noiseExpanded: true });
+    expect(html).toContain('data-file="uv.lock"');
+    expect(html).toContain("noisegroup open");
+  });
+
+  it("shows the group even when every file is noise", () => {
+    const html = diffStackHtml([lock, meta]);
+    expect(html).toContain("2 generated files");
+  });
+
+  it("passes the file options through to every rendered file", () => {
+    expect(diffStackHtml([source], { commentable: true })).toContain("fcmt");
+    expect(diffStackHtml([lock], { commentable: true, noiseExpanded: true })).toContain("fcmt");
+  });
+
+  it("says so when there is nothing at all", () => {
+    expect(diffStackHtml([])).toContain("No file changes");
   });
 });

@@ -109,9 +109,10 @@ describe("a conversation opens at its newest message", () => {
 
 const sourceOf = (file) => readFileSync(resolve("src", file), "utf8");
 
-// The conversation lives in the agent rail now; the plan surface is the last
-// pre-redesign one still painting a thread of its own.
-const SURFACES_WITH_A_CONVERSATION = ["core/agentRail.js", "views/plan.js"];
+// The conversation lives in the agent rail now; no view paints a thread of
+// its own — an issue's conversation belongs to its agent, and an agent's
+// conversation lives in the rail beside every surface.
+const SURFACES_WITH_A_CONVERSATION = ["core/agentRail.js"];
 
 describe("every surface's conversation scrolls the same way", () => {
   it.each(SURFACES_WITH_A_CONVERSATION)("%s wraps every thread paint in the shared helper", (file) => {

@@ -14,6 +14,7 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsoleRegion } from "../core/consoleRegion.js";
+import { mountAgentRail } from "../core/agentRail.js";
 import "../styles/shell.css";
 
 const BRANCH_TABS = [
@@ -43,8 +44,12 @@ export async function renderBranch() {
       cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
     });
   mountConsoleRegion($("#console-region"));
+  // The agents beside the work, not instead of it: the rail belongs to this
+  // branch, so it is mounted with the surface and torn down with it.
+  const rail = mountAgentRail($("#agent-rail"), { kind: "branch", projectId, branch });
 
   App.viewDispose = () => {
+    rail.dispose();
     const region = $("#console-region");
     if (region) region.innerHTML = "";
   };

@@ -11,6 +11,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { mountConsoleRegion } from "../core/consoleRegion.js";
+import { mountAgentRail } from "../core/agentRail.js";
 import "../styles/shell.css";
 
 /** Pure: the stage column. `selected` is a stage id, or null for none. */
@@ -50,6 +51,9 @@ export async function renderIssue() {
       </div>
     </div>`;
   mountConsoleRegion($("#console-region"));
+  // An issue carries exactly one agent session, and this is where you talk to
+  // it — including the first message, which is what starts it.
+  const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id });
 
   const paint = async () => {
     let stages = [];
@@ -69,6 +73,7 @@ export async function renderIssue() {
     });
   };
   App.viewDispose = () => {
+    rail.dispose();
     const region = $("#console-region");
     if (region) region.innerHTML = "";
   };

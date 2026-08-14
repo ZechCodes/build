@@ -203,7 +203,7 @@ describe("comments on any changeset", () => {
     await click(document.querySelector(".cp-save"));
   };
 
-  it("sends a whole-file comment as an anchored post carrying path and lines", async () => {
+  it("sends a whole-file comment as an anchored post naming the file and no line", async () => {
     const { container, pane, calls } = await mount();
     await addCommentViaPop(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
     expect(container.querySelector(".pcomment").textContent).toContain("rename this");
@@ -211,12 +211,10 @@ describe("comments on any changeset", () => {
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.run_id).toBe("run-1");
     expect(post.params.messages[0].body).toBe("rename this");
-    expect(post.params.messages[0].anchor).toMatchObject({
-      artifact: "diff",
-      path: "src/a.js",
-      line_start: 0,
-      line_end: 0,
-    });
+    expect(post.params.messages[0].anchor).toMatchObject({ artifact: "diff", path: "src/a.js" });
+    // The whole file is not a line: the anchor carries no range at all.
+    expect(post.params.messages[0].anchor.line_start).toBeUndefined();
+    expect(post.params.messages[0].anchor.line_end).toBeUndefined();
     // sent comments leave the tray
     expect(container.querySelector(".pcomment")).toBe(null);
     pane.dispose();

@@ -1,30 +1,27 @@
-// The task's review surface — the old Diff tab, now the Changes rail's pinned
-// "All changes" entry. A gitPane review plug: mount(host) renders the
-// aggregate task.diff (vs the base branch) into the detail pane and polls it
-// every 1.6s with the same freeze-while-commenting discipline; unmount stops
-// the poll. The durable conversation is a separate tab. Line/range/file comments
-// accumulate here and go to the coding
-// agent via task.request_changes; the merge/commit/push split button lives in
-// its actionbar. The plug instance (and its pending comments) belongs to the
-// task view, so remounts — tab switches, shell rebuilds — keep review state.
+// The task's review surface — the Changes rail's "All changes" entry: the
+// aggregate run.diff against the base branch. Everything about drawing a
+// changeset, holding pending comments, and posting them as anchored messages
+// lives in core/changesReview.js, which every review surface shares; what is
+// here is only what belongs to a task: where its diff comes from, that its
+// comments go to the coding agent through run.request_changes, and the
+// lifecycle verbs (merge, commit, push) its actionbar offers.
+//
+// The plug instance (and its pending comments) belongs to the task view, so
+// remounts — tab switches, shell rebuilds — keep review state.
 
-import { esc } from "../core/text.js";
-import { parseDiff } from "../core/diff.js";
-import { diffStackHtml } from "../core/diffRender.js";
-import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
-import { toggleSecretSpoiler } from "../core/secrets.js";
+import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
-import { diffThreadMessages } from "../core/notes.js";
 import { currentRevisionId } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
-import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
-import { watchSelection } from "../selectWatch.js";
 
-export const REVIEW_POLL_MS = 1600;
+export { REVIEW_POLL_MS };
 
-// Each option id maps to a task.git_action call. cleanup is omitted for
+// How long a git action's result (Committed./Pushed.) stays in the hint.
+const FLASH_MS = 6000;
+
+// Each option id maps to a run.git_action call. cleanup is omitted for
 // commit/push (the bridge rejects cleanup on non-merges).
 const GIT_ACTION_RPC = {
   merge_prune: { action: "merge", cleanup: "prune" },
@@ -34,6 +31,9 @@ const GIT_ACTION_RPC = {
   commit: { action: "commit" },
   push: { action: "push" },
 };
+
+// The states whose surface takes comments: the agent is there to read them.
+const COMMENTABLE_STATES = ["review", "building"];
 
 // The merge option set. Adopted tasks add "Merge & release" (un-adopt after
 // merge, keeping the user's worktree). A primary run (adopted around the repo
@@ -56,389 +56,111 @@ export function reviewMergeOptions(adopted, base, primary = false) {
   return options;
 }
 
+/** The resting copy under a reviewable task's diff: what there is to do here.
+ *  The primary checkout has no worktree to finish, so it says what its own
+ *  actions actually do. */
+export function reviewHint(task) {
+  return task && task.primary
+    ? "Select code or click a line number to comment, or commit the work."
+    : "Select code or click a line number to comment, or finish the worktree.";
+}
+
 /**
  * createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) →
  *   { mount(host), unmount() } — the gitPane review plug for a task.
  *
- * getTask() returns the task view's freshest run payload. Conversation rendering
- * and lifecycle actions belong to the dedicated Conversation tab; this plug owns
- * only the diff, pending review comments, and review git actions.
+ * getTask() returns the task view's freshest run payload. The conversation
+ * belongs to the agent that owns it; this plug owns only the diff, the pending
+ * review comments, and the review git actions.
  */
 export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged }) {
-  let host = null;
-  let timer = null;
-  let selDispose = null;
-
-  // Review-comment state, preserved across polls AND across mounts (the task
-  // view holds one plug instance for its whole life).
-  const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
-  let dcid = 0,
-    diffKey = null,
-    lastDiffState = null,
-    diffMsg = "";
-
-  // Re-review memory (W6), per plug instance (per-session): a stamp of what the
-  // reviewer saw at their last Request Changes, the files they have ticked off as
-  // viewed, and whether the diff is filtered to only what moved since the review.
-  // renderedFiles holds the freshest parsed diff so the stamp is taken from it.
-  let reviewStamps = new Map();
-  const viewedFiles = new Set();
-  let changedOnlyFilter = false;
-  let renderedFiles = [];
-  // The collapsed generated-files group at the bottom of the stack: noise is
-  // grouped, never filtered away, and this is whether the reviewer opened it.
-  let noiseExpanded = false;
-
   // ONE single-flight latch for the git split button, owned by the plug — not
-  // by each mount. paint() re-runs updateActions() every tick, and without a
-  // shared latch each remount would arm a fresh one: mid-merge, the poll would
-  // replace the disabled "merging…" button with an enabled Merge that can
-  // dispatch a second concurrent run.git_action. The latch is also the freeze
-  // key: while active, updateActions leaves the actionbar untouched.
+  // by each repaint. Without a shared latch, mid-merge the poll would replace
+  // the disabled "merging…" button with an enabled Merge that can dispatch a
+  // second concurrent run.git_action. It is also the freeze key: while active,
+  // the actionbar is left untouched.
   const gitFlight = createSingleFlight();
+  let flashMessage = ""; // a recent git-action result, outliving the poll
 
-  const q = (sel) => (host ? host.querySelector(sel) : null);
-
-  // The <tr> (with a line number) containing a selection/click node.
-  const rowOf = (node, table) => {
-    let element = node && node.nodeType === 3 ? node.parentElement : node;
-    while (element && element !== table && element.tagName !== "TR") element = element.parentElement;
-    return element && element.tagName === "TR" && element.dataset.ln ? element : null;
-  };
-
-  const applyHighlights = () => {
-    if (!host) return;
-    host.querySelectorAll("tr.dhl").forEach((r) => r.classList.remove("dhl"));
-    diffComments.forEach((c) => {
-      const fileEl = Array.from(host.querySelectorAll(".file")).find((element) => element.dataset.file === c.file);
-      if (!fileEl) return;
-      fileEl.querySelectorAll("tr[data-ln]").forEach((tr) => {
-        const ln = +tr.dataset.ln;
-        if (ln >= c.lnA && ln <= c.lnB) tr.classList.add("dhl");
-      });
-    });
-  };
-
-  const addComment = (file, lnA, lnB, snippet, comment, side = "new") => {
-    const idc = ++dcid;
-    diffComments.push({ id: idc, file, lnA, lnB, snippet: snippet.trim().slice(0, 400), comment, side });
-    window.getSelection().removeAllRanges();
-    applyHighlights();
-    refreshFeedback();
-  };
-  const removeComment = (idc) => {
-    const i = diffComments.findIndex((c) => c.id === idc);
-    if (i >= 0) diffComments.splice(i, 1);
-    applyHighlights();
-    refreshFeedback();
-  };
-
-  function refreshFeedback() {
-    const list = q("#difflist");
-    if (list) {
-      list.innerHTML = diffComments
-        .map((c) => {
-          const location = c.lnA === 0 && c.lnB === 0 ? "" : c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
-          return `<div class="pcomment"><span class="pcx" data-id="${c.id}">×</span>
-            <span class="psnip">${esc(c.file)}${esc(location)} · ${esc(c.snippet.replace(/\s+/g, " ").trim().slice(0, 90))}</span>
-            <span class="pctext">${esc(c.comment)}</span></div>`;
-        })
-        .join("");
-      list.querySelectorAll(".pcx").forEach((x) => (x.onclick = () => removeComment(+x.dataset.id)));
-    }
-    updateActions();
-  }
-
-  function updateActions() {
-    const actions = q("#diffactions"),
-      hint = q("#diffhint");
-    if (!actions) return;
-    // A git action (or its confirm modal) is in flight: freeze the actionbar so
-    // the poll can never remount an enabled button (or pop a second modal)
-    // under the pending RPC.
-    if (gitFlight.active()) return;
-    const task = getTask();
-    const general = q("#dgeneral") ? q("#dgeneral").value.trim() : "";
-    if (diffComments.length || general) {
-      hint.textContent = "Your comments will be sent to the coding agent to make changes.";
-      actions.innerHTML = `<button class="btn" id="clearrc">Clear</button><button class="btn primary" id="requestChanges">Request Changes</button>`;
-      q("#clearrc").onclick = () => {
-        diffComments.length = 0;
-        if (q("#dgeneral")) q("#dgeneral").value = "";
-        applyHighlights();
-        refreshFeedback();
-      };
-      q("#requestChanges").onclick = async () => {
-        const btn = q("#requestChanges");
-        btn.disabled = true;
-        btn.textContent = "requesting…";
-        const messages = diffThreadMessages(
-          diffComments,
-          q("#dgeneral") ? q("#dgeneral").value : "",
-          currentRevisionId(getTask()?.thread, "diff"),
-        );
-        try {
-          await callRpc("run.request_changes", { run_id: taskId, messages });
-          // Stamp what we just reviewed: the next pass marks files that moved.
-          reviewStamps = stampReview(renderedFiles);
-          diffComments.length = 0;
-          if (q("#dgeneral")) q("#dgeneral").value = "";
-          diffKey = null;
-          hideCommentPop();
-          paint();
-        } catch (e) {
-          btn.disabled = false;
-          btn.textContent = "Request Changes";
-          notifyError("Request Changes failed", e.message);
-        }
-      };
-    } else if (lastDiffState === "review") {
-      // A recent git-action result (Committed./Pushed./error) outlives the poll.
-      // The primary checkout has no worktree to finish, so its hint offers what
-      // its actions actually do.
-      hint.textContent =
-        diffMsg ||
-        (task && task.primary
-          ? "Select code or click a line number to comment, or commit the work."
-          : "Select code or click a line number to comment, or finish the worktree.");
-      // GitHub-style split button: primary runs the default (Merge & clean up),
-      // the caret opens the full menu. Every action commits first; push is
-      // explicit. Adopted tasks add "Merge & release".
-      const base = (task && task.base_branch) || "main";
-      const flash = (msg) => {
-        diffMsg = msg;
-        setTimeout(() => {
-          diffMsg = "";
-          updateActions();
-        }, 6000);
-      };
-      const run = async (optionId) => {
-        const { action, cleanup } = GIT_ACTION_RPC[optionId];
-        // Merge variants are decisive: confirm with the exact step outline
-        // first. A cancel throws BEFORE any RPC — the split button restores
-        // the primary, and no error notice appears.
-        const confirmPlan = gitActionConfirm(optionId, {
-          branch: (task && task.branch) || "the branch",
-          base,
-        });
-        if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
-        diffMsg = "";
-        const params = { run_id: taskId, action };
-        if (cleanup) params.cleanup = cleanup;
-        try {
-          await callRpc("run.git_action", params);
-          if (action === "merge" || action === "merge_push") {
-            onMerged();
-          } else {
-            flash(action === "commit" ? "Committed." : "Pushed " + ((task && task.branch) || "branch") + ".");
-            diffKey = null;
-            paint();
-          }
-        } catch (e) {
-          // Failures persist as an expandable notice (full message in the
-          // detail); successes above stay transient. The hint no longer
-          // carries error text — the notice owns it.
-          const reason = mergeFailureReason(e.message);
-          notifyError(reason ? "Merge failed: " + reason.split("\n")[0] : "Action failed", e.message);
-          throw e; // let the split button restore the primary button
-        }
-      };
+  const plug = createReviewPlug({
+    isOffline,
+    fetchDiff: async () => {
+      if (!getTask()) return null;
+      const diff = await callRpc("run.diff", { run_id: taskId });
+      // Re-read AFTER the round trip: a paint that snapshotted the task before
+      // awaiting would render pre-post state if something landed underneath it.
+      const task = getTask();
+      if (!task) return null;
+      return { patch: diff.patch, key: task.state, commentable: COMMENTABLE_STATES.includes(task.state) };
+    },
+    submit: (messages) => callRpc("run.request_changes", { run_id: taskId, messages }),
+    revisionId: () => currentRevisionId(getTask()?.thread, "diff"),
+    statusHtml: () =>
+      getTask() && getTask().state === "building"
+        ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>'
+        : "",
+    actionsFrozen: () => gitFlight.active(),
+    renderIdleActions: (actions, hintHost) => {
+      // A git action (or its confirm modal) is in flight: leave the actionbar
+      // exactly as it is, so no repaint can remount an enabled button under the
+      // pending RPC (or pop a second modal).
+      if (gitFlight.active()) return true;
+      const task = getTask();
+      const state = task && task.state;
+      if (state === "building") {
+        hintHost.textContent = "Comment on the diff to request changes — even while the agent is working.";
+        actions.innerHTML = "";
+        return true;
+      }
+      if (state !== "review") return false;
+      hintHost.textContent = flashMessage || reviewHint(task);
       mountSplitButton(actions, {
-        options: reviewMergeOptions(task && task.adopted, base, task && task.primary),
-        run,
+        options: reviewMergeOptions(task.adopted, task.base_branch || "main", task.primary),
+        run: (optionId) => runGitAction(optionId, task),
         flight: gitFlight,
       });
-    } else if (lastDiffState === "building") {
-      hint.textContent = "Comment on the diff to request changes — even while the agent is working.";
-      actions.innerHTML = "";
-    } else {
-      hint.textContent = "";
-      actions.innerHTML = "";
-    }
-  }
+      return true;
+    },
+  });
 
-  function renderBody(t, files) {
-    const editable = t.state === "review" || t.state === "building";
-    const working = t.state === "building";
-    // The diffbar totals always count ALL files; the changed-only filter narrows
-    // only what is rendered below. `changed` drives both the per-file chip and the
-    // filter membership.
-    const totalIns = files.reduce((a, f) => a + f.add, 0),
-      totalDel = files.reduce((a, f) => a + f.del, 0);
-    const changed = changedSinceReview(reviewStamps, files);
-    const filesToRender = changedOnlyFilter ? files.filter((f) => changed.has(f.path)) : files;
-    const changedOnlyToggle =
-      reviewStamps.size > 0
-        ? `<label class="changedonly"><input type="checkbox" id="changedonly"${changedOnlyFilter ? " checked" : ""}/> Only changes since my review</label>`
-        : "";
-    const filesHtml = filesToRender.length
-      ? diffStackHtml(filesToRender, { commentable: editable, changedSince: changed, viewed: viewedFiles, withViewedToggle: editable, noiseExpanded })
-      : files.length
-        ? '<div class="empty">Nothing changed since your review.</div>'
-        : '<div class="empty">No file changes yet.</div>';
-    host.innerHTML = `
-      <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span>
-        ${working ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>' : ""}${changedOnlyToggle}</div>
-      ${filesHtml}
-      ${editable ? `<div class="plan-feedback" id="diff-feedback"><div id="difflist"></div>
-        <textarea id="dgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
-      <div class="actionbar"><span class="hint" id="diffhint"></span><div class="right" id="diffactions"></div></div>`;
+  const flash = (message) => {
+    flashMessage = message;
+    setTimeout(() => {
+      flashMessage = "";
+      plug.refreshActions();
+    }, FLASH_MS);
+  };
 
-    // The changed-only filter and the per-file Viewed checkbox live on a delegated
-    // change handler: the filter repaints (forcing a rebuild), Viewed collapses the
-    // file in place with NO repaint so it survives the poll freeze.
-    host.onchange = (e) => {
-      const target = e.target;
-      if (target.id === "changedonly") {
-        changedOnlyFilter = target.checked;
-        diffKey = null;
-        paint();
-        return;
-      }
-      if (target.classList && target.classList.contains("fviewed-box")) {
-        const path = target.dataset.file;
-        const fileEl = target.closest(".file");
-        if (target.checked) {
-          viewedFiles.add(path);
-          if (fileEl) {
-            fileEl.classList.add("collapsed");
-            fileEl.classList.remove("capped");
-          }
-        } else {
-          viewedFiles.delete(path);
-          if (fileEl) fileEl.classList.remove("collapsed");
-        }
-      }
-    };
-
-    if (editable) {
-      // Range selections (mouse drag or touch handles) → comment on the span.
-      if (selDispose) selDispose();
-      selDispose = watchSelection(host, (sel) => {
-        const fileEl = rowOf(sel.anchorNode, host)?.closest(".file");
-        if (!fileEl) return;
-        const file = fileEl.dataset.file,
-          table = fileEl.querySelector("table");
-        const startRow = rowOf(sel.anchorNode, table),
-          endRow = rowOf(sel.focusNode, table);
-        if (!startRow && !endRow) return;
-        let a = +(startRow || endRow).dataset.ln,
-          b = +(endRow || startRow).dataset.ln;
-        if (a > b) [a, b] = [b, a];
-        const text = sel.toString();
-        const side = (startRow || endRow).dataset.side || "new";
-        showCommentPop(sel.getRangeAt(0).getBoundingClientRect(), (comment) => addComment(file, a, b, text, comment, side));
-      });
-      // Taps: the header ✎ comments the whole file; a tap on a line comments
-      // that line (touch-first path). Capped files leave the click to the
-      // pane's fold handler (expand) instead of popping a comment.
-      host.onclick = (e) => {
-        if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
-        if (e.target.closest(".noisehead")) {
-          noiseExpanded = !noiseExpanded;
-          renderBody(t, renderedFiles);
-          return;
-        }
-        const commentButton = e.target.closest(".fcmt");
-        if (commentButton) {
-          const fileEl = commentButton.closest(".file");
-          if (fileEl)
-            showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
-              addComment(fileEl.dataset.file, 0, 0, "(entire file)", comment),
-            );
-          return;
-        }
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed && sel.toString().trim()) return; // range flow owns it
-        const fileEl = e.target.closest(".file");
-        const tr = e.target.closest("tr[data-ln]");
-        if (!fileEl || fileEl.classList.contains("capped")) return;
-        if (!tr || tr.classList.contains("hunk") || !tr.dataset.ln) return;
-        const ln = +tr.dataset.ln,
-          snippet = tr.querySelector(".code").textContent;
-          showCommentPop(tr.getBoundingClientRect(), (comment) => addComment(fileEl.dataset.file, ln, ln, snippet, comment, tr.dataset.side || "new"));
-      };
-      q("#dgeneral").oninput = updateActions;
-    } else {
-      // Read-only states still open the collapsed generated-files group and
-      // reveal masked secrets — those are ways of reading, not of commenting.
-      host.onclick = (e) => {
-        if (toggleSecretSpoiler(e.target)) return;
-        if (e.target.closest(".noisehead")) {
-          noiseExpanded = !noiseExpanded;
-          renderBody(t, renderedFiles);
-        }
-      };
-    }
-    applyHighlights();
-    refreshFeedback();
-  }
-
-  const paint = async () => {
-    if (!host || isOffline()) return;
-    if (!getTask()) return;
-    let diff = { stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], patch: "" };
+  /** One review git action: confirm the decisive ones, run it, then either hand
+   *  the surface off (a merge leaves it) or say what happened. */
+  const runGitAction = async (optionId, task) => {
+    const { action, cleanup } = GIT_ACTION_RPC[optionId];
+    // Merge variants are decisive: confirm with the exact step outline first. A
+    // cancel throws BEFORE any RPC — the split button restores the primary, and
+    // no error notice appears.
+    const confirmPlan = gitActionConfirm(optionId, { branch: task.branch || "the branch", base: task.base_branch || "main" });
+    if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
+    flashMessage = "";
+    const params = { run_id: taskId, action };
+    if (cleanup) params.cleanup = cleanup;
     try {
-      diff = await callRpc("run.diff", { run_id: taskId });
-    } catch {
-      return; /* diff not readable yet — the poll retries */
+      await callRpc("run.git_action", params);
+    } catch (e) {
+      // Failures persist as an expandable notice (the full message in the
+      // detail); successes stay transient in the hint.
+      const reason = mergeFailureReason(e.message);
+      notifyError(reason ? "Merge failed: " + reason.split("\n")[0] : "Action failed", e.message);
+      throw e; // let the split button restore the primary button
     }
-    if (!host) return; // unmounted while the RPC was in flight
-    // Re-read AFTER the round trip: a paint that snapshotted the task before
-    // awaiting would render pre-post state if the composer posted underneath
-    // it, while still consuming the forced-rebuild flag that post set.
-    const t = getTask();
-    if (!t) return;
-    const files = parseDiff(diff.patch);
-    renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
-    lastDiffState = t.state;
-    const key = t.state + " " + diff.patch;
-    const general = q("#dgeneral");
-    // Freeze the diff while the user is actively commenting (pending comments,
-    // open popover, or text in the general box) so anchors/selection survive —
-    // and skip the rebuild when nothing changed (fold state survives too). A
-    // git action in flight freezes too: a rebuild would wipe the busy button.
-    // The conversation composer freezes only while focused (typing must not
-    // lose the caret); its unfocused draft survives a rebuild via threadDraft,
-    // unlike #dgeneral whose content lives only in the DOM.
-    const busy =
-      gitFlight.active() ||
-      diffComments.length > 0 ||
-      hasCommentPop() ||
-      (general && (general.value.trim() || document.activeElement === general));
-    if (q(".diffbar") && (key === diffKey || busy)) {
-      updateActions();
+    if (action === "merge" || action === "merge_push") {
+      onMerged();
       return;
     }
-    const generalDraft = general ? general.value : "";
-    diffKey = key;
-    renderBody(t, files);
-    const rebuiltGeneral = q("#dgeneral");
-    if (rebuiltGeneral && generalDraft && !rebuiltGeneral.value) {
-      rebuiltGeneral.value = generalDraft;
-      updateActions();
-    }
+    flash(action === "commit" ? "Committed." : "Pushed " + (task.branch || "branch") + ".");
   };
 
   return {
-    mount(el) {
-      host = el;
-      diffKey = null; // a fresh host always needs a first paint
-      host.innerHTML = '<div class="empty">loading…</div>';
-      paint();
-      timer = setInterval(paint, REVIEW_POLL_MS);
-    },
-    unmount() {
-      if (timer) clearInterval(timer);
-      timer = null;
-      if (selDispose) selDispose();
-      selDispose = null;
-      hideCommentPop();
-      if (host) {
-        host.onclick = null;
-        host.onchange = null;
-      }
-      host = null;
-    },
+    mount: (element) => plug.mount(element),
+    unmount: () => plug.unmount(),
   };
 }

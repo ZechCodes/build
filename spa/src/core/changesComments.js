@@ -41,6 +41,7 @@ export function createCommentLayer({
   revisionId = () => null,
   hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   onChange = () => {},
+  renderIdle = () => false,
 }) {
   const comments = [];
   let nextId = 0;
@@ -109,15 +110,18 @@ export function createCommentLayer({
     }
   };
 
-  /** The tray's actionbar: quiet hint while nothing is pending, Clear + Send
-   *  once there is. Re-rendered in place so a repaint is never needed to keep
-   *  the buttons honest. */
+  /** The changeset's actionbar: Clear + Send while comments are pending, and
+   *  otherwise whatever the mounting surface puts there (`renderIdle`, which
+   *  says whether it drew) — a changeset has ONE actionbar, and finishing the
+   *  work lives in it too. Re-rendered in place so a repaint is never needed to
+   *  keep the buttons honest. */
   function renderActions() {
     const actions = q(".csactions");
     const hintHost = q(".cshint");
     if (!actions || !hintHost) return;
     const pending = comments.length > 0 || generalDraft.trim().length > 0;
     if (!pending) {
+      if (renderIdle(actions, hintHost)) return;
       hintHost.textContent = hint;
       actions.innerHTML = "";
       return;
@@ -145,6 +149,11 @@ export function createCommentLayer({
 
     /** The reviewer is mid-comment: the controller must freeze its poll. */
     busy: () => commentLayerBusy({ pending: comments.length, popOpen: hasCommentPop(), generalText: generalDraft }),
+
+    /** Redraw the actionbar in place — what the surface calls when its own idle
+     *  verbs change (a lifecycle action settled, its catalog loaded) without the
+     *  changeset itself having moved. */
+    refreshActions: renderActions,
 
     /** Bind to a freshly-rendered changeset: restore highlights and the general
      *  draft, wire the tray's controls, and watch for text selections. */

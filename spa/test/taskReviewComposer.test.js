@@ -53,7 +53,7 @@ describe("dedicated conversation separation from diff review", () => {
     expect(host.querySelector(".review-thread")).toBeNull();
     expect(host.querySelector("#diffthreadinput")).toBeNull();
     expect(host.textContent).not.toContain("Lives elsewhere");
-    expect(host.querySelector("#dgeneral")).not.toBeNull();
+    expect(host.querySelector(".csgeneral")).not.toBeNull();
     plug.unmount();
   });
 
@@ -65,9 +65,9 @@ describe("dedicated conversation separation from diff review", () => {
     document.querySelector(".cp-add").click();
     document.querySelector(".cp-input").value = "rename this";
     document.querySelector(".cp-save").click();
-    host.querySelector("#dgeneral").value = "tighten the whole change set";
-    host.querySelector("#dgeneral").dispatchEvent(new Event("input"));
-    host.querySelector("#requestChanges").click();
+    host.querySelector(".csgeneral").value = "tighten the whole change set";
+    host.querySelector(".csgeneral").dispatchEvent(new Event("input"));
+    host.querySelector(".cssend").click();
     await vi.advanceTimersByTimeAsync(0);
 
     const request = calls.find((call) => call.method === "run.request_changes");

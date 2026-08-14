@@ -120,7 +120,15 @@ export function commentTrayHtml(comments, { generalDraft = "" } = {}) {
     .join("");
   return `<div class="plan-feedback csfeedback"><div class="cslist">${rows}</div>
     <textarea class="csgeneral plan-general" placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
-    <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
+    ${changesActionbarHtml()}`;
+}
+
+/** The changeset's one actionbar: a hint on the left, the verbs on the right.
+ *  Sending comments and finishing the work share it — a changeset has one place
+ *  where its actions live, whether it is the comment layer filling it or the
+ *  surface's own lifecycle verbs. */
+export function changesActionbarHtml() {
+  return `<div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 
 /** What the detail pane says when nothing is selected (a clean branch opens on

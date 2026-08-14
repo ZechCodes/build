@@ -33,6 +33,99 @@ export function parseDiff(patch) {
   return files;
 }
 
+// ---- hunk identity ---------------------------------------------------------
+//
+// A port of `patch_hunks` in bridge/src/diff.rs. The bridge assigns the ids a
+// triage report speaks in; the SPA has to derive the same ids from the same
+// patch to render that triage, so the two implementations must agree
+// byte-for-byte. bridge/tests/fixtures/hunk_ids.json is the shared fixture both
+// suites read — change one implementation, change the other, regenerate it.
+
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const SIXTY_FOUR_BITS = 0xffffffffffffffffn;
+
+/** FNV-1a 64 over the UTF-8 bytes of `text`, as 16 lowercase hex digits.
+ *  Identity, not integrity: the only digest the browser ships (crypto.subtle)
+ *  is async, and hunk ids have to be assignable inside a synchronous render. */
+function fnv1a64Hex(text) {
+  let hash = FNV_OFFSET_BASIS;
+  for (const byte of new TextEncoder().encode(text)) {
+    hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & SIXTY_FOUR_BITS;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+/** A patch's lines, without the empty tail a trailing newline leaves behind. */
+function patchLines(patch) {
+  const lines = (patch || "").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/** The path a `diff --git a/x b/x` line is about: its `b/` side. */
+function diffHeaderPath(line) {
+  const at = line.indexOf(" b/");
+  if (at < 0) return null;
+  const path = line.slice(at + 3);
+  return path ? path : null;
+}
+
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/** A hunk header reduced to its line counts: `@@ -12,7 +14,9 @@ fn x()` becomes
+ *  `-7 +9`, so a hunk that only moved keeps its id. Null when the line is not a
+ *  well-formed hunk header. */
+function normalizedHunkHeader(line) {
+  const m = line.match(HUNK_HEADER);
+  if (!m) return null;
+  return `-${m[2] ?? "1"} +${m[4] ?? "1"}`;
+}
+
+/** Split a patch into its hunks, in patch order, before ids are assigned. */
+function rawHunks(patch) {
+  const hunks = [];
+  let path = null;
+  let inHunk = false;
+  for (const line of patchLines(patch)) {
+    if (line.startsWith("diff --git")) {
+      path = diffHeaderPath(line);
+      inHunk = false;
+    } else if (line.startsWith("@@")) {
+      inHunk = false;
+      const normalized = normalizedHunkHeader(line);
+      if (path && normalized) {
+        hunks.push({ path, header: line, normalized, body: [] });
+        inHunk = true;
+      }
+    } else if (inHunk) {
+      hunks[hunks.length - 1].body.push(line);
+    }
+  }
+  return hunks;
+}
+
+/** Assign every hunk in `patch` a stable id: `h` + 12 hex digits of FNV-1a 64
+ *  over the file path, the count-normalized hunk header, and the hunk's body
+ *  lines. Repeats of one hunk within a file fold their occurrence number into
+ *  the hashed material, so ids are unique within a patch.
+ *  Returns [{ hunk_id, path, header }] in patch order. */
+export function patchHunks(patch) {
+  const occurrences = new Map();
+  return rawHunks(patch).map(({ path, header, normalized, body }) => {
+    const material = `${path}\n${normalized}\n${body.join("\n")}`;
+    const seen = occurrences.get(material) || 0;
+    const hashed = seen === 0 ? material : `${material}\n#${seen}`;
+    occurrences.set(material, seen + 1);
+    return { hunk_id: `h${fnv1a64Hex(hashed).slice(0, 12)}`, path, header };
+  });
+}
+
+/** patchHunks' ids alone, in patch order. */
+export function hunkIds(patch) {
+  return patchHunks(patch).map((hunk) => hunk.hunk_id);
+}
+
 // Machine noise (Build metadata, caches, lockfiles) is no longer filtered out
 // of a review: core/changesModel.js's groupNoiseFiles separates it, and
 // core/diffRender.js's diffStackHtml renders it as one collapsed group at the

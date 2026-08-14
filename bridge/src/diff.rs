@@ -408,6 +408,165 @@ fn map_status(status: git2::Delta) -> ChangeStatus {
     }
 }
 
+// ---- hunk identity ---------------------------------------------------------
+
+/// One hunk of a unified patch, carrying the identity review prioritization
+/// keys on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchHunk {
+    /// `h` + 12 hex digits — see [`patch_hunks`] for how it is derived.
+    pub hunk_id: String,
+    /// The file the hunk belongs to (the `b/` side of its `diff --git` line).
+    pub path: String,
+    /// The hunk's `@@` header line, verbatim.
+    pub header: String,
+}
+
+/// The FNV-1a 64 offset basis and prime.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a 64 over the UTF-8 bytes of `text`, as 16 lowercase hex digits.
+///
+/// Identity, not integrity. A cryptographic digest would have to be reachable
+/// from the browser too, and the only one there (`crypto.subtle`) is async —
+/// hunk ids have to be assignable inside a synchronous render.
+fn fnv1a64_hex(text: &str) -> String {
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// A patch's lines, without the empty tail a trailing newline leaves behind.
+fn patch_lines(patch: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = patch.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    lines
+}
+
+/// The path a `diff --git a/x b/x` line is about: its `b/` side.
+fn diff_header_path(line: &str) -> Option<String> {
+    let path = &line[line.find(" b/")? + 3..];
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// The line count of one `@@` range (`12,7` → `7`; a bare `12` → `1`, git's
+/// own convention). `None` for anything that is not a range.
+fn range_count(range: &str) -> Option<String> {
+    let (start, count) = match range.split_once(',') {
+        Some((start, count)) => (start, count.to_string()),
+        None => (range, "1".to_string()),
+    };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    (digits(start) && digits(&count)).then_some(count)
+}
+
+/// A hunk header reduced to its line counts: `@@ -12,7 +14,9 @@ fn x()` becomes
+/// `-7 +9`. Dropping the start lines is what lets a hunk that only MOVED keep
+/// its id. `None` when the line is not a well-formed hunk header.
+fn normalized_hunk_header(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("@@ ")?;
+    let ranges = &rest[..rest.find(" @@")?];
+    let mut ranges = ranges.split(' ');
+    let old = range_count(ranges.next()?.strip_prefix('-')?)?;
+    let new = range_count(ranges.next()?.strip_prefix('+')?)?;
+    if ranges.next().is_some() {
+        return None;
+    }
+    Some(format!("-{old} +{new}"))
+}
+
+/// A hunk before its id is assigned.
+struct RawHunk {
+    path: String,
+    header: String,
+    normalized: String,
+    body: Vec<String>,
+}
+
+/// Split a patch into its hunks, in patch order.
+fn raw_hunks(patch: &str) -> Vec<RawHunk> {
+    let mut hunks: Vec<RawHunk> = Vec::new();
+    let mut path: Option<String> = None;
+    let mut in_hunk = false;
+    for line in patch_lines(patch) {
+        if line.starts_with("diff --git") {
+            path = diff_header_path(line);
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            in_hunk = false;
+            if let (Some(path), Some(normalized)) = (path.clone(), normalized_hunk_header(line)) {
+                hunks.push(RawHunk {
+                    path,
+                    header: line.to_string(),
+                    normalized,
+                    body: Vec::new(),
+                });
+                in_hunk = true;
+            }
+        } else if in_hunk {
+            if let Some(hunk) = hunks.last_mut() {
+                hunk.body.push(line.to_string());
+            }
+        }
+    }
+    hunks
+}
+
+/// Assign every hunk in `patch` a stable id.
+///
+/// The id is a short hash of three things and nothing else:
+///
+/// 1. the file path (the `b/` side of the `diff --git` line),
+/// 2. the hunk header normalized to its line counts (`-7 +9`), so a hunk that
+///    only moved within its file keeps its id,
+/// 3. the hunk's body lines, verbatim, one per line.
+///
+/// Those are joined with newlines, hashed with FNV-1a 64, and rendered as `h`
+/// plus the first 12 hex digits. Two identical hunks in one file would hash
+/// alike, so the second and later occurrences fold their occurrence number into
+/// the hashed material (`\n#1`, `\n#2`, …) — ids are unique within a patch.
+///
+/// `spa/src/core/diff.js`'s `patchHunks` is a port of this function, and
+/// `bridge/tests/fixtures/hunk_ids.json` is the shared fixture that keeps the
+/// two honest. Change one, change the other, and regenerate the fixture.
+pub fn patch_hunks(patch: &str) -> Vec<PatchHunk> {
+    let mut occurrences: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    raw_hunks(patch)
+        .into_iter()
+        .map(|raw| {
+            let material = format!("{}\n{}\n{}", raw.path, raw.normalized, raw.body.join("\n"));
+            let seen = occurrences.entry(material.clone()).or_insert(0);
+            let hashed = if *seen == 0 {
+                material.clone()
+            } else {
+                format!("{material}\n#{seen}")
+            };
+            *seen += 1;
+            PatchHunk {
+                hunk_id: format!("h{}", &fnv1a64_hex(&hashed)[..12]),
+                path: raw.path,
+                header: raw.header,
+            }
+        })
+        .collect()
+}
+
+/// [`patch_hunks`]' ids alone, in patch order — the vocabulary a triage report
+/// is checked against.
+pub fn hunk_ids(patch: &str) -> Vec<String> {
+    patch_hunks(patch)
+        .into_iter()
+        .map(|hunk| hunk.hunk_id)
+        .collect()
+}
+
 /// A live, debounced stream of recomputed diffs for a worktree. Holds the fs
 /// watcher and the worker thread alive; dropping it stops watching.
 pub struct DiffWatcher {
@@ -913,6 +1072,166 @@ mod tests {
         assert!(!paths.contains(&".build/mcp.json"), "{paths:?}");
         assert_eq!(diff.stat().files_changed, 1, "{:?}", diff.stat());
         assert!(!diff.patch().contains("mcp.json"));
+    }
+
+    /// A two-file patch: an added file and a modification with two hunks.
+    const HUNK_FIXTURE_PATCH: &str = "\
+diff --git a/greeting.py b/greeting.py
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/greeting.py
+@@ -0,0 +1,2 @@
++def hello():
++    return \"Hello!\"
+diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -10,3 +10,4 @@ def main():
+ keep_one
+-old_line
++new_line
+ keep_two
+@@ -40,2 +41,3 @@ def other():
+ context
++added
+";
+
+    #[test]
+    fn every_hunk_of_a_patch_gets_its_own_id() {
+        let hunks = patch_hunks(HUNK_FIXTURE_PATCH);
+        assert_eq!(hunks.len(), 3, "{hunks:?}");
+        assert_eq!(hunks[0].path, "greeting.py");
+        assert_eq!(hunks[1].path, "app.py");
+        assert_eq!(hunks[2].path, "app.py");
+        assert_eq!(hunks[1].header, "@@ -10,3 +10,4 @@ def main():");
+        let ids: std::collections::HashSet<&str> =
+            hunks.iter().map(|hunk| hunk.hunk_id.as_str()).collect();
+        assert_eq!(ids.len(), 3, "ids must be unique within a patch: {hunks:?}");
+        for hunk in &hunks {
+            assert_eq!(hunk.hunk_id.len(), 13, "{hunk:?}");
+            assert!(hunk.hunk_id.starts_with('h'), "{hunk:?}");
+        }
+        assert_eq!(hunk_ids(HUNK_FIXTURE_PATCH).len(), 3);
+    }
+
+    #[test]
+    fn a_hunk_that_only_moved_keeps_its_id() {
+        // Same file, same body, different start lines and section heading: the
+        // header normalizes to its counts, so the id must not move with it.
+        let before = "\
+diff --git a/app.py b/app.py
+@@ -10,3 +10,4 @@ def main():
+ keep_one
+-old_line
++new_line
+ keep_two
+";
+        let after = "\
+diff --git a/app.py b/app.py
+@@ -80,3 +91,4 @@ def something_else():
+ keep_one
+-old_line
++new_line
+ keep_two
+";
+        assert_eq!(hunk_ids(before), hunk_ids(after));
+    }
+
+    #[test]
+    fn the_same_body_in_another_file_or_another_shape_is_another_hunk() {
+        let material = |path: &str, header: &str, body: &str| {
+            format!("diff --git a/{path} b/{path}\n{header}\n{body}")
+        };
+        let base = material("app.py", "@@ -1,2 +1,3 @@", " ctx\n+added\n");
+        let other_file = material("other.py", "@@ -1,2 +1,3 @@", " ctx\n+added\n");
+        let other_counts = material("app.py", "@@ -1,2 +1,4 @@", " ctx\n+added\n");
+        let other_body = material("app.py", "@@ -1,2 +1,3 @@", " ctx\n+different\n");
+        assert_ne!(hunk_ids(&base), hunk_ids(&other_file));
+        assert_ne!(hunk_ids(&base), hunk_ids(&other_counts));
+        assert_ne!(hunk_ids(&base), hunk_ids(&other_body));
+    }
+
+    #[test]
+    fn two_identical_hunks_in_one_file_still_get_distinct_ids() {
+        let patch = "\
+diff --git a/app.py b/app.py
+@@ -1,1 +1,2 @@
+ ctx
++added
+@@ -30,1 +31,2 @@
+ ctx
++added
+";
+        let ids = hunk_ids(patch);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "duplicate hunks must not collide: {ids:?}");
+        // And the disambiguation is stable, not order-of-hashing luck.
+        assert_eq!(ids, hunk_ids(patch));
+    }
+
+    #[test]
+    fn a_malformed_hunk_header_is_not_a_hunk() {
+        let patch = "\
+diff --git a/app.py b/app.py
+@@ not a hunk header @@
+ ctx
+@@ -1,1 +1,2 @@
+ ctx
++added
+";
+        let hunks = patch_hunks(patch);
+        assert_eq!(hunks.len(), 1, "{hunks:?}");
+        assert_eq!(hunks[0].header, "@@ -1,1 +1,2 @@");
+    }
+
+    #[test]
+    fn a_bare_range_counts_as_one_line() {
+        // `@@ -1 +1 @@` is git's shorthand for a single-line range.
+        assert_eq!(
+            normalized_hunk_header("@@ -1 +1 @@").as_deref(),
+            Some("-1 +1")
+        );
+        assert_eq!(
+            normalized_hunk_header("@@ -12,7 +14,9 @@ fn x()").as_deref(),
+            Some("-7 +9")
+        );
+        assert_eq!(normalized_hunk_header("@@ -a,b +c,d @@"), None);
+    }
+
+    #[test]
+    fn hunk_ids_are_computed_from_a_real_worktree_patch() {
+        let (_dir, repo) = init_repo();
+        std::fs::write(repo.join("README.md"), "# project\nline\nadded\n").unwrap();
+        let diff = diff_uncommitted(&repo).unwrap();
+        let hunks = patch_hunks(diff.patch());
+        assert_eq!(hunks.len(), 1, "{:?}\n{}", hunks, diff.patch());
+        assert_eq!(hunks[0].path, "README.md");
+    }
+
+    /// The fixture both languages read. The SPA's `test/hunkIds.test.js` asserts
+    /// the same ids from `spa/src/core/diff.js`, so a change to either
+    /// implementation that does not change the other fails here or there.
+    #[test]
+    fn the_shared_fixture_pins_the_ids_both_languages_produce() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hunk_ids.json");
+        let raw = std::fs::read_to_string(path).expect("the shared hunk-id fixture");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let cases = fixture["cases"].as_array().expect("cases");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let patch = case["patch"].as_str().unwrap();
+            let expected: Vec<serde_json::Value> = case["hunks"].as_array().unwrap().clone();
+            let actual = patch_hunks(patch);
+            assert_eq!(actual.len(), expected.len(), "{name}: {actual:?}");
+            for (hunk, want) in actual.iter().zip(expected.iter()) {
+                assert_eq!(hunk.hunk_id, want["hunk_id"].as_str().unwrap(), "{name}");
+                assert_eq!(hunk.path, want["path"].as_str().unwrap(), "{name}");
+                assert_eq!(hunk.header, want["header"].as_str().unwrap(), "{name}");
+            }
+        }
     }
 
     #[tokio::test]

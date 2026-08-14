@@ -168,6 +168,10 @@ main { max-width:1180px; margin:0 auto;
    (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)
    drop the padding and let the pane own the whole box. */
 main#root.surface { max-width:none;
+  /* The reading page centres with auto margins; a grid item beside the agent
+     rail must not — auto side margins stop the stretch, size the surface to
+     its content, and slide a wide diff under the rail. */
+  margin:0;
   padding:0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
   /* The locked shell provides the height; the surface just fills its column
      and hands scrolling to #tabbody. */

@@ -314,6 +314,19 @@ describe("tab layout primitives", () => {
     expect(declaration(split.body, "overflow")).toBeNull();
   });
 
+  it("fills its grid column instead of centring over the agent rail", () => {
+    // The reading page centres with `margin:0 auto`, and the surface inherits
+    // that. But the surface is a grid item beside the agent rail, and a grid
+    // item with auto side margins stops stretching: it sizes to its content
+    // and a wide diff stack slides under the rail, which then swallows every
+    // click on what it covers. The surface must give the margins back.
+    const [surface] = rulesFor("main#root.surface");
+    expect(surface).toBeTruthy();
+    const margin = declaration(surface.body, "margin");
+    expect(margin).not.toBeNull();
+    expect(margin).not.toMatch(/auto/);
+  });
+
   // Each column scrolls itself. This is what the two-column layout is for, and
   // it is exactly what capping and insetting the pane could break.
   it.each([

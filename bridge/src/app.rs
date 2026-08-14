@@ -7269,6 +7269,17 @@ impl AppState {
     /// driven by the human who opened it.
     fn run_create(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
+        // Targeting: an Issue can be implemented into a checkout that already
+        // exists instead of one cut for it (Decisions §Issue view — the stage
+        // column's assignment control).
+        if let Some(worktree_id) = params
+            .get("worktree_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            let worktree_id = worktree_id.to_string();
+            return self.run_create_in_worktree(&plan_id, &worktree_id, params);
+        }
         let source_plan_id = plan_id.clone();
         let requested_choice = model_choice_from(params)?;
         let base_override = params
@@ -7278,7 +7289,7 @@ impl AppState {
             .map(str::to_string);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
 
-        let (project_id, mut active, turn) = {
+        let (project_id, active, turn) = {
             if !self.plans.contains_key(&plan_id) {
                 return Err("unknown plan_id".to_string());
             }
@@ -7310,28 +7321,167 @@ impl AppState {
             (project_id, active, turn)
         };
 
+        let agent_id = active.agents.first().id.clone();
+        self.open_implementation_run(
+            run_id,
+            project_id,
+            source_plan_id,
+            active,
+            turn,
+            &agent_id,
+            crate::thread::ThreadEventKind::WorktreeCreated,
+            |run_id| format!("Created the Issue implementation worktree for {run_id}"),
+        )
+    }
+
+    /// Implement an Issue into a checkout that already exists, named by the
+    /// `worktree_id` the feed's branch rows carry.
+    ///
+    /// The branch's run adopts the implementation — one branch, one run — so a
+    /// checkout Build has never seen is adopted first, and a branch already
+    /// implementing a DIFFERENT Issue is refused: two Issues writing one branch
+    /// would make neither one's diff readable.
+    fn run_create_in_worktree(
+        &mut self,
+        issue_id: &str,
+        worktree_id: &str,
+        params: &Value,
+    ) -> Result<Value, String> {
+        if !self.plans.contains_key(issue_id) {
+            return Err("unknown plan_id".to_string());
+        }
+        let project_id = self.project_of(issue_id)?;
+        let requested_choice = model_choice_from(params)?;
+        let run_id = match self.run_on_worktree(&project_id, worktree_id) {
+            Some(run_id) => {
+                if let Some(other) = self.runs[&run_id]
+                    .run
+                    .plan_id
+                    .as_ref()
+                    .filter(|id| id.0 != issue_id)
+                {
+                    return Err(format!(
+                        "cannot implement into {}: it is already implementing Issue {} — finish \
+                         or abandon that implementation first",
+                        self.runs[&run_id].worktree.branch, other.0
+                    ));
+                }
+                run_id
+            }
+            None => {
+                let adopted = self.run_adopt(&json!({
+                    "project_id": project_id,
+                    "worktree_id": worktree_id,
+                }))?;
+                adopted
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .ok_or("run.adopt returned no run_id")?
+                    .to_string()
+            }
+        };
+
+        let has_active_run = self.runs.iter().any(|(id, run)| {
+            id != &run_id
+                && run.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(issue_id)
+                && !run.run.state.is_terminal()
+        });
+        let model_choice = if has_agent_choice(params) {
+            requested_choice
+        } else {
+            self.plans[issue_id].model_choice.clone()
+        };
+        let mut active = self.take_run(&run_id)?;
+        let adopted = {
+            let store = self.require_store()?;
+            let plan = &self.plans[issue_id];
+            self.orch_for(&project_id)?
+                .adopt_implementation(
+                    &mut active,
+                    RunSource {
+                        plan,
+                        has_active_run,
+                    },
+                    model_choice,
+                    store,
+                )
+                .map_err(err)
+        };
+        let (turn, agent_id) = match adopted {
+            Ok(opened) => opened,
+            Err(error) => {
+                // Nothing was handed over: the branch keeps the run it had.
+                self.runs.insert(run_id, active);
+                return Err(error);
+            }
+        };
+        let branch = active.worktree.branch.clone();
+        self.open_implementation_run(
+            run_id,
+            project_id,
+            issue_id.to_string(),
+            active,
+            turn,
+            &agent_id,
+            crate::thread::ThreadEventKind::WorktreeReused,
+            move |_| format!("Implementing into the existing checkout on {branch}"),
+        )
+    }
+
+    /// The live run that owns a checkout, matched by the same path hash the
+    /// feed's rows carry. A terminal run has let its worktree go, so it never
+    /// answers here — the checkout is adoptable again.
+    fn run_on_worktree(&self, project_id: &str, worktree_id: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .filter(|(run_id, active)| {
+                !active.run.state.is_terminal()
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+            })
+            .find(|(_, active)| {
+                crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path))
+                    == worktree_id
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
+    /// The tail every implementation dispatch shares: address the first turn to
+    /// the agent that will hear it, drive it under QA, persist the run, and
+    /// record on the Issue's conversation which checkout the work went into.
+    #[allow(clippy::too_many_arguments)]
+    fn open_implementation_run(
+        &mut self,
+        run_id: String,
+        project_id: String,
+        issue_id: String,
+        mut active: ActiveRun,
+        turn: crate::orchestrator::AgentTurn,
+        agent_id: &str,
+        checkout_event: crate::thread::ThreadEventKind,
+        checkout_summary: impl Fn(&str) -> String,
+    ) -> Result<Value, String> {
         let plan_docs = self.owning_plan_stage_docs(&active);
 
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
         self.pending_agent_turns
-            .push(PendingAgentTurn::for_run(&run_id, &active, turn));
+            .push(PendingAgentTurn::for_run_agent(
+                &run_id, agent_id, &active, turn,
+            ));
         if self.qa_agent {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
-        let mut plan = self.take_plan(&source_plan_id)?;
+        let mut plan = self.take_plan(&issue_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
-            issue_id: source_plan_id.clone(),
+            issue_id: issue_id.clone(),
             implementation_id: run_id.clone(),
         };
         plan.agents.push_event_with_links(
-            crate::thread::ThreadEventKind::WorktreeCreated,
-            Some(format!(
-                "Created the Issue implementation worktree for {run_id}"
-            )),
+            checkout_event,
+            Some(checkout_summary(&run_id)),
             None,
             None,
             vec![
@@ -7351,7 +7501,7 @@ impl AppState {
         if let Some(run) = self.runs.get(&run_id) {
             record_current_stage_started(&mut plan.agents, run, &plan_docs);
         }
-        let (_, plan_persisted) = self.finish_plan_mutation(source_plan_id, plan);
+        let (_, plan_persisted) = self.finish_plan_mutation(issue_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
@@ -16677,6 +16827,170 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("result-second-half.txt"));
+    }
+
+    /// An approved Issue, an already-approved set of stages, and the id of the
+    /// checkout its implementation should run in.
+    fn issue_ready_to_implement(state: &mut AppState, goal: &str) -> String {
+        let issue = state.handle(req("issue.create", json!({ "goal": goal })));
+        let issue_id = issue["result"]["issue_id"].as_str().unwrap().to_string();
+        for stage_id in ["first-half", "second-half"] {
+            state.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        issue_id
+    }
+
+    fn worktree_id_of_run(state: &AppState, run_id: &str) -> String {
+        crate::worktree::external_worktree_id(&AppState::canonical_root(
+            &state.runs[run_id].worktree.path,
+        ))
+    }
+
+    /// Targeting (UX Architecture: "Issues can be assigned to a new or existing
+    /// worktree"): naming a checkout implements INTO it. The branch's own run
+    /// adopts the implementation — no `build/<slug>` is cut — the stage docs are
+    /// committed onto its current HEAD as the review baseline, and the work goes
+    /// to a FRESH agent, because implementation is always a handoff.
+    #[test]
+    fn issue_implements_into_an_existing_worktree_with_a_fresh_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-target");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let worktree_id = worktree_id_of_run(&state, &run_id);
+        let worktree_path = state.runs[&run_id].worktree.path.clone();
+        let issue_id = issue_ready_to_implement(&mut state, "target an existing branch");
+
+        let implemented = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": issue_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+
+        // One branch, one run: the checkout's own run carries the Issue now.
+        assert_eq!(state.runs.len(), 1, "nothing new was cut");
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.run.plan_id.as_ref().map(|id| id.0.as_str()),
+            Some(issue_id.as_str()),
+            "the branch's run adopted the implementation"
+        );
+        assert_eq!(active.worktree.branch, "feature-target");
+        assert!(
+            active.base_sha.is_some(),
+            "the stage docs pin the review baseline"
+        );
+
+        // The implementing agent is new — the branch's existing conversation is
+        // never the one handed the work.
+        assert_eq!(active.agents.len(), 2, "{:?}", active.agents.agents());
+        let implementing = active.agents.agents()[1].id.clone();
+        assert_ne!(implementing, first_agent);
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == run_id && turn.agent_id == implementing),
+            "the build turn is addressed to the fresh agent"
+        );
+
+        // What the branch was carrying is below the baseline, in its own commit,
+        // rather than swept into the docs commit.
+        let log = std::process::Command::new("git")
+            .args(["-C", worktree_path.to_str().unwrap(), "log", "--format=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8(log.stdout).unwrap();
+        assert!(
+            log.contains("plan: target an existing branch"),
+            "the docs commit is the baseline: {log}"
+        );
+
+        // The Issue's conversation says the checkout was reused, not created.
+        let events: Vec<&str> = implemented["result"]["thread"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["data"]["event"].as_str())
+            .collect();
+        assert!(events.contains(&"worktree_reused"), "{events:?}");
+        assert!(!events.contains(&"worktree_created"), "{events:?}");
+        assert!(events.contains(&"implementation_started"), "{events:?}");
+    }
+
+    /// Two Issues writing one branch would make neither one's diff readable, so
+    /// a branch already implementing another Issue refuses the second.
+    #[test]
+    fn implementing_into_a_branch_already_implementing_another_issue_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-contended");
+        let worktree_id = worktree_id_of_run(&state, &run_id);
+        let first_issue = issue_ready_to_implement(&mut state, "first claim");
+        let taken = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": first_issue, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(taken["ok"], true, "{taken:?}");
+
+        let second_issue = issue_ready_to_implement(&mut state, "second claim");
+        let refused = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": second_issue, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let message = refused["error"].as_str().unwrap();
+        assert!(message.contains("feature-contended"), "{message}");
+        assert!(message.contains(&first_issue), "{message}");
+
+        // The refusal changed nothing: the branch still belongs to the first
+        // Issue, and the second one started no implementation anywhere.
+        assert_eq!(state.runs.len(), 1);
+        assert_eq!(
+            state.runs[&run_id].run.plan_id.as_ref().map(|id| &id.0),
+            Some(&first_issue)
+        );
+        assert!(state
+            .runs
+            .values()
+            .all(|run| run.run.plan_id.as_ref().map(|id| &id.0) != Some(&second_issue)));
+    }
+
+    /// A checkout Build has never adopted is adoptable in the same act: naming
+    /// an external worktree implements into it, and the run minted for it is the
+    /// implementation's.
+    #[test]
+    fn implementing_into_an_unadopted_worktree_adopts_it_first() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "feature-unadopted", "feature-unadopted");
+        let project_id = state.projects[0].id.clone();
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("feature-unadopted"))
+            .expect("the external worktree is discoverable")
+            .id;
+        let issue_id = issue_ready_to_implement(&mut state, "adopt and implement");
+
+        let implemented = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": issue_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert_eq!(state.runs.len(), 1, "{:?}", state.runs.keys());
+        let active = state.runs.values().next().unwrap();
+        assert_eq!(active.worktree.branch, "feature-unadopted");
+        assert_eq!(
+            active.run.plan_id.as_ref().map(|id| id.0.as_str()),
+            Some(issue_id.as_str())
+        );
+        assert!(active.adopted, "the checkout was not cut by Build");
     }
 
     #[test]

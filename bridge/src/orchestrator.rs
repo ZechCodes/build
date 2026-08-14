@@ -453,6 +453,42 @@ pub struct RunSource<'a> {
     pub has_active_run: bool,
 }
 
+/// What every implementation of an Issue must be true of before any checkout is
+/// touched, whichever worktree it is going to run in: the plan is ready, nobody
+/// else is writing for it, and the stage the first session would build is one
+/// the human approved.
+fn gate_implementation(
+    plan_link: &ActivePlan,
+    has_active_run: bool,
+) -> Result<(), OrchestratorError> {
+    if plan_link.plan.state != PlanState::Approved {
+        return Err(OrchestratorError::Gate(format!(
+            "only an approved plan can be implemented (plan {} is {:?})",
+            plan_link.plan.id.0, plan_link.plan.state
+        )));
+    }
+    if has_active_run {
+        return Err(OrchestratorError::Gate(format!(
+            "plan {} already has an active run — a second concurrent run is \
+             rejected (single-active-writer)",
+            plan_link.plan.id.0
+        )));
+    }
+    // Dispatch spawns the first stage's build session immediately, so its doc
+    // must carry a live approval. `approve_plan` already guarantees this for
+    // natively approved plans; migrated plans (and revision-staled docs on a
+    // re-run) are re-gated here.
+    if let Some(first_stage) = plan_link.stages.first() {
+        if first_stage.state != StageDocState::Approved {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot implement plan {}: stage {:?} is not approved",
+                plan_link.plan.id.0, first_stage.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Per-spawn context an interactive harness builder may honor.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
@@ -1247,31 +1283,7 @@ impl Orchestrator {
             plan: plan_link,
             has_active_run,
         } = source;
-        if plan_link.plan.state != PlanState::Approved {
-            return Err(OrchestratorError::Gate(format!(
-                "only an approved plan can be implemented (plan {} is {:?})",
-                plan_link.plan.id.0, plan_link.plan.state
-            )));
-        }
-        if has_active_run {
-            return Err(OrchestratorError::Gate(format!(
-                "plan {} already has an active run — a second concurrent run is \
-                 rejected (single-active-writer)",
-                plan_link.plan.id.0
-            )));
-        }
-        // Dispatch spawns the first stage's build session immediately, so its doc
-        // must carry a live approval. `approve_plan` already guarantees this for
-        // natively approved plans; migrated plans (and revision-staled docs on a
-        // re-run) are re-gated here.
-        if let Some(first_stage) = plan_link.stages.first() {
-            if first_stage.state != StageDocState::Approved {
-                return Err(OrchestratorError::Gate(format!(
-                    "cannot implement plan {}: stage {:?} is not approved",
-                    plan_link.plan.id.0, first_stage.id
-                )));
-            }
-        }
+        gate_implementation(plan_link, has_active_run)?;
         let goal = plan_link.plan.goal.clone();
 
         let slug = slugify(&goal);
@@ -1315,9 +1327,86 @@ impl Orchestrator {
             last_error: None,
         };
 
-        // Multi-stage plan → the first stage's build session (progress record
-        // created, stage diff pinned to the materialization commit); a
-        // single-doc plan → the whole-plan build prompt.
+        let agent_id = active.agents.first().id.clone();
+        let turn = self.open_implementation(&mut active, plan_link, &agent_id);
+        Ok((active, turn))
+    }
+
+    /// Bind an Issue's implementation to a checkout that already exists,
+    /// instead of cutting `build/<slug>` for it. The branch's run adopts the
+    /// implementation: whatever the branch was carrying is checkpointed under
+    /// its own message, the stage docs are committed on top, and THAT commit is
+    /// the review baseline — so the diff the human reviews is exactly what the
+    /// implementation adds to the branch.
+    ///
+    /// The work is handed to a FRESH agent (Decisions §Entity model: issue
+    /// implementation stays a handoff), which is why the caller gets the new
+    /// agent's id back: the turn is addressed to it, not to whatever agent was
+    /// already talking on this branch.
+    pub fn adopt_implementation(
+        &self,
+        active: &mut ActiveRun,
+        source: RunSource<'_>,
+        model_choice: ModelChoice,
+        store: &Store,
+    ) -> Result<(AgentTurn, String), OrchestratorError> {
+        let RunSource {
+            plan: plan_link,
+            has_active_run,
+        } = source;
+        gate_implementation(plan_link, has_active_run)?;
+        let goal = plan_link.plan.goal.clone();
+
+        // The branch's own uncommitted work is not part of what the
+        // implementation does, and it must not vanish under the baseline
+        // either: it lands as its own commit, below the docs commit.
+        self.commit_all_with_message(
+            &active.worktree.path,
+            "Checkpoint: before Build implements an Issue here",
+        )?;
+        let base_sha =
+            self.materialize_and_commit_plan_docs(plan_link, &active.worktree, &goal, store)?;
+
+        let mut run = Run::new(
+            active.run.id.clone(),
+            Some(plan_link.plan.id.clone()),
+            goal.clone(),
+        );
+        run.apply(RunEvent::Dispatch)?;
+        active.run = run;
+        active.base_sha = Some(base_sha);
+        active.plan_path = plan_link.plan_path.clone();
+        active.stages = Vec::new();
+        active.current_stage_id = None;
+        active.revising_stage_id = None;
+        active.auto_advance = false;
+        active.recovery = None;
+        active.publication_attempt = None;
+        active.model_choice = model_choice.clone();
+        active.last_summary = None;
+        active.last_error = None;
+
+        let agent_id = active
+            .agents
+            .add(&active.run.id.0, model_choice, &crate::store::now_rfc3339())
+            .id
+            .clone();
+        let turn = self.open_implementation(active, plan_link, &agent_id);
+        Ok((turn, agent_id))
+    }
+
+    /// The first turn of an implementation, on a run whose worktree is already
+    /// prepared and whose baseline is already pinned.
+    ///
+    /// Multi-stage plan → the first stage's build session (progress record
+    /// created, stage diff pinned to the materialization commit); a single-doc
+    /// plan → the whole-plan build prompt.
+    fn open_implementation(
+        &self,
+        active: &mut ActiveRun,
+        plan_link: &ActivePlan,
+        agent_id: &str,
+    ) -> AgentTurn {
         let prompt = if plan_link.is_multi_stage() {
             let first_stage = &plan_link.stages[0];
             active.current_stage_id = Some(first_stage.id.clone());
@@ -1326,16 +1415,20 @@ impl Orchestrator {
             active.stages.push(progress);
             self.render_run_stage(
                 &self.templates.build_stage,
-                &active,
+                active,
                 &plan_link.stages,
                 0,
                 "",
             )
         } else {
-            self.render_run(&self.templates.build, &active, "", &plan_link.stages)
+            self.render_run(&self.templates.build, active, "", &plan_link.stages)
         };
-        let turn = AgentTurn::dispatched(prompt, &active.agents, "build");
-        Ok((active, turn))
+        let thread = &active
+            .agents
+            .by_id(agent_id)
+            .expect("the implementing agent is on the run's own roster")
+            .thread;
+        AgentTurn::dispatched(prompt, thread, "build")
     }
 
     /// Materialize a plan's canonical docs into a fresh run worktree and

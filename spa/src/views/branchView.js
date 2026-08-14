@@ -27,6 +27,8 @@ import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdoptingCall } from "../core/adoption.js";
+import { noteSelfAction } from "../core/inboxView.js";
+import { entityIdOf } from "../core/entityId.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -94,6 +96,13 @@ export async function renderBranch() {
 
   const callRpc = (method, params) => App.call(method, params);
   const home = () => go({ name: "inbox" });
+  /** An ending the user triggered here must not badge its own inbox entry:
+   *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
+   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). */
+  const finished = () => {
+    noteSelfAction(entityIdOf(row), row && row.issue_id);
+    home();
+  };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
    *  A run reviews through its own diff and verbs; a bare worktree adopts on
@@ -109,7 +118,7 @@ export async function renderBranch() {
           callRpc,
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
-          onMerged: () => home(),
+          onMerged: () => finished(),
         });
       } else {
         adopting = createAdoptingCall(callRpc, scope.project_id, scope.worktree_id);
@@ -122,7 +131,7 @@ export async function renderBranch() {
           // Adoption keeps the URL — the same branch now stands on a run, so
           // the surface re-resolves and the Changes rail re-mounts run-backed.
           onAdopted: () => refresh(true),
-          onFinished: () => home(),
+          onFinished: () => finished(),
           onGone: () => refresh(true),
         });
       }

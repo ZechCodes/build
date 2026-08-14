@@ -103,6 +103,18 @@ describe("diffStackHtml with a triage overlay", () => {
     expect(html.indexOf("src/crypto.rs")).toBeLessThan(html.indexOf("Cargo.toml"));
   });
 
+  it("carries the re-review chips and per-file controls through the ordering", () => {
+    const html = diffStackHtml(FILES, {
+      review: { patch: PATCH, triage: triage() },
+      changedSince: new Set(["src/crypto.rs", "Cargo.toml"]),
+      commentable: true,
+    });
+    // The surfaced critical and the file folded into a group both keep them.
+    expect((html.match(/changed since your review/g) || []).length).toBe(2);
+    // Both readable files keep their ✎; the noise group is still collapsed.
+    expect((html.match(/class="fcmt"/g) || []).length).toBe(2);
+  });
+
   it("leaves the generated-files group its own group at the very bottom", () => {
     const html = stack({ triage: triage() });
     expect(html).toContain("noisegroup");

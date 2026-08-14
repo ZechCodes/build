@@ -1576,6 +1576,7 @@ mod tests {
                     group: Some("noise".to_string()),
                 },
             ],
+            overrides: Vec::new(),
         };
         let valid = vec!["hpresent".to_string(), "hmissed".to_string()];
         let error = check_triage_hunk_ids(&report, &valid).expect_err("an invented id is refused");
@@ -1591,6 +1592,7 @@ mod tests {
         let partial = crate::run::TriageReport {
             based_on: "rev-1".to_string(),
             hunks: vec![report.hunks[0].clone()],
+            overrides: Vec::new(),
         };
         assert!(check_triage_hunk_ids(&partial, &valid).is_ok());
     }

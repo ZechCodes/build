@@ -1223,6 +1223,15 @@ fn is_json_record(path: &Path) -> bool {
 /// The worktree-relative dir multi-stage plan docs live in.
 const STAGE_PLAN_DIR: &str = ".build/plan";
 
+/// [`write_record_atomically`] for a JSON file that is not a store record.
+///
+/// The one caller is `.build/review-rules.json`, which lives in the user's own
+/// checkout rather than the store — and wants exactly the same durability, for
+/// exactly the same reason: a half-written file is one a human has to repair.
+pub(crate) fn write_json_atomically(path: &Path, json: &str) -> Result<(), StoreError> {
+    write_record_atomically(path, json)
+}
+
 /// Persist one JSON record atomically **and durably**: write to a `.tmp`
 /// sibling, fsync it, rename over the final path, then fsync the directory.
 /// The fsyncs matter: rename-without-fsync is atomic against a process crash

@@ -492,6 +492,11 @@ pub enum ThreadEventKind {
     /// A triage pass classified the diff. Status, never attention: triage
     /// orders what the reviewer reads and asks nothing of them.
     Triaged,
+    /// The reviewer disagreed with how a hunk was classified. Status: the
+    /// agent is told, because miscalibration is only visible if it is said out
+    /// loud, but nothing is being asked of anyone — the reviewer has already
+    /// done the thing they wanted to do.
+    TriageOverridden,
     /// A daemon restart killed the session mid-work. The entity is parked and
     /// waiting for the human to restart it.
     Interrupted,
@@ -500,7 +505,7 @@ pub enum ThreadEventKind {
 impl ThreadEventKind {
     /// Every variant, so the wire-token and class rules can be checked over the
     /// whole enum instead of a sample of it.
-    pub const ALL: [ThreadEventKind; 31] = [
+    pub const ALL: [ThreadEventKind; 32] = [
         ThreadEventKind::SessionStarted,
         ThreadEventKind::SessionEnded,
         ThreadEventKind::RunStarted,
@@ -531,6 +536,7 @@ impl ThreadEventKind {
         ThreadEventKind::Merged,
         ThreadEventKind::Abandoned,
         ThreadEventKind::Triaged,
+        ThreadEventKind::TriageOverridden,
         ThreadEventKind::Interrupted,
     ];
 
@@ -573,6 +579,7 @@ impl ThreadEventKind {
             | ThreadEventKind::RecoverySucceeded
             | ThreadEventKind::Committed
             | ThreadEventKind::Triaged
+            | ThreadEventKind::TriageOverridden
             | ThreadEventKind::Pushed => EventClass::Status,
         }
     }
@@ -611,6 +618,7 @@ impl ThreadEventKind {
             ThreadEventKind::Merged => "merged",
             ThreadEventKind::Abandoned => "abandoned",
             ThreadEventKind::Triaged => "triaged",
+            ThreadEventKind::TriageOverridden => "triage_overridden",
             ThreadEventKind::Interrupted => "interrupted",
         }
     }

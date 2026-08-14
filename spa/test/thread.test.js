@@ -95,6 +95,28 @@ describe("conversation thread rendering", () => {
     expect(entry.classList.contains("success")).toBe(false);
   });
 
+  // And a `triage_overridden` event when the reviewer disagrees with where the
+  // pass put a hunk. It is the same shape of fact: the agent is told, and
+  // nothing is asked of anyone.
+  it("names a reviewer's disagreement with a triage pass", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: {
+            event: "triage_overridden",
+            summary: "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.",
+          },
+        },
+      ],
+    });
+    const entry = document.querySelector(".thread-event");
+    expect(entry.textContent).toContain("Review order corrected");
+    expect(entry.textContent).toContain("src/crypto.rs");
+    expect(entry.classList.contains("blocked")).toBe(false);
+    expect(entry.classList.contains("success")).toBe(false);
+  });
+
   it("renders a done-flagged send like any other message after the done entry", () => {
     const html = threadHtml(
       {

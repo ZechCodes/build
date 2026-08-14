@@ -1663,14 +1663,42 @@ impl Orchestrator {
         // The mcp layer guarantees outputs.triage on triage/completed, but
         // reports also arrive over the daemon socket as raw JSON — a missing
         // one is rejected, never unwrapped.
-        let Some(triage) = report.outputs.triage.clone() else {
+        let Some(mut triage) = report.outputs.triage.clone() else {
             return Err(OrchestratorError::Gate(
                 "triage/completed report carried no outputs.triage; rejected".to_string(),
             ));
         };
+        // An override is the reviewer's word about the reviewer's own reading.
+        // A report claiming to carry one is claiming to have been the human, so
+        // it is refused whole rather than quietly stripped.
+        if !triage.overrides.is_empty() {
+            return Err(OrchestratorError::Gate(
+                "triage/completed report carried overrides; only the reviewer writes those"
+                    .to_string(),
+            ));
+        }
         let diff = self.run_diff(active)?;
         crate::mcp::check_triage_hunk_ids(&triage, &crate::diff::hunk_ids(diff.patch()))
             .map_err(|error| OrchestratorError::Gate(error.to_string()))?;
+        // The reviewer's disagreements outlive the pass they were aimed at: a
+        // hunk id is content-derived, so a hunk the new pass still names is
+        // literally the same hunk, and what the reviewer said about it still
+        // holds. One the new pass does not name is gone from the diff, and the
+        // override with it — the durable record of that disagreement is the
+        // project's review rules, not this list.
+        if let Some(previous) = &active.triage {
+            let classified: std::collections::HashSet<&str> = triage
+                .hunks
+                .iter()
+                .map(|hunk| hunk.hunk_id.as_str())
+                .collect();
+            triage.overrides = previous
+                .overrides
+                .iter()
+                .filter(|disagreement| classified.contains(disagreement.hunk_id.as_str()))
+                .cloned()
+                .collect();
+        }
         active.triage = Some(triage);
         Ok(())
     }
@@ -3925,6 +3953,7 @@ mod tests {
                 triage: Some(TriageReport {
                     based_on: based_on.into(),
                     hunks,
+                    overrides: Vec::new(),
                 }),
                 ..DoneOutputs::default()
             },

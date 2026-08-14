@@ -5111,6 +5111,7 @@ impl AppState {
             "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
             "entity.mute" => self.entity_mute(params),
+            "triage.override" => self.triage_override(params),
             "agent.add" => self.agent_add(params),
             "agent.list" => self.agent_list(params),
             "worktree.diff" => self.worktree_diff(params),
@@ -6719,6 +6720,143 @@ impl AppState {
         self.attention.entry(entity_id.clone()).or_default().muted = muted;
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "muted": muted }))
+    }
+
+    /// `triage.override` — the reviewer disagreed with how a hunk was
+    /// classified, and says so once, in the three places it has to land.
+    ///
+    /// On the run, against the hunk: that is what the review surface renders,
+    /// and it is the reviewer's level from then on. In the agent's
+    /// conversation, as status: a collapse decision is only as honest as its
+    /// rationale, so a rationale the reviewer rejected has to be visible to the
+    /// one that wrote it — and nothing is being asked of anyone, because the
+    /// reviewer has already done what they wanted. And in the project's
+    /// `.build/review-rules.json`, generalized to a pattern and counted, which
+    /// is the durable half: runs end, and this is what outlives them.
+    ///
+    /// Everything fallible happens before anything is written. A disagreement
+    /// recorded in two of the three places is worse than one recorded in none.
+    fn triage_override(&mut self, params: &Value) -> Result<Value, String> {
+        let run_id = require_str(params, "run_id")?;
+        let hunk_id = require_str(params, "hunk_id")?;
+        let direction = crate::run::OverrideDirection::parse(&require_str(params, "direction")?)
+            .map_err(|error| format!("triage.override: {error}"))?;
+        let note = params
+            .get("note")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+            .map(str::to_string);
+
+        let path = self.triaged_hunk_path(&run_id, &hunk_id)?;
+        let pattern = crate::review_rules::pattern_for_path(&path);
+        let checkout = self.primary_checkout_of(&run_id)?;
+        let now = now_rfc3339();
+
+        let mut active = self.take_run(&run_id)?;
+        let triage = active
+            .triage
+            .as_mut()
+            .expect("triaged_hunk_path already found the pass this hunk belongs to");
+        let is_new_disagreement = triage.record_override(crate::run::TriageOverride {
+            hunk_id: hunk_id.clone(),
+            direction,
+            note: note.clone(),
+            at: now.clone(),
+        });
+        // A reviewer toggling the same hunk the same way twice has said one
+        // thing, not two, so the project-level count does not move for it.
+        let count = if is_new_disagreement {
+            let (document, count) = crate::review_rules::merge_override(
+                crate::review_rules::read(&checkout)?,
+                &pattern,
+                direction,
+                &now,
+            )?;
+            crate::review_rules::write(&checkout, &document)?;
+            Some(count)
+        } else {
+            None
+        };
+        let summary = triage_override_summary(direction, &path, note.as_deref());
+        let recorded = self.record_on_run_conversation(&mut active, |conversation| {
+            conversation.push_event(
+                crate::thread::ThreadEventKind::TriageOverridden,
+                Some(summary),
+                None,
+                None,
+                &now,
+            );
+        });
+        let triage = self.triage_json(&active);
+        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        recorded?;
+        persisted?;
+        Ok(json!({
+            "run_id": run_id,
+            "hunk_id": hunk_id,
+            "direction": direction.as_str(),
+            "path": path,
+            "rule": { "pattern": pattern, "direction": direction.as_str(), "count": count },
+            "triage": triage,
+        }))
+    }
+
+    /// The file a triaged hunk belongs to, read off the diff revision the pass
+    /// classified.
+    ///
+    /// Not off the current diff, and never off the caller: the reviewer is
+    /// disagreeing with what they were shown, so the patch that produced the
+    /// hunk ids they are pointing at is the only one that can name the file
+    /// they meant. A hunk this pass never classified has nothing to disagree
+    /// with and is refused.
+    fn triaged_hunk_path(&self, run_id: &str, hunk_id: &str) -> Result<String, String> {
+        let active = self
+            .runs
+            .get(run_id)
+            .ok_or_else(|| format!("triage.override: unknown run_id {run_id}"))?;
+        let triage = active.triage.as_ref().ok_or_else(|| {
+            format!("triage.override: {run_id} has no triage pass to disagree with")
+        })?;
+        if !triage.hunks.iter().any(|hunk| hunk.hunk_id == hunk_id) {
+            return Err(format!(
+                "triage.override: the pass on {run_id} did not classify {hunk_id}"
+            ));
+        }
+        let patch = self
+            .conversation_thread_for_run(active)
+            .revisions
+            .iter()
+            .rev()
+            .find(|revision| {
+                revision.artifact == crate::thread::ArtifactKind::Diff
+                    && revision.content_hash == triage.based_on
+            })
+            .and_then(|revision| revision.snapshot.as_deref())
+            .ok_or_else(|| {
+                format!(
+                    "triage.override: the diff revision {} the pass read is no longer on the \
+                     conversation",
+                    triage.based_on
+                )
+            })?;
+        crate::diff::patch_hunks(patch)
+            .into_iter()
+            .find(|hunk| hunk.hunk_id == hunk_id)
+            .map(|hunk| hunk.path)
+            .ok_or_else(|| format!("triage.override: {hunk_id} is not in the revision it names"))
+    }
+
+    /// The primary checkout of the project an entity belongs to — where a
+    /// project-wide artifact like the review rules lives, rather than in
+    /// whichever worktree happened to notice it.
+    fn primary_checkout_of(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
+        let project_id = self.project_of(entity_id)?;
+        self.projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.repo_path.clone())
+            .ok_or_else(|| format!("unknown project: {project_id}"))
     }
 
     /// Whether `entity_id` names something the attention map keeps a record
@@ -11816,6 +11954,9 @@ impl AppState {
         json!({
             "based_on": triage.based_on,
             "hunks": triage.hunks,
+            // Where the reviewer already disagreed with the pass. Renders as
+            // the level they chose, over the one the agent chose.
+            "overrides": triage.overrides,
             // No revision recorded yet means nothing has been observed to move.
             "stale": current_revision.is_some_and(|current| current != triage.based_on),
         })
@@ -13604,6 +13745,31 @@ fn out_of_phase_log(run_id: &str, illegal: &crate::run::IllegalRunTransition) ->
          ({:?} while the branch is {:?})",
         illegal.event, illegal.from
     )
+}
+
+/// What the conversation says when the reviewer disagrees with a hunk's level.
+///
+/// It names the file rather than the hunk id, because the id is a hash and the
+/// agent that has to learn from this reads in files. It says which way the pass
+/// was wrong, which is the whole content of the disagreement. And the
+/// reviewer's own note, when they left one, goes last and unedited.
+fn triage_override_summary(
+    direction: crate::run::OverrideDirection,
+    path: &str,
+    note: Option<&str>,
+) -> String {
+    let line = match direction {
+        crate::run::OverrideDirection::Surface => {
+            format!("The reviewer opened {path}: triage collapsed a change that needed reading.")
+        }
+        crate::run::OverrideDirection::Collapse => {
+            format!("The reviewer collapsed {path}: triage surfaced a change that did not.")
+        }
+    };
+    match note {
+        Some(note) => format!("{line}\n\n{note}"),
+        None => line,
+    }
 }
 
 fn record_report_in_thread(
@@ -21214,6 +21380,7 @@ mod tests {
                             group: None,
                         })
                         .collect(),
+                    overrides: Vec::new(),
                 }),
                 ..DoneOutputs::default()
             },
@@ -21417,6 +21584,351 @@ mod tests {
                 .iter()
                 .map(|turn| turn.phase)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// The run's current hunk ids, keyed by the file each belongs to. Every
+    /// test below writes one hunk per file, and the diff carries scaffolding of
+    /// its own — so a hunk is asked for by the name a reader would use.
+    fn hunks_by_path(state: &AppState, run_id: &str) -> HashMap<String, String> {
+        let project_id = state.project_of(run_id).expect("the run has a project");
+        let patch = state
+            .orch_for(&project_id)
+            .expect("the project has an orchestrator")
+            .run_diff(&state.runs[run_id])
+            .expect("the worktree is readable")
+            .patch()
+            .to_string();
+        crate::diff::patch_hunks(&patch)
+            .into_iter()
+            .map(|hunk| (hunk.path, hunk.hunk_id))
+            .collect()
+    }
+
+    /// An adopted run whose diff has been read and ordered by a triage pass,
+    /// with the pass's hunk ids by file.
+    fn triaged_run(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        branch: &str,
+        files: &[(&str, &str)],
+    ) -> (String, HashMap<String, String>) {
+        let run_id = adopted_run(state, repo, dir, branch);
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        for (path, contents) in files {
+            let path = worktree.join(path);
+            std::fs::create_dir_all(path.parent().expect("a file sits in a directory")).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "wrote the change".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let (hunk_ids, revision) = diff_vocabulary(state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let hunks = hunks_by_path(state, &run_id);
+        (run_id, hunks)
+    }
+
+    fn review_rules_of(repo: &std::path::Path) -> Value {
+        crate::review_rules::read(repo).expect("the rules file parses")
+    }
+
+    /// Disagreeing lands in all three places at once: the run's pass carries
+    /// the reviewer's level from here on, the agent that wrote the rationale is
+    /// told its rationale was rejected, and the project keeps the count. And
+    /// the telling is status — the reviewer has already done what they wanted,
+    /// so nothing is asked of anyone.
+    #[test]
+    fn a_reviewer_who_disagrees_with_a_pass_is_recorded_and_the_agent_is_told() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-override",
+            &[("src/crypto.rs", "fn derive() {}\n")],
+        );
+        let crypto = &hunks["src/crypto.rs"];
+
+        let overridden = state.handle(req(
+            "triage.override",
+            json!({
+                "run_id": run_id,
+                "hunk_id": crypto,
+                "direction": "surface",
+                "note": "key derivation is never boilerplate",
+            }),
+        ));
+        assert_eq!(overridden["ok"], true, "{overridden:?}");
+        assert_eq!(overridden["result"]["path"], "src/crypto.rs");
+        assert_eq!(overridden["result"]["rule"]["pattern"], "src/*.rs");
+        assert_eq!(overridden["result"]["rule"]["count"], 1);
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let overrides = view["result"]["triage"]["overrides"]
+            .as_array()
+            .expect("the pass carries what the reviewer said");
+        assert_eq!(overrides.len(), 1, "{view:?}");
+        assert_eq!(overrides[0]["hunk_id"], crypto.as_str());
+        assert_eq!(overrides[0]["direction"], "surface");
+        assert_eq!(
+            overrides[0]["note"], "key derivation is never boilerplate",
+            "{view:?}"
+        );
+        assert!(
+            overrides[0]["at"].as_str().is_some_and(|at| !at.is_empty()),
+            "{view:?}"
+        );
+
+        let told = view["result"]["thread"]["items"]
+            .as_array()
+            .expect("the conversation ships with the run")
+            .iter()
+            .find(|item| item["data"]["event"] == "triage_overridden")
+            .cloned()
+            .unwrap_or_else(|| panic!("the agent is told: {view:?}"));
+        let summary = told["data"]["summary"].as_str().expect("it says something");
+        assert!(
+            summary.contains("src/crypto.rs"),
+            "it names the file, not the hash: {summary}"
+        );
+        assert!(
+            summary.contains("key derivation is never boilerplate"),
+            "and the reviewer's own words: {summary}"
+        );
+        assert_eq!(
+            view["result"]["unread"], false,
+            "the reviewer already did the thing; nothing is asked back: {view:?}"
+        );
+    }
+
+    /// The durable half. One disagreement is nearly worthless and the fourth in
+    /// the same directory is not, so the project-level record is keyed on the
+    /// pattern the file shares with its neighbours and counted.
+    #[test]
+    fn disagreements_accumulate_as_one_counted_rule_in_the_primary_checkout() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-rules",
+            &[
+                ("src/crypto.rs", "fn derive() {}\n"),
+                ("src/session.rs", "fn open() {}\n"),
+            ],
+        );
+        assert_eq!(
+            review_rules_of(&repo),
+            Value::Null,
+            "nothing is written until somebody disagrees"
+        );
+
+        for hunk_id in [&hunks["src/crypto.rs"], &hunks["src/session.rs"]] {
+            let overridden = state.handle(req(
+                "triage.override",
+                json!({ "run_id": run_id, "hunk_id": hunk_id, "direction": "surface" }),
+            ));
+            assert_eq!(overridden["ok"], true, "{overridden:?}");
+        }
+
+        let rules = review_rules_of(&repo);
+        let rules = rules["rules"].as_array().expect("a list of rules");
+        assert_eq!(
+            rules.len(),
+            1,
+            "two files, one pattern, one rule: {rules:?}"
+        );
+        assert_eq!(rules[0]["pattern"], "src/*.rs");
+        assert_eq!(rules[0]["direction"], "surface");
+        assert_eq!(rules[0]["count"], 2, "{rules:?}");
+    }
+
+    /// A reviewer toggling the same hunk the same way twice has said one thing,
+    /// not two. The count is signal about the pattern, and double-counting one
+    /// click would make it lie.
+    #[test]
+    fn saying_the_same_thing_about_the_same_hunk_twice_counts_once() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-repeat",
+            &[("src/crypto.rs", "fn derive() {}\n")],
+        );
+        let crypto = hunks["src/crypto.rs"].clone();
+        let same = || json!({ "run_id": run_id, "hunk_id": crypto, "direction": "collapse" });
+
+        assert_eq!(state.handle(req("triage.override", same()))["ok"], true);
+        let again = state.handle(req("triage.override", same()));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            again["result"]["rule"]["count"],
+            Value::Null,
+            "nothing new was said, so nothing was counted: {again:?}"
+        );
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            view["result"]["triage"]["overrides"]
+                .as_array()
+                .expect("overrides")
+                .len(),
+            1,
+            "one hunk carries one disagreement: {view:?}"
+        );
+        assert_eq!(review_rules_of(&repo)["rules"][0]["count"], 1);
+    }
+
+    /// The reviewer disagrees with a reading they were shown. A hunk id no pass
+    /// classified was never shown to them, and a direction that is neither way
+    /// is not a disagreement — both are refused before anything is written.
+    #[test]
+    fn a_disagreement_with_something_that_was_never_classified_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-refuse",
+            &[("src/crypto.rs", "fn derive() {}\n")],
+        );
+
+        let invented = state.handle(req(
+            "triage.override",
+            json!({ "run_id": run_id, "hunk_id": "hnotinthispass", "direction": "surface" }),
+        ));
+        assert_eq!(invented["ok"], false, "{invented:?}");
+
+        let sideways = state.handle(req(
+            "triage.override",
+            json!({ "run_id": run_id, "hunk_id": hunks["src/crypto.rs"], "direction": "maybe" }),
+        ));
+        assert_eq!(sideways["ok"], false, "{sideways:?}");
+
+        assert_eq!(
+            review_rules_of(&repo),
+            Value::Null,
+            "a refused call writes nothing"
+        );
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(view["result"]["triage"]["overrides"], json!([]), "{view:?}");
+    }
+
+    /// A hunk id is derived from its content, so a hunk the next pass still
+    /// names is the same hunk — and what the reviewer said about it still
+    /// holds. One that changed is a different hunk, and the disagreement does
+    /// not follow it; the project's rules are what outlive the diff.
+    #[test]
+    fn a_re_triage_keeps_what_the_reviewer_said_about_the_hunks_it_still_names() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-carry",
+            &[
+                ("src/crypto.rs", "fn derive() {}\n"),
+                ("src/session.rs", "fn open() {}\n"),
+            ],
+        );
+        for hunk_id in [&hunks["src/crypto.rs"], &hunks["src/session.rs"]] {
+            let overridden = state.handle(req(
+                "triage.override",
+                json!({ "run_id": run_id, "hunk_id": hunk_id, "direction": "surface" }),
+            ));
+            assert_eq!(overridden["ok"], true, "{overridden:?}");
+        }
+
+        // One file moves; the other is untouched, so its hunk id survives.
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        std::fs::write(
+            worktree.join("src/session.rs"),
+            "fn open() {}\nfn shut() {}\n",
+        )
+        .unwrap();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "moved the diff".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let (next_hunk_ids, next_revision) = diff_vocabulary(&state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&next_revision, &next_hunk_ids));
+
+        let moved = hunks_by_path(&state, &run_id);
+        assert_eq!(
+            moved["src/crypto.rs"], hunks["src/crypto.rs"],
+            "the untouched file's hunk is the same hunk"
+        );
+        assert_ne!(
+            moved["src/session.rs"], hunks["src/session.rs"],
+            "the edited file's hunk is a different one"
+        );
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let carried: Vec<&str> = view["result"]["triage"]["overrides"]
+            .as_array()
+            .expect("overrides")
+            .iter()
+            .map(|entry| entry["hunk_id"].as_str().expect("a hunk id"))
+            .collect();
+        assert_eq!(carried, vec![hunks["src/crypto.rs"].as_str()], "{view:?}");
+    }
+
+    /// An override is the reviewer's word about the reviewer's own reading. A
+    /// pass claiming to carry one is claiming to have been the human, and is
+    /// refused whole rather than quietly stripped of the claim.
+    #[test]
+    fn a_pass_that_reports_the_reviewers_overrides_for_them_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, hunks) = triaged_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "triage-forgery",
+            &[("src/crypto.rs", "fn derive() {}\n")],
+        );
+
+        let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
+        let mut forged = done_triage(&revision, &hunk_ids);
+        forged
+            .outputs
+            .triage
+            .as_mut()
+            .expect("a triage report")
+            .overrides = vec![crate::run::TriageOverride {
+            hunk_id: hunks["src/crypto.rs"].clone(),
+            direction: crate::run::OverrideDirection::Collapse,
+            note: Some("the reviewer never said this".into()),
+            at: now_rfc3339(),
+        }];
+        state.on_agent_done(&run_id, forged);
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            view["result"]["triage"]["overrides"],
+            json!([]),
+            "the forged pass never landed: {view:?}"
         );
     }
 

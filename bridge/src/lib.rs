@@ -61,6 +61,7 @@ pub mod plan;
 pub mod pty;
 pub mod relay;
 pub mod relay_server;
+pub mod review_rules;
 pub mod router;
 pub mod run;
 pub mod service;

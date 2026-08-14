@@ -219,6 +219,16 @@ hunk, so it has to be true — if you cannot write one honestly, the hunk is not
 \"low\". Give each \"critical\" hunk a one-line rationale too, saying what to look
 at.
 
+If `.build/review-rules.json` exists in this repository, read it before you
+classify. It is where this project's reviewer has already disagreed with passes
+like yours: each rule names a path pattern, a direction (\"surface\" means they
+opened something a pass collapsed, \"collapse\" means they closed something a
+pass surfaced), and how many times they have said it. Respect that signal —
+the higher the count, the more it takes to classify against it. It is
+accumulated judgment, not a rule you have to obey: a hunk in a repeatedly
+collapsed pattern that genuinely touches security is still \"critical\", and the
+rationale is where you say why this one is different.
+
 When every hunk is classified, call the `done` tool with phase=\"triage\",
 status=\"completed\", and outputs.triage = {\"based_on\": \"{revision_sha}\",
 \"hunks\": [{\"hunk_id\", \"level\", \"rationale\", \"group\"}]} — `based_on` echoed
@@ -659,6 +669,35 @@ mod tests {
         assert!(
             triage.contains("Do not modify any files"),
             "triage is observational: {triage}"
+        );
+    }
+
+    /// Overrides are durable per-project signal, and signal nobody reads is
+    /// not signal. Until the learned-defaults layer exists, the triage prompt
+    /// IS the reader: it is told where the accumulated disagreement lives and
+    /// that it is judgment to weigh, not a rule that overrules the diff.
+    #[test]
+    fn the_triage_prompt_reads_what_the_reviewer_has_already_disagreed_with() {
+        let t = Templates::default();
+        assert!(
+            t.triage.contains(crate::review_rules::REVIEW_RULES_PATH),
+            "the prompt must name the file: {}",
+            t.triage
+        );
+        let triage = collapse_whitespace(&t.triage);
+        for direction in ["surface", "collapse"] {
+            assert!(
+                triage.contains(direction),
+                "the prompt explains what a {direction} rule means: {triage}"
+            );
+        }
+        assert!(
+            triage.contains("Respect that signal"),
+            "accumulated signal is to be respected: {triage}"
+        );
+        assert!(
+            triage.contains("not a rule you have to obey"),
+            "and weighed, not obeyed — a collapsed pattern can still carry risk: {triage}"
         );
     }
 

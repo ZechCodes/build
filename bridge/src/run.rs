@@ -291,6 +291,57 @@ pub struct TriageHunk {
     pub group: Option<String>,
 }
 
+/// Which way a reviewer disagreed with a hunk's classification.
+///
+/// The two directions are the two ways triage can be wrong, and they are worth
+/// very different things: `Surface` says the pass hid something that mattered,
+/// `Collapse` says it spent the reviewer's attention on something that did not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverrideDirection {
+    /// The reviewer opened a hunk triage had collapsed.
+    Surface,
+    /// The reviewer collapsed a hunk triage had surfaced.
+    Collapse,
+}
+
+impl OverrideDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverrideDirection::Surface => "surface",
+            OverrideDirection::Collapse => "collapse",
+        }
+    }
+
+    /// The wire token as a direction, or an error naming what was accepted.
+    pub fn parse(token: &str) -> Result<OverrideDirection, String> {
+        match token {
+            "surface" => Ok(OverrideDirection::Surface),
+            "collapse" => Ok(OverrideDirection::Collapse),
+            other => Err(format!(
+                "unknown override direction {other}: expected surface or collapse"
+            )),
+        }
+    }
+}
+
+/// One reviewer's disagreement with one hunk's classification.
+///
+/// The reviewer's, always: an agent never writes one of these, and a triage
+/// report that claims to carry them is rejected whole. Overriding is the only
+/// place in the review surface where the human's judgment is the record rather
+/// than an input to somebody else's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriageOverride {
+    pub hunk_id: String,
+    pub direction: OverrideDirection,
+    /// What the reviewer said about the disagreement, when they said anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub at: String,
+}
+
 /// A triage pass over one revision of a run's diff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,6 +351,36 @@ pub struct TriageReport {
     /// it still ships, labelled, because a stale ordering beats none.
     pub based_on: String,
     pub hunks: Vec<TriageHunk>,
+    /// Where the reviewer disagreed with the pass, at most one per hunk. Not
+    /// part of what an agent reports — see [`TriageOverride`] — so a report
+    /// that arrives carrying any is refused rather than trusted. Carried
+    /// forward across a re-triage for every hunk the new pass still names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<TriageOverride>,
+}
+
+impl TriageReport {
+    /// Record one disagreement, replacing whatever this reviewer last said
+    /// about the same hunk. Answers whether the direction is new — a reviewer
+    /// toggling the same hunk the same way twice has not said anything twice,
+    /// and must not be counted as though they had.
+    pub fn record_override(&mut self, disagreement: TriageOverride) -> bool {
+        match self
+            .overrides
+            .iter_mut()
+            .find(|existing| existing.hunk_id == disagreement.hunk_id)
+        {
+            Some(existing) => {
+                let is_new_direction = existing.direction != disagreement.direction;
+                *existing = disagreement;
+                is_new_direction
+            }
+            None => {
+                self.overrides.push(disagreement);
+                true
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

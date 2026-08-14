@@ -174,3 +174,116 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     drop(to_device_tx);
     bridge.abort();
 }
+
+/// The wedge test: a handler that takes seconds must not stop the device from
+/// reading its socket. The browser sends one slow request and then five cheap
+/// ones; every cheap answer comes back while the slow one is still working.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_handler_does_not_stall_the_socket() {
+    let identity = DeviceIdentity {
+        device_id: "dev-1".into(),
+        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
+        transport: transport::generate_transport_keypair(),
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("ws://{addr}/ws/device");
+
+    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(64);
+    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(64);
+    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
+    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
+
+    // `slow` is the board.list-with-a-libgit2-diff of the incident.
+    let handler: relay::FrameHandler = Arc::new(|_sender, frame| {
+        if frame.payload["method"] == "slow" {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+        json!({ "id": frame.payload["id"] })
+    });
+    let bridge = {
+        let identity = identity.clone();
+        tokio::spawn(async move { relay::run(&url, &identity, handler).await })
+    };
+
+    let device_transport_pub =
+        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
+            .await
+            .expect("transport key arrives")
+            .unwrap();
+
+    let session_id = "sess-slow";
+    let session_key = transport::generate_session_key();
+    let wrapped = transport::wrap_session_key(&device_transport_pub, &session_key).unwrap();
+    to_device_tx
+        .send(json!({
+            "type": "session_init",
+            "session_id": session_id,
+            "session_init": serde_json::to_value(SessionInit {
+                session_id: session_id.into(),
+                device_id: "dev-1".into(),
+                wrapped_session_key: wrapped,
+            }).unwrap(),
+        }))
+        .await
+        .unwrap();
+    let accept = recv(&mut from_device_rx).await;
+    assert_eq!(accept["type"], "session_accept");
+
+    let ask = |id: u64, method: &str| {
+        let envelope = transport::encrypt_frame(
+            &session_key,
+            &OuterFields {
+                session_id: session_id.into(),
+                route_to: "device:dev-1".into(),
+            },
+            &FrameFields {
+                frame_type: "data".into(),
+                sender: "client".into(),
+                payload: json!({ "id": id, "method": method }),
+                message_id: None,
+                created_at: None,
+            },
+            None,
+        )
+        .unwrap();
+        json!({
+            "type": "e2ee_envelope",
+            "session_id": session_id,
+            "envelope": serde_json::to_value(&envelope).unwrap(),
+        })
+    };
+
+    to_device_tx.send(ask(0, "slow")).await.unwrap();
+    for id in 1..=5u64 {
+        to_device_tx.send(ask(id, "cheap")).await.unwrap();
+    }
+
+    // The five cheap answers come back first — the read loop kept draining.
+    let mut answered: Vec<u64> = Vec::new();
+    for _ in 0..5 {
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv(&mut from_device_rx))
+                .await
+                .expect("cheap answers do not wait for the slow one");
+        let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
+        let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
+        answered.push(frame.payload["id"].as_u64().unwrap());
+    }
+    answered.sort_unstable();
+    assert_eq!(
+        answered,
+        vec![1, 2, 3, 4, 5],
+        "every cheap frame was answered"
+    );
+
+    // And the slow one still gets its answer.
+    let response = recv(&mut from_device_rx).await;
+    let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
+    let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
+    assert_eq!(frame.payload["id"], 0);
+
+    drop(to_device_tx);
+    bridge.abort();
+}

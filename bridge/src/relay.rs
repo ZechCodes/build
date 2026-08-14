@@ -156,6 +156,215 @@ impl SessionSender {
 /// payload to send back.
 pub type FrameHandler = Arc<dyn Fn(SessionSender, Frame) -> Value + Send + Sync>;
 
+/// How many handlers may run at once. Handlers are blocking (they take the app
+/// mutex, and some of them walk a worktree with libgit2), so they run on the
+/// blocking pool and this is the width of the useful work, not of the CPU: wide
+/// enough that a couple of slow diffs still leave room for the cheap calls a
+/// browser makes beside them, narrow enough that a flood of expensive frames
+/// cannot put dozens of concurrent worktree scans on the disk at once.
+const DISPATCH_WORKERS: usize = 8;
+
+/// How many frames may wait for a worker. The socket is read as fast as frames
+/// arrive and each waiting frame is a small JSON payload, so this is deep enough
+/// to absorb a multi-second stall of every poller a few browser tabs can run
+/// (the SPA polls a couple of times a second per tab) without the memory ever
+/// mattering. Past it, `dispatch` waits: the flood backs up in a queue whose size
+/// is known instead of growing until the process dies.
+const DISPATCH_QUEUE_DEPTH: usize = 256;
+
+/// How many frames may wait on one ordered lane. A lane carries one terminal's
+/// input, acks and resizes — frames whose handlers are a write to a pty fd — so a
+/// lane this deep holds far more than the largest paste burst a client can make
+/// before the caller is asked to wait.
+const LANE_QUEUE_DEPTH: usize = 64;
+
+/// The method that ends a terminal — and with it the terminal's ordered lane.
+const TERMINAL_CLOSE_METHOD: &str = "term.close";
+
+/// One decrypted frame waiting for a handler.
+struct Job {
+    sender: SessionSender,
+    frame: Frame,
+}
+
+/// What an ordered lane can be asked to do.
+enum LaneMessage {
+    /// Run this frame's handler; the lane runs one at a time, in arrival order.
+    Run(Job),
+    /// Tell me when everything queued before you has run. Used to make a session
+    /// close the last thing that happens to that session.
+    Fence(tokio::sync::oneshot::Sender<()>),
+}
+
+/// Runs frame handlers off the read loop.
+///
+/// The read loop reads, decrypts and enqueues; nothing else. Handlers run on a
+/// bounded pool of workers, each of which calls the handler on a blocking thread
+/// (handlers take the app mutex and can walk a worktree), so no handler — however
+/// slow — can keep the socket from being drained. That was the wedge: one
+/// `board.list` diff on a churning 56k-file worktree took seconds, and the frames
+/// behind it piled up in the kernel until the relay called the device dead.
+///
+/// Frames that mean something as a stream keep their order: anything naming a
+/// `term_id` goes to a serial lane keyed by that terminal and that session, so a
+/// client's input and acks are handled in the order it sent them. Everything else
+/// is an independent request and runs concurrently.
+struct Dispatcher {
+    handler: FrameHandler,
+    /// The shared pool queue. Bounded: a full queue makes the read loop wait.
+    jobs: mpsc::Sender<Job>,
+    /// (session_id, term_id) → its serial lane.
+    lanes: HashMap<(String, String), mpsc::Sender<LaneMessage>>,
+}
+
+impl Dispatcher {
+    fn new(handler: FrameHandler) -> Self {
+        Self::with_capacity(handler, DISPATCH_QUEUE_DEPTH, DISPATCH_WORKERS)
+    }
+
+    fn with_capacity(handler: FrameHandler, queue_depth: usize, workers: usize) -> Self {
+        let (jobs, rx) = mpsc::channel::<Job>(queue_depth.max(1));
+        // One queue, many workers: whoever is free takes the next frame.
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        for _ in 0..workers.max(1) {
+            let rx = rx.clone();
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                loop {
+                    let job = rx.lock().await.recv().await;
+                    let Some(job) = job else { break };
+                    run_job(&handler, job).await;
+                }
+            });
+        }
+        Dispatcher {
+            handler,
+            jobs,
+            lanes: HashMap::new(),
+        }
+    }
+
+    /// Hand one decrypted request frame to a worker. Waits only when every
+    /// worker is busy and the queue is full.
+    async fn dispatch(&mut self, sender: SessionSender, frame: Frame) {
+        match ordered_lane(&sender, &frame) {
+            Some(key) => {
+                let closing = frame.payload.get("method").and_then(Value::as_str)
+                    == Some(TERMINAL_CLOSE_METHOD);
+                let lane = self.lane(key.clone());
+                let _ = lane.send(LaneMessage::Run(Job { sender, frame })).await;
+                if closing {
+                    // A terminal id is minted once and never reused, so its close
+                    // is the last frame its lane can carry. Letting the sender go
+                    // ends the lane as soon as it has run that close.
+                    self.lanes.remove(&key);
+                }
+            }
+            None => {
+                let _ = self.jobs.send(Job { sender, frame }).await;
+            }
+        }
+    }
+
+    /// The lane for a terminal, started on first use.
+    fn lane(&mut self, key: (String, String)) -> &mpsc::Sender<LaneMessage> {
+        self.lanes.entry(key).or_insert_with(|| {
+            let (tx, mut rx) = mpsc::channel::<LaneMessage>(LANE_QUEUE_DEPTH);
+            let handler = self.handler.clone();
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        LaneMessage::Run(job) => run_job(&handler, job).await,
+                        LaneMessage::Fence(reply) => {
+                            let _ = reply.send(());
+                        }
+                    }
+                }
+            });
+            tx
+        })
+    }
+
+    /// A session ended: tell the app so it releases the session's attachments.
+    ///
+    /// This is the session's last frame and it is treated as one — it runs only
+    /// after every frame that arrived before it, or an attach still sitting on a
+    /// lane would register a sender into a session already closed and push
+    /// terminal output at a browser that is gone.
+    async fn close_session(&mut self, session_id: &str) {
+        let mut fences = Vec::new();
+        let session_lanes: Vec<(String, String)> = self
+            .lanes
+            .keys()
+            .filter(|(session, _)| session == session_id)
+            .cloned()
+            .collect();
+        for key in session_lanes {
+            let Some(lane) = self.lanes.remove(&key) else {
+                continue;
+            };
+            let (reply, wait) = tokio::sync::oneshot::channel();
+            if lane.send(LaneMessage::Fence(reply)).await.is_ok() {
+                fences.push(wait);
+            }
+            // Dropping the lane sender ends the lane once it has drained.
+        }
+
+        let handler = self.handler.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            for fence in fences {
+                let _ = fence.await;
+            }
+            let closed = Frame {
+                session_id: session_id.clone(),
+                message_id: String::new(),
+                frame_type: "close".into(),
+                sender: "relay".into(),
+                created_at: String::new(),
+                payload: Value::Null,
+            };
+            let sender = SessionSender::detached(&session_id);
+            // No response: nobody is left to read one.
+            let _ = tokio::task::spawn_blocking(move || handler(sender, closed)).await;
+        });
+    }
+}
+
+/// The serial lane a frame belongs to, if its order is part of its meaning.
+/// Terminal traffic — input, acks, resizes, attach and close — is a stream per
+/// terminal per client; everything else is an independent request.
+fn ordered_lane(sender: &SessionSender, frame: &Frame) -> Option<(String, String)> {
+    let term_id = frame
+        .payload
+        .get("params")
+        .and_then(|params| params.get("term_id"))
+        .and_then(Value::as_str)?;
+    Some((sender.session_id().to_string(), term_id.to_string()))
+}
+
+/// Run one handler on a blocking thread and send its answer back.
+///
+/// Blocking, not async: a handler takes the app mutex and may sit in libgit2 for
+/// seconds. On a runtime worker that would block the read loop and the writer
+/// with it — the very thing this queue exists to prevent.
+async fn run_job(handler: &FrameHandler, job: Job) {
+    let Job { sender, frame } = job;
+    let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    let handler = handler.clone();
+    let answering = sender.clone();
+    match tokio::task::spawn_blocking(move || handler(answering, frame)).await {
+        Ok(payload) => {
+            sender.push(payload);
+        }
+        // The handler panicked (or the runtime is shutting down). Answer anyway:
+        // a client that never hears back waits forever.
+        Err(_) => {
+            sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
+        }
+    }
+}
+
 /// Build the authenticated WebSocket upgrade request: the relay verifies an
 /// Ed25519 signature over `{timestamp}.GET./ws/device`.
 fn auth_request(url: &str, identity: &DeviceIdentity) -> Result<Request<()>, RelayError> {
@@ -231,6 +440,9 @@ pub async fn run_with_connector(
     // session_id → session_key (base64). One reader task, so no lock needed.
     let mut sessions: HashMap<String, String> = HashMap::new();
     let mut heartbeat: Option<tokio::task::JoinHandle<()>> = None;
+    // Handlers run here, not on this task: below, the loop only reads, decrypts
+    // and enqueues, so no handler can stop the socket from being drained.
+    let mut dispatcher = Dispatcher::new(handler);
 
     while let Some(message) = source.next().await {
         let message = message?;
@@ -266,7 +478,8 @@ pub async fn run_with_connector(
                 }
             }
             "e2ee_envelope" => {
-                if let Err(e) = handle_envelope(&out_tx, &mut sessions, &msg, &handler) {
+                if let Err(e) = handle_envelope(&out_tx, &mut sessions, &msg, &mut dispatcher).await
+                {
                     tracing_protocol_error(&e);
                 }
             }
@@ -274,7 +487,7 @@ pub async fn run_with_connector(
             // session key and let the app stop pushing into it.
             "session_closed" => {
                 if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                    end_session(&mut sessions, session_id, &handler);
+                    end_session(&mut sessions, session_id, &mut dispatcher).await;
                 }
             }
             // "response"/"error"/unknown: nothing for the device to do here.
@@ -328,11 +541,11 @@ fn handle_session_init(
 
 /// A client sent an encrypted frame: decrypt it, hand the inner request to the
 /// application along with a [`SessionSender`], and send the response back.
-fn handle_envelope(
+async fn handle_envelope(
     out_tx: &mpsc::UnboundedSender<Message>,
     sessions: &mut HashMap<String, String>,
     msg: &Value,
-    handler: &FrameHandler,
+    dispatcher: &mut Dispatcher,
 ) -> Result<(), RelayError> {
     let session_id = field_str(msg, "session_id")?;
     let session_key = sessions
@@ -349,7 +562,7 @@ fn handle_envelope(
     let frame = transport::decrypt_envelope(&session_key, &envelope)?;
     // `close` frames end the conversation: forget the key and tell the app.
     if frame.frame_type == "close" {
-        end_session(sessions, &session_id, handler);
+        end_session(sessions, &session_id, dispatcher).await;
         return Ok(());
     }
 
@@ -358,10 +571,10 @@ fn handle_envelope(
         session_key,
         out: out_tx.clone(),
     };
-    // The response rides the same push channel; the app may also have pushed
-    // server-initiated frames during the call (e.g. an initial terminal flush).
-    let response_payload = handler(sender.clone(), frame);
-    sender.push(response_payload);
+    // The handler runs on a worker and pushes its own answer down this same
+    // channel; the app may also push server-initiated frames during the call
+    // (e.g. an initial terminal flush).
+    dispatcher.dispatch(sender, frame).await;
     Ok(())
 }
 
@@ -369,19 +582,15 @@ fn handle_envelope(
 /// decryptable for the connection's lifetime — and hand the app a synthetic
 /// `close` frame so it releases the session's attachments (e.g. terminal
 /// senders) instead of encrypting into a session nobody will read again.
-fn end_session(sessions: &mut HashMap<String, String>, session_id: &str, handler: &FrameHandler) {
+async fn end_session(
+    sessions: &mut HashMap<String, String>,
+    session_id: &str,
+    dispatcher: &mut Dispatcher,
+) {
     if sessions.remove(session_id).is_none() {
         return; // unknown/already-closed session: nothing to release
     }
-    let closed = Frame {
-        session_id: session_id.to_string(),
-        message_id: String::new(),
-        frame_type: "close".into(),
-        sender: "relay".into(),
-        created_at: String::new(),
-        payload: Value::Null,
-    };
-    let _ = handler(SessionSender::detached(session_id), closed);
+    dispatcher.close_session(session_id).await;
 }
 
 fn spawn_heartbeat(
@@ -417,4 +626,302 @@ fn tracing_protocol_error(err: &RelayError) {
     // Protocol errors on a single frame must not kill the connection; a real
     // build wires this to `tracing`. Kept minimal here.
     let _ = err;
+}
+
+#[cfg(test)]
+mod dispatcher_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    fn request(id: u64, method: &str, params: Value) -> Frame {
+        Frame {
+            session_id: "s".into(),
+            message_id: format!("m-{id}"),
+            frame_type: "data".into(),
+            sender: "client".into(),
+            created_at: String::new(),
+            payload: json!({ "id": id, "method": method, "params": params }),
+        }
+    }
+
+    /// Wait for the next push on an observable session, decoded.
+    async fn next_push(
+        rx: &mut mpsc::UnboundedReceiver<Message>,
+        key: &str,
+        within: Duration,
+    ) -> Value {
+        let message = tokio::time::timeout(within, rx.recv())
+            .await
+            .expect("a response arrives in time")
+            .expect("the session channel is open");
+        SessionSender::decrypt_push(key, &message)
+    }
+
+    /// The incident in one test: a handler that takes seconds must not keep the
+    /// next frame from being handled. Frames are dispatched from one task (as the
+    /// read loop does), so a stall here is a stall of the socket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_slow_handler_does_not_hold_up_the_next_frame() {
+        let handler: FrameHandler = Arc::new(|_sender, frame| {
+            if frame.payload["method"] == "slow" {
+                std::thread::sleep(Duration::from_millis(750));
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 8, 4);
+
+        let (slow_sender, mut slow_rx, slow_key) = SessionSender::observable("s-slow");
+        let (fast_sender, mut fast_rx, fast_key) = SessionSender::observable("s-fast");
+
+        dispatcher
+            .dispatch(slow_sender, request(1, "slow", json!({})))
+            .await;
+        dispatcher
+            .dispatch(fast_sender, request(2, "fast", json!({})))
+            .await;
+
+        let fast = next_push(&mut fast_rx, &fast_key, Duration::from_millis(250)).await;
+        assert_eq!(
+            fast["id"], 2,
+            "the fast frame answered while the slow one ran"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), slow_rx.recv())
+                .await
+                .is_err(),
+            "the slow handler is still running — this is what the fast frame overtook"
+        );
+
+        let slow = next_push(&mut slow_rx, &slow_key, Duration::from_secs(5)).await;
+        assert_eq!(slow["id"], 1, "the slow frame still gets its answer");
+    }
+
+    /// Terminal input and acks are a stream: their order is the client's meaning.
+    /// Frames carrying the same `term_id` run one at a time, in arrival order,
+    /// even while independent frames run beside them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn frames_for_one_terminal_keep_their_order() {
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            let id = frame.payload["id"].as_u64().unwrap_or_default();
+            // The first frame is the slow one: without a serial lane the ones
+            // behind it would finish first and record out of order.
+            if id == 0 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            recorder.lock().unwrap().push(id);
+            json!({ "id": id, "ok": true })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 64, 8);
+
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        for id in 0..12u64 {
+            dispatcher
+                .dispatch(
+                    sender.clone(),
+                    request(id, "term.input", json!({ "term_id": "term-1" })),
+                )
+                .await;
+        }
+        // A second terminal is a second lane: it answers without waiting for the
+        // slow frame ahead of it on the first.
+        let (other, mut other_rx, other_key) = SessionSender::observable("s-1");
+        dispatcher
+            .dispatch(
+                other,
+                request(99, "term.input", json!({ "term_id": "term-2" })),
+            )
+            .await;
+        let overtaking = next_push(&mut other_rx, &other_key, Duration::from_millis(200)).await;
+        assert_eq!(
+            overtaking["id"], 99,
+            "a different terminal runs concurrently"
+        );
+
+        for id in 0..12u64 {
+            let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
+            assert_eq!(answered["id"], id, "responses come back in order");
+        }
+        let on_the_lane: Vec<u64> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|id| *id != 99)
+            .collect();
+        assert_eq!(
+            on_the_lane,
+            (0..12).collect::<Vec<u64>>(),
+            "handlers ran in arrival order"
+        );
+    }
+
+    /// A flood parks in a bounded queue: once it is full the dispatch call waits
+    /// instead of growing memory without end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_full_queue_makes_the_caller_wait() {
+        let blocked = Arc::new(AtomicBool::new(true));
+        let gate = blocked.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            while gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        // One worker, two waiting slots: the fourth frame has nowhere to go.
+        let mut dispatcher = Dispatcher::with_capacity(handler, 2, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-flood");
+
+        for id in 0..3u64 {
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                dispatcher.dispatch(sender.clone(), request(id, "board.list", json!({}))),
+            )
+            .await
+            .expect("the worker and the queue take the first three");
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                dispatcher.dispatch(sender.clone(), request(3, "board.list", json!({})))
+            )
+            .await
+            .is_err(),
+            "a full queue holds the caller instead of accepting without limit"
+        );
+
+        blocked.store(false, Ordering::SeqCst);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            dispatcher.dispatch(sender, request(4, "board.list", json!({}))),
+        )
+        .await
+        .expect("a drained queue takes frames again");
+        let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
+        assert_eq!(answered["id"], 0, "the queued work still ran");
+    }
+
+    /// A terminal's lane lives as long as the terminal: the close still runs, and
+    /// nothing is left behind for an id that will never be minted again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_terminal_leaves_no_lane_behind() {
+        let (ran, mut ran_rx) = mpsc::unbounded_channel::<u64>();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            let _ = ran.send(frame.payload["id"].as_u64().unwrap_or_default());
+            json!({ "ok": true })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 8, 2);
+        let (sender, _rx, _key) = SessionSender::observable("s-term");
+
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                request(1, "term.input", json!({ "term_id": "term-1" })),
+            )
+            .await;
+        assert_eq!(dispatcher.lanes.len(), 1, "the terminal has a lane");
+
+        dispatcher
+            .dispatch(
+                sender,
+                request(2, "term.close", json!({ "term_id": "term-1" })),
+            )
+            .await;
+        assert!(
+            dispatcher.lanes.is_empty(),
+            "the lane goes with the terminal"
+        );
+
+        let mut ran_ids = Vec::new();
+        for _ in 0..2 {
+            ran_ids.push(
+                tokio::time::timeout(Duration::from_secs(5), ran_rx.recv())
+                    .await
+                    .expect("both frames ran")
+                    .expect("the channel is open"),
+            );
+        }
+        assert_eq!(ran_ids, vec![1, 2], "the close ran, after the input");
+    }
+
+    /// Handlers run on blocking threads now, and a handler that opens a terminal
+    /// spawns its output pump onto the runtime (a pump that fails to start is
+    /// silently a terminal with no output). The runtime must still be reachable
+    /// from there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handler_can_still_spawn_onto_the_runtime() {
+        let (spawned, mut spawned_rx) = mpsc::unbounded_channel::<&'static str>();
+        let handler: FrameHandler = Arc::new(move |_sender, _frame| {
+            let reachable = tokio::runtime::Handle::try_current().is_ok();
+            if reachable {
+                let spawned = spawned.clone();
+                tokio::spawn(async move {
+                    let _ = spawned.send("pump");
+                });
+            }
+            json!({ "ok": reachable })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 4, 2);
+
+        let (sender, mut rx, key) = SessionSender::observable("s-pump");
+        dispatcher
+            .dispatch(sender, request(1, "term.create", json!({})))
+            .await;
+
+        let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
+        assert_eq!(
+            answered["ok"], true,
+            "the runtime is reachable from a handler"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), spawned_rx.recv())
+                .await
+                .expect("the spawned task ran"),
+            Some("pump")
+        );
+    }
+
+    /// A session's close is its last word: it runs after the frames that arrived
+    /// before it, so an attach can never register into an already-closed session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_close_waits_for_the_frames_ahead_of_it() {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            if frame.frame_type == "close" {
+                recorder.lock().unwrap().push("close".into());
+                return json!({ "ok": true });
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            recorder
+                .lock()
+                .unwrap()
+                .push(frame.payload["id"].to_string());
+            json!({ "ok": true })
+        });
+        let mut dispatcher = Dispatcher::with_capacity(handler, 16, 4);
+
+        let (sender, _rx, _key) = SessionSender::observable("s-closing");
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                request(1, "term.attach", json!({ "term_id": "term-1" })),
+            )
+            .await;
+        dispatcher.close_session("s-closing").await;
+
+        for _ in 0..100 {
+            if seen.lock().unwrap().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["1".to_string(), "close".to_string()],
+            "the close ran last"
+        );
+    }
 }

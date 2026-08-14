@@ -621,6 +621,37 @@ mod tests {
         );
     }
 
+    /// Every row of the decision rule, in the template's own words.
+    ///
+    /// The scripted-router suite in `app.rs` drives this same table through the
+    /// bridge (`a_capture_naming_a_branch_in_flight_is_dispatched_to_it` and the
+    /// three cases beside it), but a harness can only pin what Build does with a
+    /// decision once it is made. The decision itself is taught here and nowhere
+    /// else, so the sentences that teach it are asserted whole: an edit that
+    /// softens one of them is an edit to the contract.
+    #[test]
+    fn the_router_template_states_the_decision_rule_verbatim() {
+        let router = collapse_whitespace(&Templates::default().router);
+        for rule in [
+            // Rule 1: the only case that dispatches, and the check that has to
+            // happen before the router believes it is in that case.
+            "Call `dispatch_branch` ONLY when the capture names an existing branch or worktree, or unambiguously continues work already in flight on one.",
+            "Read that branch's conversation with `read_conversation` before you believe it does.",
+            // Rule 2: the default, and the asymmetry that makes it the default.
+            "Otherwise call `create_issue` on the project the capture most likely belongs to.",
+            "An issue is inert — a record, no worktree, no agent — so a wrong guess costs the user one tap.",
+            "A branch dispatch starts an agent that changes code, so a wrong guess costs them a diff to unpick.",
+            // Rule 3: the one case a question beats a guess.
+            "Call `ask_user` ONLY when even the project is ambiguous.",
+            "a best-guess issue is almost always the better answer.",
+        ] {
+            assert!(
+                router.contains(rule),
+                "the decision rule no longer says, verbatim: {rule}\n\nthe template says: {router}"
+            );
+        }
+    }
+
     /// A router has no checkout and no coding tools, and its `done` reports the
     /// one phase it has.
     #[test]

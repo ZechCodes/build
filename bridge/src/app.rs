@@ -1008,6 +1008,32 @@ enum FinishRequirement {
     CommittedAndPushed,
 }
 
+/// Everything one `branch.dispatch` brought into existence, so a failure part
+/// way through can put the world back.
+///
+/// A checkout the dispatch merely FOUND is never recorded here. That is the
+/// whole distinction cleanup turns on: what Build cut, Build removes; what was
+/// already there is handed back with its files untouched.
+#[derive(Default)]
+struct BranchDispatchCreations {
+    /// The checkout `branch.dispatch` cut for itself, when the branch it was
+    /// asked for did not exist yet.
+    minted_worktree: Option<crate::worktree::Worktree>,
+    /// The run `branch.dispatch` adopted the checkout into, minted or found.
+    adopted_run: Option<String>,
+}
+
+/// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
+/// undo what the call created can be exercised at each seam it opens.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchDispatchStep {
+    /// After the checkout is resolved or cut, before a run owns it.
+    Adopt,
+    /// After the branch has a run, before its new agent and first message land.
+    Post,
+}
+
 /// The verbs that count as the human acting on an entity, and the param naming
 /// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
 /// a queue you triage by reading and reading one IS engaging with it — while a
@@ -1790,6 +1816,9 @@ pub struct AppState {
     /// not have to sleep out a ten-second TTL.
     #[cfg(test)]
     force_stale_diff_caches: bool,
+    /// Tests only: see [`BranchDispatchStep`]. `None` everywhere else.
+    #[cfg(test)]
+    dispatch_fault: Option<BranchDispatchStep>,
     /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
     term_shell: String,
     streams: HashMap<String, StreamState>,
@@ -1948,6 +1977,8 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             force_stale_diff_caches: false,
+            #[cfg(test)]
+            dispatch_fault: None,
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             tabs: HashMap::new(),
@@ -4867,6 +4898,7 @@ impl AppState {
             // Branch surface: the work item the feed and the URLs speak, over
             // whichever of run / worktree / primary checkout stores it.
             "branch.get" => self.branch_get(params),
+            "branch.dispatch" => self.branch_dispatch(params),
             "branch.finish" => self.branch_finish(params),
             "worktree.create" => self.worktree_create(params),
             "worktree.finish" => self.worktree_finish(params),
@@ -10192,6 +10224,232 @@ impl AppState {
         }))
     }
 
+    /// `branch.dispatch` — one call from "here is what I want done" to an agent
+    /// doing it (Decisions §Capture and router, "One-call dispatch").
+    ///
+    /// The router decides a destination and then has to reach it, and reaching
+    /// it is four mutations that each create something: cut or find the
+    /// checkout, take ownership of it, put an agent on it, hand that agent the
+    /// words. A caller driving those one at a time owns the unwinding when the
+    /// third fails — and the router is an agent, which is the worst possible
+    /// owner for a half-built branch. So the four are one verb, and the verb
+    /// owns the unwinding.
+    ///
+    /// `branch` names where the work goes; with none, the instruction names the
+    /// branch it cuts. The agent is always brand new: an instruction is never
+    /// dropped into a conversation someone else is having.
+    fn branch_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        if !self.projects.iter().any(|project| project.id == project_id) {
+            return Err(format!("branch.dispatch: unknown project_id: {project_id}"));
+        }
+        let instruction = require_str(params, "instruction")?;
+        if instruction.trim().is_empty() {
+            return Err(
+                "branch.dispatch: the instruction is empty — there is nothing to dispatch"
+                    .to_string(),
+            );
+        }
+        let branch = params
+            .get("branch")
+            .and_then(Value::as_str)
+            .filter(|branch| !branch.is_empty())
+            .map(str::to_string);
+        // The provider is parsed before anything is created, so an unrunnable
+        // one refuses instead of leaving a branch nothing can work on.
+        if has_agent_choice(params) {
+            model_choice_from(params)?;
+        }
+
+        let mut created = BranchDispatchCreations::default();
+        match self.dispatch_branch_work(&project_id, branch, &instruction, params, &mut created) {
+            Ok(dispatched) => Ok(dispatched),
+            Err(error) => {
+                self.undo_branch_dispatch(&project_id, created);
+                Err(error)
+            }
+        }
+    }
+
+    /// The steps [`branch_dispatch`](Self::branch_dispatch) unwinds on failure,
+    /// recording what each one brought into existence as it goes.
+    fn dispatch_branch_work(
+        &mut self,
+        project_id: &str,
+        branch: Option<String>,
+        instruction: &str,
+        params: &Value,
+        created: &mut BranchDispatchCreations,
+    ) -> Result<Value, String> {
+        let run_id = match branch
+            .as_deref()
+            .and_then(|branch| self.run_on_branch(project_id, branch))
+        {
+            // Build already runs this branch: the dispatch joins the checkout
+            // that is there, and creates no checkout of its own.
+            Some(run_id) => run_id,
+            None => {
+                let worktree_id =
+                    match self.bare_checkout_on_branch(project_id, branch.as_deref())? {
+                        Some(worktree_id) => worktree_id,
+                        None => {
+                            let minted = self.cut_branch_for_dispatch(
+                                project_id,
+                                branch.as_deref().unwrap_or(instruction),
+                            )?;
+                            let worktree_id = crate::worktree::external_worktree_id(
+                                &Self::canonical_root(&minted.path),
+                            );
+                            created.minted_worktree = Some(minted);
+                            worktree_id
+                        }
+                    };
+                #[cfg(test)]
+                self.fail_dispatch_at(BranchDispatchStep::Adopt)?;
+                let adopted = self.run_adopt(&adoption_params(project_id, &worktree_id, params))?;
+                let run_id = adopted["run_id"]
+                    .as_str()
+                    .ok_or("branch.dispatch: adoption named no run")?
+                    .to_string();
+                created.adopted_run = Some(run_id.clone());
+                run_id
+            }
+        };
+        #[cfg(test)]
+        self.fail_dispatch_at(BranchDispatchStep::Post)?;
+
+        // A branch this call just adopted already holds exactly one agent, and
+        // it is brand new — that IS the fresh agent, already running what the
+        // adoption was told to run. Adding a second would leave an empty bubble
+        // on the rail for the life of the branch.
+        let agent_is_waiting = created.adopted_run.as_deref() == Some(run_id.as_str());
+        // Parsed before the run leaves the map, so a choice that cannot run
+        // never strands a run outside it.
+        let choice = if has_agent_choice(params) {
+            model_choice_from(params)?
+        } else {
+            self.entity_model_choice(&run_id)?
+        };
+        let now = now_rfc3339();
+        let mut active = self.take_run(&run_id)?;
+        let agent_id = if agent_is_waiting {
+            active.agents.first().id.clone()
+        } else {
+            active.agents.add(&run_id, choice, &now).id.clone()
+        };
+        let branch = active.worktree.branch.clone();
+        let root = Self::canonical_root(&active.worktree.path);
+        let agent = active
+            .agents
+            .resolve_mut(Some(&agent_id))
+            .expect("the agent was just put on this roster");
+        // The agent's own provider, not the branch's: several agents share a
+        // branch and a dispatch may have asked for one the branch does not run.
+        let model_choice = agent.choice.clone();
+        agent.thread.post_user(instruction, None, &now);
+        // Told the same way `agent.start` tells an agent what is waiting for
+        // it: the instruction is already durable on the thread, so a warm
+        // harness gets the read-your-messages nudge `thread.post` writes, and a
+        // cold one gets that nudge wrapped in the packet it has no other way to
+        // reconstruct. The spawn itself happens in `deliver_pending_agent_turns`,
+        // with the state lock free.
+        self.pending_agent_turns.push(PendingAgentTurn {
+            root,
+            owner: run_id.clone(),
+            agent_id: agent_id.clone(),
+            model_choice,
+            cold: crate::orchestrator::conversation_prompt(
+                NEW_THREAD_MESSAGES_PROMPT,
+                &agent.thread,
+            ),
+            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            phase: "dispatch",
+        });
+        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        persisted?;
+        self.touch_attention(&run_id);
+        Ok(json!({
+            "project_id": project_id,
+            "branch": branch,
+            "run_id": run_id,
+            "agent_id": agent_id,
+        }))
+    }
+
+    /// The checkout of `branch` that no run owns yet, if this project has one.
+    /// A dispatch that named no branch has nothing to look for: it always cuts
+    /// a new branch rather than adopting whatever happens to be lying around.
+    fn bare_checkout_on_branch(
+        &mut self,
+        project_id: &str,
+        branch: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let Some(branch) = branch else {
+            return Ok(None);
+        };
+        // Forced, for the same reason adoption forces it: a dispatch must
+        // decide against the checkouts that exist now, not a cached summary.
+        Ok(self
+            .external_worktrees(project_id, true)?
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(branch))
+            .map(|worktree| worktree.id))
+    }
+
+    /// Cut the branch a dispatch has nowhere else to put its work, through
+    /// `worktree.create`'s naming — from the branch the caller asked for, or,
+    /// with none, from the instruction itself.
+    fn cut_branch_for_dispatch(
+        &mut self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<crate::worktree::Worktree, String> {
+        if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return Err(format!(
+                "branch.dispatch: {name:?} has no letter or number to name a branch after"
+            ));
+        }
+        let base = self.base_for(project_id)?;
+        let worktree = self
+            .orch_for(project_id)?
+            .create_bare_worktree(&crate::worktree::slugify(name), &base)
+            .map_err(err)?;
+        // The checkout must be visible to the adoption that follows it, and to
+        // the very next board poll, rather than up to a scan interval later.
+        self.invalidate_external_scan(project_id);
+        Ok(worktree)
+    }
+
+    /// Put back what a failed `branch.dispatch` created, newest first.
+    ///
+    /// Best-effort and quiet: the call has already failed, and the caller is
+    /// told about that failure, not about the tidying. A checkout the dispatch
+    /// only adopted is un-adopted and left on disk with every file intact —
+    /// only one Build cut for itself is removed.
+    fn undo_branch_dispatch(&mut self, project_id: &str, created: BranchDispatchCreations) {
+        if let Some(run_id) = created.adopted_run {
+            if let Err(error) = self.run_release(&json!({ "run_id": run_id })) {
+                eprintln!("branch.dispatch cleanup: releasing {run_id}: {error}");
+            }
+        }
+        if let Some(worktree) = created.minted_worktree {
+            match self.orch_for(project_id) {
+                Ok(orch) => orch.discard_worktree(&worktree),
+                Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
+            }
+            self.invalidate_external_scan(project_id);
+        }
+    }
+
+    /// Fail this dispatch when a test asked for a failure at `step`.
+    #[cfg(test)]
+    fn fail_dispatch_at(&self, step: BranchDispatchStep) -> Result<(), String> {
+        if self.dispatch_fault == Some(step) {
+            return Err(format!("branch.dispatch: injected failure at {step:?}"));
+        }
+        Ok(())
+    }
+
     /// Archived plans and external worktrees for one project, grouped by kind.
     /// Canonical project path is the durable join because project ids remint.
     fn archive_list(&self, params: &Value) -> Result<Value, String> {
@@ -11426,6 +11684,22 @@ fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
     };
     choice.validate()?;
     Ok(choice)
+}
+
+/// `run.adopt`'s parameters for a dispatch: the checkout to take ownership of,
+/// carrying whatever agent choice the caller made, so the run and the agent it
+/// opens with agree on what they run.
+fn adoption_params(project_id: &str, worktree_id: &str, params: &Value) -> Value {
+    let mut adoption = json!({ "project_id": project_id, "worktree_id": worktree_id });
+    let object = adoption
+        .as_object_mut()
+        .expect("just built from an object literal");
+    for key in ["provider", "model", "effort"] {
+        if let Some(value) = params.get(key) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    adoption
 }
 
 fn has_agent_choice(params: &Value) -> bool {
@@ -27863,6 +28137,296 @@ mod tests {
         );
         assert!(state.plans[&issue_id].plan.archived_at.is_none());
         assert!(worktree.exists(), "nothing was finished");
+    }
+
+    // ==== branch.dispatch: one call from a sentence to an agent working =======
+
+    /// The instruction the router hands a branch, and the message the agent it
+    /// dispatched is holding when it wakes up.
+    fn dispatched_instruction(state: &AppState, run_id: &str, agent_id: &str) -> String {
+        let agent = state.runs[run_id]
+            .agents
+            .by_id(agent_id)
+            .unwrap_or_else(|| panic!("{agent_id} is on {run_id}'s roster"));
+        match agent
+            .thread
+            .items
+            .first()
+            .unwrap_or_else(|| panic!("{agent_id} was dispatched with a first message"))
+        {
+            crate::thread::ThreadItem::Message(message) => {
+                assert_eq!(message.role, crate::thread::MessageRole::User);
+                message.body.clone()
+            }
+            other => panic!("the first item is the instruction, not {other:?}"),
+        }
+    }
+
+    /// Nothing but the instruction: no branch named, no checkout to reuse. One
+    /// call cuts the branch, takes ownership of it, puts an agent on it, hands
+    /// that agent the words, and tells the harness there is something to read.
+    #[test]
+    fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let dispatched = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "instruction": "Add a health endpoint",
+            }),
+        ));
+
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let result = &dispatched["result"];
+        assert_eq!(result["project_id"], json!(project_id));
+        let branch = result["branch"].as_str().unwrap().to_string();
+        let run_id = result["run_id"].as_str().unwrap().to_string();
+        let agent_id = result["agent_id"].as_str().unwrap().to_string();
+        assert_eq!(branch, "build/add-a-health-endpoint", "{result:?}");
+        assert!(agent_id.starts_with("agent-"), "{result:?}");
+
+        let active = state.runs.get(&run_id).expect("the branch has a run");
+        assert!(active.worktree.path.is_dir(), "{:?}", active.worktree.path);
+        assert_eq!(active.worktree.branch, branch);
+        assert!(active.adopted, "the checkout it cut is one Build owns");
+        assert_eq!(
+            active.agents.len(),
+            1,
+            "a dispatched branch opens with exactly one agent, and no empty bubble beside it"
+        );
+        assert_eq!(active.agents.first().id, agent_id);
+        assert_eq!(
+            dispatched_instruction(&state, &run_id, &agent_id),
+            "Add a health endpoint"
+        );
+
+        // The harness is told, through the same queue every other verb speaks
+        // to an agent with: cold spawns it with the instruction in its catch-up
+        // packet, warm is the read-your-messages nudge `thread.post` writes.
+        assert_eq!(state.pending_agent_turns.len(), 1, "one turn was queued");
+        let queued = &state.pending_agent_turns[0];
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(queued.agent_id, agent_id);
+        assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
+        assert!(
+            queued.cold.contains("Add a health endpoint"),
+            "a cold agent reads the instruction out of its packet: {}",
+            queued.cold
+        );
+        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+
+        // …and the work is on the feed as one branch row.
+        let board = state.handle(req("board.list", json!({})));
+        let row = board["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["run_id"] == json!(run_id.clone()))
+            .unwrap_or_else(|| panic!("the dispatched branch is on the feed: {board:?}"));
+        assert_eq!(row["kind"], "branch", "{row:?}");
+        assert_eq!(row["branch"], json!(branch), "{row:?}");
+    }
+
+    /// A dispatch that names a branch already in flight joins that checkout —
+    /// and still gets its own agent, because an instruction is never dropped
+    /// into a conversation someone else is having.
+    #[test]
+    fn branch_dispatch_onto_an_existing_branch_reuses_it_and_adds_an_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        let dispatched = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-in-flight",
+                "instruction": "Also cover the empty case",
+                "provider": "codex",
+            }),
+        ));
+
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let result = &dispatched["result"];
+        assert_eq!(result["run_id"], json!(run_id.clone()), "{result:?}");
+        assert_eq!(result["branch"], "feature-in-flight", "{result:?}");
+        let agent_id = result["agent_id"].as_str().unwrap().to_string();
+        assert_ne!(
+            agent_id, first_agent,
+            "a dispatch never joins a conversation"
+        );
+
+        let active = state.runs.get(&run_id).expect("the run is still here");
+        assert_eq!(active.worktree.path, worktree, "the worktree was reused");
+        assert_eq!(active.agents.len(), 2);
+        assert_eq!(active.agents.by_id(&agent_id).unwrap().ordinal, 2);
+        assert_eq!(
+            active.agents.by_id(&agent_id).unwrap().choice.provider,
+            AgentProvider::Codex,
+            "the dispatch chose what its agent runs on"
+        );
+        assert!(
+            active.agents.first().thread.items.is_empty(),
+            "nothing landed in the agent that was already there"
+        );
+        assert_eq!(
+            dispatched_instruction(&state, &run_id, &agent_id),
+            "Also cover the empty case"
+        );
+        assert_eq!(state.pending_agent_turns.len(), 1);
+        let queued = &state.pending_agent_turns[0];
+        assert_eq!(queued.agent_id, agent_id);
+        assert_eq!(
+            queued.model_choice.provider,
+            AgentProvider::Codex,
+            "the harness it spawns is the one this agent was dispatched on"
+        );
+        assert!(
+            queued.cold.contains("Also cover the empty case"),
+            "{}",
+            queued.cold
+        );
+    }
+
+    /// A branch it cut and could not finish setting up leaves nothing behind:
+    /// no directory, no branch ref, no run, no agent, nothing queued.
+    #[test]
+    fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
+        let (dir, repo) = init_repo();
+        for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Post] {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            state.dispatch_fault = Some(step);
+
+            let failed = state.handle(req(
+                "branch.dispatch",
+                json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+            ));
+
+            assert_eq!(failed["ok"], false, "{step:?} -> {failed:?}");
+            assert!(state.runs.is_empty(), "{step:?} left a run behind");
+            assert!(
+                state.pending_agent_turns.is_empty(),
+                "{step:?} left a turn queued"
+            );
+            assert!(
+                !dir.path().join("wt").join("add-a-health-endpoint").exists(),
+                "{step:?} left the worktree it minted on disk"
+            );
+            state.dispatch_fault = None;
+            assert!(
+                state
+                    .external_worktrees(&project_id, true)
+                    .unwrap()
+                    .is_empty(),
+                "{step:?} left a checkout the scan can still see"
+            );
+            assert!(
+                !local_branch_exists(&repo, "build/add-a-health-endpoint").unwrap(),
+                "{step:?} left the branch ref it cut"
+            );
+        }
+    }
+
+    /// A checkout that was there before the call is handed back exactly as it
+    /// was found — files, branch and all. Cleanup undoes what the dispatch
+    /// created; it never destroys what it merely adopted.
+    #[test]
+    fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        // A bare checkout Build does not own yet: the dispatch adopts it, so
+        // cleanup un-adopts and leaves every file alone.
+        let by_hand = add_external_worktree(&repo, dir.path(), "by-hand", "feature-by-hand");
+        std::fs::write(by_hand.join("mine.txt"), "not Build's to delete\n").unwrap();
+        state.dispatch_fault = Some(BranchDispatchStep::Post);
+
+        let failed = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-by-hand",
+                "instruction": "pick this up",
+            }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(by_hand.is_dir(), "the checkout was destroyed");
+        assert!(by_hand.join("mine.txt").is_file(), "its work was destroyed");
+        assert!(state.runs.is_empty(), "the adoption was undone");
+        assert!(state.pending_agent_turns.is_empty());
+
+        // A branch Build already runs: cleanup leaves the run and its checkout
+        // standing, with the agent roster it had before the call.
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-running");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        let agents_before = state.runs[&run_id].agents.len();
+
+        let failed = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-running",
+                "instruction": "one more thing",
+            }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(worktree.is_dir(), "the running checkout was destroyed");
+        assert!(state.runs.contains_key(&run_id), "the run was released");
+        assert_eq!(state.runs[&run_id].agents.len(), agents_before);
+        assert!(state.pending_agent_turns.is_empty());
+    }
+
+    /// Refusals come before anything is created: an unknown project and an
+    /// empty instruction both leave the repo untouched.
+    #[test]
+    fn branch_dispatch_refuses_an_unknown_project_and_an_empty_instruction() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let unknown = state.handle(req(
+            "branch.dispatch",
+            json!({ "project_id": "proj-nope", "instruction": "do the thing" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert!(
+            unknown["error"].as_str().unwrap().contains("proj-nope"),
+            "{unknown:?}"
+        );
+
+        for instruction in [json!(""), json!("   ")] {
+            let empty = state.handle(req(
+                "branch.dispatch",
+                json!({ "project_id": project_id, "instruction": instruction }),
+            ));
+            assert_eq!(empty["ok"], false, "{instruction:?} -> {empty:?}");
+        }
+
+        let unrunnable = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "instruction": "do the thing",
+                "provider": "hal9000",
+            }),
+        ));
+        assert_eq!(unrunnable["ok"], false, "{unrunnable:?}");
+
+        assert!(state.runs.is_empty(), "nothing was created");
+        assert!(state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .is_empty());
     }
 
     // ==== stale-while-revalidate for the poll diff caches ======================

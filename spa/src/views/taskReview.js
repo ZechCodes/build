@@ -9,8 +9,8 @@
 // task view, so remounts — tab switches, shell rebuilds — keep review state.
 
 import { esc } from "../core/text.js";
-import { parseDiff, filterNoiseFiles } from "../core/diff.js";
-import { diffFilesHtml } from "../core/diffRender.js";
+import { parseDiff } from "../core/diff.js";
+import { diffStackHtml } from "../core/diffRender.js";
 import { stampReview, changedSinceReview } from "../core/reviewMemory.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
@@ -85,6 +85,9 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
   const viewedFiles = new Set();
   let changedOnlyFilter = false;
   let renderedFiles = [];
+  // The collapsed generated-files group at the bottom of the stack: noise is
+  // grouped, never filtered away, and this is whether the reviewer opened it.
+  let noiseExpanded = false;
 
   // ONE single-flight latch for the git split button, owned by the plug — not
   // by each mount. paint() re-runs updateActions() every tick, and without a
@@ -269,7 +272,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
         ? `<label class="changedonly"><input type="checkbox" id="changedonly"${changedOnlyFilter ? " checked" : ""}/> Only changes since my review</label>`
         : "";
     const filesHtml = filesToRender.length
-      ? diffFilesHtml(filesToRender, { commentable: editable, changedSince: changed, viewed: viewedFiles, withViewedToggle: editable })
+      ? diffStackHtml(filesToRender, { commentable: editable, changedSince: changed, viewed: viewedFiles, withViewedToggle: editable, noiseExpanded })
       : files.length
         ? '<div class="empty">Nothing changed since your review.</div>'
         : '<div class="empty">No file changes yet.</div>';
@@ -331,6 +334,11 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       // pane's fold handler (expand) instead of popping a comment.
       host.onclick = (e) => {
         if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
+        if (e.target.closest(".noisehead")) {
+          noiseExpanded = !noiseExpanded;
+          renderBody(t, renderedFiles);
+          return;
+        }
         const commentButton = e.target.closest(".fcmt");
         if (commentButton) {
           const fileEl = commentButton.closest(".file");
@@ -352,7 +360,15 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       };
       q("#dgeneral").oninput = updateActions;
     } else {
-      host.onclick = null;
+      // Read-only states still open the collapsed generated-files group and
+      // reveal masked secrets — those are ways of reading, not of commenting.
+      host.onclick = (e) => {
+        if (toggleSecretSpoiler(e.target)) return;
+        if (e.target.closest(".noisehead")) {
+          noiseExpanded = !noiseExpanded;
+          renderBody(t, renderedFiles);
+        }
+      };
     }
     applyHighlights();
     refreshFeedback();
@@ -373,7 +389,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
     // it, while still consuming the forced-rebuild flag that post set.
     const t = getTask();
     if (!t) return;
-    const files = filterNoiseFiles(parseDiff(diff.patch));
+    const files = parseDiff(diff.patch);
     renderedFiles = files; // the freshest parsed diff, for stampReview at Request Changes
     lastDiffState = t.state;
     const key = t.state + " " + diff.patch;

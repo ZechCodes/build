@@ -6,6 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
+import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 
 /** The code-cell HTML for one diff row. On a dotenv file a secret-like line is
  *  masked (a click-to-reveal spoiler span, both old and new values independent);
@@ -53,8 +54,17 @@ export function diffRowsHtml(rows, lang = null, { maskDotenv = false } = {}) {
  *  that moved since the reviewer's last pass (an amber "changed since your
  *  review" chip); `viewed` is a Set of paths the reviewer ticked off (those
  *  files render `collapsed` instead of `capped` — collapsed wins); and
- *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header. */
-export function diffFilesHtml(files, { commentable = false, changedSince = null, viewed = null, withViewedToggle = false } = {}) {
+ *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header.
+ *
+ *  `fileMenu` puts the file's own destructive verbs behind a ⋯ in the header —
+ *  where per-file discard lives now that the stage checkboxes are gone (commit
+ *  is commit-all). It is `{ openPath, pendingConfirm }`: only the named file's
+ *  menu is open, and a matching `discard:<path>` confirm renders armed, so the
+ *  existing two-click confirm idiom is what fires it. */
+export function diffFilesHtml(
+  files,
+  { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null } = {},
+) {
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   return files
     .map((f) => {
@@ -67,9 +77,37 @@ export function diffFilesHtml(files, { commentable = false, changedSince = null,
         : "";
       return `
       <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span class="fpath">${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}</div>
+        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(f.path, fileMenu)}</div>
         <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
     })
     .join("");
+}
+
+/** The file header's ⋯ and, when this file's menu is the open one, its verbs.
+ *  Today that is one verb — discard — carrying the shared inline confirm. */
+function fileMenuHtml(path, fileMenu) {
+  if (!fileMenu) return "";
+  const open = fileMenu.openPath === path;
+  const armed = fileMenu.pendingConfirm === `discard:${path}`;
+  const menu = open
+    ? `<div class="fmenu-pop"><button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-path="${esc(path)}">${armed ? "Discard changes?" : "Discard changes"}</button></div>`
+    : "";
+  return `<span class="fmenu-host"><button class="fmenu" data-path="${esc(path)}" title="File actions" aria-expanded="${open}">⋯</button>${menu}</span>`;
+}
+
+/** One changeset, stacked: every readable file as a full diff, then whatever is
+ *  machine noise (lockfiles, caches, Build metadata) as ONE collapsed group at
+ *  the bottom with a count line. Noise is never filtered away — the doc's rule
+ *  is collapse, never hide — so a reviewer can always open it.
+ *  `noiseExpanded` is the caller's persisted disclosure state; every other
+ *  option passes straight through to diffFilesHtml. */
+export function diffStackHtml(files, { noiseExpanded = false, ...fileOptions } = {}) {
+  const grouped = groupNoiseFiles(files);
+  if (!grouped.files.length && !grouped.noise.length) return '<div class="empty">No file changes.</div>';
+  const primary = grouped.files.length ? diffFilesHtml(grouped.files, fileOptions) : "";
+  if (!grouped.noise.length) return primary;
+  return `${primary}<div class="noisegroup${noiseExpanded ? " open" : ""}">
+    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(grouped.noise.length)}</button>
+    ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(grouped.noise, fileOptions)}</div>` : ""}</div>`;
 }

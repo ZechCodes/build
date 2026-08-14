@@ -1,0 +1,48 @@
+/* ---- work surfaces: Changes ------------------------------------------------
+   The rebuilt Changes surface's own rules. Every colour here is a theme token
+   from styles.css (:root / :root[data-theme="dark"]) — nothing in this file
+   hard-codes a colour, so both themes are carried by the same rules. Layout
+   tokens (--pane-gutter and friends) come from the same place: this surface
+   sits in the shell's two-column primitive and states no width of its own. */
+
+/* The changeset header: what this set of changes is, and its counts. */
+.csheader { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:0 0 14px; }
+.csheader .cstitle { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; }
+.csheader.commitheader { display:block; margin-bottom:16px; }
+/* A commit's identity line and body reuse the commit-detail type scale. */
+.csheader.commitheader .csub { font-weight:650; font-size:15px; }
+.csheader.commitheader .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2);
+  white-space:pre-wrap; margin:8px 0 0; }
+.csheader.commitheader .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 0; }
+.csplaceholder { color:var(--dim); font-size:13px; padding:6px 0 0; }
+.ftrunc { color:var(--amber); font-size:11.5px; margin:0 0 12px; }
+
+/* The rail's Uncommitted entry carries +/− counts, not a file count, so its
+   subline is a number pair rather than a word. */
+.crail .rrow .rsub .pm { margin-left:0; display:inline-flex; gap:6px; font-family:var(--mono); }
+
+/* The per-file ⋯: the file's own verbs, disclosed in the header rather than in
+   a floating layer — the file block clips its own overflow, and a menu that
+   gets clipped is a menu nobody can click. */
+.fmenu-host { display:inline-flex; align-items:center; gap:6px; flex:none; }
+.fmenu { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:3px 6px; cursor:pointer; }
+.fmenu:hover { background:var(--accent-soft); color:var(--accent); }
+.fmenu[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
+.fmenu-pop { display:inline-flex; gap:6px; }
+
+/* Generated files are collapsed, never filtered away: one count line at the
+   bottom of the stack, and the whole group opens from it. */
+.noisegroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
+.noisegroup.open { border-style:solid; border-color:var(--line); }
+.noisehead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
+  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px; }
+.noisehead:hover { color:var(--accent); background:var(--line2); }
+.noisegroup.open .noisehead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
+.noisefiles { padding:12px 12px 2px; }
+
+/* The pending-comment tray under a changeset: what has been written but not yet
+   sent, plus the general note and the send controls. */
+.csfeedback { margin-top:18px; }
+.csgeneral { min-height:62px; }
+.csfeedback .cslist:empty { display:none; }

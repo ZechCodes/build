@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDiff, filterNoiseFiles } from "../src/core/diff.js";
+import { parseDiff } from "../src/core/diff.js";
 
 const SAMPLE_PATCH = `diff --git a/greeting.py b/greeting.py
 new file mode 100644
@@ -60,17 +60,5 @@ describe("parseDiff", () => {
 
   it("ignores content before the first diff header", () => {
     expect(parseDiff("stray line\n+not a real add\n")).toEqual([]);
-  });
-});
-
-describe("filterNoiseFiles", () => {
-  it("drops build artifacts and lockfiles", () => {
-    const files = [
-      { path: ".build/state.json" },
-      { path: "src/__pycache__/mod.pyc" },
-      { path: "uv.lock" },
-      { path: "src/main.py" },
-    ];
-    expect(filterNoiseFiles(files).map((f) => f.path)).toEqual(["src/main.py"]);
   });
 });

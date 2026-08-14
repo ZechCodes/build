@@ -10,8 +10,8 @@
 // rail selection moving away and back) keep pending review comments.
 
 import { esc } from "../core/text.js";
-import { parseDiff, filterNoiseFiles } from "../core/diff.js";
-import { diffFilesHtml } from "../core/diffRender.js";
+import { parseDiff } from "../core/diff.js";
+import { diffStackHtml } from "../core/diffRender.js";
 import { diffThreadMessages } from "../core/notes.js";
 import { loadModelCatalog } from "../app.js";
 import { mountSplitButton } from "../core/splitButton.js";
@@ -83,6 +83,8 @@ export function createWorktreeReview({
   const diffComments = []; // { id, file, lnA, lnB, snippet, comment }
   let dcid = 0;
   let diffKey = null;
+  let noiseExpanded = false; // the collapsed generated-files group at the stack's bottom
+  let renderedFiles = []; // the freshest parsed diff, so a local toggle can repaint
   let meta = null; // the last worktree.diff payload's branch/base/adoptable/path
 
   let agentCatalog = normalizeModelCatalog({});
@@ -293,12 +295,13 @@ export function createWorktreeReview({
   }
 
   function renderBody(files) {
+    renderedFiles = files;
     const totalIns = files.reduce((a, f) => a + f.add, 0),
       totalDel = files.reduce((a, f) => a + f.del, 0);
     const editable = !!(meta && meta.adoptable);
     host.innerHTML = `
       <div class="diffbar"><span>${files.length} files <span style="color:var(--green)">+${totalIns}</span> <span style="color:var(--red)">−${totalDel}</span></span></div>
-      ${files.length ? diffFilesHtml(files, { commentable: editable }) : '<div class="empty">No file changes yet.</div>'}
+      ${diffStackHtml(files, { commentable: editable, noiseExpanded })}
       ${editable ? `<div class="plan-feedback" id="wdiff-feedback"><div id="wdifflist"></div>
         <textarea id="wgeneral" class="plan-general" placeholder="Add a general comment about the changes and request updates…"></textarea></div>` : ""}
       <div class="actionbar"><span class="hint" id="wdiffhint"></span><div class="right" id="wdiffactions"></div></div>`;
@@ -323,6 +326,11 @@ export function createWorktreeReview({
     // secret spoilers always. Diff folding belongs to the git pane around us.
     host.onclick = (e) => {
       if (toggleSecretSpoiler(e.target)) return; // reveal/hide a masked dotenv value
+      if (e.target.closest(".noisehead")) {
+        noiseExpanded = !noiseExpanded;
+        renderBody(renderedFiles);
+        return;
+      }
       const commentButton = e.target.closest(".fcmt");
       if (commentButton) {
         const fileEl = commentButton.closest(".file");
@@ -369,7 +377,7 @@ export function createWorktreeReview({
       path: res.path,
       adoptable: res.adoptable,
     };
-    const files = filterNoiseFiles(parseDiff(res.patch));
+    const files = parseDiff(res.patch);
     const key = String(res.adoptable) + " " + res.patch;
     const general = q("#wgeneral");
     // Freeze while the reviewer is mid-comment (pending comments, an open

@@ -33,9 +33,7 @@ export function parseDiff(patch) {
   return files;
 }
 
-/** Hide machine noise (task metadata, caches, lockfiles) from review. */
-export function filterNoiseFiles(files) {
-  return files.filter(
-    (f) => !f.path.startsWith(".build/") && !f.path.includes("__pycache__") && f.path !== "uv.lock",
-  );
-}
+// Machine noise (Build metadata, caches, lockfiles) is no longer filtered out
+// of a review: core/changesModel.js's groupNoiseFiles separates it, and
+// core/diffRender.js's diffStackHtml renders it as one collapsed group at the
+// bottom of the stack. Collapse, never hide.

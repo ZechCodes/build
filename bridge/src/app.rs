@@ -1747,6 +1747,10 @@ pub struct AppState {
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
+    /// What the user said, before anything decided where it goes, keyed by
+    /// capture id. Durable from the moment it is taken — the router runs after
+    /// the write, never instead of it.
+    captures: HashMap<String, crate::capture::Capture>,
     /// Finished external worktrees keyed by their stable path-derived id.
     /// Loaded from the store at boot; project association is resolved by the
     /// canonical project path because project ids are re-minted.
@@ -1931,6 +1935,7 @@ impl AppState {
             plans: HashMap::new(),
             runs: HashMap::new(),
             store: None,
+            captures: HashMap::new(),
             archived_worktrees: HashMap::new(),
             entity_created_at: HashMap::new(),
             entity_updated_at: HashMap::new(),
@@ -2065,6 +2070,7 @@ impl AppState {
         let archived_worktrees = store
             .load_all_archived_worktrees()
             .map_err(|e| e.to_string())?;
+        let captures = store.load_all_captures().map_err(|e| e.to_string())?;
         // Attention survives a restart, or Monday would look like a fresh install.
         self.attention = store.load_attention();
         self.store = Some(store);
@@ -2072,6 +2078,7 @@ impl AppState {
             .into_iter()
             .map(|record| (record.worktree_id.clone(), record))
             .collect();
+        self.recover_captures(captures)?;
         self.recover_completed_worktree_finishes();
         // Plans first: a run re-derives its `plan_path` from the owning plan's
         // record, so the plan must already be in the map.
@@ -4784,6 +4791,10 @@ impl AppState {
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),
             "board.list" => Ok(self.board_list()),
+            // Capture surface: what the user said, kept before anything routes it.
+            "capture.create" => self.capture_create(params),
+            "capture.list" => Ok(self.capture_list()),
+            "capture.get" => self.capture_get(params),
             "archive.list" => self.archive_list(params),
             "archived.list" => Ok(self.archived_list()),
             // Canonical Issue surface. The existing plan id and plan-store path
@@ -6780,6 +6791,150 @@ impl AppState {
             .first()
             .map(|p| p.id.clone())
             .ok_or_else(|| "no projects configured".to_string())
+    }
+
+    // ---- Captures -------------------------------------------------------------
+
+    /// Re-attach every stored capture on boot, putting a route that was in
+    /// flight back where the router picks work up. The reset is written, not
+    /// merely remembered: the router re-fires from the record, so the record is
+    /// what has to say the route never finished.
+    fn recover_captures(&mut self, captures: Vec<crate::capture::Capture>) -> Result<(), String> {
+        for stored in captures {
+            let recovered = stored.recovered_at_boot();
+            if recovered != stored {
+                self.require_store()?
+                    .save_capture(&recovered)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.captures.insert(recovered.id.clone(), recovered);
+        }
+        Ok(())
+    }
+
+    /// `capture.create` — keep what the user said, then decide about it.
+    ///
+    /// The record is on disk before this answers, and the answer IS the record.
+    /// Routing is triggered off the stored capture afterwards, so a router that
+    /// never starts, never answers, or dies mid-decision costs a routing
+    /// decision and never the text: the only part of a capture the user cannot
+    /// produce again.
+    fn capture_create(&mut self, params: &Value) -> Result<Value, String> {
+        let said = require_str(params, "text")?;
+        let text = said.trim();
+        if text.is_empty() {
+            return Err("capture.create: text is empty — there is nothing to keep".to_string());
+        }
+        let capture =
+            crate::capture::Capture::new(crate::capture::new_capture_id(), text, now_rfc3339());
+        self.require_store()?
+            .save_capture(&capture)
+            .map_err(|e| e.to_string())?;
+        let record = capture_json(&capture);
+        self.captures.insert(capture.id.clone(), capture);
+        // The router fires from here (its trigger lands with the router
+        // itself). It reads the stored record, never this in-memory copy, so a
+        // restart mid-route re-fires from exactly what survived.
+        Ok(record)
+    }
+
+    fn capture_list(&self) -> Value {
+        let captures: Vec<Value> = self
+            .captures_oldest_first()
+            .into_iter()
+            .map(capture_json)
+            .collect();
+        json!({ "captures": captures })
+    }
+
+    fn capture_get(&self, params: &Value) -> Result<Value, String> {
+        let capture_id = require_str(params, "capture_id")?;
+        let capture = self
+            .captures
+            .get(&capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        Ok(capture_json(capture))
+    }
+
+    /// Every capture in the order it was said. The map is keyed by id, and the
+    /// order captures arrived in is the order they read in.
+    fn captures_oldest_first(&self) -> Vec<&crate::capture::Capture> {
+        let mut captures: Vec<&crate::capture::Capture> = self.captures.values().collect();
+        captures.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        captures
+    }
+
+    /// The feed rows for captures that are still their own presence: unrouted,
+    /// being routed, failed, or holding a question nobody has answered. A
+    /// routed, quiet capture is spoken for by the issue or branch it became.
+    fn capture_candidates(&self) -> Vec<crate::branch::WorkItemCandidate> {
+        self.captures_oldest_first()
+            .into_iter()
+            .filter(|capture| capture.is_on_the_feed())
+            .map(|capture| self.capture_candidate(capture))
+            .collect()
+    }
+
+    fn capture_candidate(
+        &self,
+        capture: &crate::capture::Capture,
+    ) -> crate::branch::WorkItemCandidate {
+        let routing = capture.routing.as_ref();
+        let project_id = routing.map(|routing| routing.project_id.clone());
+        let issue_id = routing
+            .filter(|routing| routing.kind == crate::capture::CaptureTarget::Issue)
+            .map(|routing| routing.target_id.clone());
+        let branch = routing
+            .filter(|routing| routing.kind == crate::capture::CaptureTarget::Branch)
+            .map(|routing| routing.target_id.clone());
+        let reason = capture.unread_reason();
+        let row = json!({
+            "kind": crate::branch::WorkItemKind::Capture.as_str(),
+            "capture_id": capture.id,
+            "project_id": project_id.clone().unwrap_or_default(),
+            "project": project_id
+                .as_deref()
+                .map(|project_id| self.project_name_by_id(project_id))
+                .unwrap_or_default(),
+            "branch": branch,
+            "title": capture.title(),
+            "text": capture.text,
+            "state": capture.state.as_str(),
+            "created_at": capture.created_at,
+            "unread": reason.is_some(),
+            "unread_count": u32::from(reason.is_some()),
+            "unread_reason": reason,
+            // A capture is working exactly while the router has it: there are
+            // no agents under it to time, so there is no working clock either.
+            "working": capture.state == crate::capture::CaptureState::Routing,
+            "working_time": Value::Null,
+            "agents": Vec::<Value>::new(),
+            "stat": Value::Null,
+            // What the user said is what they last touched: a capture sorts by
+            // when it was taken until it becomes work with a life of its own.
+            "resume_at": capture.created_at,
+            // Nothing to archive and nothing to silence: a capture leaves the
+            // feed by being routed, not by being dismissed.
+            "can_finish": false,
+            "muted": false,
+            "worktree_path": Value::Null,
+            "worktree_id": Value::Null,
+            "run_id": Value::Null,
+            "issue_id": issue_id,
+            "primary": false,
+            "routing": routing,
+            "question": capture.question,
+        });
+        crate::branch::WorkItemCandidate {
+            kind: crate::branch::WorkItemKind::Capture,
+            key: crate::branch::WorkItemKey::Capture {
+                capture_id: capture.id.clone(),
+            },
+            source: None,
+            issue_id: None,
+            implementation_active: false,
+            row,
+        }
     }
 
     // ---- Plan surface ---------------------------------------------------------
@@ -9659,6 +9814,7 @@ impl AppState {
                 .iter()
                 .map(|issue_id| self.issue_candidate(issue_id)),
         );
+        candidates.extend(self.capture_candidates());
         crate::branch::fold_work_items(candidates)
     }
 
@@ -9868,9 +10024,15 @@ impl AppState {
         let Some(project_id) = self.entity_project.get(entity_id) else {
             return String::new();
         };
+        self.project_name_by_id(project_id)
+    }
+
+    /// What a project is called, or "" when this bridge has no such project —
+    /// a row names a project it cannot resolve rather than failing to exist.
+    fn project_name_by_id(&self, project_id: &str) -> String {
         self.projects
             .iter()
-            .find(|project| &project.id == project_id)
+            .find(|project| project.id == project_id)
             .map(|project| project.name.clone())
             .unwrap_or_default()
     }
@@ -11285,6 +11447,12 @@ fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
         }
     }
     aliased
+}
+
+/// A capture as it ships: the stored record itself, so the wire and the store
+/// can never disagree about what the user said.
+fn capture_json(capture: &crate::capture::Capture) -> Value {
+    serde_json::to_value(capture).expect("a capture always serializes")
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -27948,6 +28116,248 @@ mod tests {
         assert!(
             seen.iter().all(|(_, free)| *free),
             "a diff ran while the app mutex was held: {seen:?}"
+        );
+    }
+
+    // ==== captures: durable before anything routes them ======================
+
+    fn capture_rows(state: &mut AppState) -> Vec<Value> {
+        work_item_rows(state)
+            .into_iter()
+            .filter(|row| row["kind"] == "capture")
+            .collect()
+    }
+
+    /// The write that has to land before anything else happens. A capture is
+    /// on disk by the time `capture.create` answers, so a daemon that dies the
+    /// instant afterwards — mid-route, pre-route, whenever — still has what the
+    /// user said when it comes back.
+    #[test]
+    fn a_capture_is_durable_before_anything_routes_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let created = state.handle(req(
+            "capture.create",
+            json!({ "text": "fix the login redirect" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let record = created["result"].clone();
+        let capture_id = record["id"]
+            .as_str()
+            .expect("a capture has an id")
+            .to_string();
+        assert!(capture_id.starts_with("capture-"), "{capture_id}");
+        assert_eq!(record["text"], "fix the login redirect");
+        assert_eq!(record["state"], "unrouted");
+        assert_eq!(record["routing"], Value::Null);
+        assert_eq!(record["question"], Value::Null);
+
+        // On disk already — read by a store this daemon never told about it.
+        let on_disk = Store::new(dir.path().join("store"))
+            .load_all_captures()
+            .unwrap();
+        assert_eq!(on_disk.len(), 1, "the record is written before the answer");
+        assert_eq!(on_disk[0].id, capture_id);
+        assert_eq!(on_disk[0].text, "fix the login redirect");
+
+        // And a fresh daemon over the same store still has it.
+        let mut rebooted = qa_state(&repo, dir.path());
+        let listed = rebooted.handle(req("capture.list", json!({})));
+        let captures = listed["result"]["captures"].as_array().unwrap();
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0]["id"], capture_id.as_str());
+
+        let fetched = rebooted.handle(req("capture.get", json!({ "capture_id": capture_id })));
+        assert_eq!(fetched["ok"], true, "{fetched:?}");
+        assert_eq!(fetched["result"]["text"], "fix the login redirect");
+    }
+
+    /// A capture with nothing said about it is empty text: there is nothing to
+    /// keep, and a record of nothing would sit on the feed forever.
+    #[test]
+    fn a_capture_of_nothing_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let blank = state.handle(req("capture.create", json!({ "text": "   \n " })));
+        assert_eq!(blank["ok"], false, "{blank:?}");
+        assert!(state.captures.is_empty());
+        assert_eq!(
+            Store::new(dir.path().join("store"))
+                .load_all_captures()
+                .unwrap(),
+            Vec::new()
+        );
+
+        let missing = state.handle(req("capture.create", json!({})));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+    }
+
+    #[test]
+    fn capture_get_refuses_an_id_it_does_not_know() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let unknown = state.handle(req(
+            "capture.get",
+            json!({ "capture_id": "capture-nowhere" }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+    }
+
+    /// An unrouted capture is a row on the feed, in the row shape every work
+    /// item ships: what it says, that nothing has been decided, and none of the
+    /// branch facts it does not have.
+    #[test]
+    fn an_unrouted_capture_is_a_feed_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let created = state.handle(req(
+            "capture.create",
+            json!({ "text": "fix the login redirect\nand the toast" }),
+        ));
+        let capture_id = created["result"]["id"].as_str().unwrap().to_string();
+
+        let rows = capture_rows(&mut state);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        assert_eq!(row["capture_id"], capture_id.as_str());
+        assert_eq!(row["title"], "fix the login redirect");
+        assert_eq!(row["text"], "fix the login redirect\nand the toast");
+        assert_eq!(row["state"], "unrouted");
+        assert_eq!(row["unread"], false, "nothing has asked the user anything");
+        assert_eq!(row["unread_count"], 0);
+        assert_eq!(row["unread_reason"], Value::Null);
+        assert_eq!(row["working"], false);
+        assert_eq!(row["branch"], Value::Null);
+        assert_eq!(row["run_id"], Value::Null);
+        assert_eq!(row["issue_id"], Value::Null);
+        assert_eq!(row["worktree_id"], Value::Null);
+        assert_eq!(row["agents"].as_array().unwrap().len(), 0);
+        assert_eq!(row["can_finish"], false);
+        assert_eq!(row["muted"], false);
+        assert_eq!(row["primary"], false);
+        assert_eq!(row["resume_at"], row["created_at"]);
+        assert_eq!(row["routing"], Value::Null);
+        assert_eq!(row["question"], Value::Null);
+    }
+
+    /// While the router has it, the capture reads as working; when the router
+    /// gives up, it reads as needing the user.
+    #[test]
+    fn a_capture_says_whether_the_router_has_it_or_gave_up() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let created = state.handle(req("capture.create", json!({ "text": "ship it" })));
+        let capture_id = created["result"]["id"].as_str().unwrap().to_string();
+
+        state.captures.get_mut(&capture_id).unwrap().state = crate::capture::CaptureState::Routing;
+        let routing = capture_rows(&mut state).remove(0);
+        assert_eq!(routing["state"], "routing");
+        assert_eq!(routing["working"], true);
+        assert_eq!(routing["unread"], false);
+
+        state.captures.get_mut(&capture_id).unwrap().state = crate::capture::CaptureState::Failed;
+        let failed = capture_rows(&mut state).remove(0);
+        assert_eq!(failed["state"], "failed");
+        assert_eq!(failed["working"], false);
+        assert_eq!(failed["unread"], true);
+        assert_eq!(failed["unread_count"], 1);
+        assert_eq!(failed["unread_reason"], "routing_failed");
+    }
+
+    /// Once a capture is routed and quiet, the issue or branch it became is its
+    /// presence — a second row for one piece of work is a lie. An unanswered
+    /// question is the exception: that is the capture itself asking.
+    #[test]
+    fn a_routed_and_quiet_capture_leaves_the_feed() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req("capture.create", json!({ "text": "ship it" })));
+        let capture_id = created["result"]["id"].as_str().unwrap().to_string();
+
+        {
+            let capture = state.captures.get_mut(&capture_id).unwrap();
+            capture.state = crate::capture::CaptureState::Routed;
+            capture.routing = Some(crate::capture::CaptureRouting {
+                project_id: project_id.clone(),
+                kind: crate::capture::CaptureTarget::Issue,
+                target_id: "plan-7".to_string(),
+                routed_at: now_rfc3339(),
+                rationale: Some("no branch names this work".to_string()),
+            });
+        }
+        assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
+
+        state.captures.get_mut(&capture_id).unwrap().question =
+            Some(crate::capture::CaptureQuestion {
+                text: "which project is this?".to_string(),
+                asked_at: now_rfc3339(),
+                answer: None,
+            });
+        let asking = capture_rows(&mut state).remove(0);
+        assert_eq!(asking["unread"], true);
+        assert_eq!(asking["unread_reason"], "router_question");
+        assert_eq!(asking["question"]["text"], "which project is this?");
+        assert_eq!(asking["project_id"], project_id.as_str());
+        assert_eq!(asking["issue_id"], "plan-7");
+        assert_eq!(asking["routing"]["kind"], "issue");
+
+        state
+            .captures
+            .get_mut(&capture_id)
+            .unwrap()
+            .question
+            .as_mut()
+            .unwrap()
+            .answer = Some("the bridge".to_string());
+        assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
+    }
+
+    /// The router process died with the daemon, so a route that was in flight
+    /// is put back where the router picks work up — and the reset is durable,
+    /// so a second restart does not have to re-derive it.
+    #[test]
+    fn boot_puts_an_interrupted_route_back_to_unrouted() {
+        let (dir, repo) = init_repo();
+        let store = Store::new(dir.path().join("store"));
+        let mut mid_route = crate::capture::Capture::new(
+            "capture-mid-route",
+            "fix the login redirect",
+            now_rfc3339(),
+        );
+        mid_route.state = crate::capture::CaptureState::Routing;
+        store.save_capture(&mid_route).unwrap();
+        let mut routed = crate::capture::Capture::new("capture-routed", "ship it", now_rfc3339());
+        routed.state = crate::capture::CaptureState::Routed;
+        store.save_capture(&routed).unwrap();
+
+        let mut state = qa_state(&repo, dir.path());
+        let recovered = state.handle(req(
+            "capture.get",
+            json!({ "capture_id": "capture-mid-route" }),
+        ));
+        assert_eq!(recovered["result"]["state"], "unrouted", "{recovered:?}");
+        let settled = state.handle(req(
+            "capture.get",
+            json!({ "capture_id": "capture-routed" }),
+        ));
+        assert_eq!(
+            settled["result"]["state"], "routed",
+            "a decision already made is not a session to recover"
+        );
+
+        let on_disk = Store::new(dir.path().join("store"))
+            .load_all_captures()
+            .unwrap();
+        let states: Vec<&str> = on_disk
+            .iter()
+            .map(|capture| capture.state.as_str())
+            .collect();
+        assert!(
+            states.iter().all(|state| *state != "routing"),
+            "the reset is written, not just remembered: {states:?}"
         );
     }
 }

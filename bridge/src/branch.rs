@@ -20,11 +20,14 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-/// The two kinds of work item, as they ship on the wire.
+/// The kinds of work item, as they ship on the wire. Branch and issue are the
+/// work; a capture is the thing the user said that has not become work yet, and
+/// it holds a row of its own only until it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkItemKind {
     Branch,
     Issue,
+    Capture,
 }
 
 impl WorkItemKind {
@@ -32,6 +35,7 @@ impl WorkItemKind {
         match self {
             WorkItemKind::Branch => "branch",
             WorkItemKind::Issue => "issue",
+            WorkItemKind::Capture => "capture",
         }
     }
 }
@@ -62,6 +66,11 @@ pub enum WorkItemKey {
     },
     Issue {
         issue_id: String,
+    },
+    /// A capture is its own key: nothing else in the feed can be the same
+    /// thing, because it is not yet a thing.
+    Capture {
+        capture_id: String,
     },
 }
 
@@ -281,6 +290,34 @@ mod tests {
             branch_candidate("p1", "build/thing", BranchSource::Run, "adopted"),
         ]);
         assert_eq!(labels(&folded), vec!["plan-1", "adopted"]);
+    }
+
+    /// A capture row is nobody else's duplicate: it keeps its place in the
+    /// feed, suppresses nothing, and is suppressed by nothing.
+    #[test]
+    fn a_capture_row_folds_with_nothing() {
+        let capture = WorkItemCandidate {
+            kind: WorkItemKind::Capture,
+            key: WorkItemKey::Capture {
+                capture_id: "capture-1".to_string(),
+            },
+            source: None,
+            issue_id: None,
+            implementation_active: false,
+            row: json!({ "from": "capture" }),
+        };
+        let mut implementation =
+            branch_candidate("p1", "build/thing", BranchSource::Run, "implementation");
+        implementation.issue_id = Some("plan-1".to_string());
+        implementation.implementation_active = true;
+
+        let folded = fold_work_items(vec![
+            capture,
+            issue_candidate("plan-1"),
+            implementation,
+            issue_candidate("plan-2"),
+        ]);
+        assert_eq!(labels(&folded), vec!["capture", "implementation", "plan-2"]);
     }
 
     #[test]

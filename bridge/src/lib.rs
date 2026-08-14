@@ -46,6 +46,7 @@ pub mod app;
 pub mod attention;
 pub mod backoff;
 pub mod branch;
+pub mod capture;
 pub mod config;
 pub mod diff;
 pub mod gitgui;

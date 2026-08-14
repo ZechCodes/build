@@ -753,6 +753,39 @@ impl Store {
         Ok(())
     }
 
+    // ---- Captures (what the user said, before anything routed it) ----------
+
+    fn capture_path(&self, capture_id: &str) -> PathBuf {
+        self.dir.join("captures").join(format!("{capture_id}.json"))
+    }
+
+    /// Persist one capture atomically and durably. This is the write that has
+    /// to land before routing is even attempted: the text is the only part of a
+    /// capture the user cannot produce again.
+    pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
+        let json = serde_json::to_string_pretty(record).expect("a capture always serializes");
+        write_record_atomically(&self.capture_path(&record.id), &json)
+    }
+
+    /// Load every capture, oldest first. Same discipline as the other loaders:
+    /// a missing dir means none, an unparseable record is a hard error naming
+    /// the file — a capture the store cannot read is the user's own words lost.
+    pub fn load_all_captures(&self) -> Result<Vec<crate::capture::Capture>, StoreError> {
+        let captures_dir = self.dir.join("captures");
+        if !captures_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut records: Vec<crate::capture::Capture> = Vec::new();
+        for entry in std::fs::read_dir(&captures_dir)? {
+            let path = entry?.path();
+            if is_json_record(&path) {
+                records.push(read_record(&path)?);
+            }
+        }
+        records.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(records)
+    }
+
     // ---- Archived external worktrees --------------------------------------
 
     fn archived_worktree_path(&self, worktree_id: &str) -> PathBuf {
@@ -1606,10 +1639,101 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{Capture, CaptureRouting, CaptureState, CaptureTarget};
     use crate::legacy::{
         CommentAnchor, CommentState, Phase, Stage, StageComment, StageState, TaskKind, TaskState,
         ValidationReport,
     };
+
+    /// A capture is durable before anything is decided about it: what the user
+    /// said survives a store that is opened again from scratch, routing and
+    /// all.
+    #[test]
+    fn a_capture_round_trips_with_everything_decided_about_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let mut capture = Capture::new(
+            "capture-1",
+            "fix the login redirect",
+            "2026-08-13T10:00:00Z",
+        );
+        capture.state = CaptureState::Routed;
+        capture.routing = Some(CaptureRouting {
+            project_id: "p1".to_string(),
+            kind: CaptureTarget::Issue,
+            target_id: "plan-7".to_string(),
+            routed_at: "2026-08-13T10:00:05Z".to_string(),
+            rationale: Some("no branch names this work".to_string()),
+        });
+        store.save_capture(&capture).unwrap();
+
+        let reopened = Store::new(dir.path().join("tasks"));
+        assert_eq!(reopened.load_all_captures().unwrap(), vec![capture]);
+    }
+
+    /// Re-saving a capture replaces it in place rather than filing a second
+    /// copy: one capture, one record, however many times routing touches it.
+    #[test]
+    fn saving_a_capture_again_replaces_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let mut capture = Capture::new("capture-1", "ship it", "2026-08-13T10:00:00Z");
+        store.save_capture(&capture).unwrap();
+        capture.state = CaptureState::Routing;
+        store.save_capture(&capture).unwrap();
+
+        let loaded = store.load_all_captures().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].state, CaptureState::Routing);
+    }
+
+    /// Captures come back oldest first, so the order they were said in is the
+    /// order they are read in.
+    #[test]
+    fn captures_load_in_the_order_they_were_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        for (id, said_at) in [
+            ("capture-b", "2026-08-13T10:00:02Z"),
+            ("capture-a", "2026-08-13T10:00:01Z"),
+            ("capture-c", "2026-08-13T10:00:03Z"),
+        ] {
+            store
+                .save_capture(&Capture::new(id, "something", said_at))
+                .unwrap();
+        }
+        let ids: Vec<String> = store
+            .load_all_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.id)
+            .collect();
+        assert_eq!(ids, vec!["capture-a", "capture-b", "capture-c"]);
+    }
+
+    /// No captures dir means no captures — a first boot is not an error.
+    #[test]
+    fn a_store_with_no_captures_yet_loads_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        assert_eq!(store.load_all_captures().unwrap(), Vec::new());
+    }
+
+    /// A capture record that will not parse fails the boot that read it. The
+    /// text is the one thing the user cannot re-derive, so dropping it quietly
+    /// is the one thing the store must never do.
+    #[test]
+    fn an_unreadable_capture_record_fails_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        let captures_dir = dir.path().join("tasks").join("captures");
+        std::fs::create_dir_all(&captures_dir).unwrap();
+        std::fs::write(captures_dir.join("capture-1.json"), "{ not json").unwrap();
+        assert!(matches!(
+            store.load_all_captures(),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
 
     #[test]
     fn task_files_from_before_model_choice_still_load() {

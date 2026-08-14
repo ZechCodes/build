@@ -205,10 +205,16 @@ async fn expect_disconnect(ws: &mut Ws) {
     }
 }
 
-/// Assert nothing arrives on this socket for a beat (negative routing checks).
+/// Assert no ROUTED frame arrives on this socket for a beat (negative routing
+/// checks). Ping/Pong keepalives are connection plumbing, not routed traffic.
 async fn expect_silence(ws: &mut Ws) {
-    if let Ok(unexpected) = tokio::time::timeout(Duration::from_millis(400), ws.next()).await {
-        panic!("expected silence, got {unexpected:?}");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+    loop {
+        match tokio::time::timeout_at(deadline, ws.next()).await {
+            Err(_) => return, // the window elapsed in silence
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+            Ok(unexpected) => panic!("expected silence, got {unexpected:?}"),
+        }
     }
 }
 
@@ -450,22 +456,71 @@ async fn silent_device_is_severed_and_reported_offline() {
 }
 
 #[tokio::test]
-async fn heartbeating_device_outlives_the_liveness_deadline() {
+async fn heartbeating_and_reading_device_outlives_the_liveness_deadline() {
     let api = mock_api().await;
     let device = identity::generate("healthy");
     mount_device_record(&api, &device, "u1").await;
     let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "1")]);
 
     let mut device_ws = authed_device(&relay, &device).await;
-    // Heartbeat well past several liveness windows: the connection must hold.
-    for _ in 0..6 {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+    // A healthy device both writes (heartbeats) and reads (which answers the
+    // relay's pings). Keep doing both well past several liveness windows: the
+    // connection must hold.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
         device_ws
             .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
             .await
             .expect("heartbeat sends on a live connection");
+        // Poll the socket briefly: this is what a live read loop does, and it is
+        // what lets the WebSocket library answer the relay's pings.
+        match tokio::time::timeout(Duration::from_millis(200), device_ws.next()).await {
+            Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {
+                panic!("relay severed a healthy device")
+            }
+            _ => {}
+        }
     }
-    expect_silence(&mut device_ws).await;
+}
+
+#[tokio::test]
+async fn device_that_heartbeats_but_never_reads_is_severed() {
+    // The 2026-08-13 wedge shape: the bridge's heartbeat task kept writing while
+    // its read loop was stuck grinding, so the socket filled with unread frames
+    // and every browser hung on "Waiting for your device". Heartbeats alone must
+    // not count as liveness — only answering the relay's pings proves the read
+    // loop is alive, and a device that writes without ever reading must be
+    // severed and reported offline.
+    let api = mock_api().await;
+    let device = identity::generate("write-only");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "1")]);
+
+    let mut client = authed_client(&relay).await;
+    let device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    // Split the socket: write heartbeats forever, never poll the read half —
+    // so the relay's pings are never answered.
+    let (mut sink, stream) = device_ws.split();
+    std::mem::forget(stream);
+    let heartbeats = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if sink
+                .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
+                .await
+                .is_err()
+            {
+                return; // severed: exactly what the test expects
+            }
+        }
+    });
+
+    let offline = recv_json(&mut client).await;
+    assert_eq!(offline["type"], "device_offline");
+    assert_eq!(offline["device_id"], device.device_id.as_str());
+    heartbeats.abort();
 }
 
 #[tokio::test]

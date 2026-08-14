@@ -252,6 +252,10 @@ describe("disagreeing with the pass in the Changes pane", () => {
     const chip = collapsed.querySelector(".hchip.overridden");
     expect(chip.textContent).toContain("your call: collapsed");
     expect(chip.textContent).toContain("a rename, nothing more");
+    // The offer sits on a hunk row inside a capped file: pressing it must not
+    // also read as "expand this file" or "comment on this line".
+    expect(container.querySelector(".cslist").children.length).toBe(0);
+    expect(collapsed.classList.contains("capped")).toBe(true);
   });
 
   it("keeps a hunk surfaced from inside the group it was folded into", async () => {

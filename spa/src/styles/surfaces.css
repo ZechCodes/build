@@ -88,15 +88,15 @@
    a fact about who decided, not as a level. */
 .hchip.overridden { color:var(--ink); border:1px solid var(--line); }
 
-/* The offer to disagree, on the hunk the decision was about. It sits quiet
-   until the row is under the pointer — the diff is what is being read here, and
-   a control on every classified hunk would compete with it. */
+/* The offer to disagree, on the hunk the decision was about. Quiet but never
+   hidden: a control that appears only under the pointer is one a reviewer has
+   to already know about, and this one has to be found. It comes forward as the
+   row it belongs to does. */
 .toverride { font:inherit; font-size:11px; font-family:var(--mono); margin-left:8px; padding:1px 8px;
   color:var(--dim); background:none; border:1px dashed var(--line3); border-radius:999px;
-  cursor:pointer; opacity:0; transition:opacity .12s ease; }
+  cursor:pointer; opacity:.6; transition:opacity .12s ease, color .12s ease; }
 tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
-.toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; }
-@media (hover: none) { .toverride { opacity:1; } }
+.toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; opacity:1; }
 
 /* The pending-comment tray under a changeset: what has been written but not yet
    sent, plus the general note and the send controls. */

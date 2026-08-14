@@ -229,6 +229,21 @@ describe("overriding what the pass decided", () => {
     expect(markFor(result, "src/crypto.rs").overrideDirection).toBe("collapse");
   });
 
+  it("gives a group the reviewer filled the reviewer's own reason, never the pass's", () => {
+    const noted = plan(
+      applyTriageOverride(PASS, {
+        hunk_id: ids["src/crypto.rs"],
+        direction: "collapse",
+        note: "a rename, nothing more",
+      }),
+    );
+    expect(noted.sections.find((section) => section.kind === "group").rationale).toBe("a rename, nothing more");
+    // And with nothing said, the header says nothing — the pass's line for a
+    // hunk it called critical is not a reason for collapsing it.
+    const silent = plan(applyTriageOverride(PASS, { hunk_id: ids["src/crypto.rs"], direction: "collapse" }));
+    expect(silent.sections.find((section) => section.kind === "group").rationale).toBe("");
+  });
+
   it("keeps one word per hunk: saying it again replaces what was said before", () => {
     const once = applyTriageOverride(PASS, { hunk_id: ids["Cargo.toml"], direction: "surface", note: "first" });
     const twice = applyTriageOverride(once, { hunk_id: ids["Cargo.toml"], direction: "collapse", note: "second" });

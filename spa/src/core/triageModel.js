@@ -165,6 +165,14 @@ function markFile(file, queue, classified) {
   return marks;
 }
 
+/** The one line a group header can show for a hunk: why it is folded away. On
+ *  a hunk the READER folded that is whatever they said about it — the pass's
+ *  own line argued for reading the hunk, and reusing it as the reason for not
+ *  reading it would put words in nobody's mouth. */
+function collapseReason(mark) {
+  return mark.overridden ? mark.note : mark.rationale;
+}
+
 /** The section a marked file belongs to: any critical hunk surfaces the whole
  *  file (its low hunks come with it, in place — a file is read as a unit), a
  *  file that is nothing but low hunks collapses into the group its first low
@@ -235,7 +243,7 @@ export function planChangesetTriage({ files = [], patch = "", triage = null } = 
       const group = groups.get(section.name);
       group.files.push(marked);
       group.hunkCount += marks.length;
-      if (!group.rationale) group.rationale = (marks.find((mark) => mark.rationale) || {}).rationale || "";
+      if (!group.rationale) group.rationale = marks.map(collapseReason).find(Boolean) || "";
     }
   }
 

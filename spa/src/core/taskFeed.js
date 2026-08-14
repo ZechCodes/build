@@ -42,7 +42,13 @@ async function tick() {
       runs: board.runs || [],
       externalWorktrees: board.external_worktrees || [],
       primaryChanges: board.primary_changes || [],
-      projects: projectList.projects || [],
+      // The wire names a project by `project_id`; consumers of the snapshot
+      // (the toolbar's scope and menu) read `id`. Bridge the key here, in the
+      // one place the wire is read.
+      projects: (projectList.projects || []).map((project) => ({
+        ...project,
+        id: project.project_id || project.id,
+      })),
     };
     subscribers.forEach((fn) => fn(last));
   } catch {

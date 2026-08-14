@@ -225,5 +225,10 @@ export async function renderBranch() {
     consolePanel.dispose();
   };
   await refresh();
+  // The first read can outlive the view: a navigation mid-flight has already
+  // torn this view down (render() ran viewDispose), and the poll slot belongs
+  // to whatever is mounted now. Claiming it here would orphan an interval that
+  // reads a dead branch forever — the leaked-poller slowdown.
+  if (disposed) return;
   App.poll = setInterval(refresh, ROW_POLL_MS);
 }

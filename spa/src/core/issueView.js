@@ -45,6 +45,7 @@ import {
   plannedStageIds,
   stageApprovable,
   stageStateToken,
+  worktreeChoices,
 } from "./issueModel.js";
 import { createDocCommentLayer, headingForKey } from "./issueDocComments.js";
 
@@ -92,9 +93,10 @@ export function docAnnotatable(stage, paneState) {
  *
  * `issueId` names the issue; `callRpc(method, params)` is the RPC channel;
  * `navigate(route)` opens another surface; `loadCatalog()` resolves the model
- * catalog for the assignment control; `onSelectStage(stageId)` lets the host
- * keep the URL on the open stage; `onGone()` is called when the issue no longer
- * exists.
+ * catalog for the assignment control and `loadWorkItems()` its feed rows (the
+ * branches an implementation can be sent into); `onSelectStage(stageId)` lets
+ * the host keep the URL on the open stage; `onGone()` is called when the issue
+ * no longer exists.
  */
 export function mountIssueView(
   container,
@@ -104,6 +106,7 @@ export function mountIssueView(
     callRpc,
     navigate = () => {},
     loadCatalog = async () => ({}),
+    loadWorkItems = async () => [],
     onSelectStage = () => {},
     onProject = () => {},
     onGone = () => {},
@@ -121,6 +124,7 @@ export function mountIssueView(
   let stagesData = { stages: [] };
   let stageDoc = null; // { stage_id, contents } for the open stage
   let catalog = {};
+  let workItems = [];
   let selectedStageId = initialStageId;
   let selectionSeeded = false;
   let assignment = defaultAssignment(null);
@@ -142,6 +146,8 @@ export function mountIssueView(
 
   let project = projectId;
   const currentProjectId = () => project;
+  /** The branches this issue's implementation could be sent into. */
+  const worktrees = () => worktreeChoices(workItems, { projectId: currentProjectId(), issueId });
   const stages = () => stagesData.stages || [];
   const selectedStage = () => stages().find((stage) => stage.id === selectedStageId) || null;
   const docContents = () => (stageDoc && stageDoc.stage_id === selectedStageId ? stageDoc.contents || "" : "");
@@ -217,6 +223,7 @@ export function mountIssueView(
       assignment,
       assignmentOpen,
       catalog,
+      worktrees: worktrees(),
     });
     wireStageList(listHost);
     const viewerHost = container.querySelector(".ivviewer");
@@ -328,7 +335,13 @@ export function mountIssueView(
         implementAll.title = blocked;
       } else {
         bindAction(implementAll, "starting…", async () => {
-          if (!(await confirmAction(implementConfirm({ base: assignment.base || issue.base_branch || "the base branch" }))))
+          const target = worktrees().find((choice) => choice.id === assignment.worktreeId);
+          const branch = assignment.worktree === "existing" && target ? target.label : null;
+          if (
+            !(await confirmAction(
+              implementConfirm({ base: assignment.base || issue.base_branch || "the base branch", branch }),
+            ))
+          )
             throw new Error("cancelled");
           const result = await guarded(() =>
             callRpc("issue.implement_all", implementParams(issueId, assignment, { models: providerModels() })),
@@ -369,6 +382,7 @@ export function mountIssueView(
       toggle.onclick = () => {
         assignmentOpen = !assignmentOpen;
         if (assignmentOpen && !catalog.providers) loadCatalogOnce();
+        if (assignmentOpen) loadWorkItemsOnce();
         render();
       };
     const field = (id, key) => {
@@ -384,6 +398,7 @@ export function mountIssueView(
         };
     };
     field("#assignworktree", "worktree");
+    field("#assignworktreeid", "worktreeId");
     field("#assignagent", "agent");
     field("#assignbase", "base");
     field("#assignprovider", "provider");
@@ -400,6 +415,22 @@ export function mountIssueView(
     } catch {
       catalog = {};
     }
+    if (!disposed) render();
+  };
+
+  /** The feed's work items, for the branch picker. Re-read every time the
+   *  control opens: a branch that appeared (or was taken by another issue)
+   *  since the last look must be offered — or stop being. */
+  let workItemsLoading = false;
+  const loadWorkItemsOnce = async () => {
+    if (workItemsLoading) return;
+    workItemsLoading = true;
+    try {
+      workItems = (await loadWorkItems()) || [];
+    } catch {
+      workItems = [];
+    }
+    workItemsLoading = false;
     if (!disposed) render();
   };
 

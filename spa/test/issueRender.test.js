@@ -116,17 +116,33 @@ describe("assignmentHtml", () => {
     expect(html).not.toContain("<select");
   });
 
-  it("opens onto both targets, with the unsupported ones offered and disabled", () => {
+  it("opens onto both targets, offering an existing agent only to say why it cannot be used", () => {
     const html = assignmentHtml({ assignment, open: true, catalog });
     expect(html).toContain('value="existing"');
     expect(html).toContain("disabled");
-    expect(html).toMatch(/implement_all/);
+    expect(html).toMatch(/fresh agent/i);
   });
 
   it("carries the base-branch and model choice the dispatch would use", () => {
     const html = assignmentHtml({ assignment: { ...assignment, base: "release" }, open: true, catalog });
     expect(html).toContain('value="release"');
     expect(html).toContain("Claude Code");
+  });
+
+  it("swaps the base branch for a branch picker once an existing checkout is the target", () => {
+    const html = assignmentHtml({
+      assignment: { ...assignment, worktree: "existing", worktreeId: "wt-1" },
+      open: true,
+      catalog,
+      worktrees: [
+        { id: "wt-1", label: "feature-x" },
+        { id: "wt-2", label: "feature-y" },
+      ],
+    });
+    expect(html).toContain('id="assignworktreeid"');
+    expect(html).not.toContain('id="assignbase"');
+    expect(html).toContain('value="wt-1" selected');
+    expect(html).toContain("feature-y");
   });
 });
 

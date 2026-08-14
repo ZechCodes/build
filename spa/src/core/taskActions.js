@@ -217,12 +217,16 @@ export function approvePlanConfirm() {
 
 /** The confirmation plan for run.create (Implement): what-happens-next framing.
  *  `base` may be a placeholder like "the base branch". */
-export function implementConfirm({ base }) {
+export function implementConfirm({ base, branch = null }) {
   return {
     title: "Implement this issue?",
     intro: "A fresh agent session will execute the approved stage plans.",
     actions: [
-      `Create a worktree on a new branch off ${base}`,
+      // Targeting an existing checkout is a different first step, and the gate
+      // has to outline the one that will actually happen.
+      branch
+        ? `Commit the stage plans onto ${branch} as the review baseline`
+        : `Create a worktree on a new branch off ${base}`,
       "Start a coding agent session for the approved stage plans",
       "You'll be notified when it's ready to review",
     ],

@@ -7354,6 +7354,16 @@ impl AppState {
         let requested_choice = model_choice_from(params)?;
         let run_id = match self.run_on_worktree(&project_id, worktree_id) {
             Some(run_id) => {
+                // The primary checkout is the repository, not a worktree to
+                // hand an Issue: committing stage docs there lands them on the
+                // branch the human is standing on.
+                if self.owns_primary_checkout(&run_id, &self.runs[&run_id]) {
+                    return Err(
+                        "cannot implement into the primary checkout — it is the repository, not a \
+                         worktree to hand over"
+                            .to_string(),
+                    );
+                }
                 if let Some(other) = self.runs[&run_id]
                     .run
                     .plan_id
@@ -16958,6 +16968,37 @@ mod tests {
             .runs
             .values()
             .all(|run| run.run.plan_id.as_ref().map(|id| &id.0) != Some(&second_issue)));
+    }
+
+    /// The primary checkout is the repository itself. Handing an Issue to it
+    /// would commit the stage docs onto the branch the human is standing on, so
+    /// it is refused however the client asks.
+    #[test]
+    fn implementing_into_the_primary_checkout_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        let run_id = run_id_of(&adopted);
+        let worktree_id = worktree_id_of_run(&state, &run_id);
+        let issue_id = issue_ready_to_implement(&mut state, "not on main");
+
+        let refused = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": issue_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("primary checkout"),
+            "{refused:?}"
+        );
+        assert!(state.runs[&run_id].run.plan_id.is_none());
     }
 
     /// A checkout Build has never adopted is adoptable in the same act: naming

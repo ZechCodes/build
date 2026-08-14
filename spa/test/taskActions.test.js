@@ -331,6 +331,12 @@ describe("plan gate confirmation plans (Approve / Implement)", () => {
       "Create a worktree on a new branch off the base branch",
     );
   });
+
+  it("implement outlines the checkout it was targeted at instead of cutting one", () => {
+    expect(implementConfirm({ base: "main", branch: "feature-x" }).actions[0]).toBe(
+      "Commit the stage plans onto feature-x as the review baseline",
+    );
+  });
 });
 
 describe("merge failure reason extraction", () => {

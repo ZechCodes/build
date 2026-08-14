@@ -238,15 +238,46 @@ describe("the issue view", () => {
     view.dispose();
   });
 
-  it("offers targeting an existing worktree or agent, and disables what the bridge cannot do", async () => {
+  it("offers either checkout, and refuses an existing agent because implementation is a handoff", async () => {
     const { host, view } = await mount();
     host.querySelector("#assigntoggle").click();
     await flush();
     const worktree = host.querySelector("#assignworktree");
     expect([...worktree.options].map((option) => option.value)).toEqual(["new", "existing"]);
-    expect(worktree.querySelector('option[value="existing"]').disabled).toBe(true);
+    expect(worktree.querySelector('option[value="existing"]').disabled).toBe(false);
     expect(host.querySelector("#assignagent").querySelector('option[value="existing"]').disabled).toBe(true);
-    expect(host.querySelector(".ivassign-gap").textContent).toMatch(/implement_all/);
+    expect(host.querySelector(".ivassign-gap").textContent).toMatch(/fresh agent/i);
+    view.dispose();
+  });
+
+  it("dispatches Implement All into the branch the reviewer picked", async () => {
+    const ready = issuePayload({ state: "approved", stages: [{ id: "s1", state: "approved" }] });
+    const { host, view, calls } = await mount({
+      issue: ready,
+      stages: [stage({ state: "approved", approval: "approved" })],
+      loadWorkItems: async () => [
+        { kind: "branch", project_id: "proj-1", branch: "feature-x", worktree_id: "wt-1" },
+        { kind: "branch", project_id: "proj-1", branch: "main", worktree_id: "wt-main", primary: true },
+      ],
+    });
+    host.querySelector("#assigntoggle").click();
+    await flush();
+    const target = host.querySelector("#assignworktree");
+    target.value = "existing";
+    target.dispatchEvent(new Event("change"));
+    await flush();
+    const branch = host.querySelector("#assignworktreeid");
+    // The primary checkout is the repository, not a worktree to hand over.
+    expect([...branch.options].map((option) => option.value)).toEqual(["", "wt-1"]);
+    branch.value = "wt-1";
+    branch.dispatchEvent(new Event("change"));
+    await flush();
+    host.querySelector("#implementall").click();
+    await flush();
+    document.querySelector("#confirm-scrim [data-confirm-ok]").click();
+    await flush();
+    const dispatched = calls.find(([method]) => method === "issue.implement_all");
+    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
     view.dispose();
   });
 

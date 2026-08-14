@@ -15,6 +15,7 @@ import {
   defaultAssignment,
   assignmentSummary,
   implementParams,
+  worktreeChoices,
   issueViewKey,
 } from "../src/core/issueModel.js";
 
@@ -152,20 +153,23 @@ describe("assignment targets", () => {
     expect(AGENT_TARGETS.map((t) => t.id)).toEqual(["new", "existing"]);
   });
 
-  it("supports only the new-worktree/new-agent handoff the bridge implements today", () => {
+  it("takes either checkout, and only ever a fresh agent", () => {
     expect(targetSupported(WORKTREE_TARGETS, "new")).toBe(true);
-    expect(targetSupported(WORKTREE_TARGETS, "existing")).toBe(false);
+    expect(targetSupported(WORKTREE_TARGETS, "existing")).toBe(true);
+    expect(targetSupported(AGENT_TARGETS, "new")).toBe(true);
     expect(targetSupported(AGENT_TARGETS, "existing")).toBe(false);
   });
 
-  it("says why an offered target cannot be taken", () => {
-    expect(unsupportedTargetReason(WORKTREE_TARGETS, "existing")).toMatch(/worktree/i);
-    expect(unsupportedTargetReason(WORKTREE_TARGETS, "new")).toBeNull();
+  it("says why an existing agent cannot be given the build: implementation is a handoff", () => {
+    expect(unsupportedTargetReason(AGENT_TARGETS, "existing")).toMatch(/fresh agent/i);
+    expect(unsupportedTargetReason(AGENT_TARGETS, "new")).toBeNull();
+    expect(unsupportedTargetReason(WORKTREE_TARGETS, "existing")).toBeNull();
   });
 
   it("opens on a new worktree and a new agent carrying the issue's own model choice", () => {
     expect(defaultAssignment({ base_branch: "main", provider: "codex", model: "gpt", effort: "high" })).toEqual({
       worktree: "new",
+      worktreeId: "",
       agent: "new",
       base: "",
       provider: "codex",
@@ -182,6 +186,46 @@ describe("assignment targets", () => {
     expect(assignmentSummary({ worktree: "new", agent: "new", base: "release", provider: "" })).toBe(
       "New worktree · New agent · release",
     );
+  });
+
+  it("names the chosen checkout by its branch, and drops the base branch it no longer uses", () => {
+    const choices = [{ id: "wt-1", label: "feature-x" }];
+    expect(
+      assignmentSummary({ worktree: "existing", worktreeId: "wt-1", agent: "new", base: "release", provider: "" }, choices),
+    ).toBe("feature-x · New agent");
+    // Nothing chosen yet: the target still reads as what it is.
+    expect(assignmentSummary({ worktree: "existing", worktreeId: "", agent: "new", provider: "" }, choices)).toBe(
+      "Existing worktree · New agent",
+    );
+  });
+});
+
+describe("worktreeChoices", () => {
+  const rows = [
+    { kind: "branch", project_id: "p1", branch: "feature-x", worktree_id: "wt-1" },
+    { kind: "branch", project_id: "p1", branch: "main", worktree_id: "wt-main", primary: true },
+    { kind: "branch", project_id: "p1", branch: "build/other", worktree_id: "wt-2", issue_id: "issue-2" },
+    { kind: "branch", project_id: "p1", branch: "build/mine", worktree_id: "wt-3", issue_id: "issue-1" },
+    { kind: "branch", project_id: "p2", branch: "elsewhere", worktree_id: "wt-4" },
+    { kind: "issue", project_id: "p1", title: "an issue" },
+  ];
+
+  it("offers this project's branches, named the way the reviewer thinks of them", () => {
+    expect(worktreeChoices(rows, { projectId: "p1", issueId: "issue-1" })).toEqual([
+      { id: "wt-1", label: "feature-x" },
+      { id: "wt-3", label: "build/mine" },
+    ]);
+  });
+
+  it("leaves out the primary checkout and branches another issue is implementing", () => {
+    const ids = worktreeChoices(rows, { projectId: "p1", issueId: "issue-1" }).map((choice) => choice.id);
+    expect(ids).not.toContain("wt-main");
+    expect(ids).not.toContain("wt-2");
+  });
+
+  it("has nothing to offer without a feed", () => {
+    expect(worktreeChoices(null, { projectId: "p1" })).toEqual([]);
+    expect(worktreeChoices(rows, { projectId: "nope" })).toEqual([]);
   });
 });
 
@@ -211,9 +255,26 @@ describe("implementParams", () => {
     });
   });
 
+  it("names the checkout to implement into, and sends no base branch with it", () => {
+    expect(
+      implementParams(
+        "issue-1",
+        { ...defaultAssignment(null), worktree: "existing", worktreeId: "wt-1", base: "release" },
+        { models },
+      ),
+    ).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
+  });
+
   it("refuses to dispatch a target the bridge cannot honour", () => {
-    expect(() => implementParams("issue-1", { ...defaultAssignment(null), worktree: "existing" }, { models })).toThrow(/worktree/i);
-    expect(() => implementParams("issue-1", { ...defaultAssignment(null), agent: "existing" }, { models })).toThrow(/agent/i);
+    expect(() => implementParams("issue-1", { ...defaultAssignment(null), agent: "existing" }, { models })).toThrow(
+      /fresh agent/i,
+    );
+  });
+
+  it("refuses an existing-worktree dispatch that names no worktree", () => {
+    expect(() => implementParams("issue-1", { ...defaultAssignment(null), worktree: "existing" }, { models })).toThrow(
+      /choose the branch/i,
+    );
   });
 });
 

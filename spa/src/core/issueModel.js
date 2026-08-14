@@ -126,23 +126,43 @@ export function lineageRoute(implementation, projectId) {
 
 // ---- the worktree/agent assignment control ---------------------------------
 // The issue's handoff: which checkout the implementation runs in, and which
-// agent runs it. Both offers are real; only the new-worktree/new-agent handoff
-// is something the bridge's implement verbs can express today, so the existing-*
-// options are rendered and disabled rather than hidden — the shape of the choice
-// is the honest part, and hiding it would hide the gap.
+// agent runs it. The checkout is a real choice — a new `build/<slug>` or a
+// branch that already exists, which the bridge implements into by having that
+// branch's run adopt the implementation. The agent is not: implementation is
+// always a handoff, so the bridge creates the implementing agent itself and no
+// conversation already in flight can be given the build. That option is offered
+// and refused rather than hidden, because the rule is worth saying out loud.
 
-const NO_WORKTREE_TARGET = "Targeting an existing worktree needs a param issue.implement_all/implement_stage does not take yet.";
-const NO_AGENT_TARGET = "Targeting an existing agent needs a param issue.implement_all/implement_stage does not take yet.";
+const AGENT_IS_ALWAYS_NEW =
+  "Implementation always starts a fresh agent — the handoff is the point, so a conversation already in flight cannot take the build.";
 
 export const WORKTREE_TARGETS = [
   { id: "new", label: "New worktree", supported: true },
-  { id: "existing", label: "Existing worktree", supported: false, reason: NO_WORKTREE_TARGET },
+  { id: "existing", label: "Existing worktree", supported: true },
 ];
 
 export const AGENT_TARGETS = [
   { id: "new", label: "New agent", supported: true },
-  { id: "existing", label: "Existing agent", supported: false, reason: NO_AGENT_TARGET },
+  { id: "existing", label: "Existing agent", supported: false, reason: AGENT_IS_ALWAYS_NEW },
 ];
+
+/** No worktree named, when one had to be. */
+export const NO_WORKTREE_CHOSEN = "Choose the branch to implement into.";
+
+/**
+ * The checkouts an implementation can be sent into: the project's branch rows,
+ * minus the ones that cannot host one. The primary checkout is the repository
+ * itself, not a worktree to hand over, and a branch already carrying another
+ * issue's implementation would make neither issue's diff readable — the bridge
+ * refuses both, so neither is offered.
+ */
+export function worktreeChoices(items, { projectId, issueId = null } = {}) {
+  return (items || [])
+    .filter((row) => row && row.kind === "branch" && row.project_id === projectId)
+    .filter((row) => row.worktree_id && !row.primary)
+    .filter((row) => !row.issue_id || row.issue_id === issueId)
+    .map((row) => ({ id: row.worktree_id, label: row.branch || row.title || row.worktree_id }));
+}
 
 const targetEntry = (targets, id) => (targets || []).find((target) => target.id === id) || null;
 
@@ -165,6 +185,7 @@ export function unsupportedTargetReason(targets, id) {
 export function defaultAssignment(issue) {
   return {
     worktree: "new",
+    worktreeId: "",
     agent: "new",
     base: "",
     provider: (issue && issue.provider) || "",
@@ -174,14 +195,19 @@ export function defaultAssignment(issue) {
 }
 
 /** The one line the collapsed control shows: the two targets, then whatever the
- *  user has actually overridden. */
-export function assignmentSummary(assignment) {
-  const worktree = targetEntry(WORKTREE_TARGETS, assignment.worktree);
+ *  user has actually overridden. An existing checkout is named by its branch,
+ *  which is the only part of it the reviewer thinks in — `choices` is what turns
+ *  the held id back into that name. */
+export function assignmentSummary(assignment, choices = []) {
+  const targetingExisting = assignment.worktree === "existing";
+  const chosen = targetingExisting
+    ? (choices || []).find((choice) => choice.id === assignment.worktreeId)
+    : null;
+  const worktree =
+    targetingExisting && chosen ? chosen.label : (targetEntry(WORKTREE_TARGETS, assignment.worktree) || {}).label;
   const agent = targetEntry(AGENT_TARGETS, assignment.agent);
-  const base = (assignment.base || "").trim();
-  return [worktree && worktree.label, agent && agent.label, base || assignment.provider || null]
-    .filter(Boolean)
-    .join(" · ");
+  const base = targetingExisting ? "" : (assignment.base || "").trim();
+  return [worktree, agent && agent.label, base || assignment.provider || null].filter(Boolean).join(" · ");
 }
 
 /**
@@ -189,16 +215,23 @@ export function assignmentSummary(assignment) {
  * stage is being implemented, and the assignment's overrides. Throws on a target
  * the bridge cannot honour — the control disables those, so reaching here means
  * something else went wrong, and a silent drop would dispatch the WRONG handoff.
+ *
+ * A named checkout carries no base branch: the branch it implements into already
+ * exists, and its current HEAD is the baseline.
  */
 export function implementParams(issueId, assignment, { models = [], stageId = null } = {}) {
   const worktreeGap = unsupportedTargetReason(WORKTREE_TARGETS, assignment.worktree);
   if (worktreeGap) throw new Error(worktreeGap);
   const agentGap = unsupportedTargetReason(AGENT_TARGETS, assignment.agent);
   if (agentGap) throw new Error(agentGap);
-  const base = (assignment.base || "").trim();
+  const targetingExisting = assignment.worktree === "existing";
+  const worktreeId = targetingExisting ? (assignment.worktreeId || "").trim() : "";
+  if (targetingExisting && !worktreeId) throw new Error(NO_WORKTREE_CHOSEN);
+  const base = targetingExisting ? "" : (assignment.base || "").trim();
   return {
     issue_id: issueId,
     ...(stageId ? { stage_id: stageId } : {}),
+    ...(worktreeId ? { worktree_id: worktreeId } : {}),
     ...(base ? { base_branch: base } : {}),
     ...modelParams(models, assignment.model, assignment.effort, assignment.provider),
   };

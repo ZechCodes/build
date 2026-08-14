@@ -57,6 +57,9 @@ export async function renderIssue() {
     callRpc: (method, params) => App.call(method, params),
     navigate: go,
     loadCatalog: loadModelCatalog,
+    // The branches an implementation can be sent into are the feed's own branch
+    // rows, so the assignment control reads the same list the inbox does.
+    loadWorkItems: async () => (await App.call("board.list")).items || [],
     onSelectStage: (stageId) => {
       selectedStageId = stageId;
       syncHash();

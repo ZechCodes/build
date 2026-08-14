@@ -75,12 +75,15 @@ export function lineageHtml(lineage) {
 
 /** The worktree/agent assignment control: collapsed to the one line that says
  *  what the handoff would be, opening onto the two targets and the overrides the
- *  dispatch carries. The targets the bridge cannot express yet are offered and
- *  disabled — the shape of the choice is honest, and hiding it would hide the
- *  gap. */
-export function assignmentHtml({ assignment, open = false, catalog = {} }) {
+ *  dispatch carries.
+ *
+ *  Targeting an existing checkout swaps the base-branch field for the branch
+ *  picker — a branch that already exists brings its own baseline, so there is no
+ *  base to choose. The existing-agent option is offered and disabled: it is not
+ *  a gap but a rule, and the copy below the fields says which. */
+export function assignmentHtml({ assignment, open = false, catalog = {}, worktrees = [] }) {
   const summary = `<button class="ivassign-head" id="assigntoggle" aria-expanded="${open ? "true" : "false"}">
-    <span class="ivsec">Assignment</span><span class="ivassign-sum">${esc(assignmentSummary(assignment))}</span></button>`;
+    <span class="ivsec">Assignment</span><span class="ivassign-sum">${esc(assignmentSummary(assignment, worktrees))}</span></button>`;
   if (!open) return `<div class="ivassign">${summary}</div>`;
   const full = normalizeModelCatalog(catalog);
   const provider = assignment.provider || full.default_provider || "claude";
@@ -92,22 +95,42 @@ export function assignmentHtml({ assignment, open = false, catalog = {} }) {
           `<option value="${esc(target.id)}"${target.id === selected ? " selected" : ""}${target.supported ? "" : " disabled"}>${esc(target.label)}${target.supported ? "" : " (not yet)"}</option>`,
       )
       .join("");
-  const gaps = [...WORKTREE_TARGETS, ...AGENT_TARGETS].filter((target) => !target.supported).map((target) => target.reason);
+  const rules = [...WORKTREE_TARGETS, ...AGENT_TARGETS].filter((target) => !target.supported).map((target) => target.reason);
+  const branchField =
+    assignment.worktree === "existing"
+      ? `<label class="ivfield"><span>Branch</span><select id="assignworktreeid">
+          <option value=""${assignment.worktreeId ? "" : " selected"}>choose a branch…</option>
+          ${worktrees
+            .map(
+              (choice) =>
+                `<option value="${esc(choice.id)}"${choice.id === assignment.worktreeId ? " selected" : ""}>${esc(choice.label)}</option>`,
+            )
+            .join("")}
+        </select></label>`
+      : `<label class="ivfield"><span>Base branch</span><input id="assignbase" value="${esc(assignment.base || "")}" placeholder="the Issue base branch"></label>`;
   return `<div class="ivassign open">${summary}
     <div class="ivassign-body">
       <label class="ivfield"><span>Worktree</span><select id="assignworktree">${options(WORKTREE_TARGETS, assignment.worktree)}</select></label>
-      <label class="ivfield"><span>Base branch</span><input id="assignbase" value="${esc(assignment.base || "")}" placeholder="the Issue base branch"></label>
+      ${branchField}
       <label class="ivfield"><span>Agent</span><select id="assignagent">${options(AGENT_TARGETS, assignment.agent)}</select></label>
       <label class="ivfield"><span>Provider</span><select id="assignprovider">${providerOptionsHtml(full.providers, provider)}</select></label>
       <label class="ivfield"><span>Model</span><select id="assignmodel">${modelOptionsHtml(forProvider.models, assignment.model || "")}</select></label>
       <label class="ivfield"><span>Effort</span><select id="assigneffort">${effortOptionsHtml(forProvider.efforts, assignment.effort || "")}</select></label>
-      <div class="ivassign-gap">${gaps.map((gap) => `<div>${esc(gap)}</div>`).join("")}</div>
+      <div class="ivassign-gap">${rules.map((rule) => `<div>${esc(rule)}</div>`).join("")}</div>
     </div></div>`;
 }
 
 /** The left column: what this issue is, its gate, its stages, the assignment
  *  control, and its implementations. */
-export function stageListHtml({ issue, stagesData, selectedStageId = null, assignment, assignmentOpen = false, catalog = {} }) {
+export function stageListHtml({
+  issue,
+  stagesData,
+  selectedStageId = null,
+  assignment,
+  assignmentOpen = false,
+  catalog = {},
+  worktrees = [],
+}) {
   const stages = (stagesData && stagesData.stages) || [];
   const rows = stages
     .map((stage, index) => stageRowHtml(stage, { index, selected: stage.id === selectedStageId }))
@@ -140,7 +163,7 @@ export function stageListHtml({ issue, stagesData, selectedStageId = null, assig
       <div class="ivgate">${gate}</div>
     </div>
     <div class="stagelist" id="stagelist">${rows || '<div class="empty">No stages yet.</div>'}</div>
-    ${assignmentHtml({ assignment, open: assignmentOpen, catalog })}
+    ${assignmentHtml({ assignment, open: assignmentOpen, catalog, worktrees })}
     ${lineageHtml(issue.implementation_lineage)}`;
 }
 

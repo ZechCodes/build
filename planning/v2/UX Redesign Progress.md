@@ -13,7 +13,7 @@ from here. Companion doc: `UX Redesign Decisions.md` (the binding design).
 | Bridge wedge (2026-08-13 incident) | 01KZYZYMK4GQVHBWXY0C364K60 | done (validated, marked in Do) |
 | Capture and Router Agent | 01KZVK8Q2TQ2H9THHNJBV8GKTK | in flight — Stage C workflow |
 | Phase 2: Review Prioritization | 01KY5NKASCR6R5JQCYPCJZZMMS | queued (Stage D) |
-| Phase 3: Implementation Graphs | 01KY5NKNN1TMQB808EEQMABD66 | queued (Stage E) |
+| Phase 3: Implementation Graphs | 01KY5NKNN1TMQB808EEQMABD66 | skipped — reviewer decision 2026-08-14: the redesign is UX-scoped; graphs are new capability, left open in Do |
 
 Marking off = `fields.status = {type: text, value: done}` via Do's
 `update_document_fields` service, run inside the `do-worker` pod
@@ -46,9 +46,9 @@ asyncpg against the `getdo` schema. The Do MCP is not connected.
   test suite, E2E + validation.
 - Stage D (queued): Phase 2 triage — hunk-level, triage phase turn seeded by
   completion reports, overlay in Changes, overrides, SWR persistence.
-- Stage E (queued): Phase 3 graphs — graph.json wrapping stages, orchestrator
-  = the issue's single agent with graph MCP tools, graph render/edit in the
-  issue view, execution-mode choice.
+- Stage E: SKIPPED. Phase 3 graphs judged new capability rather than UX;
+  dropped from this effort by the reviewer. Its Do issue stays open and the
+  Decisions doc's graph section is design-only, unbuilt.
 
 ## Standing constraints
 

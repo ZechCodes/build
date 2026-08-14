@@ -13,6 +13,7 @@
 // file is the wiring.
 
 import { esc } from "./text.js";
+import { docCommentAnchor } from "./notes.js";
 import { renderMarkdown } from "./markdown.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { notifyError } from "./notify.js";
@@ -158,11 +159,7 @@ export function mountIssueView(
           issue_id: issueId,
           stage_id: stage.id,
           body: comment.comment,
-          anchor: {
-            heading_path: comment.headingPath,
-            snippet: comment.snippet,
-            ...(comment.lineStart ? { line_start: comment.lineStart, line_end: comment.lineEnd } : {}),
-          },
+          anchor: docCommentAnchor(comment),
         });
       }
       if (general) await callRpc("thread.post", { entity_id: issueId, body: general });

@@ -36,3 +36,29 @@ export function buildHeadingPath(precedingHeadings) {
   }
   return chain.reverse();
 }
+
+/**
+ * The line range an anchor names, as the `:12` / `:12-18` suffix every review
+ * surface writes after a location. An anchor with no range (a whole-file diff
+ * comment, a passage whose markers were rendered away) gets "" — the surfaces
+ * never print a line 0.
+ */
+export function lineRangeSuffix(lineStart, lineEnd) {
+  const start = Number(lineStart) || 0;
+  if (!start) return "";
+  const end = Number(lineEnd) || start;
+  return end > start ? `:${start}-${end}` : `:${start}`;
+}
+
+/**
+ * Where an anchored comment points, in one line of text: the enclosing heading
+ * chain when it has one, else the artifact's path (the bridge ships it on every
+ * comment), else the top of the document — plus the line range. An unanchored
+ * message is general: it is about the whole artifact, and says so.
+ */
+export function anchorLocationLabel(anchor) {
+  if (!anchor) return "(general)";
+  const headingPath = anchor.heading_path || [];
+  const where = headingPath.length ? headingPath.join(" > ") : anchor.path || "(top of doc)";
+  return `${where}${lineRangeSuffix(anchor.line_start, anchor.line_end)}`;
+}

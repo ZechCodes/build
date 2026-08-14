@@ -1,60 +1,66 @@
-// Batched review feedback → the single notes document sent to the agent.
-// (Task intake is goal-form + batched comments; there is no chat.)
+// Anchored review comments → the messages that carry them into a conversation.
+//
+// Every review surface says the same thing on the wire: a message whose anchor
+// names the artifact it points at, the path, the passage it quotes, and — when
+// the surface can measure one — the line range. The bridge answers with the
+// message's own id (`message-<n>`), and that id IS the comment from then on:
+// a persisted comment is withdrawn and resolved by it, and no separate comment
+// identity exists any more.
+//
+// Pure — no DOM, no wire. The mounting controller supplies the RPC.
 
-/** Plan-review comments ({snippet, comment}) + general feedback → agent notes. */
-export function assemblePlanNotes(comments, general) {
-  let out = "Please revise the plan to address this review feedback.\n\n";
-  comments.forEach((c, i) => {
-    const snippet = c.snippet.replace(/\s+/g, " ").trim();
-    out += `${i + 1}. On the passage: "${snippet}"\n   Comment: ${c.comment}\n\n`;
-  });
-  if (general.trim()) out += `General feedback: ${general.trim()}\n`;
-  return out;
+const SNIPPET_MAX = 400;
+
+/** A quoted passage as it goes on the wire: trimmed and capped. */
+function trimSnippet(text) {
+  return String(text ?? "").trim().slice(0, SNIPPET_MAX);
 }
 
-/** Diff-review comments ({file, lnA, lnB, snippet, comment}) → agent notes.
- *  A 0–0 span is a whole-file comment (the header's ✎ control). */
-export function assembleDiffNotes(comments, general) {
-  let out = "Please make these changes to the code:\n\n";
-  comments.forEach((c, i) => {
-    const location =
-      c.lnA === 0 && c.lnB === 0 ? "whole file" : c.lnA === c.lnB ? `line ${c.lnA}` : `lines ${c.lnA}-${c.lnB}`;
-    out += `${i + 1}. ${c.file} (${location}):\n> ${c.snippet.replace(/\n/g, "\n> ")}\n   Comment: ${c.comment}\n\n`;
-  });
-  if (general.trim()) out += `General feedback: ${general.trim()}\n`;
-  return out;
+/**
+ * The anchor for one diff comment ({file, lnA, lnB, snippet, side}).
+ *
+ * A whole-file comment (the file header's ✎, which the surfaces write as a 0–0
+ * span) carries NO line range: 0 is not a line, and both ends of the bridge's
+ * anchor are optional. Everything else names the span it was written on, on the
+ * side of the diff it was written on.
+ */
+export function diffCommentAnchor(comment, revisionId = null) {
+  const start = Number(comment.lnA) || 0;
+  const end = Number(comment.lnB) || start;
+  return {
+    artifact: "diff",
+    revision_id: revisionId || null,
+    path: comment.file,
+    side: comment.side || "new",
+    ...(start ? { line_start: start, line_end: end } : {}),
+    heading_path: [],
+    snippet: trimSnippet(comment.snippet),
+  };
 }
 
-/** Structured plan-thread posts. Anchors survive revisions and bridge restarts. */
-export function planThreadMessages(comments, general, revisionId, path) {
-  const messages = comments.map((comment) => ({
-    body: comment.comment.trim(),
-    anchor: {
-      artifact: "plan",
-      revision_id: revisionId || null,
-      path,
-      heading_path: comment.headingPath || [],
-      snippet: comment.snippet.trim().slice(0, 400),
-    },
-  }));
-  if (general.trim()) messages.push({ body: general.trim(), anchor: null });
-  return messages;
+/**
+ * The anchor for one stage-doc comment ({headingPath, snippet, lineStart,
+ * lineEnd}) — what `issue.comment_add` takes. The doc's path is the stage's, so
+ * the bridge fills it in; what the client knows is where in the doc the reader
+ * was: the enclosing heading chain, the passage, and its lines in the SOURCE.
+ */
+export function docCommentAnchor(comment) {
+  const start = Number(comment.lineStart) || 0;
+  const end = Number(comment.lineEnd) || start;
+  return {
+    heading_path: comment.headingPath || [],
+    snippet: trimSnippet(comment.snippet),
+    ...(start ? { line_start: start, line_end: end } : {}),
+  };
 }
 
-/** Structured diff-thread posts with a stable, side-aware source location. */
+/** Diff-review comments + the general note → the thread posts that carry them.
+ *  The general note is the one message with no anchor: it is about the whole
+ *  changeset, not a passage of it. */
 export function diffThreadMessages(comments, general, revisionId) {
   const messages = comments.map((comment) => ({
     body: comment.comment.trim(),
-    anchor: {
-      artifact: "diff",
-      revision_id: revisionId || null,
-      path: comment.file,
-      side: comment.side || "new",
-      line_start: comment.lnA,
-      line_end: comment.lnB,
-      heading_path: [],
-      snippet: comment.snippet.trim().slice(0, 400),
-    },
+    anchor: diffCommentAnchor(comment, revisionId),
   }));
   if (general.trim()) messages.push({ body: general.trim(), anchor: null });
   return messages;

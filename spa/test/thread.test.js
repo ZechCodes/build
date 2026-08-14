@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
-import { planThreadMessages, diffThreadMessages } from "../src/core/notes.js";
+import { diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
   it("renders messages, zero-token events, seen state, and revision resolution", async () => {
@@ -301,9 +301,7 @@ describe("thread cache (cursor merge for the detail polls)", () => {
 });
 
 describe("structured review messages", () => {
-  it("preserves plan and diff anchors instead of flattening them into a prompt", () => {
-    expect(planThreadMessages([{ snippet: "old plan", comment: "be concrete" }], "", "plan-r1", ".build/plan.md"))
-      .toEqual([{ body: "be concrete", anchor: { artifact: "plan", revision_id: "plan-r1", path: ".build/plan.md", heading_path: [], snippet: "old plan" } }]);
+  it("preserves diff anchors instead of flattening them into a prompt", () => {
     expect(diffThreadMessages([{ file: "src/a.js", lnA: 2, lnB: 4, snippet: "old()", comment: "rename" }], "ship safely", "diff-r1"))
       .toEqual([
         { body: "rename", anchor: { artifact: "diff", revision_id: "diff-r1", path: "src/a.js", side: "new", line_start: 2, line_end: 4, heading_path: [], snippet: "old()" } },

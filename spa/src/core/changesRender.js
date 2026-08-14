@@ -12,6 +12,7 @@
 
 import "../styles/surfaces.css";
 import { esc, humanAge } from "./text.js";
+import { lineRangeSuffix } from "./anchors.js";
 import { uncommittedTotals, hasUncommittedChanges } from "./changesModel.js";
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the counts above are exact</div>';
@@ -111,7 +112,7 @@ export function commitBoxHtml() {
 export function commentTrayHtml(comments, { generalDraft = "" } = {}) {
   const rows = (comments || [])
     .map((c) => {
-      const location = c.lnA === 0 && c.lnB === 0 ? "" : c.lnA === c.lnB ? `:${c.lnA}` : `:${c.lnA}-${c.lnB}`;
+      const location = lineRangeSuffix(c.lnA, c.lnB);
       return `<div class="pcomment"><span class="pcx" data-id="${esc(c.id)}">×</span>
         <span class="psnip">${esc(c.file)}${esc(location)} · ${esc(String(c.snippet || "").replace(/\s+/g, " ").trim().slice(0, 90))}</span>
         <span class="pctext">${esc(c.comment)}</span></div>`;

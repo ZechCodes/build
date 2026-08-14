@@ -11,7 +11,7 @@
 
 import "../styles/surfaces.css";
 import { esc } from "./text.js";
-import { slugifyHeading } from "./anchors.js";
+import { anchorLocationLabel, slugifyHeading } from "./anchors.js";
 import { PLAN_STATE_LABEL, planChipClass, RUN_STATE_LABEL, runChipClass } from "./entityPresentation.js";
 import {
   STAGE_STATE_LABEL,
@@ -150,8 +150,10 @@ export function stageListHtml({ issue, stagesData, selectedStageId = null, assig
 export function docCommentCardHtml(comment) {
   const anchor = comment.anchor;
   const headingPath = (anchor && anchor.heading_path) || [];
-  const breadcrumb = anchor ? (headingPath.length ? esc(headingPath.join(" > ")) : "(top of doc)") : "(general)";
-  const lines = anchor && anchor.line_start ? `:${anchor.line_start}${anchor.line_end && anchor.line_end !== anchor.line_start ? `-${anchor.line_end}` : ""}` : "";
+  // The comment carries the doc it was written on (comment_json's `path`); the
+  // anchor carries where in it. A passage under no heading falls back to naming
+  // the file, which is what the reader has to go on.
+  const location = anchorLocationLabel(anchor ? { ...anchor, path: anchor.path || comment.path } : null);
   const snippet = anchor && anchor.snippet
     ? `<span class="cc-snip">${esc(anchor.snippet.replace(/\s+/g, " ").trim().slice(0, 200))}</span>`
     : "";
@@ -161,7 +163,7 @@ export function docCommentCardHtml(comment) {
   const markerKey = headingPath.length ? slugifyHeading(headingPath[headingPath.length - 1]) : "";
   return `<div class="commentcard${addressed ? " addressed" : ""}" data-id="${esc(comment.id)}">
     ${remove}
-    <span class="cc-crumb" data-marker="${esc(markerKey)}">${breadcrumb}${esc(lines)}</span>
+    <span class="cc-crumb" data-marker="${esc(markerKey)}">${esc(location)}</span>
     ${snippet}
     <span class="cc-body">${esc(comment.body || "")}</span>
     ${reply}</div>`;

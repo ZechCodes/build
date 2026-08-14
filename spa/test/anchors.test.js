@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { slugifyHeading, buildHeadingPath } from "../src/core/anchors.js";
+import { slugifyHeading, buildHeadingPath, lineRangeSuffix, anchorLocationLabel } from "../src/core/anchors.js";
 
 describe("slugifyHeading", () => {
   it("lowercases and collapses punctuation runs to single dashes", () => {
@@ -44,5 +44,39 @@ describe("buildHeadingPath", () => {
   });
   it("starts from the nearest heading when no enclosing h1 exists", () => {
     expect(buildHeadingPath([{ level: 2, text: "B" }, { level: 3, text: "C" }])).toEqual(["B", "C"]);
+  });
+});
+
+describe("lineRangeSuffix", () => {
+  it("writes a single line and a span", () => {
+    expect(lineRangeSuffix(12, 12)).toBe(":12");
+    expect(lineRangeSuffix(12, 18)).toBe(":12-18");
+  });
+  it("treats a missing end as the start", () => {
+    expect(lineRangeSuffix(9, 0)).toBe(":9");
+    expect(lineRangeSuffix(9, undefined)).toBe(":9");
+  });
+  it("prints nothing for an anchor with no range", () => {
+    expect(lineRangeSuffix(0, 0)).toBe("");
+    expect(lineRangeSuffix(undefined, undefined)).toBe("");
+  });
+});
+
+describe("anchorLocationLabel", () => {
+  it("names the enclosing heading chain and the lines", () => {
+    expect(anchorLocationLabel({ heading_path: ["Plan", "Schema"], line_start: 12, line_end: 18 })).toBe(
+      "Plan > Schema:12-18",
+    );
+  });
+  it("falls back to the artifact's path when no heading encloses the passage", () => {
+    expect(anchorLocationLabel({ heading_path: [], path: "docs/stage-1.md", line_start: 4, line_end: 4 })).toBe(
+      "docs/stage-1.md:4",
+    );
+  });
+  it("says top of doc when there is neither a heading nor a path", () => {
+    expect(anchorLocationLabel({ heading_path: [] })).toBe("(top of doc)");
+  });
+  it("calls an unanchored message general", () => {
+    expect(anchorLocationLabel(null)).toBe("(general)");
   });
 });

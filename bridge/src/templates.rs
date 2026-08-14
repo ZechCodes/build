@@ -185,6 +185,49 @@ unexpected environment or implementation problem prevents the review itself,
 call `done` with status=\"blocked\" or status=\"failed\" and use one concise
 sentence to say why.";
 
+const TRIAGE: &str = "\
+You are a TRIAGE agent. Work in this worktree was just reported complete. Do not
+modify any files — read and classify only.
+
+Your job is to say how much review each hunk of the diff needs, so the reviewer
+reads the change that matters before the version bump. You are not deciding
+whether the work is right, and nothing waits on your answer: triage orders the
+reviewer's attention and gates nothing.
+
+What the agent that wrote these changes reported:
+
+{completion_report}
+
+Read the diff with `git diff {diff_ref}`. Build has already split it into hunks
+and named each one. These are the names you classify, verbatim:
+
+{diff_summary}
+
+Classify EVERY hunk in that list, using exactly these levels:
+
+- \"critical\" — a reviewer who skipped this would miss something that matters:
+  security, auth, data loss, money, migrations, concurrency, public contracts,
+  and anything the report above called risky or central.
+- \"normal\" — ordinary implementation work, read in the order it comes.
+- \"low\" — mechanical or inconsequential: formatting, generated files, version
+  bumps, pure renames, import reordering, boilerplate.
+
+Every \"low\" hunk carries a \"group\": a short name several hunks share (\"version
+bumps\", \"generated protobuf\", \"import reordering\"), and a \"rationale\": one line
+saying why it is safe to collapse. The reviewer reads that line INSTEAD of the
+hunk, so it has to be true — if you cannot write one honestly, the hunk is not
+\"low\". Give each \"critical\" hunk a one-line rationale too, saying what to look
+at.
+
+When every hunk is classified, call the `done` tool with phase=\"triage\",
+status=\"completed\", and outputs.triage = {\"based_on\": \"{revision_sha}\",
+\"hunks\": [{\"hunk_id\", \"level\", \"rationale\", \"group\"}]} — `based_on` echoed
+back exactly as given, one entry per hunk id listed above, and no id you made
+up. Use one concise sentence in summary to say what carries the risk in this
+change. If an unexpected environment or implementation problem prevents the
+pass, call `done` with status=\"blocked\" or status=\"failed\" and use one concise
+sentence to say what is broken.";
+
 const ROUTER: &str = "\
 You are the ROUTER. Something was captured from the user and nothing has decided
 where it goes. Deciding is your whole job: read, decide, act once, exit.
@@ -260,6 +303,9 @@ pub struct Templates {
     pub fix_stage: String,
     pub review_changes: String,
     pub validate: String,
+    /// Review prioritization: classify the diff that was just reported done.
+    /// Presentational — the run's lifecycle never waits on it.
+    pub triage: String,
     pub message: String,
     /// The one template that belongs to no phase of a piece of work: routing
     /// decides which piece of work the capture is.
@@ -277,6 +323,7 @@ impl Default for Templates {
             fix_stage: reporting_template(FIX_STAGE),
             review_changes: reporting_template(REVIEW_CHANGES),
             validate: phase_template(VALIDATE),
+            triage: phase_template(TRIAGE),
             message: phase_template(MESSAGE),
             router: phase_template(ROUTER),
         }
@@ -325,6 +372,16 @@ pub struct Vars<'a> {
     pub capture_text: &'a str,
     /// The user's answer to the router's clarifying question, or "".
     pub user_answer: &'a str,
+    /// The `triage` template's hunk list: one line per hunk, `id  path  header`.
+    pub diff_summary: &'a str,
+    /// The completion report that seeds triage, rendered as markdown.
+    pub completion_report: &'a str,
+    /// What the reviewed diff is taken against — the run's `base_sha`, or its
+    /// base branch when there is none.
+    pub diff_ref: &'a str,
+    /// The diff revision the triage pass reads, echoed back as `based_on` so a
+    /// triage that arrives after the diff moved can be labelled stale.
+    pub revision_sha: &'a str,
 }
 
 /// Render a template by substituting every `{var}` placeholder.
@@ -344,6 +401,10 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{prior_notes}", vars.prior_notes)
         .replace("{capture_text}", vars.capture_text)
         .replace("{user_answer}", vars.user_answer)
+        .replace("{diff_summary}", vars.diff_summary)
+        .replace("{completion_report}", vars.completion_report)
+        .replace("{diff_ref}", vars.diff_ref)
+        .replace("{revision_sha}", vars.revision_sha)
 }
 
 #[cfg(test)]
@@ -480,6 +541,7 @@ mod tests {
             ("build_stage", &t.build_stage),
             ("fix_stage", &t.fix_stage),
             ("validate", &t.validate),
+            ("triage", &t.triage),
             ("message", &t.message),
         ] {
             assert!(
@@ -553,6 +615,91 @@ mod tests {
         assert!(t.validate.contains("phase=\"validate\""));
     }
 
+    /// Triage's whole contract: the level vocabulary, the grouping rule, the
+    /// rationale that is read INSTEAD of the hunk, and a `done` shaped so the
+    /// bridge can check it against the diff it was taken on.
+    #[test]
+    fn triage_template_teaches_the_levels_the_groups_and_the_typed_done() {
+        let t = Templates::default();
+        for placeholder in [
+            "{completion_report}",
+            "{diff_summary}",
+            "{diff_ref}",
+            "{revision_sha}",
+        ] {
+            assert!(t.triage.contains(placeholder), "{placeholder} missing");
+        }
+        for level in ["\"critical\"", "\"normal\"", "\"low\""] {
+            assert!(
+                t.triage.contains(level),
+                "{level} missing from {}",
+                t.triage
+            );
+        }
+        assert!(t.triage.contains("phase=\"triage\""));
+        assert!(t.triage.contains("outputs.triage"));
+        assert!(t.triage.contains("hunk_id"));
+        let triage = collapse_whitespace(&t.triage);
+        assert!(
+            triage.contains("Classify EVERY hunk in that list"),
+            "every hunk must be classified: {triage}"
+        );
+        assert!(
+            triage.contains("no id you made up"),
+            "the id vocabulary is closed: {triage}"
+        );
+        assert!(
+            triage.contains("The reviewer reads that line INSTEAD of the hunk"),
+            "a collapse is only as honest as its rationale: {triage}"
+        );
+        assert!(
+            triage.contains("triage orders the reviewer's attention and gates nothing"),
+            "triage is presentational, and the agent is told so: {triage}"
+        );
+        assert!(
+            triage.contains("Do not modify any files"),
+            "triage is observational: {triage}"
+        );
+    }
+
+    /// Triage writes no code, so it is asked for no completion report — the
+    /// report is what it READS.
+    #[test]
+    fn triage_reports_no_completion_report_of_its_own() {
+        let t = Templates::default();
+        assert!(
+            !t.triage.contains("outputs.completion_report"),
+            "{}",
+            t.triage
+        );
+    }
+
+    #[test]
+    fn triage_template_substitutes_its_seed_and_its_hunks() {
+        let out = render(
+            &Templates::default().triage,
+            &Vars {
+                completion_report: "- critical: crypto.rs",
+                diff_summary: "habc123def456  crypto.rs  @@ -1,2 +1,3 @@",
+                diff_ref: "abc123",
+                revision_sha: "deadbeef",
+                ..Vars::default()
+            },
+        );
+        assert!(out.contains("- critical: crypto.rs"));
+        assert!(out.contains("habc123def456  crypto.rs  @@ -1,2 +1,3 @@"));
+        assert!(out.contains("git diff abc123"));
+        assert!(out.contains("\"based_on\": \"deadbeef\""));
+        for placeholder in [
+            "{completion_report}",
+            "{diff_summary}",
+            "{diff_ref}",
+            "{revision_sha}",
+        ] {
+            assert!(!out.contains(placeholder), "{placeholder} left unrendered");
+        }
+    }
+
     #[test]
     fn done_summaries_ask_for_one_concise_outcome() {
         let t = Templates::default();
@@ -565,6 +712,7 @@ mod tests {
             &t.fix_stage,
             &t.review_changes,
             &t.validate,
+            &t.triage,
         ] {
             let lower = tmpl.to_lowercase();
             assert!(lower.contains("one concise sentence"), "{tmpl}");

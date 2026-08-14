@@ -137,6 +137,66 @@ fn merge_stage_docs(stages: &mut Vec<StageDoc>, entries: &[StageManifestEntry]) 
     *stages = merged;
 }
 
+/// Whether a `done` report should be followed by a triage pass.
+///
+/// Triage reads a finished diff, so it follows a completed code-changing phase
+/// — and a stage's validation verdict, which is where a multi-stage run's diff
+/// finally holds still. `already_speaking` is the hand-off turn the report
+/// already produced (a stage handing itself to validation): the agent hears one
+/// thing at a time, so triage waits for the turn after it. A passed verdict
+/// only: a stage sent back for fixes has a diff about to change.
+///
+/// Deliberately blind to whether the run's lifecycle accepted the report. An
+/// agent reporting done at a review gate moves no state — and still leaves a
+/// changed diff the reviewer has to read. Triage gates nothing, so what needs
+/// ordering is decided by the diff, not by the state machine.
+pub fn triage_is_due(report: &DoneReport, already_speaking: bool) -> bool {
+    if already_speaking || report.status != DoneStatus::Completed {
+        return false;
+    }
+    match report.phase {
+        DonePhase::Build | DonePhase::Revise => true,
+        DonePhase::Validate => report
+            .outputs
+            .validation
+            .as_ref()
+            .is_some_and(|validation| validation.passed),
+        _ => false,
+    }
+}
+
+/// The completion report as the triage prompt reads it: the agent's own account
+/// of what it just did, in markdown. Empty lists are left out; a report with
+/// nothing in it says so, because "(none)" is information and a blank is not.
+fn render_completion_report(report: Option<&crate::thread::CompletionReport>) -> String {
+    let Some(report) = report else {
+        return "(the agent reported nothing)".to_string();
+    };
+    let sections = [
+        ("Critical files", &report.critical_files),
+        ("Risks", &report.risk_notes),
+        ("Decisions", &report.decisions),
+        ("Deliberately skipped", &report.skips),
+    ];
+    let rendered = sections
+        .iter()
+        .filter(|(_, lines)| !lines.is_empty())
+        .map(|(title, lines)| {
+            let body = lines
+                .iter()
+                .map(|line| format!("- {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{title}:\n{body}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if rendered.is_empty() {
+        return "(the agent reported nothing)".to_string();
+    }
+    rendered
+}
+
 /// What a lifecycle move wants said to the worktree's agent.
 ///
 /// The orchestrator owns lifecycle, thread, stages, base_sha, and worktree; it
@@ -377,6 +437,10 @@ pub struct ActiveRun {
     /// — not only the first time after an adoption. Kept because it is on every
     /// `PersistedRun` on disk and dropping it needs a store migration.
     pub pending_continuation: bool,
+    /// The last triage pass over this run's diff, with the revision it read.
+    /// Presentational: nothing in the lifecycle reads it, and a stale one still
+    /// ships (the SPA labels it) until the re-triage lands.
+    pub triage: Option<crate::run::TriageReport>,
     /// Durable nonce-bound branch recovery attempt, if one is active or last
     /// completed. The app layer owns verification and lifecycle events.
     pub recovery: Option<crate::run::RecoveryAttempt>,
@@ -423,6 +487,7 @@ impl ActiveRun {
             auto_advance: record.auto_advance,
             adopted: record.adopted,
             pending_continuation: record.pending_continuation,
+            triage: record.triage.clone(),
             recovery: record.recovery.clone(),
             publication_attempt: record.publication_attempt.clone(),
             model_choice: record.model_choice(),
@@ -856,7 +921,11 @@ impl Orchestrator {
                 self.consume_plan_stage_revision(active, store, &report)?;
             }
             (
-                DonePhase::Build | DonePhase::Validate | DonePhase::Recover | DonePhase::Route,
+                DonePhase::Build
+                | DonePhase::Validate
+                | DonePhase::Triage
+                | DonePhase::Recover
+                | DonePhase::Route,
                 DoneStatus::Completed,
             ) => {
                 return Err(OrchestratorError::Gate(format!(
@@ -1336,6 +1405,7 @@ impl Orchestrator {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             model_choice,
@@ -1555,6 +1625,13 @@ impl Orchestrator {
                     });
                 }
             }
+            // A triage pass reported its classification. It moves no lifecycle
+            // event and leaves no summary on the card: triage is an overlay on
+            // the diff, and the diff's own report is what the reviewer reads.
+            (DonePhase::Triage, DoneStatus::Completed) => {
+                self.on_run_triage_done(active, &report)?;
+                return Ok(ReportConsumed::applied());
+            }
             // Single-doc plan / adopted path: a completed build opens review.
             (DonePhase::Build | DonePhase::Revise, DoneStatus::Completed) => {
                 if let Err(illegal) = active.run.apply(RunEvent::BuildReady) {
@@ -1569,6 +1646,75 @@ impl Orchestrator {
             outcome: ReportOutcome::Applied,
             next,
         })
+    }
+
+    /// A triage pass reported: check its ids against the diff it claims to
+    /// describe, then keep it on the run.
+    ///
+    /// The ids are the one thing the tool boundary cannot check — the
+    /// vocabulary belongs to a patch, and the patch lives here. An invented id
+    /// fails the whole report rather than being dropped quietly: a triage that
+    /// half-landed would order the review by a rule nobody stated.
+    fn on_run_triage_done(
+        &self,
+        active: &mut ActiveRun,
+        report: &DoneReport,
+    ) -> Result<(), OrchestratorError> {
+        // The mcp layer guarantees outputs.triage on triage/completed, but
+        // reports also arrive over the daemon socket as raw JSON — a missing
+        // one is rejected, never unwrapped.
+        let Some(triage) = report.outputs.triage.clone() else {
+            return Err(OrchestratorError::Gate(
+                "triage/completed report carried no outputs.triage; rejected".to_string(),
+            ));
+        };
+        let diff = self.run_diff(active)?;
+        crate::mcp::check_triage_hunk_ids(&triage, &crate::diff::hunk_ids(diff.patch()))
+            .map_err(|error| OrchestratorError::Gate(error.to_string()))?;
+        active.triage = Some(triage);
+        Ok(())
+    }
+
+    /// The triage turn for a run whose diff was just reported done: the same
+    /// worktree agent, asked to say how much review each hunk needs.
+    ///
+    /// `patch` is the diff the reviewer will see and `revision_sha` names it, so
+    /// a classification that arrives after the diff moved can be labelled stale
+    /// rather than believed. `None` when the patch has no hunks — there is
+    /// nothing to order, and a turn spent saying so is a turn wasted.
+    pub fn triage_turn(
+        &self,
+        active: &ActiveRun,
+        patch: &str,
+        revision_sha: &str,
+        seed: Option<&crate::thread::CompletionReport>,
+    ) -> Option<AgentTurn> {
+        let hunks = crate::diff::patch_hunks(patch);
+        if hunks.is_empty() {
+            return None;
+        }
+        let diff_summary = hunks
+            .iter()
+            .map(|hunk| format!("{}  {}  {}", hunk.hunk_id, hunk.path, hunk.header))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let diff_ref = active
+            .base_sha
+            .clone()
+            .unwrap_or_else(|| active.worktree.base_branch.clone());
+        let rendered = crate::templates::render(
+            &self.templates.triage,
+            &crate::templates::Vars {
+                goal: &active.run.goal,
+                base_branch: &active.worktree.base_branch,
+                diff_summary: &diff_summary,
+                completion_report: &render_completion_report(seed),
+                diff_ref: &diff_ref,
+                revision_sha,
+                ..crate::templates::Vars::default()
+            },
+        );
+        Some(AgentTurn::dispatched(rendered, &active.agents, "triage"))
     }
 
     /// A stage build/fix session reported done(completed): commit the stage's
@@ -2211,6 +2357,7 @@ impl Orchestrator {
             auto_advance: false,
             adopted: true,
             pending_continuation: true,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             model_choice,
@@ -3637,6 +3784,7 @@ mod tests {
             auto_advance: true,
             adopted: true,
             pending_continuation: true,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             provider: crate::models::AgentProvider::Claude,
@@ -3750,6 +3898,297 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run.run.state, RunState::Review);
+    }
+
+    // ---- Review prioritization (triage) ----
+
+    use crate::run::{TriageHunk, TriageLevel, TriageReport};
+
+    fn done_build_with_report(report: crate::thread::CompletionReport) -> DoneReport {
+        DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "built it".into(),
+            outputs: DoneOutputs {
+                completion_report: Some(report),
+                ..DoneOutputs::default()
+            },
+        }
+    }
+
+    fn done_triage(based_on: &str, hunks: Vec<TriageHunk>) -> DoneReport {
+        DoneReport {
+            phase: DonePhase::Triage,
+            status: DoneStatus::Completed,
+            summary: "the crypto change carries the risk".into(),
+            outputs: DoneOutputs {
+                triage: Some(TriageReport {
+                    based_on: based_on.into(),
+                    hunks,
+                }),
+                ..DoneOutputs::default()
+            },
+        }
+    }
+
+    fn classified(hunk_id: &str, level: TriageLevel) -> TriageHunk {
+        TriageHunk {
+            hunk_id: hunk_id.into(),
+            level,
+            rationale: Some("because".into()),
+            group: None,
+        }
+    }
+
+    /// A build that produced a diff is followed by a pass that orders it, and
+    /// the pass is told the hunks by name plus what the builder said about them.
+    #[tokio::test]
+    async fn a_completed_build_with_a_diff_asks_for_a_triage_pass() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
+
+        std::fs::write(run.worktree.path.join("crypto.rs"), "fn derive() {}\n").unwrap();
+        let build_report = done_build_with_report(crate::thread::CompletionReport {
+            critical_files: vec!["crypto.rs — key derivation".into()],
+            risk_notes: vec!["untested on rotation".into()],
+            ..Default::default()
+        });
+        let consumed = orch
+            .on_run_done(&mut run, &[], build_report.clone())
+            .unwrap();
+        assert!(consumed.next.is_none(), "nothing else is being said");
+        assert!(
+            triage_is_due(&build_report, consumed.next.is_some()),
+            "the diff wants ordering for review"
+        );
+
+        let patch = orch.run_diff(&run).unwrap().patch().to_string();
+        let seed = crate::thread::CompletionReport {
+            critical_files: vec!["crypto.rs — key derivation".into()],
+            risk_notes: vec!["untested on rotation".into()],
+            ..Default::default()
+        };
+        let turn = orch
+            .triage_turn(&run, &patch, "revision-sha-1", Some(&seed))
+            .expect("a diff with hunks gets a triage turn");
+        assert_eq!(turn.phase, "triage");
+        let prompt = dispatch_turn_halves(&turn, "triage");
+        for hunk_id in crate::diff::hunk_ids(&patch) {
+            assert!(prompt.contains(&hunk_id), "{hunk_id} missing from {prompt}");
+        }
+        assert!(prompt.contains("crypto.rs — key derivation"), "{prompt}");
+        assert!(prompt.contains("untested on rotation"), "{prompt}");
+        assert!(prompt.contains("revision-sha-1"), "{prompt}");
+        assert!(
+            prompt.contains(run.base_sha.as_deref().unwrap()),
+            "the pass is told what the diff is taken against: {prompt}"
+        );
+    }
+
+    /// Triage gates nothing, so the lifecycle's opinion of a report does not
+    /// decide whether the diff gets ordered. An agent that reports done at a
+    /// review gate moves no state and still leaves a diff to read.
+    #[test]
+    fn what_needs_ordering_is_decided_by_the_diff_not_by_the_state_machine() {
+        for phase in [DonePhase::Build, DonePhase::Revise] {
+            assert!(triage_is_due(
+                &done(phase, DoneStatus::Completed, None),
+                false
+            ));
+            assert!(
+                !triage_is_due(&done(phase, DoneStatus::Blocked, None), false),
+                "a blocked turn produced no finished diff"
+            );
+            assert!(
+                !triage_is_due(&done(phase, DoneStatus::Completed, None), true),
+                "the agent hears one thing at a time"
+            );
+        }
+        for phase in [DonePhase::Plan, DonePhase::Triage, DonePhase::Route] {
+            assert!(!triage_is_due(
+                &done(phase, DoneStatus::Completed, None),
+                false
+            ));
+        }
+    }
+
+    /// Nothing changed, nothing to order: the turn is not spent.
+    #[tokio::test]
+    async fn an_empty_diff_gets_no_triage_turn() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
+        assert!(orch.triage_turn(&run, "", "revision-sha-1", None).is_none());
+    }
+
+    /// The agent hears one thing at a time: a stage that has just been asked to
+    /// validate itself is not also asked to triage. The verdict is when the
+    /// stage's diff finally holds still, so that is when triage is asked for —
+    /// and only when the verdict passed, since a failed one is about to change.
+    #[tokio::test]
+    async fn a_stage_is_triaged_after_its_verdict_not_beside_its_validation() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
+        let mut run = dispatch_planned_run(&orch, &store, &plan, "run-1");
+
+        std::fs::write(run.worktree.path.join("first.txt"), "one\n").unwrap();
+        let built = orch
+            .on_run_done(
+                &mut run,
+                &plan.stages,
+                done(DonePhase::Build, DoneStatus::Completed, None),
+            )
+            .unwrap();
+        assert!(built.next.is_some(), "the stage hands itself to validation");
+        assert!(
+            !triage_is_due(
+                &done(DonePhase::Build, DoneStatus::Completed, None),
+                built.next.is_some()
+            ),
+            "triage waits for the turn after the validation hand-off"
+        );
+
+        let failed = orch
+            .on_run_done(&mut run, &plan.stages, done_validate(false, "- nope", ""))
+            .unwrap();
+        assert!(
+            !triage_is_due(&done_validate(false, "- nope", ""), failed.next.is_some()),
+            "a stage sent back for fixes has a diff about to change"
+        );
+
+        // Fix it, validate again, and the passing verdict asks for the pass.
+        orch.fix_run_stage(&mut run, &plan.stages, "first", "")
+            .unwrap();
+        std::fs::write(run.worktree.path.join("first.txt"), "one\ntwo\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &plan.stages,
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        let passed = orch
+            .on_run_done(&mut run, &plan.stages, done_validate(true, "- ok", ""))
+            .unwrap();
+        assert!(
+            triage_is_due(&done_validate(true, "- ok", ""), passed.next.is_some()),
+            "the stage's diff now holds still"
+        );
+    }
+
+    /// Triage is presentational: the report lands on the run and moves nothing —
+    /// not the state, not the card's summary.
+    #[tokio::test]
+    async fn a_triage_report_is_kept_on_the_run_and_gates_nothing() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
+
+        std::fs::write(run.worktree.path.join("crypto.rs"), "fn derive() {}\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &[],
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        assert_eq!(run.run.state, RunState::Review);
+        let summary_before_triage = run.last_summary.clone();
+
+        let ids = crate::diff::hunk_ids(orch.run_diff(&run).unwrap().patch());
+        let consumed = orch
+            .on_run_done(
+                &mut run,
+                &[],
+                done_triage(
+                    "revision-sha-1",
+                    vec![classified(&ids[0], TriageLevel::Critical)],
+                ),
+            )
+            .unwrap();
+        assert_eq!(consumed.outcome, ReportOutcome::Applied);
+        assert!(
+            !triage_is_due(&done_triage("revision-sha-1", Vec::new()), false),
+            "a triage does not triage itself"
+        );
+        assert_eq!(
+            run.run.state,
+            RunState::Review,
+            "triage moves no lifecycle state"
+        );
+        assert_eq!(
+            run.last_summary, summary_before_triage,
+            "the card still says what the build said"
+        );
+        let triage = run.triage.as_ref().expect("the pass is kept on the run");
+        assert_eq!(triage.based_on, "revision-sha-1");
+        assert_eq!(triage.hunks[0].level, TriageLevel::Critical);
+    }
+
+    /// The id vocabulary is the patch's. An invented id fails the whole report
+    /// — a half-landed triage would order the review by a rule nobody stated —
+    /// and the refusal names the ids that were available.
+    #[tokio::test]
+    async fn a_triage_naming_a_hunk_that_is_not_in_the_diff_is_refused() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
+
+        std::fs::write(run.worktree.path.join("crypto.rs"), "fn derive() {}\n").unwrap();
+        orch.on_run_done(
+            &mut run,
+            &[],
+            done(DonePhase::Build, DoneStatus::Completed, None),
+        )
+        .unwrap();
+        let ids = crate::diff::hunk_ids(orch.run_diff(&run).unwrap().patch());
+
+        let error = orch
+            .on_run_done(
+                &mut run,
+                &[],
+                done_triage(
+                    "revision-sha-1",
+                    vec![
+                        classified(&ids[0], TriageLevel::Low),
+                        classified("hnotinthisdiff", TriageLevel::Critical),
+                    ],
+                ),
+            )
+            .expect_err("an invented hunk id is refused");
+        let message = error.to_string();
+        assert!(message.contains("hnotinthisdiff"), "{message}");
+        assert!(message.contains(&ids[0]), "{message}");
+        assert!(
+            run.triage.is_none(),
+            "a refused report leaves no partial ordering behind"
+        );
+    }
+
+    /// A triage report that lost its payload on the way (a raw daemon-socket
+    /// writer, a version-skewed mcp binary) is rejected, never unwrapped.
+    #[tokio::test]
+    async fn a_triage_report_with_no_triage_payload_is_rejected() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
+        std::fs::write(run.worktree.path.join("crypto.rs"), "fn derive() {}\n").unwrap();
+
+        let error = orch
+            .on_run_done(
+                &mut run,
+                &[],
+                done(DonePhase::Triage, DoneStatus::Completed, None),
+            )
+            .expect_err("a triage report without outputs.triage is rejected");
+        assert!(error.to_string().contains("outputs.triage"), "{error}");
+        assert!(run.triage.is_none());
     }
 
     #[tokio::test]

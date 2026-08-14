@@ -252,6 +252,56 @@ pub struct ValidationReport {
     pub notes_for_next_stage: String,
 }
 
+/// How much review one hunk of a diff needs.
+///
+/// Presentational, and only that: triage orders and collapses the review
+/// surface. No level gates a lifecycle transition, and no state waits on a
+/// triage pass — the diff underneath it is always the whole diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TriageLevel {
+    Critical,
+    Normal,
+    Low,
+}
+
+impl TriageLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriageLevel::Critical => "critical",
+            TriageLevel::Normal => "normal",
+            TriageLevel::Low => "low",
+        }
+    }
+}
+
+/// One hunk's classification, keyed by the id `crate::diff::patch_hunks`
+/// assigns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriageHunk {
+    pub hunk_id: String,
+    pub level: TriageLevel,
+    /// The one line the reviewer reads instead of a collapsed hunk, or the one
+    /// that says what to look at in a critical one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    /// The named group `low` hunks collapse into, shared by several hunks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// A triage pass over one revision of a run's diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriageReport {
+    /// The diff revision this pass read — the content hash of the patch it was
+    /// given. A triage whose `based_on` is not the current revision is stale:
+    /// it still ships, labelled, because a stale ordering beats none.
+    pub based_on: String,
+    pub hunks: Vec<TriageHunk>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryState {

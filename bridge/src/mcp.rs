@@ -26,6 +26,9 @@ pub enum DonePhase {
     Revise,
     /// An automated validation pass gating the next stage of a multi-stage plan.
     Validate,
+    /// A review-prioritization pass over the diff a build/revise just reported.
+    /// It gates nothing — see [`crate::run::TriageReport`].
+    Triage,
     /// A branch-lineage recovery agent reporting a nonce-bound result.
     Recover,
     /// A router session reporting where it sent a capture. The only phase on
@@ -78,6 +81,9 @@ pub struct DoneOutputs {
     /// Required when phase=validate and status=completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<crate::run::ValidationReport>,
+    /// Required when phase=triage and status=completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<crate::run::TriageReport>,
     /// Required when phase=recover and status=completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<RecoveryReport>,
@@ -117,6 +123,19 @@ pub enum DoneError {
     MissingValidationReport,
     #[error("outputs.recovery is required when phase=recover and status=completed")]
     MissingRecoveryReport,
+    #[error("outputs.triage is required when phase=triage and status=completed")]
+    MissingTriageReport,
+    #[error("outputs.triage classifies hunk {0:?} more than once")]
+    DuplicateTriageHunk(String),
+    #[error(
+        "outputs.triage names hunks that are not in this diff: {}. The hunk ids of the current diff are: {}",
+        unknown.join(", "),
+        valid.join(", ")
+    )]
+    UnknownTriageHunks {
+        unknown: Vec<String>,
+        valid: Vec<String>,
+    },
     #[error("invalid outputs.stages: {0}")]
     InvalidStages(String),
     #[error("plan_path {0:?} must be a plain relative path inside the worktree (no '..', no leading '/')")]
@@ -202,6 +221,20 @@ impl DoneReport {
         {
             return Err(DoneError::MissingRecoveryReport);
         }
+        if args.phase == DonePhase::Triage && args.status == DoneStatus::Completed {
+            let Some(triage) = &args.outputs.triage else {
+                return Err(DoneError::MissingTriageReport);
+            };
+            // A hunk classified twice has no classification. The ids are
+            // checked against the actual diff where the diff exists — see
+            // [`check_triage_hunk_ids`].
+            let mut seen = std::collections::HashSet::new();
+            for hunk in &triage.hunks {
+                if !seen.insert(hunk.hunk_id.as_str()) {
+                    return Err(DoneError::DuplicateTriageHunk(hunk.hunk_id.clone()));
+                }
+            }
+        }
         Ok(DoneReport {
             phase: args.phase,
             status: args.status,
@@ -209,6 +242,33 @@ impl DoneReport {
             outputs: args.outputs,
         })
     }
+}
+
+/// Check a triage report's hunk ids against the diff it claims to describe.
+///
+/// The tool boundary can only check the report's shape; the vocabulary of hunk
+/// ids belongs to a patch, which lives where the worktree is. So the daemon
+/// calls this with `crate::diff::hunk_ids` of the run's current diff, and an
+/// invented or mistyped id comes back to the agent WITH the ids it could have
+/// used — a correctable tool error, not a silent drop.
+pub fn check_triage_hunk_ids(
+    report: &crate::run::TriageReport,
+    valid_ids: &[String],
+) -> Result<(), DoneError> {
+    let valid: std::collections::HashSet<&str> = valid_ids.iter().map(String::as_str).collect();
+    let unknown: Vec<String> = report
+        .hunks
+        .iter()
+        .map(|hunk| hunk.hunk_id.clone())
+        .filter(|id| !valid.contains(id.as_str()))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(DoneError::UnknownTriageHunks {
+        unknown,
+        valid: valid_ids.to_vec(),
+    })
 }
 
 /// The result of handling one JSON-RPC message: a line to write back (absent for
@@ -457,7 +517,7 @@ impl DoneServer {
         json!({
             "type": "object",
             "properties": {
-                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "recover"] },
+                "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "triage", "recover"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
                 "summary": { "type": "string", "description": "One concise sentence stating what was completed. If blocked or failed, state what is needed instead. No file list, changelog, test log, links, or process narration." },
                 "outputs": {
@@ -487,6 +547,27 @@ impl DoneServer {
                                 "notes_for_next_stage": { "type": "string", "description": "Markdown notes the next stage's builder should know. Empty string if none." }
                             },
                             "required": ["passed", "findings", "notes_for_next_stage"]
+                        },
+                        "triage": {
+                            "type": "object",
+                            "description": "Required when phase=triage and status=completed. One entry per hunk id the triage prompt listed, and no others.",
+                            "properties": {
+                                "based_on": { "type": "string", "description": "The revision the triage prompt named, echoed back exactly." },
+                                "hunks": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "hunk_id": { "type": "string", "description": "A hunk id from the prompt's list, verbatim." },
+                                            "level": { "type": "string", "enum": ["critical", "normal", "low"], "description": "How much review this hunk needs." },
+                                            "rationale": { "type": "string", "description": "One line. For a low hunk it is what the reviewer reads INSTEAD of the hunk; for a critical one, what to look at." },
+                                            "group": { "type": "string", "description": "Required on low hunks: the short name several collapsed hunks share." }
+                                        },
+                                        "required": ["hunk_id", "level"]
+                                    }
+                                }
+                            },
+                            "required": ["based_on", "hunks"]
                         },
                         "recovery": {
                             "type": "object",
@@ -1145,10 +1226,21 @@ mod tests {
         let schema = &v["result"]["tools"][2]["inputSchema"];
         let phases = schema["properties"]["phase"]["enum"].as_array().unwrap();
         assert!(phases.iter().any(|p| p == "validate"));
+        assert!(phases.iter().any(|p| p == "triage"));
         let outputs = &schema["properties"]["outputs"]["properties"];
         assert!(outputs["stages"].is_object());
         assert!(outputs["validation"].is_object());
         assert!(outputs["comment_resolutions"].is_object());
+        let triage = &outputs["triage"];
+        assert_eq!(triage["type"], "object");
+        let levels = triage["properties"]["hunks"]["items"]["properties"]["level"]["enum"]
+            .as_array()
+            .expect("the level vocabulary is closed in the schema too");
+        assert_eq!(levels, &vec!["critical", "normal", "low"]);
+        assert_eq!(
+            triage["required"].as_array().unwrap(),
+            &vec!["based_on", "hunks"]
+        );
     }
 
     #[test]
@@ -1373,6 +1465,134 @@ mod tests {
         assert!(validation.passed);
         assert_eq!(validation.findings, "all good");
         assert_eq!(validation.notes_for_next_stage, "none");
+    }
+
+    /// The typed triage report: the levels are a closed vocabulary, the
+    /// optional per-hunk prose rides along, and `based_on` says which revision
+    /// was read.
+    #[test]
+    fn done_triage_completed_carries_the_classified_hunks() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"completed","summary":"the crypto change carries the risk","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"critical","rationale":"changes key derivation"},{"hunk_id":"hdef","level":"low","rationale":"version bump only","group":"version bumps"},{"hunk_id":"hghi","level":"normal"}]}}}}}"#,
+        );
+        assert_eq!(parse(&h.reply.unwrap())["result"]["isError"], false);
+        let report = h.report.expect("a triage report is emitted");
+        assert_eq!(report.phase, DonePhase::Triage);
+        let triage = report.outputs.triage.expect("triage carried");
+        assert_eq!(triage.based_on, "rev-1");
+        assert_eq!(triage.hunks.len(), 3);
+        assert_eq!(triage.hunks[0].level, crate::run::TriageLevel::Critical);
+        assert_eq!(
+            triage.hunks[1].group.as_deref(),
+            Some("version bumps"),
+            "a collapsed hunk names its group"
+        );
+        assert_eq!(triage.hunks[2].level, crate::run::TriageLevel::Normal);
+        assert_eq!(triage.hunks[2].rationale, None);
+    }
+
+    #[test]
+    fn done_triage_completed_without_a_triage_report_is_rejected() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"completed","summary":"triaged"}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert_eq!(
+            v["result"]["content"][0]["text"],
+            DoneError::MissingTriageReport.to_string()
+        );
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn a_level_outside_the_vocabulary_is_refused() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"completed","summary":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"urgent"}]}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("urgent"), "{text}");
+        assert!(h.report.is_none());
+    }
+
+    /// A field the phase does not define is a misunderstanding of the contract,
+    /// not a harmless extra: refuse it while the agent can still correct it.
+    #[test]
+    fn an_unknown_field_on_a_triage_hunk_is_refused() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"completed","summary":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"low","severity":"minor"}]}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("severity"));
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn one_hunk_classified_twice_is_refused() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"completed","summary":"triaged","outputs":{"triage":{"based_on":"rev-1","hunks":[{"hunk_id":"habc","level":"low"},{"hunk_id":"habc","level":"critical"}]}}}}}"#,
+        );
+        let v = parse(&h.reply.unwrap());
+        assert_eq!(v["result"]["isError"], true);
+        assert_eq!(
+            v["result"]["content"][0]["text"],
+            DoneError::DuplicateTriageHunk("habc".to_string()).to_string()
+        );
+        assert!(h.report.is_none());
+    }
+
+    #[test]
+    fn done_triage_blocked_needs_no_triage_report() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"done","arguments":{"phase":"triage","status":"blocked","summary":"the worktree is gone"}}}"#,
+        );
+        assert_eq!(parse(&h.reply.unwrap())["result"]["isError"], false);
+        assert!(h.report.is_some());
+    }
+
+    /// The id vocabulary belongs to the patch, so the check happens where the
+    /// patch is — and the refusal hands back the ids the agent could have used.
+    #[test]
+    fn a_hunk_id_that_is_not_in_the_diff_is_refused_with_the_ones_that_are() {
+        let report = crate::run::TriageReport {
+            based_on: "rev-1".to_string(),
+            hunks: vec![
+                crate::run::TriageHunk {
+                    hunk_id: "hpresent".to_string(),
+                    level: crate::run::TriageLevel::Normal,
+                    rationale: None,
+                    group: None,
+                },
+                crate::run::TriageHunk {
+                    hunk_id: "hinvented".to_string(),
+                    level: crate::run::TriageLevel::Low,
+                    rationale: Some("looks harmless".to_string()),
+                    group: Some("noise".to_string()),
+                },
+            ],
+        };
+        let valid = vec!["hpresent".to_string(), "hmissed".to_string()];
+        let error = check_triage_hunk_ids(&report, &valid).expect_err("an invented id is refused");
+        let message = error.to_string();
+        assert!(message.contains("hinvented"), "{message}");
+        assert!(
+            message.contains("hpresent") && message.contains("hmissed"),
+            "{message}"
+        );
+
+        // Classifying only some of the diff is allowed: the rest renders as it
+        // does today, which is what an untriaged hunk means.
+        let partial = crate::run::TriageReport {
+            based_on: "rev-1".to_string(),
+            hunks: vec![report.hunks[0].clone()],
+        };
+        assert!(check_triage_hunk_ids(&partial, &valid).is_ok());
     }
 
     #[test]

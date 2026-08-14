@@ -2748,6 +2748,7 @@ impl AppState {
             auto_advance: active.auto_advance,
             adopted: active.adopted,
             pending_continuation: active.pending_continuation,
+            triage: active.triage.clone(),
             recovery: active.recovery.clone(),
             publication_attempt: active.publication_attempt.clone(),
             provider: active.model_choice.provider,
@@ -4241,6 +4242,7 @@ impl AppState {
         let plan_docs = self.owning_plan_stage_docs(&active);
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let report_for_thread = report.clone();
+        let mut triage_due = false;
         let consumed = (|| -> Result<ReportConsumed, String> {
             let project_id = self.project_of(run_id)?;
             self.orch_for(&project_id)?
@@ -4265,6 +4267,7 @@ impl AppState {
                 // A stage that built hands itself to validation: the same
                 // agent, a new turn. Queued rather than written here — the done
                 // socket holds the state lock and a cold delivery needs it free.
+                triage_due = crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
                 if let Some(turn) = next {
                     self.pending_agent_turns
                         .push(PendingAgentTurn::for_run(run_id, &active, turn));
@@ -4389,8 +4392,46 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        if let Some(patch) = diff_revision {
-            conversation.add_revision(crate::thread::ArtifactKind::Diff, &patch, &now_rfc3339());
+        // The revision names the diff the reviewer will see, and the triage
+        // pass is asked to classify THAT revision — so the pass is rendered
+        // from the same patch the revision was minted from, and its `based_on`
+        // is what makes a later diff visibly move out from under it.
+        let triage_seed = diff_revision.map(|patch| {
+            let revision = conversation.add_revision(
+                crate::thread::ArtifactKind::Diff,
+                &patch,
+                &now_rfc3339(),
+            );
+            (patch, revision.content_hash)
+        });
+        // A revision that has already been triaged is not triaged again: the
+        // agent's turn is worth more than a second opinion on an unchanged diff.
+        let already_triaged = |revision_sha: &String| {
+            active
+                .triage
+                .as_ref()
+                .is_some_and(|triage| triage.based_on == *revision_sha)
+        };
+        if triage_due {
+            if let Some((patch, revision_sha)) = triage_seed
+                .as_ref()
+                .filter(|(_, revision_sha)| !already_triaged(revision_sha))
+            {
+                let turn = self.project_of(run_id).ok().and_then(|project_id| {
+                    self.orch_for(&project_id).ok().and_then(|orch| {
+                        orch.triage_turn(
+                            &active,
+                            patch,
+                            revision_sha,
+                            report_for_thread.outputs.completion_report.as_ref(),
+                        )
+                    })
+                });
+                if let Some(turn) = turn {
+                    self.pending_agent_turns
+                        .push(PendingAgentTurn::for_run(run_id, &active, turn));
+                }
+            }
         }
         let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
@@ -11732,6 +11773,8 @@ impl AppState {
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id),
+            // Review prioritization: an overlay on the diff, never a gate.
+            "triage": self.triage_json(active),
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
@@ -11752,6 +11795,29 @@ impl AppState {
                 .iter()
                 .map(run_stage_json)
                 .collect::<Vec<_>>(),
+        })
+    }
+
+    /// The run's triage pass, with the one thing the SPA cannot derive: whether
+    /// the diff has moved since the pass read it.
+    ///
+    /// `stale` is derived here and never stored — the diff moves under a triage
+    /// constantly, and a stored flag would be a second thing to keep true. A
+    /// stale pass still ships: an ordering from the previous revision beats no
+    /// ordering at all while the re-triage runs, and the SPA labels it.
+    fn triage_json(&self, active: &ActiveRun) -> Value {
+        let Some(triage) = &active.triage else {
+            return Value::Null;
+        };
+        let current_revision = self
+            .conversation_thread_for_run(active)
+            .current_revision(crate::thread::ArtifactKind::Diff)
+            .map(|revision| revision.content_hash.clone());
+        json!({
+            "based_on": triage.based_on,
+            "hunks": triage.hunks,
+            // No revision recorded yet means nothing has been observed to move.
+            "stale": current_revision.is_some_and(|current| current != triage.based_on),
         })
     }
 
@@ -21108,6 +21174,197 @@ mod tests {
         );
     }
 
+    // ---- Review prioritization (triage) ----
+
+    /// The hunk ids of a run's current diff, and the revision hash that names
+    /// that diff — what a triage report has to speak in.
+    fn diff_vocabulary(state: &AppState, run_id: &str) -> (Vec<String>, String) {
+        let project_id = state.project_of(run_id).expect("the run has a project");
+        let patch = state
+            .orch_for(&project_id)
+            .expect("the project has an orchestrator")
+            .run_diff(&state.runs[run_id])
+            .expect("the worktree is readable")
+            .patch()
+            .to_string();
+        (crate::diff::hunk_ids(&patch), sha256_hex(patch.as_bytes()))
+    }
+
+    fn done_triage(based_on: &str, hunk_ids: &[String]) -> DoneReport {
+        DoneReport {
+            phase: DonePhase::Triage,
+            status: DoneStatus::Completed,
+            summary: "the new file carries the risk".into(),
+            outputs: DoneOutputs {
+                triage: Some(crate::run::TriageReport {
+                    based_on: based_on.to_string(),
+                    hunks: hunk_ids
+                        .iter()
+                        .map(|hunk_id| crate::run::TriageHunk {
+                            hunk_id: hunk_id.clone(),
+                            level: crate::run::TriageLevel::Critical,
+                            rationale: Some("new code path".into()),
+                            group: None,
+                        })
+                        .collect(),
+                }),
+                ..DoneOutputs::default()
+            },
+        }
+    }
+
+    /// A build that changed files is followed by a pass that orders the diff for
+    /// review — on the same agent, in the same worktree, naming the hunks it is
+    /// to classify. The run here is adopted and sitting in Review, so the report
+    /// moves no lifecycle state at all: triage gates nothing, so it does not
+    /// wait for the state machine's blessing either.
+    #[test]
+    fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-me");
+        let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
+        std::fs::write(
+            state.runs[&run_id].worktree.path.join("crypto.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        state.pending_agent_turns.clear();
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "added the key derivation".into(),
+                outputs: DoneOutputs {
+                    completion_report: Some(crate::thread::CompletionReport {
+                        critical_files: vec!["crypto.rs — key derivation".into()],
+                        ..Default::default()
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a finished diff is ordered for review");
+        assert_eq!(queued.phase, "triage");
+        assert_eq!(queued.owner, run_id);
+        assert_eq!(queued.root, root, "triage reads the diff where it lives");
+        let (hunk_ids, revision_sha) = diff_vocabulary(&state, &run_id);
+        for hunk_id in &hunk_ids {
+            assert!(queued.warm.contains(hunk_id), "{hunk_id}: {}", queued.warm);
+        }
+        assert!(queued.warm.contains(&revision_sha), "{}", queued.warm);
+        assert!(
+            queued.warm.contains("crypto.rs — key derivation"),
+            "the completion report seeds the pass: {}",
+            queued.warm
+        );
+    }
+
+    /// The pass lands on the run and ships to the SPA; when the diff moves out
+    /// from under it, the same pass still ships — labelled stale — and a new one
+    /// is queued for the revision that replaced it.
+    #[test]
+    fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-staleness");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        std::fs::write(worktree.join("crypto.rs"), "fn a() {}\n").unwrap();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "first revision".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let (hunk_ids, first_revision) = diff_vocabulary(&state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&first_revision, &hunk_ids));
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let triage = &view["result"]["triage"];
+        assert_eq!(triage["based_on"], first_revision, "{view:?}");
+        assert_eq!(triage["stale"], false, "{view:?}");
+        assert_eq!(triage["hunks"][0]["hunk_id"], hunk_ids[0], "{view:?}");
+        assert_eq!(triage["hunks"][0]["level"], "critical", "{view:?}");
+        assert_eq!(triage["hunks"][0]["rationale"], "new code path", "{view:?}");
+
+        // The diff moves: a second turn, a second revision.
+        std::fs::write(worktree.join("crypto.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        state.pending_agent_turns.clear();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "second revision".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        let triage = &view["result"]["triage"];
+        assert_eq!(
+            triage["based_on"], first_revision,
+            "the ordering the reviewer was reading is not thrown away: {view:?}"
+        );
+        assert_eq!(
+            triage["stale"], true,
+            "and it is labelled as describing the previous revision: {view:?}"
+        );
+        let (_, second_revision) = diff_vocabulary(&state, &run_id);
+        assert_ne!(first_revision, second_revision);
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("a new revision is triaged again");
+        assert_eq!(queued.phase, "triage");
+        assert!(queued.warm.contains(&second_revision), "{}", queued.warm);
+    }
+
+    /// A revision nobody has changed is not re-triaged: the agent's turn is
+    /// worth more than a second opinion on the same diff.
+    #[test]
+    fn a_report_that_changed_nothing_does_not_ask_for_the_same_triage_twice() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-once");
+        std::fs::write(
+            state.runs[&run_id].worktree.path.join("crypto.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        let build = || DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "reported again".into(),
+            outputs: DoneOutputs::default(),
+        };
+        state.on_agent_done(&run_id, build());
+        let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
+
+        state.pending_agent_turns.clear();
+        state.on_agent_done(&run_id, build());
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "an unchanged diff is already ordered: {:?}",
+            state
+                .pending_agent_turns
+                .iter()
+                .map(|turn| turn.phase)
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// Connect to a unix socket a spawned worker is still binding.
     async fn connect_when_bound(path: &std::path::Path) -> tokio::net::UnixStream {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -23932,6 +24189,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             provider: AgentProvider::Claude,
@@ -24253,6 +24511,7 @@ mod tests {
             auto_advance: false,
             adopted: false,
             pending_continuation: false,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             provider: AgentProvider::Claude,

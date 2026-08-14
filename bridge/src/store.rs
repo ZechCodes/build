@@ -264,6 +264,12 @@ pub struct PersistedRun {
     /// session spawn after adoption, persisted so a restart in between keeps it.
     #[serde(default)]
     pub pending_continuation: bool,
+    /// The last triage pass over this run's diff. Presentational, so it is
+    /// persisted purely so a restart does not throw away an ordering the
+    /// reviewer was reading; nothing waits on it and nothing reads it back into
+    /// the lifecycle.
+    #[serde(default)]
+    pub triage: Option<crate::run::TriageReport>,
     /// Durable nonce-bound recovery journal. A started attempt survives daemon
     /// restart and can never be mistaken for a verified success.
     #[serde(default)]
@@ -1546,6 +1552,7 @@ fn run_record_from_legacy(task: &PersistedTask) -> Option<PersistedRun> {
         auto_advance: task.auto_advance,
         adopted: task.adopted,
         pending_continuation: task.pending_continuation,
+        triage: None,
         recovery: None,
         publication_attempt: None,
         provider: AgentProvider::Claude,
@@ -2242,6 +2249,7 @@ mod tests {
             auto_advance: true,
             adopted: false,
             pending_continuation: false,
+            triage: None,
             recovery: None,
             publication_attempt: None,
             provider: AgentProvider::Claude,

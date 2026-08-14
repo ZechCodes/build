@@ -39,6 +39,7 @@ async function mount(overrides = {}) {
     issue = issuePayload(),
     stages = [stage()],
     doc = { stage_id: "s1", contents: "# Wire\n\nRewrite the client so it reads items[]." },
+    planDoc = { contents: "# The whole plan" },
     fail = null,
     ...options
   } = overrides;
@@ -53,6 +54,7 @@ async function mount(overrides = {}) {
       if (method === "issue.get") return issue;
       if (method === "issue.stages") return { stages };
       if (method === "issue.stage_doc") return doc;
+      if (method === "issue.doc") return planDoc;
       return {};
     },
     ...options,
@@ -264,6 +266,20 @@ describe("the issue view", () => {
     expect(rows[1].textContent).toContain("build/two");
     rows[1].click();
     expect(routed).toEqual([{ name: "task", projectId: "proj-1", id: "run-2", tab: "changes" }]);
+    view.dispose();
+  });
+
+  it("reads the plan of an issue that has no stages at all", async () => {
+    const { host, view } = await mount({ issue: issuePayload({ stages: [] }), stages: [] });
+    expect(host.querySelector(".ivviewer").textContent).toContain("The whole plan");
+    expect(host.querySelector("#stagelist").textContent).toContain("No stages yet");
+    view.dispose();
+  });
+
+  it("says the agent is still drafting rather than offering a plan that does not exist", async () => {
+    const { host, view, calls } = await mount({ issue: issuePayload({ state: "drafting", stages: [] }), stages: [] });
+    expect(host.querySelector(".ivviewer").textContent).toContain("drafting the plan");
+    expect(calls.some(([method]) => method === "issue.stage_doc")).toBe(false);
     view.dispose();
   });
 

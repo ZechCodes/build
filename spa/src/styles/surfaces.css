@@ -70,7 +70,6 @@
   text-overflow:ellipsis; white-space:nowrap; }
 .ivgate { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
 .ivgate:empty { display:none; }
-.ivgate .hint { color:var(--dim); font-size:12px; flex-basis:100%; }
 /* A section label inside the rail — the same quiet header the commit rail uses. */
 .ivsec { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
   text-transform:uppercase; }

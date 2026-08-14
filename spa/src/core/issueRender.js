@@ -137,7 +137,7 @@ export function stageListHtml({ issue, stagesData, selectedStageId = null, assig
       <div class="ivtitle">${esc(issue.goal || "")}</div>
       <div class="ivmeta"><span class="chip ${planChipClass(issue.state)}">${esc(PLAN_STATE_LABEL[issue.state] || issue.state || "")}</span>
         <span class="ivproject">${esc(issue.project || "")}${issue.base_branch ? ` · ${esc(issue.base_branch)}` : ""}</span></div>
-      <div class="ivgate">${gate}<span class="hint" id="stageshint"></span></div>
+      <div class="ivgate">${gate}</div>
     </div>
     <div class="stagelist" id="stagelist">${rows || '<div class="empty">No stages yet.</div>'}</div>
     ${assignmentHtml({ assignment, open: assignmentOpen, catalog })}

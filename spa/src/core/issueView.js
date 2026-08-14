@@ -123,7 +123,10 @@ export function mountIssueView(
   let actionsInFlight = 0;
   let threadCursor = 0;
   let drawer = null;
-  let hint = "";
+  // The plan of an issue that has no stage manifest at all (a migrated issue
+  // predating stages): one doc, read-only, so it is still readable here.
+  let singleDoc = null;
+  let singleDocError = false;
   // Per-stage doc-read latches: a stage_doc ERROR renders an error state and
   // stops that doc's refetch until the user re-selects it.
   const docErrors = new Set();
@@ -168,10 +171,12 @@ export function mountIssueView(
     },
   });
 
-  const setHint = (text) => {
-    hint = text || "";
-    const host = container.querySelector("#stageshint");
-    if (host) host.textContent = hint;
+  /** The user is filling in the assignment control: a repaint would replace the
+   *  field under their cursor, so the poll waits. */
+  const assignmentBusy = () => {
+    if (!assignmentOpen) return false;
+    const focused = document.activeElement;
+    return Boolean(focused && container.contains(focused) && focused.closest(".ivassign"));
   };
 
   const guarded = async (work) => {
@@ -220,6 +225,7 @@ export function mountIssueView(
       docHtml: docHtmlFor(state),
       comments: (stage && stage.comments) || [],
     });
+    if (!stages().length) renderSingleDoc(viewerHost);
     if (stage) {
       const feedback = viewerHost.querySelector(".ivstagefeedback");
       if (feedback) feedback.innerHTML = commentLayer.trayHtml();
@@ -227,7 +233,35 @@ export function mountIssueView(
       commentLayer.attach(viewerHost, { annotatable: docAnnotatable(stage, state) });
       wireStageActions(viewerHost, stage);
     }
-    setHint(hint);
+  };
+
+  /** An issue with no stage manifest still has a plan: render it in the viewer
+   *  instead of the pick-a-stage line, and say so while the agent is still
+   *  drafting one. It takes no comments — the bridge anchors a doc comment to a
+   *  stage, and there is no stage to anchor to. */
+  const renderSingleDoc = (viewerHost) => {
+    if (issue.state === "created" || issue.state === "drafting") {
+      viewerHost.innerHTML = '<div class="plan plan-loading">✦ planning agent is drafting the plan…</div>';
+      return;
+    }
+    const state = planDocPaneState({
+      docsAvailable: issue.docs_available,
+      errorLatched: singleDocError,
+      hasContents: Boolean(singleDoc),
+    });
+    viewerHost.innerHTML = `<div class="plan${state === "ready" ? " markdown" : ""}" id="stagedoc">${
+      state === "ready" ? renderMarkdown(singleDoc)
+      : state === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
+      : state === "error" ? docErrorPaneHtml("plan")
+      : '<div class="plan-loading">✦ loading the plan…</div>'
+    }</div>`;
+    const retry = viewerHost.querySelector("#docretry");
+    if (retry)
+      retry.onclick = () => {
+        singleDocError = false;
+        renderedKey = null;
+        refresh();
+      };
   };
 
   const docHtmlFor = (state) => {
@@ -559,10 +593,17 @@ export function mountIssueView(
       }
     }
     await loadStageDoc();
+    await loadSingleDoc();
     if (disposed || gone) return;
-    const key = issueViewKey({ issue, stagesData, selectedStageId, docState: paneState(), doc: docContents() });
+    const key = issueViewKey({
+      issue,
+      stagesData,
+      selectedStageId,
+      docState: paneState(),
+      doc: stages().length ? docContents() : singleDoc || "",
+    });
     const rendered = Boolean(container.querySelector(".ivsplit"));
-    if (!force && rendered && (key === renderedKey || actionsInFlight > 0 || commentLayer.busy())) return;
+    if (!force && rendered && (key === renderedKey || actionsInFlight > 0 || commentLayer.busy() || assignmentBusy())) return;
     renderedKey = key;
     render();
   };
@@ -580,6 +621,18 @@ export function mountIssueView(
       if (!disposed && selectedStageId === wanted) stageDoc = doc;
     } catch {
       docErrors.add(wanted); // latch: render an error state, stop refetching
+    }
+  };
+
+  /** The single-doc issue's plan, fetched once and latched off on error — the
+   *  same discipline the stage docs get. */
+  const loadSingleDoc = async () => {
+    if (stages().length || singleDoc !== null) return;
+    if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: singleDocError })) return;
+    try {
+      singleDoc = (await callRpc("issue.doc", { issue_id: issueId })).contents || "";
+    } catch {
+      singleDocError = true;
     }
   };
 

@@ -53,7 +53,7 @@ async function tick() {
   }
 }
 
-export function startFeed(intervalMs = 2000) {
+export function startFeed(intervalMs = 10000) {
   stopFeed();
   tick();
   timer = setInterval(tick, intervalMs);

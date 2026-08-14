@@ -65,7 +65,7 @@ export function issuesHtml({ open, closed }) {
  * Mount the Issues tab. Polls board.list on the inbox's cadence and routes a
  * click to that issue's surface. Returns { dispose() }.
  */
-export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue, pollMs = 2500 }) {
+export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue, pollMs = 10000 }) {
   let disposed = false;
   const draw = (plans) => {
     host.innerHTML = issuesHtml(bucketIssues(plans, projectId));

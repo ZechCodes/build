@@ -143,7 +143,7 @@ export function archiveHtml(payload) {
 }
 
 /** Fetch and quietly refresh a project's archive. Returns { dispose() }. */
-export function mountArchiveTab(host, { projectId, callRpc, navigate, pollMs = 5000 }) {
+export function mountArchiveTab(host, { projectId, callRpc, navigate, pollMs = 10000 }) {
   let disposed = false;
   let hasRendered = false;
   host.innerHTML = '<div class="empty">Loading archive…</div>';

@@ -22,7 +22,7 @@ import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 
-export const REVIEW_POLL_MS = 1600;
+export const REVIEW_POLL_MS = 15000;
 
 // Each option id maps to a task.git_action call. cleanup is omitted for
 // commit/push (the bridge rejects cleanup on non-merges).

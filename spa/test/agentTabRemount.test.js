@@ -94,7 +94,7 @@ describe("the Agent tab across a poll-driven repaint (DOM)", () => {
     // The run moves to review: the poll rebuilds the shell, which replaces the
     // body the pane was living in.
     runState = "review";
-    await vi.advanceTimersByTimeAsync(1600);
+    await vi.advanceTimersByTimeAsync(5000);
 
     expect(paneBeforeMove.isConnected).toBe(false); // the rebuild threw it away
     expect(agentPane()).toBeTruthy(); // and the tab put a live one back
@@ -111,7 +111,7 @@ describe("the Agent tab across a poll-driven repaint (DOM)", () => {
 
     const attachesOnFiles = attachCount();
     runState = "review";
-    await vi.advanceTimersByTimeAsync(1600);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(attachCount()).toBe(attachesOnFiles);
     expect(agentPane()).toBeNull();
   });

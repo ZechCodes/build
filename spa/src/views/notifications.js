@@ -140,6 +140,13 @@ export async function renderNotifications() {
       /* offline / transient — the poll retries */
     }
   };
+  // `leaving` guards the await below — see task.js: an unguarded mount that
+  // finishes after navigation orphans its poll interval.
+  let leaving = false;
+  App.viewDispose = () => {
+    leaving = true;
+  };
   await load();
-  App.poll = setInterval(load, 2500);
+  if (leaving) return;
+  App.poll = setInterval(load, 10000);
 }

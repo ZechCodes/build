@@ -714,11 +714,16 @@ export async function renderPlan() {
     renderSingleDoc(doc, paneState);
   };
 
+  // `leaving` guards the await below — see task.js: an unguarded mount that
+  // finishes after navigation orphans its poll interval.
+  let leaving = false;
   App.viewDispose = () => {
+    leaving = true;
     disposePane();
   };
 
   shell(null); // route entry: paint the surface-bar skeleton + a loading body at once
   await paint();
-  App.poll = setInterval(paint, 1600);
+  if (leaving) return;
+  App.poll = setInterval(paint, 5000);
 }

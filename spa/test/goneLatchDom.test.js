@@ -88,7 +88,7 @@ describe("gone-latch (DOM)", () => {
     expect(root.textContent).not.toContain("no longer exists");
 
     const fetchesAtStart = calls.filter((m) => m === "issue.get").length;
-    await vi.advanceTimersByTimeAsync(3300); // two poll ticks
+    await vi.advanceTimersByTimeAsync(10100); // two poll ticks
     expect(calls.filter((m) => m === "issue.get").length).toBeGreaterThan(fetchesAtStart);
   });
 });

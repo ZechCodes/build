@@ -505,11 +505,20 @@ export async function renderTask() {
     if (tab !== "stages") return;
     await paintStages(t);
   };
-  // Tear down any mounted terminal/agent pane when navigating away.
-  App.viewDispose = () => disposeAux();
+  // Tear down any mounted terminal/agent pane when navigating away. `leaving`
+  // guards the awaits below: without it, navigating away mid-load let this
+  // mount finish anyway and orphan its interval — a poll stream nothing ever
+  // clears, and each one drives the bridge's expensive diff work forever.
+  let leaving = false;
+  App.viewDispose = () => {
+    leaving = true;
+    disposeAux();
+  };
 
   await terminals.load();
+  if (leaving) return;
   shell(null);
   await paint();
-  App.poll = setInterval(paint, 1600);
+  if (leaving) return;
+  App.poll = setInterval(paint, 5000);
 }

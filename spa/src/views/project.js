@@ -117,7 +117,7 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
     }
   };
   load();
-  const poll = setInterval(load, 2500);
+  const poll = setInterval(load, 10000);
   return {
     dispose() {
       disposed = true;

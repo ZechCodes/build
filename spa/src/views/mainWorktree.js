@@ -51,7 +51,7 @@ const PRIMARY_COMPOSER_IDS = { input: "mainthreadinput", send: "mainthreadsend",
  *  thread. */
 export function mountPrimaryConversation(
   host,
-  { adopting, callRpc, readDraft = () => "", writeDraft = () => {}, openLink = () => {}, pollMs = 1600 },
+  { adopting, callRpc, readDraft = () => "", writeDraft = () => {}, openLink = () => {}, pollMs = 5000 },
 ) {
   const threadCache = createThreadCache();
   let renderKey = null;
@@ -340,13 +340,18 @@ export async function renderMain() {
   };
 
   // Tear down the active terminal/files pane when the user navigates away.
+  // `leaving` guards the await below — see task.js: an unguarded mount that
+  // finishes after navigation mounts panes (and their polls) nothing clears.
+  let leaving = false;
   App.viewDispose = () => {
+    leaving = true;
     unsubscribeFeed();
     disposeAux();
   };
 
   shell();
   await terminals.load();
+  if (leaving) return;
   if (shellCtl) shellCtl.setTabs(staticTabs());
   selectTab(tab);
 }

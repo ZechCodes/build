@@ -189,6 +189,11 @@ export async function renderBranch() {
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
       agentSelection,
+      // Review prioritization: the run's freshest triage pass orders whichever
+      // changeset is open, and the reviewer's trust dial is remembered for the
+      // project they are reading.
+      projectId,
+      triage: () => (row && row.run && row.run.triage) || null,
     });
   };
 

@@ -95,7 +95,16 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
       // awaiting would render pre-post state if something landed underneath it.
       const task = getTask();
       if (!task) return null;
-      return { patch: diff.patch, key: task.state, commentable: COMMENTABLE_STATES.includes(task.state) };
+      return {
+        patch: diff.patch,
+        key: task.state,
+        commentable: COMMENTABLE_STATES.includes(task.state),
+        // Review prioritization: the run's own diff is the one the triage pass
+        // read, so this is where its ordering belongs. Null until a pass lands —
+        // the stack says it is untriaged rather than implying it was read.
+        triage: task.triage || null,
+        projectId: task.project_id || null,
+      };
     },
     submit: (messages) => callRpc("run.request_changes", { run_id: taskId, ...agentSelection.scope(), messages }),
     revisionId: () => currentRevisionId(getTask()?.thread, "diff"),

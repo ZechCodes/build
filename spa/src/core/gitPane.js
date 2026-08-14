@@ -38,6 +38,7 @@ import {
 import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
+import { loadTrustDial, saveTrustDial } from "./triageModel.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -375,6 +376,12 @@ export function mountGitPane(
     review = null,
     revisionId = () => null,
     onNavigate = null,
+    // Review prioritization: the run's freshest triage pass (read on every
+    // paint — a re-triage lands under this pane), and the project the reviewer's
+    // trust dial is remembered for. A surface with neither renders the plain
+    // stack it always did.
+    triage = () => null,
+    projectId = null,
     // Whose conversation the comments written here belong in: the agent whose
     // bubble is open in the rail beside this pane. Mounted without one (the
     // standalone Files/Changes hosts), the daemon answers with the entity's
@@ -402,6 +409,13 @@ export function mountGitPane(
   let scopeErrorShown = null; // the terminal scope error currently rendered
   let fileMenuPath = null; // the file whose header ⋯ is open
   const noiseExpanded = new Set(); // changesets whose collapsed noise group is open
+  // The triage overlay's reviewer-owned state: which collapsed groups they have
+  // opened (keyed by changeset, so opening one on the uncommitted stack says
+  // nothing about a commit's), and whether they have dialled the ordering off
+  // for this project.
+  const expandedGroups = new Map(); // changeset key → the group names opened in it
+  const triageProject = projectId || (scope && scope.project_id) || null;
+  let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
   // comments on it, so the next pass can mark what moved. renderedFiles is the
   // freshest parsed diff of the OPEN changeset, which is what a stamp is of.
@@ -509,16 +523,34 @@ export function mountGitPane(
       })
     : null;
 
+  /** The triage overlay for the stack being drawn, or null on a surface that
+   *  has no pass to read: only a run is triaged, so a bare worktree or the
+   *  primary checkout renders the plain stack it always did. The pass is read
+   *  fresh on every paint — a re-triage lands under this pane while it is open. */
+  const triageOverlay = (patch) => {
+    if (!commentsSupported(scope)) return null;
+    return {
+      triage: triage(),
+      patch: patch || "",
+      dial: trustDial,
+      expandedGroups: expandedGroups.get(String(selected)) || null,
+    };
+  };
+
   /** The one renderer for every changeset: a header, the stacked full file
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
   const renderChangeset = (detailHost) => {
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
-    const stackFor = (files) => ({
+    const stackFor = (files, patch) => ({
       commentable,
       noiseExpanded: noiseExpanded.has(String(selected)),
       changedSince: changedSinceChangeset(reviewStamps, selected, files),
+      // Review prioritization, on the changeset the reviewer has open — the
+      // rail is never reordered, only the stack under it. A surface with no run
+      // behind it has no pass to read and takes the plain stack.
+      review: triageOverlay(patch),
     });
     if (selected === "uncommitted") {
       if (!hasUncommittedChanges(lastStatus)) {
@@ -533,7 +565,7 @@ export function mountGitPane(
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       detailHost.innerHTML =
         uncommittedHeaderHtml(lastStatus) +
-        diffStackHtml(files, { ...stackFor(files), fileMenu }) +
+        diffStackHtml(files, { ...stackFor(files, lastStatus.patch), fileMenu }) +
         (commentLayer ? commentLayer.trayHtml() : "");
       if (commentLayer) commentLayer.attach(detailHost);
       return;
@@ -548,7 +580,7 @@ export function mountGitPane(
     renderedFiles = commitFiles;
     detailHost.innerHTML =
       commitHeaderHtml(detail) +
-      diffStackHtml(commitFiles, stackFor(commitFiles)) +
+      diffStackHtml(commitFiles, stackFor(commitFiles, detail.patch)) +
       (commentLayer ? commentLayer.trayHtml() : "");
     if (commentLayer) commentLayer.attach(detailHost);
   };
@@ -1166,6 +1198,27 @@ export function mountGitPane(
       const path = menuButton.dataset.path;
       fileMenuPath = fileMenuPath === path ? null : path;
       clearConfirm();
+      render();
+      return;
+    }
+    // The trust dial: the reviewer says how much of the pass's reading they
+    // want. Remembered per project, so the answer is asked once.
+    if (target.closest(".tdial")) {
+      trustDial = !trustDial;
+      saveTrustDial(triageProject, trustDial);
+      render();
+      return;
+    }
+    // A collapsed triage group: a click opens it, per changeset, across
+    // repaints — the same discipline the noise group is opened with.
+    const groupHead = target.closest(".tgrouphead");
+    if (groupHead) {
+      const key = String(selected);
+      if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
+      const opened = expandedGroups.get(key);
+      const name = groupHead.dataset.group;
+      if (opened.has(name)) opened.delete(name);
+      else opened.add(name);
       render();
       return;
     }

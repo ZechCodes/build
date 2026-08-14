@@ -19,6 +19,7 @@ import { createCommentLayer } from "./changesComments.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
+import { loadTrustDial, saveTrustDial } from "./triageModel.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 
 export const REVIEW_POLL_MS = 1600;
@@ -46,9 +47,13 @@ export function emptyStackHtml(totalFiles, changedOnly) {
 /**
  * createReviewPlug(options) → { mount(host), unmount(), refreshActions() }.
  *
- * - `fetchDiff()` → `{ patch, commentable?, key? }` (or null to paint nothing).
- *   `commentable` is whether this surface can talk to an agent right now;
- *   `key` is whatever else, besides the patch, changes what is drawn.
+ * - `fetchDiff()` → `{ patch, commentable?, key?, triage?, projectId? }` (or
+ *   null to paint nothing). `commentable` is whether this surface can talk to an
+ *   agent right now; `key` is whatever else, besides the patch, changes what is
+ *   drawn. A surface that is triaged reports `triage` on every payload — the
+ *   run's pass, or null when no pass has read this diff yet — and `projectId`,
+ *   which the reviewer's trust dial is remembered under. A surface that never
+ *   reports `triage` renders the plain stack, with no overlay and no label.
  * - `submit(messages)` sends the anchored comment posts; omitting it makes the
  *   surface read-only.
  * - `revisionId()` names the revision the anchors belong to.
@@ -73,9 +78,17 @@ export function createReviewPlug({
   let timer = null;
   let diffKey = null;
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
+  let renderedPatch = ""; // the patch those files came from — where hunk ids live
   let commentableNow = false;
   let trayMounted = false;
   let noiseExpanded = false; // the collapsed generated-files group at the bottom
+  // Review prioritization. `triageReport` is undefined until a payload speaks
+  // about triage at all: a surface that never mentions it renders the plain
+  // stack, while one that reports `triage: null` has a pass missing and says so.
+  let triageReport;
+  let triageProject = null;
+  let trustDial = false;
+  const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
 
   // Re-review memory, per plug instance (per session): what the reviewer saw
   // when they last sent comments, which files they have ticked off as read, and
@@ -133,6 +146,10 @@ export function createReviewPlug({
           viewed: viewedFiles,
           withViewedToggle: editable,
           noiseExpanded,
+          review:
+            triageReport === undefined
+              ? null
+              : { triage: triageReport, patch: renderedPatch, dial: trustDial, expandedGroups },
         })
       : emptyStackHtml(renderedFiles.length, changedOnlyFilter);
     host.innerHTML =
@@ -184,6 +201,22 @@ export function createReviewPlug({
         render();
         return;
       }
+      // The trust dial and the triage groups: the reviewer's own reading of how
+      // much of the pass's reading to take. The dial is remembered per project.
+      if (event.target.closest(".tdial")) {
+        trustDial = !trustDial;
+        saveTrustDial(triageProject, trustDial);
+        render();
+        return;
+      }
+      const groupHead = event.target.closest(".tgrouphead");
+      if (groupHead) {
+        const name = groupHead.dataset.group;
+        if (expandedGroups.has(name)) expandedGroups.delete(name);
+        else expandedGroups.add(name);
+        render();
+        return;
+      }
       if (trayMounted && commentLayer) commentLayer.handleClick(event);
     };
   }
@@ -198,8 +231,22 @@ export function createReviewPlug({
     }
     if (!host || !payload) return; // unmounted while the RPC was in flight
     renderedFiles = parseDiff(payload.patch);
+    renderedPatch = payload.patch || "";
     commentableNow = payload.commentable !== false && Boolean(commentLayer);
-    const key = [String(payload.key ?? ""), String(commentableNow), payload.patch].join("\x01");
+    // The pass, and the project whose dial governs how it is read. A project
+    // the plug has not seen before brings its remembered dial with it.
+    if (Object.hasOwn(payload, "triage")) triageReport = payload.triage || null;
+    if (payload.projectId && payload.projectId !== triageProject) {
+      triageProject = payload.projectId;
+      trustDial = loadTrustDial(triageProject);
+    }
+    const key = [
+      String(payload.key ?? ""),
+      String(commentableNow),
+      String(trustDial),
+      JSON.stringify(triageReport ?? null),
+      payload.patch,
+    ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
     // flight, and skip the rebuild when nothing moved (fold state survives too).
     const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.busy());

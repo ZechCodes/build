@@ -41,6 +41,50 @@
 .noisegroup.open .noisehead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
 .noisefiles { padding:12px 12px 2px; }
 
+/* ---- the triage overlay -----------------------------------------------------
+   Review prioritization: an ordering over the same stack, never a filter over
+   it. The banner says what reading is being applied (and offers the dial that
+   turns it off), critical work sits under a heading of its own, and low-risk
+   work folds into named groups whose diffs are still in the page, one click
+   from being read. */
+.triagebar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:8px 2px 12px; font-size:12px; color:var(--dim); }
+.triagebar .tsummary { font-family:var(--mono); }
+.triagebar .tuntriaged { font-family:var(--mono); color:var(--dim); }
+.triagebar .tstale { font-family:var(--mono); color:var(--amber); }
+.tdial { margin-left:auto; font:inherit; font-size:12px; color:var(--dim); background:none;
+  border:1px solid var(--line); border-radius:7px; padding:3px 9px; cursor:pointer; }
+.tdial:hover { color:var(--accent); border-color:var(--accent); }
+.tdial[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
+
+.tsectionhead { font-size:12px; font-family:var(--mono); color:var(--dim);
+  padding:2px 2px 8px; letter-spacing:.02em; }
+.tsection.tcritical { border-left:2px solid var(--red); padding-left:10px; margin-bottom:14px; }
+
+.tgroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
+.tgroup.open { border-style:solid; border-color:var(--line); }
+.tgrouphead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
+  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px;
+  display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.tgrouphead:hover { color:var(--accent); background:var(--line2); }
+.tgroup.open .tgrouphead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
+.tgrouphead .tgname { color:var(--ink); }
+.tgrouphead .tgrationale { flex:1 1 100%; color:var(--dim); font-family:inherit; }
+/* Collapsed, never dropped: the group's diffs are always in the DOM, so a
+   reviewer can find them — and their own browser can — without opening it. */
+.tgroup .tgfiles { display:none; padding:12px 12px 2px; }
+.tgroup.open .tgfiles { display:block; }
+
+.hchip { display:inline-flex; align-items:baseline; gap:6px; margin-left:10px; padding:1px 7px;
+  border-radius:999px; font-size:11px; font-family:var(--mono); cursor:default; }
+.hchip.critical { color:var(--red); background:var(--accent-soft); }
+.hchip.untriaged { color:var(--dim); border:1px dashed var(--line3); }
+.hchip .hchip-note { color:var(--dim); }
+/* The rationale is the chip's whole point: on the pointer it is a hover, and on
+   a touch screen a tap focuses the chip and reveals the same line. */
+.hchip .hrationale { display:none; color:var(--dim); }
+.hchip:hover .hrationale, .hchip:focus .hrationale, .hchip:focus-within .hrationale { display:inline; }
+
 /* The pending-comment tray under a changeset: what has been written but not yet
    sent, plus the general note and the send controls. */
 .csfeedback { margin-top:18px; }

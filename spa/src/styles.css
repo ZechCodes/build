@@ -157,6 +157,12 @@ main { max-width:1180px; margin:0 auto;
 .panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
 .panel .row .v { color:var(--ink2); }
 .panel .row.last .k { color:var(--green); }
+/* ---- the account archive ----
+   A record opens under the row it belongs to, so it reads as that row's inside
+   rather than as the next thing on the page. */
+.account-nav { margin-bottom:16px; }
+.archive-row { cursor:pointer; }
+.archive-record { max-width:none; margin:-4px 0 12px; }
 /* ---- full-height worktree surfaces (task / external worktree / main) ----
    The tab bar is the top of the view; #tabbody is the one scroll container
    (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)

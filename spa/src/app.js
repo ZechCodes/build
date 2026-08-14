@@ -20,11 +20,6 @@ export const App = {
   route: { name: "inbox" },
   poll: null,
   viewDispose: null, // the current view's teardown (terminal panes, observers)
-  // Read state is the bridge's: an entity keeps a per-user cursor and
-  // `entity.seen` advances it (core/inboxView.js). Nothing about what has been
-  // read is kept on this device any more; this empty set only keeps the
-  // pre-redesign surfaces that still ask compiling until they are deleted.
-  readIds: new Set(),
   offline: false,
   offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
 
@@ -45,12 +40,6 @@ export async function loadModelCatalog() {
     App.modelCatalog = normalizeModelCatalog({ models: [], efforts: [] });
   }
   return App.modelCatalog;
-}
-
-/** Vestigial: the same pre-redesign surfaces call this when they open. The
- *  bridge is told an entry was read by `entity.seen`, from the inbox. */
-export function markEntityRead(id) {
-  if (id) App.readIds.add(id);
 }
 
 export function rememberSelectedDevice(deviceId) {

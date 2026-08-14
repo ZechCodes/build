@@ -12,10 +12,11 @@ const manifest = JSON.parse(
     "utf8",
   ),
 );
-const stylesSource = readFileSync(
-  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
-  "utf8",
-);
+// The frame is split across two sheets: the page lock in styles.css, the
+// three-panel shell (and its scroll containers) in styles/shell.css.
+const stylesSource =
+  readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8") +
+  readFileSync(fileURLToPath(new URL("../src/styles/shell.css", import.meta.url)), "utf8");
 function metaContent(name, media) {
   const tags = indexSource.match(/<meta\s+[^>]+>/g) ?? [];
   const tag = tags.find((candidate) =>
@@ -88,11 +89,11 @@ describe("standalone shell styles", () => {
   });
 
   it("scrolls the content column and the rail independently", () => {
-    const mainRule = stylesSource.match(/\n#shell main \{[^}]+\}/)?.[0] ?? "";
+    const mainRule = stylesSource.match(/\n#shell main#root:not\(\.surface\) \{[^}]+\}/)?.[0] ?? "";
     expect(mainRule).toContain("overflow-y:auto");
-    const sidebarRule = stylesSource.match(/\n#sidebar \{[^}]+\}/)?.[0] ?? "";
-    expect(sidebarRule).not.toContain("position:sticky");
-    expect(sidebarRule).not.toContain("100vh");
-    expect(stylesSource).toContain("#sidebar-rail { flex:1; min-height:0; overflow-y:auto;");
+    const railRule = stylesSource.match(/\n#inbox-rail \{[^}]+\}/)?.[0] ?? "";
+    expect(railRule).not.toContain("position:sticky");
+    expect(railRule).not.toContain("100vh");
+    expect(stylesSource).toContain("#inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto;");
   });
 });

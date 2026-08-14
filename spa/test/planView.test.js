@@ -1,51 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { planBucketKey, bucketPlans } from "../src/core/planRail.js";
 import { docErrorPaneHtml } from "../src/core/issueRender.js";
 import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
-
-describe("planBucketKey", () => {
-  it("puts a plan still being authored in Draft", () => {
-    expect(planBucketKey("created")).toBe("draft");
-    expect(planBucketKey("drafting")).toBe("draft");
-  });
-
-  it("puts the review gate and every parked arm in In review", () => {
-    for (const s of ["plan_review", "blocked", "failed", "idle_unreported", "interrupted"]) {
-      expect(planBucketKey(s)).toBe("review");
-    }
-  });
-
-  it("puts an approved plan in Approved", () => {
-    expect(planBucketKey("approved")).toBe("approved");
-  });
-
-  it("puts the terminal (abandoned) plan in History", () => {
-    expect(planBucketKey("abandoned")).toBe("history");
-  });
-});
-
-describe("bucketPlans", () => {
-  it("groups a mixed list into ordered rail buckets", () => {
-    const plans = [
-      { plan_id: "a", state: "drafting" },
-      { plan_id: "b", state: "plan_review" },
-      { plan_id: "c", state: "approved" },
-      { plan_id: "d", state: "abandoned" },
-      { plan_id: "e", state: "blocked" },
-    ];
-    const b = bucketPlans(plans);
-    expect(b.draft.map((p) => p.plan_id)).toEqual(["a"]);
-    expect(b.review.map((p) => p.plan_id)).toEqual(["b", "e"]);
-    expect(b.approved.map((p) => p.plan_id)).toEqual(["c"]);
-    expect(b.history.map((p) => p.plan_id)).toEqual(["d"]);
-  });
-
-  it("is safe for an empty/absent list", () => {
-    expect(bucketPlans([])).toEqual({ draft: [], review: [], approved: [], history: [] });
-    expect(bucketPlans(undefined)).toEqual({ draft: [], review: [], approved: [], history: [] });
-  });
-});
 
 // The doc-read error pane carries an inline Retry affordance (W15) instead of the
 // old "Reopen the plan/stage to retry" copy. The button ids let the issue view

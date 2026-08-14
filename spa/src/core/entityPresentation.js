@@ -5,8 +5,7 @@
 //
 // This module imports only from core/board.js (the terminal-state sets), keeping
 // it free of DOM/app dependencies so it is unit-testable in node and safe to
-// import from other core modules (e.g. core/sidebar.js). views/shared.js
-// re-exports everything here so existing importers stay unchanged.
+// import from any other core module.
 
 import { RUN_TERMINAL_STATES, PLAN_TERMINAL_STATES } from "./board.js";
 

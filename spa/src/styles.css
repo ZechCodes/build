@@ -1,3 +1,10 @@
+/* One CSS entry: this file pulls in the shell (three-panel layout, inbox rail,
+   toolbar, agent rail, console) and the work surfaces (Changes, issue view).
+   Modules that own those regions also import their sheet directly, which keeps
+   the cascade order (shell/surfaces after the base) whichever path loads first. */
+@import "./styles/shell.css";
+@import "./styles/surfaces.css";
+
 /* ---- theme tokens -----------------------------------------------------------
    Every colour in this file comes from here, and the two blocks below are the
    whole theme: `:root` is light, `:root[data-theme="dark"]` is dark, and
@@ -88,11 +95,10 @@ body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:colum
 #offbar { flex:none; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
-.dim { color:var(--dim); } .ink2 { color:var(--ink2); }
-/* shared chrome bits (used by the sidebar shell and gate/settings views) */
+.dim { color:var(--dim); }
+/* shared chrome bits (used by the inbox rail and gate/settings views) */
 .badge { background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
 .dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
-.e2ee { border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-size:11px; }
 /* device picker (multi-device) */
 #devpick { font:inherit; font-size:12px; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px 6px; max-width:180px; }
 #devpick:focus { outline:none; border-color:var(--accent); }
@@ -138,36 +144,9 @@ main { max-width:1180px; margin:0 auto;
 .chip.work { background:var(--line2); color:var(--ink2); }
 .chip.done { background:var(--green-bg); color:var(--green); }
 .chip.warn { background:var(--red-bg); color:var(--red); }
-.tis { font-size:11px; color:var(--dim); margin-top:5px; }
 .empty { color:var(--dim); font-size:13px; padding:6px 0; }
 .empty.gone { text-align:center; padding:56px 12px; font-size:14px; }
 .empty.gone .btn { margin-top:14px; }
-.allclear { color:var(--green); font-size:14px; padding:14px 0; display:flex; align-items:center; gap:8px; }
-.allclear.big { flex-direction:column; padding:56px 0; font-size:17px; font-weight:600; gap:6px; }
-.allclear-sub { color:var(--dim); font-size:12.5px; font-weight:400; }
-/* notifications */
-.ncard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; }
-.ncard.read { opacity:.5; }
-.ncard .nhead { display:flex; align-items:center; gap:8px; font-weight:650; font-size:14px; }
-/* The untoned card is the one asking for review — yellow, like its chip. */
-.ncard .nhead .nicon { color:var(--amber); font-size:13px; }
-.ncard .nhead.muted .nicon { color:var(--green); }
-.ncard .nhead.warn .nicon { color:var(--red); }
-.ncard .ngoal { margin-top:6px; font-size:14px; color:var(--ink); font-weight:550; }
-.ncard .nsub { color:var(--ink2); font-size:13px; margin-top:5px; }
-.ncard .nbranch { font-family:var(--mono); font-size:12px; color:var(--dim); margin-top:5px; }
-.ncard .nact { margin-top:12px; }
-/* notification message: rendered markdown, clamped by default, expandable */
-.ncard .nmsg { position:relative; max-height:5.5em; overflow:hidden; color:var(--ink2); font-size:13px; margin-top:6px; }
-.ncard .nmsg.expanded { max-height:none; }
-.ncard .nmsg:not(.expanded)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:1.8em; background:linear-gradient(transparent, var(--panel)); pointer-events:none; }
-.ncard .nmsg > :first-child { margin-top:0; }
-.ncard .nmsg p { margin:5px 0; }
-.ncard .nmsg h1 { font-size:15px; margin:8px 0 4px; } .ncard .nmsg h2 { font-size:14px; margin:8px 0 4px; } .ncard .nmsg h3 { font-size:13px; margin:6px 0 3px; }
-.ncard .nmsg ul,.ncard .nmsg ol { margin:5px 0; padding-left:20px; } .ncard .nmsg li { margin:2px 0; }
-.ncard .nmsg code { font-family:var(--mono); font-size:12px; background:var(--line2); padding:1px 5px; border-radius:5px; }
-.ncard .nmsg pre { background:var(--code-bg); padding:10px 12px; border-radius:8px; overflow:auto; } .ncard .nmsg pre code { background:none; padding:0; }
-.ncard .nmsg-toggle { color:var(--accent); font-size:12px; font-weight:600; cursor:pointer; margin-top:6px; display:none; }
 /* settings stub */
 .settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; }
@@ -196,17 +175,11 @@ main#root.surface { max-width:none;
    right of the surface. */
 .surface-bar .tabrow { flex:1 1 auto; min-width:0; overflow-x:auto; }
 .surface-bar .tabs { margin-bottom:0; }
-.projectactions { display:flex; gap:8px; margin-left:auto; flex:none; }
-/* A cluster pane (Inbox / Issues / Archive) names itself: its tab is an icon on
-   the row, so the heading is the only place the name is written. The body keeps
-   the pane's own full height, so an empty state still centres in it. */
-.cluster-pane { display:flex; flex-direction:column; min-height:100%; }
 .cluster-pane .board-head { margin-bottom:14px; }
 /* A single 1fr row hands the mounted pane the leftover height as a definite one,
    which is what an empty state's `height:100%` needs; taller content grows the
    row instead, and #tabbody scrolls as always. */
 .cluster-pane .cluster-body { flex:1 1 auto; min-height:0; display:grid; grid-template-rows:1fr; }
-.project-inbox { container-type:inline-size; }
 /* Worktrees ride a right-hand column when this pane can spare the width, and
    fall back under the main column when it cannot. Containment is scoped to the
    inbox subtree — putting it on #tabbody would apply layout containment to the
@@ -220,16 +193,6 @@ main#root.surface { max-width:none;
 @container (min-width: 860px) {
   .inbox-cols { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:26px; align-items:start; }
 }
-/* The run view's compact plan reference: a link back to the owning plan (or the
-   bare goal, for an adopted run that implements none). Sits left of the state
-   meta, truncating gracefully. */
-.plan-ref { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis; min-width:0; flex:0 1 auto; }
-a.plan-ref { cursor:pointer; color:var(--accent); text-decoration:none; }
-a.plan-ref:hover { text-decoration:underline; }
-/* The single gate action below the run-side stage board. */
-.stageaction { margin-top:12px; }
-.fixbar .fixlabel { font-size:13px; font-weight:600; margin-bottom:6px; }
 /* Plan rows in the rail carry a distinct approved glyph tint. */
 .srow.splan.ready .sicon { color:var(--green); }
 .surface .task-error { margin:10px 18px 0; }
@@ -285,10 +248,9 @@ a.plan-ref:hover { text-decoration:underline; }
   .pane-split.drawer-open .pane-list { transform:none; box-shadow:8px 0 24px var(--shadow-soft); }
   .pane-split.drawer-open .pane-scrim { display:block; position:absolute; inset:0; z-index:11;
     background:var(--scrim); }
-  /* A tab on the pane's edge, vertically centred: the corners a phone has left
-     are taken (the project rail's reopen toggle at the top, the FAB at the
-     bottom), and an edge tab is where a pull-out is grabbed anyway. It travels
-     with the panel it opened, so the way out is where the way in was. */
+  /* A tab on the pane's edge, vertically centred: an edge tab is where a
+     pull-out is grabbed anyway. It travels with the panel it opened, so the
+     way out is where the way in was. */
   .pane-handle { display:flex; align-items:center; justify-content:center;
     position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:13;
     width:23px; height:64px; padding:0; cursor:pointer;
@@ -305,10 +267,8 @@ a.plan-ref:hover { text-decoration:underline; }
 }
 /* task view */
 .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
-.kbd { font-family:var(--mono); border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; padding:0 5px; font-size:11px; color:var(--ink2); }
 .btn.danger { border-color:var(--red); color:var(--red); }
 .btn.danger:hover { background:var(--red-bg); }
-.task-error { background:var(--red-bg); color:var(--red); border:1px solid var(--red); border-radius:9px; padding:9px 12px; font-size:13px; margin:0 0 14px; word-break:break-word; }
 .card .cerr { margin-top:8px; color:var(--red); font-size:12px; word-break:break-word; }
 /* Pills: no rule under the row, no underline on the active tab — the selected
    pill carries its own soft fill, everything else is bare. */
@@ -355,14 +315,7 @@ a.plan-ref:hover { text-decoration:underline; }
 }
 .plan ::selection, .plan::selection { background:var(--sel); }
 .plan mark.phl { background:var(--mark); color:var(--ink); border-radius:2px; padding:0 1px; }
-/* The plan cockpit's summary: last_summary as markdown, clamped to a few lines
-   with an expand affordance shown only when it overflows. */
-.plan-summary { margin-bottom:16px; }
-.plan-summary .ps-body { color:var(--ink2); font-size:13px; }
 .plan-summary .ps-body.clamped { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-.plan-summary .ps-body p { margin:0 0 4px; } .plan-summary .ps-body p:last-child { margin-bottom:0; }
-.plan-summary .ps-body code { font-family:var(--mono); font-size:12px; background:var(--line2); padding:1px 4px; border-radius:4px; }
-.plan-summary .ps-toggle { background:none; border:none; color:var(--accent); font-size:12px; cursor:pointer; padding:4px 0 0; }
 /* Honest doc-pane empty/error states (docs predating canonical storage, or a
    read that errored and latched off) inside the .plan container. */
 .plan-empty { color:var(--dim); font-size:13px; }
@@ -378,10 +331,6 @@ a.plan-ref:hover { text-decoration:underline; }
 .pcomment .pctext { color:var(--ink); }
 .pcomment .pcx { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
 .pcomment .pcx:hover { color:var(--red); }
-/* multi-stage plan board */
-.stagehead { display:flex; align-items:center; gap:14px; margin-bottom:12px; flex-wrap:wrap; }
-.stagehead .runall { display:inline-flex; align-items:center; }
-.stagehead .runall:empty { display:none; }
 .stagehead .hint { color:var(--dim); font-size:12px; }
 .stagelist { display:flex; flex-direction:column; gap:8px; }
 .stagerow { display:flex; gap:12px; align-items:flex-start; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 14px; cursor:pointer; }
@@ -393,7 +342,6 @@ a.plan-ref:hover { text-decoration:underline; }
 .stagechip { margin-left:0; }
 .cbadge { font-size:11px; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:2px 8px; white-space:nowrap; }
 .stagesummary { color:var(--ink2); font-size:12.5px; margin-top:4px; }
-.stageback { color:var(--accent); cursor:pointer; font-size:13px; margin-bottom:12px; display:inline-block; }
 .stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; }
 .stage-validation .sv-head { font-weight:650; font-size:13.5px; margin-bottom:4px; }
 .stage-validation .sv-body { font-size:13px; }
@@ -402,7 +350,6 @@ a.plan-ref:hover { text-decoration:underline; }
 .stage-validation.pass .sv-head { color:var(--green); }
 .stage-validation.fail { background:var(--red-bg); border-color:var(--red); }
 .stage-validation.fail .sv-head { color:var(--red); }
-.fixbar { margin-bottom:12px; }
 .stagecomments { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
 .commentcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:9px 30px 9px 12px; font-size:13px; position:relative; }
 .commentcard.addressed { border-left-color:var(--green); opacity:.72; }
@@ -440,11 +387,8 @@ a.plan-ref:hover { text-decoration:underline; }
 .file ::selection { background:var(--sel); }
 tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(--hl-ln) !important; color:var(--hl-ink); }
 /* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
-.gitpane .gitsec { margin-bottom:26px; }
-.gitsec-head { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:10px; align-items:center; }
 .gitstat { font-family:var(--mono); font-size:11px; letter-spacing:0; text-transform:none; }
 .gitstat .a, .cinfo .a { color:var(--green); } .gitstat .d, .cinfo .d { color:var(--red); }
-.gitfile .fhead .toggle { margin:0; }
 .gitcommit { max-width:780px; margin:0 auto; }
 .gitmsg { min-height:58px; max-height:160px; }
 /* The Changes surface fills the flush tab body: .changes2 is a .pane-split, so
@@ -536,7 +480,6 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* re-review memory: changed-since chip, per-file viewed toggle, changes-only filter */
 .fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
 .fviewed { margin-left:auto; font-size:11px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
-.doc-changed { font-size:11px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:2px 8px; display:inline-block; margin-bottom:8px; }
 .changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
@@ -709,7 +652,6 @@ body.offline #root #adddev { opacity: 1; pointer-events: auto; }
 body.offline .live-claim { font-size:0 !important; }
 body.offline .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
 
-
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
 @media (max-width: 720px) {
   /* iOS Safari auto-zooms focused fields under 16px — every text entry and
@@ -738,31 +680,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .splitmenu { right:auto; left:0; }
   .crow .cauthor { display:none; }
 }
-
-/* ---- the project's Issues tab ---- */
-/* An empty tab has nothing to scroll, so its message owns the pane: centred on
-   both axes, with the verb itself rather than directions to it. */
-.issues-empty { height:100%; display:grid; place-items:center; }
-.emptystate { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
-.emptystate-title { font-size:15px; font-weight:650; color:var(--ink2); }
-.emptystate-sub { font-size:13px; color:var(--dim); max-width:36ch; }
 .emptystate .btn { margin-top:6px; }
-.issue-section { margin-bottom:22px; }
-.issue-section h2 { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
-  text-transform:uppercase; margin:0 0 6px; }
 .issue-section h2 .n { color:var(--dim); font-weight:600; }
-.issue-row { display:flex; align-items:center; gap:12px; padding:11px 14px; cursor:pointer;
-  border:1px solid var(--line); border-radius:11px; margin-bottom:8px; }
-.issue-row:hover { border-color:var(--accent); }
-.issue-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:550; }
-.issue-meta { flex:none; font-size:11.5px; color:var(--dim); }
-
-/* The advanced panel in the New issue sheet: hidden by default, and the button
-   that opens it IS the harness name — the one thing about those three selectors
-   worth reading while they are shut. */
-.advtoggle { font-family:var(--mono); font-size:11.5px; color:var(--ink2); padding:5px 9px; }
-.advtoggle:hover { color:var(--accent); border-color:var(--accent); }
-.advtoggle .advcaret { color:var(--dim); font-size:10px; }
 /* No box: it is another field group in the sheet, titled like Project. The
    border was drawing a container around three selects that were already grouped
    by their own label. */
@@ -797,142 +716,21 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .chooser-card-lead .chooser-card-label { color:var(--accent); font-size:14px; }
 .chooser-card-lead:disabled { border-color:var(--line); background:var(--bg); }
 
-/* ---- the create FAB (every page inside a project) ---- */
-/* Two ranked verbs in one stack: the issue FAB always visible, the worktree one
-   revealed on hover or keyboard focus. column-reverse so the mini sits ABOVE
-   the primary while the primary keeps DOM (and tab) order first. */
-#fab { position:fixed; right:calc(22px + env(safe-area-inset-right, 0px));
-  bottom:calc(22px + env(safe-area-inset-bottom, 0px)); z-index:40; }
-/* The FAB is fixed over the bottom-right corner, which is exactly where two
-   controls already live: the conversation's Send and the sticky action bar's
-   right cluster. Both get clearance rather than a fight — vertical for the
-   composer (it sits in the scroll, so lifting it clears the FAB at rest),
-   horizontal for the action bar (pinned to the bottom, so it can only move in). */
-:root { --fab-clear:184px; --fab-clear-v:62px; }
-/* The centered conversation column ends before the desktop FAB begins. Keep
-   only a little breathing room below its compact composer; sticky action bars
-   still need explicit horizontal clearance because they span the viewport. */
-.thread-composer { margin-bottom:26px; }
-.actionbar .right { padding-right:var(--fab-clear); }
-.fab-stack { display:flex; flex-direction:column-reverse; align-items:flex-end; gap:10px; }
-/* The one place the accent is allowed to glow: its own colour, spread. */
-.fab { font:inherit; font-weight:650; font-size:14px; color:var(--accent-ink); background:var(--accent);
-  border:none; border-radius:999px; padding:13px 22px; cursor:pointer;
-  box-shadow:0 6px 20px color-mix(in srgb, var(--accent) 38%, transparent); }
-.fab:hover { filter:brightness(1.06); }
-.fab:active { transform:translateY(1px); }
-/* Hidden by transform+opacity rather than display, so it animates in and stays
-   reachable to a keyboard: focus-within reveals it exactly like hover. */
-.fab-mini { font:inherit; font-size:13px; color:var(--ink2); background:var(--bg);
-  border:1px solid var(--line); border-radius:999px; padding:8px 14px; cursor:pointer;
-  display:flex; align-items:center; gap:7px; box-shadow:0 4px 14px var(--shadow-soft);
-  opacity:0; transform:translateY(8px); pointer-events:none;
-  transition:opacity .14s ease, transform .14s ease; }
-.fab-stack:hover .fab-mini, .fab-stack:focus-within .fab-mini {
-  opacity:1; transform:translateY(0); pointer-events:auto; }
-.fab-mini:hover { border-color:var(--accent); color:var(--accent); }
-.fab-mini:disabled { opacity:.55; cursor:default; }
-.fab-mini-glyph { font-size:12px; }
-#fab.fab-busy .fab-mini-label::after { content:" \2026"; }
-@media (max-width: 900px) {
-  /* Clear of the mobile sidebar toggle and any sticky action bar. */
-  #fab { right:calc(14px + env(safe-area-inset-right, 0px));
-    bottom:calc(14px + env(safe-area-inset-bottom, 0px)); }
-  .fab { padding:12px 18px; }
-  :root { --fab-clear:150px; }
-}
-
-/* ---- project sidebar (every page) ---- */
-/* The shell fills the locked body and clips: its two columns (rail, main)
-   stretch to its height and each scrolls itself. */
-#shell { flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
-#sidebar { flex:0 0 272px; width:272px; display:flex; flex-direction:column;
-  background:var(--bg);
-  padding:calc(10px + env(safe-area-inset-top, 0px)) 12px
-    calc(12px + env(safe-area-inset-bottom, 0px))
-    calc(12px + env(safe-area-inset-left, 0px)); }
-body.sidebar-collapsed #sidebar { display:none; }
-body.gated #sidebar, body.gated #side-open { display:none !important; }
-#shell main { flex:1; min-width:0; overflow-y:auto; }
-.side-top { display:flex; align-items:center; margin:0 2px 10px; }
-.side-top .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
-.side-top .iconbtn { margin-left:auto; }
-.side-nav { margin-bottom:14px; }
 .srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }
 .srow.snav.active { background:var(--accent-soft); color:var(--accent); }
 .srow.snav .badge { margin-left:auto; }
-#sidebar-rail { flex:1; min-height:0; overflow-y:auto; padding-bottom:20px; }
-.side-status { padding:12px 4px 0; display:flex;
-  align-items:center; gap:10px; font-size:11.5px; color:var(--ink2); flex-wrap:wrap; }
-.side-status #devpick { max-width:130px; }
-/* the floating reopen toggle — only when the sidebar is collapsed */
-#side-open { display:none; position:fixed;
-  top:calc(10px + env(safe-area-inset-top, 0px));
-  left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
-  background:var(--panel); border:1px solid var(--line); }
-body.sidebar-collapsed #side-open { display:block; }
-.side-head { display:flex; align-items:center; margin:2px 6px 10px; }
-.side-head .side-actions { margin-left:auto; display:flex; gap:2px; }
 .iconbtn { font:inherit; font-size:14px; line-height:1; color:var(--dim); background:none;
   border:none; border-radius:6px; padding:4px 7px; cursor:pointer;
   -webkit-tap-highlight-color:transparent; }
 .iconbtn:hover { background:var(--line2); color:var(--ink2); }
-.sseclabel { font-size:10.5px; letter-spacing:.09em; color:var(--dim); font-weight:700;
-  text-transform:uppercase; }
-/* Each project is one bordered rect — no fill, so it reads as a container
-   rather than a card stacked on the page. The rect replaces both the old
-   between-block margin and the tree guide that used to hang inside it; the
-   route's project takes the accent on the border it already has. */
-/* A rail row: dot, name, floating git status. */
-.srow.sentry { gap:9px; }
-.srow.sentry .stitle { font-size:13px; }
 /* The dot carries an entry's whole state, so it has to read at a glance and be
-   honest at rest: a pulse ONLY while an agent works, yellow while something
-   finished waits to be looked at, grey once it has been. */
+   honest at rest: a pulse ONLY while an agent works (the inbox rail's state
+   classes live in styles/shell.css beside the rail). */
 .sdot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; background:var(--dim); }
-.sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
-.sdot-unseen { background:var(--amber); }
-.sdot-seen { background:var(--line); border:1px solid var(--dim); }
 @keyframes sdot-pulse {
   0%, 100% { opacity:1; box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
   50% { opacity:.55; box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent); }
 }
-/* Respect a reader who asked for stillness — the colour still says working. */
-@media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
-/* The Worktrees row is a fold, not an entry: quieter, with its own count. */
-.swt-line { color:var(--dim); }
-.swt-line .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; margin-left:4px; }
-.swt-caret { color:var(--dim); font-size:11px; margin-left:auto; }
-.sproj { margin-bottom:8px; border:1px solid var(--line); border-radius:12px; padding:5px 8px 7px 4px; }
-.sproj.active { border-color:var(--accent); }
-.sproj-head { display:flex; align-items:center; gap:4px; padding:2px 4px 2px 0; border-radius:8px;
-  font-size:14px; font-weight:600; }
-.sproj-head.active { background:transparent; }
-.chevbtn { font:inherit; font-size:11px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:6px; width:16px; height:22px; flex:none; cursor:pointer; display:grid; place-items:center; padding:0; }
-.chevbtn:hover { background:var(--line2); color:var(--ink2); }
-.sproj-open { display:flex; align-items:center; gap:7px; flex:1; min-width:0; cursor:pointer;
-  padding:3px 5px; border-radius:6px; }
-.sproj-open:hover { background:var(--line2); }
-.sfolder { color:var(--ink2); flex:none; }
-.sbranch { flex:none; vertical-align:middle; }
-.sproj-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.sbadge { margin-left:auto; }
-/* The header's second line: the checkout's branch and its git status, aligned
-   under the project name, reading as metadata rather than another entry. */
-.smain-line { margin-left:16px; font-size:12px; gap:6px; }
-.smain-line .stitle { font-size:12px; flex:0 1 auto; }
-.smain-line .sstat { margin-left:auto; }
-.ssync { color:var(--ink2); }
-/* The classic tree guide: a 1px rule hanging from under the head's icon,
-   running the body's full height, with the children nested just inside it.
-   The row backgrounds sit in the padding gap so hover/active never touch the
-   line. */
-.sproj-body { padding:2px 0 0 16px; }
-.ssec { margin:6px 0 1px; }
-/* Quieter than the head that anchors the block: smaller, tighter tracking,
-   lighter weight — a whisper, not a shout. */
-.ssec .sseclabel { margin:0 6px 3px; font-size:9.5px; letter-spacing:.05em; font-weight:600; }
 .srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
   font-size:13px; color:var(--ink2); cursor:pointer; }
 .srow.snav { -webkit-tap-highlight-color:transparent; user-select:none; }
@@ -942,32 +740,11 @@ body.sidebar-collapsed #side-open { display:block; }
 .srow.attn .sicon { color:var(--amber); }
 .srow.done .sicon { color:var(--green); }
 .srow .stitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.srow .sstat { font-size:11.5px; flex:none; }
-.sstat .add { color:var(--green); font-style:normal; }
-.sstat .del { color:var(--red); font-style:normal; }
-.srow .sstate, .srow .sage { font-size:11.5px; color:var(--dim); font-family:var(--mono); flex:none; }
 .srow .warn { color:var(--amber); font-size:11px; }
-.swt-line .stitle { font-family:var(--mono); font-size:12px; }
-.swt-dirty { color:var(--amber); font-size:11px; }
-.swt-list { padding-left:14px; }
-.swt-item .stitle { font-size:12px; }
-.sempty { font-size:12.5px; margin:8px 6px; }
-.addmenu { display:flex; flex-direction:column; gap:8px; margin:14px 0; }
-.addmenu .btn { text-align:left; }
-#side-scrim { display:none; }
-@media (max-width: 900px) {
-  #sidebar { position:fixed; left:0; top:0; bottom:0; height:auto; z-index:40;
-    box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
-  /* The open rail overlays content on narrow viewports; a scrim beneath it
-     (above the content) taps to dismiss. Hidden while gated (unlock screen). */
-  body:not(.sidebar-collapsed):not(.gated) #side-scrim {
-    display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
-}
 /* project page header */
 .crumb { font-size:12.5px; margin-bottom:2px; }
 .crumb a { color:var(--ink2); text-decoration:none; }
 .crumb a:hover { color:var(--accent); }
-.projmeta { color:var(--dim); font-size:12px; }
 /* ---- Files tab (worktree browser) ---- */
 /* Same idiom as the Changes pane: .files is a .pane-split, so the shell states
    the row's width, centring and gutters, and a narrow tree sidebar (no card
@@ -1080,9 +857,6 @@ body.sidebar-collapsed #side-open { display:block; }
 .termpane.term-offline .xterm,
 .termpane.term-offline > :not(.term-conn) { opacity:.45; }
 .agentwrap { position:relative; height:100%; }
-/* The plan surface is a normal scrolling page (not a full-height tab shell), so
-   its Agent pane needs a concrete height to fill instead of height:100%. */
-.plan-agentwrap { height:65vh; height:65dvh; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 .agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
   background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;
   font-size:12px; color:var(--dim); box-shadow:0 2px 8px var(--shadow-soft); }
@@ -1109,8 +883,6 @@ body.sidebar-collapsed #side-open { display:block; }
 .agent-overlay .chooser-card { align-items:center; justify-content:center;
   text-align:center; padding:20px 24px; min-height:64px; }
 .agent-overlay .chooser-card-lead { min-height:96px; }
-/* ---- sidebar main (primary checkout) row ---- */
-.smain-line .stitle { font-family:var(--mono); font-size:12px; }
 /* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
    exact steps that will run, then ask Confirm/Cancel. */
 .modal-scrim { position:fixed; inset:0; background:var(--scrim); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }
@@ -1174,16 +946,8 @@ body.sidebar-collapsed #side-open { display:block; }
 .thread-event.blocked .thread-event-content strong { color:var(--red); }
 .thread-event.success .thread-event-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
 .thread-empty { padding:13px 0; color:var(--dim); font-size:12px; }
-/* The Working line: what the agent is doing right now, under the message that
-   asked for it. Quiet by default — it is a status, not an event — with a live
-   dot and a counter that ticks from the moment the agent READ the message. */
-.thread-working { display:flex; align-items:center; gap:8px; margin:6px 0 0 44px;
-  color:var(--green); font-size:12px; font-weight:550; }
-.thread-working-dot { width:7px; height:7px; border-radius:999px; background:var(--green);
-  animation:working-pulse 1.6s ease-in-out infinite; }
-.thread-working-age { color:var(--dim); font-weight:400; font-variant-numeric:tabular-nums; }
 @keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
-@media (prefers-reduced-motion: reduce) { .thread-working-dot { animation:none; } }
+@media (prefers-reduced-motion: reduce) { }
 .thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 .thread-revision-view { margin-left:44px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
 .thread-revision-head { display:flex; justify-content:space-between; gap:12px; padding:8px 12px; color:var(--dim); font-size:11px; }

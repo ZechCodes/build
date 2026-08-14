@@ -329,12 +329,3 @@ body.gated #console-region { display:none !important; }
   height:100%; padding:40px 22px; color:var(--dim); }
 .shell-stub h2 { margin:0; font-size:16px; color:var(--ink2); }
 .shell-stub p { margin:0; font-size:13px; max-width:42ch; }
-/* The issue view's two columns: stages, then the stage viewer. No tabs. */
-.issue-cols { display:grid; grid-template-columns:minmax(0, 280px) minmax(0, 1fr);
-  min-height:0; height:100%; }
-.issue-stages { overflow-y:auto; border-right:1px solid var(--line); padding:12px; }
-.issue-stage-view { overflow-y:auto; padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom); }
-@media (max-width: 760px) {
-  .issue-cols { grid-template-columns:minmax(0, 1fr); grid-template-rows:auto minmax(0, 1fr); }
-  .issue-stages { border-right:none; border-bottom:1px solid var(--line); max-height:40%; }
-}

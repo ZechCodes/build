@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const stylesSource = readFileSync(
-  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
-  "utf8",
-);
+// The pane geometry is split across two sheets now: the primitives and the
+// surfaces in styles.css, the three-panel shell (the inbox rail the drawer
+// stacks under, the shell tokens) in styles/shell.css. One concatenated source,
+// so rules that must agree can be read together — shell first, so its :root
+// tokens sit ahead of the narrow-viewport marker tokensAt() slices on.
+const stylesSource =
+  readFileSync(fileURLToPath(new URL("../src/styles/shell.css", import.meta.url)), "utf8") +
+  readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
 
 const strippedSource = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -115,15 +119,17 @@ function contentSpan({ available, offset, rule, tokens }) {
 }
 
 /** What the tab shell actually has to hand a pane. Above the stacking width the
- *  project sidebar is a column in flow and costs every pane its width; at or
- *  below it the sidebar is fixed, so it costs nothing. A model that skips this
- *  reads every desktop pane 272px wider than it renders, which is the difference
- *  between a rail that fits and one that does not. */
+ *  inbox rail is a column in flow and costs every pane its width; at or below
+ *  it the rail is fixed, so it costs nothing. A model that skips this reads
+ *  every desktop pane a rail-width wider than it renders, which is the
+ *  difference between a rail that fits and one that does not. */
 function shellWidth(viewport) {
-  const inFlow = rulesFor("#sidebar").find(
+  const inFlow = rulesFor("#inbox-rail").find(
     (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "width"),
   );
-  return viewport > STACK_WIDTH ? viewport - pixels(declaration(inFlow.body, "width"), {}) : viewport;
+  return viewport > STACK_WIDTH
+    ? viewport - pixels(declaration(inFlow.body, "width"), tokensAt(viewport))
+    : viewport;
 }
 
 /** The two layouts as the shell nests them: .pane-col inside the padded tab
@@ -373,10 +379,10 @@ describe("tab layout primitives", () => {
   });
 
   it("hands the pane the whole frame at the width it stacks at", () => {
-    // The sidebar leaves the flow under the same query the panes stack under.
-    // Were they different numbers, one of the two transitions would land in a
-    // frame sized for the other.
-    const overlay = rulesFor("#sidebar").find((rule) => declaration(rule.body, "position") === "fixed");
+    // The inbox rail leaves the flow under the same query the panes stack
+    // under. Were they different numbers, one of the two transitions would
+    // land in a frame sized for the other.
+    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "fixed");
     expect(overlay).toBeTruthy();
     expect(enclosingAtRule(overlay.at)).toBe(STACK_QUERY);
     expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
@@ -431,8 +437,8 @@ describe("tab layout primitives", () => {
     expect(enclosingAtRule(base.at)).toBeNull();
   });
 
-  it("stacks the drawer under the project rail it shares the width with", () => {
-    // Both overlay at the same width. The project rail is the outer surface —
+  it("stacks the drawer under the inbox rail it shares the width with", () => {
+    // Both overlay at the same width. The inbox rail is the outer surface —
     // a pane's drawer painting over it would trap the user in the pane.
     const zIndex = (token) =>
       Number(
@@ -441,7 +447,7 @@ describe("tab layout primitives", () => {
           "z-index",
         ),
       );
-    const railFloor = Math.min(zIndex("#sidebar"), zIndex("#side-scrim"));
+    const railFloor = Math.min(zIndex("#inbox-rail"), zIndex("#inbox-scrim"));
     for (const token of [".pane-list", ".pane-scrim", ".pane-handle"]) {
       expect(zIndex(token)).toBeLessThan(railFloor);
     }

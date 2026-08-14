@@ -7,8 +7,6 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
 import { mountIssueView } from "../src/core/issueView.js";
-import { stageBoardHtml } from "../src/views/stages.js";
-import { mountProjectClusterTab } from "../src/core/projectCluster.js";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { renderFilesTab } from "../src/views/files.js";
 
@@ -54,28 +52,6 @@ describe("the panes the surfaces paint carry .pane-col", () => {
     view.dispose();
   });
 
-  it("wraps the run's stage board in the primitive", () => {
-    const host = paneRoot(stageBoardHtml({ state: "stage_gate" }, { stages: [], auto_advance: false }));
-    const pane = host.firstElementChild;
-    expect(pane.classList.contains("pane-col")).toBe(true);
-    expect(pane.querySelector("#stagelist")).toBeTruthy();
-    expect(pane.querySelector("#stageaction")).toBeTruthy();
-    expect(host.querySelectorAll(".pane-col")).toHaveLength(1);
-  });
-
-  it.each(["inbox", "issues", "archive"])("gives the %s cluster pane the primitive", (tabId) => {
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const pane = mountProjectClusterTab(host, tabId, {
-      projectId: "proj-1",
-      callRpc: () => new Promise(() => {}),
-      navigate: () => {},
-    });
-    const root = host.querySelector(".cluster-pane");
-    expect(root.classList.contains("pane-col")).toBe(true);
-    expect(host.querySelectorAll(".pane-col")).toHaveLength(1);
-    pane.dispose();
-  });
 });
 
 // The other layout. Changes and Files are the only two-column tabs, and .flush

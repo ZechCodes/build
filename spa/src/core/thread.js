@@ -290,17 +290,6 @@ function eventHtml(event, agentLabel = "Agent") {
   </div>`;
 }
 
-/** Compact age for the working counter: 12s, 4m, 2h, 3d. */
-export function workingAge(sinceIso, nowMs = Date.now()) {
-  const started = Date.parse(sinceIso);
-  if (!Number.isFinite(started)) return "";
-  const seconds = Math.max(0, Math.floor((nowMs - started) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
-
 /// The timeline: what was said, and what happened.
 ///
 /// Working time and the diffstat are NOT here. They are facts about the branch
@@ -618,27 +607,3 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
   };
 }
 
-/** Keep every rendered Working counter moving, refreshing the age in place from
- *  `data-since` rather than by re-rendering around it. Returns a stop function;
- *  safe to call on a root that holds no working line — which the conversation
- *  now never does (the toolbar owns working time). Only the pre-redesign plan
- *  surface still paints one, and this ticks it until that surface is gone. */
-export function startWorkingTicker(root, { intervalMs = 1000, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => Date.now() } = {}) {
-  let handle = null;
-  const tick = () => {
-    // A surface that navigated away leaves its root detached; retire with it
-    // rather than ticking against a DOM nobody is looking at.
-    if (root.isConnected === false) return stop();
-    for (const line of root.querySelectorAll(".thread-working")) {
-      const age = line.querySelector(".thread-working-age");
-      if (age) age.textContent = workingAge(line.dataset.since, now());
-    }
-  };
-  const stop = () => {
-    if (handle !== null) clearIntervalImpl(handle);
-    handle = null;
-  };
-  tick();
-  handle = setIntervalImpl(tick, intervalMs);
-  return stop;
-}

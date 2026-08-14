@@ -10,18 +10,8 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { createAdoptingCall } from "../src/core/adoption.js";
-import { markNewWorktree, takeNewWorktreeMark } from "../src/core/newWorktree.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 import { catalogForProvider, modelParams, normalizeModelCatalog } from "../src/core/modelPicker.js";
-
-const memoryStorage = () => {
-  const map = new Map();
-  return {
-    getItem: (k) => (map.has(k) ? map.get(k) : null),
-    setItem: (k, v) => map.set(k, v),
-    removeItem: (k) => map.delete(k),
-  };
-};
 
 const CATALOG = normalizeModelCatalog({
   default_provider: "claude",
@@ -45,10 +35,8 @@ async function requestChanges(call, { projectId, worktreeId, provider, comments,
 }
 
 describe("a review's comments reach the worktree's one agent", () => {
-  it("adopts with the agent the sheet chose, then delivers the comments to it", async () => {
-    const storage = memoryStorage();
-    markNewWorktree("wt-abc", "codex", storage); // the New Worktree sheet's answer
-    const provider = takeNewWorktreeMark("wt-abc", storage);
+  it("adopts with the agent chosen for the worktree, then delivers the comments to it", async () => {
+    const provider = "codex"; // the provider chosen for this worktree
 
     const call = vi.fn(async (method) => (method === "run.adopt" ? { run_id: "run-4" } : { ok: true }));
     await requestChanges(call, {

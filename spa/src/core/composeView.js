@@ -66,6 +66,28 @@ function announce() {
   listeners.forEach((listener) => listener());
 }
 
+/**
+ * Take a capture record the client itself just changed.
+ *
+ * A reroute answers with the capture as it now stands, and for one whose route
+ * had already settled that answer is the only correction there will ever be:
+ * the feed stopped carrying it, so nothing would take the row off its old
+ * destination. A settled row restarts its two minutes on screen — the user just
+ * acted on it, and the window is there to let them see and undo what they did.
+ * One the feed still carries keeps the feed as its record.
+ */
+export function adoptCaptureRecord(capture) {
+  const held = capture && capture.id ? tracked.get(capture.id) : null;
+  if (!held) return;
+  const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
+  tracked.set(capture.id, {
+    row: captureRow(capture, { projectName }),
+    settledAt: held.settledAt ? Date.now() : null,
+    settling: false,
+  });
+  announce();
+}
+
 /** Repaint when the held captures change. Returns unsubscribe. */
 export function subscribePendingCaptures(listener) {
   listeners.add(listener);

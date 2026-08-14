@@ -364,8 +364,27 @@ describe("capture rows", () => {
     const html = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
     expect(html).toContain('data-reroute-project="p2"');
     expect(html).toContain('data-reroute-kind="issue"');
-    expect(html).toContain('data-reroute-kind="branch"');
+    expect(html).toContain('data-reroute-branch-open="p2"');
     expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
+  });
+
+  it("take the branch's name in the picker, from the branches the project has", () => {
+    const entry = entryOf(captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const projects = [{ id: "p1", name: "relaydb" }, { id: "p2", name: "dotfiles" }];
+    const shut = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
+    expect(shut).not.toContain('data-reroute-branch="');
+
+    const open = inboxRowHtml(entry, {
+      rerouteKey: entry.key,
+      projects,
+      rerouteBranchProject: "p2",
+      rerouteBranches: ["build/login", "build/toast"],
+    });
+    expect(open).toContain('data-reroute-branch="p2"');
+    expect(open).toContain('<option value="build/toast">');
+    // The field is the branch's name; the button beside it is the dispatch.
+    expect(open).toContain('data-reroute-project="p2" data-reroute-kind="branch"');
+    expect(open).not.toContain('data-reroute-branch="p1"');
   });
 
   it("never stand in for the work item the route is on", () => {

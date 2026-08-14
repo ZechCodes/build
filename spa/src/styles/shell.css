@@ -96,6 +96,8 @@ body.inbox-collapsed #inbox-open { display:block; }
 .reroute-project { display:flex; align-items:center; gap:8px; padding:4px 6px; }
 .reroute-project .mt { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
 .reroute-kinds { flex:none; display:flex; gap:4px; }
+.reroute-branch { display:flex; align-items:center; gap:4px; padding:0 6px 6px; }
+.reroute-branch input { flex:1; min-width:0; font-size:12px; }
 
 /* ---- inbox entries ----
    One list across every project, so a row has to carry its own context: what

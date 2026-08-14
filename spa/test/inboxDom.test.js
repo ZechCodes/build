@@ -337,24 +337,59 @@ describe("captures on the rail", () => {
     expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1" });
   });
 
+  const routedCapture = (over = {}) =>
+    captureFeedRow({
+      state: "routed",
+      project_id: "p1",
+      project: "relaydb",
+      issue_id: "iss-9",
+      routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+      question: { text: "which project?", asked_at: "t", answer: null },
+      unread: true,
+      unread_reason: "router_question",
+      ...over,
+    });
+
   it("sends a capture somewhere else through the picker on its row", async () => {
-    feed([
-      captureFeedRow({
-        state: "routed",
-        project_id: "p1",
-        project: "relaydb",
-        issue_id: "iss-9",
-        routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
-        question: { text: "which project?", asked_at: "t", answer: null },
-        unread: true,
-        unread_reason: "router_question",
-      }),
-    ]);
+    feed([routedCapture()]);
     captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
     await flush();
     const picker = captureRowFor("capture-1").querySelector(".reroute-menu");
     expect(picker).toBeTruthy();
-    picker.querySelector('[data-reroute-project="p2"][data-reroute-kind="branch"]').click();
+    picker.querySelector('[data-reroute-project="p2"][data-reroute-kind="issue"]').click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "issue" });
+  });
+
+  it("names the branch it is rerouted to, offering the ones the project has", async () => {
+    feed([branchRow(), routedCapture()]);
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("capture-1").querySelector('[data-reroute-branch-open="p1"]').click();
+    await flush();
+    const field = captureRowFor("capture-1").querySelector("[data-reroute-branch]");
+    expect(field).toBeTruthy();
+    expect([...captureRowFor("capture-1").querySelectorAll("#reroute-branches option")].map((o) => o.value)).toEqual([
+      "build/login",
+    ]);
+    field.value = "build/csv-export";
+    captureRowFor("capture-1").querySelector('[data-reroute-project="p1"][data-reroute-kind="branch"]').click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("capture.reroute", {
+      capture_id: "capture-1",
+      project_id: "p1",
+      kind: "branch",
+      branch: "build/csv-export",
+    });
+  });
+
+  it("lets a branch go unnamed, which is the daemon naming it after what was said", async () => {
+    feed([routedCapture()]);
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("capture-1").querySelector('[data-reroute-branch-open="p2"]').click();
+    await flush();
+    captureRowFor("capture-1").querySelector('[data-reroute-project="p2"][data-reroute-kind="branch"]').click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "branch" });
   });

@@ -298,16 +298,34 @@ export function inboxListHtml(entries, ui = {}) {
 // visible and reversible: it says where the capture went, takes the answer to
 // the router's question, and offers the two verbs that move it.
 
+/** The branch field the picker discloses: which branch in this project the work
+ *  goes on, offered from the branches the project already has. Naming one is
+ *  optional — with none the branch is named after what was said, the same rule
+ *  the router dispatches by. */
+function rerouteBranchHtml(projectId, branches) {
+  const options = (branches || []).map((branch) => `<option value="${esc(branch)}"></option>`).join("");
+  return `<div class="reroute-branch">
+    <input type="text" class="path" data-reroute-branch="${esc(projectId)}" list="reroute-branches"
+      placeholder="a new branch, named after what you said" aria-label="Branch" autocomplete="off" />
+    <datalist id="reroute-branches">${options}</datalist>
+    <button class="btn mini primary" type="button" data-reroute-project="${esc(projectId)}" data-reroute-kind="branch">Dispatch</button>
+  </div>`;
+}
+
 /** The destination picker behind the reroute chip: every project, and the two
- *  things a capture can become in it. */
-function rerouteMenuHtml(entry, projects) {
-  const rows = (projects || [])
+ *  things a capture can become in it. An issue takes one tap — there is nothing
+ *  else to say about it; a branch discloses the field that names it.
+ *
+ *  `ui`: { projects, rerouteBranchProject, rerouteBranches }. */
+function rerouteMenuHtml(entry, ui = {}) {
+  const rows = (ui.projects || [])
     .map(
       (project) => `<div class="reroute-project"><span class="mt">${esc(project.name || project.id)}</span>
         <span class="reroute-kinds">
           <button class="btn mini" type="button" data-reroute-project="${esc(project.id)}" data-reroute-kind="issue">Issue</button>
-          <button class="btn mini" type="button" data-reroute-project="${esc(project.id)}" data-reroute-kind="branch">Branch</button>
-        </span></div>`,
+          <button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
+            data-reroute-branch-open="${esc(project.id)}">Branch</button>
+        </span></div>${project.id === ui.rerouteBranchProject ? rerouteBranchHtml(project.id, ui.rerouteBranches) : ""}`,
     )
     .join("");
   return `<div class="splitmenu reroute-menu">
@@ -316,7 +334,8 @@ function rerouteMenuHtml(entry, projects) {
   </div>`;
 }
 
-/** One capture row. `ui`: { activeKey, rerouteKey, projects }. */
+/** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
+ *  rerouteBranches }. */
 export function captureRowHtml(entry, ui = {}) {
   const spinning = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
   const status = captureStatusText(entry);
@@ -351,7 +370,7 @@ export function captureRowHtml(entry, ui = {}) {
       <span class="warn" data-capture-error hidden></span>
     </div>
     <div class="inbox-actions">${actions.join("")}${
-      ui.rerouteKey === entry.key ? rerouteMenuHtml(entry, ui.projects) : ""
+      ui.rerouteKey === entry.key ? rerouteMenuHtml(entry, ui) : ""
     }</div>
   </div>`;
 }

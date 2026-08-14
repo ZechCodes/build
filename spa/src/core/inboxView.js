@@ -19,8 +19,8 @@ import {
   unlinkDisclosure,
 } from "./inbox.js";
 import { goFromInbox } from "./inboxShell.js";
-import { mergeCaptureRows } from "./compose.js";
-import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
+import { branchOptions, mergeCaptureRows } from "./compose.js";
+import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 
 let items = [];
@@ -28,6 +28,7 @@ let projects = [];
 let entries = [];
 let openMenuKey = null;
 let rerouteKey = null; // the capture row whose destination picker is open
+let rerouteBranchProject = null; // the project in that picker whose branch field is open
 const dismissed = new Set(); // entity ids the user just said Done to
 const busy = new Set(); // entity ids with a mutation in flight
 const errors = new Map(); // entity id → the message its row is showing
@@ -69,6 +70,10 @@ function draw() {
     openMenuKey,
     rerouteKey,
     projects,
+    rerouteBranchProject,
+    // The branches that project already has, off the same feed rows the
+    // compose panel offers: one source for "which branches are there".
+    rerouteBranches: branchOptions(items, rerouteBranchProject),
   });
   list.scrollTop = scroll;
   wire(list);
@@ -172,17 +177,51 @@ function wireCaptures(list) {
       event.stopPropagation();
       const key = `capture:${control.dataset.captureReroute}`;
       rerouteKey = rerouteKey === key ? null : key;
+      rerouteBranchProject = null;
       draw();
+    };
+  });
+  // Branch is the one destination with something left to say, so it discloses
+  // the field that says it instead of dispatching on the spot.
+  list.querySelectorAll("[data-reroute-branch-open]").forEach((control) => {
+    control.onclick = (event) => {
+      event.stopPropagation();
+      const projectId = control.dataset.rerouteBranchOpen;
+      rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
+      draw();
+      // The field is found through the row that was just painted, never through
+      // a selector built out of an id the daemon minted.
+      if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
     };
   });
   list.querySelectorAll("[data-reroute-project]").forEach((control) => {
     control.onclick = (event) => {
       event.stopPropagation();
-      const captureId = control.closest(".capture-entry").dataset.capture;
+      const row = control.closest(".capture-entry");
+      const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
       rerouteKey = null;
-      rerouteCapture(captureId, { projectId: control.dataset.rerouteProject, kind: control.dataset.rerouteKind });
+      rerouteBranchProject = null;
+      rerouteCapture(row.dataset.capture, {
+        projectId: control.dataset.rerouteProject,
+        kind: control.dataset.rerouteKind,
+        branch: named,
+      });
     };
   });
+  list.querySelectorAll("[data-reroute-branch]").forEach((field) => {
+    field.onkeydown = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      field.closest(".reroute-branch").querySelector("[data-reroute-kind='branch']").click();
+    };
+  });
+}
+
+/** The branch named beside a Dispatch button, "" when the field is empty or
+ *  the destination was chosen without one. */
+function branchFieldValue(control) {
+  const field = control.closest(".reroute-branch")?.querySelector("[data-reroute-branch]");
+  return field ? field.value.trim() : "";
 }
 
 async function answerCapture(captureId, raw) {
@@ -208,10 +247,11 @@ async function rerouteCapture(captureId, destination) {
   busy.add(captureId);
   captureErrors.delete(captureId);
   try {
-    await App.call(
-      "capture.reroute",
-      destination ? { capture_id: captureId, project_id: destination.projectId, kind: destination.kind } : { capture_id: captureId },
-    );
+    const rerouted = await App.call("capture.reroute", rerouteParams(captureId, destination));
+    // The answer carries the new routing, and for a capture that has already
+    // settled it is the only thing that will: the feed stopped carrying it, so
+    // nothing else would ever correct the row's "→ project as issue".
+    adoptCaptureRecord(rerouted);
     await refreshFeed();
   } catch (error) {
     captureErrors.set(captureId, messageOf(error));
@@ -219,6 +259,15 @@ async function rerouteCapture(captureId, destination) {
     busy.delete(captureId);
     draw();
   }
+}
+
+/** What a reroute asks for: a destination, or nothing at all — which is the
+ *  retry, and means "decide again". A branch carries the name when one was
+ *  given; with none the daemon names it after what was said. */
+function rerouteParams(captureId, destination) {
+  if (!destination) return { capture_id: captureId };
+  const params = { capture_id: captureId, project_id: destination.projectId, kind: destination.kind };
+  return destination.branch ? { ...params, branch: destination.branch } : params;
 }
 
 /** Opening an entry reads it — every agent on it — and goes where it lives. */

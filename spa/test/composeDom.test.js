@@ -29,6 +29,7 @@ let App;
 let initCompose;
 let flushCaptures;
 let pendingCaptureRows;
+let adoptCaptureRecord;
 let CAPTURE_QUEUE_KEY;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
@@ -68,7 +69,7 @@ beforeEach(async () => {
   ];
   refreshFeed.mockClear();
   ({ App } = await import("../src/app.js"));
-  ({ initCompose, flushCaptures, pendingCaptureRows } = await import("../src/core/composeView.js"));
+  ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord } = await import("../src/core/composeView.js"));
   ({ CAPTURE_QUEUE_KEY } = await import("../src/core/compose.js"));
   App.route = { name: "inbox" };
   App.gated = false;
@@ -173,6 +174,79 @@ describe("capture first", () => {
     text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
     await flush();
     expect(App.call).toHaveBeenCalledWith("capture.create", { text: "ship it" });
+  });
+});
+
+// A capture the client sent is watched until its route settles, and for two
+// minutes after — the window where the routing is still visible and reversible.
+describe("a route the client is watching", () => {
+  const routedTo = (over) => ({ ...captureRecord({ state: "routed" }), ...over });
+
+  /** Send one, then let the feed drop it: the route settled, so the client asks
+   *  once where it went and keeps the row on screen. */
+  async function settledCapture(record) {
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.create") return captureRecord();
+      if (method === "capture.get") return record;
+      return { ok: true };
+    });
+    press("c");
+    type("#compose-text", "add a CSV export");
+    $("#compose-send").click();
+    await flush();
+    feedItems = [];
+    await refreshFeed();
+    await flush();
+  }
+
+  it("says where a settled capture went", async () => {
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const [row] = pendingCaptureRows();
+    expect(row.routing.kind).toBe("issue");
+    expect(row.project).toBe("relaydb");
+  });
+
+  it("takes the new destination the moment the user reroutes it", async () => {
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+
+    // What `capture.reroute` answers with. Nothing else will ever correct this
+    // row: the feed stopped carrying the capture when its route settled.
+    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+
+    const [row] = pendingCaptureRows();
+    expect(row.routing.kind).toBe("branch");
+    expect(row.project).toBe("dotfiles");
+    expect(row.branch).toBe("build/csv-export");
+    expect(row.issue_id).toBeNull();
+  });
+
+  it("gives a rerouted row its two minutes back, so the new route is undoable too", async () => {
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const { ROUTED_LINGER_MS } = await import("../src/core/compose.js");
+    const settledAt = Date.now();
+    const nearlyGone = settledAt + ROUTED_LINGER_MS - 10;
+    const wouldHaveGone = settledAt + ROUTED_LINGER_MS + 10;
+    expect(pendingCaptureRows(wouldHaveGone).length).toBe(0);
+
+    // The user reroutes it just before it would have dropped off.
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(nearlyGone);
+    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    clock.mockRestore();
+
+    expect(pendingCaptureRows(wouldHaveGone).length).toBe(1);
+    expect(pendingCaptureRows(nearlyGone + ROUTED_LINGER_MS + 10).length).toBe(0);
+  });
+
+  it("leaves a capture the feed still carries to the feed, which is its record", async () => {
+    press("c");
+    type("#compose-text", "add a CSV export");
+    $("#compose-send").click();
+    await flush();
+
+    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+
+    expect(pendingCaptureRows(Date.now() + 10).length).toBe(1);
   });
 });
 

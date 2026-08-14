@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
+import { completionReportSections } from "./agentRailModel.js";
 import {
   autoGrow,
   composerHtml,
@@ -258,6 +259,25 @@ function messageHtml(message, agentLabel = "Agent") {
   </article>`;
 }
 
+/// The agent's handoff, as a card.
+///
+/// `done` is asked for a completion report and the event is the whole record of
+/// it (there is no companion message any more), so the report renders where the
+/// event does: the critical files, the decisions a reviewer would otherwise
+/// reverse-engineer, the risks, and what was deliberately left alone. Every
+/// line is the agent's words — escaped.
+function completionReportHtml(report) {
+  const sections = completionReportSections(report);
+  if (!sections.length) return "";
+  return `<div class="completion-report">${sections
+    .map(
+      (section) =>
+        `<div class="completion-section"><div class="completion-title">${esc(section.title)}</div>
+        <ul>${section.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>`,
+    )
+    .join("")}</div>`;
+}
+
 function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   const label = meta.label.replace(/^Agent\b/, agentLabel);
@@ -266,30 +286,8 @@ function eventHtml(event, agentLabel = "Agent") {
     : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
+    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
   </div>`;
-}
-
-/** Kinds that end the work outright, whatever the agent last said. */
-const HANDBACK_EVENTS = new Set(["done", "run_failed", "idle_unreported", "blocked", "review_blocked", "abandoned"]);
-
-/**
- * Which user message (by index) is currently being worked, or -1.
- *
- * The agent has READ it (`seen_at`) and has not handed the turn back since: an
- * ordinary agent reply hands back, a progress note (`still_working`) does not,
- * and a terminal event always does. Only the newest such message carries the
- * line — one agent, one thing being worked.
- */
-export function workingMessageIndex(items) {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i] || {};
-    const data = item.data || {};
-    if (item.type === "message" && data.role === "user" && data.seen_at) return i;
-    if (item.type === "message" && data.role === "agent" && !data.still_working) return -1;
-    if (item.type !== "message" && HANDBACK_EVENTS.has(String(data.kind || "").toLowerCase())) return -1;
-  }
-  return -1;
 }
 
 /** Compact age for the working counter: 12s, 4m, 2h, 3d. */
@@ -303,23 +301,20 @@ export function workingAge(sinceIso, nowMs = Date.now()) {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-/** The line under a message the agent is working on. `data-since` is what the
- *  ticker re-reads, so the counter keeps moving between thread re-renders. */
-function workingHtml(seenAt) {
-  return `<div class="thread-working" data-since="${esc(seenAt)}">
-    <span class="thread-working-dot" aria-hidden="true"></span>Working<span class="thread-working-age">${esc(workingAge(seenAt))}</span>
-  </div>`;
-}
-
+/// The timeline: what was said, and what happened.
+///
+/// Working time and the diffstat are NOT here. They are facts about the branch
+/// or issue rather than about anything anyone said, they are true wherever you
+/// are standing in the work, and they change every second — so they live on the
+/// toolbar (core/toolbar.js) and the conversation keeps its own record: the
+/// messages, the events, and whether the agent has read you.
 function timelineHtml(items, agentLabel) {
-  const working = workingMessageIndex(items);
-  return items.flatMap((item, index) => {
+  return items.flatMap((item) => {
     if (item.type !== "message") return [eventHtml(item.data || {}, agentLabel)];
     const message = item.data || {};
     // Old bridges persisted the noisy structured handoff as a chat message.
     if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
-    const rendered = messageHtml(message, agentLabel);
-    return index === working ? [rendered, workingHtml(message.seen_at)] : [rendered];
+    return [messageHtml(message, agentLabel)];
   });
 }
 
@@ -623,10 +618,11 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
   };
 }
 
-/** Keep every rendered Working counter moving. The thread re-renders on its
- *  surface's own poll, which is slower than a second, so the age is refreshed
- *  in place from `data-since` rather than by re-rendering the timeline. Returns
- *  a stop function; safe to call on a root that holds no working line. */
+/** Keep every rendered Working counter moving, refreshing the age in place from
+ *  `data-since` rather than by re-rendering around it. Returns a stop function;
+ *  safe to call on a root that holds no working line — which the conversation
+ *  now never does (the toolbar owns working time). Only the pre-redesign plan
+ *  surface still paints one, and this ticks it until that surface is gone. */
 export function startWorkingTicker(root, { intervalMs = 1000, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => Date.now() } = {}) {
   let handle = null;
   const tick = () => {

@@ -12,16 +12,18 @@ import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
-import { initSidebar } from "./sidebar.js";
+import { initInboxRail } from "../core/inboxShell.js";
+import { initToolbar } from "../core/toolbar.js";
 
-// The gate screens are self-contained — body.gated hides the sidebar (and its
-// reopen toggle) via CSS while they own #root.
+// The gate screens are self-contained — body.gated hides the inbox rail (and
+// its reopen toggle), the toolbar, the agent rail and the console via CSS while
+// they own #root.
 function setGate(on) {
   App.gated = on;
   document.body.classList.toggle("gated", on);
   if (on) {
     $("#devpick").hidden = true;
-    stopFeed(); // no session to poll — the sidebar is hidden while gated
+    stopFeed(); // no session to poll — the inbox is hidden while gated
   }
 }
 
@@ -44,7 +46,8 @@ async function enterApp() {
   paintDevicePicker();
   setConn('<span class="dot"></span>connected');
   startFeed();
-  initSidebar();
+  initInboxRail();
+  initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
 }
 

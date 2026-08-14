@@ -32,26 +32,34 @@
       <span>A new version of Build is available.</span>
       <button class="btn" id="verbar-reload">Reload</button>
     </div>
+    <!-- The universal three-panel shell: the inbox rail (global, persistent),
+         the view column (toolbar / view body / console), and the agent rail at
+         the right edge of the view body — the rail belongs to the selected
+         branch or issue, so it sits below the toolbar, beside the tab content. -->
     <div id="shell">
-      <aside id="sidebar">
-        <div class="side-top">
+      <aside id="inbox-rail" aria-label="Inbox">
+        <div class="inbox-head">
           <span class="logo">build</span>
-          <button class="iconbtn" id="side-collapse" title="Collapse sidebar">◫</button>
+          <button class="iconbtn" id="inbox-collapse" title="Collapse the inbox">◫</button>
         </div>
-        <div class="side-nav">
-          <div class="srow snav" id="nav-notif"><span class="sicon">▤</span><span class="stitle">Notifications</span><span class="badge" id="notif" style="display:none">0</span></div>
+        <div id="inbox-list"></div>
+        <div class="inbox-foot">
           <div class="srow snav" id="nav-account"><span class="sicon">◉</span><span class="stitle">Account</span></div>
-        </div>
-        <div id="sidebar-rail"></div>
-        <div class="side-status">
           <select id="devpick" title="Which device runs your tasks" hidden></select>
         </div>
       </aside>
-      <div id="side-scrim"></div>
-      <main id="root"></main>
+      <!-- Narrow viewports overlay the rail; the scrim beneath it dismisses. -->
+      <div id="inbox-scrim"></div>
+      <div id="view">
+        <div id="toolbar"></div>
+        <div id="view-body">
+          <main id="root"></main>
+          <aside id="agent-rail" aria-label="Agents"></aside>
+        </div>
+        <div id="console-region"></div>
+      </div>
     </div>
-    <button class="iconbtn" id="side-open" title="Open sidebar">◫</button>
-    <div id="fab"></div>
+    <button class="iconbtn" id="inbox-open" title="Open the inbox">◫</button>
 
     <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
   </body>

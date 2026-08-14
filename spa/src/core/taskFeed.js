@@ -4,15 +4,14 @@
 // `runs` separately.
 
 import { App } from "../app.js";
-import { pruneReadIds, persistReadIds } from "./readState.js";
 
 const subscribers = new Set();
 let timer = null;
 let last = null;
 
-/** Subscribe to feed snapshots ({plans, runs, externalWorktrees, projects,
- *  primaryChanges}); the current snapshot (if any) is delivered immediately.
- *  Returns unsubscribe. */
+/** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
+ *  projects, primaryChanges}); the current snapshot (if any) is delivered
+ *  immediately. Returns unsubscribe. */
 export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (last) fn(last);
@@ -35,18 +34,16 @@ async function tick() {
       App.call("project.list"),
     ]);
     last = {
+      // The redesigned feed: one row per work item (branch or issue). The
+      // legacy collections below still ship, and still feed what has not moved
+      // over yet.
+      items: board.items || [],
       plans: board.plans || [],
       runs: board.runs || [],
       externalWorktrees: board.external_worktrees || [],
       primaryChanges: board.primary_changes || [],
       projects: projectList.projects || [],
     };
-    // Prune read-state against EVERY live id (not just needs-attention ones) so
-    // the persisted set can't grow forever, while an entity that re-enters
-    // needs-attention stays read.
-    const liveIds = [...last.runs.map((r) => r.run_id), ...last.plans.map((p) => p.plan_id)];
-    App.readIds = pruneReadIds(App.readIds, liveIds);
-    persistReadIds(App.readIds, localStorage);
     subscribers.forEach((fn) => fn(last));
   } catch {
     /* offline / transient — the next tick retries */

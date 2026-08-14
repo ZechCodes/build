@@ -696,37 +696,28 @@ impl Orchestrator {
 
     // ---- Plan seams (Plan/Run split) --------------------------------------
 
-    /// Dispatch a plan: create the disposable planning worktree (branch
-    /// `plan/<slug>`), scaffold `.build/` (the MCP config carries the plan id
-    /// so `done` reports route back to this plan), transition out of
-    /// `Created`, and spawn the plan session. The worktree is throwaway — the
-    /// canonical docs land in the store at each plan/revise `done` — but it
-    /// stays warm through the notes/revision loop (the scope doc's
-    /// warm-session property).
-    pub fn dispatch_plan(
+    /// File a plan and start nothing: a record in `Created` with its goal as the
+    /// conversation's first message, no worktree and no session.
+    ///
+    /// This is what an issue is before anyone has said anything to it — the
+    /// router files them this way, and so does the toolbar's New issue. The goal
+    /// is posted UNREAD: no agent exists to have read it, and
+    /// [`start_plan_drafting`](Self::start_plan_drafting) is what marks it seen,
+    /// because dispatching the session is the agent acting on it.
+    pub fn create_plan(
         &self,
         id: PlanId,
         goal: impl Into<String>,
         base_branch: &str,
         model_choice: ModelChoice,
-    ) -> Result<(ActivePlan, AgentTurn), OrchestratorError> {
-        let goal = goal.into();
-        let slug = slugify(&goal);
-        let worktree = self.plan_worktrees.create(&slug, base_branch)?;
-        self.scaffold_build_dir(&worktree, &id.0)?;
-
-        let mut plan = Plan::new(id, goal);
-        plan.apply(PlanEvent::Dispatch)?;
-
-        // The goal is the first turn in the durable conversation. Mark it seen:
-        // dispatching the planning session is the agent acting on that prompt.
+    ) -> ActivePlan {
+        let plan = Plan::new(id, goal);
         let now = crate::store::now_rfc3339();
         let mut agents = AgentRoster::with_first(&plan.id.0, model_choice.clone(), &now);
         agents.post_user(plan.goal.clone(), None, &now);
-        let _ = agents.read_unread(&now);
-        let active = ActivePlan {
+        ActivePlan {
             plan,
-            worktree: Some(worktree),
+            worktree: None,
             base_branch: base_branch.to_string(),
             plan_path: DEFAULT_PLAN_PATH.to_string(),
             stages: Vec::new(),
@@ -735,9 +726,47 @@ impl Orchestrator {
             agents,
             last_summary: None,
             last_error: None,
-        };
-        let prompt = self.render_plan(&self.templates.plan, &active, "");
-        let turn = AgentTurn::dispatched(prompt, &active.agents, "plan");
+        }
+    }
+
+    /// Start the planning session for a plan that has none: create the
+    /// disposable planning worktree (branch `plan/<slug>`), scaffold `.build/`
+    /// (the MCP config carries the plan id so `done` reports route back to this
+    /// plan), transition out of `Created`, and render the turn that spawns it.
+    ///
+    /// The worktree is throwaway — the canonical docs land in the store at each
+    /// plan/revise `done` — but it stays warm through the notes/revision loop
+    /// (the scope doc's warm-session property).
+    ///
+    /// Worktree first, state second: a failed create leaves the plan inert and
+    /// re-startable rather than `Drafting` with nothing drafting.
+    pub fn start_plan_drafting(
+        &self,
+        active: &mut ActivePlan,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        let slug = slugify(&active.plan.goal);
+        let worktree = self.plan_worktrees.create(&slug, &active.base_branch)?;
+        self.scaffold_build_dir(&worktree, &active.plan.id.0)?;
+        active.plan.apply(PlanEvent::Dispatch)?;
+        active.worktree = Some(worktree);
+        // Everything the user said before this moment is what the session is
+        // being started to answer, so the dispatch reads all of it.
+        let _ = active.agents.read_unread(&crate::store::now_rfc3339());
+        let prompt = self.render_plan(&self.templates.plan, active, "");
+        Ok(AgentTurn::dispatched(prompt, &active.agents, "plan"))
+    }
+
+    /// File a plan and start its session in one act — what `plan.create` does
+    /// when it is not asked for an inert record.
+    pub fn dispatch_plan(
+        &self,
+        id: PlanId,
+        goal: impl Into<String>,
+        base_branch: &str,
+        model_choice: ModelChoice,
+    ) -> Result<(ActivePlan, AgentTurn), OrchestratorError> {
+        let mut active = self.create_plan(id, goal, base_branch, model_choice);
+        let turn = self.start_plan_drafting(&mut active)?;
         Ok((active, turn))
     }
 

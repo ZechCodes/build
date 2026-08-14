@@ -1,0 +1,510 @@
+// The agent rail: the conversation surface for whatever the view area is
+// standing in.
+//
+// It is two things. The BUBBLE STRIP is pinned to the right edge below the
+// toolbar and never goes away: one bubble per agent, carrying that agent's
+// unread count and whether it is working, so the state of every agent on this
+// work item is legible with the rail fully collapsed. The strip is also the
+// agent selector — there is no menu. Tapping a bubble expands the CONVERSATION
+// PANEL to its left; tapping another switches which conversation is in it.
+//
+// The panel is the whole of talking to an agent. Chat is the conversation and
+// the box you write in; TUI swaps the same panel onto that agent's PTY, sized
+// to the panel. There are no Conversation and Agent tabs any more: this is both
+// of them, beside the work instead of instead of it.
+//
+// One work item, one rail: `mountAgentRail` is given the branch or the issue,
+// polls the bridge for it (branch.get / issue.get), and every agent it renders
+// comes off that payload's agents[].
+
+import { App, go } from "../app.js";
+import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
+import { loadAgentDefaults } from "./agentDefaults.js";
+import { agentTitle, providerLabel, railBubbles, railEntity, selectAgentId } from "./agentRailModel.js";
+import { markSeen } from "./inboxView.js";
+import { notifyError } from "./notify.js";
+import { refreshFeed } from "./taskFeed.js";
+import { esc } from "./text.js";
+import {
+  createThreadCache,
+  paintThreadKeepingPlace,
+  threadHtml,
+  wireThreadAttachments,
+  wireThreadComposer,
+  wireThreadLinks,
+  wireThreadRevisionLinks,
+} from "./thread.js";
+import { mountAgentTab } from "./surfaceTabs.js";
+import "../styles/shell.css";
+
+/** How often the rail re-reads its work item. The same cadence the detail
+ *  surfaces have always polled at: fast enough that a reply appears while you
+ *  are still looking at the panel. */
+const RAIL_POLL_MS = 1600;
+
+const EXPANDED_KEY = "build.rail.expanded";
+const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
+
+// What survives a remount. The rail is rebuilt whenever the view under it is
+// (a tab switch re-renders the surface), so the human's choices — which agent
+// is open, whether the panel is out, chat or TUI, and anything typed but not
+// sent — are kept here rather than in the DOM that is about to be replaced.
+const drafts = new Map(); // `${entityId}:${agentId}` → { body, attachments }
+const chosenAgent = new Map(); // entity key → agent id the human last opened
+// Chat or TUI, per work item: the terminal is the basement, so walking into a
+// different branch or issue starts you in the conversation whatever face of the
+// last one you were looking at.
+const panelModes = new Map();
+
+/** Forget what the rail remembers. For tests, and for a session teardown — the
+ *  drafts and choices belong to the person who was signed in. */
+export function resetAgentRailMemory() {
+  drafts.clear();
+  chosenAgent.clear();
+  panelModes.clear();
+}
+
+const railKey = (context) =>
+  context.kind === "issue" ? `issue:${context.issueId}` : `branch:${context.projectId}:${context.branch}`;
+
+const readExpanded = () => {
+  try {
+    return localStorage.getItem(EXPANDED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+
+const writeExpanded = (on) => {
+  try {
+    localStorage.setItem(EXPANDED_KEY, on ? "1" : "0");
+  } catch {
+    /* private mode: the choice lasts the session */
+  }
+};
+
+/** Pure: the strip. Bubbles top to bottom, the `+` last. */
+export function stripHtml(bubbles) {
+  return bubbles
+    .map((bubble) => {
+      const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
+      if (bubble.active) classes.push("active");
+      if (bubble.working) classes.push("working");
+      const badge = bubble.unread ? `<span class="rail-badge">${esc(String(bubble.unread))}</span>` : "";
+      return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
+        data-agent="${esc(bubble.id)}" title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">
+        <span class="rail-bubble-label">${esc(bubble.label)}</span>${badge}</button>`;
+    })
+    .join("");
+}
+
+/** Pure: the panel's header — who you are talking to, and the two controls that
+ *  are always there (which face of the agent you are looking at, and the way
+ *  out). */
+export function panelHeadHtml(who, mode) {
+  return `<div class="rail-head">
+    <span class="rail-who">${esc(who)}</span>
+    <div class="rail-modes" role="group" aria-label="Conversation or terminal">
+      <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
+      <button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>
+    </div>
+    <button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
+      aria-label="Collapse the conversation">›</button>
+  </div>`;
+}
+
+/**
+ * Mount the rail for one work item.
+ *
+ * `context` is `{ kind: "branch", projectId, branch }` or
+ * `{ kind: "issue", projectId, issueId }`. Returns `{ dispose() }`; disposing
+ * tears down the client view only — PTYs and conversations are the daemon's.
+ */
+export function mountAgentRail(host, context) {
+  if (!host) return { dispose() {} };
+  const key = railKey(context);
+  let entity = railEntity(null, context.kind);
+  let selectedId = chosenAgent.get(key) || null;
+  let expanded = readExpanded();
+  let mode = panelModes.get(key) || "chat";
+  let poll = null;
+  let disposed = false;
+  let tui = null; // the mounted PTY pane, in TUI mode
+  let threadCache = createThreadCache();
+  let threadAgentId = null; // whose conversation the cache holds
+  let adopting = null;
+  let sending = false; // a first message is adopting/starting — do not repaint over it
+
+  const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
+  const draftKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
+  const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
+  const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
+
+  /** The adopting caller for a checkout Build owns nothing in. Made once the
+   *  payload says which checkout it is, and kept — it holds the run it mints. */
+  const adoptingCall = () => {
+    if (!adopting && entity.adoptable && entity.projectId) {
+      const call = (method, params) => App.call(method, params);
+      adopting = entity.primary
+        ? createPrimaryAdoptingCall(call, entity.projectId)
+        : createAdoptingCall(call, entity.projectId, entity.worktreeId);
+    }
+    return adopting;
+  };
+
+  // ---- reading the work item ------------------------------------------------
+
+  /// One read of the work item: its agents, and the conversation of the one
+  /// whose bubble is open.
+  ///
+  /// `agent_id` names that conversation. A daemon that does not yet read it
+  /// answers with the entity's own — the first agent's — which is what every
+  /// surface before the rail asked for; the param is here so the panel follows
+  /// the bubble as soon as the daemon can tell them apart.
+  const detail = async () => {
+    const scope = { ...threadCache.cursorParam(), ...(selectedId ? { agent_id: selectedId } : {}) };
+    if (context.kind === "issue") {
+      return App.call("issue.get", { issue_id: context.issueId, ...scope });
+    }
+    return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
+  };
+
+  const refresh = async () => {
+    let payload;
+    try {
+      payload = await detail();
+    } catch {
+      // A branch that stopped resolving (finished, renamed) leaves the rail as
+      // it was rather than blanking the conversation under the reader.
+      return;
+    }
+    if (disposed) return;
+    entity = railEntity(payload, context.kind);
+    selectedId = selectAgentId(entity.agents, selectedId);
+    if (selectedId) chosenAgent.set(key, selectedId);
+    if (!sending) paint();
+  };
+
+  // ---- painting -------------------------------------------------------------
+
+  /// Paint the strip, and put the panel in or take it out.
+  ///
+  /// The strip is rewritten every tick — it is a handful of buttons and its
+  /// whole job is to be current. The PANEL element is not: it is where a live
+  /// PTY hangs, and a poll that replaced it would tear a terminal down and
+  /// re-attach it every second and a half. So the panel is created when the
+  /// human opens it, removed when they shut it, and otherwise left alone.
+  const paint = () => {
+    if (disposed) return;
+    if (!host.querySelector(".rail-strip")) host.innerHTML = `<div class="rail-strip"></div>`;
+    const strip = host.querySelector(".rail-strip");
+    strip.innerHTML = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
+    strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
+      bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
+    });
+    let panel = host.querySelector("#rail-panel");
+    if (expanded && !panel) {
+      panel = document.createElement("div");
+      panel.className = "rail-panel";
+      panel.id = "rail-panel";
+      host.insertBefore(panel, strip);
+    } else if (!expanded && panel) {
+      disposeTui();
+      panel.remove();
+    }
+    if (expanded) paintPanel();
+  };
+
+  const paintPanel = () => {
+    const panel = host.querySelector("#rail-panel");
+    if (!panel) return;
+    const agent = agentOf(selectedId);
+    const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    // The body is rebuilt only when what it is showing changed — which face of
+    // the agent, and which agent. Same reason as the panel itself.
+    const wantedBody = `${mode}:${selectedId || "ghost"}`;
+    if (panel.dataset.body !== wantedBody) {
+      disposeTui();
+      panel.innerHTML = `${panelHeadHtml(who, mode)}<div class="rail-body" id="rail-body"></div>`;
+      panel.dataset.head = who;
+      panel.dataset.body = wantedBody;
+      wireHead(panel);
+      if (mode === "tui") mountTui();
+    } else if (panel.dataset.head !== who) {
+      // The name changed under the panel (an agent whose provider was picked
+      // after the fact). Nothing else in the head can move on a poll, and
+      // rewriting it every tick would eat a press that landed mid-repaint.
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode);
+      panel.dataset.head = who;
+      wireHead(panel);
+    }
+    if (mode === "chat") paintChat();
+  };
+
+  const wireHead = (panel) => {
+    panel.querySelectorAll("[data-mode]").forEach((control) => {
+      control.onclick = () => {
+        if (mode === control.dataset.mode) return;
+        mode = control.dataset.mode;
+        panelModes.set(key, mode);
+        paintPanel();
+      };
+    });
+    const collapse = panel.querySelector(".rail-collapse");
+    if (collapse) {
+      collapse.onclick = () => {
+        expanded = false;
+        writeExpanded(false);
+        disposeTui();
+        paint();
+      };
+    }
+  };
+
+  // ---- chat -----------------------------------------------------------------
+
+  const threadFor = () => {
+    // The cache holds one conversation; switching bubbles switches which.
+    if (threadAgentId !== selectedId) {
+      threadCache.reset();
+      threadAgentId = selectedId;
+    }
+    return entity.thread ? threadCache.absorb(entity.thread) : null;
+  };
+
+  const paintChat = () => {
+    const body = host.querySelector("#rail-body");
+    if (!body) return;
+    const thread = threadFor();
+    const agent = agentOf(selectedId);
+    paintThreadKeepingPlace(body, () => {
+      body.innerHTML = threadHtml(thread || { items: [] }, {
+        agentLabel: providerLabel(agent && agent.provider),
+        composer: {
+          inputId: COMPOSER_IDS.input,
+          sendId: COMPOSER_IDS.send,
+          hintId: COMPOSER_IDS.hint,
+          placeholder: composerPlaceholder(),
+          attachable: true,
+        },
+      });
+      wireChat(body);
+    });
+    reportRead(body);
+  };
+
+  const composerPlaceholder = () => {
+    if (entity.adoptable) return "Send a message to start an agent here…";
+    if (!entity.agents.length) return "Send a message to start the agent…";
+    return "Send a message to this agent…";
+  };
+
+  const wireChat = (body) => {
+    wireThreadComposer(body, {
+      ids: COMPOSER_IDS,
+      readDraft: () => draftOf().body,
+      writeDraft: (value) => writeDraft({ body: value }),
+      readAttachments: () => draftOf().attachments,
+      writeAttachments: (next) => writeDraft({ attachments: next }),
+      // Attaching lands the bytes before the message names them — which needs a
+      // conversation to store them against, so it adopts exactly as sending
+      // does: choosing a file for a message is the same intent, one keystroke
+      // earlier.
+      upload: async (file, contentBase64) => {
+        const entityId = await ensureEntity();
+        return App.call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
+      },
+      onSubmit: (message, attachments) => send(message, attachments),
+      onError: (error) => notifyError("Message failed", error.message),
+    });
+    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
+    wireThreadRevisionLinks(body, (revisionId) =>
+      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
+    );
+    wireThreadLinks(body, openLink);
+  };
+
+  /** A reference in the conversation goes where it points, as far as the two
+   *  work-item surfaces can take it. */
+  const openLink = (link) => {
+    if (link.issue_id || link.plan_id) {
+      go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
+      return;
+    }
+    if (link.kind === "file" && entity.kind === "branch" && entity.branch) {
+      go({ name: "branch", projectId: entity.projectId, branch: entity.branch, tab: "files" });
+    }
+  };
+
+  /// Tell the daemon this agent's conversation has been read.
+  ///
+  /// Open, in Chat, and scrolled to the end: all three, because a panel showing
+  /// the top of a long thread has not read the message at the bottom of it.
+  const reportRead = (body) => {
+    const agent = agentOf(selectedId);
+    if (!agent || !agent.unread_count || !entity.entityId) return;
+    if (body.scrollHeight - body.clientHeight - body.scrollTop > 32) return;
+    markSeen(entity.entityId, agent.id).then(refreshFeed);
+  };
+
+  // ---- sending --------------------------------------------------------------
+
+  /** The entity a message is posted to, adopting the checkout first when Build
+   *  owns nothing here yet — an agent needs an owner for `done` to report to. */
+  const ensureEntity = async () => {
+    if (entity.entityId && !entity.adoptable) return entity.entityId;
+    const adopt = adoptingCall();
+    if (!adopt) return entity.entityId;
+    return adopt.adopt();
+  };
+
+  /**
+   * Send, and make sure something is listening.
+   *
+   * A message is durable the moment it is posted; whether an agent hears it is
+   * a second question. On a branch with no live session — including one with no
+   * agent at all, where the post has just adopted the checkout — the start is
+   * what delivers it, and it answers with the agent that now owns this
+   * conversation. An issue needs none of that: the daemon dispatches its
+   * planning agent on the first message.
+   */
+  const send = async (body, attachments) => {
+    sending = true;
+    try {
+      const entityId = await ensureEntity();
+      const agent = agentOf(selectedId);
+      await App.call("thread.post", {
+        entity_id: entityId,
+        ...(agent ? { agent_id: agent.id } : {}),
+        body,
+        attachments,
+      });
+      if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
+        const started = await App.call("agent.start", {
+          id: entityId,
+          ...(agent ? { agent_id: agent.id } : {}),
+        });
+        if (started && started.agent_id) {
+          selectedId = started.agent_id;
+          chosenAgent.set(key, selectedId);
+          threadCache.reset();
+          threadAgentId = selectedId;
+        }
+      }
+    } finally {
+      sending = false;
+    }
+    await refreshFeed();
+    await refresh();
+  };
+
+  // ---- the strip's presses --------------------------------------------------
+
+  const pressBubble = (type, agentId) => {
+    if (type === "add") {
+      addAgent();
+      return;
+    }
+    if (type === "agent" && agentId && agentId !== selectedId) {
+      selectedId = agentId;
+      chosenAgent.set(key, agentId);
+      threadCache.reset();
+      threadAgentId = agentId;
+      expanded = true;
+      writeExpanded(true);
+      paint();
+      return;
+    }
+    // The bubble already open is the way back out: press it again to collapse.
+    expanded = !expanded;
+    writeExpanded(expanded);
+    if (!expanded) disposeTui();
+    paint();
+  };
+
+  /** Another agent on this branch, with its own conversation. It starts on the
+   *  account's chosen harness (an empty preference sends nothing and the
+   *  daemon's own default stands) and nothing runs until it is spoken to. */
+  const addAgent = async () => {
+    if (!entity.entityId) return;
+    const defaults = loadAgentDefaults();
+    const params = { entity_id: entity.entityId };
+    for (const field of ["provider", "model", "effort"]) {
+      if (defaults[field]) params[field] = defaults[field];
+    }
+    try {
+      const added = await App.call("agent.add", params);
+      if (added && added.agent) {
+        selectedId = added.agent.id;
+        chosenAgent.set(key, selectedId);
+        threadCache.reset();
+        threadAgentId = selectedId;
+        expanded = true;
+        writeExpanded(true);
+      }
+      await refresh();
+    } catch (error) {
+      notifyError("Could not add an agent", error.message);
+    }
+  };
+
+  // ---- TUI ------------------------------------------------------------------
+
+  /// The same panel, attached to the agent's own screen.
+  ///
+  /// The PTY is sized to the panel, not to a full-width tab: the pane's own
+  /// observer measures the box it is mounted in and resizes the terminal (and
+  /// the PTY behind it) to match, so a TUI drawn for 120 columns redraws for
+  /// the rail's width. The touch key bar comes with the pane.
+  const mountTui = () => {
+    const body = host.querySelector("#rail-body");
+    if (!body) return;
+    body.classList.add("rail-body-tui");
+    const agent = agentOf(selectedId);
+    const target = entity.entityId && !entity.adoptable
+      ? { id: entity.entityId, ...(agent ? { agent_id: agent.id } : {}) }
+      : { project_id: entity.projectId, ...(entity.worktreeId ? { worktree_id: entity.worktreeId } : {}) };
+    tui = mountAgentTab(body, target, {
+      idleLabel: "No agent session is running here",
+      onStart: (provider) => startAgent(provider),
+    });
+  };
+
+  const startAgent = async (provider) => {
+    const entityId = await ensureEntity();
+    const agent = agentOf(selectedId);
+    const started = await App.call("agent.start", {
+      id: entityId,
+      ...(agent ? { agent_id: agent.id } : {}),
+      ...(provider ? { provider } : {}),
+    });
+    if (started && started.agent_id) {
+      selectedId = started.agent_id;
+      chosenAgent.set(key, selectedId);
+    }
+    await refresh();
+    return started;
+  };
+
+  const disposeTui = () => {
+    if (!tui) return;
+    tui.dispose();
+    tui = null;
+  };
+
+  // ---- lifecycle ------------------------------------------------------------
+
+  paint();
+  refresh();
+  poll = setInterval(refresh, RAIL_POLL_MS);
+
+  return {
+    dispose() {
+      disposed = true;
+      if (poll) clearInterval(poll);
+      poll = null;
+      disposeTui();
+      host.innerHTML = "";
+    },
+  };
+}

@@ -379,6 +379,79 @@ describe("TerminalSocket", () => {
     socket.close();
   });
 
+  // A worktree with no agent yet can only be addressed by the worktree, so the
+  // attach answers `agent:<worktree_id>` — a placeholder. The agent is born
+  // later, and its frames carry `agent:<agent_id>`: a different id, on the very
+  // screen this client is looking at. The opening term.reset is what names it.
+  it("re-keys a waiting agent screen onto the id the newborn agent's reset carries", async () => {
+    const { socket, ws, init } = await connected();
+    const snaps = [];
+    const outputs = [];
+    const lives = [];
+    const ids = [];
+    const at = socket.attachAgent({ project_id: "p1", worktree_id: "wt-2" }, {
+      cols: 120, rows: 40,
+      onSnapshot: (b) => snaps.push(dec(b)),
+      onOutput: (b) => outputs.push(dec(b)),
+      onLive: (l) => lives.push(l),
+      onTermId: (id) => ids.push(id),
+    });
+    at.catch(() => {});
+    await tick();
+    // No agent has ever run here: no provider, not live, blank screen.
+    respond(ws, init, lastPayload(ws).id, {
+      term_id: "agent:wt-2", snapshot: b64(""), cursor: 0, live: false, provider: null,
+    });
+    await at;
+    expect(ids).toEqual(["agent:wt-2"]);
+
+    // The first message spawns the agent; the pump wipes the screen it is born
+    // onto and starts painting — under the AGENT's id.
+    push(ws, init, { type: "term.reset", term_id: "agent:ag-77", cursor: 0, data: b64("") });
+    push(ws, init, { type: "term.output", term_id: "agent:ag-77", cursor: 3, data: b64("painting") });
+    await tick();
+    // The attach's blank screen, then the newborn session's own wipe.
+    expect(snaps).toEqual(["", ""]);
+    expect(outputs).toEqual(["painting"]);
+    expect(lives).toEqual([false, true]);
+    // The caller is told the id its keystrokes must now address.
+    expect(ids).toEqual(["agent:wt-2", "agent:ag-77"]);
+    // …and the screen's own ack names it too.
+    await vi.waitFor(() => {
+      const ack = ws.sent
+        .filter((m) => m.type === "e2ee_envelope")
+        .map((m) => m.envelope.frameFields.payload)
+        .find((p) => p.method === "term.ack");
+      expect(ack.params).toEqual({ term_id: "agent:ag-77", cursor: 3 });
+    });
+    socket.close();
+  });
+
+  // A retained screen already names its agent, so a new session on it is not a
+  // birth: its frames arrive under the id the attach gave, and nothing re-keys.
+  it("never re-keys an agent screen that already named its agent", async () => {
+    const { socket, ws, init } = await connected();
+    const outputs = [];
+    const at = socket.attachAgent({ id: "run-8" }, {
+      cols: 120, rows: 40,
+      onSnapshot: () => {}, onOutput: (b) => outputs.push(dec(b)), onLive: () => {},
+    });
+    at.catch(() => {});
+    await tick();
+    respond(ws, init, lastPayload(ws).id, {
+      term_id: "agent:ag-1", snapshot: b64("LAST"), cursor: 5, live: false, provider: "claude",
+    });
+    await at;
+
+    // Another agent's screen is not this one: its frames belong to a bubble
+    // this client is not showing, and must not land here.
+    push(ws, init, { type: "term.reset", term_id: "agent:ag-2", cursor: 0, data: b64("") });
+    push(ws, init, { type: "term.output", term_id: "agent:ag-2", cursor: 1, data: b64("elsewhere") });
+    await tick();
+    expect(outputs).toEqual([]);
+    socket.close();
+  });
+
   it("a streamed frame on an idle agent screen reports the session live again", async () => {
     const { socket, ws, init } = await connected();
     const lives = [];

@@ -35,6 +35,53 @@ function secondsSince(stamp, nowMs) {
   return (nowMs - parsed) / 1000;
 }
 
+/** The same lowercase word, over the one state vocabulary a board.list row can
+ *  speak: run states, issue states, and the bare checkout's `idle` (which says
+ *  nothing worth a line). */
+const ITEM_STATE_WORD = {
+  ...RUN_STATE_WORD,
+  drafting: "drafting",
+  plan_review: "in review",
+  approved: "ready to implement",
+  merged: "merged",
+  abandoned: "abandoned",
+  archived: "archived",
+};
+
+/** How long the turn in flight has been running. The bridge sends both the
+ *  start and its own resolution of it: prefer the stamp, so a client that keeps
+ *  the row on screen ticks, and fall back to the number when it cannot parse. */
+function workingSeconds(workingTime, nowMs) {
+  if (!workingTime) return null;
+  const ticking = secondsSince(workingTime.since, nowMs);
+  if (ticking !== null) return ticking;
+  return Number.isFinite(workingTime.seconds) ? workingTime.seconds : null;
+}
+
+/**
+ * The same one-line facts for a board.list `items[]` row — the shape the inbox
+ * reads. "3 files · +42 −7 · working 15m" while an agent has it; otherwise what
+ * state it sits in and when it was last picked up. "" when nothing is known.
+ */
+export function itemProgressFacts(item, nowMs) {
+  const parts = [];
+  const stat = item && item.stat;
+  if (stat && stat.files_changed > 0) {
+    parts.push(`${stat.files_changed} file${stat.files_changed === 1 ? "" : "s"}`);
+    parts.push(`+${stat.insertions || 0} −${stat.deletions || 0}`);
+  }
+  const working = workingSeconds(item && item.working_time, nowMs);
+  if (working !== null) {
+    parts.push(`working ${humanDuration(working)}`);
+    return parts.join(" · ");
+  }
+  const word = ITEM_STATE_WORD[item && item.state];
+  if (word) parts.push(word);
+  const resumed = secondsSince(item && item.resume_at, nowMs);
+  if (resumed !== null) parts.push(`picked up ${humanAge(resumed)}`);
+  return parts.join(" · ");
+}
+
 /**
  * "3 files · +42 −7 · active 5m ago · building for 12m" for a non-terminal
  * run; "" for terminal runs or when nothing is known.

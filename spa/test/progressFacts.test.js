@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { runProgressFacts } from "../src/core/progressFacts.js";
+import { itemProgressFacts, runProgressFacts } from "../src/core/progressFacts.js";
 
 const NOW = Date.parse("2026-07-18T12:00:00Z");
 const minutesAgo = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
@@ -61,5 +61,36 @@ describe("runProgressFacts", () => {
 
   it("degrades to empty when nothing is known", () => {
     expect(runProgressFacts({ state: "building", stat: null }, NOW)).toBe("");
+  });
+});
+
+// The same facts over a board.list row — the shape the inbox reads.
+describe("itemProgressFacts", () => {
+  const item = (over = {}) => ({
+    kind: "branch",
+    state: "building",
+    stat: { files_changed: 3, insertions: 42, deletions: 7 },
+    working_time: null,
+    resume_at: minutesAgo(90),
+    ...over,
+  });
+
+  it("counts the working turn from its start, so a row on screen ticks", () => {
+    const facts = itemProgressFacts(item({ working_time: { since: minutesAgo(15), seconds: 1 } }), NOW);
+    expect(facts).toBe("3 files · +42 −7 · working 15m");
+  });
+
+  it("falls back to the bridge's own count when the stamp cannot be read", () => {
+    const facts = itemProgressFacts(item({ working_time: { since: "not a time", seconds: 3600 } }), NOW);
+    expect(facts).toBe("3 files · +42 −7 · working 1h");
+  });
+
+  it("says what state a quiet row sits in, and when it was picked up", () => {
+    expect(itemProgressFacts(item({ state: "review" }), NOW)).toBe("3 files · +42 −7 · in review · picked up 1h ago");
+    expect(itemProgressFacts(item({ kind: "issue", state: "plan_review", stat: null }), NOW)).toBe("in review · picked up 1h ago");
+  });
+
+  it("has nothing to say about a bare checkout nobody has touched", () => {
+    expect(itemProgressFacts({ kind: "branch", state: "idle", stat: null, resume_at: null }, NOW)).toBe("");
   });
 });

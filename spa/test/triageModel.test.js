@@ -10,6 +10,7 @@ import {
   loadTrustDial,
   saveTrustDial,
   triageSummaryLine,
+  triageFingerprint,
 } from "../src/core/triageModel.js";
 
 /** A one-hunk patch for `path` whose changed line is `line`. */
@@ -167,6 +168,31 @@ describe("planChangesetTriage", () => {
     const result = planChangesetTriage({ files: [], patch: "", triage: null });
     expect(result.status).toBe("none");
     expect(result.sections[0].files).toEqual([]);
+  });
+});
+
+describe("triageFingerprint", () => {
+  const hunks = [{ hunk_id: "h1", level: "critical", rationale: "the seal" }];
+
+  it("says nothing changed while the pass has not", () => {
+    expect(triageFingerprint(triageOf(hunks))).toBe(triageFingerprint(triageOf(hunks)));
+  });
+
+  it("moves when a re-pass over the same revision reclassifies a hunk", () => {
+    expect(triageFingerprint(triageOf(hunks))).not.toBe(
+      triageFingerprint(triageOf([{ hunk_id: "h1", level: "low", group: "Nits" }])),
+    );
+  });
+
+  it("moves when the diff goes stale under the pass, or the reviewer disagrees", () => {
+    expect(triageFingerprint(triageOf(hunks))).not.toBe(triageFingerprint(triageOf(hunks, { stale: true })));
+    expect(triageFingerprint(triageOf(hunks))).not.toBe(
+      triageFingerprint(triageOf(hunks, { overrides: [{ hunk_id: "h1", direction: "collapse", at: "now" }] })),
+    );
+  });
+
+  it("tells a missing pass apart from an empty one", () => {
+    expect(triageFingerprint(null)).not.toBe(triageFingerprint(triageOf([])));
   });
 });
 

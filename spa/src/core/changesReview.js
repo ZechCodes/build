@@ -19,7 +19,7 @@ import { createCommentLayer } from "./changesComments.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
-import { loadTrustDial, saveTrustDial } from "./triageModel.js";
+import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 
 export const REVIEW_POLL_MS = 1600;
@@ -244,7 +244,7 @@ export function createReviewPlug({
       String(payload.key ?? ""),
       String(commentableNow),
       String(trustDial),
-      JSON.stringify(triageReport ?? null),
+      triageFingerprint(triageReport),
       payload.patch,
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in

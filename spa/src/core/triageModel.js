@@ -232,3 +232,20 @@ export function saveTrustDial(projectId, on, storage = globalThis.localStorage) 
   if (on) storage.setItem(TRUST_DIAL_KEY_PREFIX + projectId, "1");
   else storage.removeItem(TRUST_DIAL_KEY_PREFIX + projectId);
 }
+
+/** What a stack's ordering depends on, as one string: the revision the pass
+ *  read, everything it said, everything the reviewer said back, and whether the
+ *  diff has moved under it. A poll compares this to decide whether an otherwise
+ *  untouched changeset has to be re-drawn — a re-pass over the same revision
+ *  reclassifies hunks without moving a single byte of the diff, and the reader
+ *  should see that the moment it lands. */
+export function triageFingerprint(triage) {
+  if (!triage) return "none";
+  const hunks = (triage.hunks || [])
+    .map((hunk) => `${hunk.hunk_id}:${hunk.level}:${hunk.group || ""}:${hunk.rationale || ""}`)
+    .join(",");
+  const overrides = (triage.overrides || [])
+    .map((override) => `${override.hunk_id}:${override.direction}`)
+    .join(",");
+  return [triage.based_on || "", triage.stale ? "stale" : "fresh", hunks, overrides].join("\x1f");
+}

@@ -5,7 +5,7 @@
 // per project, remembered — that turns the whole reading off.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mountGitPane } from "../src/core/gitPane.js";
+import { mountGitPane, GIT_PANE_POLL_MS } from "../src/core/gitPane.js";
 import { patchHunks } from "../src/core/diff.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
 
@@ -150,6 +150,31 @@ describe("the triage overlay in the Changes pane", () => {
     // Another project is unaffected by this one's dial.
     const elsewhere = await open({ projectId: "proj-2" });
     expect(elsewhere.querySelector(".tsection.tcritical")).toBeTruthy();
+  });
+
+  it("re-orders the open stack when a pass lands under it, repo untouched", async () => {
+    let pass = null;
+    const callRpc = vi.fn(async (method) => {
+      if (method === "git.status") return dirtyStatus();
+      if (method === "git.log") return log();
+      return {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, {
+      scope: { run_id: "run-1" },
+      projectId: "proj-1",
+      triage: () => pass,
+      callRpc,
+    });
+    mounted.push(pane);
+    await settle();
+    expect(container.querySelector(".tuntriaged")).toBeTruthy();
+
+    pass = TRIAGE;
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    await settle();
+    expect(container.querySelector(".tsection.tcritical .file").dataset.file).toBe("src/crypto.rs");
   });
 
   it("leaves a surface with no triage to read exactly as it was", async () => {

@@ -38,7 +38,7 @@ import {
 import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
-import { loadTrustDial, saveTrustDial } from "./triageModel.js";
+import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -505,6 +505,11 @@ export function mountGitPane(
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus });
 
+  /** The freeze key for one poll: the repo's own, plus what the triage overlay
+   *  is drawing from. A pass landing (or a re-pass reclassifying) moves nothing
+   *  in git, so without it the ordering would wait for the next commit. */
+  const pollKeyNow = (status, log) => [gitPollKey(status, log), triageFingerprint(triage())].join("\x03");
+
   // Comments are a conversation post, so they exist where there is an agent to
   // post to. One layer serves every changeset: switching selection keeps the
   // pending set (they name their own files), and the tray renders under
@@ -794,7 +799,7 @@ export function mountGitPane(
     // A content refresh clears any stale armed confirm (the file/state it named
     // may be gone) — matching "any repaint resets the pending confirm".
     clearConfirm();
-    renderedKey = gitPollKey(lastStatus, lastLog);
+    renderedKey = pollKeyNow(lastStatus, lastLog);
     render();
   };
 
@@ -1316,7 +1321,7 @@ export function mountGitPane(
     // firing — and the interactionActive freeze it caused is released too.
     const expired = confirmExpired(armedAt, Date.now());
     if (expired) clearConfirm();
-    const key = gitPollKey(status, log);
+    const key = pollKeyNow(status, log);
     const rendered = container.querySelector(".gitpane .changes2");
     // Freeze while unchanged, while the user is drafting a commit message, while
     // any action RPC is in flight, or while an interaction is live: an armed

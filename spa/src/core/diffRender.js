@@ -7,6 +7,7 @@ import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
+import { planChangesetTriage, triageSummaryLine } from "./triageModel.js";
 
 /** The code-cell HTML for one diff row. On a dotenv file a secret-like line is
  *  masked (a click-to-reveal spoiler span, both old and new values independent);
@@ -29,14 +30,36 @@ function codeCellHtml(text, lang, maskDotenv) {
  *  per-line (each row tokenized on its own) — an accepted tradeoff for a
  *  multi-line grammar, since diff rows arrive one line at a time. `maskDotenv`
  *  (set by the caller for a dotenv file path) masks secret-like line content. */
-export function diffRowsHtml(rows, lang = null, { maskDotenv = false } = {}) {
+export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks = null } = {}) {
+  let hunkIndex = 0;
   return rows
-    .map((r) =>
-      r.t === "hunk"
-        ? `<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}</td></tr>`
-        : `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`,
-    )
+    .map((r) => {
+      if (r.t !== "hunk")
+        return `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`;
+      const mark = hunkMarks ? hunkMarks[hunkIndex] : null;
+      hunkIndex++;
+      const attributes = mark ? ` data-hunk="${esc(mark.hunk_id || "")}" data-level="${esc(mark.level)}"` : "";
+      return `<tr class="hunk"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}${hunkChipHtml(mark)}</td></tr>`;
+    })
     .join("");
+}
+
+/** The level chip on a hunk row: on a surfaced critical (carrying the pass's
+ *  one-line rationale, on hover as a title and on tap as a revealed line), and
+ *  on a hunk the pass never named, so an ordering with holes in it says so
+ *  rather than implying every unchipped hunk was read. Nothing else is chipped:
+ *  a collapsed group's header already says what its hunks are, and chipping
+ *  every normal hunk would be noise over the whole stack. */
+function hunkChipHtml(mark) {
+  if (!mark) return "";
+  if (mark.untriaged)
+    return `<span class="hchip untriaged" title="the triage pass did not classify this hunk">untriaged</span>`;
+  if (mark.level !== "critical") return "";
+  const rationale = mark.rationale || "";
+  const overridden = mark.overridden ? '<span class="hchip-note">your call</span>' : "";
+  return `<span class="hchip critical" tabindex="0" title="${esc(rationale)}">critical${overridden}${
+    rationale ? `<span class="hrationale">${esc(rationale)}</span>` : ""
+  }</span>`;
 }
 
 /** HTML for parsed diff files (core/diff.js parseDiff output). The path is
@@ -78,7 +101,10 @@ export function diffFilesHtml(
       return `
       <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span class="fpath">${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
         <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(f.path, fileMenu)}</div>
-        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, { maskDotenv: isDotenvPath(f.path) })}</table></div>
+        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, {
+          maskDotenv: isDotenvPath(f.path),
+          hunkMarks: f.triageHunks || null,
+        })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
     })
     .join("");
@@ -101,13 +127,91 @@ function fileMenuHtml(path, fileMenu) {
  *  the bottom with a count line. Noise is never filtered away — the doc's rule
  *  is collapse, never hide — so a reviewer can always open it.
  *  `noiseExpanded` is the caller's persisted disclosure state; every other
- *  option passes straight through to diffFilesHtml. */
-export function diffStackHtml(files, { noiseExpanded = false, ...fileOptions } = {}) {
+ *  option passes straight through to diffFilesHtml.
+ *
+ *  `review` plugs the triage overlay in (see reviewStackHtml). Omitting it
+ *  leaves the output byte-identical to what it always was, which is what a
+ *  surface with no triage to render — and the poll-repaint freeze contract —
+ *  depends on. */
+export function diffStackHtml(files, { noiseExpanded = false, review = null, ...fileOptions } = {}) {
   const grouped = groupNoiseFiles(files);
   if (!grouped.files.length && !grouped.noise.length) return '<div class="empty">No file changes.</div>';
-  const primary = grouped.files.length ? diffFilesHtml(grouped.files, fileOptions) : "";
+  const primary = grouped.files.length ? reviewStackHtml(grouped.files, review, fileOptions) : "";
   if (!grouped.noise.length) return primary;
   return `${primary}<div class="noisegroup${noiseExpanded ? " open" : ""}">
     <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(grouped.noise.length)}</button>
     ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(grouped.noise, fileOptions)}</div>` : ""}</div>`;
+}
+
+// ---- the triage overlay ----------------------------------------------------
+//
+// Review prioritization (UX Redesign Decisions, "Review prioritization"): the
+// stacked full-file diffs stay exactly what they are, and the overlay only
+// decides what order they come in and what starts collapsed. The diff is ground
+// truth; this is a reading of it, and the dial turns the reading off.
+
+/** The banner over an overlaid stack: what the pass did (or why there is no
+ *  ordering), and the reviewer's dial. */
+function triageBarHtml(plan, { dial, offerDial }) {
+  const claim =
+    plan.status === "none"
+      ? `<span class="tuntriaged">untriaged — the full diff, in file order</span>`
+      : plan.status === "stale"
+        ? `<span class="tstale">triage from an earlier revision — re-triaging</span><span class="tsummary">${esc(triageSummaryLine(plan))}</span>`
+        : `<span class="tsummary">${esc(triageSummaryLine(plan))}</span>`;
+  const dialButton = offerDial
+    ? `<button class="tdial" aria-pressed="${dial}" title="${
+        dial ? "order the diff by the triage pass again" : "show the full diff in file order, untriaged"
+      }">${dial ? "Show ordered diff" : "Show full diff"}</button>`
+    : "";
+  return `<div class="triagebar">${claim}${dialButton}</div>`;
+}
+
+/** One collapsed group: its name, the one line that says why its hunks are not
+ *  worth the reviewer's attention, and its counts. The diffs inside are ALWAYS
+ *  rendered — collapsed, never dropped — so a group is one click from being
+ *  read and nothing is missing from the page a reviewer searches. */
+function triageGroupHtml(section, { expanded, fileOptions }) {
+  const counts = `${section.fileCount} file${section.fileCount === 1 ? "" : "s"} · ${section.hunkCount} hunk${
+    section.hunkCount === 1 ? "" : "s"
+  }`;
+  return `<div class="tgroup${expanded ? " open" : ""}" data-group="${esc(section.name)}">
+    <button class="tgrouphead" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
+      section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
+    }</button>
+    <div class="tgfiles">${diffFilesHtml(section.files, fileOptions)}</div></div>`;
+}
+
+/** The readable files of one changeset, ordered by triage when a surface plugs
+ *  the overlay in.
+ *
+ *  `review` is `{ triage, patch, dial, expandedGroups }`: the run's triage
+ *  payload (or null), the patch those files came from (the hunk ids live
+ *  there), whether the reviewer has turned the overlay off, and the groups they
+ *  have opened. Null `review` — a surface that has no triage to render — takes
+ *  the plain stack, unchanged. */
+function reviewStackHtml(files, review, fileOptions) {
+  if (!review) return diffFilesHtml(files, fileOptions);
+  const { triage = null, patch = "", dial = false, expandedGroups = null } = review;
+  // The dial renders the untriaged stack, and says so — the pass is still
+  // there, and one click puts it back.
+  if (dial)
+    return (
+      triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) +
+      diffFilesHtml(files, fileOptions)
+    );
+  const plan = planChangesetTriage({ files, patch, triage });
+  const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
+  const body = plan.sections
+    .map((section) => {
+      if (section.kind === "group")
+        return triageGroupHtml(section, {
+          expanded: Boolean(expandedGroups && expandedGroups.has(section.name)),
+          fileOptions,
+        });
+      const head = section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
+      return `<div class="tsection t${section.kind}">${head}${diffFilesHtml(section.files, fileOptions)}</div>`;
+    })
+    .join("");
+  return bar + body;
 }

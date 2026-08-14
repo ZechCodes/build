@@ -4113,6 +4113,7 @@ impl AppState {
             "project.set_remote" => self.project_set_remote(params),
             "board.list" => Ok(self.board_list()),
             "archive.list" => self.archive_list(params),
+            "archived.list" => Ok(self.archived_list()),
             // Canonical Issue surface. The existing plan id and plan-store path
             // remain the durable identity/location; plan.* below is the
             // deprecated wire adapter for existing clients.
@@ -9411,6 +9412,139 @@ impl AppState {
         Ok(json!({ "plans": plans, "worktrees": worktrees }))
     }
 
+    /// Everything finished, across every project, newest first: archived
+    /// issues, archived runs, and the archived worktrees no run stands behind.
+    ///
+    /// The archive is the user's, not a project's, which is why this cannot be
+    /// `archive.list` with the project left off — and it speaks the feed's two
+    /// work items (Decisions §Entity model), so a finished run and the worktree
+    /// record it left behind are ONE branch row. `(project, branch)` is the
+    /// join: a deleted checkout's path no longer canonicalizes, so the worktree
+    /// id cannot be recomputed from a run whose files are gone.
+    fn archived_list(&self) -> Value {
+        let mut items: Vec<Value> = self
+            .plans
+            .iter()
+            .filter(|(_, active)| active.plan.archived_at.is_some())
+            .map(|(issue_id, active)| {
+                let mut row = self.archived_row("issue", issue_id);
+                let object = row.as_object_mut().expect("archived_row is an object");
+                object.insert("title".into(), json!(active.plan.goal));
+                object.insert("state".into(), json!(plan_state_str(&active.plan.state)));
+                object.insert("finished_at".into(), json!(active.plan.archived_at));
+                object.insert("issue_id".into(), json!(issue_id));
+                object.insert("stages".into(), json!(active.stages.len()));
+                row
+            })
+            .collect();
+
+        let mut branches_taken: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for (run_id, active) in &self.runs {
+            if active.run.state != RunState::Archived {
+                continue;
+            }
+            let branch = active.worktree.branch.clone();
+            let project_path = self.project_path_for(run_id);
+            let record = self.archived_worktrees.values().find(|record| {
+                record.status == WorktreeFinishStatus::Archived
+                    && record.project_path == project_path
+                    && record.branch.as_deref() == Some(branch.as_str())
+            });
+            branches_taken.insert((project_path, branch.clone()));
+            let mut row = self.archived_row("branch", run_id);
+            let object = row.as_object_mut().expect("archived_row is an object");
+            let title = if active.run.goal.trim().is_empty() {
+                branch.clone()
+            } else {
+                active.run.goal.clone()
+            };
+            object.insert("title".into(), json!(title));
+            object.insert("branch".into(), json!(branch));
+            object.insert("state".into(), json!(run_state_str(&active.run.state)));
+            object.insert(
+                "finished_at".into(),
+                json!(self.entity_state_changed_at.get(run_id)),
+            );
+            object.insert("run_id".into(), json!(run_id));
+            object.insert(
+                "issue_id".into(),
+                json!(active.run.plan_id.as_ref().map(|id| id.0.clone())),
+            );
+            object.insert(
+                "worktree_path".into(),
+                json!(active.worktree.path.display().to_string()),
+            );
+            if let Some(record) = record {
+                merge_archived_worktree_facts(object, record);
+            }
+            items.push(row);
+        }
+
+        for record in self.archived_worktrees.values() {
+            if record.status != WorktreeFinishStatus::Archived {
+                continue;
+            }
+            let branch = record.branch.clone();
+            if branch.as_ref().is_some_and(|branch| {
+                branches_taken.contains(&(record.project_path.clone(), branch.clone()))
+            }) {
+                continue;
+            }
+            let project = self
+                .projects
+                .iter()
+                .find(|project| project.repo_path.display().to_string() == record.project_path);
+            let mut row = json!({
+                "kind": "branch",
+                "project_id": project.map(|project| project.id.clone()),
+                "project": project.map(|project| project.name.clone()),
+                "title": branch.clone().unwrap_or_else(|| record.worktree_name.clone()),
+                "branch": branch,
+                "state": "archived",
+                "finished_at": record.archived_at,
+                "run_id": Value::Null,
+                "issue_id": Value::Null,
+                "stages": Value::Null,
+                "worktree_path": record.worktree_path,
+            });
+            merge_archived_worktree_facts(row.as_object_mut().expect("built as an object"), record);
+            items.push(row);
+        }
+
+        // Newest first; an item whose stamp was never written sorts last rather
+        // than jumping the queue.
+        items.sort_by(|left, right| {
+            let stamp = |row: &Value| row["finished_at"].as_str().unwrap_or_default().to_string();
+            stamp(right).cmp(&stamp(left))
+        });
+        json!({ "items": items })
+    }
+
+    /// The keys every archived row carries, with the entity's project already
+    /// resolved. The caller fills in the rest for its kind.
+    fn archived_row(&self, kind: &str, entity_id: &str) -> Value {
+        json!({
+            "kind": kind,
+            "project_id": self.entity_project.get(entity_id),
+            "project": self.project_name_of(entity_id),
+            "title": Value::Null,
+            "branch": Value::Null,
+            "state": Value::Null,
+            "action": Value::Null,
+            "finished_at": Value::Null,
+            "run_id": Value::Null,
+            "issue_id": Value::Null,
+            "stages": Value::Null,
+            "worktree_id": Value::Null,
+            "worktree_path": Value::Null,
+            "head_sha": Value::Null,
+            "upstream": Value::Null,
+            "unpushed": Value::Null,
+            "dirty_files": Value::Null,
+        })
+    }
+
     /// A run the user deletes must disappear from Build. Any live run whose
     /// worktree vanished retires to Archived: session ended, git's stale
     /// worktree record pruned — the record stays as quiet history. `Created` is
@@ -11075,6 +11209,24 @@ fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join("\n");
     Err(format!("git {args:?}: {detail}"))
+}
+
+/// What the checkout's archive record adds to an archived row: how it was
+/// finished, and where it stood when it was. Overwrites only the keys it owns,
+/// so a run's own facts (title, state, the branch it ran on) survive.
+fn merge_archived_worktree_facts(
+    row: &mut serde_json::Map<String, Value>,
+    record: &PersistedArchivedWorktree,
+) {
+    row.insert("worktree_id".into(), json!(record.worktree_id));
+    row.insert("action".into(), json!(record.action));
+    row.insert("head_sha".into(), json!(record.head_sha));
+    row.insert("upstream".into(), json!(record.upstream));
+    row.insert("unpushed".into(), json!(record.unpushed));
+    row.insert("dirty_files".into(), json!(record.dirty_files));
+    if row.get("finished_at").is_none_or(Value::is_null) {
+        row.insert("finished_at".into(), json!(record.archived_at));
+    }
 }
 
 fn archived_worktree_json(record: &PersistedArchivedWorktree) -> Value {
@@ -25639,6 +25791,103 @@ mod tests {
         ));
         assert_eq!(primary["ok"], false, "{primary:?}");
         assert!(repo.join("README.md").exists());
+    }
+
+    #[test]
+    fn archived_list_gathers_finished_work_across_every_project() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "finished work");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
+        let finished = state.handle(req(
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+
+        // A second project's bare checkout, finished on its own: no run behind
+        // it, so only its archived-worktree record remembers it.
+        let (_other_dir, other_repo) = init_repo();
+        let other_project = state.add_project(other_repo.clone(), "main".into());
+        add_external_worktree(&other_repo, dir.path(), "loose", "loose");
+        let loose_id = external_id(&mut state, &other_project, Some("loose"));
+        let loose_finished = state.handle(req(
+            "worktree.finish",
+            json!({ "project_id": other_project, "worktree_id": loose_id, "action": "cleanup" }),
+        ));
+        assert_eq!(loose_finished["ok"], true, "{loose_finished:?}");
+
+        let archived = state.handle(req("archived.list", json!({})));
+        let items = archived["result"]["items"].as_array().unwrap();
+        let branches: Vec<&Value> = items.iter().filter(|row| row["kind"] == "branch").collect();
+        let issues: Vec<&Value> = items.iter().filter(|row| row["kind"] == "issue").collect();
+
+        assert_eq!(issues.len(), 1, "{items:?}");
+        assert_eq!(issues[0]["issue_id"], issue_id, "{items:?}");
+        assert_eq!(issues[0]["project_id"], project_id, "{items:?}");
+        assert!(issues[0]["finished_at"].as_str().is_some(), "{items:?}");
+
+        assert_eq!(
+            branches.len(),
+            2,
+            "the finished run and its archived worktree are one branch row: {items:?}"
+        );
+        let implemented = branches
+            .iter()
+            .find(|row| row["branch"] == json!(branch.clone()))
+            .unwrap_or_else(|| panic!("no row for {branch}: {items:?}"));
+        assert_eq!(implemented["run_id"], run_id, "{implemented:?}");
+        assert_eq!(implemented["issue_id"], issue_id, "{implemented:?}");
+        assert_eq!(implemented["project_id"], project_id, "{implemented:?}");
+        assert_eq!(implemented["state"], "archived", "{implemented:?}");
+        assert_eq!(implemented["action"], "delete", "{implemented:?}");
+        assert!(
+            implemented["finished_at"].as_str().is_some(),
+            "{implemented:?}"
+        );
+
+        let loose = branches
+            .iter()
+            .find(|row| row["branch"] == "loose")
+            .unwrap_or_else(|| panic!("no loose row: {items:?}"));
+        assert_eq!(loose["project_id"], other_project, "{loose:?}");
+        assert_eq!(loose["worktree_id"], loose_id, "{loose:?}");
+        assert_eq!(loose["run_id"], Value::Null, "{loose:?}");
+        assert_eq!(loose["action"], "cleanup", "{loose:?}");
+    }
+
+    #[test]
+    fn archived_list_leaves_live_work_alone_and_puts_the_newest_first() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (live_issue, _live_run) = planned_run_in_review(&mut state, "still going");
+
+        for (name, when) in [
+            ("older", "2026-01-01T00:00:00Z"),
+            ("newer", "2026-06-01T00:00:00Z"),
+        ] {
+            let issue = state.handle(req("plan.create", json!({ "goal": name })));
+            let issue_id = plan_id_of(&issue);
+            state.plans.get_mut(&issue_id).unwrap().plan.archived_at = Some(when.to_string());
+        }
+
+        let archived = state.handle(req("archived.list", json!({})));
+        let items = archived["result"]["items"].as_array().unwrap();
+        assert!(
+            !items.iter().any(|row| row["issue_id"] == json!(live_issue)),
+            "live work is not archive: {items:?}"
+        );
+        let titles: Vec<&str> = items
+            .iter()
+            .map(|row| row["title"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(titles, vec!["newer", "older"], "{items:?}");
+        assert_eq!(items[0]["project_id"], project_id, "{items:?}");
     }
 
     #[test]

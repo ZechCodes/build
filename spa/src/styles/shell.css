@@ -365,7 +365,7 @@ body.gated #inbox-scrim,
 body.gated #toolbar,
 body.gated #agent-rail,
 body.gated #console-region { display:none !important; }
-body.gated #inbox-rail { width:0; padding:0; border-right:0; overflow:visible; background:none; }
+body.gated #inbox-rail { display:flex; width:0; padding:0; border-right:0; overflow:visible; background:none; }
 body.gated .inbox-head,
 body.gated #inbox-list,
 body.gated .inbox-foot { display:none !important; }

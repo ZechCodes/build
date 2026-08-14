@@ -212,11 +212,14 @@ export function inboxEntries({ items = [], nowMs = Date.now(), minimum = INBOX_M
 /** The entry the current route is standing on, so the list can mark it. */
 export function activeEntryKey(route, entries) {
   if (!route) return null;
+  // A capture names where it was routed, but it is not that work item — the row
+  // the route stands on is the branch or the issue itself.
+  const work = entries.filter((entry) => entry.kind !== "capture");
   const match =
     route.name === "branch"
-      ? entries.find((entry) => entry.projectId === route.projectId && entry.branch === route.branch)
+      ? work.find((entry) => entry.projectId === route.projectId && entry.branch === route.branch)
       : route.name === "issue"
-        ? entries.find((entry) => entry.issueId === route.id)
+        ? work.find((entry) => entry.issueId === route.id)
         : null;
   return match ? match.key : null;
 }

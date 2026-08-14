@@ -368,6 +368,17 @@ describe("capture rows", () => {
     expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
   });
 
+  it("never stand in for the work item the route is on", () => {
+    const entries = inboxEntries({
+      items: [
+        captureItem({ state: "routed", project_id: "p1", branch: "build/login", routing: { project_id: "p1", kind: "branch", target_id: "build/login" }, question: { text: "which?", asked_at: ago(0), answer: null }, unread: true, unread_reason: "router_question" }),
+        branch(),
+      ],
+      nowMs: NOW,
+    });
+    expect(activeEntryKey({ name: "branch", projectId: "p1", branch: "build/login" }, entries)).toBe("run-1");
+  });
+
   it("escape what the user said and what the router asked", () => {
     const entry = entryOf(
       captureItem({

@@ -106,17 +106,25 @@ export async function flushCaptures() {
  * the decision. A capture whose record has gone is dropped rather than shown.
  */
 function syncTracked() {
+  if (!tracked.size) return;
   const onFeed = new Map(
     feed.items.filter((row) => row.kind === "capture").map((row) => [row.capture_id, row]),
   );
+  let changed = false;
   for (const [id, entry] of tracked) {
     const live = onFeed.get(id);
     if (live) {
-      tracked.set(id, { row: live, settledAt: null, settling: false });
+      // The feed's copy is the record. Adopting it every tick would repaint the
+      // inbox twice a tick, so it is adopted only when it actually moved.
+      if (live !== entry.row || entry.settledAt) {
+        tracked.set(id, { row: live, settledAt: null, settling: false });
+        changed = true;
+      }
       continue;
     }
     if (entry.settledAt || entry.settling || !canSend()) continue;
     entry.settling = true;
+    changed = true;
     App.call("capture.get", { capture_id: id })
       .then((capture) => {
         const projectName = capture.routing ? projectNameOf(capture.routing.project_id) : "";
@@ -125,7 +133,7 @@ function syncTracked() {
       .catch(() => tracked.delete(id))
       .then(announce);
   }
-  announce();
+  if (changed) announce();
 }
 
 // ---- the box ------------------------------------------------------------------

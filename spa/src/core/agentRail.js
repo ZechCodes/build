@@ -154,12 +154,19 @@ export function mountAgentRail(host, context) {
 
   // ---- reading the work item ------------------------------------------------
 
+  /// One read of the work item: its agents, and the conversation of the one
+  /// whose bubble is open.
+  ///
+  /// `agent_id` names that conversation. A daemon that does not yet read it
+  /// answers with the entity's own — the first agent's — which is what every
+  /// surface before the rail asked for; the param is here so the panel follows
+  /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
-    const cursor = threadCache.cursorParam();
+    const scope = { ...threadCache.cursorParam(), ...(selectedId ? { agent_id: selectedId } : {}) };
     if (context.kind === "issue") {
-      return App.call("issue.get", { issue_id: context.issueId, ...cursor });
+      return App.call("issue.get", { issue_id: context.issueId, ...scope });
     }
-    return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...cursor });
+    return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
   };
 
   const refresh = async () => {

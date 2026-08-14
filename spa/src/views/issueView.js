@@ -46,6 +46,8 @@ export async function renderIssue() {
       <div class="issue-cols">
         <div class="issue-stages" id="issue-stages"><div class="sempty dim">Loading…</div></div>
         <div class="issue-stage-view" id="issue-stage-view">
+          <!-- TODO(integration): the stage document and its comments are the
+               plan track's; this is the seam they mount into. -->
           <div class="shell-stub"><h2>Stage</h2><p>The stage document and its comments render here.</p></div>
         </div>
       </div>

@@ -32,6 +32,10 @@ export async function renderBranch() {
       <div class="tabrow" id="branch-tabs"></div>
     </div>
     <div id="tabbody">
+      <!-- TODO(integration): the Changes and Files bodies are the git track's;
+           this is the seam they mount into. Everything else on this surface —
+           the tabs, the toolbar above, the rail beside and the console below —
+           is here. -->
       <div class="shell-stub">
         <h2>${esc(branch)}</h2>
         <p>${tab === "files" ? "The file tree and viewer render here." : "The commit list and the stacked diffs render here."}</p>

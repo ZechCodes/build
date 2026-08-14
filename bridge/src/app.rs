@@ -6093,6 +6093,10 @@ impl AppState {
 
     /// Author a new plan: spin up a disposable planning worktree and a plan
     /// agent session (the docs land canonically in the store on `done`).
+    ///
+    /// `dispatch: false` files the record and starts nothing — an inert issue,
+    /// which is what the router and the toolbar's New issue create. The first
+    /// `thread.post` to it starts the planning session.
     fn plan_create(&mut self, params: &Value) -> Result<Value, String> {
         let goal = require_str(params, "goal")?;
         let project_id = match params.get("project_id").and_then(Value::as_str) {
@@ -6103,6 +6107,23 @@ impl AppState {
         let model_choice = model_choice_from(params)?;
         self.require_store()?;
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+        if !params
+            .get("dispatch")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        {
+            let active = self.orch_for(&project_id)?.create_plan(
+                PlanId::new(&plan_id),
+                goal,
+                &base,
+                model_choice,
+            );
+            self.entity_project
+                .insert(plan_id.clone(), project_id.clone());
+            let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+            persisted?;
+            return Ok(view);
+        }
         let (mut active, turn) = self
             .orch_for(&project_id)?
             .dispatch_plan(PlanId::new(&plan_id), goal, &base, model_choice)
@@ -6116,6 +6137,25 @@ impl AppState {
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
         persisted?;
         Ok(view)
+    }
+
+    /// Start the planning session an inert issue has never had.
+    ///
+    /// Errors come back rather than being raised, so the caller can still
+    /// persist the record it is holding: a dispatch that could not start leaves
+    /// the issue inert and re-startable, with the message that tried on its
+    /// thread.
+    fn start_inert_plan(&mut self, issue_id: &str, active: &mut ActivePlan) -> Result<(), String> {
+        let project_id = self.project_of(issue_id)?;
+        let turn = self
+            .orch_for(&project_id)?
+            .start_plan_drafting(active)
+            .map_err(err)?;
+        self.queue_plan_turn(issue_id, active, turn);
+        if self.qa_agent {
+            self.qa_simulate_plan(&project_id, active)?;
+        }
+        Ok(())
     }
 
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -7396,7 +7436,13 @@ impl AppState {
                     .expect("Reply is legal from every parked plan state");
             }
             let mut parked_implementation = None;
-            if let Some((run_id, worktree_path)) = implementation_target {
+            // An inert issue has no session at all: this message is what starts
+            // one. The dispatch reads everything said so far, so the planning
+            // agent opens on the goal AND on what the user just added.
+            let mut started_planning = Ok(());
+            if active.plan.state == PlanState::Created && active.worktree.is_none() {
+                started_planning = self.start_inert_plan(&entity_id, &mut active);
+            } else if let Some((run_id, worktree_path)) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
                 // must therefore wake that implementation agent — and the same
@@ -7421,6 +7467,9 @@ impl AppState {
                 nudge_live_agent_tab(&self.tabs, &worktree.path, &agent_id, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
+            // The message is durable either way: a dispatch that could not start
+            // leaves the issue inert, with what was said still on its thread.
+            started_planning?;
             persisted?;
             if let Some(run_id) = parked_implementation {
                 let mut run = self.take_run(&run_id)?;
@@ -15957,6 +16006,116 @@ mod tests {
         ));
         assert_eq!(adopted["ok"], true, "{adopted:?}");
         run_id_of(&adopted)
+    }
+
+    /// An issue filed with `dispatch: false` is a record and nothing else: the
+    /// user opens it, and the agent session starts when they say something.
+    #[test]
+    fn issue_create_without_dispatch_files_an_inert_issue() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let res = state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        ));
+
+        assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(res["result"]["state"], "created", "{res:?}");
+        assert!(
+            res["result"]["stages"].as_array().unwrap().is_empty(),
+            "nothing has been planned yet: {res:?}"
+        );
+        let issue_id = plan_id_of(&res);
+        let active = state.plans.get(&issue_id).expect("the record is filed");
+        assert!(
+            active.worktree.is_none(),
+            "an inert issue owns no planning worktree"
+        );
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "no session was dispatched"
+        );
+        // The goal is the conversation's first message, and no agent has read it.
+        let first = &res["result"]["thread"]["items"][0];
+        assert_eq!(first["data"]["role"], "user", "{res:?}");
+        assert_eq!(first["data"]["body"], "add a greeting", "{res:?}");
+        assert_eq!(first["data"]["seen_at"], Value::Null, "{res:?}");
+        // …and it is on the feed as an issue row the user can open.
+        let board = state.handle(req("board.list", json!({})));
+        assert!(
+            board["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "issue" && item["issue_id"] == json!(issue_id.clone())),
+            "{board:?}"
+        );
+    }
+
+    /// The first message is what starts the planning session — that is the whole
+    /// point of filing an issue inert.
+    #[test]
+    fn the_first_message_to_an_inert_issue_starts_its_planning_session() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": issue_id,
+                "body": "Start with the endpoint."
+            }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        // The QA planning agent ran, so the issue lands where plan.create leaves
+        // one — the dispatch this post triggered is the same dispatch.
+        assert_eq!(posted["result"]["state"], "plan_review", "{posted:?}");
+        let active = state.plans.get(&issue_id).expect("the issue is still here");
+        let worktree = active
+            .worktree
+            .as_ref()
+            .expect("the planning session got a worktree")
+            .path
+            .clone();
+        assert!(worktree.is_dir(), "{worktree:?}");
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "exactly one turn was dispatched"
+        );
+        let queued = &state.pending_agent_turns[0];
+        assert_eq!(queued.owner, issue_id);
+        assert!(
+            queued.cold.contains("Start with the endpoint."),
+            "the message that started the session is in its prompt: {}",
+            queued.cold
+        );
+
+        // A second message steers the session it already has; it never mints a
+        // second one.
+        let again = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": issue_id,
+                "body": "And a test."
+            }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            state.plans[&issue_id]
+                .worktree
+                .as_ref()
+                .map(|w| w.path.clone()),
+            Some(worktree),
+            "the same planning worktree"
+        );
+        assert_eq!(state.pending_agent_turns.len(), 1, "no second dispatch");
     }
 
     #[test]

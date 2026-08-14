@@ -319,10 +319,11 @@ export function outsidePressDismisses({ inside, branchMenuOpen, hasPendingConfir
 }
 
 /** The commit split-button option list: the plain Commit action first (primary),
- *  then whatever agent options the mounting view offers (task scope only). */
+ *  then whatever agent options the mounting view offers (task scope only).
+ *  Commit is commit-all — there is no staged set for it to mean anything else. */
 export function commitSplitOptions(agentCommitOptions = []) {
   return [
-    { id: "commit", label: "Commit", description: "commit the staged changes with your message", busyLabel: "Committing…" },
+    { id: "commit", label: "Commit", description: "commit everything in the worktree with your message", busyLabel: "Committing…" },
     ...agentCommitOptions,
   ];
 }

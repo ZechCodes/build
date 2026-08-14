@@ -74,11 +74,12 @@ export function changesRailHtml({
 /** The uncommitted changeset's header: what this is, its counts, and the
  *  bridge's two truncation notices when its payloads were capped. */
 export function uncommittedHeaderHtml(status) {
-  const fileCount = ((status && status.files) || []).length;
+  const totals = uncommittedTotals(status);
+  const fileCount = totals.files;
   return `<div class="csheader"><span class="cstitle">Uncommitted changes</span>${statSummary({
     files_changed: fileCount,
-    insertions: uncommittedTotals(status).insertions,
-    deletions: uncommittedTotals(status).deletions,
+    insertions: totals.insertions,
+    deletions: totals.deletions,
   })}</div>
     ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}
     ${status && status.truncated ? TRUNCATED_NOTICE : ""}`;

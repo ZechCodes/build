@@ -33,6 +33,14 @@
 //! Pre-split stores are migrated on boot ([`legacy`](crate::legacy) holds the
 //! old serde shapes solely for that translation).
 
+// The app mutex is a std lock guarding the whole daemon: everything a frame
+// touches is behind it. Holding it across an await parks it on a task that may
+// not be scheduled again for as long as the runtime likes — the shape of the
+// 2026-08-13 wedge, where a poll held it through a multi-second worktree diff
+// and the relay's read loop starved behind it. The git work now runs on threads
+// that hold no lock; this keeps it that way.
+#![deny(clippy::await_holding_lock)]
+
 pub mod agent;
 pub mod app;
 pub mod attention;

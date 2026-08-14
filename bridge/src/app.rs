@@ -1049,6 +1049,368 @@ struct ExternalScanCache {
     worktrees: Vec<ExternalWorktree>,
 }
 
+/// One entry of the diff caches the poll surfaces read: a run's diffstat, a
+/// project's external-worktree scan, a project's primary-checkout summary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum DiffCacheKey {
+    RunStat(String),
+    ExternalScan(String),
+    PrimarySummary(String),
+}
+
+/// A diff-cache entry to compute, carrying every input the git work needs.
+///
+/// It borrows nothing from [`AppState`] on purpose: a refresh runs on a thread
+/// that holds no lock. That is the whole point — the 2026-08-13 wedge was a
+/// poll sitting inside libgit2 for seconds with the app mutex in its hand,
+/// which stopped the relay read loop and got the device declared dead.
+#[derive(Clone, Debug)]
+enum DiffCacheRefresh {
+    RunStat {
+        run_id: String,
+        worktree: std::path::PathBuf,
+        base_branch: String,
+    },
+    ExternalScan {
+        project_id: String,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        excluded: std::collections::HashSet<std::path::PathBuf>,
+    },
+    PrimarySummary {
+        project_id: String,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+    },
+}
+
+/// What a refresh computed, on its way back into the cache.
+enum DiffCacheEntry {
+    RunStat {
+        run_id: String,
+        stat: Value,
+    },
+    ExternalScan {
+        project_id: String,
+        worktrees: Vec<ExternalWorktree>,
+    },
+    PrimarySummary {
+        project_id: String,
+        summary: Value,
+    },
+}
+
+/// Called on the thread that is about to compute a diff-cache entry, before the
+/// git work. The seam the stale-while-revalidate tests observe: it is how they
+/// hold a compute open on purpose and check the app mutex is free while it
+/// runs. `None` in production — nothing outside tests ever sets it.
+type DiffComputeObserver = Arc<dyn Fn(&DiffCacheKey) + Send + Sync>;
+
+/// Which diff-cache entries a verb is about to read.
+enum DiffCacheScope {
+    /// Everything the feed shows: every live run's diffstat, and every
+    /// project's worktree scan and primary-checkout summary.
+    Feed,
+    /// One run's diffstat, and nothing else.
+    Run(String),
+    /// The run behind a branch, if one owns it.
+    Branch { project_id: String, branch: String },
+}
+
+/// The diff caches a verb reads, if it reads any. Only these verbs warm them,
+/// so no other frame pays for a scan it will never look at.
+fn diff_caches_read_by(method: &str, params: &Value) -> Option<DiffCacheScope> {
+    match method {
+        "board.list" | "branch.get" => Some(DiffCacheScope::Feed),
+        "run.finish" => params
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(|run_id| DiffCacheScope::Run(run_id.to_string())),
+        "branch.finish" => {
+            let project_id = params.get("project_id").and_then(Value::as_str)?;
+            let branch = params.get("branch").and_then(Value::as_str)?;
+            Some(DiffCacheScope::Branch {
+                project_id: project_id.to_string(),
+                branch: branch.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A claimed refresh, and how its claimant means to run it.
+struct ClaimedRefresh {
+    refresh: DiffCacheRefresh,
+    /// True when the caller must wait for the answer: either nothing is cached
+    /// to serve in its place, or the verb decides something from the number
+    /// (Done refuses uncommitted work) and a stale one could decide it wrongly.
+    /// The wait happens with the app mutex released, never under it.
+    blocking: bool,
+}
+
+/// What one frame has to do about one aged-out cache entry.
+enum DiffCacheWork {
+    /// This frame holds the sole claim: it runs the compute (here or behind the
+    /// answer), and publishes for every reader that asked meanwhile.
+    Claimed(ClaimedRefresh),
+    /// Another frame is already computing an entry this one has nothing to
+    /// serve in place of. Wait for that value rather than start a second scan —
+    /// and rather than fall through to the compute of last resort further down,
+    /// which runs under the app mutex.
+    AwaitFirstValue(DiffCacheKey),
+}
+
+/// How long a frame waits for another frame's first-ever compute of an entry it
+/// needs. Generous: waiting is what keeps the mutex free, and the frame that
+/// waits is one worker of several, not the read loop. Past it the frame answers
+/// with what it can rather than hang.
+const FIRST_COMPUTE_WAIT: Duration = Duration::from_secs(5);
+
+impl DiffCacheRefresh {
+    fn key(&self) -> DiffCacheKey {
+        match self {
+            Self::RunStat { run_id, .. } => DiffCacheKey::RunStat(run_id.clone()),
+            Self::ExternalScan { project_id, .. } => DiffCacheKey::ExternalScan(project_id.clone()),
+            Self::PrimarySummary { project_id, .. } => {
+                DiffCacheKey::PrimarySummary(project_id.clone())
+            }
+        }
+    }
+
+    /// The git work, on a thread that holds no lock. `None` means the compute
+    /// failed and the cache keeps whatever it was already serving.
+    fn compute(&self, observer: Option<&DiffComputeObserver>) -> Option<DiffCacheEntry> {
+        if let Some(observer) = observer {
+            observer(&self.key());
+        }
+        match self {
+            Self::RunStat {
+                run_id,
+                worktree,
+                base_branch,
+            } => Some(DiffCacheEntry::RunStat {
+                run_id: run_id.clone(),
+                stat: run_diffstat(worktree, base_branch),
+            }),
+            Self::ExternalScan {
+                project_id,
+                repo_path,
+                base_branch,
+                excluded,
+            } => match discover_external_worktrees(repo_path, base_branch, excluded) {
+                Ok(worktrees) => Some(DiffCacheEntry::ExternalScan {
+                    project_id: project_id.clone(),
+                    worktrees,
+                }),
+                Err(e) => {
+                    eprintln!("external_worktrees {project_id}: {e}");
+                    None
+                }
+            },
+            Self::PrimarySummary {
+                project_id,
+                repo_path,
+                base_branch,
+            } => primary_changes_summary(project_id, repo_path, base_branch).map(|summary| {
+                DiffCacheEntry::PrimarySummary {
+                    project_id: project_id.clone(),
+                    summary,
+                }
+            }),
+        }
+    }
+}
+
+/// One run's diffstat against its base, plus what sits uncommitted in its tree.
+///
+/// Counts only: this poll surface ships numbers, so it must never pay to render
+/// (or even load) the worktree's patch text.
+fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
+    let git_state = git2::Repository::open(worktree).ok().and_then(|repo| {
+        let head_ref = repo.head().ok()?;
+        let checked_out_branch = head_ref.shorthand().map(str::to_string);
+        let head = head_ref.peel_to_commit().ok()?;
+        let comparison = crate::worktree::branch_comparison(
+            &repo,
+            &head,
+            checked_out_branch.as_deref(),
+            base_branch,
+        );
+        Some((checked_out_branch, comparison))
+    });
+    let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
+    let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
+    let uncommitted = crate::diff::stat_uncommitted(worktree)
+        .map(|stat| {
+            json!({
+                "files_changed": stat.files_changed,
+                "insertions": stat.insertions,
+                "deletions": stat.deletions,
+            })
+        })
+        .unwrap_or(Value::Null);
+    crate::diff::stat_against_base(worktree, base_branch)
+        .map(|stat| {
+            json!({
+                "files_changed": stat.files_changed,
+                "insertions": stat.insertions,
+                "deletions": stat.deletions,
+                "branch": checked_out_branch,
+                "comparison_ref": comparison.and_then(|value| value.reference.as_deref()),
+                "upstream": comparison.and_then(|value| value.upstream.as_deref()),
+                "ahead": comparison.and_then(|value| value.ahead),
+                "behind": comparison.and_then(|value| value.behind),
+                "uncommitted": uncommitted,
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
+/// One project's primary-checkout changes summary, minus the run ownership
+/// stamped on at serve time. `None` on a failure (unborn HEAD, fs error): it
+/// logs and the cache keeps what it had.
+fn primary_changes_summary(
+    project_id: &str,
+    repo_path: &std::path::Path,
+    base_branch: &str,
+) -> Option<Value> {
+    type SyncCounts = (Option<String>, Option<String>, Option<u64>, Option<u64>);
+    fn head_sync_counts(repo: &git2::Repository, base_branch: &str) -> SyncCounts {
+        const NONE: SyncCounts = (None, None, None, None);
+        let head = match repo.head() {
+            Ok(head) if head.is_branch() => head,
+            _ => return NONE,
+        };
+        let Some(branch) = head.shorthand() else {
+            return NONE;
+        };
+        let Ok(commit) = head.peel_to_commit() else {
+            return NONE;
+        };
+        let comparison =
+            crate::worktree::branch_comparison(repo, &commit, Some(branch), base_branch);
+        (
+            comparison.upstream,
+            comparison.reference,
+            comparison.ahead,
+            comparison.behind,
+        )
+    }
+
+    let repo = git2::Repository::open(repo_path);
+    let branch = repo
+        .as_ref()
+        .ok()
+        .and_then(|r| r.head().ok())
+        .and_then(|h| h.shorthand().map(str::to_string))
+        .unwrap_or_else(|| "HEAD".to_string());
+    let (upstream, comparison_ref, ahead, behind) = repo
+        .as_ref()
+        .ok()
+        .map(|repo| head_sync_counts(repo, base_branch))
+        .unwrap_or((None, None, None, None));
+    match crate::diff::stat_against_head(repo_path) {
+        Ok(stat) => Some(json!({
+            "project_id": project_id,
+            "branch": branch,
+            "upstream": upstream,
+            "comparison_ref": comparison_ref,
+            "ahead": ahead,
+            "behind": behind,
+            "files_changed": stat.files_changed,
+            "insertions": stat.insertions,
+            "deletions": stat.deletions,
+        })),
+        Err(e) => {
+            eprintln!("primary_changes {project_id}: {e}");
+            None
+        }
+    }
+}
+
+/// Run a claimed refresh on the runtime, off every lock.
+///
+/// `spawn_blocking` on purpose: this is libgit2 walking a worktree, and it must
+/// not sit on a runtime worker the relay's read loop needs. Returns the refresh
+/// back to the caller when there is no runtime to spawn onto (the synchronous
+/// unit tests), so the caller can compute it itself.
+fn spawn_diff_refresh(
+    state: Arc<Mutex<AppState>>,
+    refresh: DiffCacheRefresh,
+    observer: Option<DiffComputeObserver>,
+) -> Result<(), DiffCacheRefresh> {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return Err(refresh);
+    };
+    runtime.spawn(async move {
+        let key = refresh.key();
+        let computed =
+            tokio::task::spawn_blocking(move || refresh.compute(observer.as_ref())).await;
+        let mut app = state.lock().unwrap();
+        match computed {
+            Ok(entry) => app.publish_diff_refresh(&key, entry),
+            // The compute panicked. Publish nothing, but let the claim go or
+            // this key would never refresh again.
+            Err(_) => app.release_diff_refresh(&key),
+        }
+    });
+    Ok(())
+}
+
+/// Refresh the diff caches a verb is about to read, with the app mutex free.
+///
+/// This is the dispatch path's half of stale-while-revalidate. A stale entry
+/// refreshes behind the answer — the verb serves the last value it has. An
+/// entry nobody has ever computed is computed here, on the worker this frame
+/// already owns, because there is no number to serve in its place; the frame
+/// waits, the daemon does not. Either way the git work runs with the lock
+/// released, so a slow worktree can no longer stop every other frame.
+fn warm_diff_caches(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) {
+    let Some(scope) = diff_caches_read_by(method, params) else {
+        return;
+    };
+    let (work, observer) = {
+        let mut app = state.lock().unwrap();
+        let work = app.claim_stale_diff_refreshes(&scope);
+        (work, app.diff_compute_observer.clone())
+    };
+    for item in work {
+        let claim = match item {
+            DiffCacheWork::Claimed(claim) => claim,
+            DiffCacheWork::AwaitFirstValue(key) => {
+                wait_for_first_diff_value(state, &key, FIRST_COMPUTE_WAIT);
+                continue;
+            }
+        };
+        let key = claim.refresh.key();
+        let waited_for = if claim.blocking {
+            claim.refresh
+        } else {
+            match spawn_diff_refresh(Arc::clone(state), claim.refresh, observer.clone()) {
+                Ok(()) => continue,
+                // No runtime to refresh on: compute it here instead — still off
+                // the lock.
+                Err(refresh) => refresh,
+            }
+        };
+        let entry = waited_for.compute(observer.as_ref());
+        state.lock().unwrap().publish_diff_refresh(&key, entry);
+    }
+}
+
+/// Wait for another frame's first-ever compute of `key` to publish. This frame
+/// waits; the app mutex does not — it is taken only to look, and dropped again
+/// between looks.
+fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, budget: Duration) {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if !state.lock().unwrap().diff_refresh_is_running(key) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Build the warm TUI adapter shared by every project's orchestrator. Build is a
 /// UI layer over the agent's PTY: every provider is launched interactively, the
 /// rendered prompt is injected into that PTY, and the same session is streamed
@@ -1411,6 +1773,19 @@ pub struct AppState {
     /// run id → cached `board.list` diffstat, so the poll surface never runs
     /// per-run git work more than once per TTL window.
     run_stat_cache: HashMap<String, (std::time::Instant, Value)>,
+    /// Diff-cache entries with a refresh running right now. Single-flight: a
+    /// poll that finds one of these stale serves the value it has and adds no
+    /// second worktree scan to the disk. The claim is also the right to publish
+    /// — a mutation that invalidates an entry drops the claim with it, so a
+    /// compute that started before the mutation is discarded instead of putting
+    /// pre-mutation numbers back on the board.
+    diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
+    /// Test seam: see [`DiffComputeObserver`]. `None` in production.
+    diff_compute_observer: Option<DiffComputeObserver>,
+    /// Tests only: read every diff cache as aged out, so a stale-poll test does
+    /// not have to sleep out a ten-second TTL.
+    #[cfg(test)]
+    force_stale_diff_caches: bool,
     /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
     term_shell: String,
     streams: HashMap<String, StreamState>,
@@ -1564,6 +1939,10 @@ impl AppState {
             conversation_attention_sequence: HashMap::new(),
             entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
+            diff_refreshes_in_flight: std::collections::HashSet::new(),
+            diff_compute_observer: None,
+            #[cfg(test)]
+            force_stale_diff_caches: false,
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             tabs: HashMap::new(),
@@ -2316,7 +2695,7 @@ impl AppState {
         self.entity_updated_at.insert(run_id.clone(), now.clone());
         self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
-        self.run_stat_cache.remove(&run_id);
+        self.invalidate_run_stat(&run_id);
         let view = self.run_view(&run_id, &active, ThreadDetail::Full);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
@@ -2803,11 +3182,277 @@ impl AppState {
             .ok_or_else(|| "unknown term_id".to_string())
     }
 
-    /// The project's external worktrees. Serves the cache when younger than
-    /// `EXTERNAL_SCAN_INTERVAL`; `force` bypasses the cadence (adoption-time
-    /// resolution). A scan error logs and returns the last-known list (or
-    /// empty) — `task.list` must stay alive. Errors are only surfaced when
-    /// `force` is set.
+    // ---- the poll surfaces' diff caches (stale-while-revalidate) -------------
+
+    /// Whether an entry stamped at `computed_at` has aged out of its window.
+    fn diff_cache_is_stale(&self, computed_at: std::time::Instant, ttl: Duration) -> bool {
+        #[cfg(test)]
+        if self.force_stale_diff_caches {
+            return true;
+        }
+        computed_at.elapsed() >= ttl
+    }
+
+    /// The refresh that recomputes one run's diffstat. `None` when the run has
+    /// no diff to take: it is gone, terminal, or its worktree is already pruned.
+    fn run_stat_refresh(&self, run_id: &str) -> Option<DiffCacheRefresh> {
+        let active = self.runs.get(run_id)?;
+        if active.run.state.is_terminal() || !active.worktree.path.exists() {
+            return None;
+        }
+        Some(DiffCacheRefresh::RunStat {
+            run_id: run_id.to_string(),
+            worktree: active.worktree.path.clone(),
+            base_branch: active.worktree.base_branch.clone(),
+        })
+    }
+
+    /// The refresh that rescans one project's external worktrees.
+    fn external_scan_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
+        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        Some(DiffCacheRefresh::ExternalScan {
+            project_id: project.id.clone(),
+            repo_path: project.repo_path.clone(),
+            base_branch: project.base_branch.clone(),
+            excluded: self.bound_worktree_paths(),
+        })
+    }
+
+    /// The refresh that recomputes one project's primary-checkout summary.
+    fn primary_summary_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
+        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        Some(DiffCacheRefresh::PrimarySummary {
+            project_id: project.id.clone(),
+            repo_path: project.repo_path.clone(),
+            base_branch: project.base_branch.clone(),
+        })
+    }
+
+    /// Take the sole right to refresh this entry. `None` means another refresh
+    /// already holds it — single-flight, and whoever holds it publishes for
+    /// every reader that asked.
+    fn claim_diff_refresh(
+        &mut self,
+        refresh: DiffCacheRefresh,
+        blocking: bool,
+    ) -> Option<ClaimedRefresh> {
+        self.diff_refreshes_in_flight
+            .insert(refresh.key())
+            .then_some(ClaimedRefresh { refresh, blocking })
+    }
+
+    /// Claim every entry a verb is about to read and finds aged out. Fresh
+    /// entries are left alone; the verb reads them out of memory.
+    fn claim_stale_diff_refreshes(&mut self, scope: &DiffCacheScope) -> Vec<DiffCacheWork> {
+        match scope {
+            DiffCacheScope::Feed => {
+                let run_ids: Vec<String> = self
+                    .runs
+                    .iter()
+                    .filter(|(_, active)| active.run.state != RunState::Archived)
+                    .map(|(run_id, _)| run_id.clone())
+                    .collect();
+                let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
+                let mut work: Vec<DiffCacheWork> = run_ids
+                    .iter()
+                    .filter_map(|run_id| self.stale_run_stat_work(run_id, false))
+                    .collect();
+                for project_id in project_ids {
+                    work.extend(self.stale_external_scan_work(&project_id));
+                    work.extend(self.stale_primary_summary_work(&project_id));
+                }
+                work
+            }
+            // Done decides from the numbers, so it waits for the truth rather
+            // than reading one the last poll left behind.
+            DiffCacheScope::Run(run_id) => {
+                self.stale_run_stat_work(run_id, true).into_iter().collect()
+            }
+            DiffCacheScope::Branch { project_id, branch } => self
+                .run_on_branch(project_id, branch)
+                .and_then(|run_id| self.stale_run_stat_work(&run_id, true))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// What a frame has to do about one aged-out entry: nothing if it is still
+    /// fresh, otherwise claim the refresh, or — when there is no value to serve
+    /// and someone else already holds the claim — wait for theirs.
+    fn diff_cache_work(
+        &mut self,
+        refresh: DiffCacheRefresh,
+        stale: bool,
+        has_value: bool,
+        blocking: bool,
+    ) -> Option<DiffCacheWork> {
+        if !stale {
+            return None;
+        }
+        let key = refresh.key();
+        match self.claim_diff_refresh(refresh, blocking || !has_value) {
+            Some(claim) => Some(DiffCacheWork::Claimed(claim)),
+            None if !has_value => Some(DiffCacheWork::AwaitFirstValue(key)),
+            // Someone else is recomputing it and there is a value to serve
+            // meanwhile: that is exactly what stale-while-revalidate is for.
+            None => None,
+        }
+    }
+
+    /// One run's diffstat. `blocking` makes the caller wait for the answer even
+    /// when there is a value to serve (Done decides from the numbers).
+    fn stale_run_stat_work(&mut self, run_id: &str, blocking: bool) -> Option<DiffCacheWork> {
+        let refresh = self.run_stat_refresh(run_id)?;
+        let cached = self
+            .run_stat_cache
+            .get(run_id)
+            .map(|(computed_at, _)| *computed_at);
+        let stale = match cached {
+            Some(computed_at) => self.diff_cache_is_stale(computed_at, TASK_STAT_TTL),
+            None => true,
+        };
+        self.diff_cache_work(refresh, stale, cached.is_some(), blocking)
+    }
+
+    /// One project's external-worktree scan.
+    fn stale_external_scan_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
+        let refresh = self.external_scan_refresh(project_id)?;
+        let scanned_at = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .and_then(|p| p.external_scan.as_ref())
+            .map(|cache| cache.scanned_at);
+        let stale = match scanned_at {
+            Some(scanned_at) => self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL),
+            None => true,
+        };
+        self.diff_cache_work(refresh, stale, scanned_at.is_some(), false)
+    }
+
+    /// One project's primary-checkout summary.
+    fn stale_primary_summary_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
+        let refresh = self.primary_summary_refresh(project_id)?;
+        let computed_at = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .and_then(|p| p.primary_summary.as_ref())
+            .map(|(computed_at, _)| *computed_at);
+        let stale = match computed_at {
+            Some(computed_at) => self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL),
+            None => true,
+        };
+        self.diff_cache_work(refresh, stale, computed_at.is_some(), false)
+    }
+
+    /// Whether a refresh of this entry is running right now.
+    fn diff_refresh_is_running(&self, key: &DiffCacheKey) -> bool {
+        self.diff_refreshes_in_flight.contains(key)
+    }
+
+    /// Start a background refresh of an entry a reader just found stale, unless
+    /// one is already running. The reader keeps the value it has.
+    fn trigger_diff_refresh(&mut self, refresh: DiffCacheRefresh) {
+        let Some(claim) = self.claim_diff_refresh(refresh, false) else {
+            return;
+        };
+        let key = claim.refresh.key();
+        let shared = self.self_handle.as_ref().and_then(std::sync::Weak::upgrade);
+        let Some(shared) = shared else {
+            // No shared handle (the synchronous test entry point): nothing can
+            // publish, so the claim goes straight back.
+            self.release_diff_refresh(&key);
+            return;
+        };
+        let observer = self.diff_compute_observer.clone();
+        if spawn_diff_refresh(shared, claim.refresh, observer).is_err() {
+            // No runtime to refresh on: the entry keeps its value and the next
+            // reader tries again.
+            self.release_diff_refresh(&key);
+        }
+    }
+
+    /// Store what a refresh computed and let its claim go. A claim that is no
+    /// longer held means the entry was invalidated while the compute ran, so
+    /// the value in hand describes a tree that has since changed: it is dropped.
+    fn publish_diff_refresh(&mut self, key: &DiffCacheKey, entry: Option<DiffCacheEntry>) {
+        if !self.diff_refreshes_in_flight.remove(key) {
+            return;
+        }
+        if let Some(entry) = entry {
+            self.store_diff_entry(entry);
+        }
+    }
+
+    /// Let a claim go without publishing anything.
+    fn release_diff_refresh(&mut self, key: &DiffCacheKey) {
+        self.diff_refreshes_in_flight.remove(key);
+    }
+
+    /// Write a computed entry into the cache it belongs to. An entry whose run
+    /// or project has since gone is simply dropped.
+    fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
+        let now = std::time::Instant::now();
+        match entry {
+            DiffCacheEntry::RunStat { run_id, stat } => {
+                self.run_stat_cache.insert(run_id, (now, stat));
+            }
+            DiffCacheEntry::ExternalScan {
+                project_id,
+                worktrees,
+            } => {
+                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+                    project.external_scan = Some(ExternalScanCache {
+                        scanned_at: now,
+                        worktrees,
+                    });
+                }
+            }
+            DiffCacheEntry::PrimarySummary {
+                project_id,
+                summary,
+            } => {
+                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+                    project.primary_summary = Some((now, summary));
+                }
+            }
+        }
+    }
+
+    /// Drop a run's cached diffstat — the mutation that calls this just changed
+    /// the tree it described. Any refresh in flight loses its claim with it.
+    fn invalidate_run_stat(&mut self, run_id: &str) {
+        self.run_stat_cache.remove(run_id);
+        self.release_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
+    }
+
+    /// Drop a project's cached primary-checkout summary, same reasoning.
+    fn invalidate_primary_summary(&mut self, project_id: &str) {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+            project.primary_summary = None;
+        }
+        self.release_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
+    }
+
+    /// The live run that owns a branch in a project, if one does.
+    fn run_on_branch(&self, project_id: &str, branch: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .find(|(run_id, active)| {
+                !active.run.state.is_terminal()
+                    && active.worktree.branch == branch
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
+    /// The project's external worktrees. Serves the last scan whatever its age
+    /// and rescans behind the answer once it is older than
+    /// `EXTERNAL_SCAN_INTERVAL`; `force` scans here and now (adoption-time
+    /// resolution, which needs the truth rather than a summary). A scan error
+    /// logs and returns the last-known list (or empty) — `task.list` must stay
+    /// alive. Errors are only surfaced when `force` is set.
     fn external_worktrees(
         &mut self,
         project_id: &str,
@@ -2815,22 +3460,33 @@ impl AppState {
     ) -> Result<Vec<ExternalWorktree>, String> {
         let excluded = self.bound_worktree_paths();
         let base = self.base_for(project_id)?;
-        let project = self
+        let repo_path = self.repo_path_for(project_id)?;
+        let cached = self
             .projects
-            .iter_mut()
+            .iter()
             .find(|p| p.id == project_id)
-            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+            .and_then(|p| p.external_scan.as_ref())
+            .map(|cache| (cache.scanned_at, cache.worktrees.clone()));
         if !force {
-            if let Some(cache) = &project.external_scan {
-                if cache.scanned_at.elapsed() < EXTERNAL_SCAN_INTERVAL {
-                    return Ok(cache.worktrees.clone());
+            if let Some((scanned_at, worktrees)) = cached.clone() {
+                // Stale-while-revalidate: answer with the last scan and rescan
+                // behind the answer. A scan walks every checkout of the repo,
+                // and doing that under the app mutex is what wedged the daemon.
+                if self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL) {
+                    if let Some(refresh) = self.external_scan_refresh(project_id) {
+                        self.trigger_diff_refresh(refresh);
+                    }
                 }
+                return Ok(worktrees);
             }
         }
-        match discover_external_worktrees(&project.repo_path, &base, &excluded) {
+        // Never scanned, or the caller demands the truth now (adoption resolves
+        // an id against it). On the dispatch path `warm_diff_caches` has already
+        // filled this in with the lock free.
+        match discover_external_worktrees(&repo_path, &base, &excluded) {
             Ok(worktrees) => {
-                project.external_scan = Some(ExternalScanCache {
-                    scanned_at: std::time::Instant::now(),
+                self.store_diff_entry(DiffCacheEntry::ExternalScan {
+                    project_id: project_id.to_string(),
                     worktrees: worktrees.clone(),
                 });
                 Ok(worktrees)
@@ -2840,11 +3496,7 @@ impl AppState {
                 if force {
                     Err(e.to_string())
                 } else {
-                    Ok(project
-                        .external_scan
-                        .as_ref()
-                        .map(|c| c.worktrees.clone())
-                        .unwrap_or_default())
+                    Ok(cached.map(|(_, worktrees)| worktrees).unwrap_or_default())
                 }
             }
         }
@@ -2856,6 +3508,7 @@ impl AppState {
         if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
             project.external_scan = None;
         }
+        self.release_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
     }
 
     /// Resolve a client-supplied `worktree_id` against the discovered list
@@ -5113,35 +5766,12 @@ impl AppState {
         entries
     }
 
-    /// Every project's primary-checkout changes summary, cached per project
-    /// for [`PRIMARY_SUMMARY_TTL`] (spec §5.3) — the `task.list` ride-along
-    /// for the sidebar "main" row and the project page's MAIN bucket. A
-    /// per-project failure (unborn HEAD, fs error) logs and contributes
-    /// nothing, same posture as `external_worktrees_json`.
+    /// Every project's primary-checkout changes summary, held per project for
+    /// [`PRIMARY_SUMMARY_TTL`] (spec §5.3) and then served stale while it
+    /// refreshes — the `task.list` ride-along for the sidebar "main" row and the
+    /// project page's MAIN bucket. A per-project failure (unborn HEAD, fs error)
+    /// logs and contributes nothing, same posture as `external_worktrees_json`.
     fn primary_changes_json(&mut self) -> Vec<Value> {
-        type SyncCounts = (Option<String>, Option<String>, Option<u64>, Option<u64>);
-        fn head_sync_counts(repo: &git2::Repository, base_branch: &str) -> SyncCounts {
-            const NONE: SyncCounts = (None, None, None, None);
-            let head = match repo.head() {
-                Ok(head) if head.is_branch() => head,
-                _ => return NONE,
-            };
-            let Some(branch) = head.shorthand() else {
-                return NONE;
-            };
-            let Ok(commit) = head.peel_to_commit() else {
-                return NONE;
-            };
-            let comparison =
-                crate::worktree::branch_comparison(repo, &commit, Some(branch), base_branch);
-            (
-                comparison.upstream,
-                comparison.reference,
-                comparison.ahead,
-                comparison.behind,
-            )
-        }
-
         // Who owns each primary checkout, so the main row can route to its run
         // after a reload. Resolved up front: the loop below holds a &mut borrow
         // of the summary cache.
@@ -5163,49 +5793,40 @@ impl AppState {
             entry
         };
 
+        let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
         let mut entries = Vec::new();
-        for i in 0..self.projects.len() {
-            if let Some((computed_at, cached)) = &self.projects[i].primary_summary {
-                if computed_at.elapsed() < PRIMARY_SUMMARY_TTL {
-                    let cached = cached.clone();
-                    let project_id = self.projects[i].id.clone();
-                    entries.push(with_owner(cached, &project_id));
-                    continue;
+        for project_id in project_ids {
+            let cached = self
+                .projects
+                .iter()
+                .find(|p| p.id == project_id)
+                .and_then(|p| p.primary_summary.clone());
+            if let Some((computed_at, summary)) = cached {
+                // Stale-while-revalidate, as for a run's diffstat: the sidebar
+                // gets the last summary now, and the walk of the primary
+                // checkout that produces the next one runs behind it.
+                if self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL) {
+                    if let Some(refresh) = self.primary_summary_refresh(&project_id) {
+                        self.trigger_diff_refresh(refresh);
+                    }
                 }
+                entries.push(with_owner(summary, &project_id));
+                continue;
             }
-            let project = &self.projects[i];
-            let project_id = project.id.clone();
-            let repo = git2::Repository::open(&project.repo_path);
-            let branch = repo
-                .as_ref()
-                .ok()
-                .and_then(|r| r.head().ok())
-                .and_then(|h| h.shorthand().map(str::to_string))
-                .unwrap_or_else(|| "HEAD".to_string());
-            let (upstream, comparison_ref, ahead, behind) = repo
-                .as_ref()
-                .ok()
-                .map(|repo| head_sync_counts(repo, &project.base_branch))
-                .unwrap_or((None, None, None, None));
-            let summary = match crate::diff::stat_against_head(&project.repo_path) {
-                Ok(stat) => Some(json!({
-                    "project_id": project_id,
-                    "branch": branch,
-                    "upstream": upstream,
-                    "comparison_ref": comparison_ref,
-                    "ahead": ahead,
-                    "behind": behind,
-                    "files_changed": stat.files_changed,
-                    "insertions": stat.insertions,
-                    "deletions": stat.deletions,
-                })),
-                Err(e) => {
-                    eprintln!("primary_changes {project_id}: {e}");
-                    None
-                }
+            // Never computed. See `run_stat`: the dispatch path warms this off
+            // the mutex, so only a caller that does not warm gets here.
+            let Some(refresh) = self.primary_summary_refresh(&project_id) else {
+                continue;
             };
-            self.projects[i].primary_summary =
-                summary.clone().map(|s| (std::time::Instant::now(), s));
+            if let Some(entry) = refresh.compute(self.diff_compute_observer.as_ref()) {
+                self.store_diff_entry(entry);
+            }
+            let summary = self
+                .projects
+                .iter()
+                .find(|p| p.id == project_id)
+                .and_then(|p| p.primary_summary.as_ref())
+                .map(|(_, summary)| summary.clone());
             if let Some(summary) = summary {
                 entries.push(with_owner(summary, &project_id));
             }
@@ -5393,14 +6014,12 @@ impl AppState {
     /// recomputes instead of serving a stale summary for up to its TTL.
     fn invalidate_git_scope_caches(&mut self, scope: &GitScope) {
         if let Some(run) = &scope.run {
-            self.run_stat_cache.remove(&run.run_id);
-            self.entity_updated_at
-                .insert(run.run_id.clone(), now_rfc3339());
+            let run_id = run.run_id.clone();
+            self.invalidate_run_stat(&run_id);
+            self.entity_updated_at.insert(run_id, now_rfc3339());
         }
-        if let Some(project_id) = &scope.project_id {
-            if let Some(project) = self.projects.iter_mut().find(|p| &p.id == project_id) {
-                project.primary_summary = None;
-            }
+        if let Some(project_id) = scope.project_id.clone() {
+            self.invalidate_primary_summary(&project_id);
         }
         if let Some(worktree) = &scope.worktree {
             let project_id = worktree.project_id.clone();
@@ -5489,8 +6108,8 @@ impl AppState {
         // it is stale.
         if scope.external_worktree {
             self.invalidate_external_scan(&scope.project_id);
-        } else if let Some(project) = self.projects.iter_mut().find(|p| p.id == scope.project_id) {
-            project.primary_summary = None;
+        } else {
+            self.invalidate_primary_summary(&scope.project_id);
         }
         crate::gitgui::status_payload(&scope.repo_path)
     }
@@ -8516,7 +9135,7 @@ impl AppState {
                 self.entity_updated_at.remove(run_id);
                 self.entity_state_changed_at.remove(run_id);
                 self.entity_last_state.remove(run_id);
-                self.run_stat_cache.remove(run_id);
+                self.invalidate_run_stat(run_id);
                 self.invalidate_external_scan(project_id);
             }
         }
@@ -8698,7 +9317,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
-        self.run_stat_cache.remove(&run_id);
+        self.invalidate_run_stat(&run_id);
 
         if worktree.path.exists() {
             if let Some(pid) = project_id {
@@ -8841,7 +9460,7 @@ impl AppState {
         let root = Self::canonical_root(&active.worktree.path);
         let worktree_id = crate::worktree::external_worktree_id(&root);
         let mut active = self.runs.remove(&run_id).expect("checked above");
-        self.run_stat_cache.remove(&run_id);
+        self.invalidate_run_stat(&run_id);
         self.close_agent_tab(&root);
         self.invalidate_external_scan(&project_id);
 
@@ -8925,7 +9544,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
-        self.run_stat_cache.remove(&run_id);
+        self.invalidate_run_stat(&run_id);
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
         }
@@ -9351,16 +9970,7 @@ impl AppState {
             .get("unlink")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let run_id = self
-            .runs
-            .iter()
-            .find(|(run_id, active)| {
-                !active.run.state.is_terminal()
-                    && active.worktree.branch == branch
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(&project_id)
-            })
-            .map(|(run_id, _)| run_id.clone());
-        let Some(run_id) = run_id else {
+        let Some(run_id) = self.run_on_branch(&project_id, &branch) else {
             // No run behind the branch: it is a bare checkout, and the durable
             // archive path is the same one `run.finish` delegates to.
             let worktree = self
@@ -9990,69 +10600,35 @@ impl AppState {
         })
     }
 
-    /// A run's live diffstat for the `board.list` poll surface, cached for
-    /// [`TASK_STAT_TTL`]. Terminal runs (worktree pruned or about to be) report
-    /// null.
+    /// A run's diffstat for the `board.list` poll surface, held for
+    /// [`TASK_STAT_TTL`] and then served stale while it refreshes. Terminal runs
+    /// (worktree pruned or about to be) report null.
     fn run_stat(&mut self, run_id: &str) -> Value {
-        let Some(active) = self.runs.get(run_id) else {
+        let Some(refresh) = self.run_stat_refresh(run_id) else {
             return Value::Null;
         };
-        if active.run.state.is_terminal() || !active.worktree.path.exists() {
-            return Value::Null;
-        }
         if let Some((computed_at, stat)) = self.run_stat_cache.get(run_id) {
-            if computed_at.elapsed() < TASK_STAT_TTL {
-                return stat.clone();
+            let (computed_at, stat) = (*computed_at, stat.clone());
+            // Stale-while-revalidate: the poll is answered with the numbers we
+            // have, and the diff that produces the next ones runs behind it.
+            if self.diff_cache_is_stale(computed_at, TASK_STAT_TTL) {
+                self.trigger_diff_refresh(refresh);
             }
+            return stat;
         }
-        let git_state = git2::Repository::open(&active.worktree.path)
-            .ok()
-            .and_then(|repo| {
-                let head_ref = repo.head().ok()?;
-                let checked_out_branch = head_ref.shorthand().map(str::to_string);
-                let head = head_ref.peel_to_commit().ok()?;
-                let comparison = crate::worktree::branch_comparison(
-                    &repo,
-                    &head,
-                    checked_out_branch.as_deref(),
-                    &active.worktree.base_branch,
-                );
-                Some((checked_out_branch, comparison))
-            });
-        let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
-        let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
-        // Counts only: this poll surface ships numbers, so it must never pay to
-        // render (or even load) the worktree's patch text.
-        let uncommitted = crate::diff::stat_uncommitted(&active.worktree.path)
-            .map(|stat| {
-                json!({
-                    "files_changed": stat.files_changed,
-                    "insertions": stat.insertions,
-                    "deletions": stat.deletions,
-                })
-            })
-            .unwrap_or(Value::Null);
-        let stat =
-            crate::diff::stat_against_base(&active.worktree.path, &active.worktree.base_branch)
-                .map(|s| {
-                    json!({
-                        "files_changed": s.files_changed,
-                        "insertions": s.insertions,
-                        "deletions": s.deletions,
-                        "branch": checked_out_branch,
-                        "comparison_ref": comparison.and_then(|value| value.reference.as_deref()),
-                        "upstream": comparison.and_then(|value| value.upstream.as_deref()),
-                        "ahead": comparison.and_then(|value| value.ahead),
-                        "behind": comparison.and_then(|value| value.behind),
-                        "uncommitted": uncommitted,
-                    })
-                })
-                .unwrap_or(Value::Null);
-        self.run_stat_cache.insert(
-            run_id.to_string(),
-            (std::time::Instant::now(), stat.clone()),
-        );
-        stat
+        // Nothing has ever been computed for this run. The dispatch path warms
+        // the cache off the mutex before the verb runs, so reaching here means a
+        // caller that does not warm — the synchronous test entry point, or a
+        // read that follows the mutation which invalidated the entry. Compute it
+        // rather than answer with a number nobody has.
+        let entry = refresh.compute(self.diff_compute_observer.as_ref());
+        if let Some(entry) = entry {
+            self.store_diff_entry(entry);
+        }
+        self.run_stat_cache
+            .get(run_id)
+            .map(|(_, stat)| stat.clone())
+            .unwrap_or(Value::Null)
     }
 
     // ---- the scripted QA agent ------------------------------------------------
@@ -11966,6 +12542,10 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         // pump needs the state lock free while it does.
         "agent.start" => agent_start(state, &params),
         _ => {
+            // Whatever this verb reads out of the diff caches is brought up to
+            // date here, with the lock free. After it, the verb only reads
+            // memory: no frame ever holds the app mutex through a worktree diff.
+            warm_diff_caches(state, &method, &params);
             let dispatched = {
                 let mut app = state.lock().unwrap();
                 let queued_before = app.pending_agent_turns.len();
@@ -27115,5 +27695,259 @@ mod tests {
         );
         assert!(state.plans[&issue_id].plan.archived_at.is_none());
         assert!(worktree.exists(), "nothing was finished");
+    }
+
+    // ==== stale-while-revalidate for the poll diff caches ======================
+    //
+    // The wedge (2026-08-13): `board.list` recomputed a run's worktree diff
+    // inline, under the app mutex, whenever its 10s cache had aged out. On a
+    // churning 56k-file worktree that took seconds, the relay read loop stopped
+    // draining behind it, and the relay called the device dead. These tests hold
+    // the caches to the rule that follows from it: a poll is answered from the
+    // last value the moment there is one, the recompute happens behind the
+    // answer, several stale polls share one recompute, and no diff ever runs
+    // while the app mutex is held.
+
+    /// One run's `stat` off a `board.list` poll, over the frame handler — the
+    /// path the relay actually takes, warm step and all.
+    fn polled_run_stat(handler: &FrameHandler, run_id: &str) -> Value {
+        let board = call(handler, "board.list", json!({}));
+        board["result"]["runs"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the board ships runs: {board:?}"))
+            .iter()
+            .find(|run| run["run_id"] == json!(run_id))
+            .unwrap_or_else(|| panic!("{run_id} is on the board: {board:?}"))["stat"]
+            .clone()
+    }
+
+    /// `board.list` on a blocking thread, as the relay's dispatcher runs it.
+    async fn poll_board(handler: &FrameHandler) {
+        let handler = handler.clone();
+        tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+            .await
+            .expect("the poll does not panic");
+    }
+
+    /// A shared QA daemon with one adopted run whose worktree holds one
+    /// uncommitted file — the shape a poll pays a diff for.
+    fn daemon_with_a_run_to_diff(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler, String, PathBuf) {
+        let (state, handler) = shared_qa_state_and_handler(repo, dir);
+        let run_id = {
+            let mut app = state.lock().unwrap();
+            adopted_run(&mut app, repo, dir, "swr-run")
+        };
+        let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
+        std::fs::write(worktree.join("first.txt"), "one\n").unwrap();
+        (state, handler, run_id, worktree)
+    }
+
+    /// Make every run-stat compute take `hold`, and count them.
+    fn watch_run_stat_computes(
+        state: &Arc<Mutex<AppState>>,
+        hold: Duration,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let computes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&computes);
+        state.lock().unwrap().diff_compute_observer = Some(Arc::new(move |key| {
+            if matches!(key, DiffCacheKey::RunStat(_)) {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(hold);
+            }
+        }));
+        computes
+    }
+
+    /// A poll that finds an aged-out diffstat is answered from the value it
+    /// already has, immediately — and the recompute that runs behind it
+    /// publishes what it found.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stale_diffstat_answers_the_poll_while_it_refreshes_behind_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler, run_id, worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
+
+        // The first poll has nothing to serve, so it computes.
+        let first = {
+            let handler = handler.clone();
+            let run_id = run_id.clone();
+            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                .await
+                .unwrap()
+        };
+        let before = first["uncommitted"]["files_changed"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("the first poll counted the tree: {first:?}"));
+        assert!(
+            before >= 1,
+            "the worktree carries the file just written: {first:?}"
+        );
+
+        // One more file, and every cache aged past its TTL: the next poll is a
+        // stale one, and its recompute is held open long enough to be caught in
+        // the act.
+        std::fs::write(worktree.join("second.txt"), "two\n").unwrap();
+        watch_run_stat_computes(&state, Duration::from_millis(600));
+        state.lock().unwrap().force_stale_diff_caches = true;
+
+        let started = std::time::Instant::now();
+        let stale = {
+            let handler = handler.clone();
+            let run_id = run_id.clone();
+            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                .await
+                .unwrap()
+        };
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(300),
+            "the poll waited for the recompute instead of answering from cache: {waited:?}"
+        );
+        assert_eq!(
+            stale["uncommitted"]["files_changed"],
+            json!(before),
+            "the poll was answered with the value it already had: {stale:?}"
+        );
+
+        // …and what the refresh computed replaces it.
+        let refreshed = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let handler = handler.clone();
+                let run_id = run_id.clone();
+                let stat = tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                    .await
+                    .unwrap();
+                if stat["uncommitted"]["files_changed"] == json!(before + 1) {
+                    return stat;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the background refresh publishes the second file");
+        assert_eq!(
+            refreshed["uncommitted"]["files_changed"],
+            json!(before + 1),
+            "the refresh counted the file written while the stale value was serving: {refreshed:?}"
+        );
+    }
+
+    /// Single-flight: a recompute already running absorbs every poll that
+    /// arrives while it runs. Otherwise four browser tabs polling twice a second
+    /// put a worktree scan per poll on the disk — the flood that starved the
+    /// socket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_stale_polls_share_one_recompute() {
+        let (dir, repo) = init_repo();
+        let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
+
+        // Seed the cache: after this every poll is a stale read.
+        {
+            let handler = handler.clone();
+            let run_id = run_id.clone();
+            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                .await
+                .unwrap();
+        }
+        let computes = watch_run_stat_computes(&state, Duration::from_millis(800));
+        state.lock().unwrap().force_stale_diff_caches = true;
+
+        let mut polls = Vec::new();
+        for _ in 0..6 {
+            let handler = handler.clone();
+            polls.push(tokio::task::spawn_blocking(move || {
+                call(&handler, "board.list", json!({}));
+            }));
+        }
+        for poll in polls {
+            tokio::time::timeout(Duration::from_secs(5), poll)
+                .await
+                .expect("no poll waits on the recompute")
+                .expect("no poll panics");
+        }
+
+        assert_eq!(
+            computes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "six stale polls must share one recompute"
+        );
+    }
+
+    /// A mutation that lands while a refresh is computing takes the refresh's
+    /// claim with it, and a refresh without a claim publishes nothing. Otherwise
+    /// a commit would be followed by the pre-commit numbers reappearing on the
+    /// board, put there by the scan the commit interrupted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refresh_overtaken_by_a_mutation_publishes_nothing() {
+        let (dir, repo) = init_repo();
+        let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
+
+        // Seed the cache, then start a refresh and hold it open.
+        poll_board(&handler).await;
+        watch_run_stat_computes(&state, Duration::from_millis(600));
+        state.lock().unwrap().force_stale_diff_caches = true;
+        poll_board(&handler).await;
+
+        // The mutation lands while that refresh is still walking the worktree.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        state.lock().unwrap().invalidate_run_stat(&run_id);
+
+        // Whatever the refresh found describes the tree from before it.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(
+            !state.lock().unwrap().run_stat_cache.contains_key(&run_id),
+            "the overtaken refresh put its numbers back on the board"
+        );
+    }
+
+    /// The rule the incident was a violation of: the git work never runs with
+    /// the app mutex in hand — not the background refresh, and not the
+    /// first-ever compute a caller waits for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_diff_is_computed_while_the_app_mutex_is_held() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
+
+        // Each compute reports whether the app mutex could be taken while it ran.
+        // A compute holding it (or running under a caller that holds it) never
+        // sees it free.
+        type Observation = (DiffCacheKey, bool);
+        let observations: Arc<Mutex<Vec<Observation>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&observations);
+        let weak = Arc::downgrade(&state);
+        state.lock().unwrap().diff_compute_observer = Some(Arc::new(move |key| {
+            let mut free = false;
+            for _ in 0..20 {
+                if weak.upgrade().is_some_and(|state| state.try_lock().is_ok()) {
+                    free = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            recorded.lock().unwrap().push((key.clone(), free));
+        }));
+
+        // First-ever computes (the caller waits for these) …
+        poll_board(&handler).await;
+        // … then background refreshes of what is now stale.
+        state.lock().unwrap().force_stale_diff_caches = true;
+        poll_board(&handler).await;
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while observations.lock().unwrap().len() < 4 {
+                poll_board(&handler).await;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the caches refresh");
+
+        let seen = observations.lock().unwrap().clone();
+        assert!(
+            seen.iter().all(|(_, free)| *free),
+            "a diff ran while the app mutex was held: {seen:?}"
+        );
     }
 }

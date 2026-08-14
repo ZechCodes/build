@@ -541,10 +541,13 @@ pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
 /// expires the prompt is written anyway — a spawn that silently never delivers
 /// its prompt is worse than one that races the startup screen.
 /// Upper bound on waiting for a harness to become ready. Must comfortably
-/// exceed a real TUI's full startup — claude 2.1.219 settles at ~1.8s, plus its
-/// declared settle window — or the wait expires and the prompt is written into
-/// a still-painting screen, which is the failure it exists to prevent.
-pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(6000);
+/// exceed a real TUI's full startup or the wait expires and the prompt is
+/// written into a still-painting screen, which is the failure it exists to
+/// prevent. claude 2.1.219 settled at ~1.8s; 2.1.223 (statusline hooks, MCP
+/// config load) does not enable bracketed paste until ~4s on an idle machine,
+/// so the old 6s bound left no margin at all under load — and an expired wait
+/// writes into the startup screen, where the alternate-screen clear eats it.
+pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(20000);
 
 pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);

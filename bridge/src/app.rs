@@ -1063,8 +1063,13 @@ const REAL_TUI_SETTLE: Duration = Duration::from_millis(750);
 /// How long a real TUI's submit key trails the pasted prompt. Written together
 /// they arrive in one stdin read, and claude's editor handles the Enter before
 /// the paste has committed to its composer — the turn sits pasted, never
-/// submitted. Two ink frames of margin over anything observed.
-const REAL_TUI_SUBMIT_DELAY: Duration = Duration::from_millis(200);
+/// submitted.
+///
+/// Measured against claude 2.1.223 (PTY probe, idle machine): the composer
+/// echoes the paste ~640ms after the write, and an Enter at +200ms is consumed
+/// without submitting — the turn sat pasted forever. An Enter at +1000ms
+/// submits reliably. The margin over that covers a loaded machine.
+const REAL_TUI_SUBMIT_DELAY: Duration = Duration::from_millis(1500);
 
 /// Session markers a parent agent leaves in the environment. A harness that
 /// finds its own markers treats itself as a nested child of that session rather
@@ -2902,6 +2907,20 @@ impl AppState {
         tokio::spawn(async move {
             if let Some(parent) = std::path::Path::new(&path).parent() {
                 let _ = std::fs::create_dir_all(parent);
+            }
+            // A socket file that ANSWERS belongs to a running daemon: its
+            // harnesses dial this path for every `done`, and unlinking it out
+            // from under them silently breaks each one's report. A second
+            // bridge (a dev stack launched from inside an agent session that
+            // inherited BRIDGE_MCP_SOCKET, say) must refuse loudly instead of
+            // stealing the control plane. Only a DEAD file — one nothing
+            // accepts on — is stale debris to clear.
+            if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+                eprintln!(
+                    "done socket: {path} is already served by a live daemon; refusing to \
+                     replace it. Set BRIDGE_MCP_SOCKET to a private path for this instance."
+                );
+                return;
             }
             let _ = std::fs::remove_file(&path);
             let listener = match bind_done_listener(std::path::Path::new(&path)) {
@@ -19300,6 +19319,29 @@ mod tests {
             "the agent that built the stage is the one asked to validate it"
         );
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    }
+
+    /// A second daemon pointed at a live control socket must not steal it: the
+    /// running bridge's harnesses dial this path for every `done`, and an
+    /// unlink would silently break every one of them. The newcomer refuses and
+    /// says so; the incumbent keeps accepting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_done_socket_is_never_stolen_by_a_second_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("done.sock");
+        let incumbent = bind_done_listener(&path).expect("the first daemon binds");
+
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        AppState::spawn_done_socket(Arc::clone(&state), path.to_string_lossy().into_owned());
+        // Give the would-be thief time to run its bind attempt to completion.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // The path still belongs to the incumbent: a fresh client's connect is
+        // answered by the ORIGINAL listener, not a replacement.
+        let (accepted, connected) =
+            tokio::join!(incumbent.accept(), tokio::net::UnixStream::connect(&path),);
+        accepted.expect("the incumbent still owns its socket");
+        connected.expect("harnesses can still dial the path");
     }
 
     /// A planning worktree is a worktree, so every plan verb is a turn

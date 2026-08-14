@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { hashText, hashFileRows, stampReview, changedSinceReview } from "../src/core/reviewMemory.js";
+import {
+  hashText,
+  hashFileRows,
+  stampReview,
+  changedSinceReview,
+  stampChangeset,
+  changedSinceChangeset,
+  changesetStamped,
+} from "../src/core/reviewMemory.js";
 
 const fileA = { path: "a.js", rows: [{ text: "line 1" }, { text: "line 2" }] };
 const fileB = { path: "b.js", rows: [{ text: "hello" }] };
@@ -65,5 +73,36 @@ describe("changedSinceReview", () => {
   it("flags nothing when the stamp is empty (never reviewed)", () => {
     expect(changedSinceReview(new Map(), [fileA, fileB]).size).toBe(0);
     expect(changedSinceReview(null, [fileA]).size).toBe(0);
+  });
+});
+
+describe("per-changeset review memory", () => {
+  const fileAt = (path, text) => ({ path, rows: [{ text }] });
+
+  it("keeps each changeset's baseline apart", () => {
+    let stamps = new Map();
+    stamps = stampChangeset(stamps, "uncommitted", [fileAt("a.js", "one")]);
+    stamps = stampChangeset(stamps, "abc123", [fileAt("b.js", "two")]);
+    expect(changedSinceChangeset(stamps, "uncommitted", [fileAt("a.js", "one")]).size).toBe(0);
+    expect([...changedSinceChangeset(stamps, "uncommitted", [fileAt("a.js", "moved")])]).toEqual(["a.js"]);
+    // b.js is the other changeset's file: reviewing it there says nothing here.
+    expect([...changedSinceChangeset(stamps, "uncommitted", [fileAt("b.js", "two")])]).toEqual(["b.js"]);
+  });
+
+  it("flags nothing on a changeset that was never reviewed", () => {
+    const stamps = stampChangeset(new Map(), "uncommitted", [fileAt("a.js", "one")]);
+    expect(changedSinceChangeset(stamps, "abc123", [fileAt("a.js", "one")]).size).toBe(0);
+    expect(changesetStamped(stamps, "abc123")).toBe(false);
+    expect(changesetStamped(stamps, "uncommitted")).toBe(true);
+  });
+
+  it("does not mutate the map it was given", () => {
+    const stamps = new Map();
+    stampChangeset(stamps, "uncommitted", [fileAt("a.js", "one")]);
+    expect(stamps.size).toBe(0);
+  });
+
+  it("counts an empty changeset as no baseline at all", () => {
+    expect(changesetStamped(stampChangeset(new Map(), "uncommitted", []), "uncommitted")).toBe(false);
   });
 });

@@ -36,6 +36,7 @@ import {
   hasUncommittedChanges,
 } from "./changesModel.js";
 import { createCommentLayer } from "./changesComments.js";
+import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -388,6 +389,11 @@ export function mountGitPane(
   let scopeErrorShown = null; // the terminal scope error currently rendered
   let fileMenuPath = null; // the file whose header ⋯ is open
   const noiseExpanded = new Set(); // changesets whose collapsed noise group is open
+  // Re-review memory, per changeset: what the reviewer saw when they last sent
+  // comments on it, so the next pass can mark what moved. renderedFiles is the
+  // freshest parsed diff of the OPEN changeset, which is what a stamp is of.
+  let reviewStamps = new Map();
+  let renderedFiles = [];
   const branchControl = showBranchControl(scope); // interactive branch menu?
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort/delete)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
@@ -479,7 +485,12 @@ export function mountGitPane(
   const commentable = commentsSupported(scope);
   const commentLayer = commentable
     ? createCommentLayer({
-        submit: (messages) => callRpc("run.request_changes", { run_id: scope.run_id, messages }),
+        submit: async (messages) => {
+          await callRpc("run.request_changes", { run_id: scope.run_id, messages });
+          // Stamp what was just reviewed, per changeset: the next pass marks
+          // which of ITS files moved since the comments went out.
+          reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles);
+        },
         revisionId,
         onChange: () => render(),
       })
@@ -489,34 +500,42 @@ export function mountGitPane(
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
   const renderChangeset = (detailHost) => {
-    const stackOptions = {
+    // Every stack carries the same re-review chip: a file that moved since the
+    // reviewer last sent comments on THIS changeset says so.
+    const stackFor = (files) => ({
       commentable,
       noiseExpanded: noiseExpanded.has(String(selected)),
-    };
+      changedSince: changedSinceChangeset(reviewStamps, selected, files),
+    });
     if (selected === "uncommitted") {
       if (!hasUncommittedChanges(lastStatus)) {
+        renderedFiles = [];
         detailHost.innerHTML = uncommittedHeaderHtml(lastStatus) + changesetPlaceholderHtml("No uncommitted changes.");
         return;
       }
       const files = parseDiff(lastStatus.patch);
+      renderedFiles = files;
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       detailHost.innerHTML =
         uncommittedHeaderHtml(lastStatus) +
-        diffStackHtml(files, { ...stackOptions, fileMenu }) +
+        diffStackHtml(files, { ...stackFor(files), fileMenu }) +
         (commentLayer ? commentLayer.trayHtml() : "");
       if (commentLayer) commentLayer.attach(detailHost);
       return;
     }
     const detail = showCache.get(selected);
     if (!detail) {
+      renderedFiles = [];
       detailHost.innerHTML = '<div class="empty cdetail-loading">loading…</div>';
       return;
     }
+    const commitFiles = parseDiff(detail.patch);
+    renderedFiles = commitFiles;
     detailHost.innerHTML =
       commitHeaderHtml(detail) +
-      diffStackHtml(parseDiff(detail.patch), stackOptions) +
+      diffStackHtml(commitFiles, stackFor(commitFiles)) +
       (commentLayer ? commentLayer.trayHtml() : "");
     if (commentLayer) commentLayer.attach(detailHost);
   };
@@ -1161,8 +1180,10 @@ export function mountGitPane(
     // The comment affordances every changeset carries: ✎ on a file header, the
     // tray's remove control, and a tap on a line of an expanded file. This runs
     // BEFORE the fold handling: ✎ sits inside a capped file's header, and the
-    // fold handler would otherwise eat the click as "expand me".
-    if (commentLayer && commentLayer.handleClick(event)) return;
+    // fold handler would otherwise eat the click as "expand me". While the
+    // review plug owns the detail pane it owns its comments too — this layer
+    // must not also claim them, or one tap would write two comments.
+    if (!reviewMounted && commentLayer && commentLayer.handleClick(event)) return;
     // Diff folding, shared by every detail (uncommitted, commit, review plug):
     // the filename bar toggles a full collapse; a click on a capped body
     // expands it. Controls in the bar (⋯, ✎) keep their jobs.

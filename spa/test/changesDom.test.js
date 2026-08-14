@@ -273,3 +273,44 @@ describe("the poll freeze holds a review in progress", () => {
     }
   });
 });
+
+describe("re-review memory on every stack", () => {
+  it("marks the files that moved since comments went out on THIS changeset", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let served = dirtyStatus();
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const callRpc = vi.fn(async (method) => {
+        if (method === "git.status") return served;
+        if (method === "git.log") return log();
+        if (method === "git.show") return show();
+        if (method === "run.request_changes") return { ok: true };
+        return {};
+      });
+      const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
+      await settle();
+      await click(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
+      await click(document.querySelector(".cp-add"));
+      document.querySelector(".cp-input").value = "rename this";
+      await click(document.querySelector(".cp-save"));
+      await click(container.querySelector(".cssend"));
+      expect(container.querySelector(".fchanged")).toBe(null); // nothing has moved yet
+
+      served = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on") + patchFor("uv.lock", "locked") });
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+      const changed = container.querySelector('.file[data-file="src/a.js"] .fchanged');
+      expect(changed.textContent).toContain("changed since your review");
+
+      // The stamp belongs to the changeset it was taken on: a commit's stack
+      // has never been reviewed, so nothing in it is flagged.
+      await click(container.querySelector(".crow[data-hash]"));
+      await settle();
+      expect(container.querySelector(".cdetail-host .fchanged")).toBe(null);
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

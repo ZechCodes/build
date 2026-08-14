@@ -7003,7 +7003,15 @@ impl AppState {
     /// flight back where the router picks work up. The reset is written, not
     /// merely remembered: the router re-fires from the record, so the record is
     /// what has to say the route never finished.
+    ///
+    /// The re-fire happens here too: the router process died with the daemon,
+    /// and nobody else is going to ask again. A capture holding an unanswered
+    /// question is left waiting — the answer is what lets a router decide — and
+    /// a failed one keeps its one-tap retry with the user. A re-fire that
+    /// cannot start (no projects yet, say) is logged, not fatal: the capture is
+    /// safe on disk either way, which is the whole point of capture-first.
     fn recover_captures(&mut self, captures: Vec<crate::capture::Capture>) -> Result<(), String> {
+        let mut refire = Vec::new();
         for stored in captures {
             let recovered = stored.recovered_at_boot();
             if recovered != stored {
@@ -7011,7 +7019,17 @@ impl AppState {
                     .save_capture(&recovered)
                     .map_err(|e| e.to_string())?;
             }
+            if recovered.state == crate::capture::CaptureState::Unrouted
+                && !recovered.awaiting_answer()
+            {
+                refire.push(recovered.id.clone());
+            }
             self.captures.insert(recovered.id.clone(), recovered);
+        }
+        for capture_id in refire {
+            if let Err(error) = self.begin_routing(&capture_id) {
+                eprintln!("boot: could not re-fire routing for {capture_id}: {error}");
+            }
         }
         Ok(())
     }
@@ -29599,10 +29617,11 @@ mod tests {
     }
 
     /// The router process died with the daemon, so a route that was in flight
-    /// is put back where the router picks work up — and the reset is durable,
-    /// so a second restart does not have to re-derive it.
+    /// is re-fired at boot from the recovered record: the daemon owes the user
+    /// a decision, not a row waiting for one. A question still waiting on the
+    /// user, and a decision already made, are left alone.
     #[test]
-    fn boot_puts_an_interrupted_route_back_to_unrouted() {
+    fn boot_refires_an_interrupted_route_and_leaves_the_rest_alone() {
         let (dir, repo) = init_repo();
         let store = Store::new(dir.path().join("store"));
         let mut mid_route = crate::capture::Capture::new(
@@ -29615,13 +29634,39 @@ mod tests {
         let mut routed = crate::capture::Capture::new("capture-routed", "ship it", now_rfc3339());
         routed.state = crate::capture::CaptureState::Routed;
         store.save_capture(&routed).unwrap();
+        let mut asking =
+            crate::capture::Capture::new("capture-asking", "do the thing", now_rfc3339());
+        asking.question = Some(crate::capture::CaptureQuestion {
+            text: "which project?".to_string(),
+            asked_at: now_rfc3339(),
+            answer: None,
+        });
+        store.save_capture(&asking).unwrap();
 
         let mut state = qa_state(&repo, dir.path());
-        let recovered = state.handle(req(
+        let refired = state.handle(req(
             "capture.get",
             json!({ "capture_id": "capture-mid-route" }),
         ));
-        assert_eq!(recovered["result"]["state"], "unrouted", "{recovered:?}");
+        assert_eq!(
+            refired["result"]["state"], "routing",
+            "the interrupted route is the router's again: {refired:?}"
+        );
+        assert!(
+            state.router_sessions.contains_key("capture-mid-route"),
+            "a fresh router session decides the recovered capture"
+        );
+
+        let waiting = state.handle(req(
+            "capture.get",
+            json!({ "capture_id": "capture-asking" }),
+        ));
+        assert_eq!(
+            waiting["result"]["state"], "unrouted",
+            "an unanswered question waits for the user, not a router: {waiting:?}"
+        );
+        assert!(!state.router_sessions.contains_key("capture-asking"));
+
         let settled = state.handle(req(
             "capture.get",
             json!({ "capture_id": "capture-routed" }),
@@ -29630,18 +29675,7 @@ mod tests {
             settled["result"]["state"], "routed",
             "a decision already made is not a session to recover"
         );
-
-        let on_disk = Store::new(dir.path().join("store"))
-            .load_all_captures()
-            .unwrap();
-        let states: Vec<&str> = on_disk
-            .iter()
-            .map(|capture| capture.state.as_str())
-            .collect();
-        assert!(
-            states.iter().all(|state| *state != "routing"),
-            "the reset is written, not just remembered: {states:?}"
-        );
+        assert!(!state.router_sessions.contains_key("capture-routed"));
     }
 
     // ==== the router: what decides where a capture goes ======================

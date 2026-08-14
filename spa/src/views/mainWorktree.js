@@ -18,6 +18,7 @@ import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { RUN_STATE_LABEL, runChipClass } from "./shared.js";
 import { notifyError } from "../core/notify.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
+import { whenVisible } from "../core/visibility.js";
 
 // The Working counter ticks independently of this surface's poll.
 let stopWorkingTicker = null;
@@ -169,7 +170,7 @@ export function mountPrimaryConversation(
 
   if (adopting.adoptedRunId()) refresh();
   else paintInvitation();
-  const timer = pollMs > 0 ? setInterval(refresh, pollMs) : null;
+  const timer = pollMs > 0 ? setInterval(whenVisible(refresh), pollMs) : null;
 
   return {
     refresh,

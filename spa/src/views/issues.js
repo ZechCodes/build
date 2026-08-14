@@ -8,6 +8,7 @@
 
 import { esc, humanAge } from "../core/text.js";
 import { PLAN_STATE_LABEL, planChipClass, planStateWord } from "./shared.js";
+import { whenVisible } from "../core/visibility.js";
 
 
 const CLOSED_STATES = new Set(["abandoned"]);
@@ -84,7 +85,7 @@ export function mountIssuesTab(host, { projectId, callRpc, navigate, onNewIssue,
     }
   };
   load();
-  const poll = setInterval(load, pollMs);
+  const poll = setInterval(whenVisible(load), pollMs);
   return {
     dispose() {
       disposed = true;

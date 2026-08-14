@@ -5,6 +5,7 @@
 
 import { App } from "../app.js";
 import { pruneReadIds, persistReadIds } from "./readState.js";
+import { whenVisible } from "./visibility.js";
 
 const subscribers = new Set();
 let timer = null;
@@ -53,15 +54,27 @@ async function tick() {
   }
 }
 
+// Refocusing a tab refreshes immediately instead of waiting out the interval —
+// the visible counterpart of hidden tabs skipping their ticks.
+const onVisibilityChange = () => {
+  if (!document.hidden) tick();
+};
+
 export function startFeed(intervalMs = 10000) {
   stopFeed();
   tick();
-  timer = setInterval(tick, intervalMs);
+  timer = setInterval(whenVisible(tick), intervalMs);
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
 }
 
 export function stopFeed() {
   if (timer) clearInterval(timer);
   timer = null;
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
 }
 
 /** Force an immediate refresh (after adding a project, adopting, …). */

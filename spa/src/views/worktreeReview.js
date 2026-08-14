@@ -21,6 +21,7 @@ import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
 import { toggleSecretSpoiler } from "../core/secrets.js";
+import { whenVisible } from "../core/visibility.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -31,7 +32,7 @@ import {
   providerOptionsHtml,
 } from "../core/modelPicker.js";
 
-export const WORKTREE_REVIEW_POLL_MS = 1600;
+export const WORKTREE_REVIEW_POLL_MS = 15000;
 
 // The adopted-task merge set for the browse view: prune / keep / release only
 // (no commit/push/merge_push here — those belong to a task already in review;
@@ -395,7 +396,7 @@ export function createWorktreeReview({
       diffKey = null; // a fresh host always needs a first paint
       host.innerHTML = '<div class="empty">loading…</div>';
       paint();
-      timer = setInterval(paint, WORKTREE_REVIEW_POLL_MS);
+      timer = setInterval(whenVisible(paint), WORKTREE_REVIEW_POLL_MS);
     },
     unmount() {
       if (timer) clearInterval(timer);

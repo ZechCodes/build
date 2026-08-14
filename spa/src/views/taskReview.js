@@ -21,6 +21,7 @@ import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { watchSelection } from "../selectWatch.js";
+import { whenVisible } from "../core/visibility.js";
 
 export const REVIEW_POLL_MS = 15000;
 
@@ -410,7 +411,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, onMerged
       diffKey = null; // a fresh host always needs a first paint
       host.innerHTML = '<div class="empty">loading…</div>';
       paint();
-      timer = setInterval(paint, REVIEW_POLL_MS);
+      timer = setInterval(whenVisible(paint), REVIEW_POLL_MS);
     },
     unmount() {
       if (timer) clearInterval(timer);

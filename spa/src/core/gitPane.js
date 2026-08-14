@@ -22,6 +22,7 @@ import {
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
+import { whenVisible } from "./visibility.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -1186,7 +1187,7 @@ export function mountGitPane(container, { scope, callRpc, agentCommitOptions = [
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
   poll();
-  const timer = setInterval(poll, GIT_PANE_POLL_MS);
+  const timer = setInterval(whenVisible(poll), GIT_PANE_POLL_MS);
 
   return {
     dispose() {

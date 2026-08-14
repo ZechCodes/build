@@ -10,6 +10,7 @@ import { persistReadIds } from "../core/readState.js";
 import { attnRuns, attnPlans, setBadge } from "./shared.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { notifActionsFor } from "../core/notifActions.js";
+import { whenVisible } from "../core/visibility.js";
 
 // A run's decision card. Runs never carry plan_review — that belongs to a plan.
 function runNotifEvent(t) {
@@ -148,5 +149,5 @@ export async function renderNotifications() {
   };
   await load();
   if (leaving) return;
-  App.poll = setInterval(load, 10000);
+  App.poll = setInterval(whenVisible(load), 10000);
 }

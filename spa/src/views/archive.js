@@ -2,6 +2,7 @@
 // only a retained plan id links back to its review document.
 
 import { esc } from "../core/text.js";
+import { whenVisible } from "../core/visibility.js";
 
 const optionalString = (value) => {
   if (value === null || value === undefined) return null;
@@ -174,7 +175,7 @@ export function mountArchiveTab(host, { projectId, callRpc, navigate, pollMs = 1
   };
 
   load();
-  const poll = setInterval(load, pollMs);
+  const poll = setInterval(whenVisible(load), pollMs);
   return {
     dispose() {
       disposed = true;

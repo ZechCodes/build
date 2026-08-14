@@ -17,6 +17,7 @@ import { bucketProjectEntities } from "../core/board.js";
 import { runProgressFacts } from "../core/progressFacts.js";
 import { defaultRunTab } from "../core/taskActions.js";
 import { externalWorktreeCard } from "../core/worktreeCards.js";
+import { whenVisible } from "../core/visibility.js";
 
 export function mountProjectInbox(host, { projectId, callRpc = (method, params) => App.call(method, params) }) {
   let disposed = false;
@@ -117,7 +118,7 @@ export function mountProjectInbox(host, { projectId, callRpc = (method, params) 
     }
   };
   load();
-  const poll = setInterval(load, 10000);
+  const poll = setInterval(whenVisible(load), 10000);
   return {
     dispose() {
       disposed = true;

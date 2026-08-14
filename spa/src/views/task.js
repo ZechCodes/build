@@ -21,6 +21,7 @@ import { createThreadCache, paintThreadKeepingPlace, threadHtml, wireThreadAttac
 import { hashFromRoute } from "../core/router.js";
 import { RUN_TERMINAL_STATES } from "../core/board.js";
 import { isProjectClusterTab, mountProjectClusterTab, projectClusterShellOptions } from "../core/projectCluster.js";
+import { whenVisible } from "../core/visibility.js";
 
 // The Working counter ticks independently of this surface's poll.
 let stopWorkingTicker = null;
@@ -520,5 +521,5 @@ export async function renderTask() {
   shell(null);
   await paint();
   if (leaving) return;
-  App.poll = setInterval(paint, 5000);
+  App.poll = setInterval(whenVisible(paint), 5000);
 }

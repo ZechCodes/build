@@ -35,6 +35,7 @@ import { notifyError } from "../core/notify.js";
 import { hideCommentPop, hasCommentPop } from "../commentPop.js";
 import { renderPlanStages, planStageActionBusy, docErrorPaneHtml, DOCS_UNAVAILABLE } from "./planStages.js";
 import { hashFromRoute } from "../core/router.js";
+import { whenVisible } from "../core/visibility.js";
 
 // The Working counter ticks independently of this surface's poll.
 let stopWorkingTicker = null;
@@ -725,5 +726,5 @@ export async function renderPlan() {
   shell(null); // route entry: paint the surface-bar skeleton + a loading body at once
   await paint();
   if (leaving) return;
-  App.poll = setInterval(paint, 5000);
+  App.poll = setInterval(whenVisible(paint), 5000);
 }

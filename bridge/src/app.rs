@@ -6748,7 +6748,7 @@ impl AppState {
             .filter(|note| !note.is_empty())
             .map(str::to_string);
 
-        let path = self.triaged_hunk_path(&run_id, &hunk_id)?;
+        let (path, rationale) = self.triaged_hunk_context(&run_id, &hunk_id)?;
         let pattern = crate::review_rules::pattern_for_path(&path);
         let checkout = self.primary_checkout_of(&run_id)?;
         let now = now_rfc3339();
@@ -6757,7 +6757,7 @@ impl AppState {
         let triage = active
             .triage
             .as_mut()
-            .expect("triaged_hunk_path already found the pass this hunk belongs to");
+            .expect("triaged_hunk_context already found the pass this hunk belongs to");
         let is_new_disagreement = triage.record_override(crate::run::TriageOverride {
             hunk_id: hunk_id.clone(),
             direction,
@@ -6778,7 +6778,8 @@ impl AppState {
         } else {
             None
         };
-        let summary = triage_override_summary(direction, &path, note.as_deref());
+        let summary =
+            triage_override_summary(direction, &path, rationale.as_deref(), note.as_deref());
         let recorded = self.record_on_run_conversation(&mut active, |conversation| {
             conversation.push_event(
                 crate::thread::ThreadEventKind::TriageOverridden,
@@ -6802,15 +6803,20 @@ impl AppState {
         }))
     }
 
-    /// The file a triaged hunk belongs to, read off the diff revision the pass
-    /// classified.
+    /// What the conversation has to say about a hunk the reviewer disagreed
+    /// with: the file it lives in, and the rationale the pass gave for putting
+    /// it where it put it.
     ///
-    /// Not off the current diff, and never off the caller: the reviewer is
-    /// disagreeing with what they were shown, so the patch that produced the
-    /// hunk ids they are pointing at is the only one that can name the file
-    /// they meant. A hunk this pass never classified has nothing to disagree
-    /// with and is refused.
-    fn triaged_hunk_path(&self, run_id: &str, hunk_id: &str) -> Result<String, String> {
+    /// The file is read off the diff revision the pass classified — not off the
+    /// current diff, and never off the caller: the reviewer is disagreeing with
+    /// what they were shown, so the patch that produced the hunk ids they are
+    /// pointing at is the only one that can name the file they meant. A hunk
+    /// this pass never classified has nothing to disagree with and is refused.
+    fn triaged_hunk_context(
+        &self,
+        run_id: &str,
+        hunk_id: &str,
+    ) -> Result<(String, Option<String>), String> {
         let active = self
             .runs
             .get(run_id)
@@ -6818,11 +6824,15 @@ impl AppState {
         let triage = active.triage.as_ref().ok_or_else(|| {
             format!("triage.override: {run_id} has no triage pass to disagree with")
         })?;
-        if !triage.hunks.iter().any(|hunk| hunk.hunk_id == hunk_id) {
-            return Err(format!(
-                "triage.override: the pass on {run_id} did not classify {hunk_id}"
-            ));
-        }
+        let rationale = triage
+            .hunks
+            .iter()
+            .find(|hunk| hunk.hunk_id == hunk_id)
+            .ok_or_else(|| {
+                format!("triage.override: the pass on {run_id} did not classify {hunk_id}")
+            })?
+            .rationale
+            .clone();
         let patch = self
             .conversation_thread_for_run(active)
             .revisions
@@ -6840,11 +6850,12 @@ impl AppState {
                     triage.based_on
                 )
             })?;
-        crate::diff::patch_hunks(patch)
+        let path = crate::diff::patch_hunks(patch)
             .into_iter()
             .find(|hunk| hunk.hunk_id == hunk_id)
             .map(|hunk| hunk.path)
-            .ok_or_else(|| format!("triage.override: {hunk_id} is not in the revision it names"))
+            .ok_or_else(|| format!("triage.override: {hunk_id} is not in the revision it names"))?;
+        Ok((path, rationale))
     }
 
     /// The primary checkout of the project an entity belongs to — where a
@@ -13751,25 +13762,31 @@ fn out_of_phase_log(run_id: &str, illegal: &crate::run::IllegalRunTransition) ->
 ///
 /// It names the file rather than the hunk id, because the id is a hash and the
 /// agent that has to learn from this reads in files. It says which way the pass
-/// was wrong, which is the whole content of the disagreement. And the
-/// reviewer's own note, when they left one, goes last and unedited.
+/// was wrong, which is the whole content of the disagreement. It quotes the
+/// rationale the pass gave, so the agent can see which of its own claims was
+/// not believed rather than having to go and find it. And the reviewer's own
+/// note, when they left one, goes last and unedited.
 fn triage_override_summary(
     direction: crate::run::OverrideDirection,
     path: &str,
+    rationale: Option<&str>,
     note: Option<&str>,
 ) -> String {
-    let line = match direction {
+    let mut lines = vec![match direction {
         crate::run::OverrideDirection::Surface => {
             format!("The reviewer opened {path}: triage collapsed a change that needed reading.")
         }
         crate::run::OverrideDirection::Collapse => {
             format!("The reviewer collapsed {path}: triage surfaced a change that did not.")
         }
-    };
-    match note {
-        Some(note) => format!("{line}\n\n{note}"),
-        None => line,
+    }];
+    if let Some(rationale) = rationale.map(str::trim).filter(|it| !it.is_empty()) {
+        lines.push(format!("Triage said: {rationale}"));
     }
+    if let Some(note) = note {
+        lines.push(note.to_string());
+    }
+    lines.join("\n\n")
 }
 
 fn record_report_in_thread(
@@ -21705,6 +21722,11 @@ mod tests {
         assert!(
             summary.contains("key derivation is never boilerplate"),
             "and the reviewer's own words: {summary}"
+        );
+        assert!(
+            summary.contains("new code path"),
+            "and the rationale that was rejected, so the agent reading this can \
+             see which of its own claims the reviewer did not believe: {summary}"
         );
         assert_eq!(
             view["result"]["unread"], false,

@@ -513,7 +513,17 @@ describe("capture rows", () => {
   const entryOf = (item) => listed([item])[0];
 
   it("sort by the same anchor as everything else", () => {
-    const entries = listed([branch({ anchor: ago(2) }), captureItem({ anchor: ago(40) })]);
+    const entries = listed([branch({ anchor: ago(2) }), captureItem({ anchor: ago(40), last_activity: ago(1) })]);
+    expect(entries.map((entry) => entry.kind)).toEqual(["capture", "branch"]);
+  });
+
+  // One this client is holding for an absent device has no record yet, so no
+  // anchor — and it is still dated by when the user said it.
+  it("sort a capture this client is holding by when it was taken", () => {
+    const entries = listed([
+      branch({ anchor: ago(2) }),
+      captureItem({ state: "queued", anchor: null, created_at: ago(9), last_activity: null }),
+    ]);
     expect(entries.map((entry) => entry.kind)).toEqual(["capture", "branch"]);
   });
 

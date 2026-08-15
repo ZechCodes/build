@@ -199,7 +199,11 @@ function toCaptureEntry(item) {
     primary: false,
     facts: "",
     route: entryRoute(item),
-    anchorMs: ms(item.anchor),
+    // What the user said is when they said it. A capture this client is still
+    // holding has no record on the daemon and so no anchor of its own yet — it
+    // is dated by when it was taken, which is the anchor the work it becomes
+    // will inherit anyway.
+    anchorMs: ms(item.anchor || item.created_at),
     lastActivityMs: ms(item.last_activity || item.created_at),
   };
 }

@@ -78,6 +78,49 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
     expect(calls).toEqual(["merge_prune", "merge_prune"]);
   });
 
+  // A real pointer presses before it clicks. The outside-press watch has to be
+  // armed in the same event cycle as the opening click (a deferred one loses
+  // the race), so it must treat the split button's own pointers as inside.
+  describe("the menu the caret opens", () => {
+    const press = (target) => target.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+
+    it("stays open through the pointer sequence that opened it", () => {
+      const { caret, menu } = mount(pendingRun());
+      press(caret);
+      caret.click();
+      expect(menu.hidden).toBe(false);
+    });
+
+    it("stays open while the pointer travels onto an item", () => {
+      const { caret, menu } = mount(pendingRun());
+      press(caret);
+      caret.click();
+      press(menu.querySelector('[data-action="commit"]'));
+      expect(menu.hidden).toBe(false);
+    });
+
+    it("closes on a press outside it", () => {
+      const { caret, menu } = mount(pendingRun());
+      press(caret);
+      caret.click();
+      press(document.body);
+      expect(menu.hidden).toBe(true);
+    });
+
+    it("stops watching for outside presses once the caret shuts it again", () => {
+      const { caret, menu } = mount(pendingRun());
+      caret.click();
+      caret.click();
+      expect(menu.hidden).toBe(true);
+      caret.click();
+      press(document.body);
+      expect(menu.hidden).toBe(true);
+      // One open leaves exactly one watch behind: reopening still closes once.
+      caret.click();
+      expect(menu.hidden).toBe(false);
+    });
+  });
+
   it("a shared external flight blocks invokes on a remounted button mid-flight", async () => {
     const flight = createSingleFlight();
     const first = pendingRun();

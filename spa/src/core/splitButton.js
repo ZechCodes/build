@@ -58,10 +58,35 @@ export function mountSplitButton(container, { options, run, flight = createSingl
   const caret = container.querySelector(".caret");
   const menu = container.querySelector(".splitmenu");
 
+  // The open menu's outside-press watch. It is armed in the same event cycle as
+  // the click that opens the menu — deferring it to a macrotask loses the race
+  // against a real pointer, whose press can land before the timer runs, so the
+  // menu shuts the instant it appears. Arming it immediately is safe because a
+  // press anywhere inside the split button (the caret that toggles it, the item
+  // being reached for) is not outside.
+  let stopWatchingOutsidePress = null;
+  const closeMenu = () => {
+    if (menu) menu.hidden = true;
+    if (stopWatchingOutsidePress) stopWatchingOutsidePress();
+  };
+  const openMenu = () => {
+    menu.hidden = false;
+    if (stopWatchingOutsidePress) return;
+    const onOutsidePress = (event) => {
+      if (container.querySelector(".splitbtn")?.contains(event.target)) return;
+      closeMenu();
+    };
+    document.addEventListener("pointerdown", onOutsidePress);
+    stopWatchingOutsidePress = () => {
+      document.removeEventListener("pointerdown", onOutsidePress);
+      stopWatchingOutsidePress = null;
+    };
+  };
+
   const invoke = async (optionId) => {
     if (!flight.begin()) return;
     const option = byId[optionId];
-    if (menu) menu.hidden = true;
+    closeMenu();
     primary.disabled = true;
     if (caret) caret.disabled = true;
     const restoreLabel = primary.textContent;
@@ -86,21 +111,13 @@ export function mountSplitButton(container, { options, run, flight = createSingl
     caret.onclick = (event) => {
       event.stopPropagation();
       if (caret.disabled) return;
-      menu.hidden = !menu.hidden;
-      if (!menu.hidden) {
-        const close = (ev) => {
-          if (!container.querySelector(".splitbtn")?.contains(ev.target)) {
-            menu.hidden = true;
-            document.removeEventListener("pointerdown", close);
-          }
-        };
-        setTimeout(() => document.addEventListener("pointerdown", close), 0);
-      }
+      if (menu.hidden) openMenu();
+      else closeMenu();
     };
     menu.querySelectorAll(".mi").forEach(
       (mi) =>
         (mi.onclick = () => {
-          menu.hidden = true;
+          closeMenu();
           invoke(mi.dataset.action);
         }),
     );

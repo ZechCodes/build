@@ -180,13 +180,24 @@ export async function renderBranch() {
     finished();
   };
 
+  // What the Done control was last painted from. The row poll runs every 1.6
+  // seconds and almost every tick resolves the same close-out; rewriting the
+  // host on each one destroyed whatever was open inside it, so the menu
+  // vanished before the user could reach an item.
+  let paintedFinish = null;
+
   /** Paint the row's Done off the freshest branch.get row. Frozen while a
    *  close-out is in flight, so no poll can remount an enabled button over a
-   *  pending branch.finish. */
+   *  pending branch.finish, and while its menu is open — a click in progress
+   *  outranks a repaint, which lands on a later tick once the menu is shut. */
   const paintFinish = () => {
     const host = $("#branch-finish");
     if (!host || finishFlight.active()) return;
+    if (host.querySelector(".splitmenu:not([hidden])")) return;
     const closeout = branchCloseout(row);
+    const signature = JSON.stringify(closeout);
+    if (signature === paintedFinish) return;
+    paintedFinish = signature;
     if (!closeout.shown) {
       host.innerHTML = "";
       return;

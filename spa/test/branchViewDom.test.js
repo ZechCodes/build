@@ -181,6 +181,66 @@ describe("closing the branch out", () => {
     expect(finishCalls()[1][1].unlink).toBe(true);
   });
 
+  // The row poll runs every 1.6s. Re-rendering the Done control on a tick that
+  // resolved the same close-out threw away whatever the user had open — the
+  // menu appeared and vanished before an item could be reached.
+  describe("while its menu is open", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const pollTick = async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    };
+
+    it("leaves the open menu standing through a poll that reads the same row", async () => {
+      await mountWith(finishableRow());
+      finishHost().querySelector(".caret").click();
+      const opened = finishHost().querySelector(".splitmenu");
+      expect(opened.hidden).toBe(false);
+
+      await pollTick();
+
+      const menuNow = finishHost().querySelector(".splitmenu");
+      expect(menuNow, "the menu element was replaced by the poll").toBe(opened);
+      expect(menuNow.hidden).toBe(false);
+    });
+
+    it("still runs the item the user reaches for after a poll tick", async () => {
+      await mountWith(finishableRow());
+      finishHost().querySelector(".caret").click();
+      await pollTick();
+      finishHost().querySelector('.splitmenu .mi[data-action="finish_delete"]').click();
+      await answerConfirm(true);
+      expect(finishCalls()[0][1].action).toBe("delete");
+    });
+
+    // The row itself can change under an open menu (the branch is renamed, the
+    // work stops being finishable). The click in progress wins; the repaint
+    // lands on the next tick, once the menu is shut.
+    it("defers a repaint the changed row wants until the menu is closed", async () => {
+      let current = finishableRow();
+      App.call = vi.fn(async (method) => (method === "branch.get" ? current : {}));
+      await renderBranch();
+      await flush();
+      finishHost().querySelector(".caret").click();
+      const opened = finishHost().querySelector(".splitmenu");
+
+      current = finishableRow({ can_finish: false, stat: { uncommitted: { files_changed: 1 }, ahead: 0, upstream: "o" } });
+      await pollTick();
+      expect(finishHost().querySelector(".splitmenu")).toBe(opened);
+
+      // Closing it hands the surface back: the next read paints the block reason.
+      finishHost().querySelector(".caret").click();
+      await pollTick();
+      expect(doneButton().disabled).toBe(true);
+      expect(doneButton().title).toContain("1 uncommitted file");
+    });
+  });
+
   it("reports a failed close-out as a notice and restores the button", async () => {
     await mountWith(finishableRow(), {
       "branch.finish": () => {

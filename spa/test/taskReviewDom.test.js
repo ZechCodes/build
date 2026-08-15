@@ -101,6 +101,47 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     expect(host.querySelector('[data-action="merge_prune"]')).toBe(null);
     plug.unmount();
   });
+
+  // The reviewer opens the merge menu to reach an option in it. The 1.6s poll
+  // must not shut it before they get there.
+  it("leaves the open merge menu standing through a poll tick, and still runs its item", async () => {
+    const calls = [];
+    const callRpc = (method, params) => {
+      calls.push([method, params]);
+      return method === "run.diff" ? Promise.resolve({ patch: PATCH, stat: {}, files: [] }) : Promise.resolve({});
+    };
+    const plug = createTaskReview({
+      taskId: "r2",
+      callRpc,
+      getTask: () => ({ ...TASK, adopted: true }),
+      isOffline: () => false,
+      onMerged: () => {},
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    plug.mount(host);
+    await vi.advanceTimersByTimeAsync(0);
+
+    host.querySelector(".csactions .caret").click();
+    const menu = host.querySelector(".csactions .splitmenu");
+    expect(menu.hidden).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
+
+    expect(host.querySelector(".csactions .splitmenu"), "the poll replaced the menu").toBe(menu);
+    expect(menu.hidden).toBe(false);
+
+    menu.querySelector('[data-action="merge_release"]').click();
+    await vi.advanceTimersByTimeAsync(0);
+    document.querySelector("[data-confirm-ok]").click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.find(([method]) => method === "run.git_action")[1]).toEqual({
+      run_id: "r2",
+      action: "merge",
+      cleanup: "release",
+    });
+    plug.unmount();
+  });
 });
 
 describe("reviewMergeOptions", () => {

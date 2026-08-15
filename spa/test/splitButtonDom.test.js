@@ -121,6 +121,50 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
     });
   });
 
+  // Every caller of this component sits under a poll. A tick that would mount
+  // the very same button must not take the menu the user just opened.
+  describe("a remount under an open menu", () => {
+    it("leaves the open menu standing when nothing about the button changed", () => {
+      const spec = pendingRun();
+      const { container, caret, menu } = mount(spec);
+      caret.click();
+      expect(menu.hidden).toBe(false);
+
+      mountSplitButton(container, { options: OPTIONS, run: spec.run }); // the poll tick
+
+      expect(container.querySelector(".splitmenu"), "the menu element was replaced").toBe(menu);
+      expect(menu.hidden).toBe(false);
+      // And the item the user was reaching for still runs.
+      menu.querySelector('[data-action="commit"]').click();
+      expect(spec.calls).toEqual(["commit"]);
+    });
+
+    it("rebuilds anyway when the options themselves changed", () => {
+      const spec = pendingRun();
+      const { container, caret, menu } = mount(spec);
+      caret.click();
+      expect(menu.hidden).toBe(false);
+
+      mountSplitButton(container, {
+        options: [OPTIONS[0], { id: "push", menuLabel: "Push", description: "d", busyLabel: "pushing…" }],
+        run: spec.run,
+      });
+
+      expect(container.querySelector(".splitmenu")).not.toBe(menu);
+      expect(container.textContent).toContain("Push");
+    });
+
+    it("still repaints once the menu is shut again", () => {
+      const spec = pendingRun();
+      const { container, caret } = mount(spec);
+      caret.click();
+      caret.click(); // shut
+      const before = container.querySelector(".splitmenu");
+      mountSplitButton(container, { options: OPTIONS, run: spec.run });
+      expect(container.querySelector(".splitmenu")).not.toBe(before);
+    });
+  });
+
   it("a shared external flight blocks invokes on a remounted button mid-flight", async () => {
     const flight = createSingleFlight();
     const first = pendingRun();

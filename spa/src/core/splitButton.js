@@ -42,6 +42,12 @@ export function createSingleFlight() {
   };
 }
 
+/** What each container was last mounted from. A poll-driven caller remounts the
+ *  same button over and over, and the markup is what says whether that remount
+ *  would change anything at all. Keyed weakly: a container that goes away takes
+ *  its entry with it. */
+const mountedMarkup = new WeakMap();
+
 /** Render into `container` and wire behavior. `run(optionId)` is awaited; while
  *  in flight the primary button and caret are disabled, the menu stays closed,
  *  and further invokes are ignored (single flight — no concurrent destructive
@@ -52,7 +58,15 @@ export function createSingleFlight() {
  *  button while an action can be pending (poll-driven repaints) pass a shared
  *  `flight` latch so a remount can never re-arm a fresh one mid-flight. */
 export function mountSplitButton(container, { options, run, flight = createSingleFlight() }) {
-  container.innerHTML = splitButtonMarkup(options);
+  const markup = splitButtonMarkup(options);
+  // A repaint that would change nothing must not close the menu the user just
+  // opened, nor swap a busy button for a fresh one: a click in progress
+  // outranks a poll tick, which lands again once the menu is shut. Options that
+  // actually moved still rebuild — what the button offers has changed.
+  const held = container.querySelector(".splitmenu:not([hidden])") || (flight.active() && container.querySelector(".splitbtn"));
+  if (held && mountedMarkup.get(container) === markup) return;
+  container.innerHTML = markup;
+  mountedMarkup.set(container, markup);
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
   const primary = container.querySelector(".btn.primary:not(.caret)");
   const caret = container.querySelector(".caret");

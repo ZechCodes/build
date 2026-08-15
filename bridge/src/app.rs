@@ -2916,15 +2916,72 @@ impl AppState {
     }
 
     /// The agent process an id owns has ended: close the conversation's session
-    /// lineage for it. The mirror of
+    /// lineage for it, and close the turn it died holding. The mirror of
     /// [`record_agent_session_start`](Self::record_agent_session_start), and it
     /// is the PUMP that calls it — the only place that learns a harness died on
     /// its own. An owner that no longer exists (its record was deleted with the
     /// tab) has no lineage left to close, which is why this is quiet.
-    fn record_agent_session_end(&mut self, owner: &str) {
+    fn record_agent_session_end(&mut self, owner: &str, agent_id: &str) {
         self.edit_owner_thread("record_agent_session_end", owner, |thread| {
             finish_open_session(thread, &now_rfc3339())
         });
+        self.close_turn_of_dead_agent(owner, agent_id);
+    }
+
+    /// `agent_id`'s process is gone. If it died mid-turn, say so on the
+    /// conversation that agent speaks in — which closes the turn, and with it
+    /// the row's and the bubble's claim that work is in flight.
+    ///
+    /// The conversation is chosen exactly the way
+    /// [`agent_conversation`](Self::agent_conversation) reads it: the first
+    /// agent's IS the entity's own, and a planned implementation's is its
+    /// Issue's, so an event written for the first agent has to travel there or
+    /// it lands on a thread no surface renders. A turn that is already closed —
+    /// the agent replied, reported `done`, or was told the branch was abandoned
+    /// — is left alone: this marker exists only for a turn nobody else will
+    /// ever close.
+    fn close_turn_of_dead_agent(&mut self, owner: &str, agent_id: &str) {
+        let died_mid_turn = self
+            .agent_conversation(owner, Some(agent_id))
+            .is_ok_and(|thread| thread.working_since().is_some());
+        if !died_mid_turn {
+            return;
+        }
+        let now = now_rfc3339();
+        if self.plans.contains_key(owner) {
+            let Ok(mut active) = self.take_plan(owner) else {
+                return;
+            };
+            if let Some(agent) = active.agents.by_id_mut(agent_id) {
+                record_session_death_in_thread(&mut agent.thread, &now);
+            }
+            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
+            if let Err(error) = persisted {
+                eprintln!("close_turn_of_dead_agent {owner}: {error}");
+            }
+            return;
+        }
+        let Ok(mut active) = self.take_run(owner) else {
+            return;
+        };
+        let is_first = active.agents.first().id == agent_id;
+        let recorded = if is_first {
+            self.record_on_run_conversation(&mut active, |thread| {
+                record_session_death_in_thread(thread, &now)
+            })
+        } else {
+            if let Some(agent) = active.agents.by_id_mut(agent_id) {
+                record_session_death_in_thread(&mut agent.thread, &now);
+            }
+            Ok(())
+        };
+        if let Err(error) = recorded {
+            eprintln!("close_turn_of_dead_agent {owner}: {error}");
+        }
+        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
+        if let Err(error) = persisted {
+            eprintln!("close_turn_of_dead_agent {owner}: {error}");
+        }
     }
 
     /// Apply `edit` to `owner`'s conversation and persist the result, whichever
@@ -10777,6 +10834,19 @@ impl AppState {
                 None,
                 now_rfc3339(),
             );
+            // A branch may carry several agents and the kill above took every
+            // one of them. `Abandoned` closed the first agent's turn (and, for
+            // a planned implementation, its Issue's — see
+            // `mirror_run_outcome_to_issue`); the agents beside it were told
+            // nothing, so each one that died mid-turn is closed on its own
+            // conversation. Every other teardown path removes the run from the
+            // board entirely, so there is no row left to read as working.
+            let now = now_rfc3339();
+            for agent in active.agents.iter_mut() {
+                if agent.thread.working_since().is_some() {
+                    record_session_death_in_thread(&mut agent.thread, &now);
+                }
+            }
         }
         let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
         result?;
@@ -14667,6 +14737,30 @@ fn record_idle_in_thread(thread: &mut crate::thread::Thread, exit: Option<&Harne
     thread.push_event(event, Some(summary), None, None, now);
 }
 
+/// What a conversation says when the agent's PROCESS ended with a turn still in
+/// flight: nobody is coming back to hand it over, so the turn is closed here.
+///
+/// `Interrupted` rather than `IdleUnreported`, because the two differ by whether
+/// the agent is still there. `IdleUnreported` reads "went quiet without
+/// reporting done" — an agent alive at its prompt with nothing to say. A killed
+/// harness is not quiet, it is gone, which is exactly what `Interrupted` already
+/// means ("the session did not survive"); boot recovery writes the same event
+/// for the same reason after a daemon restart. It is attention-class, and that
+/// class is what ENDS a turn — so `working_since` goes `None`, the row and the
+/// agent's bubble stop claiming work is happening, and the entry says why.
+fn record_session_death_in_thread(thread: &mut crate::thread::Thread, now: &str) {
+    thread.push_event(
+        crate::thread::ThreadEventKind::Interrupted,
+        Some(SESSION_DIED_SUMMARY.to_string()),
+        None,
+        None,
+        now,
+    );
+}
+
+/// What the conversation reads when a harness died mid-turn.
+const SESSION_DIED_SUMMARY: &str = "The agent's session ended without reporting back";
+
 /// What happens to the worktree + branch after a user-approved merge lands
 /// (spec §5.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15538,18 +15632,22 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     Err(broadcast::error::RecvError::Closed) => {
                         let mut s = state.lock().unwrap();
                         let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        let ended_owner = match &tab.role {
-                            TabRole::Agent { owner, .. } => Some(owner.clone()),
+                        let ended_agent = match &tab.role {
+                            TabRole::Agent { owner, agent_id, .. } => {
+                                Some((owner.clone(), agent_id.clone()))
+                            }
                             TabRole::Shell => None,
                         };
-                        match ended_owner {
-                            Some(owner) => {
+                        match ended_agent {
+                            Some((owner, agent_id)) => {
                                 tab.live = false;
                                 tab.screen.flush(&term_id);
                                 tab.screen.push_closed(&term_id, "agent_session_ended");
                                 // The process is what a session IS, so this is
-                                // where the conversation's lineage closes.
-                                s.record_agent_session_end(&owner);
+                                // where the conversation's lineage closes — and
+                                // where a turn the dead process was holding is
+                                // closed, so the row stops reading as working.
+                                s.record_agent_session_end(&owner, &agent_id);
                             }
                             None => {
                                 let Some(tab) = s.tabs.remove(&key) else { return; };
@@ -16972,6 +17070,244 @@ mod tests {
             s.runs["run-eof"].agents.sessions.len(),
             1,
             "the dead session is closed, not replaced"
+        );
+    }
+
+    /// The feed row for a run, off `board.list` — the one place `working` is
+    /// actually read from, so a test about a stuck working state asks there.
+    fn feed_row_for_run(handler: &FrameHandler, run_id: &str) -> Value {
+        let board = call(handler, "board.list", json!({}));
+        board["result"]["items"]
+            .as_array()
+            .expect("the feed is a list of rows")
+            .iter()
+            .find(|row| row["run_id"] == json!(run_id))
+            .unwrap_or_else(|| panic!("no feed row for {run_id}: {board:?}"))
+            .clone()
+    }
+
+    /// The interruption a dead session leaves on a conversation, if it left
+    /// one.
+    fn interruption_in(thread: &crate::thread::Thread) -> Option<&crate::thread::ThreadEvent> {
+        thread.items.iter().find_map(|item| match item {
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::Interrupted =>
+            {
+                Some(event)
+            }
+            _ => None,
+        })
+    }
+
+    /// Hand `run_id`'s first agent a turn: the human asks, the agent reads it,
+    /// nothing comes back. That read is what starts the working clock.
+    fn open_a_turn(state: &Arc<Mutex<AppState>>, run_id: &str) {
+        let mut s = state.lock().unwrap();
+        let run = s.runs.get_mut(run_id).expect("the run is on the board");
+        run.agents
+            .post_user("do the thing", None, "2026-08-15T10:00:00Z");
+        run.agents.read_unread("2026-08-15T10:00:01Z");
+        assert!(
+            run.agents.working_since().is_some(),
+            "the agent read the message, so it holds the turn"
+        );
+    }
+
+    /// A killed agent process must not leave its row working.
+    ///
+    /// The run sits at its review gate, so its STATE claims nothing — the row's
+    /// working flag comes entirely from the open turn, which is the half the
+    /// idle sweep cannot reach (it only demotes entities whose state is
+    /// working). The pump's EOF is where the death is noticed, so that is where
+    /// the turn closes.
+    #[tokio::test]
+    async fn a_killed_agent_process_leaves_its_row_inactive() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (tab_key, _wire_id) =
+            insert_live_run(&state, &repo, dir.path().join("side"), "run-killed");
+        state
+            .lock()
+            .unwrap()
+            .runs
+            .get_mut("run-killed")
+            .unwrap()
+            .run
+            .state = RunState::Review;
+        open_a_turn(&state, "run-killed");
+        assert_eq!(
+            feed_row_for_run(&handler, "run-killed")["working"],
+            json!(true),
+            "a turn in flight is the row working"
+        );
+
+        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let row = loop {
+            let row = feed_row_for_run(&handler, "run-killed");
+            if row["working"] == json!(false) {
+                break row;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the agent's process was killed and the row still claims it is working: {row:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            row["unread_reason"], "interrupted",
+            "the row says why the work stopped: {row:?}"
+        );
+
+        let s = state.lock().unwrap();
+        let thread = &s.runs["run-killed"].agents;
+        assert_eq!(thread.working_since(), None, "the turn is closed");
+        let interruption = interruption_in(thread).expect("the conversation records the death");
+        assert!(
+            interruption
+                .summary
+                .as_deref()
+                .is_some_and(|said| said.contains("without reporting")),
+            "the entry says the session ended without reporting: {interruption:?}"
+        );
+    }
+
+    /// A second agent on a run, with its own PTY tab and its own conversation —
+    /// the shape of a branch carrying more than one agent. Returns its id and
+    /// the key of the tab it runs in.
+    fn add_second_agent(state: &Arc<Mutex<AppState>>, run_id: &str) -> (String, TabKey) {
+        let (agent_id, root) = {
+            let mut s = state.lock().unwrap();
+            let active = s.runs.get_mut(run_id).expect("the run is on the board");
+            let agent_id = active
+                .agents
+                .add(run_id, ModelChoice::default(), "2026-08-15T10:00:00Z")
+                .id
+                .clone();
+            let root = AppState::canonical_root(&active.worktree.path);
+            (agent_id, root)
+        };
+        let (tab, rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.to_string(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            agent_tab_id(&agent_id),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the second agent's tab spawns");
+        let key = TabKey::agent(&root, &agent_id);
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        spawn_tab_pump(state, key.clone(), rx);
+        (agent_id, key)
+    }
+
+    /// One agent dying is not every agent dying. The interruption lands on the
+    /// conversation of the agent whose process ended, and the agent beside it
+    /// — still running, still mid-turn — keeps its turn and hears nothing.
+    #[tokio::test]
+    async fn a_dead_agents_interruption_lands_on_its_own_conversation() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let (_first_key, _wire_id) =
+            insert_live_run(&state, &repo, dir.path().join("side"), "run-two-agents");
+        open_a_turn(&state, "run-two-agents");
+        let (second_id, second_key) = add_second_agent(&state, "run-two-agents");
+        {
+            let mut s = state.lock().unwrap();
+            let second = s.runs.get_mut("run-two-agents").unwrap();
+            let second = second.agents.by_id_mut(&second_id).expect("just added");
+            second
+                .thread
+                .post_user("and this one too", None, "2026-08-15T10:00:02Z");
+            second.thread.read_unread("2026-08-15T10:00:03Z");
+        }
+
+        state.lock().unwrap().tabs[&second_key]
+            .session
+            .kill_and_reap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            {
+                let s = state.lock().unwrap();
+                let roster = &s.runs["run-two-agents"].agents;
+                let second = roster.by_id(&second_id).expect("still on the roster");
+                if second.thread.working_since().is_none() {
+                    assert!(
+                        interruption_in(&second.thread).is_some(),
+                        "the dead agent's own conversation records it: {:?}",
+                        second.thread.items
+                    );
+                    assert!(
+                        roster.first().thread.working_since().is_some(),
+                        "the agent still running keeps its turn"
+                    );
+                    assert!(
+                        interruption_in(&roster.first().thread).is_none(),
+                        "and is told nothing: {:?}",
+                        roster.first().thread.items
+                    );
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the second agent's process was killed and its turn never closed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A process that exits after the agent handed back is an ordinary ending,
+    /// not an interruption. The marker exists to close a turn nobody else will
+    /// ever close, so a conversation with no turn in flight gains nothing.
+    #[tokio::test]
+    async fn a_process_that_exits_after_handing_back_records_no_interruption() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (tab_key, _wire_id) =
+            insert_live_run(&state, &repo, dir.path().join("side"), "run-handback");
+        state
+            .lock()
+            .unwrap()
+            .runs
+            .get_mut("run-handback")
+            .unwrap()
+            .run
+            .state = RunState::Review;
+        open_a_turn(&state, "run-handback");
+        {
+            let mut s = state.lock().unwrap();
+            let run = s.runs.get_mut("run-handback").unwrap();
+            run.agents
+                .post_agent("here is what I did", None, "2026-08-15T10:05:00Z");
+            assert_eq!(run.agents.working_since(), None, "the reply hands back");
+        }
+
+        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while state.lock().unwrap().tabs[&tab_key].live {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pump never noticed the process end"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let row = feed_row_for_run(&handler, "run-handback");
+        assert_eq!(row["working"], json!(false), "{row:?}");
+        let s = state.lock().unwrap();
+        assert!(
+            interruption_in(&s.runs["run-handback"].agents).is_none(),
+            "a handed-back turn is not interrupted: {:?}",
+            s.runs["run-handback"].agents.items
         );
     }
 

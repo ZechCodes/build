@@ -173,8 +173,8 @@ body.inbox-collapsed #inbox-open { display:block; }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
 /* ---- the view area's toolbar ----
-   Where you are standing, said as one sentence: project / branch-or-issue, both
-   halves opening the same menu. The right side carries the two facts about the
+   Where you are standing, said as one sentence: project / branch-or-issue, each
+   half opening the list of its own kind. The right side carries the two facts about the
    work that are true wherever you are in it — how long its agent has been at it
    and what the diff weighs — plus the ⋯ the tab row's right cluster used to be. */
 .toolbar { display:flex; align-items:center; gap:2px; padding:0 10px 0 12px;
@@ -213,6 +213,14 @@ body.inbox-collapsed #inbox-open { display:block; }
   background:var(--bg); border:1px solid var(--line); border-radius:6px; }
 .tb-group { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
   color:var(--dim); padding:8px 8px 3px; }
+/* The work list names the project whose work it is, and carries the way back to
+   the project list: two menus, one flow. */
+.tb-scope { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.tb-scope > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tb-scope-switch { flex:none; font:inherit; font-size:10.5px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--accent); background:none; border:none;
+  padding:0; cursor:pointer; }
+.tb-scope-switch:hover { text-decoration:underline; }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
 .tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
 

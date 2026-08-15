@@ -1,11 +1,11 @@
-// The view-area toolbar's pure model: what the two selectors say, what the one
-// menu behind them offers, and what the right side reports.
+// The view-area toolbar's pure model: what the two selectors say, what each
+// one's menu offers, and what the right side reports.
 //
 // The toolbar names where you are standing — project, then branch or issue —
-// and both names open the SAME project-scoped menu: switching project and
-// switching work item are parallel entries of one list, and the two creates
-// (a branch, an issue) sit at its foot. Everything here is pure; core/toolbar.js
-// renders and wires it.
+// and each name opens the menu of its own kind: the project half lists projects,
+// the item half lists the scoped project's branches and issues. Two questions,
+// two lists; a menu that answered both at once made the same list appear behind
+// both names. Everything here is pure; core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 
@@ -85,30 +85,30 @@ function toEntry(item) {
   };
 }
 
-/**
- * The one menu both selectors open: every project, and every work item in the
- * project the toolbar is scoped to. `query` filters both halves at once
- * (subsequence matching, core/fuzzy.js), so one search box reaches a project by
- * name and a branch by its letters without saying which you meant.
- *
- * A row with no branch to name it by is nameable by no URL, so it is not on a
- * menu whose whole job is navigation.
- */
-export function toolbarMenuModel({ items = [], projects = [], projectId = null, query = "" } = {}) {
-  const projectEntries = projects.map((project) => ({
+/** The project selector's menu: the projects the device knows, the scoped one
+ *  marked, filtered by name (subsequence matching, core/fuzzy.js). Projects
+ *  only — a branch is not an answer to "which project". */
+export function projectMenuModel({ projects = [], projectId = null, query = "" } = {}) {
+  const entries = projects.map((project) => ({
     id: project.id,
     name: project.name || project.id,
     current: project.id === projectId,
   }));
+  return fuzzyRank(entries, query, (entry) => entry.name);
+}
+
+/** The item selector's menu: the branches and issues of the scoped project,
+ *  most recently touched first, filtered by what they are called.
+ *
+ *  A row with no branch to name it by is nameable by no URL, so it is not on a
+ *  menu whose whole job is navigation. */
+export function workMenuModel({ items = [], projectId = null, query = "" } = {}) {
   const work = items
     .filter((item) => item.project_id === projectId)
     .filter((item) => (item.kind === "issue" ? !!item.issue_id : !!item.branch))
     .map(toEntry)
     .sort((a, b) => b.resumeMs - a.resumeMs || a.label.localeCompare(b.label));
-  return {
-    projects: fuzzyRank(projectEntries, query, (entry) => entry.name),
-    work: fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`),
-  };
+  return fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`);
 }
 
 /** Where the toolbar says you are standing: the project, and the branch or

@@ -93,6 +93,11 @@ export function actionSettleReenables(inFlightCount) {
   return inFlightCount === 0;
 }
 
+/** The button vocabulary the git bar's verbs wear. The bar is a dense toolbar
+ *  of secondary actions, so Fetch, the branch control and the Pull/Push/Stash
+ *  split buttons are all the app's mini button — no look of its own. */
+export const TOOLBAR_BUTTON_VARIANT = "mini";
+
 /** The controls one settled action re-enables — every toolbar verb PLUS the
  *  commit primary. This is the single source S1 unifies on: a toolbar action's
  *  repaint disables the commit button (render() disables it while any action is
@@ -102,8 +107,8 @@ export function settleReenableSelectors() {
   return [
     ".gtfetch",
     ".gtbranchbtn",
-    ".gtsync .btn.primary",
-    ".gtstash .btn.primary",
+    ".gtsync .btn",
+    ".gtstash .btn",
     ".gitcommit-actions .btn.primary:not(.caret)",
   ];
 }
@@ -778,22 +783,32 @@ export function mountGitPane(
 
   /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host
    *  is absent unless the repo-management toolbar rendered (older bridge → no
-   *  hosts, nothing to mount). */
+   *  hosts, nothing to mount). The git bar is a dense toolbar, so its verbs wear
+   *  the mini button — the same one Fetch and the branch control wear. */
   const mountToolbarControls = () => {
     const pullHost = container.querySelector(".gtpull");
-    if (pullHost) mountSplitButton(pullHost, { options: pullSplitOptions(), run: runSyncOption });
+    if (pullHost) mountSplitButton(pullHost, { options: pullSplitOptions(), run: runSyncOption, variant: TOOLBAR_BUTTON_VARIANT });
     const pushHost = container.querySelector(".gtpush");
     // Arming force push re-renders with the armed label so the menu item reads
     // "Confirm force push?" — the pending two-click confirm is visible (S2a).
-    if (pushHost) mountSplitButton(pushHost, { options: pushSplitOptions(pendingConfirm === "force_push"), run: runSyncOption });
+    if (pushHost)
+      mountSplitButton(pushHost, {
+        options: pushSplitOptions(pendingConfirm === "force_push"),
+        run: runSyncOption,
+        variant: TOOLBAR_BUTTON_VARIANT,
+      });
     const stashHost = container.querySelector(".gtstash");
     if (stashHost)
-      mountSplitButton(stashHost, { options: stashSplitOptions(lastStatus && lastStatus.stash_count), run: runSyncOption });
+      mountSplitButton(stashHost, {
+        options: stashSplitOptions(lastStatus && lastStatus.stash_count),
+        run: runSyncOption,
+        variant: TOOLBAR_BUTTON_VARIANT,
+      });
   };
 
   const toolbarButtons = () => [
-    ...container.querySelectorAll(".gtfetch, .gtbranchbtn"),
-    ...container.querySelectorAll(".gtsync .btn.primary, .gtstash .btn.primary"),
+    ...container.querySelectorAll(".gtbranchbtn"),
+    ...container.querySelectorAll(".gtsync .btn, .gtstash .btn"),
   ];
   const disableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = true));
 

@@ -74,7 +74,7 @@ export async function renderBranch() {
     <div class="surface-bar">
       <div class="tabrow" id="branch-tabs"></div>
     </div>
-    <div id="tabbody"><div class="empty">loading…</div></div>`;
+    <div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   $("#branch-tabs").innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
   $("#branch-tabs")
     .querySelectorAll("[data-tab]")

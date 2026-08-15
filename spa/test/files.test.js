@@ -162,15 +162,27 @@ describe("shouldMaskDotenv", () => {
 });
 
 describe("previewPlaceholderHtml", () => {
-  it("renders idle and error messages as a quiet centered line", () => {
-    expect(previewPlaceholderHtml("idle", "Select a file to preview.")).toBe(
-      '<div class="fpidle">Select a file to preview.</div>',
-    );
-    expect(previewPlaceholderHtml("error", "cannot read: nope")).toContain("cannot read: nope");
+  it("renders idle and error messages as a quiet centered block", () => {
+    const idle = previewPlaceholderHtml("idle", "No file open");
+    expect(idle).toContain('class="fpidle"');
+    expect(idle).toContain('class="fpidle-msg">No file open<');
+    const error = previewPlaceholderHtml("error", "cannot read: nope");
+    expect(error).toContain("cannot read: nope");
+    expect(error).toContain("fpidle-error");
+  });
+
+  // An empty pane that only says it is empty leaves the reader looking for the
+  // control that fills it — which, below the stacking width, is behind a drawer
+  // handle rather than in view.
+  it("carries a hint beside the message when one is given", () => {
+    const idle = previewPlaceholderHtml("idle", "No file open", "Choose a file from the tree.");
+    expect(idle).toContain('class="fpidle-hint">Choose a file from the tree.<');
+    expect(previewPlaceholderHtml("idle", "No file open")).not.toContain("fpidle-hint");
   });
 
   it("escapes placeholder messages (error text carries repo-derived paths)", () => {
     expect(previewPlaceholderHtml("error", "<img src=x>")).not.toContain("<img");
+    expect(previewPlaceholderHtml("idle", "ok", "<img src=x>")).not.toContain("<img");
   });
 
   it("renders loading as a throbber", () => {

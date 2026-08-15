@@ -214,6 +214,10 @@ main#root.surface { max-width:none;
    internally at full height, and .pane-split carries the gutters the padded
    body gives the one-column layout. */
 .surface #tabbody.flush { padding:0; overflow:hidden; }
+/* What a surface paints into the flush body before either column exists —
+   "loading…", a branch no checkout carries. The body pays no gutter, so the
+   message states the token itself rather than standing against the frame. */
+.surface #tabbody.flush > .empty { padding:var(--pane-top) var(--pane-gutter); }
 /* ---- the two tab layouts ----
    There are exactly two, and dimensionally they are one: the same width, the
    same centring, the same gutters, so a tab switch moves nothing but what is
@@ -760,16 +764,27 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    the row's width, centring and gutters, and a narrow tree sidebar (no card
    chrome, a single right divider, its own scroll) sits beside a preview pane
    that fills the rest. All padding lives inside the crumb/rows and the preview
-   head/body — never the gutter again, which the split already paid. Uncapped
-   for the same reason as the commit rail: the basis is the floor, and a cap can
-   only take the tree below it. */
-.ftree { flex:0 0 300px; border-right:1px solid var(--line);
+   head/body — never the gutter again, which the split already paid.
+   Uncapped for the same reason as the commit rail: the basis is the floor, and a
+   cap can only take the tree below it. It does shrink, though — a pane squeezed
+   narrower than both columns (a docked inbox and an open agent panel on a small
+   laptop) has to take the room from somewhere, and taking it from the tree
+   leaves the preview readable, where taking it from the preview leaves the tree
+   listing files there is nowhere to read. */
+.ftree { flex:0 1 300px; border-right:1px solid var(--line);
   overflow-y:auto; padding:6px 0; }
-.fpreview { flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; }
+/* The floor is the preview's share of that squeeze, and it is deliberately
+   below what any real two-column pane hands it — it changes nothing until the
+   pane is too narrow for both columns. */
+.fpreview { flex:1; min-width:min(200px, 100%); overflow:hidden; display:flex; flex-direction:column; }
 /* placeholder states (nothing selected / loading / error): no panel box,
    message or throbber centered in the preview area */
 .fpreview.idle { border:none; background:none; align-items:center; justify-content:center; }
-.fpidle { color:var(--dim); font-size:13px; }
+.fpidle { color:var(--dim); font-size:13px; text-align:center; max-width:34ch;
+  padding:0 18px; }
+.fpidle p { margin:0; }
+.fpidle .fpidle-hint { margin-top:5px; font-size:12px; color:var(--dim); opacity:.8; }
+.fpidle.fpidle-error .fpidle-msg { color:var(--red); }
 .throbber { width:22px; height:22px; border-radius:50%; border:2px solid var(--line);
   border-top-color:var(--accent); animation:throb .8s linear infinite; }
 @keyframes throb { to { transform:rotate(360deg); } }

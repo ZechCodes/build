@@ -119,10 +119,12 @@ const sizePlaceholder = (mode, size) =>
   `<div class="fbinary">${mode === "toolarge" ? "file too large to preview" : "binary file"} · ${Number(size) || 0} bytes</div>`;
 
 /** Pure: the preview pane's container-less placeholder states. `idle` and
- *  `error` center a quiet message; `loading` centers a throbber. */
-export function previewPlaceholderHtml(kind, message = "") {
+ *  `error` center a quiet block — the message, and an optional second line
+ *  saying what would fill the pane; `loading` centers a throbber. */
+export function previewPlaceholderHtml(kind, message = "", hint = "") {
   if (kind === "loading") return `<div class="throbber" role="status" aria-label="loading"></div>`;
-  return `<div class="fpidle">${esc(message)}</div>`;
+  const hintLine = hint ? `<p class="fpidle-hint">${esc(hint)}</p>` : "";
+  return `<div class="fpidle${kind === "error" ? " fpidle-error" : ""}"><p class="fpidle-msg">${esc(message)}</p>${hintLine}</div>`;
 }
 
 /**
@@ -145,11 +147,13 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   const drawer = initPaneDrawer(body.querySelector(".files"), { list: treeEl, closeOnSelect: ".ffile" });
   // The placeholder states render container-less (no panel box), centered in
   // the preview area; only a loaded file gets the bordered panel back.
-  const showPlaceholder = (kind, message) => {
+  const showPlaceholder = (kind, message, hint) => {
     previewEl.classList.add("idle");
-    previewEl.innerHTML = previewPlaceholderHtml(kind, message);
+    previewEl.innerHTML = previewPlaceholderHtml(kind, message, hint);
   };
-  showPlaceholder("idle", "Select a file to preview.");
+  // Below the stacking width the tree is behind the drawer handle rather than
+  // beside the preview, so the empty state names it instead of pointing at it.
+  showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
   let dir = initialPath ? parentPath(initialPath) : ""; // current directory, relative to the scope root
   let sourceOverride = false; // per-selected-file "view source" toggle

@@ -104,6 +104,16 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:minmax\(0, 1fr\) auto/);
   });
 
+  it("pins each panel to its own track, so the view column never lands in the rail's", () => {
+    // The rail leaves the flow twice — hidden when it is collapsed, fixed below
+    // the stacking width — and auto-placement then drops the view column into
+    // the `auto` track, where it sizes to its content instead of filling the
+    // frame. Naming both tracks is what keeps the shell viewport-wide with the
+    // rail away.
+    expect(shellCss).toMatch(/#inbox-rail \{[^}]*grid-column:1/);
+    expect(shellCss).toMatch(/#view \{[^}]*grid-column:2/);
+  });
+
   it("gives the gate the whole frame, keeping only the compose box", () => {
     const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
     for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region", "#inbox-list", ".inbox-foot"]) {

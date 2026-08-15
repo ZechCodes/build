@@ -314,6 +314,33 @@ describe("tab layout primitives", () => {
     expect(declaration(split.body, "overflow")).toBeNull();
   });
 
+  it("stands the flush body's own pre-pane messages on the same gutter", () => {
+    // A surface paints "loading…" and "no checkout carries this branch" into the
+    // tab body before either column exists. The flush body pays no gutter, so
+    // those messages would sit against the frame — they take the token instead,
+    // exactly as the Changes pane's pre-skeleton states do.
+    const [message] = cssRules().filter((rule) => rule.selector === ".surface #tabbody.flush > .empty");
+    expect(message).toBeTruthy();
+    expect(declaration(message.body, "padding")).toBe("var(--pane-top) var(--pane-gutter)");
+  });
+
+  it("keeps the Files preview column legible in a pane too narrow for both", () => {
+    // The tree is a fixed 300px and the preview takes what is left, so a pane
+    // squeezed by a docked inbox and an open agent panel hands the preview
+    // nothing — an empty state rendered a few characters wide. The floor is
+    // small enough never to bind at a width the two columns actually render at
+    // (the tightest is a 901px window, where the preview still clears it), so
+    // the tree keeps its full basis everywhere it has the room for it.
+    const [preview] = rulesFor(".fpreview");
+    expect(preview).toBeTruthy();
+    const floor = declaration(preview.body, "min-width");
+    expect(floor).toBe("min(200px, 100%)");
+    const [tree] = rulesFor(".ftree");
+    // …and the tree is what gives ground for it: a column that cannot shrink
+    // would overflow the pane instead, and the flush body clips what overflows.
+    expect(declaration(tree.body, "flex")).toBe("0 1 300px");
+  });
+
   it("fills its grid column instead of centring over the agent rail", () => {
     // The reading page centres with `margin:0 auto`, and the surface inherits
     // that. But the surface is a grid item beside the agent rail, and a grid

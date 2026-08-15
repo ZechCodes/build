@@ -25,7 +25,12 @@
 }
 
 /* ---- inbox rail (left) ---- */
+/* Track 1 by name, not by order: the rail leaves the flow whenever it is
+   collapsed or overlaid, and auto-placement would then hand its track to the
+   view column — which sizes to its content there and leaves the rest of the
+   frame empty. */
 #inbox-rail {
+  grid-column:1;
   width:var(--inbox-rail);
   display:flex; flex-direction:column; min-height:0;
   background:var(--bg);
@@ -152,6 +157,7 @@ body.inbox-collapsed #inbox-open { display:block; }
 /* Positioned, because the console's full size is an overlay over this column
    (below the toolbar — where you are standing stays legible). */
 #view {
+  grid-column:2; /* the 1fr track, with or without the rail beside it */
   display:grid;
   grid-template-rows:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; position:relative;

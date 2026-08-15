@@ -49,6 +49,18 @@ describe("the branch surface", () => {
     expect(App.call).toHaveBeenCalledWith("branch.get", expect.objectContaining({ project_id: "p1" }));
   });
 
+  // Both tabs paint a .pane-split, which states the shell's gutters itself. In
+  // a padded tab body those gutters are paid twice — a doubled inset all round —
+  // and the body scrolls the two columns together instead of letting each scroll
+  // in its own frame.
+  it.each(["changes", "files"])("hands the %s pane a flush tab body", async (tab) => {
+    App.route = { ...App.route, tab };
+    App.call = vi.fn(async () => row);
+    await renderBranch();
+    await flush();
+    expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
+  });
+
   it("installs no poll when the view was torn down mid-load", async () => {
     let answer;
     const firstRead = new Promise((r) => {
